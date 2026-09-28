@@ -132,14 +132,8 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                 'allowed_tools': ['interface_describe', 'interface_execute', 'probe_run', 'probe_diff', 'model_validate'],
                 'binding': session['binding'], 'effects': ['write', 'actuate']}
     if stage == 'ground':
-        raw = state['probe_evaluation']
-        evidence = ws / 'independent-observations.json'
-        _write(evidence, {k: raw[k] for k in ('execution', 'observations', 'observation_channel', 'physical')})
-        return {'objective': 'Assess whether the independently observed outputs support the requested temperature/read, '
-                '65 percent output, permission refusal, and disarm tasks. Distinguish emulator effects from physical '
-                'measurement; report disagreement or missing evidence. Cite independent-observations.json.',
-                'inputs': [str(evidence)], 'allowed_tools': [],
-                'context': {'independent_channel': 'Renode monitor; protocol replies do not supply timer observations'}}
+        from .ground import prepare
+        return prepare(accepted, ws)
     if stage == 'emit':
         model = ws/'model'
         source = _accepted_file(accepted, 'probe', 'model.json',
@@ -277,7 +271,7 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
         ok = state['probe_evaluation']['score']['verdict'] == 'passed' and report.get('status') == 'completed'
         return {'ok': ok, 'reason': None if ok else 'Grounding has missing or contradictory evidence',
                 'checks': [{'name': 'independent_output_observation', 'passed': ok}],
-                'artifacts': [str(ws/'independent-observations.json')]}
+                'artifacts': [str(ws/'ground-evidence')]}
     if stage == 'emit':
         manifests = list(ws.rglob('manifest.json'))
         for manifest_path in manifests:

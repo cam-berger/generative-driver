@@ -56,6 +56,8 @@ TQ9 interpretation receives the binary and generic sealed analysis kit. Original
 
 The configurator allows two bounded repairs for evidenced model defects. Operator/host faults stop for correction. Maintenance changes only firmware identity in this version, detects the old package's refusal, and requires new interpretation, probing, grounding, emission and fresh reuse. Unknown semantic drift is a future case version.
 
+Ground receives an evidence directory containing the accepted candidate model, live transaction records with decoded units, and independently observed output duty. Permission refusal is the host's rejection before I/O. New captures retain monitor register counts and responses; legacy captures explicitly disclose when only measured duty scalars were retained. Ground receives observations and their provenance, without private reference answers.
+
 ### Continuing a stopped trial
 
 Ordinary resume retains the original deadline. The budget is total wall time from the original start, including stopped time. If the user explicitly authorizes more time, record the increased total and its reason:

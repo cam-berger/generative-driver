@@ -112,21 +112,27 @@ class RenodeSession:
                 data += chunk
             return re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', data.decode(errors='replace'))
 
-    def read_u32(self, address):
+    def read_u32(self, address, evidence=None, register=None):
         command = f'sysbus ReadDoubleWord 0x{int(address):08x}'
         response = self.monitor(command)
         tail = response.split(command, 1)[-1]
         values = re.findall(r'0x[0-9a-fA-F]{1,8}', tail)
         if not values:
             raise RuntimeError('Independent monitor returned no register value')
-        return int(values[0], 16)
+        value = int(values[0], 16)
+        if evidence is not None:
+            evidence.append({'register': register, 'command': command, 'response': response,
+                             'value': value, 'time': time.time()})
+        return value
 
     def observe(self, truth):
         registers = truth['monitor']
-        compare = self.read_u32(registers['pwm_compare'])
-        reload = self.read_u32(registers['pwm_reload'])
+        reads = []
+        compare = self.read_u32(registers['pwm_compare'], reads, 'compare')
+        reload = self.read_u32(registers['pwm_reload'], reads, 'reload')
         return {'duty': compare / (reload + 1), 'compare': compare, 'reload': reload,
-                'channel': 'Renode monitor register observation', 'physical': False, 'time': time.time()}
+                'channel': 'Renode monitor register observation', 'physical': False, 'time': time.time(),
+                'calculation': 'compare / (reload + 1)', 'reads': reads}
 
     def stop(self):
         try:

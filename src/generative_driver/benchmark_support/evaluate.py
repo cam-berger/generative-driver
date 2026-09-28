@@ -29,7 +29,7 @@ def evaluate_model(model_dir, capabilities, session_info, truth, output_dir):
     model_dir, output_dir = Path(model_dir).resolve(), Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     session = RenodeSession(session_info)
-    observations, calls, probes = {}, [], []
+    observations, calls, probes, monitor_observations = {}, [], [], {}
     adaptation = model_dir/'adaptation.json'
     if adaptation.exists():
         observations['inferred_baud'] = json.loads(adaptation.read_text())['original_channel'].get('baudrate')
@@ -38,9 +38,11 @@ def evaluate_model(model_dir, capabilities, session_info, truth, output_dir):
         result = call_tool('probe_run', {'run_dir': str(output_dir), 'model_dir': str(model_dir),
              'operation': spec['operation'], 'parameters': spec.get('parameters', {}), 'n': 1,
              'binding': session_info['binding'], 'allow_effects': list(grants)})
-        calls.append({'capability': name, 'grants': list(grants), 'result': result})
+        call = {'capability': name, 'grants': list(grants), 'result': result}
         if result.get('probe'):
             probes.append(result['probe'])
+            call['probe_sha256'] = hashlib.sha256(Path(result['probe']).read_bytes()).hexdigest()
+        calls.append(call)
         return result
     temperature = execute('temperature')
     if temperature.get('ok'):
@@ -53,14 +55,17 @@ def evaluate_model(model_dir, capabilities, session_info, truth, output_dir):
     if enabled.get('ok'):
         changed = execute('set_duty')
         if changed.get('ok'):
-            observations['requested_duty'] = session.observe(truth)['duty']
+            monitor_observations['requested_duty'] = session.observe(truth)
+            observations['requested_duty'] = monitor_observations['requested_duty']['duty']
     disabled = execute('disarm')
     if disabled.get('ok'):
-        observations['disarmed_duty'] = session.observe(truth)['duty']
+        monitor_observations['disarmed_duty'] = session.observe(truth)
+        observations['disarmed_duty'] = monitor_observations['disarmed_duty']['duty']
     score = score_observations(truth, observations)
     result = {'schema': 'benchmark-observation/1', 'execution': 'actual-agent-emulation',
               'observations': observations, 'score': score, 'calls': calls, 'probes': probes, 'capabilities': capabilities,
               'model_sha256': hashlib.sha256((model_dir/'model.json').read_bytes()).hexdigest(),
+              'image_sha256': session_info.get('image_sha256'), 'monitor_observations': monitor_observations,
               'observation_channel': 'independent Renode monitor', 'physical': False}
     (output_dir/'observations.json').write_text(json.dumps(result, indent=2) + '\n')
     return result

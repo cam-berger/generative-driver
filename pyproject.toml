@@ -20,6 +20,9 @@ dev = ["build>=1.2"]
 generative-driver = "generative_driver.cli:main"
 generative-driver-mcp = "generative_driver.mcp:main"
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 where = ["src"]
 namespaces = false

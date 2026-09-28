@@ -1,5 +1,6 @@
 """Developer-facing MCP server; workflows belong to the detached configurator."""
 import json
+from typing import Literal
 from mcp.server.mcpserver import MCPServer
 from .setup import doctor
 
@@ -53,9 +54,15 @@ def driver_result(run_id: str) -> str:
 
 
 @server.tool()
-def driver_resume(run_id: str) -> str:
-    """Resume after correcting a reported blocker; recovery rechecks accepted input evidence."""
-    return _call("resume", run_id=run_id)
+def driver_resume(run_id: str, scoped_tool_approval: Literal["emulator"] | None = None) -> str:
+    """Resume after correcting a blocker; recheck accepted evidence.
+    Set scoped_tool_approval only after explicit user approval of assigned TQ9 emulator tools.
+    That scope cannot authorize physical devices or unrelated MCP tools.
+    """
+    params = {"run_id": run_id}
+    if scoped_tool_approval is not None:
+        params["scoped_tool_approval"] = scoped_tool_approval
+    return _call("resume", **params)
 
 
 @server.tool()

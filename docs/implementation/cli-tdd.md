@@ -18,6 +18,7 @@ The four seams were approved before implementation. This record covers the insta
 12. Doctor with a configured runtime outside PATH: red (available false), green using the explicit configured executable.
 13. Codex reasoning setting: red (flag absent), green persisting the explicit runtime setting. Goose does not claim support for this Codex-specific option.
 14. Scoped worker MCP session: red (legacy SDK decorator unavailable in installed MCP 2), green with constructor handlers; the actual protocol test imports the assigned bytes and refuses a subsequent call after cancellation.
+15. Explicit emulator approval through CLI/MCP: red (flag absent and MCP ignored the unsupported field), green forwarding the typed approval scope to the controller. Both public interfaces refuse this scope for a generic device run.
 
 Release tests run again after integration against a freshly built, separately installed wheel; in-progress wheel snapshots are not final release verification.
 

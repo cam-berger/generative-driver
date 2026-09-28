@@ -15,8 +15,10 @@ def manage(action, case, password_file, output, new_password_file=None, compiler
     manifest = json.loads((root/'cases'/case/'case.json').read_text(encoding='utf-8'))
     truth = truth_for_case(root, manifest, {'evaluator_password_file':password_file})
     destination = Path(output).expanduser().resolve()
-    if destination.is_relative_to(Path(__file__).resolve().parents[2]):
-        raise ValueError('Evaluator output must be outside installed package and candidate resources')
+    package_boundary = Path(__file__).resolve().parents[2]
+    checkout = next((p for p in Path(__file__).resolve().parents if (p/'.git').exists()), None)
+    if destination.is_relative_to(package_boundary) or (checkout and destination.is_relative_to(checkout)):
+        raise ValueError('Evaluator output must be outside the repository, installed package and candidate resources')
     if destination.exists() and any(destination.iterdir()):
         raise ValueError('Choose an empty evaluator output directory')
     destination.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -52,7 +54,7 @@ def manage(action, case, password_file, output, new_password_file=None, compiler
             source = source.replace(*recipe['drift_replace'])
         (destination/'main.c').write_text(source,encoding='utf-8')
         elf = destination/(image+'.elf')
-        built = subprocess.run([str(compiler),*recipe['flags'],'main.c','-o',str(elf)],cwd=destination,capture_output=True,text=True)
+        built = subprocess.run([str(compiler),*recipe['flags'],'main.c','-lgcc','-o',str(elf)],cwd=destination,capture_output=True,text=True)
         if built.returncode:
             raise RuntimeError('Reference build failed: '+built.stderr[-2000:])
         subprocess.run([str(objcopy),'-O','binary',str(elf),str(destination/image)],check=True,capture_output=True)

@@ -15,7 +15,7 @@ python -m generative_driver benchmark truth unlock --case tq9 --password-file "/
 python -m generative_driver benchmark truth rebuild --case tq9 --password-file "/private/evaluator/tq9.password" --compiler "/absolute/path/to/arm-none-eabi-gcc" --output "/private/evaluator/rebuilt"
 ```
 
-Use an empty output directory. `unlock` writes plaintext evidence and owned sources for human review. Never use that directory as a candidate workspace. `rebuild` requires Arm GNU Toolchain 14.2.Rel1 (GCC 14.2.1) plus its adjacent `objcopy`; it rebuilds both firmware revisions and checks byte hashes. Other compiler versions may change binary bytes; record a new case version when adopting different inputs. Candidate-generated code is never compared with reference source as a quality score.
+Use an empty output directory. `unlock` writes plaintext evidence and owned sources for human review. Never use that directory as a candidate workspace. `rebuild` requires Arm GNU Toolchain 14.2.Rel1 (GCC 14.2.1) plus its adjacent `objcopy`; it links the toolchain's `libgcc` arithmetic helpers, rebuilds both firmware revisions and checks byte hashes. Other compiler versions may change binary bytes; record a new case version when adopting different inputs. Candidate-generated code is never compared with reference source as a quality score.
 
 ## Rotate or publish your own evaluator key
 

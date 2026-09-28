@@ -101,6 +101,7 @@ def main(argv=None):
     running.add_argument('--java-home')
     running.add_argument('--home')
     running.add_argument('--request-id')
+    running.add_argument('--approve-emulator-tools', action='store_true', help='Explicitly authorize scoped tq9 emulator MCP tools; no physical device approval')
     running.add_argument('--binding-json', help='Operator-owned binding JSON, e.g. {"url":"ftdi://selected/1"}')
     comparing = commands.add_parser('compare')
     comparing.add_argument('before')
@@ -123,7 +124,8 @@ def main(argv=None):
                           'evaluator_password_file': args.password_file, 'renode': args.renode,
                           'ghidra_home': args.ghidra_home, 'java_home': args.java_home,
                           'home': args.home, 'request_id': args.request_id,
-                          'binding': json.loads(args.binding_json) if args.binding_json else None}.items() if v is not None})
+                          'binding': json.loads(args.binding_json) if args.binding_json else None,
+                          'scoped_tool_approval': 'emulator' if args.approve_emulator_tools else None}.items() if v is not None})
         elif args.command == 'truth':
             from .benchmark_support.evaluator_cli import manage
             result = manage(args.action,args.case,args.password_file,args.output,args.new_password_file,args.compiler)
@@ -143,6 +145,10 @@ def case_root():
 
 
 def run(case='setup-smoke', output_dir=None, executor=None, options=None):
+    options = dict(options or {})
+    approval = options.pop('scoped_tool_approval', None)
+    if approval is not None and (case != 'tq9' or approval != 'emulator'):
+        raise ValueError('Scoped emulator tool approval is supported only for tq9')
     if case in ('tq9', 'bme280'):
         from .client import call
         options = dict(options or {})
@@ -152,6 +158,8 @@ def run(case='setup-smoke', output_dir=None, executor=None, options=None):
         args = {'goal': 'Recover, check, package, freshly reuse and maintain the benchmark device interface.',
                 'case': case, 'executor': executor or 'codex', 'budget_seconds': budget,
                 'effects': effects, 'case_options': options}
+        if approval is not None:
+            args['scoped_tool_approval'] = approval
         if request_id:
             args['request_id'] = request_id
         if output_dir:
@@ -212,17 +220,29 @@ def compare(before, after):
     before, after = _read(before), _read(after)
     required = ('case', 'case_version', 'evaluator_version', 'seed', 'execution')
     incompatible = [k for k in required if k not in before or k not in after or before[k] != after[k]]
-    changed = [k for k in ('agent', 'toolchain_revision', 'skills_revision', 'budget_seconds')
+    changed = [k for k in ('agent', 'toolchain_revision', 'skills_revision', 'budget_seconds', 'environment', 'time_policy')
                if before.get(k) != after.get(k)]
     def delta(key):
         a, b = before.get(key), after.get(key)
         return b - a if type(a) in (int, float) and type(b) in (int, float) else None
     old_usage, new_usage = before.get('usage') or {}, after.get('usage') or {}
     old_tokens, new_tokens = old_usage.get('total_tokens'), new_usage.get('total_tokens')
+    stage_changes = {}
+    for stage in sorted(set(before.get('stages', {})) | set(after.get('stages', {}))):
+        a, b = before.get('stages', {}).get(stage, {}), after.get('stages', {}).get(stage, {})
+        row = {key+'_delta': b[key]-a[key] if type(a.get(key)) in (int,float) and type(b.get(key)) in (int,float) else None
+               for key in ('elapsed_seconds','worker_seconds','tool_seconds','tool_calls','attempt_count')}
+        at,bt = (a.get('usage') or {}).get('total_tokens'), (b.get('usage') or {}).get('total_tokens')
+        row['tokens_delta'] = bt-at if type(at) is int and type(bt) is int else None
+        for key in ('workflow_status','evaluator_status'):
+            row['before_'+key],row['after_'+key] = a.get(key),b.get(key)
+        stage_changes[stage] = row
     return {'schema': 'benchmark-comparison/1', 'compatible': not incompatible,
             'incompatible_fields': incompatible, 'changed_dimensions': changed,
             'comparison_kind': 'combined-system' if len(changed) > 1 else changed[0] if changed else 'repeat',
             'before_verdict': before.get('verdict'), 'after_verdict': after.get('verdict'),
+            'before_workflow_status':before.get('workflow_status'), 'after_workflow_status':after.get('workflow_status'),
+            'stages':stage_changes,
             'elapsed_seconds_delta': delta('elapsed_seconds'),
             'tokens_delta': new_tokens - old_tokens if type(old_tokens) is int and type(new_tokens) is int else None}
 
@@ -287,6 +307,10 @@ def score(report, password_file=None):
         grounding = state.get('physical_grounding', {})
         observations = grounding.get('observations', {})
         reference = grounding.get('reference', {}).get('reference', {})
+        if set(reference) != set(truth['max_tolerances']) or any(
+                type(v.get('absolute_tolerance')) not in (int,float) or not 0<v['absolute_tolerance']<=truth['max_tolerances'][k]
+                for k,v in reference.items()):
+            raise ValueError('Recorded physical reference is incomplete or exceeds evaluator uncertainty limits')
         contract = {'checks':[{'id':k,'expected':v['value'],'absolute_tolerance':v['absolute_tolerance']} for k,v in reference.items()]}
         grade = score_observations(contract, observations)
     else:
@@ -304,3 +328,21 @@ def score(report, password_file=None):
             'model_benchmark':True,'verdict':'passed' if grade['verdict']=='passed' and not missing else 'failed',
             'behavior':grade,'missing_required_gates':missing,'truth_sha256':manifest['truth']['sha256'],
             'scope':'Recorded evidence regraded; does not rerun a model or a device'}
+
+
+def score_stimulus(initial_reference, changed_reference, observations):
+    """Require independent ambient change beyond combined uncertainty and a matching fresh reading."""
+    changed=[]
+    for name, current in changed_reference.items():
+        previous=initial_reference.get(name)
+        if not isinstance(previous,dict) or not isinstance(current,dict):
+            continue
+        values=[previous.get('value'),current.get('value'),previous.get('absolute_tolerance'),current.get('absolute_tolerance')]
+        if all(type(v) in (int,float) and math.isfinite(v) for v in values) and min(values[2:])>0 and abs(values[1]-values[0])>sum(values[2:]):
+            changed.append(name)
+    contract={'checks':[{'id':name,'expected':row['value'],'absolute_tolerance':row['absolute_tolerance']}
+                        for name,row in changed_reference.items()]}
+    behavior=score_observations(contract,observations)
+    return {'verdict':'passed' if changed and behavior['verdict']=='passed' else 'failed',
+            'changed_channels':changed,'behavior':behavior,
+            'criterion':'At least one independently measured change exceeds the sum of both stated uncertainties'}

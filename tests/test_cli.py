@@ -9,6 +9,20 @@ from pathlib import Path
 
 
 class CliTests(unittest.TestCase):
+    def test_cli_emulator_approval_refuses_a_generic_device_run(self):
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory(prefix="CLI scoped approval ") as temp:
+            run = call("start", {"goal": "Check the approval boundary", "executor_config": {
+                "command": ["no-such-agent-runtime"]}}, temp)
+            call("cancel", run, temp)
+            try:
+                result = subprocess.run([sys.executable, "-m", "generative_driver", "--home", temp,
+                    "resume", run["run_id"], "--approve-emulator-tools"], cwd=temp, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("tq9", json.loads(result.stdout)["reason"].lower())
+            finally:
+                call("shutdown", {}, temp)
+
     def test_doctor_finds_a_configured_runtime_outside_the_app_search_path(self):
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix="configured doctor ") as temp:

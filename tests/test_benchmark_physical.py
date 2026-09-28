@@ -22,3 +22,14 @@ class PhysicalPrerequisitesTests(unittest.TestCase):
                 {'status':'completed','reference':{'temperature':20}},options={'binding':{'url':'ftdi://selected/1'},'configured_effects':['write']})
             self.assertFalse(checked['ok'])
             self.assertIn('Operator reference missing',checked['reason'])
+
+    def test_physical_probe_does_not_bypass_operator_grants_or_managed_dispatch(self):
+        from generative_driver.benchmark import check_stage
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            calls=[]
+            checked=check_stage('bme280','probe',root/'run',root/'worker',{'status':'completed'},
+                options={'binding':{'url':'ftdi://selected/1'},'configured_effects':[],
+                         'managed_probe':lambda *args:calls.append(args)})
+            self.assertFalse(checked['ok'])
+            self.assertEqual(calls,[])

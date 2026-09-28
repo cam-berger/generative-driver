@@ -8,7 +8,11 @@ description: Derive a bounded executable interface-model/4 or /5 from supplied f
 Read `INTERFACE_MODEL.md` and supplied evidence. Produce `model.json` in schema 4 (`interface-model/4`), or in schema 5 (`interface-model/5`) for a binary framed protocol, `NOTES.md` and `replies.json`.
 No `convert.py` is required or executed. This is the shared model/probe/emission workflow; no target-specific
 runtime can fill missing protocol facts. Supplied binary analysis may use the provided Ghidra installation
-and exporter inside the enforced offline worker. Do not use internet resources.
+and exporter in the supplied workspace. Use only supplied evidence; filesystem and network isolation
+depend on the configured runtime and are not established by the input seal. Do not use internet resources.
+
+Run Python commands with the configured Python 3.11+ interpreter. The `python3` examples below stand
+for that interpreter; on Windows use its full path rather than assuming a `python3` command exists.
 
 Before choosing any load base for a raw image, run the mapping checker, `python3 image_map_check.py image.bin`,
 a standard-library script supplied beside `validate.py`. A plausible vector table is not a load map: the same

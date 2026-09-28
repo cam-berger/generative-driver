@@ -38,6 +38,8 @@ python -m generative_driver benchmark run --case tq9 --executor codex --home "be
 
 On Windows use `python.exe`, the installed `Renode.exe`, the Ghidra directory and Java home directory; quote paths with spaces. Use `--executor goose` after configuring Goose to select that runtime. The evaluator password is obtained separately as described in [groundtruth](groundtruth/README.md). It must be outside the repository, candidate inputs and worker environment. An encrypted bundle without its password cannot run the independent emulator evaluator.
 
+For a noninteractive Codex worker, explicitly authorize the scoped TQ9 emulator tools by adding `--approve-emulator-tools` when you start the trial. The equivalent MCP option is `scoped_tool_approval: "emulator"`. This is limited to the TQ9 emulator profile and its permitted tools; it is not approval for physical hardware. Without that explicit authorization a runtime may stop for a tool approval.
+
 The call returns a durable `run_id`. Closing the UI does not stop the configurator. The same run can be inspected through either UI using `driver_status`, `driver_result`, or these commands:
 
 ```sh

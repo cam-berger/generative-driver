@@ -49,6 +49,9 @@ def main(argv=None):
             action.add_argument("--after", type=int, default=0)
         if method == "respond":
             action.add_argument("--observation", required=True, help="JSON file containing observation and source")
+        if method == "resume":
+            action.add_argument("--approve-emulator-tools", action="store_true",
+                                help="Explicitly approve only assigned TQ9 emulator tools for this run")
     args = parser.parse_args(argv)
     if args.command == "doctor":
         result = doctor(args.home)
@@ -82,6 +85,8 @@ def main(argv=None):
             params["after"] = args.after
         if args.command == "respond":
             params["observation"] = json.loads(Path(args.observation).read_text(encoding="utf-8"))
+        if args.command == "resume" and args.approve_emulator_tools:
+            params["scoped_tool_approval"] = "emulator"
         result = call(args.command, params, home=args.home)
     print(json.dumps(result, indent=2))
     return 0 if result.get("ok") else 1

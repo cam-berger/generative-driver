@@ -23,6 +23,7 @@ Nothing describes this device. You are given what the bus showed: which addresse
 
 ## Rules
 
+- Use the configured Python 3.11+ interpreter for `python3` commands; on Windows use its full path.
 - Run `python3 validate.py .` before you finish and fix every defect it reports.
 - Do not name the part or use any memory of parts with this address to fill in registers the sweep did not show moving.
 - Work only in this workspace. Stop when `validate.py` passes or after one hour.

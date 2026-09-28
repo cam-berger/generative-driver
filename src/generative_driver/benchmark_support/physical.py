@@ -24,7 +24,14 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                 'inputs':[],'allowed_tools':['acquire_datasheet'],'context':{'part_hint':'bme280'}}
     if stage=='interpret':
         source=Path(state['datasheet_dir'])
-        inputs={'datasheet.pdf':str(source/'datasheet.pdf'),'pages':str(source/'pages')}
+        pdf=_accepted_file(accepted,'acquire','datasheet.pdf',source/'datasheet.pdf')
+        pages=source/'pages'
+        for handoff in reversed(accepted or []):
+            if handoff.get('stage')=='acquire':
+                pages=next((Path(a['path']) for a in handoff['artifacts'] if Path(a['path']).is_dir() and Path(a['path']).name.split('-',1)[-1]=='pages'),None)
+                if pages is None:raise ValueError('Accepted acquisition has no extracted pages directory')
+                break
+        inputs={'datasheet.pdf':str(pdf),'pages':str(pages)}
         prepared=call_tool('interpret_run',{'run_dir':str(Path(run_dir)/'benchmark/tools'),'front_end':'interpret-datasheet','inputs':inputs,
             'mode':'prepare','attempt':state.get('interpret_attempt',0)+1,'workspace_root':tempfile.mkdtemp(prefix='gd-sensor-candidate-')})
         if not prepared.get('ok'):raise ValueError(str(prepared))
@@ -46,9 +53,14 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         observations=[o for o in options.get('operator_observations',[]) if isinstance(o,dict) and o.get('stage')==stage]
         if not observations:
             return {'blocked':'Supply an independent physical reference through driver_respond, then resume. Observation: {"stage":"'+stage+'","channel":"independent meter and identifier","observed_at":UNIX_SECONDS,"reference":{"temperature":{"value":NUMBER,"absolute_tolerance":NUMBER},"humidity":{"value":NUMBER,"absolute_tolerance":NUMBER},"pressure":{"value":NUMBER,"absolute_tolerance":NUMBER}},"evidence_path":"absolute photo/log path"}. Units: Celsius, percent RH, pascals. Do not use candidate output as the reference.'}
+        model=ws/'model';model.mkdir(exist_ok=True)
+        for name in ('model.json','convert.py'):
+            source=_accepted_file(accepted,'probe',name,Path(state['physical_model_dir'])/name)
+            shutil.copy2(source,model/name)
+        state['physical_model_dir']=str(model);_write(state_path,state)
         evidence=ws/'physical-observation.json';_write(evidence,observations[-1])
         return {'objective':'Assess the supplied independent physical reference and its scope. The evaluator will acquire a fresh sample and compare canonical temperature/humidity/pressure with that reference. Report missing evidence and distinguish observed agreement from absolute calibration.',
-                'inputs':[str(evidence)],'allowed_tools':[], 'binding':binding, 'effects':['write']}
+                'inputs':[str(evidence),str(model)],'allowed_tools':[], 'binding':binding, 'effects':['write']}
     if stage=='emit':
         model=ws/'model';model.mkdir(exist_ok=True)
         for name in ('model.json','convert.py'):
@@ -119,8 +131,10 @@ def check_stage(case_id,stage,run_dir,workspace,report,accepted=None,options=Non
         grade=score_observations(contract,values)
         copy=Path(run_dir)/('benchmark/reference-'+stage+Path(observed['evidence_path']).suffix)
         shutil.copy2(observed['evidence_path'],copy)
+        if hashlib.sha256(copy.read_bytes()).hexdigest()!=validated['evidence_sha256']:
+            return answer(False,'independent_reference_integrity',reason='Independent evidence changed during measurement; submit a stable reference file')
         observed={**observed,'evidence_path':str(copy),'evidence_sha256':validated['evidence_sha256']}
-        state['physical_grounding']={'observations':values,'reference':observed,'score':grade,'physical':True,'probe':probe['probe']};_write(path,state)
+        state['physical_grounding']={'observations':values,'reference':observed,'score':grade,'physical':True,'probe':probe['probe'],'measurement_time':time.time()};_write(path,state)
         evidence=Path(run_dir)/('benchmark/physical-'+stage+'.json');_write(evidence,state['physical_grounding'])
         return answer(grade['verdict']=='passed','independent_physical_agreement',[evidence,copy],evaluator=grade)
     if stage=='emit':
@@ -133,7 +147,9 @@ def check_stage(case_id,stage,run_dir,workspace,report,accepted=None,options=Non
     if stage=='reuse':
         events=Path(run_dir)/'benchmark/physical-package-events.jsonl'
         rows=[json.loads(x) for x in events.read_text().splitlines()] if events.exists() else []
-        valid=[r for r in rows if r.get('ok') and r.get('stage')=='reuse' and r.get('values')]
+        outputs=list(state.get('capabilities',{}).values())
+        valid=[r for r in rows if r.get('ok') and r.get('stage')=='reuse' and len(outputs)==3
+               and all(type(r.get('values',{}).get(name)) in (int,float) and math.isfinite(r['values'][name]) for name in outputs)]
         return answer(bool(valid),'fresh_physical_package_measurement',[events] if events.exists() else [])
     raise ValueError('Unknown physical stage '+stage)
 

@@ -12,6 +12,30 @@ from mcp.client.stdio import stdio_client
 
 
 class McpTests(unittest.TestCase):
+    def test_emulator_tool_approval_cannot_authorize_a_generic_device_run(self):
+        asyncio.run(self.refuse_non_emulator_approval())
+
+    async def refuse_non_emulator_approval(self):
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory(prefix="MCP scoped approval ") as temp:
+            run = call("start", {"goal": "Check the approval boundary", "executor_config": {
+                "command": ["no-such-agent-runtime"]}}, temp)
+            call("cancel", run, temp)
+            params = StdioServerParameters(command=sys.executable, args=["-m", "generative_driver.mcp"],
+                                            cwd=temp, env={"GENERATIVE_DRIVER_HOME": temp})
+            try:
+                async with stdio_client(params) as (reader, writer):
+                    async with ClientSession(reader, writer) as session:
+                        await session.initialize()
+                        reply = await session.call_tool("driver_resume", {
+                            "run_id": run["run_id"], "scoped_tool_approval": "emulator"})
+                        self.assertFalse(reply.is_error, reply)
+                        refused = json.loads(reply.content[0].text)
+                        self.assertFalse(refused["ok"])
+                        self.assertIn("tq9", refused["reason"].lower())
+            finally:
+                call("shutdown", {}, temp)
+
     def test_scoped_worker_server_executes_only_the_assigned_tool(self):
         asyncio.run(self.run_scoped_worker())
 

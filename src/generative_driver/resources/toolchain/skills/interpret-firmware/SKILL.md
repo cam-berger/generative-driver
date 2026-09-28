@@ -24,6 +24,7 @@ The firmware already on the controller is a driver somebody wrote who knew the h
 ## Rules
 
 - One model per bus device. If the firmware drives more than one, write `device_1/`, `device_2/` each with the three files and say in NOTES.md which is which.
+- Use the configured Python 3.11+ interpreter for `python3` commands; on Windows use its full path.
 - Run `python3 validate.py .` before you finish and fix every defect it reports.
 - Leave a value null rather than guess. Do not use the part's name, if you infer one, to fill in anything the firmware does not do.
 - Work only in this workspace. Stop when `validate.py` passes or after two hours.

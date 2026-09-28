@@ -1,10 +1,10 @@
 """Stage 2. Turn whatever the acquire stage found into an interface model.
 
 Each pipeline stage has an assigned agent; this module supplies the interpret stage's tools.
-The interpret agent runs sealed: its own workspace, file tools only, no bus, no network, no
-knowledge of the bench. What it may read is copied in and hashed first, with the hashes kept on the host
-outside the workspace; what it writes is the model. Everything it does is pulled out of its transcript and
-written into the run's event log.
+The interpret agent receives a separate workspace with supplied inputs hashed first and the hashes
+kept on the host. The configured runtime controls its tools; the default seal records input integrity
+and instructions to stay within supplied evidence. It does not establish OS filesystem or network
+isolation. The agent writes the model for host collection and validation.
 """
 import collections, gzip, hashlib, json, os, re, shlex, shutil, tempfile
 from pathlib import Path
@@ -231,7 +231,7 @@ def model_validate(model_dir, random_files=20, seed=0, **_):
     if not os.path.exists(cp):
         d.append({"where": "convert.py", "what": "missing"})
         return {"ok": False, "defects": d, "_exit": 1}
-    src = open(cp, encoding="utf-8").read()
+    src = Path(cp).read_text(encoding="utf-8")
     for line in src.splitlines():
         s = line.strip()
         if s.startswith(("import ", "from ")):
@@ -263,7 +263,8 @@ def model_validate(model_dir, random_files=20, seed=0, **_):
                   "what": f"declared {sorted(declared)} but convert returned {sorted(produced)}"})
     dp = os.path.join(md, "defects.json")
     if d:
-        json.dump(d, open(dp, "w", encoding="utf-8"), indent=1)
+        with open(dp, "w", encoding="utf-8") as stream:
+            json.dump(d, stream, indent=1)
     elif os.path.exists(dp):
         os.remove(dp)
     return {"ok": not d, "defects": d, "checks_run": 8 + len(trials),

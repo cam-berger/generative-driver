@@ -22,6 +22,7 @@ You are given a datasheet and a wiring note, nothing else about the device, and 
 
 ## Rules
 
+- Use the configured Python 3.11+ interpreter for `python3` commands; on Windows use its full path.
 - Run `python3 validate.py .` before you finish and fix every defect it reports.
 - Leave a value null rather than guess when the datasheet does not say.
 - Do not search the web for drivers or example code. The datasheet is the description.

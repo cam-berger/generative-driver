@@ -49,7 +49,8 @@ class FtdiI2cBackend:
 
 
 def load_model(model_dir):
-    model = json.load(open(os.path.join(model_dir, "model.json"), encoding="utf-8"))
+    with open(os.path.join(model_dir, "model.json"), encoding="utf-8") as stream:
+        model = json.load(stream)
     assert model.get("schema") == "interface-model/1", "unknown schema"
     conv = model.get("conversion") or {}
     spec = importlib.util.spec_from_file_location("model_convert", os.path.join(model_dir, conv.get("module", "convert.py")))

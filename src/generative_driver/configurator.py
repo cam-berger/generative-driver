@@ -54,6 +54,18 @@ def _json(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False)
 
 
+def validate_scoped_approval(spec):
+    scope=spec.get('scoped_tool_approval')
+    if scope is None:
+        return
+    case=spec.get('case')
+    case_id=case.get('id') if isinstance(case,dict) else case
+    if scope!='emulator' or case_id!='tq9':
+        raise ValueError('scoped_tool_approval supports only the tq9 emulator profile')
+    if spec.get('binding') or spec.get('case_options',{}).get('binding') or (isinstance(case,dict) and case.get('options',{}).get('binding')):
+        raise ValueError('Emulator tool approval cannot authorize an operator-supplied device binding')
+
+
 def binding_identity(binding):
     """Lease physical endpoints, ignoring tuning knobs and permission flags.
 
@@ -216,6 +228,7 @@ class Controller:
             config=spec['executor_config']
             case=spec.get('case')
             out.update(case=case.get('id') if isinstance(case,dict) else case,
+                scoped_tool_approval=spec.get('scoped_tool_approval'),
                 budget_seconds=spec['budget_seconds'],limits={'max_model_repairs':spec.get('max_revisions',2),'max_maintenance_cycles':1},
                 agent={'runtime':spec['executor'],'model':config.get('model'),
                     'provider':config.get('provider') or ('openai' if spec['executor']=='codex' else None),
@@ -263,12 +276,19 @@ class Controller:
                 if row['uncertain']:
                     raise ValueError('Outstanding effect is uncertain; operator must respond with confirmed_safe after reconciliation')
                 spec = json.loads(row['spec'])
+                if params.get('scoped_tool_approval') is not None:
+                    spec['scoped_tool_approval']=params['scoped_tool_approval']
+                    validate_scoped_approval(spec)
                 if time.time() >= row['created'] + spec['budget_seconds']:
                     raise ValueError('Run budget exhausted; start a new run')
                 for handoff in self.call('result',{'run_id':run_id})['accepted_handoffs']:
                     self._verify_inputs({a['path']:a['sha256'] for a in handoff['artifacts']})
                 with self._db() as db:
                     self._claim_binding(spec.get('binding'),run_id,db)
+                    if spec!=json.loads(row['spec']):
+                        db.execute('UPDATE runs SET spec=? WHERE id=?',(_json(spec),run_id))
+                        self._event(run_id,'run.authorization',{'scoped_tool_approval':spec['scoped_tool_approval'],
+                            'scope':'Assigned import, analysis, package and owned emulator tools; physical devices excluded'},db)
                     db.execute("UPDATE assignments SET state='superseded' WHERE run_id=? AND state='active'",(run_id,))
                     db.execute("UPDATE runs SET cancelled=0,status='queued',reason=NULL,updated=? WHERE id=?",(time.time(),run_id))
                     self._event(run_id,'run.resumed',{},db)
@@ -295,6 +315,7 @@ class Controller:
             config = json.loads(config_path.read_text(encoding='utf-8')).get('executors', {}).get(executor, {})
         config = {**config, **params.get('executor_config', {}), 'runtime': executor}
         spec = {**params, 'executor': executor, 'executor_config': config, 'budget_seconds': budget, 'effects': effects}
+        validate_scoped_approval(spec)
         encoded = _json(spec)
         with self._lock:
             if self._closing:
@@ -382,7 +403,8 @@ class Controller:
                 result = execute(StageRequest(stage=stage, workspace=workspace, prompt=prompt,
                                 budget_seconds=max(0.01, row['created'] + spec['budget_seconds'] - time.time()),
                                 report_required=assignment['report_required'], allowed_tools=assignment['allowed_tools'],
-                                gateway=gateway if assignment['allowed_tools'] else None),
+                                gateway=gateway if assignment['allowed_tools'] else None,
+                                approve_scoped_tools=spec.get('scoped_tool_approval')=='emulator'),
                                 spec['executor_config'], cancel)
                 record = {'assignment_id': attempt, 'stage': stage, 'revision':revision,'workspace': str(workspace), **result}
                 with self._db() as db:

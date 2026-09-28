@@ -29,6 +29,8 @@ Leave out, or set to null, whatever the evidence does not give; never guess a va
 
 ## Checking
 
+Use the configured Python 3.11+ interpreter for `python3` commands; on Windows use its full path.
+
 Run `python3 validate.py .` and fix every defect; it reports one at a time. Write `replies.json` in `interface-replies/2` with one `{"hex": ...}` per exchange or control step (`{"hex": ""}` for a step that receives nothing), copied from the raw bytes in `descriptor.json` or built from the reply formats the specification gives, never from the model. Run `python3 qualify.py . replies.json` and revise until every operation with replies qualifies; an operation it reports uncovered goes into NOTES.
 
 `NOTES.md` lists every operation and decoder with its source (descriptor, spec, vendor client or recall), what you expect the device to answer to each that the probe stage should check, the interfaces you did not model, and each value you left null and why. Record remaining runtime gaps precisely, including streams that need a data-dependent number of frames or an unproved reply sequence rule. A parsed sequence field in vendor code does not itself prove firmware echoes the request sequence. Do not substitute a short-packet assumption or an unguarded response.

@@ -8,6 +8,43 @@ import time
 
 
 class AgentAdapterTests(unittest.TestCase):
+    def test_codex_scoped_approval_is_explicit_and_only_for_assigned_tools(self):
+        from generative_driver.agents import StageRequest, execute
+        with tempfile.TemporaryDirectory() as root:
+            root=Path(root)
+            fake=root/'approval_contract.py'
+            fake.write_text('''import json,sys
+args=sys.argv
+assert 'approval_policy="never"' in args
+assert args[args.index('--sandbox')+1]=='workspace-write'
+assert 'mcp_servers.stage.enabled_tools=["model_validate"]' in args
+approved='mcp_servers.stage.tools."model_validate".approval_mode="approve"' in args
+assert approved == (sys.stdin.read()=='approved')
+assert not any('default_tools_approval_mode' in a for a in args)
+print(json.dumps({'type':'turn.completed','usage':{'input_tokens':0,'output_tokens':0}}))
+''')
+            for approved in (False,True):
+                result=execute(StageRequest(stage='probe',workspace=root/str(approved),prompt='approved' if approved else 'unapproved scope',
+                    report_required=False,allowed_tools=['model_validate'],gateway={'command':sys.executable},approve_scoped_tools=approved),
+                    {'runtime':'codex','command':[sys.executable,str(fake)]})
+                self.assertEqual(result['status'],'completed',result)
+
+    def test_local_skill_disables_target_instruction_files(self):
+        from generative_driver.agents import StageRequest, execute
+        with tempfile.TemporaryDirectory() as root:
+            root=Path(root)
+            fake=root/'skill_contract.py'
+            fake.write_text('''import json,sys,tomllib
+settings=[a for a in sys.argv if a.startswith('skills.config=')]
+for item in tomllib.loads(settings[0])['skills']['config']:
+ assert item['path'].endswith('/SKILL.md') or item['path'].endswith('\\\\SKILL.md')
+ assert item['enabled'] is False
+assert any(a.startswith('developer_instructions=') and 'Do not read personal skills' in a for a in sys.argv)
+''')
+            result=execute(StageRequest(stage='interpret',workspace=root/'work',prompt='exact sealed prompt',report_required=False),
+                {'runtime':'codex','command':[sys.executable,str(fake)]})
+            self.assertEqual(result['status'],'completed',result)
+
     def test_budget_stops_descendants_after_the_runtime_leader_exits(self):
         from generative_driver.agents import StageRequest, execute
         with tempfile.TemporaryDirectory() as root:

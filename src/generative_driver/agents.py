@@ -27,6 +27,13 @@ REPORT_SCHEMA = {
     }, 'required': ['status', 'summary', 'artifacts', 'checks', 'unresolved'],
 }
 
+STAGE_BOUNDARY = ('Use only the assigned workspace, supplied inputs, and assigned tool gateway. '
+    'Do not read personal skills, home-directory instructions, other repositories, prior runs, or evaluator files. '
+    'Do not search outside the assigned workspace for task evidence or examples. '
+    'Installed runtime libraries and explicitly supplied analysis executables may run normally. '
+    'Use the assigned gateway for all device or emulator interactions; never bypass a denied tool through the shell. '
+    'If a required input or capability is absent, report the blocker.')
+
 
 @dataclass
 class StageRequest:
@@ -37,6 +44,7 @@ class StageRequest:
     report_required: bool = True
     allowed_tools: list = field(default_factory=list)
     gateway: dict | None = None
+    approve_scoped_tools: bool = False
 
 
 def _environment(config):
@@ -50,11 +58,21 @@ def _environment(config):
     return env
 
 
-def _skill_overrides():
-    paths = []
-    for root in (Path.home() / '.agents/skills', Path.home() / '.codex/skills'):
-        if root.is_dir():
-            paths.extend(str(p.parent) for p in root.rglob('SKILL.md'))
+def _skill_overrides(work):
+    roots = {Path.home()/'.agents/skills', Path(os.environ.get('CODEX_HOME',Path.home()/'.codex'))/'skills',
+             Path('/etc/codex/skills')}
+    roots.update(parent/'.agents/skills' for parent in (work,*work.parents))
+    paths, visited = [], set()
+    for root in roots:
+        for directory, children, files in os.walk(root,followlinks=True):
+            resolved=Path(directory).resolve()
+            if resolved in visited:
+                children[:]=[]
+                continue
+            visited.add(resolved)
+            if 'SKILL.md' in files:
+                # Codex matches the instruction-file path, not its containing directory.
+                paths.append(str((resolved/'SKILL.md').resolve()))
     return 'skills.config=[' + ','.join('{path=' + json.dumps(p) + ',enabled=false}' for p in sorted(set(paths))) + ']'
 
 
@@ -94,7 +112,8 @@ def _launch(request, config):
                     '-c', 'approval_policy="never"', '-c', 'web_search="disabled"',
                     '-c', 'features.plugins=false', '-c', 'features.memories=false',
                     '-c', 'agents.enabled=false', '-c', 'project_doc_max_bytes=0',
-                    '-c', 'shell_environment_policy.inherit="core"', '-c', _skill_overrides()]
+                    '-c', 'shell_environment_policy.inherit="core"', '-c', _skill_overrides(work),
+                    '-c', 'developer_instructions=' + json.dumps(STAGE_BOUNDARY)]
         if request.report_required:
             schema = work / '_report_schema.json'
             schema.write_text(json.dumps(REPORT_SCHEMA), encoding='utf-8')
@@ -110,12 +129,17 @@ def _launch(request, config):
             for name, value in (('command', gateway['command']), ('args', gateway.get('args', []))):
                 command += ['-c', 'mcp_servers.stage.' + name + '=' + json.dumps(value)]
             command += ['-c', 'mcp_servers.stage.tool_timeout_sec=600']
+            command += ['-c', 'mcp_servers.stage.enabled_tools=' + json.dumps(request.allowed_tools)]
+            if request.approve_scoped_tools:
+                for tool in request.allowed_tools:
+                    command += ['-c', 'mcp_servers.stage.tools.' + json.dumps(tool) + '.approval_mode="approve"']
         command += ['-']
         stdin = request.prompt
     elif runtime == 'goose':
         # Explicit recipe extensions replace inherited extension selection.
         recipe = {'version': '1.0.0', 'title': 'Generative Driver ' + request.stage,
                   'description': 'One configurator-owned stage', 'prompt': request.prompt,
+                  'instructions': STAGE_BOUNDARY,
                   'extensions': [{'type': 'builtin', 'name': 'developer'}],
                   'settings': {'max_turns': int(config.get('max_turns', 100))}}
         if request.report_required:

@@ -20,3 +20,9 @@ class SetupBenchmarkTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class ApprovalScopeTests(unittest.TestCase):
+    def test_emulator_tool_approval_cannot_be_applied_to_a_different_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError,'tq9'):
+                run('setup-smoke',directory,options={'scoped_tool_approval':'emulator'})

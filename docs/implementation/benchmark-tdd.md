@@ -18,3 +18,7 @@ Native reference calibration exercised Renode, shared runtime and relocated pack
 11. Stage comparison: a fixture with a changed host environment and failed-to-passed interpretation initially produced no dimension or stage changes (red). Added explicit per-stage worker/elapsed/tool/attempt/token deltas and workflow/evaluator status changes, keeping missing counters unknown.
 
 Evaluator rebuild verification found a missing `libgcc` link flag; the helper now links the compiler arithmetic helpers. Running the public rebuild path with the recorded compiler reproduces both published firmware SHA-256 values. No model execution is involved.
+
+12. Changed physical reference: a public stimulus score test started red without the scorer. A fresh matching value now passes; a constant value after changed reference and an unchanged reference both fail. BME280 case/evaluator version 2 carries this criterion in its encrypted evidence.
+13. Retry evidence: reuse initially accepted a successful observation from a previous attempt (red). Every package preparation now creates a unique attempt identifier, recorded by package execution and required by current reuse/maintenance checks in both profiles.
+14. Fault ownership: a granted set-output transport failure must remain a host fault even when the intentional no-grant check also reports refusal. Evaluator calls now record grants; the public fault classifier excludes only the intentional operator refusal and preserves granted host/operator failures.

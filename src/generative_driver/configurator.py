@@ -60,6 +60,13 @@ def validate_scoped_approval(spec):
         return
     case=spec.get('case')
     case_id=case.get('id') if isinstance(case,dict) else case
+    if scope=='bound-device':
+        if not spec.get('binding'):
+            raise ValueError('Bound-device approval requires an explicit operator binding')
+        binding_identity(spec['binding'])
+        if not spec.get('effects'):
+            raise ValueError('Bound-device approval requires nonempty operator effect grants')
+        return
     if scope!='emulator' or case_id!='tq9':
         raise ValueError('scoped_tool_approval supports only the tq9 emulator profile')
     if spec.get('binding') or spec.get('case_options',{}).get('binding') or (isinstance(case,dict) and case.get('options',{}).get('binding')):
@@ -288,7 +295,7 @@ class Controller:
                     if spec!=json.loads(row['spec']):
                         db.execute('UPDATE runs SET spec=? WHERE id=?',(_json(spec),run_id))
                         self._event(run_id,'run.authorization',{'scoped_tool_approval':spec['scoped_tool_approval'],
-                            'scope':'Assigned import, analysis, package and owned emulator tools; physical devices excluded'},db)
+                            'scope':'Assigned tools only; saved binding and effect grants apply'},db)
                     db.execute("UPDATE assignments SET state='superseded' WHERE run_id=? AND state='active'",(run_id,))
                     db.execute("UPDATE runs SET cancelled=0,status='queued',reason=NULL,updated=? WHERE id=?",(time.time(),run_id))
                     self._event(run_id,'run.resumed',{},db)
@@ -315,6 +322,11 @@ class Controller:
             config = json.loads(config_path.read_text(encoding='utf-8')).get('executors', {}).get(executor, {})
         config = {**config, **params.get('executor_config', {}), 'runtime': executor}
         spec = {**params, 'executor': executor, 'executor_config': config, 'budget_seconds': budget, 'effects': effects}
+        case=spec.get('case')
+        option_bindings=[spec.get('case_options',{}).get('binding')]
+        if isinstance(case,dict): option_bindings.append(case.get('options',{}).get('binding'))
+        if spec.get('binding') and any(value and value!=spec['binding'] for value in option_bindings):
+            raise ValueError('Operator and case options contain conflicting device bindings')
         validate_scoped_approval(spec)
         encoded = _json(spec)
         with self._lock:
@@ -404,7 +416,7 @@ class Controller:
                                 budget_seconds=max(0.01, row['created'] + spec['budget_seconds'] - time.time()),
                                 report_required=assignment['report_required'], allowed_tools=assignment['allowed_tools'],
                                 gateway=gateway if assignment['allowed_tools'] else None,
-                                approve_scoped_tools=spec.get('scoped_tool_approval')=='emulator'),
+                                approve_scoped_tools=spec.get('scoped_tool_approval') in ('emulator','bound-device')),
                                 spec['executor_config'], cancel)
                 record = {'assignment_id': attempt, 'stage': stage, 'revision':revision,'workspace': str(workspace), **result}
                 with self._db() as db:

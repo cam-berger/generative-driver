@@ -75,3 +75,12 @@ class StimulusScoreTests(unittest.TestCase):
         self.assertEqual(score_stimulus(initial,changed,{'temperature':23.1})['verdict'],'passed')
         self.assertEqual(score_stimulus(initial,changed,{'temperature':21.0})['verdict'],'failed')
         self.assertEqual(score_stimulus(initial,unchanged,{'temperature':21.2})['verdict'],'failed')
+
+class FaultOwnershipTests(unittest.TestCase):
+    def test_expected_permission_refusal_does_not_hide_granted_transport_failure(self):
+        from generative_driver.benchmark import evaluation_fault
+        refused={'capability':'set_duty','grants':[],'result':{'ok':False,'fault':'operator'}}
+        failed={'capability':'set_duty','grants':['write','actuate'],'result':{'ok':False,'fault':'host'}}
+        self.assertEqual(evaluation_fault({'score':{'verdict':'failed'},'calls':[refused,failed]}),'host')
+        self.assertEqual(evaluation_fault({'score':{'verdict':'failed'},'calls':[refused,
+            {'capability':'temperature','grants':['write','actuate'],'result':{'ok':True}}]}),'model')

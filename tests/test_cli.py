@@ -23,6 +23,20 @@ class CliTests(unittest.TestCase):
             finally:
                 call("shutdown", {}, temp)
 
+    def test_cli_device_approval_requires_an_explicit_binding(self):
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory(prefix="CLI bound approval ") as temp:
+            run = call("start", {"goal": "Check missing device selection", "executor_config": {
+                "command": ["no-such-agent-runtime"]}}, temp)
+            call("cancel", run, temp)
+            try:
+                result = subprocess.run([sys.executable, "-m", "generative_driver", "--home", temp,
+                    "resume", run["run_id"], "--approve-bound-device-tools"], cwd=temp, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("binding", json.loads(result.stdout)["reason"].lower())
+            finally:
+                call("shutdown", {}, temp)
+
     def test_doctor_finds_a_configured_runtime_outside_the_app_search_path(self):
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix="configured doctor ") as temp:

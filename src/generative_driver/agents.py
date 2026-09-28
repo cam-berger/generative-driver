@@ -131,8 +131,10 @@ def _launch(request, config):
             command += ['-c', 'mcp_servers.stage.tool_timeout_sec=600']
             command += ['-c', 'mcp_servers.stage.enabled_tools=' + json.dumps(request.allowed_tools)]
             if request.approve_scoped_tools:
-                for tool in request.allowed_tools:
-                    command += ['-c', 'mcp_servers.stage.tools.' + json.dumps(tool) + '.approval_mode="approve"']
+                # CLI dotted override keys split on dots without parsing quoted
+                # TOML keys. Put tool names inside the parsed table value.
+                policies=','.join(json.dumps(tool)+'={approval_mode="approve"}' for tool in request.allowed_tools)
+                command += ['-c', 'mcp_servers.stage.tools={' + policies + '}']
         command += ['-']
         stdin = request.prompt
     elif runtime == 'goose':

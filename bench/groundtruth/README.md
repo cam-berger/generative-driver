@@ -2,7 +2,7 @@
 
 The installed `resources/bench/groundtruth/*.enc` bundles use AES-256-GCM authenticated encryption with PBKDF2-HMAC-SHA256 (600,000 iterations, random salt and nonce). Each case manifest pins its ciphertext SHA-256. Hashes identify bytes; they are not physical truth or a sandbox.
 
-TQ9 contains owned firmware source and linker script, source/build/input hashes, exact build flags, the preserved MIT Renode sensor model, independent reference models/vectors, monitor observations, positive and wrong-decoder examples, and the original/revised-package calibration evidence. No plaintext reference source or reference model is copied into candidate kits. Physical BME280 contains official document provenance, required independent reference criteria, expected gates and known incorrect behaviors. Vendor PDFs are fetched from their source rather than redistributed here.
+TQ9 contains owned firmware source and linker script, source/build/input hashes, exact build flags, the preserved MIT Renode sensor model, independent reference models/vectors, monitor observations, positive and wrong-decoder examples, and the original/revised-package calibration evidence. No plaintext reference source or reference model is copied into candidate kits. Physical BME280 version 2 contains official document provenance, required independent reference criteria, expected gates and known incorrect behaviors. Maintain requires an operator-measured ambient change beyond combined uncertainty on at least one channel and a matching fresh sensor response; constant output and unchanged-reference examples are rejected. Vendor PDFs are fetched from their source rather than redistributed here.
 
 ## Obtain and handle the password
 

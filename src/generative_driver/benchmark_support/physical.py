@@ -52,7 +52,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
     if stage in ('ground','maintain'):
         observations=[o for o in options.get('operator_observations',[]) if isinstance(o,dict) and o.get('stage')==stage]
         if not observations:
-            return {'blocked':'Supply an independent physical reference through driver_respond, then resume. Observation: {"stage":"'+stage+'","channel":"independent meter and identifier","observed_at":UNIX_SECONDS,"reference":{"temperature":{"value":NUMBER,"absolute_tolerance":NUMBER},"humidity":{"value":NUMBER,"absolute_tolerance":NUMBER},"pressure":{"value":NUMBER,"absolute_tolerance":NUMBER}},"evidence_path":"absolute photo/log path"}. Units: Celsius, percent RH, pascals. Do not use candidate output as the reference.'}
+            return {'blocked':('For maintain, independently measure an ambient change on at least one channel exceeding the sum of the old and new uncertainties; choose a safe change yourself. ' if stage=='maintain' else '')+'Supply an independent physical reference through driver_respond, then resume. Observation: {"stage":"'+stage+'","channel":"independent meter and identifier","observed_at":UNIX_SECONDS,"reference":{"temperature":{"value":NUMBER,"absolute_tolerance":NUMBER},"humidity":{"value":NUMBER,"absolute_tolerance":NUMBER},"pressure":{"value":NUMBER,"absolute_tolerance":NUMBER}},"evidence_path":"absolute photo/log path"}. Units: Celsius, percent RH, pascals. Do not use candidate output as the reference.'}
         model=ws/'model';model.mkdir(exist_ok=True)
         for name in ('model.json','convert.py'):
             source=_accepted_file(accepted,'probe',name,Path(state['physical_model_dir'])/name)
@@ -76,7 +76,9 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
             if h.get('stage')=='emit':
                 source=next((Path(a['path']) for a in h['artifacts'] if Path(a['path']).is_dir()),source);break
         package=ws/'package';shutil.copytree(source,package)
-        state.setdefault('package_copies',{})[stage]=str(package);_write(state_path,state)
+        state.setdefault('package_copies',{})[stage]=str(package)
+        state.setdefault('package_attempts',{})[stage]=__import__('uuid').uuid4().hex
+        _write(state_path,state)
         return {'objective':'Using only this package, take a fresh measurement via benchmark_package_execute(operation="measure"). Report all values with units and identify any unsupported output.',
                 'inputs':[str(package)],'allowed_tools':['benchmark_package_execute'],'context':{'package_dir':str(package)},
                 'binding':binding,'effects':['write'],'boundary':'Fresh package-only context; physical sensor'}
@@ -125,10 +127,17 @@ def check_stage(case_id,stage,run_dir,workspace,report,accepted=None,options=Non
         if not validated['ok']:return answer(False,'independent_reference',reason=validated['reason'])
         probe=options['managed_probe'](state['physical_model_dir'],3)
         if not probe.get('ok'):return answer(False,'fresh_physical_measurement',evaluator=probe)
-        from ..benchmark import score_observations
+        from ..benchmark import score_observations, score_stimulus
         values={k:sum(sample[output] for sample in probe['samples'])/len(probe['samples']) for k,output in state['capabilities'].items()}
         contract={'checks':[{'id':k,'expected':v['value'],'absolute_tolerance':v['absolute_tolerance']} for k,v in observed['reference'].items()]}
         grade=score_observations(contract,values)
+        if stage=='maintain':
+            initial=state.get('physical_initial_reference',{})
+            stimulus=score_stimulus(initial,observed['reference'],values)
+            observed={**observed,'baseline_reference':initial,'stimulus':stimulus}
+            grade=stimulus
+        elif grade['verdict']=='passed':
+            state['physical_initial_reference']=observed['reference']
         copy=Path(run_dir)/('benchmark/reference-'+stage+Path(observed['evidence_path']).suffix)
         shutil.copy2(observed['evidence_path'],copy)
         if hashlib.sha256(copy.read_bytes()).hexdigest()!=validated['evidence_sha256']:
@@ -136,7 +145,7 @@ def check_stage(case_id,stage,run_dir,workspace,report,accepted=None,options=Non
         observed={**observed,'evidence_path':str(copy),'evidence_sha256':validated['evidence_sha256']}
         state['physical_grounding']={'observations':values,'reference':observed,'score':grade,'physical':True,'probe':probe['probe'],'measurement_time':time.time()};_write(path,state)
         evidence=Path(run_dir)/('benchmark/physical-'+stage+'.json');_write(evidence,state['physical_grounding'])
-        return answer(grade['verdict']=='passed','independent_physical_agreement',[evidence,copy],evaluator=grade)
+        return answer(grade['verdict']=='passed','independent_physical_stimulus_response' if stage=='maintain' else 'independent_physical_agreement',[evidence,copy],evaluator=grade)
     if stage=='emit':
         for manifest in ws.rglob('manifest.json'):
             checked=call_tool('emit_check',{'run_dir':str(Path(run_dir)/'benchmark/tools'),'package_dir':str(manifest.parent),'model_dir':str(ws/'model')})
@@ -148,7 +157,8 @@ def check_stage(case_id,stage,run_dir,workspace,report,accepted=None,options=Non
         events=Path(run_dir)/'benchmark/physical-package-events.jsonl'
         rows=[json.loads(x) for x in events.read_text().splitlines()] if events.exists() else []
         outputs=list(state.get('capabilities',{}).values())
-        valid=[r for r in rows if r.get('ok') and r.get('stage')=='reuse' and len(outputs)==3
+        attempt=state.get('package_attempts',{}).get(stage)
+        valid=[r for r in rows if attempt and r.get('attempt_id')==attempt and r.get('ok') and r.get('stage')=='reuse' and len(outputs)==3
                and all(type(r.get('values',{}).get(name)) in (int,float) and math.isfinite(r['values'][name]) for name in outputs)]
         return answer(bool(valid),'fresh_physical_package_measurement',[events] if events.exists() else [])
     raise ValueError('Unknown physical stage '+stage)
@@ -187,7 +197,7 @@ def package_execute(case_id,run_dir,stage,package_dir,operation,parameters=None,
         cwd=package.parent,capture_output=True,text=True,timeout=60)
     try:row=json.loads(result.stdout.strip().splitlines()[-1])
     except (ValueError,IndexError):row={'status':'ERR','reason':result.stderr[-1000:]}
-    row.update(ok=result.returncode==0 and row.get('status')=='OK',stage=stage,execution='actual-physical-package',time=time.time(),package_sha256=state['package_sha256'])
+    row.update(ok=result.returncode==0 and row.get('status')=='OK',stage=stage,attempt_id=state['package_attempts'][stage],execution='actual-physical-package',time=time.time(),package_sha256=state['package_sha256'])
     evidence=Path(run_dir)/'benchmark/physical-package-events.jsonl'
     with evidence.open('a',encoding='utf-8') as stream:stream.write(json.dumps(row,allow_nan=False)+'\n')
     return {**row,'evidence':str(evidence)}

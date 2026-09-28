@@ -78,7 +78,7 @@ def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=
         result = {'ok': False, 'error': {'code': 'package', 'message': completed.stderr[-1000:]}}
     _, _, truth = _load_case(options or {})
     observed = emulator.observe(truth)
-    row = {'stage': stage, 'revision': state.get('revision', 0), 'operation': operation,
+    row = {'stage': stage, 'revision': state.get('revision', 0), 'attempt_id': state['package_attempts'][stage], 'operation': operation,
            'parameters': parameters or {}, 'ok': completed.returncode == 0 and result.get('ok') is True,
            'result': result, 'observation': observed, 'time': time.time(), 'package_sha256': state['package_sha256'], 'time_policy': 'emulation paused between package calls'}
     path = Path(run_dir)/'benchmark/package-events.jsonl'
@@ -101,7 +101,9 @@ def main(argv=None):
     running.add_argument('--java-home')
     running.add_argument('--home')
     running.add_argument('--request-id')
-    running.add_argument('--approve-emulator-tools', action='store_true', help='Explicitly authorize scoped tq9 emulator MCP tools; no physical device approval')
+    approval_flags=running.add_mutually_exclusive_group()
+    approval_flags.add_argument('--approve-bound-device-tools', action='store_true', help='Explicitly authorize assigned BME280 tools for the selected physical binding and effects')
+    approval_flags.add_argument('--approve-emulator-tools', action='store_true', help='Explicitly authorize scoped tq9 emulator MCP tools; no physical device approval')
     running.add_argument('--binding-json', help='Operator-owned binding JSON, e.g. {"url":"ftdi://selected/1"}')
     comparing = commands.add_parser('compare')
     comparing.add_argument('before')
@@ -125,7 +127,7 @@ def main(argv=None):
                           'ghidra_home': args.ghidra_home, 'java_home': args.java_home,
                           'home': args.home, 'request_id': args.request_id,
                           'binding': json.loads(args.binding_json) if args.binding_json else None,
-                          'scoped_tool_approval': 'emulator' if args.approve_emulator_tools else None}.items() if v is not None})
+                          'scoped_tool_approval': 'bound-device' if args.approve_bound_device_tools else 'emulator' if args.approve_emulator_tools else None}.items() if v is not None})
         elif args.command == 'truth':
             from .benchmark_support.evaluator_cli import manage
             result = manage(args.action,args.case,args.password_file,args.output,args.new_password_file,args.compiler)
@@ -147,8 +149,10 @@ def case_root():
 def run(case='setup-smoke', output_dir=None, executor=None, options=None):
     options = dict(options or {})
     approval = options.pop('scoped_tool_approval', None)
-    if approval is not None and (case != 'tq9' or approval != 'emulator'):
-        raise ValueError('Scoped emulator tool approval is supported only for tq9')
+    if approval is not None and (case,approval) not in (('tq9','emulator'),('bme280','bound-device')):
+        raise ValueError('Scoped approval requires tq9/emulator or bme280/bound-device')
+    if approval == 'bound-device' and (not isinstance(options.get('binding'),dict) or not options['binding']):
+        raise ValueError('Bound-device approval requires an explicit operator binding')
     if case in ('tq9', 'bme280'):
         from .client import call
         options = dict(options or {})
@@ -158,6 +162,8 @@ def run(case='setup-smoke', output_dir=None, executor=None, options=None):
         args = {'goal': 'Recover, check, package, freshly reuse and maintain the benchmark device interface.',
                 'case': case, 'executor': executor or 'codex', 'budget_seconds': budget,
                 'effects': effects, 'case_options': options}
+        if options.get('binding') is not None:
+            args['binding'] = options['binding']
         if approval is not None:
             args['scoped_tool_approval'] = approval
         if request_id:
@@ -312,7 +318,8 @@ def score(report, password_file=None):
                 for k,v in reference.items()):
             raise ValueError('Recorded physical reference is incomplete or exceeds evaluator uncertainty limits')
         contract = {'checks':[{'id':k,'expected':v['value'],'absolute_tolerance':v['absolute_tolerance']} for k,v in reference.items()]}
-        grade = score_observations(contract, observations)
+        baseline_reference=grounding.get('reference',{}).get('baseline_reference',{})
+        grade = score_stimulus(baseline_reference, reference, observations) if truth.get('require_maintain_stimulus') else score_observations(contract, observations)
     else:
         grade = score_observations(truth, observations) if truth.get('checks') else {'verdict':'unscored','checks':[]}
     stages = data.get('stages', state.get('stage_verdicts', {}))
@@ -346,3 +353,22 @@ def score_stimulus(initial_reference, changed_reference, observations):
     return {'verdict':'passed' if changed and behavior['verdict']=='passed' else 'failed',
             'changed_channels':changed,'behavior':behavior,
             'criterion':'At least one independently measured change exceeds the sum of both stated uncertainties'}
+
+
+def evaluation_fault(evaluation):
+    """Assign an independently observed failure; expected refusal is not a defect."""
+    if evaluation.get('score',{}).get('verdict')=='passed':
+        return None
+    calls=evaluation.get('calls',[])
+    if not calls:
+        return 'host'
+    faults=[]
+    for call in calls:
+        result=call.get('result',{})
+        if result.get('ok'):
+            continue
+        fault=result.get('fault')
+        if call.get('capability')=='set_duty' and call.get('grants')==[] and fault=='operator':
+            continue
+        faults.append(fault or 'host')
+    return 'operator' if 'operator' in faults else 'host' if 'host' in faults else 'model'

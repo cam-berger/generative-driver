@@ -13,12 +13,15 @@ class AgentAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             root=Path(root)
             fake=root/'approval_contract.py'
-            fake.write_text('''import json,sys
+            fake.write_text('''import json,sys,tomllib
 args=sys.argv
 assert 'approval_policy="never"' in args
 assert args[args.index('--sandbox')+1]=='workspace-write'
 assert 'mcp_servers.stage.enabled_tools=["model_validate"]' in args
-approved='mcp_servers.stage.tools."model_validate".approval_mode="approve"' in args
+settings=[a for a in args if a.startswith('mcp_servers.stage.tools=')]
+configured=tomllib.loads(settings[0])['mcp_servers']['stage']['tools'] if settings else {}
+approved=configured.get('model_validate',{}).get('approval_mode')=='approve'
+assert set(configured)<= {'model_validate'}
 assert approved == (sys.stdin.read()=='approved')
 assert not any('default_tools_approval_mode' in a for a in args)
 print(json.dumps({'type':'turn.completed','usage':{'input_tokens':0,'output_tokens':0}}))

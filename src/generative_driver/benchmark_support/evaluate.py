@@ -38,7 +38,7 @@ def evaluate_model(model_dir, capabilities, session_info, truth, output_dir):
         result = call_tool('probe_run', {'run_dir': str(output_dir), 'model_dir': str(model_dir),
              'operation': spec['operation'], 'parameters': spec.get('parameters', {}), 'n': 1,
              'binding': session_info['binding'], 'allow_effects': list(grants)})
-        calls.append({'capability': name, 'result': result})
+        calls.append({'capability': name, 'grants': list(grants), 'result': result})
         if result.get('probe'):
             probes.append(result['probe'])
         return result

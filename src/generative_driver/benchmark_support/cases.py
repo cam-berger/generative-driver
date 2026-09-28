@@ -172,6 +172,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         source = _accepted_package(accepted, state.get('package_dir', ws/'missing-package'))
         shutil.copytree(source, package, dirs_exist_ok=True)
         state.setdefault('package_copies', {})[stage] = str(package)
+        state.setdefault('package_attempts', {})[stage] = __import__('uuid').uuid4().hex
         if stage == 'maintain' and not state.get('drift_started'):
             state['firmware_revision'] = 1
             state['drift_started'] = True
@@ -263,9 +264,10 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
         state['probe_evaluation'] = evaluated
         _write(state_path, state)
         ok = evaluated['score']['verdict'] == 'passed'
-        faults = [c['result'].get('fault') for c in evaluated['calls'] if not c['result'].get('ok') and c['capability'] != 'set_duty']
-        model_fault = not ok and not any(f in ('host', 'operator') for f in faults)
-        return {'ok': ok, 'route': 'interpret' if model_fault else None, 'fault': 'model' if model_fault else None,
+        from ..benchmark import evaluation_fault
+        fault = evaluation_fault(evaluated)
+        model_fault = fault == 'model'
+        return {'ok': ok, 'route': 'interpret' if model_fault else None, 'fault': fault,
                 'feedback': {'defects': [{'task': row['id'], 'observed': row['observed'], 'reason': 'Observed behavior does not satisfy the assigned task'}
                              for row in evaluated['score']['checks'] if not row['passed']]},
                 'reason': None if ok else 'Independent outputs/effects do not meet the case contract',
@@ -293,7 +295,9 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
     if stage in ('reuse', 'maintain'):
         events_path = Path(run_dir)/'benchmark/package-events.jsonl'
         events = [json.loads(line) for line in events_path.read_text().splitlines()] if events_path.exists() else []
-        events = [e for e in events if e['stage'] == stage and e['revision'] == state.get('revision', 0)]
+        attempt = state.get('package_attempts', {}).get(stage)
+        events = [e for e in events if attempt and e.get('attempt_id') == attempt
+                  and e['stage'] == stage and e['revision'] == state.get('revision', 0)]
         if stage == 'reuse':
             _, _, truth = _load_case(options or {})
             contract = truth['reuse_goal']

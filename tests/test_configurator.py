@@ -7,6 +7,24 @@ import sys
 
 
 class ConfiguratorTests(unittest.TestCase):
+    def test_bound_device_approval_requires_a_binding_and_effect_grants(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller=Controller(Path(directory))
+            try:
+                params={'goal':'Bound device approval contract; no device calls','scoped_tool_approval':'bound-device',
+                    'executor_config':{'command':['missing-contract-runtime']},'effects':['read']}
+                with self.assertRaisesRegex(ValueError,'binding'):
+                    controller.call('start',params)
+                with self.assertRaisesRegex(ValueError,'effect'):
+                    controller.call('start',{**params,'binding':{'port':'COM9'},'effects':[]})
+                run=controller.call('start',{**params,'binding':{'port':'COM9'}})
+                self.assertEqual(controller.call('result',run)['scoped_tool_approval'],'bound-device')
+                with self.assertRaisesRegex(ValueError,'conflicting'):
+                    controller.call('start',{**params,'binding':{'port':'COM9'},'case_options':{'binding':{'port':'COM10'}}})
+            finally:
+                controller.close()
+
     def test_emulator_approval_is_explicit_persisted_and_cannot_authorize_physical_runs(self):
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as directory:

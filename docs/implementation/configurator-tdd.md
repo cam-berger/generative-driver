@@ -21,6 +21,7 @@ The approved test seam is the public configurator/worker execution interface. Th
 | Reconciliation ordering | A response cleared uncertainty while a tool was still pending | Reconciliation waits until the worker and outstanding dispatch finish |
 | Scoped emulator approval | Resume did not retain an explicit authorization | Run-specific `scoped_tool_approval: "emulator"` enables only the assigned TQ9 gateway tools, with operator device bindings rejected |
 | Personal skill context | Folder-path disable entries left the personal stage skill in the actual runtime prompt | Instruction-file paths disable discovered skills; a local non-inference prompt inspection confirms the personal catalog is absent |
+| Effective MCP policy | Quoted names in CLI dotted override keys became literal quoted tool names, leaving the actual tool unapproved | Tool policies are encoded as a parsed TOML table value; actual local app-server `config/read` verifies the correct tool policy and unchanged global approval mode |
 
 Further public regressions verify cancellation remains responsive during a deliberately delayed HTTP tool, an actual fixture acquisition is accepted, changed accepted bytes prevent resume, and recovery preserves effect uncertainty until an explicit operator reconciliation. A scripted TQ9 interpretation defect also verifies persisted repair counters and invalidation of the old worker gateway. These were added to the working implementation as integration checks; they are not claimed as separate failing-first cycles.
 

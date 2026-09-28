@@ -17,7 +17,9 @@ class McpTests(unittest.TestCase):
 
     async def refuse_non_emulator_approval(self):
         from generative_driver.client import call
+        from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix="MCP scoped approval ") as temp:
+            configure("codex", ["no-such-agent-runtime"], home=temp)
             run = call("start", {"goal": "Check the approval boundary", "executor_config": {
                 "command": ["no-such-agent-runtime"]}}, temp)
             call("cancel", run, temp)
@@ -33,6 +35,19 @@ class McpTests(unittest.TestCase):
                         refused = json.loads(reply.content[0].text)
                         self.assertFalse(refused["ok"])
                         self.assertIn("tq9", refused["reason"].lower())
+                        reply = await session.call_tool("driver_resume", {
+                            "run_id": run["run_id"], "scoped_tool_approval": "bound-device"})
+                        self.assertFalse(reply.is_error, reply)
+                        refused = json.loads(reply.content[0].text)
+                        self.assertFalse(refused["ok"])
+                        self.assertIn("binding", refused["reason"].lower())
+                        reply = await session.call_tool("driver_start", {
+                            "goal": "Missing binding must not launch a device run",
+                            "scoped_tool_approval": "bound-device"})
+                        self.assertFalse(reply.is_error, reply)
+                        refused = json.loads(reply.content[0].text)
+                        self.assertFalse(refused["ok"])
+                        self.assertIn("binding", refused["reason"].lower())
             finally:
                 call("shutdown", {}, temp)
 

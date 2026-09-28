@@ -8,7 +8,7 @@ Measure whether a recovered driver produces the required outputs and effects. Ca
 |---|---|---|
 | `setup-smoke` | Recorded replay, scripted | Installation, model validation, probe recording, emission, relocation and standalone package replay. No model performance claim. |
 | `tq9` | Actual stage agents + owned firmware in Renode | All seven roles, numeric decoding and independent timer effects, fresh package-only reuse, seeded identity drift, repair/requalification and second fresh reuse. |
-| `bme280` | Optional actual agents + physical sensor | Datasheet recovery, FTDI I2C execution, independent operator reference, portable package, fresh reuse and later physical agreement. No injected physical firmware drift. |
+| `bme280` | Optional actual agents + physical sensor | Datasheet recovery, FTDI I2C execution, independent operator reference, portable package, fresh reuse and response to an independently measured ambient change. No injected physical firmware drift. |
 
 Canonical machine assets are installed from [`src/generative_driver/resources/bench`](../src/generative_driver/resources/bench/). This directory holds instructions and selected reports, avoiding duplicate inputs. Case manifests pin firmware, encrypted evidence and evaluator version. No vendor PDF or historical research run is bundled.
 
@@ -65,7 +65,7 @@ python -m pip install -e ".[hardware,docs]"
 python -m generative_driver benchmark run --case bme280 --executor codex --home "physical state" --password-file "/private/evaluator/bme280.password" --binding-json '{"url":"ftdi://SELECTED_ADAPTER/1"}'
 ```
 
-PowerShell users can put the same binding in the MCP `options.binding` object to avoid shell quoting. The run requires an explicit adapter; it never chooses the first USB device. The profile grants bounded model register writes required for sensor setup. No physical run is performed by setup smoke.
+PowerShell users can put the same binding in the MCP `options.binding` object to avoid shell quoting. For a noninteractive worker, explicitly authorize this selected device and its configured effects with `--approve-bound-device-tools` (MCP `scoped_tool_approval: "bound-device"`). That approval applies only to the BME280 profile, its supplied binding and assigned tools; it does not permit arbitrary devices. The run requires an explicit adapter; it never chooses the first USB device. The profile grants bounded model register writes required for sensor setup. No physical run is performed by setup smoke.
 
 At ground and maintain the run stops and requests independent reference observations. Create a JSON file with this shape, using actual measurements and timestamp rather than these placeholders:
 
@@ -90,7 +90,7 @@ python -m generative_driver --home "physical state" respond RUN_ID --observation
 python -m generative_driver --home "physical state" resume RUN_ID
 ```
 
-The evaluator takes a fresh sensor sample and compares it with the operator reference. The worker cannot supply its own reference. Repeat with `stage: "maintain"` when requested. Recorded agreement is within the supplied reference uncertainty; it is not an absolute sensor calibration claim. The optional physical flow is implemented but has no new physical baseline in this release.
+The evaluator takes a fresh sensor sample and compares it with the operator reference. The worker cannot supply its own reference. BME280 case/evaluator version 2 requires a stimulus at maintain: choose a safe ambient change yourself, independently measure it, and submit `stage: "maintain"`. On at least one channel, the new reference must differ from the initial reference by more than the sum of their stated uncertainties. The evaluator then requires a fresh sensor reading to follow the new reference. An unchanged environment cannot establish this gate, and an unchanged constant output fails the changed-reference check. The agent does not induce a physical change. Recorded agreement is within the supplied reference uncertainty; it is not an absolute sensor calibration claim. The optional physical flow is implemented but has no new physical baseline in this release.
 
 ## Metrics and comparisons
 

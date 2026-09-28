@@ -26,3 +26,7 @@ class ApprovalScopeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError,'tq9'):
                 run('setup-smoke',directory,options={'scoped_tool_approval':'emulator'})
+
+    def test_bound_device_approval_requires_an_explicit_physical_binding(self):
+        with self.assertRaisesRegex(ValueError,'binding'):
+            run('bme280',options={'scoped_tool_approval':'bound-device'})

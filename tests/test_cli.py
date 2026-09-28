@@ -4,11 +4,37 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 
 class CliTests(unittest.TestCase):
+    def test_cli_budget_extension_requires_a_reason_and_preserves_run_history(self):
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory(prefix="CLI budget adjustment ") as temp:
+            run=call('start',{'goal':'CLI budget contract','budget_seconds':60,
+                'executor_config':{'command':['no-such-agent-runtime']}},temp)
+            try:
+                until=time.monotonic()+5
+                while time.monotonic()<until:
+                    original=call('result',run,temp)
+                    if original['status']=='blocked':break
+                    time.sleep(.01)
+                command=[sys.executable,'-m','generative_driver','--home',temp,'resume',run['run_id'],'--budget-seconds','120']
+                refused=subprocess.run(command,cwd=temp,capture_output=True,text=True)
+                self.assertEqual(refused.returncode,1,refused.stderr)
+                self.assertIn('budget_reason',json.loads(refused.stdout)['reason'])
+                resumed=subprocess.run([*command,'--budget-reason','Operator approved test extension'],cwd=temp,capture_output=True,text=True)
+                self.assertEqual(resumed.returncode,0,resumed.stderr)
+                result=call('result',run,temp)
+                self.assertEqual(result['budget_seconds'],120)
+                self.assertEqual(result['created'],original['created'])
+                self.assertEqual(result['worker_reports'][0],original['worker_reports'][0])
+                self.assertEqual(len([e for e in call('events',run,temp)['events'] if e['kind']=='run.budget_extended']),1)
+            finally:
+                call('shutdown',{},temp)
+
     def test_cli_emulator_approval_refuses_a_generic_device_run(self):
         from generative_driver.client import call
         with tempfile.TemporaryDirectory(prefix="CLI scoped approval ") as temp:

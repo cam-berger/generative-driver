@@ -34,6 +34,14 @@ Save the run ID returned by `driver_start`. Read `driver_status` or `driver_resu
 
 Keep the machine awake during long runs. Background persistence survives a client disconnect, not a powered-off computer. The configurator records interrupted runs for checked recovery after a crash.
 
+The budget measures wall-clock seconds from the original start, including stopped time. Ordinary resume retains that deadline. After the user explicitly approves more time, resume with an increased total and its reason:
+
+```sh
+python -m generative_driver resume RUN_ID --budget-seconds 21600 --budget-reason "User-approved continuation after pause"
+```
+
+This example sets a six-hour total measured from the original start. `driver_resume` accepts the equivalent `budget_seconds` and `budget_reason` fields from Goose or Codex. The total can increase up to seven days; repeating the same total adds no further time. A durable `run.budget_extended` event records the previous and new totals/deadlines, added seconds and reason. Start time, prior attempts and accepted evidence remain intact, and recovery checks still apply.
+
 ## Developer command line
 
 `python -m generative_driver tools` lists the installed tool catalog. Use `tool NAME --arguments arguments.json` to execute one tool with explicit paths and bindings. These direct developer calls are separate from a managed workflow; use the configurator when ownership and checked stage progression are required.

@@ -94,3 +94,30 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(report["stages"]["reuse"]["workflow_status"], "not_run")
         self.assertEqual(report["human_inputs"], 1)
         self.assertEqual(report["verdict"], "blocked")
+
+    def test_interventions_preserve_budget_history_without_exposing_operator_messages(self):
+        from generative_driver.reporting import summarize
+        result={"run_id":"example","status":"cancelled","created":10,"updated":600,
+                "worker_reports":[],"accepted_handoffs":[]}
+        events=[
+            {"id":1,"kind":"run.started","time":10,"data":{"budget_seconds":120}},
+            {"id":2,"kind":"run.authorization","time":20,"data":{"scoped_tool_approval":"emulator","scope":"Assigned tools only"}},
+            {"id":3,"kind":"run.cancelled","time":40,"data":{"stage":"interpret","reason":"Cancellation requested"}},
+            {"id":4,"kind":"operator.response","time":450,"data":{"message":"PRIVATE OPERATOR MESSAGE","observation":{"private":"PRIVATE OBSERVATION"}}},
+            {"id":5,"kind":"run.budget_extended","time":500,"data":{"old_budget_seconds":120,"new_budget_seconds":620,
+                "extension_seconds":500,"old_deadline":130,"new_deadline":630,"reason":"User authorized restoring remaining time after pause","private":"EXCLUDED"}},
+            {"id":6,"kind":"run.resumed","time":501,"data":{}}]
+        report=summarize(result,events,provenance={"budget_seconds":620,"toolchain_revision":"exporter-new"})
+        self.assertEqual(report["original_budget_seconds"],120)
+        self.assertEqual(report["effective_budget_seconds"],620)
+        self.assertEqual(report["human_inputs"],1)
+        self.assertEqual(report["intervention_counts"]["run.budget_extended"],1)
+        self.assertEqual(len(report["interventions"]),5)
+        extension=next(i for i in report["interventions"] if i["kind"]=="run.budget_extended")
+        self.assertEqual(extension["new_deadline"],630)
+        self.assertIn("restoring",extension["reason"])
+        self.assertNotIn("PRIVATE",json.dumps(report))
+        self.assertNotIn("EXCLUDED",json.dumps(report))
+        self.assertIn("export",report["provenance_meaning"]["toolchain_revision"])
+        self.assertEqual(report["elapsed_seconds"],590)
+        self.assertNotIn("active_seconds",report)

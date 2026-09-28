@@ -56,6 +56,16 @@ TQ9 interpretation receives the binary and generic sealed analysis kit. Original
 
 The configurator allows two bounded repairs for evidenced model defects. Operator/host faults stop for correction. Maintenance changes only firmware identity in this version, detects the old package's refusal, and requires new interpretation, probing, grounding, emission and fresh reuse. Unknown semantic drift is a future case version.
 
+### Continuing a stopped trial
+
+Ordinary resume retains the original deadline. The budget is total wall time from the original start, including stopped time. If the user explicitly authorizes more time, record the increased total and its reason:
+
+```sh
+python -m generative_driver --home "benchmark state" resume RUN_ID --budget-seconds 21600 --budget-reason "User-approved continuation after pause"
+```
+
+This example sets a six-hour total; it does not add six hours. Prior attempts, accepted evidence and the budget extension remain in the same run. See [recovery](../docs/setup.md#recovery) for equivalent UI fields. Reports and comparisons must retain the changed budget and intervention history when interpreting performance.
+
 ## Optional physical BME280 trial
 
 Install the `hardware` and `docs` extras and the host USB driver described in [setup](../docs/setup.md). Wire your supported FTDI I2C adapter and BME280 according to their own documentation, select its explicit FTDI URL, and provide independent temperature, humidity and pressure reference instruments. The official [Bosch datasheet](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bme280-ds002.pdf) is downloaded by acquire and hash checked; a changed vendor document needs a reviewed registry update.
@@ -95,6 +105,8 @@ The evaluator takes a fresh sensor sample and compares it with the operator refe
 ## Metrics and comparisons
 
 Reports include runtime/provider/model/settings, toolchain and skills hashes, case/evaluator versions, firmware and recovered-model/package hashes, environment, budget, per-stage attempts and evaluator checks, overall wall time, worker time, tool calls/time, human inputs and reported tokens. Worker tool time is included in worker time; managed evaluator tool time is reported separately. Overall wall time is measured directly, and component durations overlap. Missing usage remains unknown, with measured coverage shown. Retries and failed attempts remain visible.
+
+Reports distinguish operator messages/observations from recorded authorization, cancellation, resume and budget events; event counts are not counts of unique people. Original and effective budgets are explicit. Wall time includes stopped intervals; no pause-adjusted active time is inferred. Source, skills and environment fields describe the exporting installation. Trials executed across different installations need execution snapshot history to attribute earlier attempts correctly.
 
 Overall success requires every declared acceptance gate. A strong average cannot hide failed grounding, omitted reuse or undetected drift. Unrun, failed, blocked and inapplicable roles remain explicit. Compare the same case, evaluator, seed and execution mode. A changed provider/model and compiler together is labelled `combined-system`; it cannot isolate a model improvement. Replay cannot be compared as an actual agent trial.
 

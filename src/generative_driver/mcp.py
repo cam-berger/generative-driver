@@ -57,14 +57,20 @@ def driver_result(run_id: str) -> str:
 
 
 @server.tool()
-def driver_resume(run_id: str, scoped_tool_approval: Literal["emulator", "bound-device"] | None = None) -> str:
+def driver_resume(run_id: str, scoped_tool_approval: Literal["emulator", "bound-device"] | None = None,
+                  budget_seconds: float | None = None, budget_reason: str | None = None) -> str:
     """Resume after correcting a blocker; recheck accepted evidence.
     Set scoped_tool_approval only after explicit user approval. emulator covers assigned TQ9 tools;
     bound-device requires the saved explicit device binding and allowed effects. Neither permits unrelated tools.
+    Set budget_seconds only after explicit user approval to increase the total wall-clock budget from the original
+    start. Supply a nonblank budget_reason; the increase is recorded without resetting time or prior attempts.
     """
     params = {"run_id": run_id}
     if scoped_tool_approval is not None:
         params["scoped_tool_approval"] = scoped_tool_approval
+    if budget_seconds is not None:
+        params["budget_seconds"] = budget_seconds
+        params["budget_reason"] = budget_reason
     return _call("resume", **params)
 
 

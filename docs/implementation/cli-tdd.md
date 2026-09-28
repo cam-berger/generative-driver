@@ -20,6 +20,7 @@ The four seams were approved before implementation. This record covers the insta
 14. Scoped worker MCP session: red (legacy SDK decorator unavailable in installed MCP 2), green with constructor handlers; the actual protocol test imports the assigned bytes and refuses a subsequent call after cancellation.
 15. Explicit emulator approval through CLI/MCP: red (flag absent and MCP ignored the unsupported field), green forwarding the typed approval scope to the controller. Both public interfaces refuse this scope for a generic device run.
 16. Explicit bound-device approval: red (CLI flag absent and MCP rejected/ignored the new field), green forwarding the scope on start/resume and refusing it without a selected binding.
+17. Explicit resume budget: CLI red (flags unrecognized), MCP red (additional fields ignored and total unchanged), then green through both real interfaces. The new total is measured from the original start, requires a reason and cannot decrease. Prior reports and start time remain intact; one durable event records the increase.
 
 Release tests run again after integration against a freshly built, separately installed wheel; in-progress wheel snapshots are not final release verification.
 

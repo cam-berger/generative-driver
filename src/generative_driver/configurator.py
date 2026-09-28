@@ -12,6 +12,7 @@ import sys
 import copy
 import ipaddress
 import tempfile
+import math
 from contextlib import contextmanager
 
 from .agents import StageRequest, execute
@@ -283,6 +284,7 @@ class Controller:
             return self.call('status', {'run_id': run_id})
         if method == 'resume':
             with self._lock:
+                row=self._row(run_id)
                 if self._closing:
                     raise ValueError('Configurator is stopping')
                 if run_id in self._workers or run_id in self._inflight:
@@ -291,18 +293,37 @@ class Controller:
                     raise ValueError('Only a stopped incomplete run can resume')
                 if row['uncertain']:
                     raise ValueError('Outstanding effect is uncertain; operator must respond with confirmed_safe after reconciliation')
-                spec = json.loads(row['spec'])
+                original_spec=json.loads(row['spec'])
+                spec = dict(original_spec)
+                budget_change=None
+                if params.get('budget_seconds') is not None:
+                    budget=params['budget_seconds']
+                    reason=params.get('budget_reason')
+                    if type(budget) not in (int,float) or not 0<budget<=7*86400 or not math.isfinite(budget):
+                        raise ValueError('budget_seconds must be finite, positive and no more than seven days')
+                    if not isinstance(reason,str) or not reason.strip():
+                        raise ValueError('An explicit budget_reason is required when setting a resume budget')
+                    if budget<spec['budget_seconds']:
+                        raise ValueError('Resume budget_seconds cannot decrease the saved total budget')
+                    if budget>spec['budget_seconds']:
+                        budget_change={'old_budget_seconds':spec['budget_seconds'],'new_budget_seconds':budget,
+                            'extension_seconds':budget-spec['budget_seconds'],'reason':reason.strip(),
+                            'old_deadline':row['created']+spec['budget_seconds'],'new_deadline':row['created']+budget}
+                        spec['budget_seconds']=budget
                 if params.get('scoped_tool_approval') is not None:
                     spec['scoped_tool_approval']=params['scoped_tool_approval']
                     validate_scoped_approval(spec)
                 if time.time() >= row['created'] + spec['budget_seconds']:
-                    raise ValueError('Run budget exhausted; start a new run')
+                    raise ValueError('Run budget exhausted; supply an explicitly approved larger budget or start a new run')
                 for handoff in self.call('result',{'run_id':run_id})['accepted_handoffs']:
                     self._verify_inputs({a['path']:a['sha256'] for a in handoff['artifacts']})
                 with self._db() as db:
                     self._claim_binding(spec.get('binding'),run_id,db)
-                    if spec!=json.loads(row['spec']):
+                    if spec!=original_spec:
                         db.execute('UPDATE runs SET spec=? WHERE id=?',(_json(spec),run_id))
+                    if budget_change:
+                        self._event(run_id,'run.budget_extended',budget_change,db)
+                    if spec.get('scoped_tool_approval')!=original_spec.get('scoped_tool_approval'):
                         self._event(run_id,'run.authorization',{'scoped_tool_approval':spec['scoped_tool_approval'],
                             'scope':'Assigned tools only; saved binding and effect grants apply'},db)
                     db.execute("UPDATE assignments SET state='superseded' WHERE run_id=? AND state='active'",(run_id,))

@@ -50,6 +50,9 @@ def main(argv=None):
         if method == "respond":
             action.add_argument("--observation", required=True, help="JSON file containing observation and source")
         if method == "resume":
+            action.add_argument("--budget-seconds",type=float,
+                                help="Explicitly approved total wall-clock budget from the original start; may only increase")
+            action.add_argument("--budget-reason",help="Required explanation for an explicit budget adjustment")
             approval = action.add_mutually_exclusive_group()
             approval.add_argument("--approve-emulator-tools", action="store_true",
                                   help="Explicitly approve only assigned TQ9 emulator tools for this run")
@@ -92,6 +95,9 @@ def main(argv=None):
             params["scoped_tool_approval"] = "emulator"
         if args.command == "resume" and args.approve_bound_device_tools:
             params["scoped_tool_approval"] = "bound-device"
+        if args.command == "resume" and args.budget_seconds is not None:
+            params["budget_seconds"] = args.budget_seconds
+            params["budget_reason"] = args.budget_reason
         result = call(args.command, params, home=args.home)
     print(json.dumps(result, indent=2))
     return 0 if result.get("ok") else 1

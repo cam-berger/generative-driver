@@ -22,9 +22,42 @@ def _usage(workers):
             "counting": "input + output; cached input and reasoning output are subsets"}
 
 
+
+def _interventions(events):
+    """Publish control-event metadata, excluding operator messages and observations."""
+    fields = {
+        "operator.response": ("effect_resolution",),
+        "run.authorization": ("scoped_tool_approval", "scope"),
+        "run.budget_extended": ("old_budget_seconds", "new_budget_seconds", "extension_seconds",
+                                "old_deadline", "new_deadline", "reason"),
+        "run.cancelled": ("stage", "reason"),
+        "run.resumed": (),
+        "run.recovered": ("uncertain_effect",),
+    }
+    rows, counts = [], {}
+    for event in events:
+        kind = event["kind"]
+        if kind not in fields:
+            continue
+        data = event.get("data", {})
+        row = {"event_id": event.get("id"), "kind": kind, "time": event["time"],
+               **{key: data[key] for key in fields[kind] if key in data}}
+        if kind == "operator.response":
+            row["has_observation"] = isinstance(data.get("observation"), dict)
+        rows.append(row)
+        counts[kind] = counts.get(kind, 0) + 1
+    return rows, counts
+
+
 def summarize(result, events, *, case_manifest=None, case_state=None, provenance=None):
     """Summarize real configurator records without inferring missing stage outcomes."""
     case_manifest, case_state = case_manifest or {}, case_state or {}
+    interventions, intervention_counts = _interventions(events)
+    starts = [e.get("data", {}).get("budget_seconds") for e in events if e["kind"] == "run.started"]
+    extensions = [e for e in interventions if e["kind"] == "run.budget_extended"]
+    original_budget = starts[0] if starts else extensions[0].get("old_budget_seconds") if extensions else None
+    effective_budget = (extensions[-1].get("new_budget_seconds") if extensions else
+                        (provenance or {}).get("budget_seconds", original_budget))
     workers = result.get("worker_reports", [])
     accepted = {h["assignment_id"]: h for h in result.get("accepted_handoffs", [])}
     opened, tool_seconds, tool_calls = {}, {}, {}
@@ -92,6 +125,17 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
             "tool_time_scope": "Managed worker and evaluator calls; other evaluator work is included only in overall wall time",
             "unfinished_tool_calls": len(opened), "usage": _usage(workers),
             "human_inputs": sum(e["kind"] == "operator.response" for e in events),
+            "human_inputs_scope": "Counts operator.response messages or observations; other control events are listed separately. Not a count of unique people.",
+            "interventions": interventions, "intervention_counts": intervention_counts,
+            "interventions_scope": "Recorded control events; several events may belong to one human action, and recovery may be automatic.",
+            "original_budget_seconds": original_budget, "effective_budget_seconds": effective_budget,
+            "elapsed_scope": "Elapsed wall time from run creation to latest state includes stopped intervals; worker totals are recorded separately. No pause-adjusted active time is inferred.",
+            "provenance_meaning": {
+                "toolchain_revision": "Hash of the exporting installation; not per-attempt execution provenance.",
+                "skills_revision": "Hash of skills in the exporting installation; not per-attempt execution provenance.",
+                "environment": "Exporting process environment; historical executions require their own snapshot evidence.",
+                "agent": "Current saved runtime configuration; historical identity remains in individual worker records.",
+                "case_metadata": "Case manifest from the exporting installation; verify against executed snapshots."},
             "additional_attempts": sum(max(0, s["attempt_count"] - 1) for s in stages.values()),
             "limitations": case_manifest.get("limitations", []),
             **{k: v for k, v in (provenance or {}).items() if k in {
@@ -140,6 +184,20 @@ def markdown(report):
               "Overall wall time is measured directly; component times overlap. "
               "Cached input and reasoning tokens are subsets of input/output. "
               "Unrun stages and unavailable usage remain visible."]
+    if report.get("interventions"):
+        from datetime import datetime, timezone
+        lines += ["", "## Recorded interventions", "",
+                  "These are controller event counts, not a count of unique people. Operator message content is omitted.", "",
+                  "| Time (UTC) | Event | Detail |", "|---|---|---|"]
+        for event in report["interventions"]:
+            when = datetime.fromtimestamp(event["time"], timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            if event["kind"] == "run.budget_extended":
+                detail = f"Budget {show(event.get('old_budget_seconds'))} → {show(event.get('new_budget_seconds'))} seconds. " + event.get("reason", "")
+            else:
+                detail = event.get("reason") or event.get("scoped_tool_approval") or ("Content omitted" if event["kind"] == "operator.response" else "Recorded")
+            lines.append(f"| {when} | {event['kind']} | {str(detail).replace(chr(10), ' ').replace('|', '/')} |")
+    lines += ["", "Wall time includes stopped intervals; no pause-adjusted active time is inferred. "
+              "Source and environment fields describe the exporting installation; consult execution snapshot history for earlier attempts."]
     if report.get("reason"):
         lines += ["", "Run outcome: " + report["reason"]]
     if report.get("limitations"):

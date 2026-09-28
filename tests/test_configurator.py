@@ -7,6 +7,59 @@ import sys
 
 
 class ConfiguratorTests(unittest.TestCase):
+    def test_expired_run_resumes_with_an_audited_absolute_budget_increase(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller=Controller(Path(directory))
+            try:
+                run=controller.call('start',{'goal':'Budget extension contract','budget_seconds':.3,
+                    'executor_config':{'command':['missing-contract-runtime']}})
+                until=time.monotonic()+5
+                while time.monotonic()<until:
+                    original=controller.call('result',run)
+                    if original['status']=='blocked' and time.time()>original['created']+.4:break
+                    time.sleep(.01)
+                with self.assertRaisesRegex(ValueError,'budget exhausted'):
+                    controller.call('resume',run)
+                for invalid in (True,0,-1,float('inf'),float('nan'),604801,10**1000,.1):
+                    with self.subTest(budget=repr(invalid)), self.assertRaises(ValueError):
+                        controller.call('resume',{**run,'budget_seconds':invalid,'budget_reason':'Invalid test request'})
+                with self.assertRaisesRegex(ValueError,'budget_reason'):
+                    controller.call('resume',{**run,'budget_seconds':30,'budget_reason':' '})
+                self.assertEqual(controller.call('result',run)['budget_seconds'],.3)
+                controller.call('resume',{**run,'budget_seconds':30,'budget_reason':'Operator approved restoring paused time'})
+                until=time.monotonic()+5
+                while time.monotonic()<until:
+                    result=controller.call('result',run)
+                    if result['status']=='blocked' and len(result['worker_reports'])==2:break
+                    time.sleep(.01)
+                self.assertEqual(result['run_id'],original['run_id'])
+                self.assertEqual(result['created'],original['created'])
+                self.assertEqual(result['budget_seconds'],30)
+                self.assertEqual(result['worker_reports'][0],original['worker_reports'][0])
+                self.assertEqual(result['accepted_handoffs'],original['accepted_handoffs'])
+                events=controller.call('events',run)['events']
+                extension=[e['data'] for e in events if e['kind']=='run.budget_extended']
+                self.assertEqual(len(extension),1)
+                self.assertEqual(extension[0]['old_budget_seconds'],.3)
+                self.assertEqual(extension[0]['new_budget_seconds'],30)
+                self.assertAlmostEqual(extension[0]['extension_seconds'],29.7)
+                self.assertAlmostEqual(extension[0]['old_deadline'],original['created']+.3)
+                self.assertAlmostEqual(extension[0]['new_deadline'],original['created']+30)
+                self.assertEqual(extension[0]['reason'],'Operator approved restoring paused time')
+                self.assertFalse(any(e['kind']=='run.authorization' for e in events))
+                until=time.monotonic()+5
+                while time.monotonic()<until:
+                    try:
+                        controller.call('resume',{**run,'budget_seconds':30,'budget_reason':'Operator approved restoring paused time'})
+                        break
+                    except ValueError as exc:
+                        self.assertIn('stopping',str(exc));time.sleep(.01)
+                self.assertEqual(controller.call('result',run)['budget_seconds'],30)
+                self.assertEqual(len([e for e in controller.call('events',run)['events'] if e['kind']=='run.budget_extended']),1)
+            finally:
+                controller.close()
+
     def test_physical_case_receives_the_operator_binding_before_worker_execution(self):
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as directory:

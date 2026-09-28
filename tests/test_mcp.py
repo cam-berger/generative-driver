@@ -12,6 +12,56 @@ from mcp.client.stdio import stdio_client
 
 
 class McpTests(unittest.TestCase):
+    def test_mcp_resume_records_an_explicit_total_budget_without_resetting_the_run(self):
+        asyncio.run(self.adjust_budget())
+
+    async def adjust_budget(self):
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory(prefix="MCP budget adjustment ") as temp:
+            run=call('start',{'goal':'MCP budget contract','budget_seconds':60,
+                'executor_config':{'command':['no-such-agent-runtime']}},temp)
+            params=StdioServerParameters(command=sys.executable,args=['-m','generative_driver.mcp'],cwd=temp,
+                env={'GENERATIVE_DRIVER_HOME':temp})
+            try:
+                async with stdio_client(params) as (reader,writer):
+                    async with ClientSession(reader,writer) as session:
+                        await session.initialize()
+                        async def stopped(reports):
+                            until=time.monotonic()+5
+                            while time.monotonic()<until:
+                                result=call('result',run,temp)
+                                if result['status']=='blocked' and len(result['worker_reports'])>=reports:return result
+                                await asyncio.sleep(.01)
+                            self.fail('Scripted runtime did not stop with its retained report')
+                        async def resume(arguments):
+                            until=time.monotonic()+5
+                            while time.monotonic()<until:
+                                reply=await session.call_tool('driver_resume',{'run_id':run['run_id'],**arguments})
+                                self.assertFalse(reply.is_error,reply)
+                                response=json.loads(reply.content[0].text)
+                                if response.get('ok') or 'stopping' not in response.get('reason',''):return reply
+                                await asyncio.sleep(.01)
+                            self.fail('Previous scripted worker did not finish stopping')
+                        original=await stopped(1)
+                        reply=await resume({'budget_seconds':120,'budget_reason':'Operator approved test extension'})
+                        self.assertFalse(reply.is_error,reply)
+                        self.assertTrue(json.loads(reply.content[0].text)['ok'],reply)
+                        reply=await session.call_tool('driver_result',{'run_id':run['run_id']})
+                        result=json.loads(reply.content[0].text)
+                        self.assertEqual(result['budget_seconds'],120)
+                        self.assertEqual(result['created'],original['created'])
+                        self.assertEqual(result['worker_reports'][0],original['worker_reports'][0])
+                        reply=await session.call_tool('driver_events',{'run_id':run['run_id']})
+                        events=json.loads(reply.content[0].text)['events']
+                        self.assertEqual(len([e for e in events if e['kind']=='run.budget_extended']),1)
+                        await stopped(2)
+                        reply=await resume({'budget_seconds':30,'budget_reason':'A total cannot shrink'})
+                        self.assertFalse(json.loads(reply.content[0].text)['ok'])
+                        self.assertIn('cannot decrease',json.loads(reply.content[0].text)['reason'])
+                        self.assertEqual(call('result',run,temp)['budget_seconds'],120)
+            finally:
+                call('shutdown',{},temp)
+
     def test_emulator_tool_approval_cannot_authorize_a_generic_device_run(self):
         asyncio.run(self.refuse_non_emulator_approval())
 

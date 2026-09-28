@@ -5,9 +5,83 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
+import socket
+import socketserver
+import threading
+import copy
 
 
 class BenchmarkPackageGateTests(unittest.TestCase):
+    def test_package_execute_treats_read_as_implicit_and_preserves_write_and_actuate(self):
+        from generative_driver.benchmark import run, package_execute, case_root
+        from generative_driver.benchmark_support.truth import seal
+        from generative_driver.toolkit import call_tool
+        class DeviceFixture(socketserver.StreamRequestHandler):
+            def handle(self):
+                for request in self.rfile:
+                    self.wfile.write(b'DEMO-42\n' if request == b'ID?\n' else b'T:21.5\n')
+                    self.wfile.flush()
+        class MonitorFixture:
+            def __init__(self): self.data = b''
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def settimeout(self, value): pass
+            def sendall(self, data):
+                if not data.startswith(b'\xff'):
+                    self.data = data + (b'0x3e7\n' if b'ReadDoubleWord' in data else b'') + b'(device)'
+            def recv(self, size):
+                if not self.data: raise socket.timeout()
+                data, self.data = self.data[:size], self.data[size:]
+                return data
+        with tempfile.TemporaryDirectory() as temporary, socketserver.ThreadingTCPServer(('127.0.0.1', 0), DeviceFixture) as server:
+            server.daemon_threads = True
+            thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+            self.addCleanup(server.shutdown)
+            root = Path(temporary).resolve()
+            run('setup-smoke', root/'smoke')
+            model_dir = root/'smoke/model'
+            model = json.loads((model_dir/'model.json').read_text())
+            model['channel'] = {'type': 'tcp'}
+            for name in ('write', 'actuate'):
+                operation = copy.deepcopy(model['operations']['measure']); operation['effect'] = name
+                model['operations'][name] = operation
+                model['provenance'].append({'item': 'operations.'+name, 'source': 'synthetic fixture'})
+            (model_dir/'model.json').write_text(json.dumps(model))
+            probe = call_tool('probe_run', {'run_dir': str(root/'build'), 'model_dir': str(model_dir),
+                'operation': 'measure', 'n': 1, 'replay': str(root/'smoke/replay.json')})
+            emitted = call_tool('emit_package', {'run_dir': str(root/'build'), 'model_dir': str(model_dir), 'probe': probe['probe']})
+            package = Path(emitted['package_dir'])
+            binding = {'host': '127.0.0.1', 'port': server.server_address[1]}
+            run_dir = root/'run'; (run_dir/'benchmark').mkdir(parents=True)
+            (run_dir/'benchmark/state.json').write_text(json.dumps({
+                'package_copies': {'reuse': str(package)}, 'package_attempts': {'reuse': 'fixture-attempt'},
+                'package_sha256': hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest(),
+                'session': {'binding': binding, 'monitor_port': 1}}))
+            # Substitute only the filesystem case manifest with a synthetic,
+            # properly encrypted evaluator fixture. No real case password is used.
+            manifest_path = case_root()/'cases/tq9/case.json'
+            manifest = json.loads(manifest_path.read_text())
+            truth_path = root/'fixture.enc'; password = root/'fixture.password'; password.write_text('test-only')
+            digest = seal({'monitor': {'pwm_compare': 1, 'pwm_reload': 2}}, truth_path, 'test-only')
+            manifest['truth'] = {'path': str(truth_path), 'sha256': digest}
+            original_read = Path.read_text
+            def read_fixture(path, *args, **kwargs):
+                return json.dumps(manifest) if path == manifest_path else original_read(path, *args, **kwargs)
+            with patch.object(Path, 'read_text', read_fixture), patch('socket.create_connection', side_effect=lambda *args, **kwargs: MonitorFixture()):
+                for operation in ('measure', 'write', 'actuate'):
+                    result = package_execute('tq9', run_dir, 'reuse', package, operation,
+                        binding=binding, allow_effects=['read', 'write', 'actuate'],
+                        options={'evaluator_password_file': str(password)})
+                    self.assertTrue(result['ok'], result)
+                    self.assertEqual(result['outputs']['temperature'], 21.5)
+                refused = package_execute('tq9', run_dir, 'reuse', package, 'actuate',
+                    binding=binding, allow_effects=['read'], options={'evaluator_password_file': str(password)})
+                self.assertFalse(refused['ok'])
+                self.assertEqual(refused['error']['fault'], 'operator')
+                self.assertIn('explicit effect grant', refused['error']['message'])
+                self.assertEqual(refused['transcript'], [])
+
     def test_emit_uses_accepted_bytes_and_requires_matching_current_executable_package(self):
         from generative_driver.benchmark import run, prepare_stage, check_stage
         from generative_driver.toolkit import call_tool

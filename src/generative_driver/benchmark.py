@@ -65,7 +65,9 @@ def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=
         str(package), 'execute', operation, '--parameters', json.dumps(parameters or {}),
         '--binding', json.dumps(binding)]
     for effect in allow_effects or []:
-        command.extend(['--allow-effect', effect])
+        # Reads are implicit in the emitted CLI; only side effects need a flag.
+        if effect != 'read':
+            command.extend(['--allow-effect', effect])
     emulator = RenodeSession(session)
     emulator.monitor('start')
     try:

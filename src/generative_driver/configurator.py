@@ -73,6 +73,15 @@ def validate_scoped_approval(spec):
         raise ValueError('Emulator tool approval cannot authorize an operator-supplied device binding')
 
 
+def case_options(spec):
+    case=spec.get('case')
+    options={**(case.get('options',{}) if isinstance(case,dict) else {}),**spec.get('case_options',{})}
+    if spec.get('binding'):
+        options['binding']=spec['binding']
+    return {**options,'revision':spec.get('_revision',0),'feedback':spec.get('_feedback'),
+        'operator_observations':spec.get('_operator_observations',[]),'configured_effects':spec['effects']}
+
+
 def binding_identity(binding):
     """Lease physical endpoints, ignoring tuning knobs and permission flags.
 
@@ -392,6 +401,8 @@ class Controller:
                 assignment = {'id': attempt, 'stage': stage, 'workspace': str(workspace), 'inputs': input_hashes,
                               'allowed_tools': prepared.get('allowed_tools', []), 'report_required': prepared.get('report_required', True),
                               'binding': prepared.get('binding', spec.get('binding')), 'effects': spec['effects'], 'revision': revision}
+                if spec.get('scoped_tool_approval')=='bound-device' and assignment['binding']!=spec['binding']:
+                    raise ValueError('Prepared stage changed the explicitly approved device binding')
                 if prepared.get('collection'):
                     assignment['collection'] = prepared['collection']
                 with self._db() as db:
@@ -440,6 +451,12 @@ class Controller:
                     with self._db() as db:
                         db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)', (attempt, run_id, stage,
                             _json({'stage':stage, 'assignment_id':attempt, **checked['evaluator']}), time.time()))
+                if cancel.is_set():
+                    return
+                if self._row(run_id)['uncertain']:
+                    self._state(run_id,'blocked','Evaluator effect is uncertain; operator reconciliation is required before further execution')
+                    return
+                self._verify_inputs(input_hashes)
                 if not checked.get('ok'):
                     if checked.get('route') == 'interpret' and checked.get('fault') == 'model' and stage in ('interpret','probe','ground'):
                         if progress['repairs'] >= int(spec.get('max_revisions',2)):
@@ -531,12 +548,7 @@ class Controller:
         if case:
             from .benchmark import prepare_stage
             case_id = case['id'] if isinstance(case, dict) else case
-            options = spec.get('case_options', {})
-            if isinstance(case, dict):
-                options = {**case.get('options', {}), **options}
-            options = {**options,'revision':spec.get('_revision',0),'feedback':spec.get('_feedback'),
-                       'operator_observations':spec.get('_operator_observations',[]),'configured_effects':spec['effects']}
-            return prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
+            return prepare_stage(case_id, stage, run_dir, workspace, accepted, case_options(spec))
         if stage in ('ground','maintain'):
             return {'blocked':stage + ' requires an independent observation/evaluator adapter; none is configured for this device'}
         if stage == 'interpret':
@@ -572,11 +584,9 @@ class Controller:
         if spec.get('case'):
             from .benchmark import check_stage
             case = spec['case']
-            options = spec.get('case_options', {})
-            if isinstance(case, dict):
-                options = {**case.get('options', {}), **options}
-            options = {**options,'revision':spec.get('_revision',0),'feedback':spec.get('_feedback'),
-                       'operator_observations':spec.get('_operator_observations',[]),'configured_effects':spec['effects']}
+            options = case_options(spec)
+            if (case.get('id') if isinstance(case,dict) else case)=='bme280':
+                options['managed_probe']=lambda model_dir,n: self._managed_probe(run_dir.name,assignment,model_dir,n)
             return check_stage(case['id'] if isinstance(case, dict) else case, stage, run_dir, workspace, report, accepted, options)
         if stage == 'interpret':
             from .toolkit import call_tool
@@ -689,7 +699,28 @@ class Controller:
             self._event(run_id, 'stage.accepted', handoff, db)
         return handoff
 
-    def _tool(self, method, params, run):
+    def _managed_probe(self,run_id,assignment,model_dir,n):
+        """Host-only evaluator callback; never exposed by the worker MCP server."""
+        if assignment['stage'] not in ('probe','ground','maintain') or type(n) is not int or not 1<=n<=3:
+            raise ValueError('Evaluator probe requires an assigned physical stage and one to three samples')
+        source=Path(model_dir).resolve()
+        if source!=Path(assignment['workspace'])/'model' or str(source) not in assignment['inputs']:
+            raise ValueError('Evaluator probe must use the pinned model in the current stage')
+        with self._lock:
+            operation_lock=self._operations.setdefault(run_id,threading.RLock())
+        with operation_lock, self._active_operation(run_id):
+            self._verify_inputs(assignment['inputs'])
+            # Copy checked bytes outside the worker workspace; the callback never
+            # accepts a worker-supplied binding, output path or permission grant.
+            workspace=self.home/'runs'/run_id/'evaluator'/assignment['id']/uuid.uuid4().hex
+            snapshot=workspace/'model'
+            shutil.copytree(source,snapshot)
+            if digest(snapshot)!=assignment['inputs'][str(source)]:
+                raise ValueError('Evaluator model changed while taking its pinned snapshot')
+            return self._tool('tool',{'assignment_id':assignment['id'],'name':'probe_run',
+                'arguments':{'model_dir':str(snapshot),'n':n}},self._row(run_id),evaluator_workspace=workspace)
+
+    def _tool(self, method, params, run, *, evaluator_workspace=None):
         from .toolkit import list_tools, call_tool
         with self._db() as db:
             assigned = db.execute('SELECT * FROM assignments WHERE id=? AND run_id=?',
@@ -702,7 +733,13 @@ class Controller:
         progress=json.loads(saved['payload']) if saved else {}
         if assignment['stage'] != run['stage'] or assignment.get('revision',0) != progress.get('revision',0):
             raise ValueError('Worker assignment is inactive after stage or revision change')
-        contracts = [copy.deepcopy(t) for t in list_tools() if t['name'] in assignment['allowed_tools']]
+        allowed=assignment['allowed_tools']
+        if evaluator_workspace is not None:
+            spec=json.loads(run['spec']);case=spec.get('case')
+            if (case.get('id') if isinstance(case,dict) else case)!='bme280' or assignment['stage'] not in ('probe','ground','maintain'):
+                raise ValueError('Managed evaluator probes are restricted to the physical case stages')
+            allowed=['probe_run']
+        contracts = [copy.deepcopy(t) for t in list_tools() if t['name'] in allowed]
         if 'benchmark_package_execute' in assignment['allowed_tools']:
             contracts.append({'name':'benchmark_package_execute','description':'Execute a packaged driver operation with configurator-owned binding and immediately capture the evaluator observation.',
                 'inputSchema':{'type':'object','required':['package_dir','operation'],'additionalProperties':False,
@@ -721,7 +758,7 @@ class Controller:
         arguments = dict(params.get('arguments', {}))
         if {'run_dir','binding','allow_effects','bus_url'} & arguments.keys():
             raise ValueError('Connection, output directory and effect grants are configurator-owned')
-        workspace = Path(assignment['workspace'])
+        workspace = Path(evaluator_workspace or assignment['workspace'])
         from .toolkit import _PATH_ARGUMENTS
         for key in _PATH_ARGUMENTS & arguments.keys():
             value = arguments[key]
@@ -755,16 +792,15 @@ class Controller:
                     raise ValueError('Outstanding effect is uncertain; another effectful operation is refused until operator reconciliation')
                 if effectful:
                     db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run['id'],))
-                self._event(run['id'], 'tool.started', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'effectful':effectful}, db)
+                self._event(run['id'], 'tool.started', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'effectful':effectful,
+                    'actor':'evaluator' if evaluator_workspace is not None else 'worker'}, db)
         if name == 'benchmark_package_execute':
             from .benchmark import package_execute
             spec = json.loads(run['spec'])
             case = spec.get('case')
             if not case:
                 raise ValueError('Benchmark package execution requires an assigned case')
-            options = spec.get('case_options', {})
-            if isinstance(case, dict):
-                options = {**case.get('options', {}), **options}
+            options = case_options(spec)
             arguments['run_dir'] = str(self.home / 'runs' / run['id'])
             result = package_execute(case['id'] if isinstance(case,dict) else case,
                                      stage=assignment['stage'],options=options,**arguments)
@@ -782,7 +818,8 @@ class Controller:
             success = result.get('_exit',0)==0 and bool(result.get('ok',result.get('available',True)))
             if effectful and not cancelled and success:
                 db.execute('UPDATE runs SET uncertain=0 WHERE id=?',(run['id'],))
-            self._event(run['id'], 'tool.finished', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'ok':success,'result':result,'artifacts':observed_artifacts}, db)
+            self._event(run['id'], 'tool.finished', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'ok':success,'result':result,'artifacts':observed_artifacts,
+                'actor':'evaluator' if evaluator_workspace is not None else 'worker'}, db)
         return result
 
     def close(self):

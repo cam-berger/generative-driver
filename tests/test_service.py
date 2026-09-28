@@ -2,6 +2,8 @@ import tempfile
 import time
 import unittest
 import threading
+import socketserver
+import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import sys
 from pathlib import Path
@@ -9,6 +11,73 @@ import generative_driver
 
 
 class ServiceTests(unittest.TestCase):
+    def test_uncertain_effect_refuses_another_write_but_allows_read_only_observation(self):
+        """A localhost scripted device exercises real managed TCP dispatch, no hardware."""
+        from generative_driver.client import call
+        received=[]
+        class Device(socketserver.StreamRequestHandler):
+            def handle(self):
+                while True:
+                    command=self.rfile.readline()
+                    if not command:return
+                    received.append(command)
+                    if command==b'ID?\n': self.wfile.write(b'DEMO-42\n');self.wfile.flush()
+                    else:return  # A write may have happened, but its reply was lost.
+        server=socketserver.ThreadingTCPServer(('127.0.0.1',0),Device)
+        server.daemon_threads=True
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        with tempfile.TemporaryDirectory() as home:
+            source=Path(home)/'owned.bin';source.write_bytes(b'contract fixture')
+            fake=Path(home)/'uncertain_agent.py'
+            fake.write_text('''import json,sys,pathlib,hashlib
+sys.path.insert(0,PACKAGE_PARENT)
+from generative_driver.client import call
+from generative_driver.toolkit import resources_root
+prompt=sys.stdin.read()
+if not prompt.startswith('Execute exactly'):
+ model=json.loads((resources_root()/'bench/cases/setup-smoke/model.json').read_text())
+ model['channel']={'type':'tcp'};model['operations']['measure']['effect']='write'
+ pathlib.Path('model.json').write_text(json.dumps(model))
+ sys.exit(0)
+task=json.loads(prompt.split('\\n',1)[1])
+args=json.loads(next(a.split('=',1)[1] for a in sys.argv if a.startswith('mcp_servers.stage.args=')))
+home=args[args.index('--home')+1]
+identity={'run_id':args[args.index('--run')+1],'assignment_id':args[args.index('--assignment')+1]}
+def invoke(name,arguments):return call('tool',{**identity,'name':name,'arguments':arguments},home)
+if task['stage']=='acquire':
+ image=pathlib.Path(task['inputs'][0])
+ out=invoke('acquire_firmware_artifact',{'source_path':str(image),'expected_sha256':hashlib.sha256(image.read_bytes()).hexdigest(),'origin':'provided_binary'})
+ r={'status':'completed','summary':'Scripted import','artifacts':[{'path':out[k],'sha256':hashlib.sha256(pathlib.Path(out[k]).read_bytes()).hexdigest(),'kind':'evidence'} for k in ('artifact','provenance')],'checks':[{'name':'import','status':'pass','evidence':[out['provenance']]}],'unresolved':[]}
+else:
+ model=next(str(p.parent) for p in pathlib.Path('.').rglob('model.json'))
+ first=invoke('interface_execute',{'model_dir':str(pathlib.Path(model).resolve()),'operation':'measure'})
+ second=invoke('interface_execute',{'model_dir':str(pathlib.Path(model).resolve()),'operation':'measure'})
+ observation=invoke('interface_execute',{'model_dir':str(pathlib.Path(model).resolve()),'operation':'identify'})
+ print(json.dumps({'type':'fixture.results','first':first,'second':second,'observation':observation}))
+ r={'status':'blocked','summary':'Uncertain scripted device response','artifacts':[],'checks':[],'unresolved':['operator must reconcile']}
+print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps(r)}}))
+'''.replace('PACKAGE_PARENT',repr(str(Path(generative_driver.__file__).resolve().parents[1]))))
+            try:
+                run=call('start',{'goal':'Managed uncertainty contract','inputs':{'image.bin':str(source)},
+                    'binding':{'host':'127.0.0.1','port':server.server_address[1]},'effects':['write'],
+                    'executor_config':{'command':[sys.executable,str(fake)]}},home)
+                until=time.monotonic()+15
+                while time.monotonic()<until:
+                    result=call('result',run,home)
+                    if result['status'] in ('failed','blocked'):break
+                    time.sleep(.03)
+                self.assertEqual(result['stage'],'probe',result)
+                self.assertTrue(result['uncertain_effect'],result)
+                rows=[json.loads(line) for record in result['worker_reports'] for line in Path(record['transcript']).read_text().splitlines()]
+                fixture=next(row for row in rows if row.get('type')=='fixture.results')
+                self.assertFalse(fixture['first']['ok'])
+                self.assertIn('uncertain',fixture['second']['reason'])
+                self.assertTrue(fixture['observation']['ok'],fixture)
+                self.assertEqual(received.count(b'T\n'),1,received)
+            finally:
+                call('shutdown',{},home)
+                server.shutdown();server.server_close()
+
     def test_observed_acquisition_is_accepted_but_altered_evidence_cannot_resume(self):
         from generative_driver.client import call
         with tempfile.TemporaryDirectory() as home:

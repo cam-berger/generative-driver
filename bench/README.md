@@ -94,7 +94,7 @@ The evaluator takes a fresh sensor sample and compares it with the operator refe
 
 ## Metrics and comparisons
 
-Reports include runtime/provider/model/settings, toolchain and skills hashes, case/evaluator versions, firmware and recovered-model/package hashes, environment, budget, per-stage attempts and evaluator checks, overall wall time, worker time, tool calls/time, human inputs and reported tokens. Tool time is contained in worker time; do not add them. Missing usage remains unknown, with measured coverage shown. Retries and failed attempts remain visible.
+Reports include runtime/provider/model/settings, toolchain and skills hashes, case/evaluator versions, firmware and recovered-model/package hashes, environment, budget, per-stage attempts and evaluator checks, overall wall time, worker time, tool calls/time, human inputs and reported tokens. Worker tool time is included in worker time; managed evaluator tool time is reported separately. Overall wall time is measured directly, and component durations overlap. Missing usage remains unknown, with measured coverage shown. Retries and failed attempts remain visible.
 
 Overall success requires every declared acceptance gate. A strong average cannot hide failed grounding, omitted reuse or undetected drift. Unrun, failed, blocked and inapplicable roles remain explicit. Compare the same case, evaluator, seed and execution mode. A changed provider/model and compiler together is labelled `combined-system`; it cannot isolate a model improvement. Replay cannot be compared as an actual agent trial.
 

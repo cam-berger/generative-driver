@@ -28,14 +28,18 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
     workers = result.get("worker_reports", [])
     accepted = {h["assignment_id"]: h for h in result.get("accepted_handoffs", [])}
     opened, tool_seconds, tool_calls = {}, {}, {}
+    actor_seconds = {"worker": {}, "evaluator": {}}
     for event in events:
         data = event.get("data", {})
-        key = (data.get("stage"), data.get("name"))
+        actor = "evaluator" if data.get("actor") == "evaluator" else "worker"
+        key = (data.get("stage"), data.get("name"), actor)
         if event["kind"] == "tool.started":
             opened[key] = event["time"]
             tool_calls[key[0]] = tool_calls.get(key[0], 0) + 1
         elif event["kind"] == "tool.finished" and key in opened:
-            tool_seconds[key[0]] = tool_seconds.get(key[0], 0) + max(0, event["time"] - opened.pop(key))
+            elapsed = max(0, event["time"] - opened.pop(key))
+            tool_seconds[key[0]] = tool_seconds.get(key[0], 0) + elapsed
+            actor_seconds[actor][key[0]] = actor_seconds[actor].get(key[0], 0) + elapsed
     stages = {}
     verdicts = case_state.get("stage_verdicts", {})
     for stage in STAGES:
@@ -50,6 +54,8 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
             "evaluator_status": checked.get("status", "not_run"), "checks": checked.get("checks", []),
             "worker_seconds": sum(w.get("elapsed_seconds", 0) for w in attempts),
             "tool_seconds": tool_seconds.get(stage, 0), "tool_calls": tool_calls.get(stage, 0),
+            "worker_tool_seconds": actor_seconds["worker"].get(stage, 0),
+            "evaluator_tool_seconds": actor_seconds["evaluator"].get(stage, 0),
             "usage": _usage(attempts)}
     status = result["status"]
     verdict = "blocked" if status == "blocked" else "incomplete"
@@ -81,7 +87,9 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
             "elapsed_seconds": max(0, result["updated"] - result["created"]),
             "worker_seconds": sum(w.get("elapsed_seconds", 0) for w in workers),
             "tool_seconds": sum(tool_seconds.values()), "tool_calls": sum(tool_calls.values()),
-            "tool_time_scope": "Managed worker calls; evaluator time is included only in overall wall time",
+            "worker_tool_seconds": sum(actor_seconds["worker"].values()),
+            "evaluator_tool_seconds": sum(actor_seconds["evaluator"].values()),
+            "tool_time_scope": "Managed worker and evaluator calls; other evaluator work is included only in overall wall time",
             "unfinished_tool_calls": len(opened), "usage": _usage(workers),
             "human_inputs": sum(e["kind"] == "operator.response" for e in events),
             "additional_attempts": sum(max(0, s["attempt_count"] - 1) for s in stages.values()),
@@ -128,7 +136,8 @@ def markdown(report):
               f"Reported tokens: {show(report['usage']['total_tokens'])}; "
               f"usage available for {report['usage']['reported_attempts']}/{report['usage']['attempts']} worker attempts. "
               f"Human inputs: {report['human_inputs']}.", "",
-              "Worker time includes tool waits; tool time is a subset and is not added again. "
+              "Worker time includes worker tool waits. Managed evaluator tool time is recorded separately in JSON. "
+              "Overall wall time is measured directly; component times overlap. "
               "Cached input and reasoning tokens are subsets of input/output. "
               "Unrun stages and unavailable usage remain visible."]
     if report.get("reason"):

@@ -7,6 +7,21 @@ from pathlib import Path
 
 
 class ReportTests(unittest.TestCase):
+    def test_worker_and_evaluator_tool_time_are_reported_separately(self):
+        from generative_driver.reporting import summarize
+        result = {"run_id": "example", "status": "blocked", "created": 0, "updated": 8,
+                  "worker_reports": [{"assignment_id": "p", "stage": "probe", "status": "completed",
+                                      "elapsed_seconds": 2}], "accepted_handoffs": []}
+        events = [{"kind": kind, "time": when, "data": {"stage": "probe", "name": "probe_run", "actor": actor}}
+                  for kind, when, actor in [("tool.started", 1, "worker"), ("tool.finished", 2, "worker"),
+                                             ("tool.started", 4, "evaluator"), ("tool.finished", 7, "evaluator")]]
+        report = summarize(result, events)
+        self.assertEqual(report["stages"]["probe"]["worker_tool_seconds"], 1)
+        self.assertEqual(report["stages"]["probe"]["evaluator_tool_seconds"], 3)
+        self.assertEqual(report["tool_seconds"], 4)
+        self.assertEqual(report["worker_seconds"], 2)
+        self.assertEqual(report["elapsed_seconds"], 8)
+
     def test_report_preserves_independent_observations_for_offline_scoring(self):
         from generative_driver.reporting import summarize
         result = {"run_id": "example", "status": "blocked", "created": 0, "updated": 1,

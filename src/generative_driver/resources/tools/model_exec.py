@@ -53,8 +53,14 @@ def load_model(model_dir):
         model = json.load(stream)
     assert model.get("schema") == "interface-model/1", "unknown schema"
     conv = model.get("conversion") or {}
-    spec = importlib.util.spec_from_file_location("model_convert", os.path.join(model_dir, conv.get("module", "convert.py")))
-    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    source_path = os.path.join(model_dir, conv.get("module", "convert.py"))
+    spec = importlib.util.spec_from_file_location("model_convert", source_path)
+    mod = importlib.util.module_from_spec(spec)
+    # Supplied models are pinned inputs. Execute their source bytes without
+    # reading or creating __pycache__ inside that evidence directory.
+    with open(source_path, "rb") as stream:
+        source = stream.read()
+    exec(compile(source, source_path, "exec"), mod.__dict__)
     return model, getattr(mod, conv.get("entry", "convert"))
 
 

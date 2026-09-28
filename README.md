@@ -8,7 +8,12 @@ This is an experimental developer tool. Supported paths and their verification s
 
 ## Start here
 
-Use Python 3.11 or newer; development verification uses Python 3.13. From a checkout of this repository:
+Use Python 3.11 or newer. Clone the repository, then choose your platform's installation commands:
+
+```sh
+git clone https://github.com/cam-berger/generative-driver.git
+cd generative-driver
+```
 
 ### macOS
 

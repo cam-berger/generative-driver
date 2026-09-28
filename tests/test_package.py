@@ -33,6 +33,28 @@ def example_replay():
 
 
 class PackageTests(unittest.TestCase):
+    def test_register_validation_preserves_supplied_model_bytes_and_inventory(self):
+        from generative_driver.toolkit import call_tool
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            model_dir = root / "model"
+            model_dir.mkdir()
+            model = {"schema": "interface-model/1", "channel": {"type": "i2c", "address_7bit": "0x20"},
+                "identity": {"from": "id", "expect": ["0x42"]},
+                "operations": {"identify": [{"op": "reg_read", "reg": "0x00", "len": 1, "as": "id"}],
+                    "measure": [{"op": "reg_read", "reg": "0x10", "len": 1, "as": "raw"}]},
+                "conversion": {"module": "convert.py", "outputs": {"value": "count"}}, "safety": {},
+                "provenance": [{"item": "operations.identify"}, {"item": "operations.measure"}]}
+            supplied = {"model.json": json.dumps(model).encode(),
+                        "convert.py": b'def convert(inputs):\n    return {"value": inputs["0x10"][0]}\n'}
+            for name, content in supplied.items():
+                (model_dir / name).write_bytes(content)
+            checked = call_tool("model_validate", {"run_dir": str(root / "run"),
+                "model_dir": str(model_dir), "random_files": 0})
+            self.assertTrue(checked["ok"], checked)
+            self.assertEqual({p.relative_to(model_dir).as_posix(): p.read_bytes()
+                              for p in model_dir.rglob("*") if p.is_file()}, supplied)
+
     def test_register_workspace_and_package_validate_outside_installation(self):
         from generative_driver.toolkit import call_tool
         with tempfile.TemporaryDirectory(prefix="register case ") as temp:

@@ -26,6 +26,8 @@ Optional Python packages support serial ports, USB, FTDI bridges, ESP acquisitio
 
 Supply a concrete operator binding and effect grants with the objective. Use an explicit serial endpoint, USB identity or FTDI adapter URL; automatic discovery alone does not establish which device is authorized. Read access is the default. Generated packages preserve operation effects and validate their declared interface before execution.
 
+For noninteractive Codex workers, explicitly approve the assigned runtime tools for that run. A device run uses `scoped_tool_approval: "bound-device"` alongside its selected `binding` and `effects`; the TQ9 benchmark uses `"emulator"`. The configurator permits only the assigned tool names and enforces the saved binding and effects. Without approval, the runtime can stop before invoking a tool. Resume an already selected device run with `resume RUN_ID --approve-bound-device-tools`, or an emulator run with `--approve-emulator-tools`. The equivalent `driver_resume` input is `scoped_tool_approval`. These settings do not alter the developer's global Codex configuration.
+
 ## Recovery
 
 Save the run ID returned by `driver_start`. Read `driver_status` or `driver_result` from either UI to reconnect. Closing an MCP connection does not cancel a run. Cancellation is an explicit action. Resume rechecks saved evidence; uncertain physical operations require an observation before further action.

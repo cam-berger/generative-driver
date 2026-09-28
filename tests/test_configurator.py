@@ -7,6 +7,23 @@ import sys
 
 
 class ConfiguratorTests(unittest.TestCase):
+    def test_physical_case_receives_the_operator_binding_before_worker_execution(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller=Controller(Path(directory))
+            try:
+                binding={'url':'ftdi://fixture-no-device/1'}
+                run=controller.call('start',{'goal':'No hardware contract','case':'bme280','binding':binding,'effects':['write'],
+                    'scoped_tool_approval':'bound-device','executor_config':{'command':['missing-contract-runtime']}})
+                until=time.monotonic()+5
+                while time.monotonic()<until and controller.call('status',run)['status']!='blocked': time.sleep(.01)
+                self.assertIn('Cannot start configured runtime',controller.call('status',run)['reason'])
+                assigned=[e['data'] for e in controller.call('events',run)['events'] if e['kind']=='stage.assigned']
+                self.assertEqual(assigned[0]['binding'],binding)
+                self.assertEqual(assigned[0]['effects'],['write'])
+            finally:
+                controller.close()
+
     def test_bound_device_approval_requires_a_binding_and_effect_grants(self):
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as directory:

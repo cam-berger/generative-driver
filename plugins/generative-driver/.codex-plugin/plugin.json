@@ -1,0 +1,25 @@
+{
+  "name": "generative-driver",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "Generate device interfaces with checked firmware and experiment evidence.",
+  "author": {
+    "name": "Generative Driver contributors"
+  },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Generative Driver",
+    "shortDescription": "Generate and verify device interfaces.",
+    "longDescription": "Run the seven-stage workflow through a local background configurator.",
+    "developerName": "Generative Driver contributors",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Check my setup and help me generate a device interface."
+    ]
+  }
+}

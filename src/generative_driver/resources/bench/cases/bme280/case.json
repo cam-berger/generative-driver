@@ -1,0 +1,33 @@
+{
+  "schema": "benchmark-case/1",
+  "id": "bme280",
+  "version": "1",
+  "evaluator_version": "1",
+  "execution": "actual-agent-physical",
+  "required_stages": [
+    "acquire",
+    "interpret",
+    "probe",
+    "ground",
+    "emit",
+    "reuse",
+    "maintain"
+  ],
+  "truth": {
+    "path": "groundtruth/bme280.enc",
+    "sha256": "bc25ec834f44232573a5baa9360d6a4dd0aee6e579bf3969a4bb05e19d72cbf7"
+  },
+  "prerequisites": [
+    "BME280 on explicitly selected FTDI I2C adapter",
+    "hardware and docs extras; native USB driver",
+    "Independent temperature/humidity/pressure reference instruments and timestamped photo/log"
+  ],
+  "limitations": [
+    "No physical run is shipped as a new measurement",
+    "Operator supplied reference must be independent; this is not authenticated laboratory metrology",
+    "No firmware identity drift injection for physical profile"
+  ],
+  "time_policy": {
+    "physical": "Real elapsed device time; no timing pause"
+  }
+}

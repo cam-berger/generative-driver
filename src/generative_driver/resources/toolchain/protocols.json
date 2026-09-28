@@ -1,0 +1,26 @@
+{
+  "schema": "protocol-registry/1",
+  "note": "Public protocol specifications a device can name in its own USB strings. acquire_selfdescription reports a key in named_protocols when one of its `match` substrings occurs (case-sensitive) in any string descriptor; acquire_protocol_spec fetches that key's commit-pinned `sources`, refuses any whose sha256 differs, and splits a source with a `split` marker into sections. Toolchain-side only: never copied into an interpreter workspace.",
+  "protocols": {
+    "cmsis-dap": {
+      "title": "Arm CMSIS-DAP debug access protocol, command reference",
+      "publisher": "Arm",
+      "match": ["CMSIS-DAP"],
+      "rendered": "https://arm-software.github.io/CMSIS-DAP/latest/",
+      "sources": [
+        {
+          "name": "ref_dap.txt",
+          "url": "https://raw.githubusercontent.com/ARM-software/CMSIS-DAP/12636590eec66fae2d1bba4518749426ad5a4595/Documentation/Doxygen/src/ref_dap.txt",
+          "sha256": "44ff07615236e07da1fcd058c602f3ecc775dc341cc183fee12f6f091ba4de58",
+          "split": "\\defgroup"
+        },
+        {
+          "name": "dap_firmware.md",
+          "url": "https://raw.githubusercontent.com/ARM-software/CMSIS-DAP/12636590eec66fae2d1bba4518749426ad5a4595/Documentation/Doxygen/src/dap_firmware.md",
+          "sha256": "78ce9844a64312211259c72ee346d658d269edadfae9e9566deb0fdea0d25521",
+          "split": null
+        }
+      ]
+    }
+  }
+}

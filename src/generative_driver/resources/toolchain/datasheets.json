@@ -1,0 +1,13 @@
+{
+  "schema": "datasheet-registry/1",
+  "note": "Public vendor datasheet URLs and pinned content hashes. No datasheet files are bundled. An unlisted part returns needs_search for the find-datasheet skill.",
+  "parts": {
+    "bme280": {
+      "vendor": "Bosch Sensortec",
+      "title": "BME280 combined humidity and pressure sensor",
+      "revision": "1.24",
+      "url": "https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bme280-ds002.pdf",
+      "sha256": "a2ccdb449fec94380742fe8eec851a11d9bd4142252d332b34682b4deecd7d89"
+    }
+  }
+}

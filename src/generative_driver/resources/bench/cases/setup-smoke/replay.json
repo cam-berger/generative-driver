@@ -1,0 +1,25 @@
+{
+  "schema": "interface-replay/1",
+  "transactions": [
+    {
+      "tx_hex": "49443f0a",
+      "rx_hex": "44454d4f2d34320a",
+      "rx": {
+        "mode": "until",
+        "delimiter_hex": "0a",
+        "max_bytes": 128
+      },
+      "timeout_ms": 500
+    },
+    {
+      "tx_hex": "540a",
+      "rx_hex": "543a32312e350a",
+      "rx": {
+        "mode": "until",
+        "delimiter_hex": "0a",
+        "max_bytes": 128
+      },
+      "timeout_ms": 500
+    }
+  ]
+}

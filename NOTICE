@@ -1,0 +1,10 @@
+Generative Driver
+Copyright 2026 Generative Driver contributors
+
+Original toolchain and runtime code was extracted from the ai-firmware research
+project and is distributed under the Apache License, Version 2.0.
+
+Third-party materials retain their original notices and licenses. See
+bench/groundtruth/README.md and bundled benchmark evidence for the provenance of
+emulator models. External Codex, Goose, Ghidra, Renode, compiler, serial and USB
+dependencies are separately distributed under their respective licenses.

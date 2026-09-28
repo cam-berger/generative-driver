@@ -1,0 +1,1517 @@
+{
+  "schema": "toolchain-tools/1",
+  "note": "Installed public tool contracts. All filesystem path arguments are absolute. run_dir selects writable output storage outside the installation. Optional hardware and analysis tools are loaded only when invoked. Agent execution belongs to the configurator.",
+  "tools": [
+    {
+      "name": "interface_describe",
+      "description": "Describe validated executable (schema 3-6) operations and transport capabilities. No device access.",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "model_dir": {
+            "title": "Model Dir",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_dir",
+          "model_dir"
+        ],
+        "type": "object",
+        "title": "interface_describeArguments"
+      }
+    },
+    {
+      "name": "interface_execute",
+      "description": "Execute one typed schema 3-6 operation after identity verification. Bindings are explicit host choices.\nOnly read effects by default; write/actuate require grants. Explicit replay is offline evidence.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "model_dir": {
+            "title": "Model Dir",
+            "type": "string"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "parameters": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parameters"
+          },
+          "binding": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Binding"
+          },
+          "allow_effects": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allow Effects"
+          },
+          "replay": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Replay"
+          }
+        },
+        "required": [
+          "run_dir",
+          "model_dir",
+          "operation"
+        ],
+        "type": "object",
+        "title": "interface_executeArguments"
+      }
+    },
+    {
+      "name": "usage_record",
+      "description": "Record actual provider token counters with explicit delta/cumulative/unavailable semantics.\nRecords are deduplicated. Cached input and reasoning are subsets, never additive token totals.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "usage": {
+            "additionalProperties": true,
+            "title": "Usage",
+            "type": "object"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "attempt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attempt"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Record Id"
+          }
+        },
+        "required": [
+          "run_dir",
+          "stage",
+          "usage",
+          "source"
+        ],
+        "type": "object",
+        "title": "usage_recordArguments"
+      }
+    },
+    {
+      "name": "usage_summary",
+      "description": "Report measured stage token proportions and coverage, with tool time counted separately.\nUnknown inference remains unavailable/unattributed. Token shares are not FLOPs or dollar costs.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          }
+        },
+        "required": [
+          "run_dir"
+        ],
+        "type": "object",
+        "title": "usage_summaryArguments"
+      }
+    },
+    {
+      "name": "interpret_collect",
+      "description": "Collect a model after interpret_run(mode='prepare'): verify the workspace against the host seal and the\nseal against `expected_seal_sha256` (the seal_sha256 prepare returned; without it, the earliest prepare\nevent, refused when none), freeze the outputs into the run, and report validation (executable schemas 3-6,\nor schema-1 register) and a host re-run of qualification beside ok. `seal_kind` is 'instruction' or\n'enforced'; `transcript` (the agent's JSONL, or .jsonl.gz) is audited for access outside the workspace.\nExperimental schema-2 evidence uses firmware_collect.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "attempt": {
+            "default": 1,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "agent_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Agent Summary"
+          },
+          "seal_kind": {
+            "default": "instruction",
+            "title": "Seal Kind",
+            "type": "string"
+          },
+          "transcript": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Transcript"
+          },
+          "expected_seal_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Seal Sha256"
+          }
+        },
+        "required": [
+          "run_dir"
+        ],
+        "title": "interpret_collectArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "interpret_run",
+      "description": "Prepare a neutral workspace for a configurator-owned interpreter stage. Inputs are copied and hashed, generic skills and validators are bundled, and a host seal is returned for interpret_collect. This tool never launches an agent.",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "front_end": {
+            "title": "Front End",
+            "type": "string"
+          },
+          "inputs": {
+            "additionalProperties": true,
+            "title": "Inputs",
+            "type": "object"
+          },
+          "wiring": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Wiring"
+          },
+          "attempt": {
+            "default": 1,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "defects": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Defects"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "prepare"
+            ],
+            "default": "prepare"
+          },
+          "workspace_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workspace Root"
+          }
+        },
+        "required": [
+          "run_dir",
+          "front_end",
+          "inputs"
+        ],
+        "type": "object",
+        "title": "interpret_runArguments"
+      }
+    },
+    {
+      "name": "bus_prepare",
+      "description": "ESP32 shared-bus adapter only. Requires backend='esp32' and explicit controller ports.\nNever use this to prepare an operating serial-command device. No implicit port enumeration.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "mode": {
+            "default": "park",
+            "title": "Mode",
+            "type": "string"
+          },
+          "ports": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ports"
+          },
+          "backend": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Backend"
+          }
+        },
+        "required": [
+          "run_dir"
+        ],
+        "type": "object",
+        "title": "bus_prepareArguments"
+      }
+    },
+    {
+      "name": "acquire_classify",
+      "description": "Stage 1. Walk the acquisition ladder and return the device class, the description artifact, and the\nlog of every rung tried. A selected `port` requires `flash_backend=\"esp32\"`; a failed port attempt\ncannot fall through to the an unselected FTDI bus. `part_hint` offers a part marking to look up.\n`transports` (e.g. [\"usb\"]) with the operator's `address` (vid:pid) and optional `serial_number` selects\na self-describing device; a miss then ends the walk and no bus is scanned.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "bus_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null,
+            "description": "Explicit ftdi:// adapter URL. No default device is selected."
+          },
+          "port": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Port"
+          },
+          "part_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Part Hint"
+          },
+          "allow_register_sweep": {
+            "default": false,
+            "title": "Allow Register Sweep",
+            "type": "boolean"
+          },
+          "flash_backend": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Flash Backend"
+          },
+          "transports": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Transports"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Address"
+          },
+          "serial_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Serial Number"
+          }
+        },
+        "required": [
+          "run_dir"
+        ],
+        "type": "object",
+        "title": "acquire_classifyArguments"
+      }
+    },
+    {
+      "name": "acquire_flash",
+      "description": "Use the explicitly selected ESP32 acquisition backend; never guess it from a serial port.\nRequires a known compatible controller. This is not a generic printer firmware-dump tool.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "port": {
+            "title": "Port",
+            "type": "string"
+          },
+          "backend": {
+            "title": "Backend",
+            "type": "string"
+          },
+          "chunked": {
+            "default": false,
+            "title": "Chunked",
+            "type": "boolean"
+          },
+          "strip_app_desc": {
+            "default": false,
+            "title": "Strip App Desc",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run_dir",
+          "port",
+          "backend"
+        ],
+        "type": "object",
+        "title": "acquire_flashArguments"
+      }
+    },
+    {
+      "name": "acquire_datasheet",
+      "description": "Fetch a registered part_hint or an explicit URL, verify expected_sha256 when supplied, and extract datasheet pages.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "run_dir"
+        ],
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "part_hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "expected_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        }
+      }
+    },
+    {
+      "name": "acquire_selfdescription",
+      "description": "Stage 1, rung 3. Read one explicitly selected USB device's standard descriptors into descriptor.json,\nraw and parsed, with ENDPOINT.md beside it for the interpreter. transport is \"usb\"; address is the\noperator's vid:pid in hex; serial_number picks one of several matches. Only descriptor reads (and the\nvendor read its own BOS advertises) are sent: nothing is claimed or configured, no data is transferred.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "transport": {
+            "title": "Transport",
+            "type": "string"
+          },
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "serial_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Serial Number"
+          }
+        },
+        "required": [
+          "run_dir",
+          "transport",
+          "address"
+        ],
+        "type": "object",
+        "title": "acquire_selfdescriptionArguments"
+      }
+    },
+    {
+      "name": "acquire_bus_scan",
+      "description": "Poll every 7-bit address in the write direction; return what acknowledged.",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "bus_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null,
+            "description": "Explicit ftdi:// adapter URL. No default device is selected."
+          },
+          "speed_hz": {
+            "default": 100000,
+            "title": "Speed Hz",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run_dir"
+        ],
+        "title": "acquire_bus_scanArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "acquire_register_sweep",
+      "description": "Read every register of one address repeatedly; report what is constant and what moves. Class 4 only.",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "snapshots": {
+            "default": 20,
+            "title": "Snapshots",
+            "type": "integer"
+          },
+          "interval_ms": {
+            "default": 500,
+            "title": "Interval Ms",
+            "type": "integer"
+          },
+          "bus_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null,
+            "description": "Explicit ftdi:// adapter URL. No default device is selected."
+          },
+          "speed_hz": {
+            "default": 100000,
+            "title": "Speed Hz",
+            "type": "integer"
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Labels"
+          }
+        },
+        "required": [
+          "run_dir",
+          "address"
+        ],
+        "title": "acquire_register_sweepArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "model_validate",
+      "description": "Validate schema-1 register conversion, schema-2 evidence, or schema 3-6 executable transactions.\nReturns defects; structural command validation does not prove semantics or authorize physical action.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "model_dir": {
+            "title": "Model Dir",
+            "type": "string"
+          },
+          "random_files": {
+            "default": 20,
+            "title": "Random Files",
+            "type": "integer"
+          },
+          "seed": {
+            "default": 0,
+            "title": "Seed",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run_dir",
+          "model_dir"
+        ],
+        "title": "model_validateArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "model_provenance_audit",
+      "description": "Reported, not a gate: does every citation in the model point at something really in the artifact?",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "model_dir": {
+            "title": "Model Dir",
+            "type": "string"
+          },
+          "artifact": {
+            "title": "Artifact",
+            "type": "string"
+          },
+          "kind": {
+            "default": "datasheet",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_dir",
+          "model_dir",
+          "artifact"
+        ],
+        "title": "model_provenance_auditArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "image_map_check",
+      "description": "Stage 2. Score candidate load maps of a raw little-endian Cortex-M image by reset-handler plausibility,\nvector sanity and literal-pointer coherence; rank them and say whether the best is decisive. A plausible\nvector table alone is not a load map. Heuristic; confirm by resolving a known literal pointer.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "image": {
+            "title": "Image",
+            "type": "string"
+          },
+          "base": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Base"
+          },
+          "header_offsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Header Offsets"
+          },
+          "resolve": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resolve"
+          },
+          "max_words": {
+            "default": 200000,
+            "title": "Max Words",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run_dir",
+          "image"
+        ],
+        "title": "image_map_checkArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "model_qualify",
+      "description": "Stage 2. Qualify an executable model offline against supplied replies: streams (interface-replies/1)\nunder complete and fragmented delivery with LF and CRLF, USB (interface-replies/2, one hex reply per\nexchange or control step) as whole transfers or fragmented framed replies, then synthetic faults, through the real engine and adapter.\nProves framing and guard robustness against assumed replies only; never opens hardware.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "model_dir": {
+            "title": "Model Dir",
+            "type": "string"
+          },
+          "replies": {
+            "title": "Replies",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_dir",
+          "model_dir",
+          "replies"
+        ],
+        "type": "object",
+        "title": "model_qualifyArguments"
+      }
+    },
+    {
+      "name": "ghidra_run",
+      "description": "Stage 2. Run headless Ghidra without a shell pipeline, with workspace-local JVM settings, the true exit\nstatus, success markers, verified export files and the local-host-name warning classified separately.\nok is true only when the exit is 0, the import succeeded and the exports verify.\n Native Windows uses support/analyzeHeadless.bat; other hosts use support/analyzeHeadless. Select an explicit Ghidra installation and JDK. The writable analysis workspace must contain no whitespace.",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "workspace": {
+            "title": "Workspace",
+            "type": "string"
+          },
+          "image": {
+            "title": "Image",
+            "type": "string"
+          },
+          "base_address": {
+            "title": "Base Address",
+            "type": "string"
+          },
+          "processor": {
+            "title": "Processor",
+            "type": "string"
+          },
+          "ghidra_path": {
+            "title": "Ghidra Path",
+            "type": "string"
+          },
+          "java_home": {
+            "title": "Java Home",
+            "type": "string"
+          },
+          "export_dir": {
+            "title": "Export Dir",
+            "type": "string"
+          },
+          "loader": {
+            "default": "BinaryLoader",
+            "title": "Loader",
+            "type": "string"
+          },
+          "prescripts": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prescripts"
+          },
+          "script_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Script Path"
+          },
+          "timeout_s": {
+            "default": 1800,
+            "title": "Timeout S",
+            "type": "integer"
+          },
+          "noanalysis": {
+            "default": false,
+            "title": "Noanalysis",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run_dir",
+          "workspace",
+          "image",
+          "base_address",
+          "processor",
+          "ghidra_path",
+          "java_home",
+          "export_dir"
+        ],
+        "title": "ghidra_runArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "probe_run",
+      "description": "Probe without repairing the model. Schema 1 supports live I2C; schemas 3-6 require an explicit\noperation and trusted binding or replay trace. Evidence kind and model hash are recorded.\nA failed probe returns error_code; exit 4 is a transport fault (inconclusive), exit 1 a model failure.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "model_dir": {
+            "title": "Model Dir",
+            "type": "string"
+          },
+          "n": {
+            "default": 3,
+            "title": "N",
+            "type": "integer"
+          },
+          "bus_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null,
+            "description": "Explicit ftdi:// adapter URL. No default device is selected."
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Operation"
+          },
+          "parameters": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parameters"
+          },
+          "binding": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Binding"
+          },
+          "allow_effects": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allow Effects"
+          },
+          "replay": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Replay"
+          },
+          "period_override_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Period Override Ms"
+          }
+        },
+        "required": [
+          "run_dir",
+          "model_dir"
+        ],
+        "title": "probe_runArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "probe_diff",
+      "description": "What the device did that the model did not predict, as a defect list for an interpret retry.\nFor schemas 3-6 each failed result becomes a defect with its step, error code, fault (transport or\nmodel) and the bytes seen; exit 4 means every failure was a transport fault.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "model_dir": {
+            "title": "Model Dir",
+            "type": "string"
+          },
+          "probe_json": {
+            "title": "Probe Json",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_dir",
+          "model_dir",
+          "probe_json"
+        ],
+        "type": "object",
+        "title": "probe_diffArguments"
+      }
+    },
+    {
+      "name": "emit_package",
+      "description": "Stage 5. Generate the device package from the model and the probe output: a driver that executes the\nbundled model, a reference, an evidence file, a regression suite of invariants, and a manifest.",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "model_dir": {
+            "title": "Model Dir",
+            "type": "string"
+          },
+          "probe_json": {
+            "title": "Probe Json",
+            "type": "string"
+          },
+          "wiring": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Wiring"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "version": {
+            "default": "1.0.0",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_dir",
+          "model_dir",
+          "probe_json"
+        ],
+        "title": "emit_packageArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "emit_check",
+      "description": "Check generated package consistency offline. Schema 1 uses register fixtures; schemas 3-6 verify\nmanifest integrity and runtime currency separately. Current trusted packages run standalone wire replay;\nintact archived runtimes remain verifiable without executing their code. An external manifest pin\nestablishes artifact identity. Executable packages use their bundled model when model_dir is omitted;\nregister packages require it. This is not physical validation or sequence-safety evidence.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "package_dir": {
+            "title": "Package Dir",
+            "type": "string"
+          },
+          "model_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model Dir"
+          },
+          "seeds": {
+            "default": 20,
+            "title": "Seeds",
+            "type": "integer"
+          },
+          "expected_manifest_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Manifest Sha256"
+          },
+          "seed": {
+            "default": 0,
+            "title": "Seed",
+            "type": "integer"
+          },
+          "tol_rel": {
+            "default": 1e-09,
+            "title": "Tol Rel",
+            "type": "number"
+          }
+        },
+        "required": [
+          "run_dir",
+          "package_dir"
+        ],
+        "title": "emit_checkArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "emit_test_live",
+      "description": "Stage 5. Run the emitted package live. A register package runs its own regression suite on the bus. An\ninterface package runs each of `operations` (default: identity) once through its own command line with\nthe operator's trusted `binding`, the `parameters` given per operation and the `allow_effects` grants,\nafter the same verified snapshot as emit_check; each run lands in emit/live-N.json. A malformed binding or a\nmissing grant is refused before any call. Exit 4 is a transport fault, inconclusive.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "package_dir": {
+            "title": "Package Dir",
+            "type": "string"
+          },
+          "binding": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Binding"
+          },
+          "operations": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Operations"
+          },
+          "parameters": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parameters"
+          },
+          "allow_effects": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allow Effects"
+          },
+          "model_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model Dir"
+          },
+          "expected_manifest_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Manifest Sha256"
+          }
+        },
+        "required": [
+          "run_dir",
+          "package_dir"
+        ],
+        "title": "emit_test_liveArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "acquire_firmware_artifact",
+      "description": "Import local binary bytes and truthful caller-declared provenance; no USB or network access.\norigin is public_release, device_dump or provided_binary. Version match is not byte equality.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "source_path": {
+            "title": "Source Path",
+            "type": "string"
+          },
+          "origin": {
+            "title": "Origin",
+            "type": "string"
+          },
+          "expected_sha256": {
+            "title": "Expected Sha256",
+            "type": "string"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Url"
+          },
+          "reported_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reported Version"
+          },
+          "artifact_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Artifact Version"
+          }
+        },
+        "required": [
+          "run_dir",
+          "source_path",
+          "origin",
+          "expected_sha256"
+        ],
+        "type": "object",
+        "title": "acquire_firmware_artifactArguments"
+      }
+    },
+    {
+      "name": "firmware_collect",
+      "description": "Verify all sealed binary inputs and structurally validate/freeze output with local evidence.\nDoes not assert semantic truth, enforce an OS sandbox, or require register conversion code.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "attempt": {
+            "default": 1,
+            "title": "Attempt",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run_dir"
+        ],
+        "type": "object",
+        "title": "firmware_collectArguments"
+      }
+    },
+    {
+      "name": "firmware_prepare",
+      "description": "Prepare a fresh neutral binary-only handoff. Spawn a no-history agent with returned prompt.\nNo device identity or user objective is supplied; isolation is by instruction, not an OS sandbox.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "artifact": {
+            "title": "Artifact",
+            "type": "string"
+          },
+          "expected_sha256": {
+            "title": "Expected Sha256",
+            "type": "string"
+          },
+          "attempt": {
+            "default": 1,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "ghidra_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ghidra Path"
+          },
+          "java_home": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Java Home"
+          }
+        },
+        "required": [
+          "run_dir",
+          "artifact",
+          "expected_sha256"
+        ],
+        "type": "object",
+        "title": "firmware_prepareArguments"
+      }
+    },
+    {
+      "name": "firmware_validate",
+      "description": "Validate experimental command-model structure and local evidence references without hardware.",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "model_dir": {
+            "title": "Model Dir",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_dir",
+          "model_dir"
+        ],
+        "type": "object",
+        "title": "firmware_validateArguments"
+      }
+    },
+    {
+      "name": "acquire_protocol_spec",
+      "description": "Stage 1. Fetch the public specification of a protocol the device names in its own strings (a key from\nacquire_selfdescription's named_protocols), verify every source against the registry sha256, and split\nlong sources into sections for interpret_run. Nothing is written unless every source matches.\n",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_dir",
+          "key"
+        ],
+        "type": "object",
+        "title": "acquire_protocol_specArguments"
+      }
+    },
+    {
+      "name": "probe_observe",
+      "description": "Compare a register model with a captured bus record; no live device access.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "run_dir",
+          "model_dir",
+          "bus"
+        ],
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "model_dir": {
+            "type": "string"
+          },
+          "bus": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

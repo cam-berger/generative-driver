@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Experimental binary interface handoff",
+  "description": "Structural contract only. It does not prove semantic correctness, safety, or live-device equivalence, and authorizes no execution. Do not fetch this schema URI.",
+  "type": "object",
+  "required": ["schema", "device", "channel", "operations", "limits", "safety", "provenance", "uncertainties"],
+  "properties": {
+    "schema": {"const": "interface-model/2-experimental"},
+    "device": {"type": "object"},
+    "channel": {"type": "object"},
+    "limits": {"type": "object"},
+    "safety": {"type": "object"},
+    "provenance": {"type": "object"},
+    "uncertainties": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "description": "IDs must be unique across all operations. Unmodeled commands must remain unavailable.",
+      "items": {
+        "type": "object",
+        "required": ["id", "request", "response_interpretation", "effect_class", "evidence"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "request": {"type": "object", "minProperties": 1, "description": "Concrete request or explicit parameterized grammar, with framing where known."},
+          "response_interpretation": {"type": "object", "minProperties": 1},
+          "effect_class": {"enum": ["read_only", "state_change", "physical_action", "destructive", "unknown"]},
+          "evidence": {
+            "type": "array", "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["export"],
+              "anyOf": [{"required": ["address"]}, {"required": ["file_offset"]}, {"required": ["offset"]}],
+              "properties": {
+                "export": {"type": "string", "minLength": 1, "description": "Existing nonempty workspace-relative file; no absolute paths, traversal or symlinks."},
+                "address": {"$ref": "#/$defs/location"},
+                "file_offset": {"$ref": "#/$defs/location"},
+                "offset": {"$ref": "#/$defs/location"},
+                "claim": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "location": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "string", "pattern": "^(0[xX][0-9a-fA-F]+|[0-9]+)$"}]}
+  }
+}

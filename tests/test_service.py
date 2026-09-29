@@ -11,6 +11,65 @@ import generative_driver
 
 
 class ServiceTests(unittest.TestCase):
+    def test_probe_json_cannot_read_outside_the_assigned_workspace(self):
+        """A scripted stage reaches the real gateway without inference or device access."""
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            source = home / 'source.bin'; source.write_bytes(b'scripted input')
+            outside = home / 'outside-probe.json'; outside.write_text('{}', encoding='utf-8')
+            script = home / 'agent.py'
+            script.write_text('''import json,sys,pathlib,hashlib,shutil,time
+sys.path.insert(0,PACKAGE_PARENT)
+from generative_driver.client import call
+from generative_driver.toolkit import resources_root
+prompt=sys.stdin.read()
+if not prompt.startswith('Execute exactly'):
+    shutil.copy2(resources_root()/'bench/cases/setup-smoke/model.json','model.json')
+    sys.exit(0)
+task=json.loads(prompt.split('\\n',1)[1])
+if task['stage']=='probe':
+    time.sleep(30)
+    sys.exit(0)
+args=json.loads(next(a.split('=',1)[1] for a in sys.argv if a.startswith('mcp_servers.stage.args=')))
+identity={'run_id':args[args.index('--run')+1],'assignment_id':args[args.index('--assignment')+1]}
+image=pathlib.Path(task['inputs'][0])
+out=call('tool',{**identity,'name':'acquire_firmware_artifact','arguments':{'source_path':str(image),'expected_sha256':hashlib.sha256(image.read_bytes()).hexdigest(),'origin':'provided_binary'}},args[args.index('--home')+1])
+report={'status':'completed','summary':'Scripted import','artifacts':[{'path':out[k],'sha256':hashlib.sha256(pathlib.Path(out[k]).read_bytes()).hexdigest(),'kind':'evidence'} for k in ('artifact','provenance')],'checks':[{'name':'import','status':'pass','evidence':[out['provenance']]}],'unresolved':[]}
+print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps(report)}}))
+'''.replace('PACKAGE_PARENT', repr(str(Path(generative_driver.__file__).resolve().parents[1]))), encoding='utf-8')
+            run = None
+            try:
+                run = call('start', {'goal':'Scripted evidence path boundary', 'inputs':{'image.bin':str(source)},
+                    'executor_config':{'command':[sys.executable,str(script)]}}, home)
+                until = time.monotonic() + 10
+                assignment = None
+                while time.monotonic() < until:
+                    assignments = [event['data'] for event in call('events', run, home)['events']
+                                   if event['kind'] == 'stage.assigned' and event['data']['stage'] == 'probe']
+                    if assignments:
+                        assignment = assignments[-1]
+                        break
+                    time.sleep(.02)
+                self.assertIsNotNone(assignment, call('result', run, home))
+                model = next(path for path in assignment['inputs'] if (Path(path) / 'model.json').is_file())
+                identity = {**run, 'assignment_id':assignment['id']}
+                tools = call('tools', identity, home)['tools']
+                contract = next(tool for tool in tools if tool['name'] == 'probe_diff')
+                self.assertIn('probe_json', contract['inputSchema']['required'])
+                for evidence in (str(outside), 'outside-probe.json'):
+                    refused = call('tool', {**identity, 'name':'probe_diff',
+                        'arguments':{'model_dir':model, 'probe_json':evidence}}, home)
+                    self.assertFalse(refused.get('ok'), refused)
+                    self.assertIn('outside this stage workspace: probe_json', refused.get('reason', ''), refused)
+                dispatched = [event for event in call('events', run, home)['events']
+                              if event['kind'] == 'tool.started' and event['data']['name'] == 'probe_diff']
+                self.assertEqual(dispatched, [])
+            finally:
+                if run is not None:
+                    call('cancel', run, home)
+                call('shutdown', {}, home)
+
     def test_uncertain_effect_refuses_another_write_but_allows_read_only_observation(self):
         """A localhost scripted device exercises real managed TCP dispatch, no hardware."""
         from generative_driver.client import call

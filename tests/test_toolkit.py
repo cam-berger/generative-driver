@@ -11,6 +11,35 @@ from pathlib import Path
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_advertised_probe_diff_argument_compares_saved_replay_evidence(self):
+        from generative_driver.toolkit import call_tool, list_tools, resources_root
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            model = root / "model"
+            model.mkdir()
+            fixture = resources_root() / "bench/cases/setup-smoke"
+            shutil.copy2(fixture / "model.json", model / "model.json")
+            shutil.copy2(fixture / "replay.json", root / "replay.json")
+            arguments = {"run_dir": str(root / "run"), "model_dir": str(model)}
+            observed = call_tool("probe_run", {**arguments, "operation": "measure", "n": 1,
+                                               "replay": str(root / "replay.json")})
+            self.assertTrue(observed.get("ok"), observed)
+            self.assertEqual(observed["results"][0]["outputs"]["temperature"], 21.5)
+            contract = next(tool for tool in list_tools() if tool["name"] == "probe_diff")
+            self.assertIn("probe_json", contract["inputSchema"]["required"])
+            for field in ("probe_json", "probe"):
+                compared = call_tool("probe_diff", {**arguments, field: observed["probe"]})
+                self.assertTrue(compared.get("ok"), compared)
+                self.assertEqual(compared["defects"], [])
+            refused = call_tool("probe_diff", {**arguments, "probe_json": observed["probe"],
+                                               "probe": str(root / "other.json")})
+            self.assertIn("same evidence", refused.get("error", ""), refused)
+            relative_run = root / "relative-run"
+            refused = call_tool("probe_diff", {**arguments, "run_dir": str(relative_run),
+                                               "probe_json": "relative-probe.json"})
+            self.assertIn("absolute", refused.get("error", ""), refused)
+            self.assertFalse(relative_run.exists())
+
     def test_packaged_text_assets_work_under_a_non_utf8_system_locale(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()

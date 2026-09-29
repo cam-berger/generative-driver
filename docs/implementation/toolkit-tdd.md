@@ -52,3 +52,20 @@ The existing register-package seam reproduced unclosed-file `ResourceWarning`s i
 Review also corrected a nested-quote f-string that depended on Python 3.12 syntax despite the declared Python 3.11 floor. Native Python 3.11 reproduces the frozen file's `SyntaxError` and compiles all 59 updated source and packaged Python files successfully. Only source quoting changed; emitted text is identical. Newer Python's `ast.parse(feature_version=(3, 11))` did not reject that lexical construct. This syntax check is distinct from the full installed native-version test matrix.
 
 The physical callback review exposed a second input-integrity issue: schema-1 validation imported `convert.py` and created bytecode within the pinned model directory. A new public `model_validate` seam test first failed because a valid model's file inventory gained `__pycache__/convert.cpython-313.pyc`. The loader now executes the supplied source bytes without reading or writing bytecode caches; integrity checks retain their full inventory. The test passes. All 27 package/runtime tests, including synthetic register conversion and relocated executable replay, and 11 toolkit tests pass. Native Python 3.11 source compilation also passes. No hardware or model inference was used.
+
+## Advertised probe evidence argument
+
+An actual benchmark worker supplied the advertised `probe_json` argument to `probe_diff` and received a missing-`probe` error. The immutable run retains those failed calls and its independent probe verdict; this source repair does not change that execution environment or its evidence.
+
+Two public-seam TDD cycles reproduced and repaired the defect:
+
+| Seam | Observed red | Observed green |
+|---|---|---|
+| Toolkit catalogue and dispatch | `test_advertised_probe_diff_argument_compares_saved_replay_evidence` reproduced `TypeError: probe_diff() missing 1 required positional argument: 'probe'` with a schema-correct call against saved synthetic replay evidence. | The facade translates `probe_json` for `probe_diff`, as it already did for package emission. Comparison passes; legacy `probe` remains supported, conflicting aliases are rejected, and relative evidence paths are refused before run storage is created. |
+| Configurator worker gateway | `test_probe_json_cannot_read_outside_the_assigned_workspace` reached an assigned probe stage through scripted acquisition and interpretation. The external probe file was incorrectly read, returning an invalid-envelope diagnostic. | The shared path-argument set now includes `probe_json`. Absolute external and relative paths are rejected at the workspace boundary, with no `tool.started` event. The same guard applies to package emission. |
+
+Each named test was run alone for its red and green cycle with `PYTHONPATH=src:tests .venv/bin/python -W ignore::ResourceWarning -m unittest <module>.<class>.<test> -v`. The complete focused command below passes 20 tests on native macOS Python 3.13. It includes existing package-emission compatibility coverage. The new tests use synthetic replay and an external scripted agent, with no model inference or device access.
+
+```sh
+PYTHONPATH=src:tests .venv/bin/python -W ignore::ResourceWarning -m unittest test_toolkit test_service test_package -v
+```

@@ -27,7 +27,7 @@ _MODULE_TOOLS = {
     "ghidra": ("ghidra_run",),
 }
 _DISPATCH = {name: module for module, names in _MODULE_TOOLS.items() for name in names}
-_PATH_ARGUMENTS = {"run_dir", "source_path", "artifact", "model_dir", "probe", "package_dir", "image",
+_PATH_ARGUMENTS = {"run_dir", "source_path", "artifact", "model_dir", "probe", "probe_json", "package_dir", "image",
                    "workspace", "workspace_root", "ghidra_path", "java_home", "export_dir", "script_path",
                    "wiring", "transcript", "replies", "bus", "replay"}
 
@@ -71,7 +71,7 @@ def call_tool(name: str, arguments: dict) -> dict:
         if not isinstance(arguments, dict):
             raise ValueError("arguments must be an object")
         arguments = dict(arguments)
-        if name == "emit_package" and "probe_json" in arguments:
+        if name in ("emit_package", "probe_diff") and "probe_json" in arguments:
             if "probe" in arguments and arguments["probe"] != arguments["probe_json"]:
                 raise ValueError("probe and probe_json must name the same evidence")
             arguments["probe"] = arguments.pop("probe_json")

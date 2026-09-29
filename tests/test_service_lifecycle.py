@@ -3,6 +3,7 @@ import ctypes
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -40,6 +41,48 @@ def process_alive(pid):
 
 
 class ServiceLifecycleTests(unittest.TestCase):
+    def test_unpublished_daemon_exits_when_starting_client_disconnects(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            child = subprocess.run([sys.executable, '-m', 'generative_driver.daemon',
+                '--home', temporary, '--wait-for-startup'], input='',
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(child.returncode, 1, child)
+            self.assertIn('Startup cancelled before endpoint publication', child.stderr)
+            self.assertFalse((Path(temporary) / 'service.json').exists())
+            self.assertFalse((Path(temporary) / 'runs.sqlite3').exists())
+
+    def test_service_restarts_with_a_metadata_reader_open(self):
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            first = call('ping', {}, home)
+            self.assertTrue(call('shutdown', {}, home)['stopped'])
+            try:
+                # A normal Windows read handle permits writes but denies rename.
+                # Keep the same reader open across the next owner publication.
+                with (home / 'service.json').open(encoding='utf-8'):
+                    try:
+                        second = call('ping', {}, home)
+                    except Exception as exc:
+                        self.fail(f'{exc}\nFresh fixture daemon log:\n' +
+                                  (home / 'daemon.log').read_text(encoding='utf-8'))
+                    self.assertNotEqual(first['pid'], second['pid'])
+                    self.assertEqual(call('ping', {}, home, autostart=False)['pid'], second['pid'])
+            finally:
+                call('shutdown', {}, home)
+
+    def test_failed_startup_reports_the_child_exit_without_waiting_for_readiness(self):
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            (home / 'runs.sqlite3').write_bytes(b'invalid database fixture')
+            started = time.monotonic()
+            with self.assertRaisesRegex(RuntimeError, 'Configurator exited during startup'):
+                call('ping', {}, home)
+            self.assertLess(time.monotonic() - started, 5)
+            self.assertIn('DatabaseError: file is not a database',
+                          (home / 'daemon.log').read_text(encoding='utf-8'))
+
     def test_reconnect_only_client_never_creates_a_service(self):
         from generative_driver.client import call
         with tempfile.TemporaryDirectory() as temporary:
@@ -125,8 +168,13 @@ class ServiceLifecycleTests(unittest.TestCase):
             program = ('import os,sys,time; from pathlib import Path; '
                        'p=Path(sys.argv[1]); t=p.with_suffix(".tmp"); '
                        't.write_text(str(os.getpid())); t.replace(p); time.sleep(30)')
-            run = call('start', {'goal':'Scripted cancellation lifecycle',
-                'executor_config':{'command':[sys.executable, '-c', program, str(ready)]}}, home)
+            try:
+                run = call('start', {'goal':'Scripted cancellation lifecycle',
+                    'executor_config':{'command':[sys.executable, '-c', program, str(ready)]}}, home)
+            except Exception as exc:
+                log = home / 'daemon.log'
+                self.fail(f'{exc}\nFresh fixture daemon log:\n' +
+                          (log.read_text(encoding='utf-8') if log.exists() else '(not created)'))
             try:
                 deadline = time.monotonic() + 5
                 while not ready.exists() and time.monotonic() < deadline:

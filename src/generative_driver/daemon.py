@@ -4,6 +4,7 @@ import json
 from multiprocessing.connection import Listener
 from multiprocessing import AuthenticationError
 import os
+import sys
 from pathlib import Path
 import threading
 import time
@@ -16,12 +17,6 @@ def serve(home):
     endpoint = json.loads((home / 'service.json').read_text(encoding='utf-8'))
     controller = Controller(home)
     listener = Listener(endpoint['address'], family=endpoint['family'], authkey=bytes.fromhex(endpoint['authkey']))
-    endpoint['pid'] = os.getpid()
-    identity_file = home / 'service.json.tmp'
-    identity_file.write_text(json.dumps(endpoint), encoding='utf-8')
-    if os.name != 'nt':
-        identity_file.chmod(0o600)
-    identity_file.replace(home / 'service.json')
     ordinary_slots = threading.BoundedSemaphore(24)
     tool_slots = threading.BoundedSemaphore(8)
     requests = set()
@@ -100,7 +95,11 @@ def serve(home):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--home', required=True)
-    serve(parser.parse_args().home)
+    parser.add_argument('--wait-for-startup', action='store_true', help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if args.wait_for_startup and sys.stdin.buffer.read(1) != b'1':
+        parser.exit(1, 'Startup cancelled before endpoint publication\n')
+    serve(args.home)
 
 
 if __name__ == '__main__':

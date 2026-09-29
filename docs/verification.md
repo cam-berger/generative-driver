@@ -35,6 +35,12 @@ The repaired wheel passes all **119 installed-wheel tests** on native macOS arm6
 
 CI exercises scripted worker contracts and real local process/MCP connections; it makes no model-performance claim. The Windows jobs verify the native named-pipe, process ownership, cancellation and reconnection paths on Microsoft's Server 2025 runner. These release changes do not alter or rerun the frozen Codex baseline.
 
+### Startup publication follow-up
+
+The [documentation-only repeat](https://github.com/cam-berger/generative-driver/actions/runs/36505100608) exposed one intermittent startup timeout on Windows Python 3.13; its other three jobs passed. Its temporary daemon log was discarded, so the exact cause cannot be established. Review identified a concrete Windows hazard: ordinary readers can prevent replacing the connection metadata while the daemon starts. The fix publishes the endpoint and known child PID once, then releases the child through a private pipe; the daemon no longer replaces that file. Early child exit now reports promptly with the retained log location, and a parent disconnect before publication stops the child. Regression fixtures retain their own failure logs.
+
+The updated wheel passes **122 installed-wheel tests** on native macOS Python 3.11.15 and 3.13.12. Native CI is required to close this follow-up.
+
 ## Remaining qualification
 
 Windows 11 workstation UI setup and the native Windows Renode/Ghidra benchmark have not been run. Goose has contract coverage but no live Goose trial. No physical BME280 baseline has been performed. Password encryption protects groundtruth at rest; worker filesystem isolation is unverified.

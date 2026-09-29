@@ -1,4 +1,5 @@
 """Short-lived clients reconnect to one local owner over private native IPC."""
+from contextlib import suppress
 import hashlib
 import json
 from multiprocessing.connection import Client
@@ -117,17 +118,33 @@ def _start(home):
             Path(address).unlink(missing_ok=True)
         endpoint = {'family': family, 'address': address, 'authkey': secrets.token_hex(32)}
         path = home / 'service.json'
-        path.write_text(json.dumps(endpoint), encoding='utf-8')
-        if os.name != 'nt':
-            path.chmod(0o600)
         env = os.environ.copy()
         env['PYTHONPATH'] = str(Path(__file__).resolve().parents[1])
         options = {'creationflags': subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
         with (home / 'daemon.log').open('ab') as log:
-            process = subprocess.Popen([sys.executable, '-m', 'generative_driver.daemon', '--home', str(home)],
-                             cwd=home, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, **options)
+            process = subprocess.Popen([sys.executable, '-m', 'generative_driver.daemon', '--home', str(home), '--wait-for-startup'],
+                             cwd=home, env=env, stdin=subprocess.PIPE, stdout=log, stderr=log, **options)
         threading.Thread(target=process.wait, daemon=True).start()
+        try:
+            # Publish once, with the child PID already known. The child waits
+            # until this writer closes; it never renames a file readers hold.
+            endpoint['pid'] = process.pid
+            path.write_text(json.dumps(endpoint), encoding='utf-8')
+            if os.name != 'nt':
+                path.chmod(0o600)
+            process.stdin.write(b'1')
+            process.stdin.flush()
+        except BaseException:
+            with suppress(OSError):
+                process.stdin.close()  # EOF cancels an unpublished startup.
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+            raise
+        else:
+            process.stdin.close()
         while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise RuntimeError(f'Configurator exited during startup (exit {process.returncode}); inspect ' + str(home / 'daemon.log'))
             try:
                 if _request(home, 'ping', {}).get('ok'):
                     return

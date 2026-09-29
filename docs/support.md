@@ -1,10 +1,10 @@
 # Supported paths and verification
 
-The core targets native macOS and Windows 11 or newer. The development machine is macOS on Apple silicon. Windows validation is defined in CI; a successful local Mac run does not establish a Windows pass.
+The core targets native macOS and Windows 11 or newer. The development machine is macOS on Apple silicon. [Native CI](https://github.com/cam-berger/generative-driver/actions/runs/36504830025) passes 119 installed-wheel tests and installation replay on macOS and Windows Server 2025 with Python 3.11 and 3.13. Windows 11 workstation UI setup and the native Windows Renode/Ghidra benchmark remain unmeasured.
 
 | Component | Implemented behavior | Dependency / limit |
 |---|---|---|
-| Configurator | Detached owner, durable run IDs and checked stage handoffs | Python; native socket or Windows named pipe |
+| Configurator | Detached owner, durable run IDs and checked stage handoffs | Python; native socket or Windows named pipe; Windows MCP requires an independently started owner |
 | Codex integration | MCP, plugin, configured command-line workers | Separately installed and authenticated Codex |
 | Goose integration | MCP, recipe, configured command-line workers | Goose live execution requires its installed version; contract test alone is not a live pass |
 | Firmware input | Pinned local import and sealed neutral interpretation workspace | Firmware ownership and lawful acquisition are operator concerns |

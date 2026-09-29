@@ -24,8 +24,17 @@ The [first CI run](https://github.com/cam-berger/generative-driver/actions/runs/
 
 The repair confirms daemon exit, drains accepted requests, settles idle workers before resume, preserves startup failures as host blockers, and requires Windows MCP clients to connect to an independently started owner. Stage gateways cannot restart a missing owner. Generated Codex/Goose settings retain the selected state directory, and an MCP benchmark cannot select a different directory from its status/cancel tools. The public regression tests were observed failing before their fixes; the fixture cleanup repair follows its native CI failure.
 
-The repaired wheel passes all **119 installed-wheel tests** on native macOS arm64 with Python 3.11.15 and 3.13.12, from outside the checkout. Native Windows CI is the next platform gate. These release changes do not alter or rerun the frozen Codex baseline.
+The repaired wheel passes all **119 installed-wheel tests** on native macOS arm64 with Python 3.11.15 and 3.13.12, from outside the checkout. [Native CI for source `9744292`](https://github.com/cam-berger/generative-driver/actions/runs/36504830025) also passed every test and the separate installation benchmark in all four jobs:
+
+| Native CI host | Python | Installed-wheel tests | Installation benchmark |
+|---|---|---|---|
+| macOS | 3.11.9 | 119 passed | passed |
+| macOS | 3.13.15 | 119 passed | passed |
+| Windows Server 2025 | 3.11.9 | 119 passed | passed |
+| Windows Server 2025 | 3.13.15 | 119 passed | passed |
+
+CI exercises scripted worker contracts and real local process/MCP connections; it makes no model-performance claim. The Windows jobs verify the native named-pipe, process ownership, cancellation and reconnection paths on Microsoft's Server 2025 runner. These release changes do not alter or rerun the frozen Codex baseline.
 
 ## Remaining qualification
 
-Goose has contract coverage but no live Goose trial. No physical BME280 baseline has been performed. Password encryption protects groundtruth at rest; worker filesystem isolation is unverified.
+Windows 11 workstation UI setup and the native Windows Renode/Ghidra benchmark have not been run. Goose has contract coverage but no live Goose trial. No physical BME280 baseline has been performed. Password encryption protects groundtruth at rest; worker filesystem isolation is unverified.

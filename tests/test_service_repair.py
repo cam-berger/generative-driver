@@ -36,14 +36,21 @@ else:
             try:
                 run=call('start',{'goal':'Scripted revision contract, not a benchmark result','case':'tq9',
                     'executor_config':{'command':[sys.executable,str(script)]}},home)
-                until=time.monotonic()+10
                 assignments=[]
-                while time.monotonic()<until:
-                    assignments=[e['data'] for e in call('events',run,home)['events'] if e['kind']=='stage.assigned']
-                    if len(assignments)>=3: break
-                    state=call('status',run,home)
-                    if state['status'] in ('failed','blocked'): break
-                    time.sleep(.03)
+                # Wait for each durable transition, not a total runtime guess
+                # spanning several external workers and their case checks.
+                for count,stage in enumerate(('acquire','interpret','interpret'),1):
+                    until=time.monotonic()+10
+                    while True:
+                        events=call('events',run,home)['events']
+                        assignments=[e['data'] for e in events if e['kind']=='stage.assigned']
+                        if len(assignments)>=count: break
+                        state=call('status',run,home)
+                        if state['status'] in ('failed','blocked','cancelled','completed') or time.monotonic()>=until:
+                            self.fail(f'Waiting for assignment {count} ({stage}); '
+                                      f'last event: {events[-1] if events else None}; '
+                                      f'result: {call("result",run,home)}')
+                        time.sleep(.03)
                 self.assertEqual([a['stage'] for a in assignments[:3]],['acquire','interpret','interpret'],call('result',run,home))
                 old=call('tools',{**run,'assignment_id':assignments[1]['id']},home)
                 self.assertFalse(old['ok'])

@@ -168,10 +168,25 @@ class ConfiguratorTests(unittest.TestCase):
             try:
                 run = controller.call('start', {'goal':'Scripted cancellation contract',
                     'executor_config':{'command':[sys.executable,'-c','import time; time.sleep(20)']}})
-                time.sleep(.1)
-                first = [e['data']['id'] for e in controller.call('events',run)['events'] if e['kind']=='stage.assigned'][0]
+                def assigned_ids(count):
+                    until = time.monotonic() + 3
+                    while time.monotonic() < until:
+                        ids = [e['data']['id'] for e in controller.call('events',run)['events']
+                               if e['kind']=='stage.assigned']
+                        if len(ids) >= count:
+                            self.assertEqual(len(ids), count)
+                            return ids
+                        state = controller.call('status',run)
+                        self.assertIn(state['status'], ('queued','running'), state)
+                        time.sleep(.02)
+                    self.fail(f'Expected {count} assignments; last result: {controller.call("result",run)}')
+                first = assigned_ids(1)[0]
                 self.assertEqual(controller.call('cancel',run)['status'],'cancelled')
+                self.assertEqual(controller.call('status',run)['status'],'cancelled')
+                self.assertEqual([e['data']['id'] for e in controller.call('events',run)['events']
+                                  if e['kind']=='stage.assigned'], [first])
                 until = time.monotonic() + 3
+                resumed = None
                 while time.monotonic() < until:
                     try:
                         resumed = controller.call('resume',run)
@@ -179,13 +194,9 @@ class ConfiguratorTests(unittest.TestCase):
                     except ValueError as exc:
                         self.assertIn('stopping', str(exc))
                         time.sleep(.02)
+                self.assertIsNotNone(resumed, controller.call('result',run))
                 self.assertIn(resumed['status'], ('queued','running'))
-                until = time.monotonic() + 3
-                while time.monotonic() < until:
-                    ids = [e['data']['id'] for e in controller.call('events',run)['events'] if e['kind']=='stage.assigned']
-                    if len(ids) == 2:
-                        break
-                    time.sleep(.02)
+                ids = assigned_ids(2)
                 self.assertNotEqual(first,ids[-1])
                 with self.assertRaisesRegex(ValueError,'inactive'):
                     controller.call('tools',{**run,'assignment_id':first})

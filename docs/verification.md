@@ -41,6 +41,10 @@ The [documentation-only repeat](https://github.com/cam-berger/generative-driver/
 
 The updated wheel passes **122 installed-wheel tests** on native macOS Python 3.11.15 and 3.13.12. [Native CI for source `4c95b15`](https://github.com/cam-berger/generative-driver/actions/runs/36506077842) passed all 122 tests and installation replay in all four macOS/Windows Python 3.11/3.13 jobs, including the held-reader restart on both Windows versions. This closes the follow-up; the baseline execution and measurements remain unchanged.
 
+### Python 3.13 test synchronization
+
+The [CI run for `bfce07f`](https://github.com/cam-berger/generative-driver/actions/runs/36508764721) installed the package successfully but exposed two asynchronous test assumptions in its Python 3.13 jobs. Interpreter and dependency versions matched the earlier passing jobs. The cancellation test read an assignment after a fixed 0.1-second sleep; the repair test shared ten seconds across several healthy stage transitions. Tests now wait for the expected durable assignments, retain bounded deadlines and fail immediately on terminal errors. Both failures were reproduced with deliberately delayed scheduling/workers before checking the corrected waits. See the [test synchronization record](implementation/configurator-tdd.md#test-synchronization). Production package behavior and the frozen benchmark remain unchanged.
+
 ## Remaining qualification
 
 Windows 11 workstation UI setup and the native Windows Renode/Ghidra benchmark have not been run. Goose has contract coverage but no live Goose trial. No physical BME280 baseline has been performed. Password encryption protects groundtruth at rest; worker filesystem isolation is unverified.

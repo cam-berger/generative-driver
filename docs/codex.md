@@ -2,6 +2,8 @@
 
 Install the Python package and [configure a worker runtime](setup.md). The developer-facing Codex and the worker runtime may use different models; record the worker model explicitly.
 
+On Windows, [start the independent configurator](setup.md#start-the-configurator) from a standalone PowerShell window before connecting the plugin or MCP server. A terminal inside Codex is still owned by Codex's process lifetime.
+
 ## Generate the plugin
 
 From your installation environment:
@@ -10,7 +12,7 @@ From your installation environment:
 python -m generative_driver setup --host codex --output ./codex-install
 ```
 
-This creates `codex-install/plugins/generative-driver` and a local marketplace, with an MCP connection pinned to that Python executable and the workflow skill. Keep the environment at its existing path, or regenerate into a new directory after moving it.
+This creates `codex-install/plugins/generative-driver` and a local marketplace, with an MCP connection pinned to that Python executable and state directory, plus the workflow skill. Use a leading `--home DIRECTORY` to select the same custom directory as your configurator. Keep the environment at its existing path, or regenerate into a new directory after moving it.
 
 Register the generated marketplace:
 
@@ -28,7 +30,7 @@ For Codex CLI or its code extension, register the installation directly:
 codex mcp add generative-driver -- /absolute/path/to/python -m generative_driver.mcp
 ```
 
-Use the Windows Python executable path on Windows. In the app, an equivalent local MCP server uses that executable as its command and `-m`, `generative_driver.mcp` as separate arguments. See [official MCP setup](https://learn.chatgpt.com/docs/extend/mcp?surface=cli). Copy `codex-install/plugins/generative-driver/skills/generative-driver` into your project's `.agents/skills/` if using MCP without the plugin.
+Use the Windows Python executable path on Windows. In the app, an equivalent local MCP server uses that executable as its command and `-m`, `generative_driver.mcp` as separate arguments. For a custom state directory, set `GENERATIVE_DRIVER_HOME` in that server's environment; the generated plugin's `.mcp.json` shows the complete settings. See [official MCP setup](https://learn.chatgpt.com/docs/extend/mcp?surface=cli). Copy `codex-install/plugins/generative-driver/skills/generative-driver` into your project's `.agents/skills/` if using MCP without the plugin.
 
 ## First conversation
 

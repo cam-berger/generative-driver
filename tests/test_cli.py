@@ -1,5 +1,6 @@
 """Public installed CLI behavior from a caller-owned working directory."""
 import json
+import asyncio
 import os
 import subprocess
 import sys
@@ -10,6 +11,70 @@ from pathlib import Path
 
 
 class CliTests(unittest.TestCase):
+    def test_setup_connections_keep_the_explicit_state_home(self):
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        with tempfile.TemporaryDirectory(prefix="setup state selection ") as temp:
+            root = Path(temp).resolve()
+            selected = root / "selected state"
+            inherited = root / "different inherited state"
+            async def doctor(connection, command_key, environment_key):
+                params = StdioServerParameters(command=connection[command_key], args=connection['args'],
+                    cwd=str(root), env={'GENERATIVE_DRIVER_HOME': str(inherited),
+                                       **connection.get(environment_key, {})})
+                async with stdio_client(params) as (reader, writer):
+                    async with ClientSession(reader, writer) as session:
+                        await session.initialize()
+                        reply = await session.call_tool('driver_doctor', {})
+                        self.assertFalse(reply.is_error, reply)
+                        return json.loads(reply.content[0].text)
+            for host in ('codex', 'goose'):
+                output = root / host
+                generated = subprocess.run([sys.executable, '-m', 'generative_driver', '--home',
+                    'selected state', 'setup', '--host', host, '--output', str(output)],
+                    cwd=root, env={**os.environ, 'GENERATIVE_DRIVER_HOME': str(inherited)},
+                    capture_output=True, text=True, timeout=15)
+                self.assertEqual(generated.returncode, 0, generated.stderr)
+                if host == 'codex':
+                    connection = json.loads((output / 'plugins/generative-driver/.mcp.json').read_text(
+                        encoding='utf-8'))['mcpServers']['generative-driver']
+                    command_key, environment_key = 'command', 'env'
+                else:
+                    connection = json.loads((output / 'generative-driver.json').read_text(
+                        encoding='utf-8'))['extensions'][0]
+                    command_key, environment_key = 'cmd', 'envs'
+                report = asyncio.run(doctor(connection, command_key, environment_key))
+                self.assertEqual(report['home'], str(selected))
+                self.assertEqual(connection[environment_key], {'GENERATIVE_DRIVER_HOME': str(selected)})
+
+    def test_service_commands_start_inspect_and_stop_an_independent_owner(self):
+        with tempfile.TemporaryDirectory(prefix="service owner ") as temp:
+            home = Path(temp) / "state"
+            def cli(action):
+                return subprocess.run([sys.executable, "-m", "generative_driver", "--home", str(home),
+                    "service", action], cwd=temp, capture_output=True, text=True, timeout=30)
+            absent = cli("status")
+            self.assertEqual(absent.returncode, 1, absent.stderr)
+            self.assertFalse(json.loads(absent.stdout)["ok"])
+            self.assertFalse((home / "service.json").exists())
+            try:
+                started = cli("start")
+                self.assertEqual(started.returncode, 0, started.stderr)
+                owner = json.loads(started.stdout)
+                self.assertTrue(owner["ok"])
+                self.assertGreater(owner["pid"], 0)
+                inspected = cli("status")
+                self.assertEqual(inspected.returncode, 0, inspected.stderr)
+                self.assertEqual(json.loads(inspected.stdout)["pid"], owner["pid"])
+                stopped = cli("stop")
+                self.assertEqual(stopped.returncode, 0, stopped.stderr)
+                self.assertTrue(json.loads(stopped.stdout)["stopped"])
+                absent = cli("status")
+                self.assertEqual(absent.returncode, 1, absent.stderr)
+                self.assertFalse(json.loads(absent.stdout)["ok"])
+            finally:
+                cli("stop")
+
     def test_cli_budget_extension_requires_a_reason_and_preserves_run_history(self):
         from generative_driver.client import call
         with tempfile.TemporaryDirectory(prefix="CLI budget adjustment ") as temp:
@@ -124,6 +189,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(report["verdict"], "passed")
 
     def test_setup_generates_host_assets_with_the_installed_interpreter(self):
+        from generative_driver.setup import home_path
         with tempfile.TemporaryDirectory(prefix="plugin output ") as temp:
             for host in ("codex", "goose"):
                 dest = Path(temp) / host
@@ -139,12 +205,14 @@ class CliTests(unittest.TestCase):
                     connection = config["mcpServers"]["generative-driver"]
                     self.assertEqual(connection["command"], sys.executable)
                     self.assertEqual(connection["args"], ["-m", "generative_driver.mcp"])
+                    self.assertEqual(connection["env"]["GENERATIVE_DRIVER_HOME"], str(home_path()))
                     self.assertTrue((plugin / "skills/generative-driver/SKILL.md").exists())
                 else:
                     recipe = json.loads((dest / "generative-driver.json").read_text())
                     connection = recipe["extensions"][0]
                     self.assertEqual(connection["cmd"], sys.executable)
                     self.assertEqual(connection["args"], ["-m", "generative_driver.mcp"])
+                    self.assertEqual(connection["envs"]["GENERATIVE_DRIVER_HOME"], str(home_path()))
 
     def test_configure_preserves_distinct_runtime_commands_and_arguments(self):
         with tempfile.TemporaryDirectory(prefix="driver config ") as temp:

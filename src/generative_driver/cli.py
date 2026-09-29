@@ -32,6 +32,8 @@ def main(argv=None):
     setup = commands.add_parser("setup", help="Generate Codex plugin or Goose recipe using this installation")
     setup.add_argument("--host", choices=["codex", "goose"], required=True)
     setup.add_argument("--output", required=True)
+    service = commands.add_parser("service", help="Manage the independent background configurator")
+    service.add_argument("action", choices=["start", "status", "stop"])
     commands.add_parser("benchmark", help="Run, score and compare benchmark profiles")
     run = commands.add_parser("run", help="Start a durable run from a JSON specification")
     run.add_argument("--spec", required=True)
@@ -68,7 +70,7 @@ def main(argv=None):
                                    args.model, args.provider, args.home, args.reasoning_effort), indent=2))
         return 0
     if args.command == "setup":
-        print(json.dumps(integration_assets(args.host, args.output), indent=2))
+        print(json.dumps(integration_assets(args.host, args.output, home=args.home), indent=2))
         return 0
     if args.command == "report":
         from .reporting import report_run
@@ -83,7 +85,10 @@ def main(argv=None):
         print(json.dumps(result, indent=2, default=str))
         return int(result.get("_exit", 0)) or int(result.get("ok") is False)
     from .client import call
-    if args.command == "run":
+    if args.command == "service":
+        method = "shutdown" if args.action == "stop" else "ping"
+        result = call(method, home=args.home, autostart=args.action == "start")
+    elif args.command == "run":
         result = call("start", json.loads(Path(args.spec).read_text(encoding="utf-8")), home=args.home)
     else:
         params = {"run_id": args.run_id}

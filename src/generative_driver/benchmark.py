@@ -148,7 +148,7 @@ def case_root():
     return Path(__file__).resolve().parent / 'resources' / 'bench'
 
 
-def run(case='setup-smoke', output_dir=None, executor=None, options=None):
+def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, autostart=True):
     options = dict(options or {})
     approval = options.pop('scoped_tool_approval', None)
     if approval is not None and (case,approval) not in (('tq9','emulator'),('bme280','bound-device')):
@@ -172,7 +172,7 @@ def run(case='setup-smoke', output_dir=None, executor=None, options=None):
             args['request_id'] = request_id
         if output_dir:
             args['output_dir'] = str(Path(output_dir).resolve())
-        return call('start', args, home=home)
+        return call('start', args, home=home, autostart=autostart)
     if case != 'setup-smoke':
         raise ValueError('Unknown benchmark case: ' + str(case))
     from .toolkit import call_tool

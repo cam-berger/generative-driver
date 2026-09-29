@@ -10,6 +10,7 @@ import socket
 import socketserver
 import threading
 import copy
+from contextlib import ExitStack
 
 
 class BenchmarkPackageGateTests(unittest.TestCase):
@@ -34,10 +35,12 @@ class BenchmarkPackageGateTests(unittest.TestCase):
                 if not self.data: raise socket.timeout()
                 data, self.data = self.data[:size], self.data[size:]
                 return data
-        with tempfile.TemporaryDirectory() as temporary, socketserver.ThreadingTCPServer(('127.0.0.1', 0), DeviceFixture) as server:
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as cleanup:
+            server = cleanup.enter_context(socketserver.ThreadingTCPServer(('127.0.0.1', 0), DeviceFixture))
             server.daemon_threads = True
             thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
-            self.addCleanup(server.shutdown)
+            cleanup.callback(thread.join)
+            cleanup.callback(server.shutdown)
             root = Path(temporary).resolve()
             run('setup-smoke', root/'smoke')
             model_dir = root/'smoke/model'

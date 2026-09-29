@@ -15,6 +15,21 @@ On Windows supply the installed `.exe` path. A runtime command is stored as an a
 
 Run state defaults to the native user data directory: `~/Library/Application Support/GenerativeDriver` on macOS and `%LOCALAPPDATA%\GenerativeDriver` on Windows. Set `GENERATIVE_DRIVER_HOME` or the CLI's leading `--home` option for a separate installation. Configure and connect both interfaces to the same directory to share runs.
 
+## Start the configurator
+
+On Windows, open a standalone PowerShell window separately from Goose or Codex and start the owner before connecting either interface:
+
+```powershell
+python -m generative_driver service start
+python -m generative_driver service status
+```
+
+Use your installation environment's Python executable. `start` returns the background owner's process ID; `status` inspects it without starting another process. If you selected a custom state directory, use the same leading `--home DIRECTORY` for `configure`, `service start` and `setup`. Generated plugins and recipes pin that directory in their MCP environment. For a manually registered MCP connection, set `GENERATIVE_DRIVER_HOME` in its server environment to that same directory.
+
+Windows MCP hosts can terminate their entire child-process tree when a session closes. Windows MCP connections therefore require an existing independent owner and return setup instructions if it is absent. They do not create a background owner inside that process tree. macOS clients can start the owner automatically; these explicit commands work there too.
+
+Start the service again after a reboot or sign-out. After work finishes, stop it explicitly with `python -m generative_driver service stop`. Closing a Goose/Codex conversation does not send that shutdown command.
+
 ## Add optional hardware tools
 
 ```sh

@@ -6,9 +6,9 @@ On macOS arm64 with Python 3.13.12, the initial wheel passed all 80 tests from o
 
 The independent native TQ9 reference calibration passed probe, emission, fresh package reuse, seeded identity refusal and revised-package reuse. A deliberately incorrect decoder was rejected. Selected reference evidence is inside the password-encrypted groundtruth bundle.
 
-## Release verification — 2026-09-28
+## Baseline publication snapshot — 2026-09-28
 
-The release package passes all **108 installed-wheel tests** on native macOS arm64 with Python 3.11.15 and 3.13.12, from outside the checkout. Plugin and skill validators pass; setup links and distribution archives pass their checks. The physical evaluator callback is implemented and tested with controlled fixtures; no physical sensor has been operated.
+The baseline publication package passed all **108 installed-wheel tests** on native macOS arm64 with Python 3.11.15 and 3.13.12, from outside the checkout. Plugin and skill validators passed; setup links and distribution archives passed their checks. The physical evaluator callback is implemented and tested with controlled fixtures; no physical sensor has been operated.
 
 The [actual Codex development baseline](../bench/baselines/codex-tq9-2026-09-28.md) completed and passed all seven final gates, including independent emulated observations, fresh package reuse, seeded identity refusal, repair/requalification and second fresh reuse. Its selected report also passed offline regrading. One maintenance interpretation returned raw temperature `2450`; the evaluator rejected it, and one of two allowed model repairs restored correct decoding. All failed attempts remain visible.
 
@@ -18,6 +18,14 @@ A later successful probe exposed seven comparison-tool failures caused by an arg
 
 The selected publication includes source/wheel/skills hashes, per-attempt runtime identity, the revision sequence, independent observations, intervention history and missing-usage coverage. Raw candidate transcripts, private reference values and internal file inventories are excluded. One development run is not a performance study.
 
+## Native portability repair — 2026-09-29
+
+The [first CI run](https://github.com/cam-berger/generative-driver/actions/runs/36502950912) passed both macOS jobs and failed both Windows jobs. Native Windows exposed premature shutdown acknowledgments and file locks, a cancel/resume race, missing-executable classification through the Windows worker wrapper, and an MCP child-process lifetime constraint. A TCP test fixture also needed to stop its serving thread before closing its socket.
+
+The repair confirms daemon exit, drains accepted requests, settles idle workers before resume, preserves startup failures as host blockers, and requires Windows MCP clients to connect to an independently started owner. Stage gateways cannot restart a missing owner. Generated Codex/Goose settings retain the selected state directory, and an MCP benchmark cannot select a different directory from its status/cancel tools. The public regression tests were observed failing before their fixes; the fixture cleanup repair follows its native CI failure.
+
+The repaired wheel passes all **119 installed-wheel tests** on native macOS arm64 with Python 3.11.15 and 3.13.12, from outside the checkout. Native Windows CI is the next platform gate. These release changes do not alter or rerun the frozen Codex baseline.
+
 ## Remaining qualification
 
-Windows CI is configured and will be checked after the initial push. Goose has contract coverage but no live Goose trial. No physical BME280 baseline has been performed. Password encryption protects groundtruth at rest; worker filesystem isolation is unverified.
+Goose has contract coverage but no live Goose trial. No physical BME280 baseline has been performed. Password encryption protects groundtruth at rest; worker filesystem isolation is unverified.

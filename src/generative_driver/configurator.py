@@ -230,8 +230,10 @@ class Controller:
                 with self._active_operation(run_id):
                     return self._tool(method, params, self._row(run_id))
         if method == 'status':
+            with self._lock:
+                stopping = row['status'] in TERMINAL and (run_id in self._workers or run_id in self._inflight)
             return {'ok': True, **{k: row[k] for k in ('status', 'stage', 'reason', 'created', 'updated')},
-                    'run_id': run_id, 'uncertain_effect': bool(row['uncertain'])}
+                    'run_id': run_id, 'uncertain_effect': bool(row['uncertain']), 'stopping': stopping}
         if method == 'events':
             with self._db() as db:
                 events = db.execute('SELECT * FROM events WHERE run_id=? AND seq>? ORDER BY seq LIMIT 500',
@@ -260,9 +262,15 @@ class Controller:
             with self._lock:
                 with self._db() as db:
                     db.execute('UPDATE runs SET cancelled=1 WHERE id=?', (run_id,))
-                if run_id in self._workers:
-                    self._workers[run_id][0].set()
+                worker = self._workers.get(run_id)
+                if worker:
+                    worker[0].set()
+                wait_for_worker = worker is not None and run_id not in self._inflight
                 self._state(run_id, 'cancelled', 'Cancellation requested; retain outstanding-effect uncertainty')
+            # Worker cleanup acquires _lock. Never join while holding it, and
+            # keep cancellation responsive when a device/tool call is in flight.
+            if wait_for_worker:
+                worker[1].join(timeout=10)
             return self.call('status', {'run_id': run_id})
         if method == 'respond':
             observation = params.get('observation')
@@ -743,6 +751,8 @@ class Controller:
 
     def _tool(self, method, params, run, *, evaluator_workspace=None):
         from .toolkit import list_tools, call_tool
+        if self._closing:
+            raise ValueError('Configurator is stopping; no new tools may be dispatched')
         with self._db() as db:
             assigned = db.execute('SELECT * FROM assignments WHERE id=? AND run_id=?',
                                   (params.get('assignment_id'), run['id'])).fetchone()
@@ -843,9 +853,13 @@ class Controller:
                 'actor':'evaluator' if evaluator_workspace is not None else 'worker'}, db)
         return result
 
-    def close(self):
+    def close(self, timeout=10):
         with self._lock:
             self._closing = True
-        for cancel, thread in list(self._workers.values()):
+            workers = list(self._workers.values())
+        deadline = time.monotonic() + timeout
+        for cancel, thread in workers:
             cancel.set()
-            thread.join(timeout=10)
+        for cancel, thread in workers:
+            thread.join(max(0, deadline - time.monotonic()))
+        return not any(thread.is_alive() for _, thread in workers)

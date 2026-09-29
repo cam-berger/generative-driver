@@ -17,13 +17,13 @@ def main():
     identity = {'run_id':args.run, 'assignment_id':args.assignment}
 
     async def tools(context, params):
-        result = await asyncio.to_thread(call, 'tools', identity, args.home)
+        result = await asyncio.to_thread(call, 'tools', identity, args.home, autostart=False)
         if not result.get('ok'):
             raise ValueError(result.get('reason', 'Worker assignment unavailable'))
         return ListToolsResult(tools=[Tool(**item) for item in result['tools']])
 
     async def invoke(context, params):
-        result = await asyncio.to_thread(call, 'tool', {**identity,'name':params.name,'arguments':params.arguments or {}}, args.home)
+        result = await asyncio.to_thread(call, 'tool', {**identity,'name':params.name,'arguments':params.arguments or {}}, args.home, autostart=False)
         return CallToolResult(content=[TextContent(type='text',text=json.dumps(result))])
 
     server = Server('generative-driver-stage', on_list_tools=tools, on_call_tool=invoke)

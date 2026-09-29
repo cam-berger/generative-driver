@@ -7,6 +7,7 @@ This file is invoked only on Windows and has no imports into other platforms.
 import ctypes
 from ctypes import wintypes
 import os
+import json
 import subprocess
 import sys
 
@@ -47,4 +48,10 @@ def main():
 
 
 if __name__=='__main__':
-    main()
+    try:
+        main()
+    except OSError as exc:
+        # Popen in the parent started this wrapper, not the configured runtime.
+        # Preserve launch failures as host blockers across that process boundary.
+        print(json.dumps({'type':'generative_driver.runtime_start_failed','error':str(exc)}), flush=True)
+        raise SystemExit(1)

@@ -31,7 +31,10 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 .\.venv\Scripts\python.exe -m generative_driver doctor
 .\.venv\Scripts\python.exe -m generative_driver benchmark run --case setup-smoke --output "$env:TEMP\generative-driver-smoke"
+.\.venv\Scripts\python.exe -m generative_driver service start
 ```
+
+Run the Windows commands in a standalone PowerShell window opened separately from Goose or Codex. Windows MCP clients connect to that independently started configurator so closing the interface leaves its run alive. See [service management](docs/setup.md#start-the-configurator).
 
 Choose a new output directory on each run. The smoke check validates a model, replays recorded responses, emits a package, moves it, and exercises its standalone interface. It needs no agent account, hardware or container. Its report is explicitly labelled `scripted-replay` and does not count as model performance.
 

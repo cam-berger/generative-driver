@@ -8,6 +8,30 @@ import time
 
 
 class AgentAdapterTests(unittest.TestCase):
+    def test_launcher_failure_is_a_blocker_while_runtime_exit_remains_a_failure(self):
+        from generative_driver.agents import StageRequest, execute
+        with tempfile.TemporaryDirectory(prefix='runtime launch contract ') as directory:
+            root = Path(directory)
+            launcher = root / 'launcher.py'
+            launcher.write_text('''import json,sys
+sys.stdin.read()
+print(json.dumps({'type':'generative_driver.runtime_start_failed',
+                  'error':'Configured executable is unavailable'}), flush=True)
+sys.exit(1)
+''', encoding='utf-8')
+            blocked = execute(StageRequest(stage='acquire', workspace=root/'blocked', prompt='fixture'),
+                              {'runtime':'codex', 'command':[sys.executable,str(launcher)]})
+            self.assertEqual(blocked['status'], 'blocked', blocked)
+            self.assertIn('Cannot start configured runtime', blocked['reason'])
+            self.assertIn('unavailable', blocked['reason'])
+            self.assertIsNone(blocked['usage'])
+            self.assertIsNone(blocked['report'])
+            failed = execute(StageRequest(stage='acquire', workspace=root/'failed', prompt='fixture'),
+                             {'runtime':'codex', 'command':[sys.executable,'-c','raise SystemExit(7)']})
+            self.assertEqual(failed['status'], 'failed', failed)
+            self.assertEqual(failed['exit_code'], 7)
+            self.assertIn('Configured runtime exited', failed['reason'])
+
     def test_codex_scoped_approval_is_explicit_and_only_for_assigned_tools(self):
         from generative_driver.agents import StageRequest, execute
         with tempfile.TemporaryDirectory() as root:

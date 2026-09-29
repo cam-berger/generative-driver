@@ -6,6 +6,7 @@ from multiprocessing import AuthenticationError
 import os
 from pathlib import Path
 import threading
+import time
 
 from .configurator import Controller
 
@@ -15,8 +16,16 @@ def serve(home):
     endpoint = json.loads((home / 'service.json').read_text(encoding='utf-8'))
     controller = Controller(home)
     listener = Listener(endpoint['address'], family=endpoint['family'], authkey=bytes.fromhex(endpoint['authkey']))
+    endpoint['pid'] = os.getpid()
+    identity_file = home / 'service.json.tmp'
+    identity_file.write_text(json.dumps(endpoint), encoding='utf-8')
+    if os.name != 'nt':
+        identity_file.chmod(0o600)
+    identity_file.replace(home / 'service.json')
     ordinary_slots = threading.BoundedSemaphore(24)
     tool_slots = threading.BoundedSemaphore(8)
+    requests = set()
+    requests_lock = threading.Lock()
     if os.name != 'nt':
         Path(endpoint['address']).chmod(0o600)
     def dispatch(conn, method, params, slot):
@@ -32,6 +41,8 @@ def serve(home):
                     pass
         finally:
             slot.release()
+            with requests_lock:
+                requests.discard(threading.current_thread())
     try:
         while True:
             try:
@@ -48,13 +59,24 @@ def serve(home):
                     if method == 'ping':
                         result = {'ok': True, 'pid': os.getpid()}
                     elif method == 'shutdown':
-                        controller.close()
-                        result, shutdown = {'ok': True, 'stopped': True}, True
+                        deadline = time.monotonic() + 20
+                        settled = controller.close(timeout=10)
+                        with requests_lock:
+                            pending = list(requests)
+                        for thread in pending:
+                            thread.join(max(0, deadline - time.monotonic()))
+                        shutdown = settled and not any(thread.is_alive() for thread in pending)
+                        result = {'ok': shutdown, 'stopped': shutdown, 'pid': os.getpid()}
+                        if not shutdown:
+                            result['reason'] = 'Shutdown is pending: a worker or accepted operation is still stopping; retry shutdown after it finishes'
                     else:
                         slot = tool_slots if method == 'tool' else ordinary_slots
                         if not slot.acquire(blocking=False):
                             raise RuntimeError('Configurator request capacity reached; retry later')
-                        threading.Thread(target=dispatch,args=(conn,method,params,slot),daemon=True).start()
+                        thread = threading.Thread(target=dispatch,args=(conn,method,params,slot),daemon=True)
+                        with requests_lock:
+                            requests.add(thread)
+                        thread.start()
                         conn = None
                         continue
                 except Exception as exc:

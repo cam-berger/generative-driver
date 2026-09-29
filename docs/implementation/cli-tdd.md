@@ -32,3 +32,11 @@ Release tests run again after integration against a freshly built, separately in
 4. Carry the configured run budget into the report: red (missing top-level controller metadata mapping), green preserving the public result metadata.
 5. Preserve independently observed values for offline scoring: red (observations missing), green with a whitelist of scoring evidence that excludes evaluator credentials and private contracts.
 6. Distinguish managed worker and evaluator tool time: red (actor breakdown absent), green preserving separate measured durations and the directly measured overall wall time.
+
+## Explicit service ownership
+
+The native Windows MCP lifecycle requires an independently started configurator. A public CLI regression first failed because `service` was not a recognized command. Added `service start`, `service status` and `service stop`: the test now starts an owner in an external process, reconnects to the same PID, waits for shutdown, and verifies that status never starts an absent owner. The installed-wheel and native CI gates verify this alongside the workflow commands.
+
+## Generated connection state directory
+
+The public setup regression first showed that `--home "selected state" setup` produced a connection whose actual stdio MCP doctor reported a different inherited state directory. Setup now resolves the selected home and writes `GENERATIVE_DRIVER_HOME` into Codex's connection `env` and Goose's stdio extension `envs`. Both generated connections are launched through the real MCP transport, and their doctor results match the selected directory. The default setup test also verifies that the current native/default home is retained. All 12 CLI tests pass on native macOS Python 3.13. Goose's `envs` string map is verified against its [extension schema and environment resolver](https://github.com/aaif-goose/goose/blob/main/crates/goose/src/agents/extension.rs); this test does not claim a Goose Desktop UI run.

@@ -223,6 +223,7 @@ def execute(request, config, cancel_event=None, on_event=None):
     text_parts = []
     done = set()
     outcome = None
+    launch_error = None
     size = 0
     with transcript.open('w', encoding='utf-8') as transcript_file, stderr_path.open('w', encoding='utf-8') as stderr_file:
         while len(done) < 2 or proc.poll() is None:
@@ -256,6 +257,8 @@ def execute(request, config, cancel_event=None, on_event=None):
             transcript_file.flush()
             if on_event:
                 on_event(event)
+            if event.get('type') == 'generative_driver.runtime_start_failed' and isinstance(event.get('error'), str):
+                launch_error = event['error']
             if event.get('type') == 'turn.completed' and isinstance(event.get('usage'), dict):
                 usage = event['usage']
                 result['usage'] = {key: usage.get(key) for key in ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens')}
@@ -287,6 +290,8 @@ def execute(request, config, cancel_event=None, on_event=None):
     proc.stderr.close()
     if outcome:
         return {**result, 'status': outcome[0], 'reason': outcome[1]}
+    if launch_error is not None:
+        return {**result, 'status': 'blocked', 'reason': 'Cannot start configured runtime: ' + launch_error}
     for text in reversed(text_parts):
         try:
             candidate = json.loads(text)

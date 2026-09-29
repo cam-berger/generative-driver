@@ -12,6 +12,141 @@ from mcp.client.stdio import stdio_client
 
 
 class McpTests(unittest.TestCase):
+    def test_benchmark_home_must_match_the_mcp_configurator(self):
+        asyncio.run(self.keep_benchmark_on_connected_owner())
+
+    async def keep_benchmark_on_connected_owner(self):
+        from generative_driver.client import call
+        from generative_driver.setup import configure
+        with tempfile.TemporaryDirectory(prefix='MCP selected owner ') as directory:
+            root = Path(directory).resolve()
+            owner, other = root/'owner', root/'other'
+            for home in (owner, other):
+                configure('codex', ['no-such-agent-runtime'], home=home)
+                call('ping', {}, home=home)
+            params = StdioServerParameters(command=sys.executable, args=['-m','generative_driver.mcp'],
+                                           cwd=root, env={'GENERATIVE_DRIVER_HOME':str(owner)})
+            try:
+                async with stdio_client(params) as (reader, writer):
+                    async with ClientSession(reader, writer) as session:
+                        await session.initialize()
+                        for profile in ('tq9', 'bme280'):
+                            reply = await session.call_tool('driver_benchmark_run', {
+                                'profile':profile, 'options':{'home':str(other)}})
+                            self.assertFalse(reply.is_error, reply)
+                            refused = json.loads(reply.content[0].text)
+                            self.assertFalse(refused.get('ok'), refused)
+                            self.assertIn('configured MCP home', refused.get('reason', ''))
+                            self.assertFalse(list((other/'runs').glob('*')))
+                        for same_home in (str(owner), 'owner/.'):
+                            reply = await session.call_tool('driver_benchmark_run', {
+                                'profile':'bme280', 'options':{'home':same_home}})
+                            self.assertFalse(reply.is_error, reply)
+                            started = json.loads(reply.content[0].text)
+                            self.assertTrue(started.get('ok'), started)
+                            reply = await session.call_tool('driver_status', {'run_id':started['run_id']})
+                            visible = json.loads(reply.content[0].text)
+                            self.assertTrue(visible.get('ok'), visible)
+                            self.assertEqual(visible['run_id'], started['run_id'])
+            finally:
+                for home in (owner, other):
+                    call('shutdown', {}, home=home)
+
+    def test_worker_gateway_never_creates_an_absent_owner(self):
+        asyncio.run(self.refuse_worker_owner_creation())
+
+    async def refuse_worker_owner_creation(self):
+        from generative_driver.client import call
+        from mcp.shared.exceptions import MCPError
+        from mcp.types import CallToolRequest, CallToolRequestParams, CallToolResult
+        with tempfile.TemporaryDirectory(prefix='MCP absent worker owner ') as temp:
+            params = StdioServerParameters(command=sys.executable,
+                args=['-m', 'generative_driver.worker_tools', '--home', temp,
+                      '--run', 'absent-run', '--assignment', 'absent-assignment'], cwd=temp)
+            try:
+                async with stdio_client(params) as (reader, writer):
+                    async with ClientSession(reader, writer) as session:
+                        await session.initialize()
+                        with self.assertRaisesRegex(MCPError, 'service start'):
+                            await session.list_tools()
+                        self.assertFalse((Path(temp)/'service.json').exists())
+                        reply = await session.send_request(CallToolRequest(params=CallToolRequestParams(
+                            name='model_validate', arguments={'model_dir':str(Path(temp)/'model')})), CallToolResult)
+                        self.assertFalse(reply.is_error, reply)
+                        refused = json.loads(reply.content[0].text)
+                        self.assertFalse(refused.get('ok'), refused)
+                        self.assertIn('service start', refused.get('reason', ''))
+                        self.assertFalse((Path(temp)/'service.json').exists())
+                        self.assertFalse((Path(temp)/'runs').exists())
+            finally:
+                call('shutdown', {}, temp)
+
+    def test_windows_mcp_requires_an_independently_started_configurator(self):
+        asyncio.run(self.refuse_windows_child_owner())
+
+    async def refuse_windows_child_owner(self):
+        from generative_driver.client import call
+        from generative_driver.setup import configure
+        with tempfile.TemporaryDirectory(prefix='MCP independent owner ') as temp:
+            configure('codex', ['no-such-agent-runtime'], home=temp)
+            # Substitute only the OS policy boundary; exercise real stdio MCP
+            # and client IPC on every host without skipping this Windows rule.
+            program = "import platform; platform.system=lambda:'Windows'; from generative_driver.mcp import main; main()"
+            params = StdioServerParameters(command=sys.executable, args=['-c', program],
+                                           cwd=temp, env={'GENERATIVE_DRIVER_HOME':temp})
+            try:
+                async with stdio_client(params) as (reader, writer):
+                    async with ClientSession(reader, writer) as session:
+                        await session.initialize()
+                        reply = await session.call_tool('driver_start', {'goal':'Absent owner contract'})
+                        self.assertFalse(reply.is_error, reply)
+                        refused = json.loads(reply.content[0].text)
+                        self.assertFalse(refused.get('ok'), refused)
+                        self.assertIn('service start', refused.get('reason', ''))
+                        self.assertFalse((Path(temp)/'service.json').exists())
+                        self.assertFalse((Path(temp)/'runs').exists())
+            finally:
+                call('shutdown', {}, temp)
+
+    def test_windows_agent_benchmarks_require_an_owner_but_replay_does_not(self):
+        asyncio.run(self.require_windows_benchmark_owner())
+
+    async def require_windows_benchmark_owner(self):
+        from generative_driver.client import call
+        from generative_driver.setup import configure
+        with tempfile.TemporaryDirectory(prefix='MCP benchmark owner ') as temp:
+            configure('codex', ['no-such-agent-runtime'], home=temp)
+            program = "import platform; platform.system=lambda:'Windows'; from generative_driver.mcp import main; main()"
+            params = StdioServerParameters(command=sys.executable, args=['-c', program],
+                                           cwd=temp, env={'GENERATIVE_DRIVER_HOME':temp})
+            try:
+                async with stdio_client(params) as (reader, writer):
+                    async with ClientSession(reader, writer) as session:
+                        await session.initialize()
+                        for profile in ('tq9', 'bme280'):
+                            reply = await session.call_tool('driver_benchmark_run', {'profile':profile})
+                            self.assertFalse(reply.is_error, reply)
+                            refused = json.loads(reply.content[0].text)
+                            self.assertFalse(refused.get('ok'), refused)
+                            self.assertIn('service start', refused.get('reason', ''))
+                            self.assertFalse((Path(temp)/'service.json').exists())
+                        reply = await session.call_tool('driver_benchmark_run', {
+                            'profile':'setup-smoke', 'output_dir':str(Path(temp)/'replay')})
+                        self.assertFalse(reply.is_error, reply)
+                        replay = json.loads(reply.content[0].text)
+                        self.assertEqual(replay['verdict'], 'passed', replay)
+                        self.assertFalse(replay['model_benchmark'])
+                        self.assertFalse((Path(temp)/'service.json').exists())
+                # The final benchmark start must also refuse if the owner
+                # disappears after the MCP preflight has succeeded.
+                from generative_driver.benchmark import run
+                refused = run('tq9', options={'home':temp}, autostart=False)
+                self.assertFalse(refused.get('ok'), refused)
+                self.assertIn('service start', refused.get('reason', ''))
+                self.assertFalse((Path(temp)/'service.json').exists())
+            finally:
+                call('shutdown', {}, temp)
+
     def test_mcp_resume_records_an_explicit_total_budget_without_resetting_the_run(self):
         asyncio.run(self.adjust_budget())
 
@@ -168,6 +303,7 @@ class McpTests(unittest.TestCase):
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix="MCP durable run ") as temp:
             configure("codex", ["no-such-agent-runtime"], home=temp)
+            owner = call('ping', {}, home=temp)
             params = StdioServerParameters(command=sys.executable,
                 args=["-m", "generative_driver.mcp"], env={"GENERATIVE_DRIVER_HOME": temp}, cwd=temp)
             try:
@@ -179,6 +315,7 @@ class McpTests(unittest.TestCase):
                         self.assertFalse(reply.is_error, reply)
                         started = json.loads(reply.content[0].text)
                         self.assertTrue(started["ok"], started)
+                self.assertEqual(call('ping', {}, home=temp, autostart=False)['pid'], owner['pid'])
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
                         await session.initialize()
@@ -193,6 +330,9 @@ class McpTests(unittest.TestCase):
                         self.assertIn("Cannot start", result["reason"])
                         reply = await session.call_tool("driver_result", {"run_id": started["run_id"]})
                         self.assertEqual(json.loads(reply.content[0].text)["accepted_handoffs"], [])
+                        reply = await session.call_tool('driver_events', {'run_id':started['run_id']})
+                        events = json.loads(reply.content[0].text)['events']
+                        self.assertFalse(any(event['kind']=='run.recovered' for event in events))
             finally:
                 call("shutdown", {}, home=temp)
 

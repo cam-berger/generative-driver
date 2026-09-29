@@ -43,13 +43,14 @@ def configure(executor, command, model=None, provider=None, home=None, reasoning
     return {"configured": executor, "configuration": entry, "path": str(path)}
 
 
-def integration_assets(host, output, *, command=None, arguments=None):
+def integration_assets(host, output, *, command=None, arguments=None, home=None):
     """Generate relocatable host assets; installed setup pins this Python executable."""
     if host not in ("codex", "goose"):
         raise ValueError("Choose codex or goose")
     target = Path(output).expanduser().resolve()
     command = command or sys.executable
     arguments = ["-m", "generative_driver.mcp"] if arguments is None else arguments
+    environment = {"GENERATIVE_DRIVER_HOME": str(home_path(home))}
     source = Path(__file__).parent / "resources/client/skills"
     target.mkdir(parents=True, exist_ok=True)
     if host == "codex":
@@ -68,7 +69,7 @@ def integration_assets(host, output, *, command=None, arguments=None):
                                   "defaultPrompt": ["Check my setup and help me generate a device interface."]}}
         (plugin / ".codex-plugin/plugin.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         (plugin / ".mcp.json").write_text(json.dumps({"mcpServers": {"generative-driver": {
-            "command": command, "args": arguments}}}, indent=2), encoding="utf-8")
+            "command": command, "args": arguments, "env": environment}}}, indent=2), encoding="utf-8")
         shutil.copytree(source, plugin / "skills")
         marketplace = target / ".agents/plugins/marketplace.json"
         marketplace.parent.mkdir(parents=True, exist_ok=True)
@@ -84,7 +85,8 @@ def integration_assets(host, output, *, command=None, arguments=None):
               "instructions": (source / "generative-driver/SKILL.md").read_text(encoding="utf-8"),
               "prompt": "Check the Generative Driver installation and help me start or reconnect to my workflow.",
               "extensions": [{"type": "stdio", "name": "generative-driver", "cmd": command,
-                              "args": arguments, "timeout": 120, "description": "Local driver configurator"}]}
+                              "args": arguments, "envs": environment, "timeout": 120,
+                              "description": "Local driver configurator"}]}
     path = target / "generative-driver.json"
     with path.open("x", encoding="utf-8") as stream:
         json.dump(recipe, stream, indent=2)

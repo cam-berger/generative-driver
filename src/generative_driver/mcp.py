@@ -1,5 +1,7 @@
 """Developer-facing MCP server; workflows belong to the detached configurator."""
 import json
+import platform
+from pathlib import Path
 from typing import Literal
 from mcp.server.mcpserver import MCPServer
 from .setup import doctor
@@ -15,7 +17,7 @@ def driver_doctor() -> str:
 
 def _call(method, **params):
     from .client import call
-    return json.dumps(call(method, params), default=str)
+    return json.dumps(call(method, params, autostart=platform.system() != 'Windows'), default=str)
 
 
 @server.tool()
@@ -86,9 +88,23 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = No
     """Run installation replay or start a configured real-agent benchmark.
     setup-smoke uses no inference. tq9 and bme280 require explicit runtime and documented options.
     Supply evaluator password FILE paths through options, never the password itself.
+    For real-agent profiles, options.home must resolve to this MCP connection's configured home.
     """
     from .benchmark import run
-    return json.dumps(run(case=profile, output_dir=output_dir, executor=executor, options=options), default=str)
+    autostart = platform.system() != 'Windows'
+    if profile in ('tq9', 'bme280'):
+        from .client import call, default_home
+        selected_home = (options or {}).get('home')
+        if selected_home and Path(selected_home).expanduser().resolve() != default_home().resolve():
+            return json.dumps({'ok':False, 'reason':
+                'Benchmark options.home must match the configured MCP home. Omit options.home, '
+                'or reconnect using an MCP configuration for the selected home.'})
+        if not autostart:
+            owner = call('ping', home=selected_home, autostart=False)
+            if not owner.get('ok'):
+                return json.dumps(owner, default=str)
+    return json.dumps(run(case=profile, output_dir=output_dir, executor=executor, options=options,
+                          autostart=autostart), default=str)
 
 
 def main():

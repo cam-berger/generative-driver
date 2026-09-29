@@ -13,6 +13,54 @@ import time
 import threading
 
 
+def _wait_for_exit(pid, timeout=10):
+    """Observe process exit without terminating it or inferring it from IPC closure."""
+    if os.name == 'nt':
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE only
+        if not handle:
+            if ctypes.get_last_error() == 87:  # Process already gone.
+                return True
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            result = kernel.WaitForSingleObject(handle, int(timeout * 1000))
+            if result == 0xFFFFFFFF:
+                raise ctypes.WinError(ctypes.get_last_error())
+            return result == 0
+        finally:
+            kernel.CloseHandle(handle)
+    deadline = time.monotonic() + timeout
+    while True:
+        # A daemon started in this client is reaped by its process.wait thread.
+        # Reconnected clients may observe an orphan and cannot waitpid it.
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(.01, remaining))
+
+
+def _confirmed_shutdown(pid, timeout=10):
+    if type(pid) is not int or pid <= 0:
+        return {'ok': False, 'stopped': False, 'reason': 'Daemon exit cannot be confirmed without its process identity'}
+    try:
+        stopped = _wait_for_exit(pid, timeout)
+    except OSError as exc:
+        return {'ok': False, 'stopped': False, 'reason': 'Daemon exit verification failed: ' + str(exc)}
+    return {'ok': stopped, 'stopped': stopped, 'pid': pid,
+            **({} if stopped else {'reason': 'Daemon exit was not confirmed before the shutdown deadline'})}
+
+
 def default_home():
     if os.environ.get('GENERATIVE_DRIVER_HOME'):
         return Path(os.environ['GENERATIVE_DRIVER_HOME']).expanduser().resolve()
@@ -90,15 +138,26 @@ def _start(home):
         shutil.rmtree(lock, ignore_errors=True)
 
 
-def call(method, params=None, home=None):
+def call(method, params=None, home=None, *, autostart=True):
     """Send one JSON request; starting or disconnecting a UI never owns a run."""
     directory = Path(home or default_home()).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     params = params or {}
     try:
-        return _request(directory, method, params)
+        result = _request(directory, method, params)
     except (OSError, EOFError, ValueError):
         if method == 'shutdown':
-            return {'ok': True, 'stopped': True}
+            try:
+                endpoint = json.loads((directory / 'service.json').read_text(encoding='utf-8'))
+            except FileNotFoundError:
+                return {'ok': True, 'stopped': True}
+            except (OSError, ValueError) as exc:
+                return {'ok': False, 'stopped': False, 'reason': 'Cannot confirm daemon identity: ' + str(exc)}
+            return _confirmed_shutdown(endpoint.get('pid'), timeout=0)
+        if not autostart:
+            return {'ok': False, 'reason': 'Configurator is not reachable. Run generative-driver service start from an operator terminal, then reconnect this UI.'}
         _start(directory)
         return _request(directory, method, params)
+    if method == 'shutdown' and result.get('stopped'):
+        return _confirmed_shutdown(result.get('pid'))
+    return result

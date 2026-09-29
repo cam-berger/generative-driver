@@ -108,8 +108,14 @@ The evaluator takes a fresh sensor sample and compares it with the operator refe
 
 Reports include runtime/provider/model/settings, toolchain and skills hashes, case/evaluator versions, firmware and recovered-model/package hashes, environment, budget, per-stage attempts and evaluator checks, overall wall time, worker time, tool calls/time, human inputs and reported tokens. Worker tool time is included in worker time; managed evaluator tool time is reported separately. Overall wall time is measured directly, and component durations overlap. Missing usage remains unknown, with measured coverage shown. Retries and failed attempts remain visible.
 
+Managed tool counters cover configurator gateway calls. Native agent shell and analysis calls are included in worker elapsed time but not those counters.
+
 Reports distinguish operator messages/observations from recorded authorization, cancellation, resume and budget events; event counts are not counts of unique people. Original and effective budgets are explicit. Wall time includes stopped intervals; no pause-adjusted active time is inferred. Source, skills and environment fields describe the exporting installation. Trials executed across different installations need execution snapshot history to attribute earlier attempts correctly.
+
+The current report's `seed: 0` is fixed case bookkeeping. No model sampling seed is configured, and repeated agent runs can differ.
 
 Overall success requires every declared acceptance gate. A strong average cannot hide failed grounding, omitted reuse or undetected drift. Unrun, failed, blocked and inapplicable roles remain explicit. Compare the same case, evaluator, seed and execution mode. A changed provider/model and compiler together is labelled `combined-system`; it cannot isolate a model improvement. Replay cannot be compared as an actual agent trial.
 
 For a study, run three fresh trial IDs per configuration with identical budgets and case assets; preserve each report, report success count and median time/usage for completed measurements, and retain failures separately. Each `run` is an explicit inference invocation. The first authorized development baseline is one trial, not a repeated study. Runtime-reported usage is not a bill or an estimated token count.
+
+The [selected Codex development baseline](baselines/codex-tq9-2026-09-28.md) includes the original workflow, firmware drift and repair, stage/overall measurements, failed attempts and source snapshot history.

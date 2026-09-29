@@ -41,6 +41,7 @@ Choose a new output directory on each run. The smoke check validates a model, re
 - [Goose Desktop or CLI](docs/goose.md)
 - [Runtime configuration and hardware](docs/setup.md)
 - [Benchmark setup, run, score and compare](bench/README.md)
+- [Measured Codex development baseline](bench/baselines/codex-tq9-2026-09-28.md)
 
 Agent execution uses your separately configured Codex or Goose runtime and its supported authentication. The configurator does not implement another provider API loop. Original code is [Apache-2.0](LICENSE); included third-party material retains its [notices](NOTICE).
 

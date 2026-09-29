@@ -28,7 +28,7 @@ For Codex CLI or its code extension, register the installation directly:
 codex mcp add generative-driver -- /absolute/path/to/python -m generative_driver.mcp
 ```
 
-Use the Windows Python executable path on Windows. In the app, an equivalent local MCP server uses that executable as its command and `-m`, `generative_driver.mcp` as separate arguments. See [official MCP setup](https://learn.chatgpt.com/docs/extend/mcp?surface=cli). Add the generated `skills/generative-driver` directory to your project's `.agents/skills` if using MCP without the plugin.
+Use the Windows Python executable path on Windows. In the app, an equivalent local MCP server uses that executable as its command and `-m`, `generative_driver.mcp` as separate arguments. See [official MCP setup](https://learn.chatgpt.com/docs/extend/mcp?surface=cli). Copy `codex-install/plugins/generative-driver/skills/generative-driver` into your project's `.agents/skills/` if using MCP without the plugin.
 
 ## First conversation
 

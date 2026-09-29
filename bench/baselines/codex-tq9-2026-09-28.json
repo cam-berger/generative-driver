@@ -1,0 +1,1230 @@
+{
+  "schema": "benchmark-report/1",
+  "run_id": "run-25135fbf211641c6",
+  "case": "tq9",
+  "case_version": "1",
+  "evaluator_version": "1",
+  "seed": 0,
+  "execution": "actual-agent-emulation",
+  "model_benchmark": true,
+  "workflow_status": "completed",
+  "verdict": "passed",
+  "reason": "Seven stages accepted",
+  "stages": {
+    "acquire": {
+      "attempts": [
+        {
+          "assignment_id": "29c1cefd548a4923bafd4c74113d15b4",
+          "status": "completed",
+          "worker_status": "blocked",
+          "accepted": false,
+          "elapsed_seconds": 76.35208012501244,
+          "usage": {
+            "cached_input_tokens": 92672,
+            "input_tokens": 131802,
+            "output_tokens": 3096,
+            "reasoning_output_tokens": 1341
+          }
+        },
+        {
+          "assignment_id": "3af5ca72e7a3461a955b234eea7dff93",
+          "status": "completed",
+          "worker_status": "blocked",
+          "accepted": false,
+          "elapsed_seconds": 57.12990691594314,
+          "usage": {
+            "cached_input_tokens": 52864,
+            "input_tokens": 66358,
+            "output_tokens": 2286,
+            "reasoning_output_tokens": 832
+          }
+        },
+        {
+          "assignment_id": "518e8d7e93dd4441a8ee0cd7a1651671",
+          "status": "completed",
+          "worker_status": "completed",
+          "accepted": true,
+          "elapsed_seconds": 74.23207450006157,
+          "usage": {
+            "cached_input_tokens": 55424,
+            "input_tokens": 70265,
+            "output_tokens": 3317,
+            "reasoning_output_tokens": 1155
+          }
+        }
+      ],
+      "attempt_count": 3,
+      "workflow_status": "accepted",
+      "evaluator_status": "passed",
+      "checks": [
+        {
+          "name": "imported_firmware_hash",
+          "passed": true
+        }
+      ],
+      "worker_seconds": 207.71406154101714,
+      "tool_seconds": 0.021106243133544922,
+      "tool_calls": 1,
+      "worker_tool_seconds": 0.021106243133544922,
+      "evaluator_tool_seconds": 0,
+      "usage": {
+        "input_tokens": 268425,
+        "cached_input_tokens": 200960,
+        "output_tokens": 8699,
+        "reasoning_output_tokens": 3328,
+        "total_tokens": 277124,
+        "observed_total_tokens": 277124,
+        "reported_attempts": 3,
+        "attempts": 3,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      }
+    },
+    "interpret": {
+      "attempts": [
+        {
+          "assignment_id": "cb7a3f4a636047a79e51f840168f582c",
+          "status": "cancelled",
+          "worker_status": null,
+          "accepted": false,
+          "elapsed_seconds": 617.3849603750277,
+          "usage": null
+        },
+        {
+          "assignment_id": "5631ef7331db4e09a776f2fcbd8918ea",
+          "status": "completed",
+          "worker_status": null,
+          "accepted": true,
+          "elapsed_seconds": 602.7490417920053,
+          "usage": {
+            "cached_input_tokens": 1947392,
+            "input_tokens": 2058275,
+            "output_tokens": 29439,
+            "reasoning_output_tokens": 16282
+          }
+        },
+        {
+          "assignment_id": "4fa42e9e954f407ca6180bf4ec5f0fae",
+          "status": "completed",
+          "worker_status": null,
+          "accepted": true,
+          "elapsed_seconds": 723.6777299159439,
+          "usage": {
+            "cached_input_tokens": 1535744,
+            "input_tokens": 1653032,
+            "output_tokens": 36091,
+            "reasoning_output_tokens": 25292
+          }
+        },
+        {
+          "assignment_id": "1a269ec3f2f14281b4f801659a53d92c",
+          "status": "completed",
+          "worker_status": null,
+          "accepted": true,
+          "elapsed_seconds": 610.4011596669443,
+          "usage": {
+            "cached_input_tokens": 1665792,
+            "input_tokens": 1755471,
+            "output_tokens": 28880,
+            "reasoning_output_tokens": 17283
+          }
+        }
+      ],
+      "attempt_count": 4,
+      "workflow_status": "accepted",
+      "evaluator_status": "passed",
+      "checks": [
+        {
+          "name": "sealed_inputs",
+          "passed": true
+        },
+        {
+          "name": "executable_model",
+          "passed": true
+        },
+        {
+          "name": "predicted_reply_qualification",
+          "passed": true
+        }
+      ],
+      "worker_seconds": 2554.2128917499213,
+      "tool_seconds": 0,
+      "tool_calls": 0,
+      "worker_tool_seconds": 0,
+      "evaluator_tool_seconds": 0,
+      "usage": {
+        "input_tokens": null,
+        "cached_input_tokens": null,
+        "output_tokens": null,
+        "reasoning_output_tokens": null,
+        "total_tokens": null,
+        "observed_total_tokens": 5561188,
+        "reported_attempts": 3,
+        "attempts": 4,
+        "coverage": 0.75,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      }
+    },
+    "probe": {
+      "attempts": [
+        {
+          "assignment_id": "1578bbdc925a4f15829f1c6f7b98a753",
+          "status": "completed",
+          "worker_status": "completed",
+          "accepted": true,
+          "elapsed_seconds": 180.10347270895727,
+          "usage": {
+            "cached_input_tokens": 184320,
+            "input_tokens": 216213,
+            "output_tokens": 8702,
+            "reasoning_output_tokens": 4279
+          }
+        },
+        {
+          "assignment_id": "cb9c1ff2d0a34de4881bc8baa77cb0d6",
+          "status": "completed",
+          "worker_status": "completed",
+          "accepted": false,
+          "elapsed_seconds": 198.58328041702043,
+          "usage": {
+            "cached_input_tokens": 276864,
+            "input_tokens": 304824,
+            "output_tokens": 9764,
+            "reasoning_output_tokens": 5991
+          }
+        },
+        {
+          "assignment_id": "1bbc7f13366d4c928b3510ee6c1ffccc",
+          "status": "completed",
+          "worker_status": "completed",
+          "accepted": true,
+          "elapsed_seconds": 241.2882656250149,
+          "usage": {
+            "cached_input_tokens": 370176,
+            "input_tokens": 409449,
+            "output_tokens": 10577,
+            "reasoning_output_tokens": 5133
+          }
+        }
+      ],
+      "attempt_count": 3,
+      "workflow_status": "accepted",
+      "evaluator_status": "passed",
+      "checks": [
+        {
+          "name": "temperature",
+          "passed": true
+        },
+        {
+          "name": "requested_duty",
+          "passed": true
+        },
+        {
+          "name": "no_grant",
+          "passed": true
+        },
+        {
+          "name": "disarmed_duty",
+          "passed": true
+        },
+        {
+          "name": "inferred_baud",
+          "passed": true
+        }
+      ],
+      "worker_seconds": 619.9750187509926,
+      "tool_seconds": 1.1941783428192139,
+      "tool_calls": 50,
+      "worker_tool_seconds": 1.1941783428192139,
+      "evaluator_tool_seconds": 0,
+      "usage": {
+        "input_tokens": 930486,
+        "cached_input_tokens": 831360,
+        "output_tokens": 29043,
+        "reasoning_output_tokens": 15403,
+        "total_tokens": 959529,
+        "observed_total_tokens": 959529,
+        "reported_attempts": 3,
+        "attempts": 3,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      }
+    },
+    "ground": {
+      "attempts": [
+        {
+          "assignment_id": "8d976a8d147248138177877b5fe3bb62",
+          "status": "completed",
+          "worker_status": "blocked",
+          "accepted": false,
+          "elapsed_seconds": 155.83408462500665,
+          "usage": {
+            "cached_input_tokens": 73984,
+            "input_tokens": 92298,
+            "output_tokens": 7992,
+            "reasoning_output_tokens": 4931
+          }
+        },
+        {
+          "assignment_id": "fa946ca3699e4dd28393279a293f086c",
+          "status": "completed",
+          "worker_status": "completed",
+          "accepted": true,
+          "elapsed_seconds": 179.873975292081,
+          "usage": {
+            "cached_input_tokens": 65024,
+            "input_tokens": 121929,
+            "output_tokens": 9063,
+            "reasoning_output_tokens": 4451
+          }
+        },
+        {
+          "assignment_id": "5ac7497d5e104cb792cd909ec6bdf9b9",
+          "status": "completed",
+          "worker_status": "completed",
+          "accepted": true,
+          "elapsed_seconds": 265.3610707500484,
+          "usage": {
+            "cached_input_tokens": 172800,
+            "input_tokens": 206587,
+            "output_tokens": 13330,
+            "reasoning_output_tokens": 6246
+          }
+        }
+      ],
+      "attempt_count": 3,
+      "workflow_status": "accepted",
+      "evaluator_status": "passed",
+      "checks": [
+        {
+          "name": "independent_output_observation",
+          "passed": true
+        }
+      ],
+      "worker_seconds": 601.069130667136,
+      "tool_seconds": 0,
+      "tool_calls": 0,
+      "worker_tool_seconds": 0,
+      "evaluator_tool_seconds": 0,
+      "usage": {
+        "input_tokens": 420814,
+        "cached_input_tokens": 311808,
+        "output_tokens": 30385,
+        "reasoning_output_tokens": 15628,
+        "total_tokens": 451199,
+        "observed_total_tokens": 451199,
+        "reported_attempts": 3,
+        "attempts": 3,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      }
+    },
+    "emit": {
+      "attempts": [
+        {
+          "assignment_id": "105beafe4d6a468f959dc4338c620c3e",
+          "status": "completed",
+          "worker_status": "completed",
+          "accepted": true,
+          "elapsed_seconds": 142.21486341604032,
+          "usage": {
+            "cached_input_tokens": 173952,
+            "input_tokens": 200609,
+            "output_tokens": 6491,
+            "reasoning_output_tokens": 3429
+          }
+        },
+        {
+          "assignment_id": "ca196a8aa4a44c6093319e53e5da2c5f",
+          "status": "completed",
+          "worker_status": "completed",
+          "accepted": true,
+          "elapsed_seconds": 124.71447458397597,
+          "usage": {
+            "cached_input_tokens": 155520,
+            "input_tokens": 188617,
+            "output_tokens": 5443,
+            "reasoning_output_tokens": 2412
+          }
+        }
+      ],
+      "attempt_count": 2,
+      "workflow_status": "accepted",
+      "evaluator_status": "passed",
+      "checks": [
+        {
+          "name": "package_integrity_and_replay",
+          "passed": true
+        }
+      ],
+      "worker_seconds": 266.9293380000163,
+      "tool_seconds": 0.14084196090698242,
+      "tool_calls": 4,
+      "worker_tool_seconds": 0.14084196090698242,
+      "evaluator_tool_seconds": 0,
+      "usage": {
+        "input_tokens": 389226,
+        "cached_input_tokens": 329472,
+        "output_tokens": 11934,
+        "reasoning_output_tokens": 5841,
+        "total_tokens": 401160,
+        "observed_total_tokens": 401160,
+        "reported_attempts": 2,
+        "attempts": 2,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      }
+    },
+    "reuse": {
+      "attempts": [
+        {
+          "assignment_id": "f598307f01c54740957cccac9578471b",
+          "status": "completed",
+          "worker_status": "blocked",
+          "accepted": false,
+          "elapsed_seconds": 135.43300600000657,
+          "usage": {
+            "cached_input_tokens": 153472,
+            "input_tokens": 178006,
+            "output_tokens": 6494,
+            "reasoning_output_tokens": 3176
+          }
+        },
+        {
+          "assignment_id": "ee0aa670fac24eb78f9b2653633363a9",
+          "status": "completed",
+          "worker_status": "completed",
+          "accepted": true,
+          "elapsed_seconds": 171.65423637500498,
+          "usage": {
+            "cached_input_tokens": 269312,
+            "input_tokens": 290416,
+            "output_tokens": 7291,
+            "reasoning_output_tokens": 3433
+          }
+        },
+        {
+          "assignment_id": "f588c4aa6a724b80aae4c8d9cd3636d3",
+          "status": "completed",
+          "worker_status": "completed",
+          "accepted": true,
+          "elapsed_seconds": 137.91425675002392,
+          "usage": {
+            "cached_input_tokens": 241408,
+            "input_tokens": 262789,
+            "output_tokens": 5665,
+            "reasoning_output_tokens": 1955
+          }
+        }
+      ],
+      "attempt_count": 3,
+      "workflow_status": "accepted",
+      "evaluator_status": "passed",
+      "checks": [
+        {
+          "name": "fresh_package_temperature",
+          "passed": true
+        },
+        {
+          "name": "fresh_package_requested_output",
+          "passed": true
+        },
+        {
+          "name": "fresh_package_disarm",
+          "passed": true
+        }
+      ],
+      "worker_seconds": 445.0014991250355,
+      "tool_seconds": 14.634368896484375,
+      "tool_calls": 13,
+      "worker_tool_seconds": 14.634368896484375,
+      "evaluator_tool_seconds": 0,
+      "usage": {
+        "input_tokens": 731211,
+        "cached_input_tokens": 664192,
+        "output_tokens": 19450,
+        "reasoning_output_tokens": 8564,
+        "total_tokens": 750661,
+        "observed_total_tokens": 750661,
+        "reported_attempts": 3,
+        "attempts": 3,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      }
+    },
+    "maintain": {
+      "attempts": [
+        {
+          "assignment_id": "580472d8bed346f090a9b43777cba30b",
+          "status": "completed",
+          "worker_status": "needs_revision",
+          "accepted": true,
+          "elapsed_seconds": 117.56284799997229,
+          "usage": {
+            "cached_input_tokens": 112256,
+            "input_tokens": 137030,
+            "output_tokens": 5337,
+            "reasoning_output_tokens": 3183
+          }
+        },
+        {
+          "assignment_id": "ac98ceeb756642eca3e861f0543a3478",
+          "status": "completed",
+          "worker_status": "completed",
+          "accepted": true,
+          "elapsed_seconds": 135.60006337496452,
+          "usage": {
+            "cached_input_tokens": 182144,
+            "input_tokens": 201639,
+            "output_tokens": 6155,
+            "reasoning_output_tokens": 3106
+          }
+        }
+      ],
+      "attempt_count": 2,
+      "workflow_status": "accepted",
+      "evaluator_status": "passed",
+      "checks": [
+        {
+          "name": "requalified_package_current",
+          "passed": true
+        }
+      ],
+      "worker_seconds": 253.1629113749368,
+      "tool_seconds": 3.3925342559814453,
+      "tool_calls": 3,
+      "worker_tool_seconds": 3.3925342559814453,
+      "evaluator_tool_seconds": 0,
+      "usage": {
+        "input_tokens": 338669,
+        "cached_input_tokens": 294400,
+        "output_tokens": 11492,
+        "reasoning_output_tokens": 6289,
+        "total_tokens": 350161,
+        "observed_total_tokens": 350161,
+        "reported_attempts": 2,
+        "attempts": 2,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      }
+    }
+  },
+  "case_state": {
+    "stage_verdicts": {
+      "acquire": {
+        "status": "passed",
+        "checks": [
+          {
+            "name": "imported_firmware_hash",
+            "passed": true
+          }
+        ],
+        "revision": 0,
+        "reason": null
+      },
+      "interpret": {
+        "status": "passed",
+        "checks": [
+          {
+            "name": "sealed_inputs",
+            "passed": true
+          },
+          {
+            "name": "executable_model",
+            "passed": true
+          },
+          {
+            "name": "predicted_reply_qualification",
+            "passed": true
+          }
+        ],
+        "revision": 2,
+        "reason": null
+      },
+      "probe": {
+        "status": "passed",
+        "checks": [
+          {
+            "name": "temperature",
+            "passed": true
+          },
+          {
+            "name": "requested_duty",
+            "passed": true
+          },
+          {
+            "name": "no_grant",
+            "passed": true
+          },
+          {
+            "name": "disarmed_duty",
+            "passed": true
+          },
+          {
+            "name": "inferred_baud",
+            "passed": true
+          }
+        ],
+        "revision": 2,
+        "reason": null
+      },
+      "ground": {
+        "status": "passed",
+        "checks": [
+          {
+            "name": "independent_output_observation",
+            "passed": true
+          }
+        ],
+        "revision": 2,
+        "reason": null
+      },
+      "emit": {
+        "status": "passed",
+        "checks": [
+          {
+            "name": "package_integrity_and_replay",
+            "passed": true
+          }
+        ],
+        "revision": 2,
+        "reason": null
+      },
+      "reuse": {
+        "status": "passed",
+        "checks": [
+          {
+            "name": "fresh_package_temperature",
+            "passed": true
+          },
+          {
+            "name": "fresh_package_requested_output",
+            "passed": true
+          },
+          {
+            "name": "fresh_package_disarm",
+            "passed": true
+          }
+        ],
+        "revision": 2,
+        "reason": null
+      },
+      "maintain": {
+        "status": "passed",
+        "checks": [
+          {
+            "name": "requalified_package_current",
+            "passed": true
+          }
+        ],
+        "revision": 2,
+        "reason": null
+      }
+    },
+    "probe_evaluation": {
+      "observations": {
+        "inferred_baud": 115200,
+        "temperature": 24.5,
+        "no_grant": true,
+        "requested_duty": 0.65,
+        "disarmed_duty": 0.0
+      }
+    },
+    "drift_detected": true
+  },
+  "elapsed_seconds": 16657.901673793793,
+  "worker_seconds": 4948.064851209056,
+  "tool_seconds": 19.38302969932556,
+  "tool_calls": 71,
+  "worker_tool_seconds": 19.38302969932556,
+  "evaluator_tool_seconds": 0,
+  "tool_time_scope": "Managed worker and evaluator calls; other evaluator work is included only in overall wall time",
+  "unfinished_tool_calls": 0,
+  "usage": {
+    "input_tokens": null,
+    "cached_input_tokens": null,
+    "output_tokens": null,
+    "reasoning_output_tokens": null,
+    "total_tokens": null,
+    "observed_total_tokens": 8751022,
+    "reported_attempts": 19,
+    "attempts": 20,
+    "coverage": 0.95,
+    "counting": "input + output; cached input and reasoning output are subsets"
+  },
+  "human_inputs": 2,
+  "human_inputs_scope": "Counts operator.response messages or observations; other control events are listed separately. Not a count of unique people.",
+  "interventions": [
+    {
+      "event_id": 6,
+      "kind": "operator.response",
+      "time": 1790624716.20141,
+      "effect_resolution": null,
+      "has_observation": false
+    },
+    {
+      "event_id": 7,
+      "kind": "run.authorization",
+      "time": 1790625096.368834,
+      "scoped_tool_approval": "emulator",
+      "scope": "Assigned import, analysis, package and owned emulator tools; physical devices excluded"
+    },
+    {
+      "event_id": 8,
+      "kind": "run.resumed",
+      "time": 1790625096.3688588
+    },
+    {
+      "event_id": 13,
+      "kind": "run.resumed",
+      "time": 1790625712.532449
+    },
+    {
+      "event_id": 22,
+      "kind": "run.cancelled",
+      "time": 1790626404.202564,
+      "stage": null,
+      "reason": "Cancellation requested; retain outstanding-effect uncertainty"
+    },
+    {
+      "event_id": 24,
+      "kind": "run.budget_extended",
+      "time": 1790635868.8484328,
+      "old_budget_seconds": 10800,
+      "new_budget_seconds": 20265,
+      "extension_seconds": 9465,
+      "old_deadline": 1790635266.136692,
+      "new_deadline": 1790644731.136692,
+      "reason": "User requested: restore the benchmark run, we have plenty of time. Restored time since the saved user-requested pause; original start and earlier attempts retained."
+    },
+    {
+      "event_id": 25,
+      "kind": "run.resumed",
+      "time": 1790635868.848462
+    },
+    {
+      "event_id": 72,
+      "kind": "run.resumed",
+      "time": 1790637528.491178
+    },
+    {
+      "event_id": 95,
+      "kind": "operator.response",
+      "time": 1790638143.18097,
+      "effect_resolution": "confirmed_safe",
+      "has_observation": true
+    },
+    {
+      "event_id": 96,
+      "kind": "run.resumed",
+      "time": 1790638386.805454
+    }
+  ],
+  "intervention_counts": {
+    "operator.response": 2,
+    "run.authorization": 1,
+    "run.resumed": 5,
+    "run.cancelled": 1,
+    "run.budget_extended": 1
+  },
+  "interventions_scope": "Recorded control events; several events may belong to one human action, and recovery may be automatic.",
+  "original_budget_seconds": 10800,
+  "effective_budget_seconds": 20265,
+  "elapsed_scope": "Elapsed wall time from run creation to latest state includes stopped intervals; worker totals are recorded separately. No pause-adjusted active time is inferred.",
+  "provenance_meaning": {
+    "toolchain_revision": "Hash of the exporting installation; not per-attempt execution provenance.",
+    "skills_revision": "Hash of skills in the exporting installation; not per-attempt execution provenance.",
+    "environment": "Exporting process environment; historical executions require their own snapshot evidence.",
+    "agent": "Current saved runtime configuration; historical identity remains in individual worker records.",
+    "case_metadata": "Case manifest from the exporting installation; verify against executed snapshots."
+  },
+  "additional_attempts": 13,
+  "limitations": [
+    "UART-over-TCP does not prove wire baud correctness",
+    "Grounding is emulator register observation, not silicon measurement"
+  ],
+  "agent": {
+    "runtime": "codex",
+    "model": "gpt-6-sol",
+    "provider": "openai",
+    "version": "codex-cli 0.158.0-alpha.2.1",
+    "settings": {
+      "reasoning_effort": "ultra"
+    }
+  },
+  "environment": {
+    "system": "Darwin",
+    "release": "25.5.0",
+    "architecture": "arm64",
+    "python": "3.13.12"
+  },
+  "budget_seconds": 20265,
+  "attempt_limits": {
+    "max_model_repairs": 2,
+    "max_maintenance_cycles": 1
+  },
+  "toolchain_revision": "4bdce60d91ffbc1fda449800f889df35b4cb59125f6593262104a9dc51ac5a03",
+  "skills_revision": "fc2742d446833a231c19d49919a5be19a2befe788b18ce1983c8ce28391054c5",
+  "truth_sha256": "daf4fda57fe760e5b28726771ce18df771b30fbe320fe6543531967d773e8c67",
+  "case_inputs": {
+    "firmware.bin": "c1e9ab72e497c13d1e8037a9773c8b229adf6eb63665c3a8f750894c65d92d51",
+    "firmware-next.bin": "0a4b5fa1545bbba2998e55f10fdc65366b7b134da44c584cb693bce448ff6aad"
+  },
+  "time_policy": {
+    "probe": "continuous emulator virtual time",
+    "package_calls": "paused between calls, running inside each call; model timing must hold inside each operation",
+    "clock": "firmware reset-clock SysTick frequency configured by encrypted reference recipe",
+    "limitation": "Agent thinking time is excluded from device watchdog time during reuse and maintain; this is not a real-time control benchmark"
+  },
+  "artifact_hashes": [
+    {
+      "stage": "acquire",
+      "revision": 0,
+      "artifacts": [
+        {
+          "name": "0-image.bin",
+          "sha256": "c1e9ab72e497c13d1e8037a9773c8b229adf6eb63665c3a8f750894c65d92d51",
+          "kind": "file"
+        },
+        {
+          "name": "1-provenance.json",
+          "sha256": "bc7419ccce1fed1d330a67ffce53b319dfd00ea5852de9831efa118b0bcc3bab",
+          "kind": "file"
+        }
+      ]
+    },
+    {
+      "stage": "interpret",
+      "revision": 0,
+      "artifacts": [
+        {
+          "name": "0-model.json",
+          "sha256": "d0e9be0d687ea5911ac1c785f3a504eaedde416bea411dd329efc65ab639fee1",
+          "kind": "file"
+        },
+        {
+          "name": "1-replies.json",
+          "sha256": "aebf035c6d06b97189e2abba23ae1789c7ecbe0fd9222f5cd8aa696e57bc1357",
+          "kind": "file"
+        },
+        {
+          "name": "2-NOTES.md",
+          "sha256": "d7a3749aba84acead8b7dc725aae48b2d1824bca61d5935b8e330080aeb3264b",
+          "kind": "file"
+        }
+      ]
+    },
+    {
+      "stage": "probe",
+      "revision": 0,
+      "artifacts": [
+        {
+          "name": "0-capabilities.json",
+          "sha256": "802f2cc062e1804ef1dcb3fa91f5d1ccb5c8eed85bba56a21f9c1cd5ff3b0ce0",
+          "kind": "file"
+        },
+        {
+          "name": "1-observations.json",
+          "sha256": "cc78103bec9bd5cfba04ac5afbdd78344409df1ab07edf44bd81166c775865e1",
+          "kind": "file"
+        },
+        {
+          "name": "2-model.json",
+          "sha256": "de9b5a1f854155e547295e86fce168f2ca58816d55f7e3da80dbf09534a35edc",
+          "kind": "file"
+        },
+        {
+          "name": "3-interface-1.json",
+          "sha256": "317bb6f0891fb6891d81da5172e3f8ab497fe7304f17ea3058c0940274bb76d5",
+          "kind": "file"
+        },
+        {
+          "name": "4-interface-2.json",
+          "sha256": "0d35feb891bd9fcb7de34931d7b92b92a0afb7c62dd972e3e89910c7e76919b7",
+          "kind": "file"
+        },
+        {
+          "name": "5-interface-3.json",
+          "sha256": "68f70c7c26153bf5be525deefd07eeefa270396fdc28a107a4b6023b669644aa",
+          "kind": "file"
+        },
+        {
+          "name": "6-interface-4.json",
+          "sha256": "cfef1ce54224d1e76ecbd8d57cef5b35a92918a69884b546e7525d158851c2dd",
+          "kind": "file"
+        },
+        {
+          "name": "7-interface-5.json",
+          "sha256": "09b879177f7263a72f39b2a86bc08732751ad98b38481722cec567218d0644aa",
+          "kind": "file"
+        }
+      ]
+    },
+    {
+      "stage": "ground",
+      "revision": 0,
+      "artifacts": [
+        {
+          "name": "0-ground-evidence",
+          "sha256": "170628c778751e6b470049b5fed16a1891ff1eb2ec4f277c519b68de23251f8b",
+          "kind": "directory"
+        }
+      ]
+    },
+    {
+      "stage": "emit",
+      "revision": 0,
+      "artifacts": [
+        {
+          "name": "0-interface-package-mlgp4_1r",
+          "sha256": "670fa78547c2ef0fd1a3456bd826a498b499e66d5d1ea3979501f022fb86acc3",
+          "kind": "directory"
+        }
+      ]
+    },
+    {
+      "stage": "reuse",
+      "revision": 0,
+      "artifacts": [
+        {
+          "name": "0-package-events.jsonl",
+          "sha256": "7cf29893f73eeff8dcf8a8b128262c7669be6eda62779ad8f65bef85c10eee5f",
+          "kind": "file"
+        }
+      ]
+    },
+    {
+      "stage": "maintain",
+      "revision": 0,
+      "artifacts": [
+        {
+          "name": "0-package-events.jsonl",
+          "sha256": "0b123b3198ff5bf688aa104577e0b3e7bd63876adbf3c0a1e27a17d6b269f89f",
+          "kind": "file"
+        }
+      ]
+    },
+    {
+      "stage": "interpret",
+      "revision": 1,
+      "artifacts": [
+        {
+          "name": "0-model.json",
+          "sha256": "8ca1100615c02e02719fa45fd0ee75403333cda6b96d839c448356d376a2a1a7",
+          "kind": "file"
+        },
+        {
+          "name": "1-replies.json",
+          "sha256": "ee72ace01b62d00d7fac20bcd8f56d86ded1a87cb32cdc010a26a999ddc35946",
+          "kind": "file"
+        },
+        {
+          "name": "2-NOTES.md",
+          "sha256": "8993f16c7894427703e26b494ea6bc787988e637712684acfb783b91fee781e1",
+          "kind": "file"
+        }
+      ]
+    },
+    {
+      "stage": "interpret",
+      "revision": 2,
+      "artifacts": [
+        {
+          "name": "0-model.json",
+          "sha256": "658b700b531ab6987de321046df351f01e01858b22a548a75022481858d1aaa4",
+          "kind": "file"
+        },
+        {
+          "name": "1-replies.json",
+          "sha256": "7afd92847a20e422f4a1420b7ea77f07c0805f12fbc1450b5d6aa72ac7c9dd0b",
+          "kind": "file"
+        },
+        {
+          "name": "2-NOTES.md",
+          "sha256": "66f036b2306644b4f4a460799df9f699f5cf8160b1118c319c5ca3fccc80ba30",
+          "kind": "file"
+        }
+      ]
+    },
+    {
+      "stage": "probe",
+      "revision": 2,
+      "artifacts": [
+        {
+          "name": "0-capabilities.json",
+          "sha256": "91a8f2e4861a57e43d02c27c3c1f5398cccc7ec9b5677968db7ed06d65f33691",
+          "kind": "file"
+        },
+        {
+          "name": "1-observations.json",
+          "sha256": "487ab3a177901f8c0266480ca7809f1ae42ab3ca2c04d6b62a1127fbd26e5217",
+          "kind": "file"
+        },
+        {
+          "name": "2-model.json",
+          "sha256": "b0a402c3f26ecf805af0008ed388329ec1e0b3ebc2de324fb31bbd9ec1e08111",
+          "kind": "file"
+        },
+        {
+          "name": "3-interface-1.json",
+          "sha256": "458368669a1bd8ed28d2a94a8a2b5b4bb9ed7f76f9535c912f12e507b11a708f",
+          "kind": "file"
+        },
+        {
+          "name": "4-interface-2.json",
+          "sha256": "43d25dc8a0ada087ccc48699c37a67a893d7c3286db53cc9870d3218547edb34",
+          "kind": "file"
+        },
+        {
+          "name": "5-interface-3.json",
+          "sha256": "ee5010809d133ab8a15c3d1a6d1077c00e973ceaf0d7bd1f89ebbea95eb3c4d2",
+          "kind": "file"
+        },
+        {
+          "name": "6-interface-4.json",
+          "sha256": "64fe10f8a0b4498cd6d5fceca3d8d69420f1c5d22a59b78409e32cd67ce35e8d",
+          "kind": "file"
+        },
+        {
+          "name": "7-interface-5.json",
+          "sha256": "dea96fc0e5f267a8b893177c5d0a32f7936c40c30cea8f84efb02ae60e5c981e",
+          "kind": "file"
+        }
+      ]
+    },
+    {
+      "stage": "ground",
+      "revision": 2,
+      "artifacts": [
+        {
+          "name": "0-ground-evidence",
+          "sha256": "85b338e57e70a84bc86eb2a0e21dfcfffdf3a795a97b878ea7fb396c15b71dc0",
+          "kind": "directory"
+        }
+      ]
+    },
+    {
+      "stage": "emit",
+      "revision": 2,
+      "artifacts": [
+        {
+          "name": "0-interface-package-7fsdxtmo",
+          "sha256": "194602b43d0c72bc8bbdd261790d7a2320937413af64ed93888c6e8b94d6f789",
+          "kind": "directory"
+        }
+      ]
+    },
+    {
+      "stage": "reuse",
+      "revision": 2,
+      "artifacts": [
+        {
+          "name": "0-package-events.jsonl",
+          "sha256": "f130a67efba8d48b41c54d7a5e22794df18d3c8c54dd2267f1a77f7ed1cc825a",
+          "kind": "file"
+        }
+      ]
+    },
+    {
+      "stage": "maintain",
+      "revision": 2,
+      "artifacts": [
+        {
+          "name": "0-package-events.jsonl",
+          "sha256": "1e553ed5d0f032fd37ce8b64b677a6a58287297a1ed9ceb90917044c97a464f1",
+          "kind": "file"
+        }
+      ]
+    }
+  ],
+  "evaluator_verdicts": [
+    {
+      "assignment_id": "5631ef7331db4e09a776f2fcbd8918ea",
+      "stage": "interpret",
+      "collection_summary": {
+        "ok": true,
+        "sealed_inputs_unchanged": true,
+        "validated": true,
+        "tampered": []
+      },
+      "structural_summary": {
+        "ok": true
+      }
+    },
+    {
+      "assignment_id": "1578bbdc925a4f15829f1c6f7b98a753",
+      "stage": "probe",
+      "passed": 5,
+      "total": 5,
+      "verdict": "passed",
+      "checks": [
+        {
+          "id": "temperature",
+          "observed": 24.5,
+          "passed": true,
+          "reason": null
+        },
+        {
+          "id": "requested_duty",
+          "observed": 0.65,
+          "passed": true,
+          "reason": null
+        },
+        {
+          "id": "no_grant",
+          "observed": true,
+          "passed": true,
+          "reason": null
+        },
+        {
+          "id": "disarmed_duty",
+          "observed": 0.0,
+          "passed": true,
+          "reason": null
+        },
+        {
+          "id": "inferred_baud",
+          "observed": 115200,
+          "passed": true,
+          "reason": null
+        }
+      ]
+    },
+    {
+      "assignment_id": "105beafe4d6a468f959dc4338c620c3e",
+      "stage": "emit",
+      "ok": true,
+      "evidence_kind": "replay",
+      "integrity_ok": true,
+      "manifest_pin_verified": false,
+      "replay_status": "passed",
+      "runtime_current": true,
+      "source_evidence_kind": "live"
+    },
+    {
+      "assignment_id": "4fa42e9e954f407ca6180bf4ec5f0fae",
+      "stage": "interpret",
+      "collection_summary": {
+        "ok": true,
+        "sealed_inputs_unchanged": true,
+        "validated": true,
+        "tampered": []
+      },
+      "structural_summary": {
+        "ok": true
+      }
+    },
+    {
+      "assignment_id": "cb9c1ff2d0a34de4881bc8baa77cb0d6",
+      "stage": "probe",
+      "passed": 4,
+      "total": 5,
+      "verdict": "failed",
+      "checks": [
+        {
+          "id": "temperature",
+          "observed": 2450,
+          "passed": false,
+          "reason": null
+        },
+        {
+          "id": "requested_duty",
+          "observed": 0.65,
+          "passed": true,
+          "reason": null
+        },
+        {
+          "id": "no_grant",
+          "observed": true,
+          "passed": true,
+          "reason": null
+        },
+        {
+          "id": "disarmed_duty",
+          "observed": 0.0,
+          "passed": true,
+          "reason": null
+        },
+        {
+          "id": "inferred_baud",
+          "observed": 115200,
+          "passed": true,
+          "reason": null
+        }
+      ]
+    },
+    {
+      "assignment_id": "1a269ec3f2f14281b4f801659a53d92c",
+      "stage": "interpret",
+      "collection_summary": {
+        "ok": true,
+        "sealed_inputs_unchanged": true,
+        "validated": true,
+        "tampered": []
+      },
+      "structural_summary": {
+        "ok": true
+      }
+    },
+    {
+      "assignment_id": "1bbc7f13366d4c928b3510ee6c1ffccc",
+      "stage": "probe",
+      "passed": 5,
+      "total": 5,
+      "verdict": "passed",
+      "checks": [
+        {
+          "id": "temperature",
+          "observed": 24.5,
+          "passed": true,
+          "reason": null
+        },
+        {
+          "id": "requested_duty",
+          "observed": 0.65,
+          "passed": true,
+          "reason": null
+        },
+        {
+          "id": "no_grant",
+          "observed": true,
+          "passed": true,
+          "reason": null
+        },
+        {
+          "id": "disarmed_duty",
+          "observed": 0.0,
+          "passed": true,
+          "reason": null
+        },
+        {
+          "id": "inferred_baud",
+          "observed": 115200,
+          "passed": true,
+          "reason": null
+        }
+      ]
+    },
+    {
+      "assignment_id": "ca196a8aa4a44c6093319e53e5da2c5f",
+      "stage": "emit",
+      "ok": true,
+      "evidence_kind": "replay",
+      "integrity_ok": true,
+      "manifest_pin_verified": false,
+      "replay_status": "passed",
+      "runtime_current": true,
+      "source_evidence_kind": "live"
+    }
+  ],
+  "publication": {
+    "kind": "reviewed selected report",
+    "source_report_sha256": "fc227ecf6b9d6b6d40873ca289072c0fbdb044e431171d37eebc8d85e0c26500",
+    "execution_context": "codex-tq9-2026-09-28.context.json",
+    "omitted": [
+      "Oracle expected values and tolerances from detailed evaluator checks",
+      "Diagnostic file inventories, collection paths and internal validator details"
+    ],
+    "preserved": "Observed measurements, verdicts, all attempts and usage, artifact hashes, budgets and interventions."
+  }
+}

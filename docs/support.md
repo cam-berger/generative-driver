@@ -1,6 +1,6 @@
 # Supported paths and verification
 
-The core targets native macOS and Windows 11 or newer. The development machine is macOS on Apple silicon. [Native CI](https://github.com/cam-berger/generative-driver/actions/runs/36504830025) passes 119 installed-wheel tests and installation replay on macOS and Windows Server 2025 with Python 3.11 and 3.13. Windows 11 workstation UI setup and the native Windows Renode/Ghidra benchmark remain unmeasured.
+The core targets native macOS and Windows 11 or newer. The development machine is macOS on Apple silicon. [Native CI](https://github.com/cam-berger/generative-driver/actions/runs/36506077842) passes 122 installed-wheel tests and installation replay on macOS and Windows Server 2025 with Python 3.11 and 3.13. Windows 11 workstation UI setup and the native Windows Renode/Ghidra benchmark remain unmeasured.
 
 | Component | Implemented behavior | Dependency / limit |
 |---|---|---|

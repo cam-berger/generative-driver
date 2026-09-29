@@ -39,7 +39,7 @@ CI exercises scripted worker contracts and real local process/MCP connections; i
 
 The [documentation-only repeat](https://github.com/cam-berger/generative-driver/actions/runs/36505100608) exposed one intermittent startup timeout on Windows Python 3.13; its other three jobs passed. Its temporary daemon log was discarded, so the exact cause cannot be established. Review identified a concrete Windows hazard: ordinary readers can prevent replacing the connection metadata while the daemon starts. The fix publishes the endpoint and known child PID once, then releases the child through a private pipe; the daemon no longer replaces that file. Early child exit now reports promptly with the retained log location, and a parent disconnect before publication stops the child. Regression fixtures retain their own failure logs.
 
-The updated wheel passes **122 installed-wheel tests** on native macOS Python 3.11.15 and 3.13.12. Native CI is required to close this follow-up.
+The updated wheel passes **122 installed-wheel tests** on native macOS Python 3.11.15 and 3.13.12. [Native CI for source `4c95b15`](https://github.com/cam-berger/generative-driver/actions/runs/36506077842) passed all 122 tests and installation replay in all four macOS/Windows Python 3.11/3.13 jobs, including the held-reader restart on both Windows versions. This closes the follow-up; the baseline execution and measurements remain unchanged.
 
 ## Remaining qualification
 

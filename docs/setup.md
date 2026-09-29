@@ -1,10 +1,10 @@
 # Installation and runtime setup
 
-Install the base package using the [README](../README.md). Use the same environment's Python in every command below (`.venv/bin/python` on macOS, `.venv\Scripts\python.exe` on Windows). Paths containing spaces remain one quoted argument. No shell activation is required.
+Install the base package using the [README](../README.md). Use the Python executable from the environment containing Generative Driver in every command below (`.venv/bin/python` on macOS, `.venv\Scripts\python.exe` on Windows). The `python` examples stand for that executable; this is separate from the installed Codex or Goose executable. Paths containing spaces remain one quoted argument. No shell activation is required.
 
 ## Select an agent runtime
 
-Install and authenticate Codex or Goose through its own supported setup. Then record its executable and model:
+Install and authenticate Codex or Goose through its own supported setup. For Codex, run the selected executable with `--version` and confirm the output starts with `codex-cli`; an unrelated Python application shares the `codex` command name. Use a verified absolute OpenAI CLI path if there is a collision; see the [Codex identity check and macOS example](codex.md#verify-the-openai-cli). Then record the runtime's executable and model:
 
 ```sh
 python -m generative_driver configure --executor codex --command "/absolute/path/to/codex" --model YOUR_MODEL

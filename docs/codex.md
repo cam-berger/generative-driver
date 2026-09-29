@@ -4,9 +4,30 @@ Install the Python package and [configure a worker runtime](setup.md). The devel
 
 On Windows, [start the independent configurator](setup.md#start-the-configurator) from a standalone PowerShell window before connecting the plugin or MCP server. A terminal inside Codex is still owned by Codex's process lifetime.
 
+## Verify the OpenAI CLI
+
+Before running the registration commands below, check which program your terminal selects:
+
+```sh
+codex --version
+```
+
+The output must begin with `codex-cli`. An unrelated Python application is also named Codex; comic-library, archive or Django server output identifies that application. Press Ctrl+C if it starts a server. If the name resolves incorrectly, use the absolute path to your OpenAI CLI for every `codex` command below and for the worker runtime's `--command`. Verify that executable with `--version` first. In PowerShell, invoke a quoted executable path with `&`.
+
+### macOS bundled executable, when present
+
+Some desktop installations include the CLI at the following path. This installation-specific example verifies it before registering the marketplace; use your installed OpenAI CLI's actual path if this file is absent:
+
+```sh
+CODEX_CLI="/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+"$CODEX_CLI" --version
+```
+
+After generating `codex-install` below, register it with `"$CODEX_CLI" plugin marketplace add ./codex-install` when using this bundled executable.
+
 ## Generate the plugin
 
-From your installation environment:
+Use the Python executable from the environment where you installed Generative Driver:
 
 ```sh
 python -m generative_driver setup --host codex --output ./codex-install
@@ -14,7 +35,7 @@ python -m generative_driver setup --host codex --output ./codex-install
 
 This creates `codex-install/plugins/generative-driver` and a local marketplace, with an MCP connection pinned to that Python executable and state directory, plus the workflow skill. Use a leading `--home DIRECTORY` to select the same custom directory as your configurator. Keep the environment at its existing path, or regenerate into a new directory after moving it.
 
-Register the generated marketplace:
+Register the generated marketplace using the OpenAI CLI verified above:
 
 ```sh
 codex plugin marketplace add ./codex-install

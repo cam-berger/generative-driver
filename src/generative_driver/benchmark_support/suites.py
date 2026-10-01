@@ -1,4 +1,4 @@
-"""Pure suite validation, frozen experiment inputs and child request projection."""
+"""Suite selection, frozen inputs and a thin client of the existing owner."""
 import copy
 import math
 
@@ -49,6 +49,55 @@ def expand_trials(manifest: dict) -> list[dict]:
             for index, entry in enumerate(manifest['entries'])]
 
 
+def preflight_selection(manifest: dict) -> tuple[dict, list, list[dict]]:
+    """Check public selection and pin registered assets without starting processes.
+
+    Authenticated calibration and runtime configuration remain owner admission.
+    """
+    from .registry import resolve_case, pin_case
+    normalized = normalize_manifest(manifest)
+    definitions = [resolve_case(entry['case']) for entry in normalized['entries']]
+    if any(case.execution != 'actual-agent-emulation' for case in definitions):
+        raise ValueError('Suite requires emulated actual-agent cases')
+    if len({case.evidence_track for case in definitions}) != 1:
+        raise ValueError('Mixed evidence tracks cannot share a suite aggregate')
+    pins = [pin_case(entry['case'], entry['scenario'], entry['case_seed']) for entry in normalized['entries']]
+    for definition, pin in zip(definitions, pins):
+        calibration = pin.get('calibration', {})
+        status = calibration.get('status') if isinstance(calibration, dict) else None
+        allowed_status = 'legacy-not-required' if definition.id == 'tq9' else 'passed'
+        if status != allowed_status:
+            raise ValueError('Suite contains a case without required reference calibration')
+        if pin.get('scope') != 'full-workflow':
+            raise ValueError('Stage-local evidence cannot enter a full-workflow suite')
+    return normalized, definitions, pins
+
+
+def start_suite(manifest: dict, executor: str = 'codex', options: dict | None = None,
+                request_id: str | None = None, *, home=None, autostart=True) -> dict:
+    """Reconnect before mutable preflight; never become an execution owner."""
+    from pathlib import Path
+    from ..client import call, default_home
+    normalized = normalize_manifest(manifest)
+    if options is not None and not isinstance(options, dict):
+        raise ValueError('Suite options must be an object')
+    selected = dict(options or {})
+    directory = Path(home or default_home()).expanduser().resolve()
+    selected_home = selected.pop('home', None)
+    if selected_home is not None:
+        if not isinstance(selected_home, str) or not selected_home.strip():
+            raise ValueError('Suite options.home must be a nonblank path')
+        if Path(selected_home).expanduser().resolve() != directory:
+            raise ValueError('Suite options.home must match the configured owner home')
+    params = {'manifest': normalized, 'executor': executor, 'options': selected, 'request_id': request_id}
+    if call('ping', {}, directory, autostart=False).get('ok'):
+        # Saved-request dedup precedes asset reads in the owner. If it disappears
+        # after this ping, preserve that failure instead of creating another owner.
+        return call('suite_start', params, directory, autostart=False)
+    preflight_selection(normalized)
+    return call('suite_start', params, directory, autostart=autostart)
+
+
 def freeze_suite(manifest: dict, executor: str, executor_config: dict,
                  options: dict, provenance: dict) -> dict:
     """Pin inputs without creating an owner, run, snapshot or native process.
@@ -58,7 +107,6 @@ def freeze_suite(manifest: dict, executor: str, executor_config: dict,
     """
     import hashlib
     import json
-    from .registry import resolve_case, pin_case
     from ..configurator import validate_scoped_approval
     normalized = normalize_manifest(manifest)
     allowed = {'renode', 'ghidra_home', 'java_home', 'evaluator_password_files', 'scoped_tool_approval'}
@@ -78,20 +126,7 @@ def freeze_suite(manifest: dict, executor: str, executor_config: dict,
     if (not isinstance(handles, dict) or set(handles) - selected
             or any(not isinstance(value, str) or not value.strip() for value in handles.values())):
         raise ValueError('Evaluator handles must name selected cases and file paths')
-    definitions = [resolve_case(entry['case']) for entry in normalized['entries']]
-    if any(case.execution != 'actual-agent-emulation' for case in definitions):
-        raise ValueError('Suite requires emulated actual-agent cases')
-    if len({case.evidence_track for case in definitions}) != 1:
-        raise ValueError('Mixed evidence tracks cannot share a suite aggregate')
-    pins = [pin_case(entry['case'], entry['scenario'], entry['case_seed']) for entry in normalized['entries']]
-    for definition, pin in zip(definitions, pins):
-        calibration = pin.get('calibration', {})
-        status = calibration.get('status') if isinstance(calibration, dict) else None
-        allowed_status = 'legacy-not-required' if definition.id == 'tq9' else 'passed'
-        if status != allowed_status:
-            raise ValueError('Suite contains a case without required reference calibration')
-        if pin.get('scope') != 'full-workflow':
-            raise ValueError('Stage-local evidence cannot enter a full-workflow suite')
+    normalized, definitions, pins = preflight_selection(normalized)
     encoded = json.dumps(normalized, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
     frozen = copy.deepcopy({'manifest': normalized, 'manifest_sha256': hashlib.sha256(encoded).hexdigest(),
         'request': {'manifest': normalized, 'executor': executor, 'options': options},

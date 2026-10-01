@@ -57,6 +57,8 @@ python -m generative_driver resume RUN_ID --budget-seconds 21600 --budget-reason
 
 This example sets a six-hour total measured from the original start. `driver_resume` accepts the equivalent `budget_seconds` and `budget_reason` fields from Goose or Codex. The total can increase up to seven days; repeating the same total adds no further time. A durable `run.budget_extended` event records the previous and new totals/deadlines, added seconds and reason. Start time, prior attempts and accepted evidence remain intact, and recovery checks still apply.
 
+Benchmark suites use this same configurator. Save the `suite_id` from `benchmark suite start` or `driver_benchmark_suite_start`, and reconnect with suite status/events/result from either interface. Keep the leading CLI `--home` and MCP `GENERATIVE_DRIVER_HOME` consistent; another `options.home` is refused. Windows suite MCP tools require the independent owner described above. Suite cancellation/resume preserves the current child. Suite and child wall-clock budgets are separate and include stopped time; increasing one does not increase the other. [Suite commands and authorization gates](../bench/README.md#durable-benchmark-suites) cover manifest copying, private evaluator options, pagination, export and offline comparison.
+
 ## Developer command line
 
 `python -m generative_driver tools` lists the installed tool catalog. Use `tool NAME --arguments arguments.json` to execute one tool with explicit paths and bindings. These direct developer calls are separate from a managed workflow; use the configurator when ownership and checked stage progression are required.

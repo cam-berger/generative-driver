@@ -44,6 +44,29 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog='gd benchmark')
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('cases')
+    suites = commands.add_parser('suite').add_subparsers(dest='action', required=True)
+    starting = suites.add_parser('start')
+    starting.add_argument('--manifest', required=True)
+    starting.add_argument('--executor', choices=['codex', 'goose'], default='codex')
+    starting.add_argument('--options')
+    starting.add_argument('--request-id')
+    for action in ('status', 'events', 'result', 'cancel', 'resume'):
+        lifecycle = suites.add_parser(action)
+        lifecycle.add_argument('suite_id')
+        if action == 'events':
+            lifecycle.add_argument('--after', type=int, default=0)
+        elif action == 'result':
+            lifecycle.add_argument('--offset', type=int, default=0)
+            lifecycle.add_argument('--limit', type=int, default=50)
+        elif action == 'resume':
+            lifecycle.add_argument('--suite-budget-seconds', type=float)
+            lifecycle.add_argument('--budget-reason')
+    exporting = suites.add_parser('report')
+    exporting.add_argument('suite_id')
+    exporting.add_argument('--output', required=True)
+    suite_comparing = suites.add_parser('compare')
+    suite_comparing.add_argument('before')
+    suite_comparing.add_argument('after')
     running = commands.add_parser('run')
     running.add_argument('--case', default='setup-smoke', choices=case_ids())
     running.add_argument('--scenario')
@@ -81,6 +104,29 @@ def main(argv=None):
     evaluator.add_argument('--java-home')
     args = parser.parse_args(argv)
     try:
+        if args.command == 'suite':
+            if args.action == 'compare':
+                from .benchmark_support.suite_reporting import compare_suites
+                result = compare_suites(args.before, args.after)
+            elif args.action == 'report':
+                from .benchmark_support.suite_reporting import report_suite
+                result = report_suite(args.suite_id, output=args.output)
+            elif args.action == 'start':
+                from .benchmark_support.suites import start_suite
+                params = {'manifest': json.loads(Path(args.manifest).read_text(encoding='utf-8')),
+                    'executor': args.executor,
+                    'options': json.loads(Path(args.options).read_text(encoding='utf-8')) if args.options else {},
+                    'request_id': args.request_id}
+                result = start_suite(**params)
+            else:
+                from .client import call
+                params = {'suite_id': args.suite_id}
+                for key in ('after', 'offset', 'limit', 'suite_budget_seconds', 'budget_reason'):
+                    if hasattr(args, key) and getattr(args, key) is not None:
+                        params[key] = getattr(args, key)
+                result = call('suite_' + args.action, params)
+            print(json.dumps(result, indent=2, allow_nan=False))
+            return 0 if result.get('ok', result.get('compatible', True)) else 1
         if args.command == 'cases':
             result = case_descriptors()
         elif args.command == 'run':

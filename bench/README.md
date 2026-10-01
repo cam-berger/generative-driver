@@ -148,3 +148,56 @@ Qualification uses two independently authored references per family, native bina
 The available pilot scope is three independently authored families on one emulated STM32 platform, with six paired semantic/control entries. UART-over-TCP does not establish wire baud correctness; independent emulator observations provide no physical grounding. Reference calibration measures evaluator correctness. No model-performance pilot is implied by qualification, and native macOS observations do not qualify native Windows execution.
 
 Historical calibration at `aee512e` passed on macOS arm64: 13 sensor runs, 14 store runs and 32 TQ9-v2 runs. Subsequent evaluator changes make those records stale; current qualification is pending and admission remains closed until the final integration native refresh. See the [calibration record](../docs/verification.md#historical-native-family-calibration--2026-10-01). These results do not replace a separately authorized model pilot.
+
+## Durable benchmark suites
+
+The installed `development-pilot.json` plans 18 fresh trials: three firmware families × two paired semantic/control scenarios × three repetitions, one child at a time. It gives each child 10,800 wall-clock seconds and the suite 216,000 seconds. These are explicit experiment conditions; running the pilot requires current native reference qualification and user authorization for the selected runtime/model, trial count, budgets and assigned emulator tools. Current native calibration remains pending as of 2026-10-01. The commands below describe execution after those gates are met.
+
+Select and configure the runtime in the same home used by CLI and MCP. On Windows, start the owner from a standalone PowerShell window before connecting Goose or Codex:
+
+```sh
+python -m generative_driver --home "suite state" configure --executor codex --command "/absolute/path/to/codex" --model YOUR_MODEL
+python -m generative_driver --home "suite state" service start
+python -m generative_driver benchmark cases
+python -c "from pathlib import Path; from generative_driver.benchmark import case_root; Path('pilot.json').write_text((case_root() / 'suites/development-pilot.json').read_text(encoding='utf-8'), encoding='utf-8')"
+python -c "from pathlib import Path; print(Path('pilot.json').read_text(encoding='utf-8'))"
+```
+
+Use native `.exe` paths on Windows. To select Goose, configure its command, model and provider, then start with `--executor goose`. For a six-trial development run, change only `repetitions` to `1` in the copied manifest before authorization; the three families and paired scenarios remain. `case_seed` identifies the case scenario, separately from model sampling.
+
+Create an operator-owned `suite-options.json` with native tool paths and separately obtained evaluator password file handles:
+
+```json
+{
+  "renode": "/absolute/path/to/renode",
+  "ghidra_home": "/absolute/path/to/ghidra",
+  "java_home": "/absolute/path/to/java-home",
+  "evaluator_password_files": {
+    "tq9-v2": "/private/evaluator/tq9-v2.password",
+    "sampled-sensor-v1": "/private/evaluator/sampled-sensor-v1.password",
+    "parameter-store-v1": "/private/evaluator/parameter-store-v1.password"
+  },
+  "scoped_tool_approval": "emulator"
+}
+```
+
+Keep these handles outside candidate inputs; the evaluator owns them. Password encryption protects truth at rest and does not provide worker filesystem isolation. Public selection preflight checks registration, execution, scenario/seed, full workflow, one evidence track and calibration status before a possible owner start. The owner checks runtime configuration and authenticated calibration before child execution. A retried request to a reachable owner returns its frozen saved suite before rereading mutable registry assets.
+
+```sh
+python -m generative_driver --home "suite state" benchmark suite start --manifest "pilot.json" --executor codex --options "suite-options.json" --request-id "pilot-approved-1"
+python -m generative_driver --home "suite state" benchmark suite status SUITE_ID
+python -m generative_driver --home "suite state" benchmark suite events SUITE_ID --after 0
+python -m generative_driver --home "suite state" benchmark suite result SUITE_ID --offset 0 --limit 50
+python -m generative_driver --home "suite state" benchmark suite cancel SUITE_ID
+python -m generative_driver --home "suite state" benchmark suite resume SUITE_ID
+python -m generative_driver --home "suite state" benchmark suite report SUITE_ID --output "reports/pilot-approved-1"
+python -m generative_driver benchmark suite compare "reports/before/suite.json" "reports/pilot-approved-1/suite.json"
+```
+
+Save the returned `suite_id`. Retrying the same `request-id` and submitted inputs reconnects to that suite. Status exposes `active_child_id`; result pages expose public trial summaries and frozen experiment metadata. Follow `next_offset` until null; the limit is 1–100. Events use their returned cursor. Closing a CLI or MCP client keeps the owner and child running. Cancellation and host/operator blockers preserve the active slot for explicit resolution; model failures remain measured failed trials.
+
+Both budgets include stopped wall time from their original starts. Correct the blocker, then explicitly authorize any larger total. A suite extension uses `benchmark suite resume SUITE_ID --suite-budget-seconds 259200 --budget-reason "User-approved suite continuation"`. Extend an exhausted child separately with `resume RUN_ID --budget-seconds 21600 --budget-reason "User-approved child continuation"`, then resume the suite. Neither extension resets start time, prior attempts or consumed resources; child overrides become comparison conditions. An uncertain device effect still requires reconciliation.
+
+MCP exposes `driver_benchmark_suite_start(manifest, executor, options, request_id)` and the corresponding `status`, `events`, `result`, `cancel` and `resume` tools. All use the connection's configured owner home; an equivalent `options.home` is stripped, and another resolved home is refused. Windows MCP never starts an owner, including when it disappears after a successful ping. Use CLI for suite export and saved comparison.
+
+Report requires an explicit output directory and a reachable existing owner. It writes `suite.json`, `report.md` and relative allowlisted trial reports; private options, password handles, source/monitor data and raw transcripts are excluded. Incomplete suites produce provisional reports: all planned slots remain in the denominator, failed resources remain visible, and missing usage stays unknown. CLI export uses checked owner records; the Python export API can instead select authenticated regrade with `evidence_files` keyed by trial key and `password_files` keyed by case ID. Saved comparison runs offline without an owner, model process or device connection. Model/toolchain dimensions may differ; changed manifest, pins, evidence scope, time or effective budgets refuse a paired claim. Multiple dimension changes are labelled a combined-system comparison. Physical cases cannot enter these emulated aggregates.

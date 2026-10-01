@@ -1,10 +1,11 @@
 # Supported paths and verification
 
-The core targets native macOS and Windows 11 or newer. The development machine is macOS on Apple silicon. [Native CI](https://github.com/cam-berger/generative-driver/actions/runs/36506077842) passes 122 installed-wheel tests and installation replay on macOS and Windows Server 2025 with Python 3.11 and 3.13. Windows 11 workstation UI setup and the native Windows Renode/Ghidra benchmark remain unmeasured.
+The core targets native macOS and Windows 11 or newer. The development machine is macOS on Apple silicon. [Historical native CI for source `4c95b15`](https://github.com/cam-berger/generative-driver/actions/runs/36506077842) passed 122 installed-wheel tests and installation replay on macOS and Windows Server 2025 with Python 3.11 and 3.13. That run predates the suite changes. Windows 11 workstation UI setup and the native Windows Renode/Ghidra benchmark remain unmeasured.
 
 | Component | Implemented behavior | Dependency / limit |
 |---|---|---|
 | Configurator | Detached owner, durable run IDs and checked stage handoffs | Python; native socket or Windows named pipe; Windows MCP requires an independently started owner |
+| Benchmark suites | CLI/MCP reconnect to that owner; sequential children, checked export and offline saved comparison | Registered calibrated emulated full workflows only; current native refresh pending |
 | Codex integration | MCP, plugin, configured command-line workers | Separately installed and authenticated Codex |
 | Goose integration | MCP, recipe, configured command-line workers | Goose live execution requires its installed version; contract test alone is not a live pass |
 | Firmware input | Pinned local import and sealed neutral interpretation workspace | Firmware ownership and lawful acquisition are operator concerns |
@@ -25,3 +26,5 @@ BLE and SCPI discovery are not implemented. An adapter being present does not qu
 The registered benchmark cases are documented in [bench/README.md](../bench/README.md). Reports distinguish installation replay, actual model execution, emulated observations and physical observations. Local test and baseline evidence is recorded in [verification](verification.md).
 
 TQ9 v2 requires authenticated calibration for the installed evaluator implementation. Its native macOS reference gate uses GCC/Renode/Ghidra/Java; Controller fixtures use scripted external workers and are labelled accordingly. Neither establishes model success, physical-device behavior or native Windows emulator qualification. Windows CI configuration is not an observed Windows native result. Native process ownership is retained in the running configurator; ownership lost on restart fails closed for operator reconciliation.
+
+As of 2026-10-01, the suite CLI and real stdio MCP boundaries have local macOS scripted-contract coverage, including same-owner reconnection, missing-owner Windows policy, a disappearing owner, strict pagination, public exports and offline comparison. Simulating `platform.system()` in a macOS MCP process checks policy only. The historical 122-test CI run above precedes these suite changes; this branch has no new Windows Server or Windows 11 execution result. Current source results and pending installed-wheel/native gates are listed in [verification](verification.md#durable-suite-interfaces--2026-10-01).

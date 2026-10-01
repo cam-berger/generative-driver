@@ -4,6 +4,7 @@ import platform
 from pathlib import Path
 from typing import Literal
 from mcp.server.mcpserver import MCPServer
+from pydantic import StrictInt
 from .setup import doctor
 
 server = MCPServer("generative-driver")
@@ -113,6 +114,61 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = No
                               autostart=autostart), default=str)
     except ValueError as error:
         return json.dumps({'ok': False, 'reason': str(error)})
+
+
+@server.tool()
+def driver_benchmark_suite_start(manifest: dict, executor: str = 'codex',
+                                 options: dict | None = None, request_id: str | None = None) -> str:
+    """Start a durable emulated suite; save suite_id to reconnect from either client.
+
+    Use the configured MCP home; password file handles stay evaluator-only.
+    Emulator tool approval and inference budgets require explicit user authorization.
+    Windows requires an independently started configurator.
+    """
+    from .benchmark_support.suites import start_suite
+    try:
+        return json.dumps(start_suite(manifest, executor, options, request_id,
+            autostart=platform.system() != 'Windows'), allow_nan=False)
+    except (OSError, ValueError, RuntimeError) as error:
+        return json.dumps({'ok': False, 'reason': str(error)})
+
+
+@server.tool()
+def driver_benchmark_suite_status(suite_id: str) -> str:
+    """Reconnect to a durable suite and its active child without starting another owner."""
+    return _call('suite_status', suite_id=suite_id)
+
+
+@server.tool()
+def driver_benchmark_suite_events(suite_id: str, after: StrictInt = 0) -> str:
+    """Read retained suite events after the previous cursor."""
+    return _call('suite_events', suite_id=suite_id, after=after)
+
+
+@server.tool()
+def driver_benchmark_suite_result(suite_id: str, offset: StrictInt = 0, limit: StrictInt = 50) -> str:
+    """Read public trial summaries in pages of at most 100, with frozen experiment metadata."""
+    return _call('suite_result', suite_id=suite_id, offset=offset, limit=limit)
+
+
+@server.tool()
+def driver_benchmark_suite_cancel(suite_id: str) -> str:
+    """Stop further suite work while preserving its current child and evidence."""
+    return _call('suite_cancel', suite_id=suite_id)
+
+
+@server.tool()
+def driver_benchmark_suite_resume(suite_id: str, suite_budget_seconds: float | None = None,
+                                  budget_reason: str | None = None) -> str:
+    """Resume a stopped incomplete suite after correcting its blocker.
+
+    A user-approved extension increases the total suite wall-clock budget from
+    original start and requires a reason; it does not extend a child's budget.
+    """
+    params = {'suite_id': suite_id}
+    if suite_budget_seconds is not None:
+        params.update(suite_budget_seconds=suite_budget_seconds, budget_reason=budget_reason)
+    return _call('suite_resume', **params)
 
 
 def main():

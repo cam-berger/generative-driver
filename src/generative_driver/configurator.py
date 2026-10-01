@@ -68,8 +68,14 @@ def validate_scoped_approval(spec):
         if not spec.get('effects'):
             raise ValueError('Bound-device approval requires nonempty operator effect grants')
         return
-    if scope!='emulator' or case_id!='tq9':
-        raise ValueError('scoped_tool_approval supports only the tq9 emulator profile')
+    if scope!='emulator':
+        raise ValueError('Unsupported scoped_tool_approval')
+    if case_id is None:
+        raise ValueError('Emulator approval requires a registered benchmark case such as tq9')
+    from .benchmark_support.registry import resolve_case
+    definition = resolve_case(case_id)
+    if definition.execution != 'actual-agent-emulation' or definition.approval_scope != 'emulator':
+        raise ValueError('scoped_tool_approval supports only a registered emulator profile')
     if spec.get('binding') or spec.get('case_options',{}).get('binding') or (isinstance(case,dict) and case.get('options',{}).get('binding')):
         raise ValueError('Emulator tool approval cannot authorize an operator-supplied device binding')
 

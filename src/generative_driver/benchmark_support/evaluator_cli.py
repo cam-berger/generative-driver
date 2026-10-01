@@ -1,6 +1,5 @@
 """Human evaluator commands. Output belongs outside candidate workspaces."""
 import hashlib
-import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -8,11 +7,15 @@ from pathlib import Path
 
 def manage(action, case, password_file, output, new_password_file=None, compiler=None):
     from ..benchmark import case_root
+    from .registry import resolve_case
     from .truth import seal
     from .emulator import truth_for_case
     from .cases import _write
     root = case_root()
-    manifest = json.loads((root/'cases'/case/'case.json').read_text(encoding='utf-8'))
+    definition = resolve_case(case)
+    if not definition.manifest.get('truth'):
+        raise ValueError('Case has no evaluator truth')
+    manifest = definition.manifest
     truth = truth_for_case(root, manifest, {'evaluator_password_file':password_file})
     destination = Path(output).expanduser().resolve()
     package_boundary = Path(__file__).resolve().parents[2]

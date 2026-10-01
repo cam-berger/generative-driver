@@ -91,8 +91,13 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = No
     For real-agent profiles, options.home must resolve to this MCP connection's configured home.
     """
     from .benchmark import run
+    from .benchmark_support.registry import resolve_case
+    try:
+        definition = resolve_case(profile)
+    except ValueError as error:
+        return json.dumps({'ok': False, 'reason': str(error)})
     autostart = platform.system() != 'Windows'
-    if profile in ('tq9', 'bme280'):
+    if definition.execution.startswith('actual-agent-'):
         from .client import call, default_home
         selected_home = (options or {}).get('home')
         if selected_home and Path(selected_home).expanduser().resolve() != default_home().resolve():
@@ -103,8 +108,11 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = No
             owner = call('ping', home=selected_home, autostart=False)
             if not owner.get('ok'):
                 return json.dumps(owner, default=str)
-    return json.dumps(run(case=profile, output_dir=output_dir, executor=executor, options=options,
-                          autostart=autostart), default=str)
+    try:
+        return json.dumps(run(case=profile, output_dir=output_dir, executor=executor, options=options,
+                              autostart=autostart), default=str)
+    except ValueError as error:
+        return json.dumps({'ok': False, 'reason': str(error)})
 
 
 def main():

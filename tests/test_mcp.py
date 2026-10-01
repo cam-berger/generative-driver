@@ -1,5 +1,6 @@
 """The real stdio protocol is the public MCP seam."""
 import asyncio
+import hashlib
 import json
 import sys
 import tempfile
@@ -12,6 +13,68 @@ from mcp.client.stdio import stdio_client
 
 
 class McpTests(unittest.TestCase):
+    def test_registered_emulator_fixture_obeys_home_and_windows_owner_boundaries(self):
+        asyncio.run(self.refuse_fixture_owner_mismatch())
+
+    async def refuse_fixture_owner_mismatch(self):
+        with tempfile.TemporaryDirectory(prefix='MCP emulated fixture ') as temp:
+            root = Path(temp)
+            resources = root / 'resources'
+            case = resources / 'cases' / 'tq9-v2'
+            case.mkdir(parents=True)
+            image = case / 'image.bin'
+            image.write_bytes(b'fixture')
+            truth = resources / 'groundtruth' / 'tq9-v2.enc'
+            truth.parent.mkdir()
+            truth.write_bytes(b'ciphertext')
+            sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+            manifest = {'schema': 'benchmark-case/2', 'id': 'tq9-v2', 'family': 'tq9',
+                        'version': '2', 'evaluator_version': '2', 'execution': 'actual-agent-emulation',
+                        'evidence_track': 'firmware', 'adapter_key': 'emulator-v2',
+                        'approval_scope': 'emulator', 'default_effects': ['write'],
+                        'scenarios': ['semantic'], 'required_stages': ['acquire'],
+                        'images': {'image.bin': sha(image)},
+                        'truth': {'path': 'groundtruth/tq9-v2.enc', 'sha256': sha(truth)},
+                        'time_policy': {}, 'provenance': {}, 'limitations': [],
+                        'calibration': {'status': 'pending'}}
+            (case / 'case.json').write_text(json.dumps(manifest))
+            owner = root / 'owner'
+            other = root / 'other'
+            program = ("import platform; platform.system=lambda:'Windows'; "
+                       "import generative_driver.benchmark as b; from pathlib import Path; "
+                       f"b.case_root=lambda:Path({str(resources)!r}); "
+                       "from generative_driver.mcp import main; main()")
+            params = StdioServerParameters(command=sys.executable, args=['-c', program],
+                                           cwd=root, env={'GENERATIVE_DRIVER_HOME': str(owner)})
+            async with stdio_client(params) as (reader, writer):
+                async with ClientSession(reader, writer) as session:
+                    await session.initialize()
+                    reply = await session.call_tool('driver_benchmark_run', {
+                        'profile': 'tq9-v2', 'options': {'home': str(other)}})
+                    self.assertFalse(reply.is_error, reply)
+                    self.assertIn('configured MCP home', json.loads(reply.content[0].text)['reason'])
+                    reply = await session.call_tool('driver_benchmark_run', {'profile': 'tq9-v2'})
+                    self.assertFalse(reply.is_error, reply)
+                    self.assertIn('service start', json.loads(reply.content[0].text)['reason'])
+                    self.assertFalse((owner / 'service.json').exists())
+
+    def test_unknown_benchmark_profile_fails_before_owner_creation(self):
+        asyncio.run(self.refuse_unknown_benchmark_profile())
+
+    async def refuse_unknown_benchmark_profile(self):
+        with tempfile.TemporaryDirectory(prefix='MCP unknown benchmark ') as temp:
+            params = StdioServerParameters(command=sys.executable, args=['-m', 'generative_driver.mcp'],
+                                           cwd=temp, env={'GENERATIVE_DRIVER_HOME':temp})
+            async with stdio_client(params) as (reader, writer):
+                async with ClientSession(reader, writer) as session:
+                    await session.initialize()
+                    reply = await session.call_tool('driver_benchmark_run', {'profile': 'unknown-case'})
+                    self.assertFalse(reply.is_error, reply)
+                    refused = json.loads(reply.content[0].text)
+                    self.assertFalse(refused.get('ok'), refused)
+                    self.assertIn('Unknown benchmark case', refused.get('reason', ''))
+                    self.assertFalse((Path(temp)/'service.json').exists())
+
     def test_benchmark_home_must_match_the_mcp_configurator(self):
         asyncio.run(self.keep_benchmark_on_connected_owner())
 
@@ -60,11 +123,12 @@ class McpTests(unittest.TestCase):
         from mcp.shared.exceptions import MCPError
         from mcp.types import CallToolRequest, CallToolRequestParams, CallToolResult
         with tempfile.TemporaryDirectory(prefix='MCP absent worker owner ') as temp:
+            expected_error_log = tempfile.TemporaryFile(mode='w+t')
             params = StdioServerParameters(command=sys.executable,
                 args=['-m', 'generative_driver.worker_tools', '--home', temp,
                       '--run', 'absent-run', '--assignment', 'absent-assignment'], cwd=temp)
             try:
-                async with stdio_client(params) as (reader, writer):
+                async with stdio_client(params, errlog=expected_error_log) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
                         await session.initialize()
                         with self.assertRaisesRegex(MCPError, 'service start'):
@@ -78,7 +142,12 @@ class McpTests(unittest.TestCase):
                         self.assertIn('service start', refused.get('reason', ''))
                         self.assertFalse((Path(temp)/'service.json').exists())
                         self.assertFalse((Path(temp)/'runs').exists())
+                expected_error_log.seek(0)
+                error_text = expected_error_log.read()
+                self.assertIn("handler for 'tools/list' raised", error_text)
+                self.assertIn('Configurator is not reachable', error_text)
             finally:
+                expected_error_log.close()
                 call('shutdown', {}, temp)
 
     def test_windows_mcp_requires_an_independently_started_configurator(self):

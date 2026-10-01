@@ -116,6 +116,79 @@ def toy_store_model():
     return _model("TOY-STORE", operations)
 
 
+def toy_store_model_four_cell():
+    """Four-cell variant for the transaction oracle; the two-cell model stays fixed."""
+    model = toy_store_model()
+    for operation in ("update", "stage", "read"):
+        model["operations"][operation]["parameters"]["slot"]["maximum"] = 3
+    return model
+
+
+class FourCellStoreDevice:
+    """Public volatile store with independent monitor snapshots across connections."""
+    def __init__(self, initial):
+        self.committed = list(initial)
+        self.pending = list(initial)
+        self.bank = None
+        self.generation = 0
+        self.opens = 0
+
+    def factory(self, channel, binding):
+        if channel != {"type": "tcp"} or not isinstance(binding, dict):
+            raise AssertionError("unexpected toy binding")
+        self.opens += 1
+        return self
+
+    def exchange(self, tx, rx, timeout_ms):
+        if tx == b"ID\n":
+            return b"FAMILY:TOY-STORE\nREADY\n"
+        begin = re.fullmatch(rb"BEGIN ([AB])\n", tx)
+        put = re.fullmatch(rb"PUT ([0-3]) (-?[0-9]+)\n", tx)
+        get = re.fullmatch(rb"GET ([AB]) ([0-3])\n", tx)
+        if begin:
+            if self.bank is not None:
+                return b"ERR:order\nREADY\n"
+            self.bank = begin.group(1).decode()
+            self.pending = list(self.committed)
+        elif put:
+            value = int(put.group(2))
+            if self.bank is None:
+                return b"ERR:order\nREADY\n"
+            if not -9 <= value <= 9:
+                return b"ERR:range\nREADY\n"
+            offset = 4 if self.bank == "B" else 0
+            self.pending[offset + int(put.group(1))] = value
+        elif tx == b"COMMIT\n":
+            if self.bank is None:
+                return b"ERR:order\nREADY\n"
+            self.committed = list(self.pending)
+            self.generation += 1
+            self.bank = None
+        elif tx == b"ABORT\n":
+            if self.bank is None:
+                return b"ERR:order\nREADY\n"
+            self.pending = list(self.committed)
+            self.bank = None
+        elif get:
+            if self.bank is not None:
+                return b"ERR:order\nREADY\n"
+            offset = 4 if get.group(1) == b"B" else 0
+            return ("VALUE:" + str(self.committed[offset + int(get.group(2))]) + "\nREADY\n").encode()
+        else:
+            return b"ERR:syntax\nREADY\n"
+        return b"READY\n"
+
+    def observe(self):
+        return {"values": {"committed": [value & 65535 for value in self.committed],
+                           "pending": [value & 65535 for value in self.pending],
+                           "generation": self.generation,
+                           "pending_active": int(self.bank is not None)},
+                "reads": [], "time": 0.0, "physical": False}
+
+    def close(self):
+        pass
+
+
 class ToyTransport:
     """Scripted replies guarded by command grammar, ordering and optional request CRC."""
     def __init__(self, script):

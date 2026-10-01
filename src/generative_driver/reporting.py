@@ -206,17 +206,17 @@ def markdown(report):
     return "\n".join(lines) + "\n"
 
 
-def report_run(run_id, home=None, output=None):
+def report_run(run_id, home=None, output=None, *, autostart=True):
     """Export a saved run to portable JSON and a human-readable Markdown sibling."""
     from .client import call, default_home
     from .benchmark import case_root
     root = Path(home or default_home()).resolve()
-    result = call("result", {"run_id": run_id}, home=root)
+    result = call("result", {"run_id": run_id}, home=root, autostart=autostart)
     if not result.get("ok"):
         raise ValueError(result.get("reason", "Cannot read run"))
     events, cursor = [], 0
     while True:
-        page = call("events", {"run_id": run_id, "after": cursor}, home=root)
+        page = call("events", {"run_id": run_id, "after": cursor}, home=root, autostart=autostart)
         events.extend(page["events"])
         if page["cursor"] == cursor or len(page["events"]) < 500:
             break

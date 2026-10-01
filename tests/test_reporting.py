@@ -126,6 +126,8 @@ class ReportTests(unittest.TestCase):
         import shutil
         from unittest.mock import patch
         from generative_driver.benchmark import case_root
+        # Import before patching case_root: the adapter keeps a module-level alias.
+        from generative_driver.benchmark_support import legacy
         from generative_driver.configurator import Controller
         from generative_driver.reporting import report_run
         with tempfile.TemporaryDirectory() as temp:

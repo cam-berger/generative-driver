@@ -101,6 +101,14 @@ class McpTests(unittest.TestCase):
                             self.assertFalse(refused.get('ok'), refused)
                             self.assertIn('configured MCP home', refused.get('reason', ''))
                             self.assertFalse(list((other/'runs').glob('*')))
+                        reply = await session.call_tool('driver_benchmark_run', {
+                            'profile': 'tq9', 'options': {'home': str(owner),
+                            'scoped_tool_approval': 'emulator', 'binding': {}}})
+                        self.assertFalse(reply.is_error, reply)
+                        refused = json.loads(reply.content[0].text)
+                        self.assertFalse(refused.get('ok'), refused)
+                        self.assertIn('binding', refused.get('reason', ''))
+                        self.assertFalse(list((owner/'runs').glob('*')))
                         for same_home in (str(owner), 'owner/.'):
                             reply = await session.call_tool('driver_benchmark_run', {
                                 'profile':'bme280', 'options':{'home':same_home}})

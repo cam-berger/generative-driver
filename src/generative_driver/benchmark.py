@@ -115,7 +115,7 @@ def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, aut
     approval = options.pop('scoped_tool_approval', None)
     if approval == 'emulator' and not (definition.execution == 'actual-agent-emulation' and definition.approval_scope == 'emulator'):
         raise ValueError('Scoped approval requires tq9/emulator or bme280/bound-device')
-    if approval == 'emulator' and options.get('binding'):
+    if approval == 'emulator' and 'binding' in options:
         raise ValueError('Emulator approval cannot authorize an operator-supplied binding')
     if approval not in (None, 'emulator') and approval != definition.approval_scope:
         raise ValueError('Scoped approval requires tq9/emulator or bme280/bound-device')

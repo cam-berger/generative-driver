@@ -182,6 +182,22 @@ class RegistryTests(unittest.TestCase):
             run('tq9', options={'scoped_tool_approval': 'emulator',
                                 'binding': {'host': '127.0.0.1', 'port': 1234}}, autostart=False)
 
+    def test_emulator_approval_rejects_empty_binding_before_owner(self):
+        from generative_driver.benchmark import run
+        with self.assertRaisesRegex(ValueError, 'binding'):
+            run('tq9', options={'scoped_tool_approval': 'emulator', 'binding': {}}, autostart=False)
+
+    def test_owner_rejects_present_empty_bindings_in_every_location(self):
+        for case, top, case_options in (
+            ('tq9', {'binding': {}}, {}),
+            ('tq9', {}, {'binding': {}}),
+            ({'id': 'tq9', 'options': {'binding': {}}}, {}, {}),
+        ):
+            with self.subTest(case=case, top=top, case_options=case_options):
+                with self.assertRaisesRegex(ValueError, 'binding'):
+                    validate_scoped_approval({'case': case, 'scoped_tool_approval': 'emulator',
+                                              'case_options': case_options, **top})
+
     def test_v2_case_cannot_downgrade_manifest_schema(self):
         import json
         import tempfile

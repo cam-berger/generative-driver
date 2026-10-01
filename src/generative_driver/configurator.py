@@ -76,7 +76,11 @@ def validate_scoped_approval(spec):
     definition = resolve_case(case_id)
     if definition.execution != 'actual-agent-emulation' or definition.approval_scope != 'emulator':
         raise ValueError('scoped_tool_approval supports only a registered emulator profile')
-    if spec.get('binding') or spec.get('case_options',{}).get('binding') or (isinstance(case,dict) and case.get('options',{}).get('binding')):
+    case_option_values=spec.get('case_options')
+    nested_case_options=case.get('options') if isinstance(case,dict) else None
+    if ('binding' in spec or
+            (isinstance(case_option_values,dict) and 'binding' in case_option_values) or
+            (isinstance(nested_case_options,dict) and 'binding' in nested_case_options)):
         raise ValueError('Emulator tool approval cannot authorize an operator-supplied device binding')
 
 

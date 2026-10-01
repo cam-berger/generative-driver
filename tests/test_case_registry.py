@@ -21,7 +21,7 @@ class RegistryTests(unittest.TestCase):
                     'version': '2', 'evaluator_version': '2',
                     'execution': 'actual-agent-emulation', 'evidence_track': 'firmware',
                     'adapter_key': 'emulator-v2', 'approval_scope': 'emulator',
-                    'default_effects': ['write'], 'scenarios': ['semantic'],
+                    'default_effects': ['write', 'actuate'], 'scenarios': ['semantic'],
                     'required_stages': ['acquire'], 'images': {'image.bin': digest(image)},
                     'truth': {'path': 'groundtruth/tq9-v2.enc', 'sha256': digest(truth)},
                     'time_policy': {'probe': 'continuous'}, 'provenance': {'license': 'test'},

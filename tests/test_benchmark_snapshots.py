@@ -258,6 +258,7 @@ class ControllerSnapshotTests(unittest.TestCase):
                 try:
                     with self.assertRaisesRegex(ValueError, 'calibration'):
                         controller.start({'goal': 'pending v2', 'case': 'tq9-v2',
+                            'effects': ['write', 'actuate'],
                             'case_options': {'scenario_id': 'semantic'}})
                     with controller._db() as db:
                         self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 0)

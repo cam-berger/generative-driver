@@ -81,7 +81,7 @@ def build_case(authoring_dir: Path, compiler: Path, output_dir: Path) -> dict:
         if not isinstance(step, list) or not step or step[0] not in ('{compiler}', '{objcopy}'):
             raise ValueError('Build steps must invoke only pinned tools')
         argv = [str(paths[step[0][1:-1]])]
-        for arg in step[1:]:
+        for index, arg in enumerate(step[1:], 1):
             if not isinstance(arg, str) or not arg or any(c in arg for c in '\n\r\x00'):
                 raise ValueError('Invalid build argument')
             if arg.startswith('{authoring}/') or arg.startswith('{output}/'):
@@ -94,6 +94,26 @@ def build_case(authoring_dir: Path, compiler: Path, output_dir: Path) -> dict:
             elif any(c in arg for c in '{}\\/') or arg in ('.', '..'):
                 raise ValueError('Only validated authoring/output paths may be substituted')
             else:
+                # Literal arguments are a small native-tool vocabulary, never implicit
+                # filenames, response files, include paths, specs, plugins or scripts.
+                compiler_flags = {'-mthumb', '-Wall', '-Wextra', '-Werror',
+                    '-ffunction-sections', '-fdata-sections', '-ffreestanding',
+                    '-fno-common', '-nostdlib', '-nostartfiles', '-c', '-lgcc',
+                    '-Wl,--gc-sections', '-Wl,--build-id=none'}
+                compiler_value = re.fullmatch(
+                    r'(?:-O[0123sgz]|-g[0-3]|-mcpu=cortex-m[0-9]+(?:plus)?|'
+                    r'-mfloat-abi=(?:soft|softfp|hard)|'
+                    r'-D[A-Za-z_][A-Za-z0-9_]*(?:=(?:-?[0-9]+|0[xX][0-9a-fA-F]+))?)', arg)
+                next_arg = step[index + 1] if index + 1 < len(step) else None
+                next_prefix = {'-o': '{output}/', '-T': '{authoring}/'}.get(arg)
+                supported = (step[0] == '{compiler}' and
+                             (arg in compiler_flags or compiler_value is not None or
+                              (next_prefix is not None and isinstance(next_arg, str) and next_arg.startswith(next_prefix))))
+                supported = supported or (step[0] == '{objcopy}' and
+                             ((arg == '-O' and next_arg == 'binary') or
+                              (arg == 'binary' and step[index - 1] == '-O')))
+                if not supported:
+                    raise ValueError('Unsupported literal build argument; file inputs require inventoried placeholders')
                 argv.append(arg)
         commands.append(argv)
     versions = {}

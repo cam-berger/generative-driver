@@ -334,3 +334,61 @@ class BuildTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_case(author, Path(sys.executable), root / 'output')
             self.assertFalse((root / 'output').exists())
+
+    def test_bare_source_cannot_bypass_input_hash_inventory(self):
+        import json
+        import sys
+        import tempfile
+        from pathlib import Path
+        from generative_driver.benchmark_support.authoring import build_case
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            author, manifest = self.authoring(root)
+            (author / 'unhashed.py').write_text((author / 'compile.py').read_text())
+            manifest['steps'][0][1] = 'unhashed.py'
+            (author / 'build.json').write_text(json.dumps(manifest))
+            output = root / 'output'
+            with self.assertRaises(ValueError):
+                build_case(author, Path(sys.executable), output)
+            self.assertFalse(output.exists())
+
+    def test_response_files_and_embedded_file_flags_are_rejected_before_build(self):
+        import json
+        import sys
+        import tempfile
+        from pathlib import Path
+        from generative_driver.benchmark_support.authoring import build_case
+        for token in ('@options', '-Wl,@options', '-specs=options', '-includeunhashed.h'):
+            with self.subTest(token=token), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                author, manifest = self.authoring(root)
+                (author / 'options').write_text('unhashed.c')
+                manifest['steps'][0].append(token)
+                (author / 'build.json').write_text(json.dumps(manifest))
+                output = root / 'output'
+                with self.assertRaises(ValueError):
+                    build_case(author, Path(sys.executable), output)
+                self.assertFalse(output.exists())
+
+    def test_supported_native_flags_preserve_external_argv_build(self):
+        import json
+        import sys
+        import tempfile
+        from pathlib import Path
+        from generative_driver.benchmark_support.authoring import build_case
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            author, manifest = self.authoring(root)
+            manifest['steps'][0] += ['-mcpu=cortex-m4', '-mthumb', '-mfloat-abi=soft',
+                '-Os', '-g0', '-Wall', '-Wextra', '-Werror', '-ffunction-sections',
+                '-fdata-sections', '-ffreestanding', '-fno-common', '-nostdlib',
+                '-nostartfiles', '-T', '{authoring}/compile.py', '-Wl,--gc-sections',
+                '-Wl,--build-id=none', '-DTEMP_ENCODING_DIVISOR=10', '-DFW_VER=0x0106',
+                '-lgcc', '-o', '{output}/unused.elf']
+            manifest['steps'].append(['{objcopy}', '{authoring}/compile.py',
+                                     '{output}/firmware.bin', '-O', 'binary'])
+            (author / 'build.json').write_text(json.dumps(manifest))
+            output = root / 'output'
+            result = build_case(author, Path(sys.executable), output)
+            self.assertEqual((output / 'firmware.bin').read_bytes(), b'built image')
+            self.assertEqual(result['commands'][1][-2:], ['-O', 'binary'])

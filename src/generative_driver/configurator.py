@@ -440,6 +440,9 @@ class Controller:
                     pin = pin_case(case['id'] if isinstance(case, dict) else case,
                                    options.get('scenario_id'), options.get('case_seed', 0))
                     if pin['manifest'].get('schema') == 'benchmark-case/2':
+                        required_effects = set(pin['manifest']['default_effects']) - {'read'}
+                        if required_effects - set(effects):
+                            raise ValueError('Case evaluator requires the declared write/actuate effect grants before admission')
                         from .benchmark_support.registry import require_calibration
                         require_calibration(pin, options)
                     spec['_case_pin'] = pin
@@ -974,7 +977,14 @@ class Controller:
             result = package_execute(case['id'] if isinstance(case,dict) else case,
                                      stage=assignment['stage'],options=options,**arguments)
         else:
-            result = call_tool(name, arguments)
+            spec = json.loads(run['spec'])
+            if (connected and name in ('interface_execute','probe_run')
+                    and spec.get('_case_pin', {}).get('manifest', {}).get('schema') == 'benchmark-case/2'):
+                from .benchmark_support.emulated import worker_tool
+                result = worker_tool(spec['_case_pin']['case_id'], self.home/'runs'/run['id'],
+                                     name, arguments, case_options(spec))
+            else:
+                result = call_tool(name, arguments)
         observed_artifacts = {}
         for key in ('artifact','provenance','pages','pages_dir','manifest','package_dir','probe','model_dir','transcript'):
             raw = result.get(key)

@@ -410,3 +410,15 @@ def score(report, password_file=None, *, evidence_path=None):
     """Offline regrade requires an explicit evaluator sidecar; never guesses paths."""
     from .evidence import regrade_v2
     return regrade_v2(report, evidence_path, password_file)
+
+
+def worker_tool(case_id, run_dir, name, arguments, options):
+    """Execute a gateway-approved live call with the existing native owner."""
+    from ..toolkit import call_tool
+    if name not in ('interface_execute', 'probe_run'):
+        raise ValueError('Unsupported native worker tool')
+    session = _session(case_id, run_dir, options)
+    if arguments.get('binding') != session.binding:
+        raise ValueError('Worker binding differs from evaluator-owned emulator')
+    return run_call(session, lambda operation, parameters: call_tool(name, arguments),
+                    {'operation': arguments.get('operation'), 'parameters': arguments.get('parameters', {})})

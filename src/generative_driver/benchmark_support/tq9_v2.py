@@ -58,7 +58,7 @@ def build_plan(pin: dict, truth: dict, phase: str) -> list[dict]:
 def observations(raw: dict, canonical_task_result: dict, inputs: dict) -> dict:
     values = raw['values']
     return {**canonical_task_result.get('outputs', {}),
-            'refused_without_io': bool(not canonical_task_result.get('ok') and canonical_task_result.get('error', {}).get('fault') == 'operator' and not canonical_task_result.get('transcript')), 
+            'refused_without_io': bool(not canonical_task_result.get('ok') and canonical_task_result.get('error', {}).get('fault') == 'operator' and not canonical_task_result.get('transcript')),
             'duty': 1000 * values['compare'] / (values['reload'] + 1)}
 
 

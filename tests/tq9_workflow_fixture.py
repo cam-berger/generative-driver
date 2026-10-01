@@ -44,11 +44,17 @@ class Silicon:
         self.semantic = b'semantic' in Path(image).read_bytes()
         self.temperature, self.duty, self.armed = 20, 0, False
         self.monitor_available = True
+        self.running = False
+        self.commands = []
+        self.paused_requests = []
         owner = self
         class UART(socketserver.StreamRequestHandler):
             def handle(self):
                 for line in self.rfile:
                     command=line.decode().strip()
+                    if not owner.running:
+                        owner.paused_requests.append(command)
+                        return
                     if command=='ID?': reply='DEMO-42'
                     elif command=='T': reply='T:'+str(42 if getattr(owner,'wrong_hidden',False) and owner.temperature<0 else owner.temperature*(10 if owner.semantic else 1))
                     elif command=='A': owner.armed=True; reply='OK'
@@ -63,6 +69,8 @@ class Silicon:
                 self.wfile.write(b'(device) ');self.wfile.flush()
                 line=self.rfile.readline().decode(errors='ignore').lstrip('\x00\x01\x03').strip()
                 if not owner.monitor_available: return
+                owner.commands.append(line)
+                if line in ('start','pause'): owner.running = line == 'start'
                 if line=='reset': owner.duty=0;owner.armed=False
                 if line.startswith('temp '): owner.temperature=int(line.split()[1])
                 value=getattr(owner,'monitor_error',None) or {'compare':owner.duty,'reload':999,'temperature':owner.temperature}.get(line,'')
@@ -106,6 +114,13 @@ artifacts=[];status='completed'
 if stage=='acquire':
     result=call('acquire_firmware_artifact',task['context']);artifacts=[result['artifact'],result['provenance']]
 elif stage=='probe':
+    model_dir=task['context']['model_dir']
+    rejected=call('interface_execute',{'model_dir':model_dir,'operation':'measure','parameters':{'unexpected':1}})
+    assert not rejected['ok']
+    measured=call('interface_execute',{'model_dir':model_dir,'operation':'measure','parameters':{}})
+    assert measured['ok'], 'live interface_execute failed'
+    probed=call('probe_run',{'model_dir':model_dir,'operation':'measure','parameters':{},'n':1})
+    assert probed['ok'], 'live probe_run failed'
     pathlib.Path('capabilities.json').write_text(json.dumps(capabilities()));artifacts=['capabilities.json']
 elif stage=='emit':
     result=call('emit_package',task['context']);assert result['ok'];artifacts=[result['package_dir']]

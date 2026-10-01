@@ -252,11 +252,17 @@ class TQ9V2Tests(unittest.TestCase):
                 manifest['truth']['sha256']=seal(truth,resources/manifest['truth']['path'],password.read_text())
                 manifest['calibration']={'status':'pending'}
                 (case/'case.json').write_text(json.dumps(manifest))
-                controller=Controller(root/'home'); peers=[]
+                controller=Controller(root/'home'); peers=[]; worker_live=[]
                 class Handler(http.server.BaseHTTPRequestHandler):
                     def do_POST(self):
                         request=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-                        try: response=controller.call(request['method'],request['params'])
+                        try:
+                            before=len(peers[-1].commands) if peers else 0
+                            response=controller.call(request['method'],request['params'])
+                            if request['params'].get('name') in ('interface_execute','probe_run'):
+                                worker_live.append((request['params']['name'],response.get('ok'),peers[-1].running,peers[-1].commands[before:]))
+                                if mode == 'monitor-missing' and request['params']['name'] == 'probe_run':
+                                    peers[-1].monitor_available = False
                         except Exception as error: response={'fixture_error':str(error)}
                         body=json.dumps(response).encode();self.send_response(200);self.end_headers();self.wfile.write(body)
                     def log_message(self,*args):pass
@@ -268,7 +274,7 @@ class TQ9V2Tests(unittest.TestCase):
                 def native_start(**kwargs):
                     peer=Silicon(kwargs['image']);peers.append(peer)
                     peer.wrong_hidden = mode == 'hidden-wrong'
-                    peer.monitor_available = mode != 'monitor-missing'
+                    peer.monitor_available = True
                     return peer.session(kwargs['recipe'],root/('native-'+str(len(peers))))
                 original_accept=controller._accept
                 def accept(*args,**kwargs):
@@ -311,7 +317,15 @@ class TQ9V2Tests(unittest.TestCase):
                         result=controller.call('result',run);accepted=result['accepted_handoffs']
                         self.assertEqual(result['progress']['maintenance_cycles'],int(scenario=='semantic'))
                         self.assertEqual({a['stage'] for a in accepted},{'acquire','interpret','probe','ground','emit','reuse','maintain'})
+                        self.assertTrue(worker_live)
+                        self.assertEqual([row[:2] for row in worker_live[:3]],
+                            [('interface_execute',False),('interface_execute',True),('probe_run',True)])
+                        self.assertTrue(all(not running and commands == ['start','pause'] for _,_,running,commands in worker_live))
+                        self.assertFalse(any(peer.paused_requests for peer in peers))
                         events=controller.call('events',run)['events']
+                        live_events=[e for e in events if e['kind']=='tool.finished' and e['data'].get('name') in ('interface_execute','probe_run')]
+                        self.assertEqual(len(live_events),len(worker_live))
+                        self.assertTrue(all(e['data']['actor']=='worker' for e in live_events))
                         assignments=[e['data'] for e in events if e['kind']=='stage.assigned']
                         self.assertNotIn('EVALUATOR SENTINEL',json.dumps(assignments))
                         reuse=[a for a in assignments if a['stage']=='reuse']
@@ -508,3 +522,23 @@ class TQ9V2Tests(unittest.TestCase):
                 self.assertNotIn('compare',str(caught.exception))
                 self.assertIn('PRIVATE-MONITOR-SENTINEL',(private/'monitor-errors.jsonl').read_text())
             finally:session.stop()
+
+    def test_read_only_controller_refuses_case_effects_before_evaluator_io(self):
+        # Public Controller admission; calibrated-label fixture avoids opening private truth.
+        import sys
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        for grants in (None, ['read'], ['write'], ['actuate']):
+            with self.subTest(grants=grants), tempfile.TemporaryDirectory() as temp:
+                controller=Controller(Path(temp)/'home')
+                spec={'goal':'scripted no-effects fixture','case':'tq9-v2','case_options':{'scenario_id':'control'},
+                      'executor_config':{'command':[sys.executable,'-c','raise SystemExit(0)']}}
+                if grants is not None:spec['effects']=grants
+                try:
+                    with patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True}), \
+                         patch('generative_driver.benchmark_support.native.NativeSession.start') as native:
+                        with self.assertRaisesRegex(ValueError,'effect grants'):
+                            controller.start(spec)
+                        native.assert_not_called()
+                        self.assertFalse(controller._workers)
+                finally:controller.close()

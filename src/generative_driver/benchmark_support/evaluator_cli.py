@@ -5,7 +5,11 @@ import subprocess
 from pathlib import Path
 
 
-def manage(action, case, password_file, output, new_password_file=None, compiler=None, authoring_dir=None):
+def manage(action, case, password_file, output, new_password_file=None, compiler=None, authoring_dir=None, *, renode=None, ghidra_home=None, java_home=None):
+    if action == 'calibrate':
+        from .authoring import calibrate
+        return calibrate(case, {'evaluator_password_file':password_file,'output':output,'compiler':compiler,
+                               'renode':renode,'ghidra_home':ghidra_home,'java_home':java_home})
     from ..benchmark import case_root
     from .registry import resolve_case
     from .truth import seal

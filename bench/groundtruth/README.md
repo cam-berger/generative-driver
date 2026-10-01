@@ -32,3 +32,15 @@ The encrypted calibration is scripted reference execution, not model performance
 ## Third-party notice
 
 The encrypted Renode sensor model retains its original Copyright 2010–2024 Antmicro MIT header and modification notice. The complete notice is shipped at [`resources/bench/licenses/renode-MIT.txt`](../../src/generative_driver/resources/bench/licenses/renode-MIT.txt), matching [Renode's upstream license](https://github.com/renode/renode/blob/master/LICENSE). The owned firmware and original benchmark harness are Apache-2.0; encrypting evaluator evidence does not remove third-party attribution obligations.
+
+## V2 calibration
+
+Run native GCC, Renode, Ghidra and Java against two distinct reference models and the required behavioral mutants. All original, semantic, control and identity scenarios must qualify. Missing tools, host faults, malformed candidates and skipped checks leave calibration pending. Use an empty evaluator directory outside the checkout, installed resources and worker inputs:
+
+```sh
+python -m generative_driver benchmark truth calibrate --case tq9-v2 --password-file "/private/evaluator/tq9-v2.password" --compiler "/absolute/path/to/arm-none-eabi-gcc" --renode "/absolute/path/to/renode" --ghidra-home "/absolute/path/to/ghidra" --java-home "/absolute/path/to/java-home" --output "/private/evaluator/calibration"
+```
+
+`ARM_NONE_EABI_GCC` or a compiler on PATH may replace `--compiler`. The command emits a private measured record, a new encrypted bundle and a matching public manifest; it never edits installed resources. Publish those two release assets together after reviewing the record. The record commits source, image, recipe, contract, reference, mutation and evaluator identities without hashing its enclosing ciphertext. Admission authenticates that record and its public commitment. Password possession is the local evaluator trust boundary, not third-party attestation or a filesystem sandbox.
+
+Final run sidecars contain actual accepted controller artifact paths and hashes, evaluator action records, and separate worker/evaluator maintenance evidence IDs. Preserve accepted artifacts when archiving a run. Offline scoring verifies those bytes and recomputes grades. Private final vectors, source and monitor recipes must remain outside candidate inputs, logs shown to workers and version control.

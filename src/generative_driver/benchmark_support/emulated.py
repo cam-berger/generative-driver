@@ -1,0 +1,412 @@
+"""Evaluator-owned native benchmark stages, called by the configurator."""
+import hashlib
+import shutil
+import tempfile
+import json
+from pathlib import Path
+
+from .cases import _state, _write
+from .registry import resolve_case
+from .snapshots import read_snapshot
+from .emulated_evidence import _private, _diagnose, _final
+
+
+def _inputs(case_id, run_dir):
+    if (Path(run_dir)/'benchmark/execution.json').exists():
+        saved = read_snapshot(run_dir)
+        if saved['case_pin']['case_id'] != case_id:
+            raise ValueError('Execution snapshot case mismatch')
+        return Path(run_dir)/'benchmark/inputs', saved['case_pin']['manifest']
+    case = resolve_case(case_id)
+    return case.root, case.manifest
+
+
+def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=None):
+    options = options or {}
+    ws = Path(workspace).resolve()
+    ws.mkdir(parents=True, exist_ok=True)
+    inputs, manifest = _inputs(case_id, run_dir)
+    if stage == 'acquire':
+        source = inputs/'firmware.bin'
+        if hashlib.sha256(source.read_bytes()).hexdigest() != manifest['images']['firmware.bin']:
+            raise ValueError('Supplied firmware hash mismatch')
+        target = ws/'description.bin'
+        shutil.copyfile(source, target)
+        return {'objective': 'Import the supplied firmware with acquire_firmware_artifact, verify its hash, and report artifact and provenance paths.',
+                'inputs': [str(target)], 'allowed_tools': ['acquire_firmware_artifact'],
+                'context': {'source_path': str(target), 'expected_sha256': manifest['images']['firmware.bin'],
+                            'origin': 'provided_binary'}, 'boundary': 'provided artifact import'}
+    if stage == 'probe' and not any(h.get('stage') == 'interpret' for h in accepted or []):
+        raise ValueError('Probe requires an accepted interpret handoff')
+    if stage == 'probe':
+        from .cases import _accepted_file
+        from .evaluate import adapt_model
+        from ..configurator import digest
+        original = _accepted_file(accepted, 'interpret', 'model.json', ws/'missing')
+        handoff = next(h for h in reversed(accepted) if h['stage'] == 'interpret')
+        if not any(a['path'] == str(original) and a['sha256'] == digest(original) for a in handoff['artifacts']):
+            raise ValueError('Accepted interpretation bytes changed')
+        adaptation = adapt_model(original, ws/'model')
+        session = _session(case_id, run_dir, options)
+        path, state = _state(run_dir)
+        state.update(adaptation=adaptation, adapted_model_dir=str(ws/'model'), revision=int(options.get('revision', state.get('revision', 0))))
+        _write(path, state)
+        return {'objective': 'Test the supplied immutable model over the emulator binding. Write capabilities.json with schema benchmark-capabilities/2 and tasks temperature, arm, set_duty, disarm. Each task has operation, constants, inputs and outputs. Map canonical set_duty input duty (permille) with copy or affine parameter mapping. Map canonical temperature output to its candidate output and declared unit. Report unsupported capabilities honestly.',
+                'inputs': [str(ws/'model/model.json'), str(ws/'model/adaptation.json')],
+                'context': {'model_dir': str(ws/'model'), 'capabilities_output': str(ws/'capabilities.json')},
+                'allowed_tools': ['interface_describe', 'interface_execute', 'probe_run', 'probe_diff', 'model_validate'],
+                'binding': session.binding, 'effects': ['write', 'actuate']}
+    if stage == 'ground':
+        from .ground import prepare
+        return prepare(accepted, ws)
+    if stage == 'emit':
+        from .cases import _accepted_file
+        source = _accepted_file(accepted, 'probe', 'model.json', ws/'missing')
+        (ws/'model').mkdir(exist_ok=True)
+        shutil.copyfile(source, ws/'model/model.json')
+        handoff = next(h for h in reversed(accepted or []) if h['stage'] == 'probe')
+        for artifact in handoff['artifacts']:
+            candidate = Path(artifact['path'])
+            if candidate.suffix != '.json':
+                continue
+            probe = json.loads(candidate.read_text())
+            if probe.get('schema') == 'interface-probe/1' and probe.get('ok'):
+                if hashlib.sha256(candidate.read_bytes()).hexdigest() != artifact['sha256']:
+                    raise ValueError('Accepted probe bytes changed')
+                shutil.copyfile(candidate, ws/'probe.json')
+                return {'objective': 'Use emit_package with the supplied immutable model and successful probe, then emit_check. Report the complete package directory.',
+                        'inputs': [str(ws/'model/model.json'), str(ws/'probe.json')],
+                        'context': {'model_dir': str(ws/'model'), 'probe': str(ws/'probe.json')},
+                        'allowed_tools': ['emit_package', 'emit_check']}
+        raise ValueError('No accepted successful executable probe')
+    if stage in ('reuse', 'maintain'):
+        from .cases import _accepted_package, _accepted_file
+        from ..configurator import digest
+        import uuid
+        source = _accepted_package(accepted, ws/'missing')
+        package = ws/'package'
+        shutil.copytree(source, package)
+        path, state = _state(run_dir)
+        if digest(package) != state['package_sha256']:
+            raise ValueError('Accepted package identity changed')
+        state.setdefault('package_copies', {})[stage] = str(package)
+        state.setdefault('package_attempts', {})[stage] = uuid.uuid4().hex
+        state['capabilities_path'] = str(_accepted_file(accepted, 'probe', 'capabilities.json', ws/'missing'))
+        _write(path, state)
+        if stage == 'maintain':
+            _apply_scenario(case_id, run_dir, options)
+        session = _session(case_id, run_dir, options)
+        if stage == 'maintain':
+            from .scenarios import maintain_objective
+            return {'objective': maintain_objective(read_snapshot(run_dir)['case_pin']['scenario_id']),
+                    'inputs': [str(package)], 'allowed_tools': ['benchmark_package_execute'],
+                    'context': {'package_dir': str(package)}, 'binding': session.binding}
+        return {'objective': 'Use only the emitted package and this objective: read temperature, enable the device, request 37 percent output, then disarm. Use benchmark_package_execute for each operation. Find names and arguments in the package reference. Report actual observations and limitations.',
+                'inputs': [str(package)], 'allowed_tools': ['benchmark_package_execute'],
+                'context': {'package_dir': str(package)}, 'binding': session.binding,
+                'boundary': 'fresh package-only mission'}
+    if stage == 'interpret':
+        from ..toolkit import call_tool, resources_root
+        state_path, state = _state(run_dir)
+        state['revision'] = int(options.get('revision', state.get('revision', 0)))
+        image = inputs/state.get('image_name', 'firmware.bin')
+        sources = {'image.bin': str(image),
+                   'ghidra_run.py': str(resources_root()/'tools/workspace/ghidra_run.py'),
+                   'ExportDecomp.java': str(resources_root()/'toolchain/skills/interpret-firmware-binary/ExportDecomp.java')}
+        config = ws/'ANALYSIS_TOOLS.json'
+        _write(config, {k: str(options[k]) for k in ('ghidra_home', 'java_home') if options.get(k)})
+        sources['ANALYSIS_TOOLS.json'] = str(config)
+        if options.get('feedback'):
+            _write(ws/'DEFECTS.json', options['feedback'])
+            sources['DEFECTS.json'] = str(ws/'DEFECTS.json')
+        attempt = int(state.get('interpret_attempt', 0)) + 1
+        prepared = call_tool('interpret_run', {'run_dir': str(Path(run_dir).resolve()/'benchmark/tools'),
+            'front_end': 'interpret-interface', 'inputs': sources, 'mode': 'prepare', 'attempt': attempt,
+            'workspace_root': tempfile.mkdtemp(prefix='gd-candidate-')})
+        if not prepared.get('ok'):
+            raise ValueError('Cannot prepare sealed interpretation')
+        state.update(interpret_attempt=attempt, interpret=prepared)
+        _write(state_path, state)
+        return {'work_dir': prepared['workspace'], 'prompt': prepared['prompt_for_agent'],
+                'report_required': False, 'objective': 'Recover the external interface from the supplied binary.',
+                'inputs': [str(Path(prepared['workspace'])/name) for name in prepared['sealed_inputs']],
+                'allowed_tools': [], 'boundary': 'sealed inputs; encrypted evaluator evidence'}
+    raise ValueError('Native stage is not implemented: ' + stage)
+
+
+def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, options=None):
+    import json
+    _, manifest = _inputs(case_id, run_dir)
+    if stage == 'acquire':
+        matches = []
+        for provenance in Path(workspace).rglob('provenance.json'):
+            try:
+                record = json.loads(provenance.read_text())
+                for binary in provenance.parent.glob('*.bin'):
+                    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+                    if digest == manifest['images']['firmware.bin']:
+                        matches.extend([str(binary), str(provenance)])
+            except (ValueError, OSError):
+                continue
+        ok = bool(matches)
+        return {'ok': ok, 'checks': [{'name': 'imported_firmware_hash', 'passed': ok}],
+                'artifacts': matches, 'reason': None if ok else 'No matching imported firmware'}
+    if stage == 'probe':
+        ws = Path(workspace)
+        capabilities = ws/'capabilities.json'
+        if not capabilities.is_file():
+            return {'ok': False, 'checks': [], 'artifacts': [], 'reason': 'Missing capability mapping'}
+        _, state = _state(run_dir)
+        model = Path(state['adapted_model_dir'])/'model.json'
+        if hashlib.sha256(model.read_bytes()).hexdigest() != state['adaptation']['adapted_model_sha256']:
+            raise ValueError('Probe changed the accepted model')
+        grade, records, probes, observed = _diagnose(case_id, run_dir, model.parent, json.loads(capabilities.read_text()), options or {})
+        from .behavior import project_feedback
+        ok = grade['verdict'] == 'passed'
+        return {'ok': ok, 'fault': None if ok else 'model', 'route': None if ok else 'interpret',
+                'reason': None if ok else 'Independent diagnostic behavior failed', 'feedback': project_feedback(records),
+                'checks': [{'name': c['id'], 'passed': c['passed']} for c in grade['checks']],
+                'artifacts': [str(model), str(capabilities), str(observed), *probes], 'evaluator': grade}
+    if stage == 'ground':
+        _, state = _state(run_dir)
+        ok = bool(state.get('diagnostic', {}).get('passed') and report.get('status') == 'completed')
+        return {'ok': ok, 'checks': [{'name': 'independent_diagnostic_grounding', 'passed': ok}],
+                'artifacts': [str(Path(workspace)/'ground-evidence')]}
+    if stage == 'emit':
+        from ..toolkit import call_tool
+        from ..configurator import digest
+        for manifest_path in Path(workspace).rglob('manifest.json'):
+            package = manifest_path.parent
+            result = call_tool('emit_check', {'run_dir': str(Path(run_dir)/'benchmark/package-checks'),
+                'package_dir': str(package), 'model_dir': str(Path(workspace)/'model')})
+            if (result.get('ok') and result.get('integrity_ok') and result.get('runtime_current')
+                    and result.get('replay_status') == 'passed'):
+                path, state = _state(run_dir)
+                state.update(package_sha256=digest(package), package_manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest())
+                _write(path, state)
+                return {'ok': True, 'checks': [{'name': 'package_integrity_and_replay', 'passed': True}],
+                        'artifacts': [str(package)], 'evaluator': {'verdict': 'passed'}}
+        return {'ok': False, 'checks': [], 'artifacts': [], 'reason': 'No package passed integrity and replay'}
+    if stage == 'maintain':
+        return _maintain(case_id, run_dir, workspace, report, options or {})
+    if stage == 'reuse':
+        _, state = _state(run_dir)
+        events_path = Path(run_dir)/'benchmark/package-events.jsonl'
+        events = [json.loads(line) for line in events_path.read_text().splitlines()] if events_path.exists() else []
+        events = [e for e in events if e['actor'] == 'worker' and e['stage'] == stage
+                  and e['attempt_id'] == state['package_attempts'][stage] and e['revision'] == state.get('revision', 0)]
+        duties = [e['observation']['duty'] for e in events if e['result'].get('ok')]
+        mapping = json.loads(Path(state['capabilities_path']).read_text())['tasks']['temperature']
+        output = mapping['outputs']['temperature']['output']
+        read = any(e.get('operation') == mapping['operation'] and e['result'].get('ok')
+                   and type(e['result'].get('outputs', {}).get(output)) in (int, float) for e in events)
+        fresh = read and any(abs(value - 370) <= 2 for value in duties) and bool(duties) and duties[-1] == 0
+        if not fresh:
+            return {'ok': False, 'checks': [], 'artifacts': [], 'reason': 'Fresh worker mission lacks observed reading, requested effect or disarm'}
+        package = Path(state['package_copies'][stage])
+        decision = _final(case_id, run_dir, package, json.loads(Path(state['capabilities_path']).read_text()), options or {})
+        return {**decision, 'checks': [{'name': 'fresh_worker_mission', 'passed': True},
+                                     {'name': 'frozen_final_behavior', 'passed': decision['ok']}],
+                'artifacts': [str(package)]}
+    if stage == 'interpret':
+        from ..toolkit import call_tool
+        state_path, state = _state(run_dir)
+        prepared = state['interpret']
+        tools = str(Path(run_dir).resolve()/'benchmark/tools')
+        result = call_tool('interpret_collect', {'run_dir': tools, 'attempt': state['interpret_attempt'],
+            'expected_seal_sha256': prepared['seal_sha256'], 'seal_kind': 'instruction'})
+        out = Path(prepared['model_dir'])
+        validation = call_tool('model_validate', {'run_dir': tools, 'model_dir': str(out)}) if result.get('ok') else {'ok': False}
+        qualification = result.get('qualification', {})
+        qualified = qualification.get('status') == 'qualified' and not qualification.get('uncovered')
+        ok = bool(result.get('ok') and validation.get('ok') and qualified)
+        state.update(model_dir=str(out), interpret_collect=result)
+        _write(state_path, state)
+        return {'ok': ok, 'route': 'interpret' if not ok and result.get('ok') else None,
+                'fault': 'model' if not ok and result.get('ok') else None,
+                'feedback': {'structural_defects': validation.get('defects', []), 'qualification': qualification},
+                'checks': [{'name': 'sealed_inputs', 'passed': bool(result.get('ok'))},
+                           {'name': 'executable_model', 'passed': bool(validation.get('ok'))},
+                           {'name': 'predicted_reply_qualification', 'passed': bool(qualified)}],
+                'artifacts': [str(p) for p in out.glob('*') if p.is_file() and p.name in ('model.json', 'NOTES.md', 'replies.json')]}
+    raise ValueError('Native stage is not implemented: ' + stage)
+
+
+def run_call(session, invoke, request):
+    session.set_running(True)
+    try:
+        return invoke(request['operation'], request['parameters'])
+    finally:
+        session.set_running(False)
+
+
+def reference_execute(pin, truth, model, capabilities, *, renode, image, output_dir):
+    """Measured evaluator-only reference seam. Never invokes an agent runtime."""
+    from .native import NativeSession
+    from . import tq9_v2
+    from .emulated_actions import execute_plan, model_invoker
+    from .behavior import validate_records
+    from interface_runtime.engine import validate_model
+    candidate = {**model, 'channel': {'type': 'tcp'}}
+    if not validate_model(candidate)['ok']:
+        raise ValueError('Reference candidates must be structurally valid before native calibration')
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    model_dir = output/'model'
+    _write(model_dir/'model.json', candidate)
+    local = {**truth, 'artifact_sha256': hashlib.sha256((model_dir/'model.json').read_bytes()).hexdigest()}
+    contract = tq9_v2.contract(pin, local, 'final')
+    probes = []
+    session = NativeSession.start(renode=renode, image=image, recipe=truth['recipe'])
+    try:
+        invoke = model_invoker(model_dir, capabilities, session.binding, output/'tools', probes)
+        records = execute_plan(session, invoke, tq9_v2.build_plan(pin, local, 'final'), contract,
+                               output/'raw.json', tq9_v2.observations, truth['contracts']['time_policy']['sample_settle_seconds'])
+        result = {'execution': 'reference-calibration', 'backend': 'native-renode',
+                  'native_process_observed': session.process is not None and session.process.poll() is None,
+                  'process': session.info, 'contract': contract, 'records': records,
+                  'grade': validate_records(contract, records), 'probes': probes}
+        _write(output/'evaluation.json', result)
+        return result
+    finally:
+        session.stop()
+
+
+_OWNERS = {}
+
+
+def _truth(case_id, run_dir, options):
+    from ..benchmark import case_root
+    from .emulator import truth_for_case
+    _, manifest = _inputs(case_id, run_dir)
+    return truth_for_case(case_root(), manifest, options)
+
+
+def _session(case_id, run_dir, options):
+    from .native import NativeSession
+    key = str(Path(run_dir).resolve())
+    path, state = _state(run_dir)
+    if key in _OWNERS:
+        return _OWNERS[key]
+    if state.get('session'):
+        raise RuntimeError('Native process ownership was lost; operator reconciliation is required')
+    inputs, _ = _inputs(case_id, run_dir)
+    session = NativeSession.start(renode=options.get('renode'),
+        image=inputs/state.get('image_name', 'firmware.bin'), recipe=_truth(case_id, run_dir, options)['recipe'])
+    _OWNERS[key] = session
+    state['session'] = session.info
+    _write(path, state)
+    return session
+
+
+def cleanup(case_id, run_dir, options=None):
+    key = str(Path(run_dir).resolve())
+    path, state = _state(run_dir)
+    session = _OWNERS.pop(key, None)
+    if session is None and state.get('session'):
+        raise RuntimeError('Native process ownership was lost; operator reconciliation is required')
+    if session is not None:
+        session.stop()
+        state['previous_session'] = state.pop('session', session.info)
+        _write(path, state)
+    return {'ok': True}
+
+
+def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=None,
+                    binding=None, allow_effects=None, options=None):
+    from ..configurator import digest
+    from .emulated_actions import package_invoker
+    from . import tq9_v2
+    path, state = _state(run_dir)
+    package = Path(package_dir).resolve()
+    if str(package) != state.get('package_copies', {}).get(stage) or digest(package) != state['package_sha256']:
+        raise ValueError('Only the unchanged stage-assigned package may execute')
+    session = _session(case_id, run_dir, options or {})
+    if binding != session.binding:
+        raise ValueError('Package binding differs from the evaluator-owned emulator')
+    result = run_call(session, package_invoker(package, binding, allow_effects or []),
+                      {'operation': operation, 'parameters': parameters or {}})
+    raw = session.observe()
+    observed = tq9_v2.observations(raw, result, parameters or {})
+    public = {'duty': observed['duty'], 'unit': 'permille',
+              'temperature_reference': raw['values']['temperature'], 'temperature_unit': 'degC',
+              'phase': 'diagnostic'}
+    events = Path(run_dir)/'benchmark/package-events.jsonl'
+    row = {'actor': 'worker', 'stage': stage, 'operation': operation, 'revision': state.get('revision', 0),
+           'attempt_id': state['package_attempts'][stage], 'assignment_id': (options or {}).get('assignment_id'),
+           'package_sha256': state['package_sha256'], 'result': result, 'observation': public}
+    with events.open('a') as stream:
+        stream.write(json.dumps(row, allow_nan=False)+'\n')
+    return {**result, 'observation': public}
+
+
+def _apply_scenario(case_id, run_dir, options):
+    import uuid
+    from .scenarios import ScenarioJournal
+    from .snapshots import canonical_digest
+    journal = ScenarioJournal(Path(run_dir)/'benchmark')
+    current = journal.state()
+    if current.get('status') == 'applying':
+        raise RuntimeError('Scenario application requires reconciliation; no automatic replay')
+    if current.get('status') in ('applied', 'observed'):
+        return
+    truth = _truth(case_id, run_dir, options)
+    scenario = read_snapshot(run_dir)['case_pin']['scenario_id']
+    definition = truth['contracts']['scenarios'][scenario]
+    stimulus = {'temperature': definition['temperature_vectors'][-1]['stimulus']}
+    action = {'image': definition['next_image'], 'image_sha256': truth['images'][definition['next_image']], 'values': stimulus}
+    nonce, action_hash = uuid.uuid4().hex, canonical_digest(action)
+    journal.begin(nonce, action_hash)
+    cleanup(case_id, run_dir, options)
+    path, state = _state(run_dir)
+    state['image_name'] = definition['next_image']
+    _write(path, state)
+    session = _session(case_id, run_dir, options)
+    response = session.stimulate(stimulus)
+    if response['values'].get('temperature') != stimulus['temperature']:
+        raise RuntimeError('Scenario stimulus was not independently acknowledged')
+    acknowledgement = '\n'.join(row['response'] for row in response['controls'])
+    journal.applied(nonce, {'success': True, 'action_sha256': action_hash,
+                           'native_acknowledgement': {'response': acknowledgement}})
+
+
+def _maintain(case_id, run_dir, workspace, report, options):
+    from .scenarios import read_maintenance_claim, maintenance_decision, ScenarioJournal
+    from .snapshots import canonical_digest
+    from .emulated_evidence import maintenance_observation
+    path, state = _state(run_dir)
+    events = [e for e in options.get('worker_events', []) if e.get('actor') == 'worker']
+    claim = read_maintenance_claim(Path(workspace), report, options.get('assignment_id'), events)
+    package = Path(state['package_copies']['maintain'])
+    diagnostic = maintenance_observation(case_id, run_dir, package,
+        json.loads(Path(state['capabilities_path']).read_text()), options)
+    payload = _private(run_dir, options)
+    repaired = 'initial' in payload['maintenance']
+    diagnostic.update(fresh_reuse_passed=bool(state.get('fresh_reuse_passed')),
+                      requalified=bool(repaired and state.get('diagnostic', {}).get('passed')))
+    scenario = read_snapshot(run_dir)['case_pin']['scenario_id']
+    result = maintenance_decision(scenario=scenario, claim=claim['claim'], diagnostic=diagnostic, repaired=repaired)
+    payload['maintenance']['repaired' if repaired else 'initial'] = {
+        'revision': state.get('revision', 0), 'claim': claim['claim'], 'worker_evidence_ids': claim['evidence_ids'], 'diagnostic': diagnostic}
+    _private(run_dir, options, payload)
+    journal = ScenarioJournal(Path(run_dir)/'benchmark')
+    if journal.state().get('status') == 'applied':
+        journal.observed(journal.state()['nonce'], canonical_digest(diagnostic))
+    initial = payload['maintenance']['initial']
+    state['maintenance'] = {'drift_claimed': initial['claim'] == 'drift',
+        'drift_observed': initial['diagnostic'].get('evaluable') is True and initial['diagnostic'].get('contradiction') is True,
+        'false_alarm': result.get('maintenance', {}).get('false_alarm', False),
+        'repair_completed': repaired and result['ok'], 'requalified': diagnostic['requalified'],
+        'fresh_reuse_passed': diagnostic['fresh_reuse_passed']}
+    if result.get('route'):
+        state['fresh_reuse_passed'] = False
+    _write(path, state)
+    return {**result, 'checks': [{'name': 'evidenced_maintenance_claim', 'passed': result['ok']}],
+            'artifacts': [str(package), str(Path(workspace)/'maintenance.json')],
+            'feedback': {'reason': 'Diagnostic package behavior requires requalification'} if result.get('route') else None}
+
+
+def score(report, password_file=None, *, evidence_path=None):
+    """Offline regrade requires an explicit evaluator sidecar; never guesses paths."""
+    from .evidence import regrade_v2
+    return regrade_v2(report, evidence_path, password_file)

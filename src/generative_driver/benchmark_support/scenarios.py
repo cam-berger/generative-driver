@@ -16,9 +16,9 @@ def maintain_objective(scenario: str) -> str:
     if scenario not in ('control', 'semantic', 'identity'):
         raise ValueError('Unknown maintenance scenario')
     return ('Check the supplied package against the current device using assigned tools. '
-            'Write maintenance.json with schema benchmark-maintenance-claim/1, claim unchanged or drift, '
+            'Write maintenance.json with schema benchmark-maintenance-claim/1, claim unchanged, drift, or unknown, '
             'and evidence_ids naming this assignment\'s observed tool events. Include its actual SHA-256 '
-            'in the stage report artifacts. Report completed for unchanged or needs_revision for drift. '
+            'in the stage report artifacts. Report completed for unchanged or unknown, or needs_revision for drift. '
             'Do not repair the package in this stage.')
 
 
@@ -34,7 +34,7 @@ def read_maintenance_claim(workspace: Path, report: dict, assignment_id: str, ev
     if len(claimed) != 1 or claimed[0].get('sha256') != actual_hash:
         raise ValueError('maintenance.json report artifact hash mismatch')
     value = json.loads(target.read_text(encoding='utf-8'))
-    if value.get('schema') != 'benchmark-maintenance-claim/1' or value.get('claim') not in ('unchanged', 'drift'):
+    if value.get('schema') != 'benchmark-maintenance-claim/1' or value.get('claim') not in ('unchanged', 'drift', 'unknown'):
         raise ValueError('Invalid maintenance claim schema or value')
     expected_status = 'needs_revision' if value['claim'] == 'drift' else 'completed'
     if report.get('status') != expected_status:

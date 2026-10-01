@@ -69,13 +69,16 @@ def main(argv=None):
     scoring.add_argument('--password-file')
     scoring.add_argument('--evidence')
     evaluator = commands.add_parser('truth')
-    evaluator.add_argument('action', choices=['unlock','rekey','rebuild'])
+    evaluator.add_argument('action', choices=['unlock','rekey','rebuild','calibrate'])
     evaluator.add_argument('--case',default='tq9',choices=case_ids())
     evaluator.add_argument('--password-file')
     evaluator.add_argument('--output',required=True)
     evaluator.add_argument('--new-password-file')
     evaluator.add_argument('--compiler')
     evaluator.add_argument('--authoring-dir')
+    evaluator.add_argument('--renode')
+    evaluator.add_argument('--ghidra-home')
+    evaluator.add_argument('--java-home')
     args = parser.parse_args(argv)
     try:
         if args.command == 'cases':
@@ -91,7 +94,8 @@ def main(argv=None):
                           'scoped_tool_approval': 'bound-device' if args.approve_bound_device_tools else 'emulator' if args.approve_emulator_tools else None}.items() if v is not None})
         elif args.command == 'truth':
             from .benchmark_support.evaluator_cli import manage
-            result = manage(args.action,args.case,args.password_file,args.output,args.new_password_file,args.compiler,args.authoring_dir)
+            result = manage(args.action,args.case,args.password_file,args.output,args.new_password_file,args.compiler,args.authoring_dir,
+                            renode=args.renode,ghidra_home=args.ghidra_home,java_home=args.java_home)
         elif args.command == 'compare':
             result = compare(args.before, args.after)
         else:
@@ -111,9 +115,10 @@ def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, aut
     from .benchmark_support.registry import resolve_case, pin_case
     options = dict(options or {})
     definition = resolve_case(case)
-    pin_case(case, options.get('scenario_id'), options.get('case_seed', 0))
+    pin = pin_case(case, options.get('scenario_id'), options.get('case_seed', 0))
     if definition.manifest.get('schema') == 'benchmark-case/2':
-        raise ValueError('V2 case requires independently validated passed calibration before a run')
+        from .benchmark_support.registry import require_calibration
+        require_calibration(pin, options)
     approval = options.pop('scoped_tool_approval', None)
     if approval == 'emulator' and not (definition.execution == 'actual-agent-emulation' and definition.approval_scope == 'emulator'):
         raise ValueError('Scoped approval requires tq9/emulator or bme280/bound-device')

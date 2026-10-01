@@ -22,4 +22,6 @@ The core targets native macOS and Windows 11 or newer. The development machine i
 
 BLE and SCPI discovery are not implemented. An adapter being present does not qualify arbitrary hardware. In particular, transport framing checks do not establish decoder correctness, physical meaning or safe protocol state sequencing.
 
-The three benchmark profiles are documented in [bench/README.md](../bench/README.md). Reports distinguish installation replay, actual model execution, emulated observations and physical observations. Local test and baseline evidence is recorded in [verification](verification.md).
+The registered benchmark cases are documented in [bench/README.md](../bench/README.md). Reports distinguish installation replay, actual model execution, emulated observations and physical observations. Local test and baseline evidence is recorded in [verification](verification.md).
+
+TQ9 v2 requires authenticated calibration for the installed evaluator implementation. Its native macOS reference gate uses GCC/Renode/Ghidra/Java; Controller fixtures use scripted external workers and are labelled accordingly. Neither establishes model success, physical-device behavior or native Windows emulator qualification. Windows CI configuration is not an observed Windows native result. Native process ownership is retained in the running configurator; ownership lost on restart fails closed for operator reconciliation.

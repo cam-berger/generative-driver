@@ -90,7 +90,12 @@ def _smoke():
                            package_execute=unsupported, cleanup=unsupported, score=legacy.score)
 
 
-_ADAPTERS = {'smoke': _smoke, 'legacy-emulator': _legacy_emulator,
+def _emulated():
+    from . import emulated
+    return emulated
+
+
+_ADAPTERS = {'emulator-v2': _emulated, 'smoke': _smoke, 'legacy-emulator': _legacy_emulator,
              'legacy-physical': _legacy_physical}
 
 
@@ -257,3 +262,35 @@ def pin_case(case_id: str, scenario_id: str | None, case_seed: int) -> dict:
             'scope': manifest.get('scope', 'full-workflow' if definition.id == 'tq9' else 'installation' if definition.id == 'setup-smoke' else 'full-workflow'),
             'time_policy': copy.deepcopy(manifest.get('time_policy', {})),
             'calibration': copy.deepcopy(calibration)}
+
+
+def require_calibration(pin: dict, options: dict) -> dict:
+    """Admission is evaluator-owned; public labels alone cannot launch an agent."""
+    current = pin_case(pin['case_id'], pin['scenario_id'], pin['case_seed'])
+    if pin != current:
+        raise ValueError('Calibration admission case pin changed')
+    if pin['manifest'].get('schema') != 'benchmark-case/2':
+        return {'ok': True}
+    if pin.get('calibration', {}).get('status') != 'passed':
+        raise ValueError('V2 case requires independently validated passed calibration before a run')
+    from ..benchmark import case_root
+    from .emulator import truth_for_case
+    from .reference_calibration import input_hashes, validate_record, CORE_MUTANTS
+    from .snapshots import canonical_digest
+    manifest = pin['manifest']
+    try:
+        truth = truth_for_case(case_root(), manifest, options)
+    except (OSError, ValueError) as error:
+        raise ValueError('Authenticated calibration evidence requires the evaluator password file') from error
+    record = truth.get('calibration', {})
+    try:
+        valid = (canonical_digest(record) == manifest['calibration']['evidence_sha256']
+                 and input_hashes(truth) == record['input_hashes']
+                 and truth['images'] == manifest['images']
+                 and set(record['required_mutants']) == set(CORE_MUTANTS) | set(truth['mutations']['required'])
+                 and validate_record(manifest, record)['ok'])
+    except (KeyError, TypeError, ValueError):
+        valid = False
+    if not valid:
+        raise ValueError('Calibration evidence is missing, stale, or incomplete; rerun native calibration')
+    return {'ok': True, 'evidence_sha256': canonical_digest(record)}

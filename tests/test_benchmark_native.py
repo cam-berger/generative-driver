@@ -176,7 +176,7 @@ class BuildTests(unittest.TestCase):
         version = subprocess.check_output([sys.executable, '--version'], text=True).strip()
         manifest = {'schema': 'benchmark-build/1', 'tools': {
             'compiler': {'version': version},
-            'objcopy': {'filename': __import__('pathlib').Path(sys.executable).name, 'version': version}},
+            'objcopy': {'filename': __import__('pathlib').Path(sys.executable).resolve().name, 'version': version}},
             'source_hashes': {'compile.py': hashlib.sha256(script.read_bytes()).hexdigest()},
             'steps': [['{compiler}', '{authoring}/compile.py', '{output}/firmware.bin']],
             'outputs': ['firmware.bin']}

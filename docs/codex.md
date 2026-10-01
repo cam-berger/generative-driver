@@ -60,3 +60,5 @@ Use the Windows Python executable path on Windows. In the app, an equivalent loc
 The front-end calls the configurator's tools. The configurator launches fresh workers and scopes their tool access. Reopening Codex and asking for the saved run ID retrieves the same progress. Use the [benchmark guide](../bench/README.md) for the initial replay check and paid agent baseline.
 
 The plugin format is validated and the stdio connection is integration-tested. UI menu labels may vary by Codex version. A plugin installation alone does not install the optional native hardware or analysis dependencies.
+
+For TQ9 v2, select the registered `tq9-v2` case and an explicit scenario/seed through the configurator. The evaluator must supply a current native calibration and keep its password outside worker assignments. Workers receive diagnostic feedback; frozen final checks remain encrypted and final failures are terminal. The [benchmark guide](../bench/README.md#versioned-tq9) covers scenario selection and explicit-sidecar offline scoring.

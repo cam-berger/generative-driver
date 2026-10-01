@@ -227,8 +227,9 @@ class Controller:
         if db is None:
             with self._db() as own:
                 return self._event(run_id, kind, payload, own)
-        db.execute('INSERT INTO events(run_id,kind,payload,created) VALUES(?,?,?,?)',
+        cursor = db.execute('INSERT INTO events(run_id,kind,payload,created) VALUES(?,?,?,?)',
                    (run_id, kind, _json(payload), time.time()))
+        return cursor.lastrowid
 
     def _state(self, run_id, status, reason=None, stage=None):
         with self._db() as db:
@@ -439,7 +440,8 @@ class Controller:
                     pin = pin_case(case['id'] if isinstance(case, dict) else case,
                                    options.get('scenario_id'), options.get('case_seed', 0))
                     if pin['manifest'].get('schema') == 'benchmark-case/2':
-                        raise ValueError('V2 case requires independently validated passed calibration before a run')
+                        from .benchmark_support.registry import require_calibration
+                        require_calibration(pin, options)
                     spec['_case_pin'] = pin
                     saved = snapshot_case(self.home / 'runs' / run_id, pin, execution_provenance(config))
                     spec['_snapshot_sha256'] = saved['snapshot_sha256']
@@ -602,6 +604,14 @@ class Controller:
                     case=spec['case']
                     options=spec.get('case_options',{})
                     if isinstance(case,dict): options={**case.get('options',{}),**options}
+                    if spec.get('_case_pin', {}).get('manifest', {}).get('schema') == 'benchmark-case/2':
+                        from .benchmark_support.emulated_evidence import finalize
+                        try:
+                            finalize(case['id'] if isinstance(case,dict) else case, run_dir,
+                                     self.call('result', {'run_id':run_id})['accepted_handoffs'], options)
+                        except Exception as error:
+                            self._state(run_id, 'failed', 'Evaluator evidence sealing failed: '+str(error))
+                            self._event(run_id, 'evidence.sealing_failed', {'reason':type(error).__name__})
                     cleanup(case['id'] if isinstance(case,dict) else case,run_dir,options)
                 except Exception as exc:
                     self._event(run_id,'cleanup.failed',{'reason':type(exc).__name__+': '+str(exc)})
@@ -668,7 +678,11 @@ class Controller:
         if case:
             from .benchmark import prepare_stage
             case_id = case['id'] if isinstance(case, dict) else case
-            return prepare_stage(case_id, stage, run_dir, workspace, accepted, case_options(spec))
+            options = case_options(spec)
+            if spec.get('_case_pin', {}).get('manifest', {}).get('schema') == 'benchmark-case/2' and stage in ('probe','maintain'):
+                return self._evaluator_operation(run_dir.name, stage, None, options,
+                    lambda: prepare_stage(case_id, stage, run_dir, workspace, accepted, options))
+            return prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
         if stage in ('ground','maintain'):
             return {'blocked':stage + ' requires an independent observation/evaluator adapter; none is configured for this device'}
         if stage == 'interpret':
@@ -700,6 +714,29 @@ class Controller:
         return {'objective': spec['goal'], 'inputs': inputs, 'allowed_tools': STAGE_TOOLS[stage],
                 'context': {'stage': stage, 'acceptance': 'Report evidence for this stage; missing evidence blocks acceptance.'}}
 
+    def _evaluator_operation(self, run_id, stage, assignment_id, options, invoke):
+        """One controller owns evaluator effects, uncertainty and actor-labelled evidence."""
+        with self._lock:
+            operation_lock = self._operations.setdefault(run_id, threading.RLock())
+        with operation_lock, self._active_operation(run_id):
+            with self._db() as db:
+                row = db.execute('SELECT cancelled,uncertain FROM runs WHERE id=?',(run_id,)).fetchone()
+                if self._closing or row['cancelled'] or row['uncertain']:
+                    raise ValueError('Evaluator operation requires active ownership and reconciled effects')
+                db.execute('UPDATE runs SET uncertain=1 WHERE id=?',(run_id,))
+                evidence_id = self._event(run_id, 'tool.started', {'actor':'evaluator','stage':stage,
+                    'assignment_id':assignment_id,'name':'benchmark_evaluate','effectful':True}, db)
+            options['evaluator_evidence_ids'] = [str(evidence_id)]
+            result = invoke()
+            with self._db() as db:
+                cancelled = db.execute('SELECT cancelled FROM runs WHERE id=?',(run_id,)).fetchone()['cancelled']
+                acknowledged = result.get('fault') != 'host'
+                if not cancelled and acknowledged:
+                    db.execute('UPDATE runs SET uncertain=0 WHERE id=?',(run_id,))
+                self._event(run_id, 'tool.finished', {'actor':'evaluator','stage':stage,'assignment_id':assignment_id,
+                    'name':'benchmark_evaluate','ok':bool(result.get('ok', True)), 'evaluation_event_id':str(evidence_id)}, db)
+            return result
+
     def _check(self, spec, stage, run_dir, workspace, report, accepted, assignment):
         if spec.get('case'):
             from .benchmark import check_stage
@@ -707,6 +744,15 @@ class Controller:
             options = case_options(spec)
             if (case.get('id') if isinstance(case,dict) else case)=='bme280':
                 options['managed_probe']=lambda model_dir,n: self._managed_probe(run_dir.name,assignment,model_dir,n)
+            if spec.get('_case_pin', {}).get('manifest', {}).get('schema') == 'benchmark-case/2':
+                options['assignment_id'] = assignment['id']
+                with self._db() as db:
+                    rows = db.execute("SELECT seq,payload FROM events WHERE run_id=? AND kind='tool.finished' ORDER BY seq", (run_dir.name,)).fetchall()
+                options['worker_events'] = [{'id':str(row['seq']), **json.loads(row['payload'])} for row in rows
+                    if json.loads(row['payload']).get('actor') == 'worker']
+                if stage in ('probe','reuse','maintain'):
+                    return self._evaluator_operation(run_dir.name, stage, assignment['id'], options,
+                        lambda: check_stage(case['id'] if isinstance(case, dict) else case, stage, run_dir, workspace, report, accepted, options))
             return check_stage(case['id'] if isinstance(case, dict) else case, stage, run_dir, workspace, report, accepted, options)
         if stage == 'interpret':
             from .toolkit import call_tool
@@ -923,6 +969,7 @@ class Controller:
             if not case:
                 raise ValueError('Benchmark package execution requires an assigned case')
             options = case_options(spec)
+            options['assignment_id'] = assignment['id']
             arguments['run_dir'] = str(self.home / 'runs' / run['id'])
             result = package_execute(case['id'] if isinstance(case,dict) else case,
                                      stage=assignment['stage'],options=options,**arguments)
@@ -940,8 +987,10 @@ class Controller:
             success = result.get('_exit',0)==0 and bool(result.get('ok',result.get('available',True)))
             if effectful and not cancelled and success:
                 db.execute('UPDATE runs SET uncertain=0 WHERE id=?',(run['id'],))
-            self._event(run['id'], 'tool.finished', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'ok':success,'result':result,'artifacts':observed_artifacts,
+            evidence_id = self._event(run['id'], 'tool.finished', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'ok':success,'result':result,'artifacts':observed_artifacts,
                 'actor':'evaluator' if evaluator_workspace is not None else 'worker'}, db)
+        if name == 'benchmark_package_execute':
+            result = {**result, 'evidence_id': str(evidence_id)}
         return result
 
     def close(self, timeout=10):

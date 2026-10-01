@@ -138,3 +138,8 @@ def build_case(authoring_dir: Path, compiler: Path, output_dir: Path) -> dict:
               'tool_versions': versions, 'commands': commands}
     (output / 'build-report.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     return result
+
+
+def calibrate(case_id: str, options: dict) -> dict:
+    from .reference_calibration import calibrate as native_calibration
+    return native_calibration(case_id, options)

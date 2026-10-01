@@ -1,5 +1,7 @@
 """Evaluator-only native controls. Only ``binding`` may reach a candidate."""
 import copy
+import json
+import math
 import re
 import socket
 import hashlib
@@ -38,6 +40,11 @@ def _validate_recipe(recipe):
             raise ValueError('Invalid stimulus integer bounds')
         _command(spec.get('command'), template=True)
     for spec in recipe.get('observations', {}).values():
+        if isinstance(spec, dict) and spec.get('kind') == 'scalar':
+            if set(spec) != {'kind', 'command', 'unit'} or not isinstance(spec['unit'], str) or not spec['unit']:
+                raise ValueError('Invalid scalar observation definition')
+            _command(spec['command'])
+            continue
         if (not isinstance(spec, dict) or type(spec.get('width')) is not int
                 or spec['width'] not in (8, 16, 32, 64) or type(spec.get('count')) is not int
                 or not 1 <= spec['count'] <= 4096):
@@ -198,7 +205,10 @@ class NativeSession:
                     clean = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', data.decode(errors='replace'))
                     if re.search(r'\(device\)\s*$', clean):
                         if re.search(r'(?:Error|Exception|Could not|No such)', clean, re.I):
-                            raise RuntimeError('Host fault: monitor rejected command: ' + clean)
+                            if self.info.get('private_dir'):
+                                with (Path(self.info['private_dir'])/'monitor-errors.jsonl').open('a') as evidence:
+                                    evidence.write(json.dumps({'command':command,'response':clean,'time':time.time()})+'\n')
+                            raise RuntimeError('Host fault: monitor rejected evaluator control; see private evidence')
                         return data.decode(errors='replace')
                 raise RuntimeError('Host fault: monitor response timed out')
         except OSError as error:
@@ -211,12 +221,19 @@ class NativeSession:
             response = self._monitor(command)
             clean = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', response)
             tail = clean.split(command, 1)[-1].split('(device)', 1)[0].strip()
-            tokens = re.findall(r'(?<![\w.])-?(?:0x[0-9a-fA-F]+|[0-9]+)(?![\w.])', tail)
-            numbers = [int(token, 16 if '0x' in token else 10) for token in tokens]
-            if (len(numbers) != spec['count'] or
-                    any(not -(2 ** (spec['width'] - 1)) <= value < 2 ** spec['width'] for value in numbers)):
-                raise RuntimeError('Host fault: incomplete or invalid monitor observation: ' + name)
-            value = numbers[0] if spec['count'] == 1 else numbers
+            if spec.get('kind') == 'scalar':
+                if re.fullmatch(r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?', tail) is None:
+                    raise RuntimeError('Host fault: missing or malformed scalar observation: ' + name)
+                value = float(tail)
+                if not math.isfinite(value):
+                    raise RuntimeError('Host fault: nonfinite scalar observation: ' + name)
+            else:
+                tokens = re.findall(r'(?<![\w.])-?(?:0x[0-9a-fA-F]+|[0-9]+)(?![\w.])', tail)
+                numbers = [int(token, 16 if '0x' in token else 10) for token in tokens]
+                if (len(numbers) != spec['count'] or
+                        any(not -(2 ** (spec['width'] - 1)) <= value < 2 ** spec['width'] for value in numbers)):
+                    raise RuntimeError('Host fault: incomplete or invalid monitor observation: ' + name)
+                value = numbers[0] if spec['count'] == 1 else numbers
             values[name] = value
             reads.append({'name': name, 'command': command, 'response': response,
                           'value': value, 'time': time.time()})

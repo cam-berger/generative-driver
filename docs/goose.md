@@ -29,3 +29,5 @@ Ask:
 > Use Generative Driver to check my setup, help me select the inputs and device connection, and start a run. Keep the run ID so I can reconnect later.
 
 For installation replay and the real-agent examples, follow [the benchmark guide](../bench/README.md). A recipe grants access to the configurator; it does not establish hardware availability or independent groundtruth. The configured Goose adapter's live behavior must be checked against your installed Goose version; automated contract tests use a scripted external process and are not a model benchmark.
+
+For TQ9 v2, select the registered `tq9-v2` case and an explicit scenario/seed through the configurator. The evaluator must supply a current native calibration and keep its password outside worker assignments. Workers receive diagnostic feedback; frozen final checks remain encrypted and final failures are terminal. The [benchmark guide](../bench/README.md#versioned-tq9) covers scenario selection and explicit-sidecar offline scoring.

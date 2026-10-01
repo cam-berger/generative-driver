@@ -8,6 +8,7 @@ Measure whether a recovered driver produces the required outputs and effects. Ca
 |---|---|---|
 | `setup-smoke` | Recorded replay, scripted | Installation, model validation, probe recording, emission, relocation and standalone package replay. No model performance claim. |
 | `tq9` | Actual stage agents + owned firmware in Renode | All seven roles, numeric decoding and independent timer effects, fresh package-only reuse, seeded identity drift, repair/requalification and second fresh reuse. |
+| `tq9-v2` | Calibrated native evaluator + independently configured stage agents | Versioned semantic, control and identity scenarios; diagnostic repair, sealed private final checks and independently evidenced maintenance. |
 | `bme280` | Optional actual agents + physical sensor | Datasheet recovery, FTDI I2C execution, independent operator reference, portable package, fresh reuse and response to an independently measured ambient change. No injected physical firmware drift. |
 
 Canonical machine assets are installed from [`src/generative_driver/resources/bench`](../src/generative_driver/resources/bench/). This directory holds instructions and selected reports, avoiding duplicate inputs. Case manifests pin firmware, encrypted evidence and evaluator version. No vendor PDF or historical research run is bundled.
@@ -121,3 +122,19 @@ Overall success requires every declared acceptance gate. A strong average cannot
 For a study, run three fresh trial IDs per configuration with identical budgets and case assets; preserve each report, report success count and median time/usage for completed measurements, and retain failures separately. Each `run` is an explicit inference invocation. The first authorized development baseline is one trial, not a repeated study. Runtime-reported usage is not a bill or an estimated token count.
 
 The [selected Codex development baseline](baselines/codex-tq9-2026-09-28.md) includes the original workflow, firmware drift and repair, stage/overall measurements, failed attempts and source snapshot history.
+
+## Versioned TQ9
+
+`tq9` retains its legacy inputs and scoring. Discover registered cases with `python -m generative_driver benchmark cases`. For `tq9-v2`, use the native run command above with `--case tq9-v2 --scenario semantic --case-seed 0` and its separately supplied evaluator password. Scenarios are `semantic`, `control` and `identity`. The seed rotates independent reset-delimited temperature episodes; it does not control model sampling or remove checks. Stateful effect steps retain their order.
+
+Both CLI and direct configurator admission verify the encrypted native calibration against the current evaluator code, dependencies, images and private inputs. A public `passed` label is insufficient. Changed evaluator code requires calibration again. See [evaluator commands](groundtruth/README.md#v2-calibration).
+
+Diagnostic observations may inform repair. Final checks execute after the submitted package is frozen, stay in encrypted evidence and cannot trigger another repair attempt. Fresh workers must separately complete their visible package-only mission. Maintenance claims (`unchanged`, `drift`, or `unknown`) cite current worker evidence; independent evaluator evidence determines credit. Unknown claims receive no detection credit. Lost native process ownership or interrupted scenario application requires operator reconciliation; no PID-only cleanup or uncertain replay occurs.
+
+Offline v2 scoring requires both explicit paths and does not launch tools or workers:
+
+```sh
+python -m generative_driver benchmark score "reports/trial.json" --evidence "/private/evaluator/run-evidence.enc" --password-file "/private/evaluator/tq9-v2.password"
+```
+
+The Python adapter accepts `score(report, password_file=None, *, evidence_path=None)` with the same explicit-sidecar requirement. Calibration/reference executions and scripted Controller tests are evaluator checks, not measurements of model performance.

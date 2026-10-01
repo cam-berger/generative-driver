@@ -1,3 +1,4 @@
+import math
 import unittest
 
 from generative_driver.benchmark_support.behavior import bind_task, validate_records, project_feedback
@@ -60,6 +61,24 @@ class BehaviorTests(unittest.TestCase):
         self.assertEqual(validate_records(contract, [record])['verdict'], 'passed')
         self.assertEqual(validate_records(contract, [dict(record, value=100.5)])['verdict'], 'failed')
         self.assertEqual(validate_records(contract, [dict(record, value='1.0')])['verdict'], 'failed')
+
+    def test_numeric_tolerance_accepts_exact_bounds_and_rejects_next_values(self):
+        check = {'id': 'toy/read', 'revision': 0, 'kind': 'number',
+                 'expected': 1.0, 'absolute_tolerance': .01,
+                 'unit': 'degC', 'channel': 'independent-monitor'}
+        contract = {'schema': 'benchmark-behavior/1', 'artifact_sha256': 'a' * 64,
+                    'checks': [check]}
+        record = {'id': 'toy/read', 'revision': 0, 'unit': 'degC',
+                  'channel': 'independent-monitor', 'artifact_sha256': 'a' * 64}
+        for value in (.99, 1.01):
+            with self.subTest(value=value):
+                self.assertEqual(validate_records(contract, [dict(record, value=value)])['verdict'], 'passed')
+        for value in (math.nextafter(.99, -math.inf), math.nextafter(1.01, math.inf)):
+            with self.subTest(value=value):
+                self.assertEqual(validate_records(contract, [dict(record, value=value)])['verdict'], 'failed')
+        zero = dict(contract, checks=[dict(check, absolute_tolerance=0)])
+        self.assertEqual(validate_records(zero, [dict(record, value=1.0)])['verdict'], 'passed')
+        self.assertEqual(validate_records(zero, [dict(record, value=math.nextafter(1.0, math.inf))])['verdict'], 'failed')
 
     def test_invalid_contract_tolerance_raises(self):
         contract = {'schema': 'benchmark-behavior/1', 'artifact_sha256': 'a' * 64,

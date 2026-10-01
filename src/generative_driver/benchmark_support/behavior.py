@@ -130,7 +130,9 @@ def _record_reason(check, record, artifact):
             numeric_value(value)
         except ValueError:
             return 'invalid observation'
-        if abs(value - check['expected']) > check['absolute_tolerance']:
+        lower = check['expected'] - check['absolute_tolerance']
+        upper = check['expected'] + check['absolute_tolerance']
+        if value < lower or value > upper:
             return 'value mismatch'
     elif check['kind'] == 'boolean':
         if type(value) is not bool:

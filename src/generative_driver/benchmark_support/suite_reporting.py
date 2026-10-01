@@ -5,8 +5,9 @@ import hashlib
 import json
 import math
 import statistics
+from pathlib import PurePosixPath,PureWindowsPath
 from .suites import normalize_manifest,expand_trials
-from .evidence import public_pin,public_v2_report,PIN
+from .evidence import public_pin,public_v2_report,PIN,USAGE
 from ..benchmark import STAGES
 
 QUALIFICATIONS={'recorded-controller-verdicts','regraded-encrypted-evidence'}
@@ -24,8 +25,22 @@ def _number(value,integer=False):
     if value is not None and (type(value) not in ((int,) if integer else (int,float)) or not math.isfinite(value) or value<0):
         raise ValueError('Invalid observed resource measurement')
 
+def _usage_measurements(value):
+    if value is None:return
+    if not isinstance(value,dict):raise ValueError('Invalid usage record')
+    for key in USAGE:
+        if key not in ('coverage','counting'):_number(value.get(key),True)
+    coverage=value.get('coverage')
+    _number(coverage)
+    if coverage is not None and coverage>1:raise ValueError('Invalid usage coverage')
+    if value.get('counting') is not None and not isinstance(value['counting'],str):raise ValueError('Invalid usage counting description')
+
+def _intervention_measurements(rows):
+    for row in rows:
+        for key in ('time','old_deadline','new_deadline','extension_seconds','old_budget_seconds','new_budget_seconds'):
+            _number(row.get(key))
+
 def _experiment(value):
-    value=copy.deepcopy(value)
     _exact(value,('schema','comparison_identity','dimensions','execution_snapshots'))
     if value['schema']!='benchmark-suite-experiment/1':raise ValueError('Unsupported experiment')
     identity=value['comparison_identity']
@@ -34,14 +49,32 @@ def _experiment(value):
     if identity['manifest_sha256']!=_digest(manifest) or identity['trials']!=slots or identity['repetitions']!=manifest['repetitions']:
         raise ValueError('Frozen suite identity mismatch')
     if not _sha(identity['evaluator_revision']):raise ValueError('Missing evaluator identity')
+    for key in ('execution','evidence_track','scope'):
+        if not isinstance(identity[key],str) or not identity[key].strip():raise ValueError('Invalid experiment scope')
     pins=identity['entry_pins']
+    if not isinstance(pins,list) or not isinstance(identity['time_policy'],list):raise ValueError('Invalid entry inventory')
+    public_pins=[]
     if len(pins)!=len(manifest['entries']) or len(identity['time_policy'])!=len(pins):raise ValueError('Incomplete entry pins')
     for entry,pin,policy in zip(manifest['entries'],pins,identity['time_policy']):
         if not isinstance(pin,dict) or set(pin)-set((*PIN,'pin_sha256','image_hashes')):raise ValueError('Unknown public pin field')
+        for key in PIN:
+            if key not in pin:continue
+            item=pin[key]
+            if key=='case_seed':
+                if type(item) is not int:raise ValueError('Invalid pinned seed')
+            elif key.endswith('_sha256'):
+                if item is not None and not _sha(item):raise ValueError('Invalid pin digest')
+            elif item is not None and (not isinstance(item,str) or not item.strip()):raise ValueError('Invalid pin identity value')
         if any(pin.get(k)!=entry[v] for k,v in (('case_id','case'),('scenario_id','scenario'),('case_seed','case_seed'))):raise ValueError('Entry pin mismatch')
         if any(pin.get(k)!=identity[k] for k in ('execution','evidence_track','scope')) or not pin.get('family'):raise ValueError('Mixed or missing pin scope')
         if any(not _sha(pin.get(k)) for k in ('manifest_sha256','truth_sha256','pin_sha256')) or not pin.get('case_version') or not pin.get('evaluator_version'):raise ValueError('Incomplete pin identity')
         if not isinstance(pin.get('image_hashes'),dict) or any(not _sha(v) for v in pin['image_hashes'].values()):raise ValueError('Invalid image identities')
+        for name in pin['image_hashes']:
+            if (not isinstance(name,str) or not name or PurePosixPath(name).is_absolute()
+                    or PureWindowsPath(name).drive or '..' in PurePosixPath(name).parts
+                    or '..' in PureWindowsPath(name).parts):raise ValueError('Invalid public image name')
+        public_pins.append({**{key:pin[key] for key in PIN if key in pin},'pin_sha256':pin['pin_sha256'],
+            'image_hashes':{key:digest for key,digest in pin['image_hashes'].items()}})
         if not isinstance(policy,dict) or set(policy)-{'probe','package_calls','clock','limitation'} or any(not isinstance(v,str) for v in policy.values()):raise ValueError('Invalid time policy')
     _exact(identity['budgets'],('original','effective'))
     original=identity['budgets']['original'];effective=identity['budgets']['effective']
@@ -51,6 +84,7 @@ def _experiment(value):
     for key in original:
         _number(effective[key])
         if effective[key] is None or not original[key]<=effective[key]<=604800:raise ValueError('Invalid effective budget')
+    if not isinstance(effective['child_budget_overrides'],list):raise ValueError('Invalid child overrides')
     positions={slot['trial_key']:i for i,slot in enumerate(slots)};prior=-1
     for override in effective['child_budget_overrides']:
         _exact(override,('trial_key','budget_seconds'));position=positions.get(override['trial_key'],-1)
@@ -58,13 +92,35 @@ def _experiment(value):
         if position<=prior or not original['child_budget_seconds']<override['budget_seconds']<=604800:raise ValueError('Invalid child budget override')
         prior=position
     _exact(identity['intervention_policy'],('scoped_tool_approval','max_model_repairs','max_maintenance_cycles'))
+    policy=identity['intervention_policy']
+    if policy['scoped_tool_approval'] is not None and policy['scoped_tool_approval']!='emulator':raise ValueError('Invalid intervention approval')
+    for key in ('max_model_repairs','max_maintenance_cycles'):
+        if type(policy[key]) is not int or policy[key]<0:raise ValueError('Invalid intervention limit')
     dimensions=value['dimensions']
-    if set(dimensions)-{'runtime','model','provider','version','reasoning_effort','max_turns','skills_revision','toolchain_revision'} or any(v is not None and type(v) not in (str,int,float,bool) for v in dimensions.values()):raise ValueError('Unknown dimensions')
-    if len(value['execution_snapshots'])!=len(slots):raise ValueError('Incomplete snapshot coverage')
+    dimension_fields=('runtime','model','provider','version','reasoning_effort','max_turns','skills_revision','toolchain_revision')
+    if not isinstance(dimensions,dict) or set(dimensions)-set(dimension_fields):raise ValueError('Unknown dimensions')
+    for key,item in dimensions.items():
+        if item is None:continue
+        if key=='max_turns':
+            if type(item) is not int or item<0:raise ValueError('Invalid turn limit')
+        elif key in ('skills_revision','toolchain_revision'):
+            if not _sha(item):raise ValueError('Invalid dimension digest')
+        elif not isinstance(item,str) or not item.strip():raise ValueError('Invalid runtime dimension')
+    if not isinstance(value['execution_snapshots'],list) or len(value['execution_snapshots'])!=len(slots):raise ValueError('Incomplete snapshot coverage')
     for slot,snapshot in zip(slots,value['execution_snapshots']):
         _exact(snapshot,('trial_key','snapshot_sha256'))
         if snapshot['trial_key']!=slot['trial_key'] or snapshot['snapshot_sha256'] is not None and not _sha(snapshot['snapshot_sha256']):raise ValueError('Invalid snapshot identity')
-    return value
+    return {'schema':'benchmark-suite-experiment/1','comparison_identity':{
+        'manifest':manifest,'manifest_sha256':identity['manifest_sha256'],'entry_pins':public_pins,
+        'trials':slots,'repetitions':manifest['repetitions'],
+        **{key:identity[key] for key in ('execution','evidence_track','scope','evaluator_revision')},
+        'time_policy':[{key:row[key] for key in ('probe','package_calls','clock','limitation') if key in row} for row in identity['time_policy']],
+        'budgets':{'original':{key:original[key] for key in ('child_budget_seconds','suite_budget_seconds')},
+            'effective':{**{key:effective[key] for key in ('child_budget_seconds','suite_budget_seconds')},
+                'child_budget_overrides':[{'trial_key':row['trial_key'],'budget_seconds':row['budget_seconds']} for row in effective['child_budget_overrides']]}},
+        'intervention_policy':{key:policy[key] for key in ('scoped_tool_approval','max_model_repairs','max_maintenance_cycles')}},
+        'dimensions':{key:dimensions[key] for key in dimension_fields if key in dimensions},
+        'execution_snapshots':[{'trial_key':row['trial_key'],'snapshot_sha256':row['snapshot_sha256']} for row in value['execution_snapshots']]}
 
 def _maintenance_ok(value):
     return (value.get('false_alarm') is False and type(value.get('drift_claimed')) is bool
@@ -96,18 +152,23 @@ def _validate_trials(manifest,trials,reports,experiment):
         if rid:
             if not isinstance(rid,str) or rid in runs:raise ValueError('Duplicate or invalid run')
             runs.add(rid)
+        _intervention_measurements(trial.get('interventions',[]))
         report=reports.get(rid)
         if report is None:continue
         if (report.get('run_id')!=rid or report.get('case')!=slot['case'] or report.get('scenario_id')!=slot['scenario']
                 or report.get('case_seed')!=slot['case_seed'] or public_pin(report.get('case_pin',{}))!=pin
                 or report.get('snapshot_sha256')!=snapshot['snapshot_sha256'] or not _sha(snapshot['snapshot_sha256'])):
             raise ValueError('Report does not match frozen trial identity')
-        for key in ('elapsed_seconds','worker_seconds','tool_seconds','repair_seconds'):_number(report.get(key))
-        for key in ('total_tokens','observed_total_tokens'):_number((report.get('usage') or {}).get(key),True)
+        for key in ('elapsed_seconds','worker_seconds','tool_seconds','worker_tool_seconds','evaluator_tool_seconds','repair_seconds'):_number(report.get(key))
+        _usage_measurements(report.get('usage'))
+        _intervention_measurements(report.get('interventions',[]))
         for stage in report.get('stages',{}).values():
             for key in ('worker_seconds','tool_seconds','worker_tool_seconds','evaluator_tool_seconds'):_number(stage.get(key))
             _number(stage.get('attempt_count'),True)
-            for attempt in stage.get('attempts',[]):_number(attempt.get('elapsed_seconds'))
+            _usage_measurements(stage.get('usage'))
+            for attempt in stage.get('attempts',[]):
+                _number(attempt.get('elapsed_seconds'))
+                _usage_measurements(attempt.get('usage'))
     if set(reports)-runs:raise ValueError('Report outside planned trials')
 
 

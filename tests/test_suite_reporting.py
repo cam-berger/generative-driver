@@ -401,3 +401,79 @@ class AdaptedDiagnosticIdentityTests(unittest.TestCase):
         owner['benchmark_summary']['evaluations'][0]['frozen_artifact_sha256']='2'*64
         report.update(copy.deepcopy(owner['benchmark_summary']))
         self.assertFalse(_recorded_success(owner,events,report))
+
+class PublicBoundaryFixTests(unittest.TestCase):
+    def test_nested_experiment_values_cannot_retain_private_payloads(self):
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        private={'unfamiliar':'/private/PRIVATE_POLICY'}
+        changes=[lambda e:e['comparison_identity']['intervention_policy'].update(scoped_tool_approval=private),
+            lambda e:e['comparison_identity']['intervention_policy'].update(max_model_repairs=private),
+            lambda e:e['comparison_identity']['intervention_policy'].update(max_maintenance_cycles=True),
+            lambda e:e['comparison_identity']['intervention_policy'].update(scoped_tool_approval='physical'),
+            lambda e:e['comparison_identity']['entry_pins'][0].update(variant=private),
+            lambda e:e['comparison_identity']['entry_pins'][0].update(case_version=private),
+            lambda e:e['comparison_identity']['entry_pins'][0].update(family=private),
+            lambda e:e['comparison_identity'].update(execution=private),
+            lambda e:e['comparison_identity']['time_policy'].__setitem__(0,{'clock':private}),
+            lambda e:e['dimensions'].update(model=private),
+            lambda e:e['dimensions'].update(max_turns=True),
+            lambda e:e['dimensions'].update(skills_revision=private),
+            lambda e:e['comparison_identity']['entry_pins'][0].update(image_hashes={'/private/PRIVATE_IMAGE':'a'*64}),
+            lambda e:e['comparison_identity']['entry_pins'][0].update(image_hashes={'C:\\private\\PRIVATE_IMAGE':'a'*64}),
+            lambda e:e['comparison_identity']['entry_pins'][0].update(image_hashes={7:'a'*64})]
+        for index,change in enumerate(changes):
+            m,t,r,e=fixture();change(e)
+            with self.subTest(index=index),self.assertRaises(ValueError):
+                aggregate_suite(m,t,{},'recorded-controller-verdicts',experiment=e)
+        m,t,r,e=fixture();e['comparison_identity']['intervention_policy']['scoped_tool_approval']='emulator'
+        result=aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
+        e['comparison_identity']['intervention_policy']['scoped_tool_approval']=private
+        self.assertEqual(result['experiment']['comparison_identity']['intervention_policy']['scoped_tool_approval'],'emulator')
+        self.assertNotIn('PRIVATE',json.dumps(result))
+
+    def test_every_exported_usage_counter_is_validated_at_each_level(self):
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        fields=('input_tokens','cached_input_tokens','output_tokens','reasoning_output_tokens','total_tokens','observed_total_tokens','reported_attempts','attempts')
+        for level in ('report','stage','attempt'):
+            for field in fields:
+                for invalid in (-7,True,1.5,float('nan'),float('inf'),'7',{'private':'PRIVATE'}):
+                    m,t,r,e=fixture();record=r['r1']
+                    if level!='report':record=record['stages']['probe']
+                    if level=='attempt':record=record['attempts'][0]
+                    record.setdefault('usage',{})[field]=invalid
+                    with self.subTest(level=level,field=field,invalid=invalid),self.assertRaises(ValueError):
+                        aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
+            for invalid in (-.1,1.1,True,float('inf')):
+                m,t,r,e=fixture();record=r['r1'] if level=='report' else r['r1']['stages']['probe']
+                if level=='attempt':record=record['attempts'][0]
+                record.setdefault('usage',{})['coverage']=invalid
+                with self.subTest(level=level,coverage=invalid),self.assertRaises(ValueError):aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
+        m,t,r,e=fixture()
+        for record in (r['r1'],r['r1']['stages']['probe'],r['r1']['stages']['probe']['attempts'][0]):
+            record['usage']={'input_tokens':None,'output_tokens':0,'total_tokens':None,'coverage':.5,'counting':'observed subset','unfamiliar':{'private':'PRIVATE'}}
+        result=aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
+        attempt=result['trials'][0]['stages']['probe']['attempts'][0]
+        self.assertIsNone(attempt['usage']['total_tokens']);self.assertEqual(attempt['usage']['output_tokens'],0)
+        self.assertEqual(attempt['usage']['coverage'],.5);self.assertNotIn('PRIVATE',json.dumps(result))
+
+    def test_all_projected_duration_fields_reject_negative_nonfinite_and_boolean_values(self):
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        groups={'report':('elapsed_seconds','worker_seconds','tool_seconds','worker_tool_seconds','evaluator_tool_seconds','repair_seconds'),
+            'stage':('worker_seconds','tool_seconds','worker_tool_seconds','evaluator_tool_seconds'),'attempt':('elapsed_seconds',)}
+        for level,fields in groups.items():
+            for field in fields:
+                for invalid in (-1,True,float('nan'),float('inf')):
+                    m,t,r,e=fixture();record=r['r1'] if level=='report' else r['r1']['stages']['probe']
+                    if level=='attempt':record=record['attempts'][0]
+                    record[field]=invalid
+                    with self.subTest(level=level,field=field,invalid=invalid),self.assertRaises(ValueError):aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
+
+    def test_published_intervention_durations_are_validated(self):
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        for source in ('trial','report'):
+            for field in ('extension_seconds','old_budget_seconds','new_budget_seconds'):
+                for invalid in (-1,True,float('inf')):
+                    m,t,r,e=fixture();record=t[0] if source=='trial' else r['r1']
+                    record['interventions']=[{'event_id':1,'kind':'run.budget_extended','time':1,field:invalid}]
+                    with self.subTest(source=source,field=field,invalid=invalid),self.assertRaises(ValueError):
+                        aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)

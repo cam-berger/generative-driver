@@ -35,7 +35,7 @@
   },
   "truth": {
     "path": "groundtruth/sampled-sensor-v1.enc",
-    "sha256": "8694cc3bc729ba938bed9d5dbcac8622c1a8186ce2a5681e9bed45d28cb6d9fe"
+    "sha256": "b44b91e4df2aefe0db77746f62a6773d6e870d1ee4b9e97dd55cce01d9f4b2aa"
   },
   "default_effects": [
     "write"
@@ -43,10 +43,26 @@
   "approval_scope": "emulator",
   "calibration": {
     "status": "pending",
+    "evidence_sha256": "b36e900827143f800afb6a823e77be0215822ccbad0bfcba389387acf1f97fef",
     "input_hashes": {
       "source": "22db46bf51be6ec5fdd141211385ac88b48eaa825527130fb00af1bc8cbc5918",
-      "contract": "3b5a5c5a3d35f0a1bc6cdb4979c77efe7d4e537abad1d4920a46406b30c3e97b"
-    }
+      "contract": "3b5a5c5a3d35f0a1bc6cdb4979c77efe7d4e537abad1d4920a46406b30c3e97b",
+      "recipe": "e8b105d2b902b7eacbfc2d8ea5e8bca6d8141555c7035948394238e7cbb08975",
+      "references": "986ae98aeddda6e36a16aaafb35f680d04ee303b80be1391483f4416ca048141",
+      "mutations": "8f742280bcda61215272d0935bf6723140675013222e5730341b17889c3a39d8",
+      "build": "bf75b451cd8626eeddf539cca923f1c7e6245ea6892ac23b7e5dc80a48b5c57b",
+      "inventory": "68616fcd73b2a174959fcfd7b8e13c81dd7813b8ce8200bc55eb3b99588ad92b"
+    },
+    "execution": "reference-calibration",
+    "backend": "native-renode",
+    "references": 2,
+    "reference_runs": 8,
+    "mutants": 5,
+    "native_runs": 13,
+    "observed_platform": "macOS arm64",
+    "measured_status": "passed",
+    "measured_source_revision": "aee512e7701d6a426df682865a7b5ffc2a7f8544",
+    "limitation": "Current evaluator changed after measurement; final integration native refresh required"
   },
   "provenance": {
     "source": "Independently authored family firmware",
@@ -65,7 +81,6 @@
     "limitation": "Thinking time excluded; not a real-time control benchmark"
   },
   "limitations": [
-    "Reference calibration pending",
     "UART-over-TCP does not prove wire baud correctness",
     "Independent emulator observation is not physical measurement"
   ]

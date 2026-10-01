@@ -54,3 +54,15 @@ Windows 11 workstation UI setup and the native Windows Renode/Ghidra benchmark h
 New firmware-family admission validates the authenticated exact private inventory, current evaluator/dependency and executed runtime identities, pinned images, two distinct references, diagnostic and frozen-package final coverage, semantic/control maintenance, and every required changed mutant with its exact required failure IDs. The selected native gate is documented in [evaluator evidence](../bench/groundtruth/README.md#authored-family-calibration). Public toy contract tests cannot qualify distributed assets.
 
 Source and installed-wheel tests require no password, native emulator, analysis tool, inference call or physical device. Native reference calibration is a separate measured gate. Native Windows Renode/Ghidra qualification and model-performance pilot execution remain unobserved.
+
+### Historical native family calibration — 2026-10-01
+
+At source revision `aee512e`, native reference calibration passed on macOS 26.5.1 arm64 with Python 3.13.12, cryptography 50.0.1 and mcp 2.2.0. GCC 14.2.1 rebuilt every pinned binary; Renode 1.16.1 measured the episodes; Ghidra 12.1.3 with OpenJDK 21.0.12.1 imported and decompiled every pinned image. Two independently authored references passed eight episodes per case, including emitted-package final execution. Required behavioral mutants were rejected.
+
+| Case | Correct reference episodes | Rejected mutant executions | Native runs |
+|---|---:|---:|---:|
+| tq9-v2 | 8 | 24 | 32 |
+| sampled-sensor-v1 | 8 | 5 | 13 |
+| parameter-store-v1 | 8 | 6 | 14 |
+
+At that revision, the new-family gate also passed native malformed reset-vector refusal checks and authenticated admission passed for all seven registered scenarios. Public manifests retain those encrypted historical records and report their measured platform and counts. The subsequent sealed interpretation-kit correction changes evaluator identity: current calibration status is pending, and admission refuses these historical records. One native refresh is deferred to the final integration gate after suite implementation and review. Failed and interrupted development calibrations were retained; none supplied the published qualification. The original TQ9 and September 28 baseline identities remain unchanged. These are reference-calibration results, with no model-performance or physical-grounding claim. Native Windows qualification remains unobserved.

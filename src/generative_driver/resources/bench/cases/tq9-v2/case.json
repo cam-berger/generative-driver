@@ -33,11 +33,11 @@
   },
   "truth": {
     "path": "groundtruth/tq9-v2.enc",
-    "sha256": "f593a86aa20a588eb649572f47d097a2988aa0481715d6e2bac52ac484babe3f"
+    "sha256": "e3acab7e6e5f255b47a2a6d58b283a2333734bea356698f8e523d9d949ae1bf0"
   },
   "calibration": {
-    "status": "passed",
-    "evidence_sha256": "9e4ede72ffea7b4cfe6688bd4444d7350f18a3423eac3441f4b83c56c1545b98",
+    "status": "pending",
+    "evidence_sha256": "8b8e406fb6f3ddcdef44b61decb6ff656ac86197d43715772e6cb6d587df118f",
     "input_hashes": {
       "source": "7ab030a6849a88ae0f1fd4faff1432fab6f3a0bcc20f90bb96869fa72c4d7411",
       "contract": "1ad27619046750344210b79751b71d701df1ad000d85f59f6a5e8e5ecd4bc54c",
@@ -46,7 +46,17 @@
       "mutations": "41af47ad038cc02c68afb1c10c9c912937a9ebec216bd1e9dd3e81607ae9e731",
       "build": "970318318a5ac8ac09852cc60a7e77df481af2665edffa0952fedd2c4d46f8d2",
       "analysis": "838f9a43ebceb3ffb7445cb6cf601ce1430a0d4dea53a3b618fea72b41f68b7e"
-    }
+    },
+    "execution": "reference-calibration",
+    "backend": "native-renode",
+    "references": 2,
+    "reference_runs": 8,
+    "mutants": 24,
+    "native_runs": 32,
+    "observed_platform": "macOS arm64",
+    "measured_status": "passed",
+    "measured_source_revision": "aee512e7701d6a426df682865a7b5ffc2a7f8544",
+    "limitation": "Current evaluator changed after measurement; final integration native refresh required"
   },
   "time_policy": {
     "probe": "continuous emulator virtual time",

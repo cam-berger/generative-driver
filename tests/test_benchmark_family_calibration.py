@@ -411,6 +411,33 @@ class StoreReuseTests(unittest.TestCase):
             with self.subTest(composition=name):
                 self.assertTrue(parameter_store.reuse_passed(events,caps))
 
+class InterpretationHelperTests(unittest.TestCase):
+    def test_family_preparation_supplies_and_seals_reachable_generic_prescript(self):
+        import json,subprocess,sys,tempfile
+        from pathlib import Path
+        from generative_driver.benchmark import prepare_stage,check_stage
+        from generative_driver.toolkit import resources_root
+        packaged=resources_root()/'toolchain/skills/interpret-firmware-binary/SeedCortexM.java'
+        for case in ('sampled-sensor-v1','parameter-store-v1'):
+            with self.subTest(case=case),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp);prepared=prepare_stage(case,'interpret',root/'run',root/'worker')
+                workspace=Path(prepared['work_dir']);seed=workspace/'SeedCortexM.java'
+                self.assertTrue(seed.is_file(),'Generic calibrated prescript missing from neutral kit')
+                self.assertEqual(seed.read_bytes(),packaged.read_bytes())
+                self.assertIn(str(seed),prepared['inputs'])
+                hashes=json.loads((workspace/'INPUT_HASHES.json').read_text())
+                self.assertEqual(hashes['SeedCortexM.java'],hashlib.sha256(seed.read_bytes()).hexdigest())
+                guide=json.loads((workspace/'ANALYSIS_TOOLS.json').read_text())['optional_cortex_m_prescript']
+                self.assertIn('image evidence',guide['when'])
+                self.assertIn('--prescript SeedCortexM.java',guide['usage'])
+                self.assertIn('--script-path',guide['usage'])
+                helper=subprocess.run([sys.executable,str(workspace/'ghidra_run.py'),'--help'],capture_output=True,text=True)
+                self.assertEqual(helper.returncode,0)
+                self.assertIn('--prescript',helper.stdout)
+                seed.write_bytes(seed.read_bytes()+b'\n// modified')
+                checked=check_stage(case,'interpret',root/'run',workspace,{})
+                self.assertFalse(next(c for c in checked['checks'] if c['name']=='sealed_inputs')['passed'])
+
 class StageDispatchTests(unittest.TestCase):
     def test_diagnostic_stage_uses_family_contract_and_monitor_units(self):
         import tempfile

@@ -22,10 +22,26 @@ def pilot_manifest():
     }''')
 
 
-def legacy_manifest():
-    manifest = pilot_manifest()
-    manifest['entries'] = [{'case': 'tq9', 'scenario': 'identity', 'case_seed': 0}]
-    return manifest
+def legacy_manifest(repetitions=1):
+    return {'schema':'benchmark-suite/1','id':'scripted-contract','version':'1',
+        'entries':[{'case':'tq9','scenario':'identity','case_seed':0}],
+        'repetitions':repetitions,'child_budget_seconds':120,
+        'suite_budget_seconds':120,'max_active_children':1}
+
+
+def sqlite_context(path):
+    from contextlib import contextmanager
+    import sqlite3
+    @contextmanager
+    def open_db():
+        db=sqlite3.connect(path,timeout=20)
+        try:
+            db.row_factory=sqlite3.Row
+            db.execute('PRAGMA journal_mode=WAL')
+            db.execute('PRAGMA busy_timeout=20000')
+            with db:yield db
+        finally:db.close()
+    return open_db
 
 
 def public_case_fixture(root, case_id='tq9-v2', *, calibration=None, **changes):

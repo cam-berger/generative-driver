@@ -211,6 +211,10 @@ class Controller:
                 db.execute("UPDATE assignments SET state='interrupted' WHERE run_id=? AND state='active'", (row['id'],))
                 self._event(row['id'],'run.recovered',{'uncertain_effect':bool(uncertain)},db)
 
+        from .benchmark_support.suite_store import SuiteStore
+        self._suites = SuiteStore(self._db)
+        self._suites.recover()
+
     @contextmanager
     def _db(self):
         db = sqlite3.connect(self.db_path, timeout=20)
@@ -251,6 +255,8 @@ class Controller:
         params = params or {}
         if method == 'start':
             return self.start(params)
+        if method.startswith('suite_'):
+            return self._suite_call(method,params)
         run_id = params.get('run_id')
         row = self._row(run_id)
         if method in ('tool', 'tools'):
@@ -380,6 +386,72 @@ class Controller:
             return self.call('status',{'run_id':run_id})
         raise ValueError('Unknown method: ' + str(method))
 
+    def suite_start(self,params):
+        from .benchmark_support.suites import normalize_manifest,freeze_suite
+        from .benchmark_support.snapshots import execution_provenance
+        manifest=normalize_manifest(params.get('manifest'))
+        executor=params.get('executor','codex')
+        options=params.get('options',{})
+        request={'manifest':manifest,'executor':executor,'options':options}
+        with self._lock:
+            saved=self._suites.find_request(params.get('request_id'),request)
+            if saved is not None:
+                return {'ok':True,'suite_id':saved['suite_id'],'duplicate':True}
+            if self._closing:raise ValueError('Configurator is stopping')
+            config_path=self.home/'config.json'
+            config=json.loads(config_path.read_text(encoding='utf-8')).get('executors',{}).get(executor,{}) if config_path.is_file() else {}
+            config={**config,'runtime':executor}
+            frozen=freeze_suite(manifest,executor,config,options,execution_provenance(config))
+            saved=self._suites.create(frozen,params.get('request_id'))
+            return {'ok':True,'suite_id':saved['suite_id'],'duplicate':False}
+
+    def _suite_call(self,method,params):
+        if method=='suite_start':return self.suite_start(params)
+        suite_id=params.get('suite_id')
+        suite=self._suites.get(suite_id)
+        if method=='suite_events':return {'ok':True,**self._suites.events(suite_id,params.get('after',0))}
+        active=next((trial for trial in suite['trials'] if trial['status'] in ('launching','running')),None)
+        status={'ok':True,'suite_id':suite_id,**{key:suite[key] for key in ('status','created','updated')},
+            'reason':None if suite['reason'] is None else 'Explicit suite resolution required',
+            'active_child_id':active['run_id'] if active else None,
+            'planned':len(suite['trials']),'completed':sum(trial['status']=='finished' for trial in suite['trials']),
+            'stopping':False}
+        if method=='suite_status':return status
+        if method=='suite_result':
+            return {**status,**self._suites.trials(suite_id,params.get('offset',0),params.get('limit',50)),
+                'experiment':self._suite_experiment(suite)}
+        raise ValueError('Unknown suite method: '+str(method))
+
+    def _suite_experiment(self,suite):
+        # Public provenance is an allowlist, never the private execution snapshot.
+        from .benchmark_support.evidence import public_pin
+        frozen=suite['frozen'];manifest=frozen['manifest'];provenance=frozen['provenance']
+        config=frozen['executor_config']
+        def scalars(value,keys):
+            return {key:value[key] for key in keys if key in value and
+                    (value[key] is None or type(value[key]) in (str,int,float,bool))}
+        dimensions=scalars(config,('model','provider','version','reasoning_effort','max_turns'))
+        dimensions.update(runtime=frozen['executor'],**scalars(provenance,('skills_revision','toolchain_revision')))
+        policy={key:manifest[key] for key in ('child_budget_seconds','suite_budget_seconds')}
+        snapshots=[];overrides=[]
+        for trial in suite['trials']:
+            spec=json.loads(self._row(trial['run_id'])['spec']) if trial['run_id'] else {}
+            snapshots.append({'trial_key':trial['trial_key'],'snapshot_sha256':spec.get('_snapshot_sha256')})
+            if spec and spec['budget_seconds']!=policy['child_budget_seconds']:
+                overrides.append({'trial_key':trial['trial_key'],'budget_seconds':spec['budget_seconds']})
+        return {'schema':'benchmark-suite-experiment/1',
+            'comparison_identity':{'manifest':manifest,'manifest_sha256':frozen['manifest_sha256'],
+                'entry_pins':[public_pin(pin) for pin in frozen['entry_pins']],
+                'trials':frozen['trials'],'repetitions':manifest['repetitions'],
+                'execution':frozen['entry_pins'][0]['execution'],
+                'evidence_track':frozen['entry_pins'][0]['evidence_track'],'scope':frozen['scope'],
+                'time_policy':[scalars(pin['time_policy'],('probe','package_calls','clock','limitation')) for pin in frozen['entry_pins']],
+                'evaluator_revision':provenance['evaluator_revision'],
+                'budgets':{'original':policy,'effective':{**policy,'suite_budget_seconds':suite['budget_seconds'],'child_budget_overrides':overrides}},
+                'intervention_policy':{'scoped_tool_approval':frozen['options'].get('scoped_tool_approval'),
+                    'max_model_repairs':2,'max_maintenance_cycles':1}},
+            'dimensions':dimensions,'execution_snapshots':snapshots}
+
     def start(self, params):
         # Submitted intent is compared before reading mutable defaults or resources.
         params = json.loads(_json(params))
@@ -410,7 +482,12 @@ class Controller:
             raise ValueError('effects must contain only read, write, actuate')
         config = {}
         config_path = self.home / 'config.json'
-        if config_path.is_file():
+        if 'case_pin' in params:
+            if not isinstance(params.get('executor_config'),dict):
+                raise ValueError('Frozen case pin requires complete executor_config')
+            if not params.get('case'):
+                raise ValueError('Expected case pin requires a registered case')
+        elif config_path.is_file():
             config = json.loads(config_path.read_text(encoding='utf-8')).get('executors', {}).get(executor, {})
         config = {**config, **params.get('executor_config', {}), 'runtime': executor}
         spec = {**params, 'executor': executor, 'executor_config': config, 'budget_seconds': budget, 'effects': effects,
@@ -439,6 +516,8 @@ class Controller:
                     options = case_options(spec)
                     pin = pin_case(case['id'] if isinstance(case, dict) else case,
                                    options.get('scenario_id'), options.get('case_seed', 0))
+                    if 'case_pin' in params and _json(params['case_pin']) != _json(pin):
+                        raise ValueError('Expected case pin differs from current case inputs')
                     if pin['manifest'].get('schema') == 'benchmark-case/2':
                         required_effects = set(pin['manifest']['default_effects']) - {'read'}
                         if required_effects - set(effects):

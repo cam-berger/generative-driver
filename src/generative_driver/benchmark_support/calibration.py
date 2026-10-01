@@ -43,6 +43,14 @@ def _sha(value):
     return isinstance(value,str) and len(value)==64 and all(c in '0123456789abcdef' for c in value)
 
 
+def execution_input_identity(model, capabilities):
+    """Predict the normalized model file bytes and canonical task-map identity."""
+    normalized={**model,'channel':{'type':'tcp'}}
+    encoded=(json.dumps(normalized,indent=2,allow_nan=False)+'\n').encode()
+    return {'model_sha256':hashlib.sha256(encoded).hexdigest(),
+            'capabilities_sha256':canonical_digest(capabilities)}
+
+
 def validate_calibration(manifest, record):
     """Validate measured coverage, not candidate success flags. Local trust only."""
     from .reference_calibration import calibration_identity
@@ -79,7 +87,7 @@ def validate_calibration(manifest, record):
                     or process['pid']<=0 or not process.get('executable')
                     or process.get('image_sha256')!=run['image_sha256']
                     or run['image_sha256'] != expected_image
-                    or any(not _sha(run.get(k)) for k in ('evidence_sha256','contract_sha256','model_sha256','runtime_sha256'))
+                    or any(not _sha(run.get(k)) for k in ('evidence_sha256','contract_sha256','model_sha256','capabilities_sha256','runtime_sha256'))
                     or run['runtime_sha256']!=runtime or not run['checks']):failures.append('run evidence:'+run['id'])
             if (len(run['check_ids'])!=len(set(run['check_ids']))
                     or {c['id'] for c in run['checks']} != set(run['check_ids']) |
@@ -94,6 +102,9 @@ def validate_calibration(manifest, record):
         used=[]
         for ref in refs:
             selected=[runs[name] for name in ref['runs']];used.extend(ref['runs'])
+            if (set(ref['execution_inputs'])!=set(ref['runs'])
+                    or any(ref['execution_inputs'][r['id']]!={k:r[k] for k in ('model_sha256','capabilities_sha256')} for r in selected)):
+                failures.append('reference execution inputs:'+ref['id'])
             if (ref['passed'] is not True or not _sha(ref['model_sha256'])
                     or len(selected)!=4 or {(r['phase'],r['scenario']) for r in selected}!=_REFERENCE_PHASES
                     or any(r['passed'] is not True or any(c['passed'] is not True for c in r['checks']) for r in selected)):
@@ -104,6 +115,8 @@ def validate_calibration(manifest, record):
             run=runs[row['run']];used.append(row['run'])
             failed={c['id'] for c in run['checks'] if not c['passed']}
             reasons = {'false drift claim'} if row['id']=='false-drift' else {'value mismatch','unit mismatch','invalid observation'}
+            if row['execution_input']!={k:run[k] for k in ('model_sha256','capabilities_sha256')}:
+                failures.append('mutant execution inputs:'+row['id'])
             if (row['rejected'] is not True or not row['expected_failed_checks']
                     or not set(row['expected_failed_checks'])<=set(row['failed_checks'])
                     or len(row['expected_failed_checks'])!=len(set(row['expected_failed_checks']))

@@ -379,19 +379,25 @@ class TQ9V2Tests(unittest.TestCase):
             'images':{'firmware.bin':'a'*64},'input_hashes':{'source':'b'*64,'contract':'c'*64},
             'evaluator_identity':identity,'tools':{name:'observed fixture version' for name in ('compiler','objcopy','renode','ghidra','java')},
             'references':[{'id':name,'model_sha256':digest,'passed':True,'scenarios':['original','semantic','control','identity']}
-                for name,digest in [('a','d'*64),('b','e'*64)]],
+                for name,digest in [('reference-a','d'*64),('reference-b','e'*64)]],
             'required_mutants':['wrong-scale','constant-output','wrong-state','false-drift'],
             'mutants':[{'id':name,'rejected':True,'failed_checks':['fixture/check'], 'failures':[{'id':'fixture/check','reason':'value mismatch'}], 'scenario':scenario}
                 for name in ('wrong-scale','constant-output','wrong-state','false-drift') for scenario in ('original','semantic','control','identity')],
             'scenarios':{name:{'passed':True} for name in ('original','semantic','control','identity')}}
+        names=[ref['id']+'-'+scenario for ref in record['references'] for scenario in ref['scenarios']]
+        names += [row['id']+'-'+row['scenario'] for row in record['mutants']]
+        record['execution_inputs']={name:{'model_sha256':'a'*64,'capabilities_sha256':'b'*64} for name in names}
+        record['runs']=[{'id':name,**value} for name,value in record['execution_inputs'].items()]
         manifest={'id':'tq9-v2','evaluator_version':'2','images':record['images'], 'calibration':{'input_hashes':record['input_hashes']}}
         self.assertTrue(validate_record(manifest,record)['ok'])
-        for change in ('code','reference','mutant','reason','backend'):
+        for change in ('code','reference','mutant','reason','backend','executed-model','executed-capabilities'):
             bad=copy.deepcopy(record)
             if change=='code':bad['evaluator_identity']['sha256']='f'*64
             elif change=='reference':bad['references'].pop()
             elif change=='mutant':bad['mutants'].pop()
             elif change=='reason':bad['mutants'][0]['failures']=[]
+            elif change=='executed-model':bad['runs'][0]['model_sha256']='f'*64
+            elif change=='executed-capabilities':bad['runs'][0]['capabilities_sha256']='f'*64
             else:bad['backend']='scripted TCP fixture'
             with self.subTest(change=change):self.assertFalse(validate_record(manifest,bad)['ok'])
 
@@ -403,7 +409,17 @@ class TQ9V2Tests(unittest.TestCase):
         from generative_driver.benchmark_support.truth import seal
         truth = {key:{} for key in ('source_hashes','contracts','recipe','references','build','analysis')}
         truth['images'] = record['images']
-        truth['mutations'] = {'required':[]}
+        truth['mutations'] = {'required':[],'mutations':[]}
+        model={'operations':{'temp':{'outputs':{'value':{'scale':1,'unit':'degC'}}},'arm':{'toy':1},'disarm':{'toy':0}}}
+        caps={'tasks':{'temperature':{'operation':'temp','outputs':{'temperature':{'output':'value','unit':'degC'}}},
+                       'arm':{'operation':'arm','outputs':{}},'disarm':{'operation':'disarm','outputs':{}}}}
+        truth['references']={name:{'model':{**model,'toy_reference':name},'semantic_model':{**model,'toy_reference':name+'semantic'},
+            'identity_model':{**model,'toy_reference':name+'identity'},'capabilities':caps} for name in ('reference-a','reference-b')}
+        truth=json.loads(json.dumps(truth,sort_keys=True))
+        from generative_driver.benchmark_support.reference_calibration import tq9_execution_inputs
+        record['execution_inputs']=tq9_execution_inputs(truth)
+        record['runs']=[{'id':name,**value} for name,value in record['execution_inputs'].items()]
+
         record['input_hashes'] = input_hashes(truth)
         manifest.update(schema='benchmark-case/2')
         manifest['calibration'] = {'status':'passed','input_hashes':record['input_hashes'],
@@ -417,6 +433,16 @@ class TQ9V2Tests(unittest.TestCase):
             with patch('generative_driver.benchmark_support.registry.pin_case',return_value=pin), \
                  patch('generative_driver.benchmark.case_root',return_value=root):
                 self.assertTrue(require_calibration(pin,{'evaluator_password_file':str(password)})['ok'])
+                for field in ('model_sha256','capabilities_sha256'):
+                    for name in ('reference-a-original','reference-b-semantic','wrong-state-control'):
+                        row=next(row for row in record['runs'] if row['id']==name)
+                        old=row[field];row[field]='f'*64;record['execution_inputs'][name][field]='f'*64
+                        manifest['calibration']['evidence_sha256']=canonical_digest(record)
+                        manifest['truth']['sha256']=seal(truth,root/'truth.enc',password.read_text())
+                        with self.subTest(field=field,run=name),self.assertRaisesRegex(ValueError,'Calibration'):
+                            require_calibration(pin,{'evaluator_password_file':str(password)})
+                        row[field]=old;record['execution_inputs'][name][field]=old
+                manifest['calibration']['evidence_sha256']=canonical_digest(record)
                 truth['recipe']={'changed':True}
                 manifest['truth']['sha256']=seal(truth,root/'truth.enc',password.read_text())
                 with self.assertRaisesRegex(ValueError,'Calibration'):

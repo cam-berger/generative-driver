@@ -327,7 +327,7 @@ def reference_execute(pin, truth, model, capabilities, *, renode, image, output_
             'native_process_observed': session.process is not None and session.process.poll() is None,
             'process': session.info, 'contract': contract, 'records': records,
             'grade': validate_records(contract, records), 'probes': probes,
-            'model_sha256': model_hash, 'package_sha256': frozen,
+            'model_sha256': model_hash, 'capabilities_sha256': canonical_digest(capabilities), 'package_sha256': frozen,
             'artifact_execution': 'emitted-package' if frozen else 'model-runtime',
             'package_dir': str(package) if package is not None else None, 'runtime_sha256': runtime_hash}
         _write(output/'evaluation.json', result)

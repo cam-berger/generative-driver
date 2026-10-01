@@ -52,14 +52,14 @@ class AdmissionTests(unittest.TestCase):
                 name=ref+'-'+phase+'-'+scenario; ids.append(name)
                 runs.append(dict(id=name, phase=phase, scenario=scenario, passed=True,
                     native_process_observed=True, process={'pid':123,'executable':'/toy/renode','image_sha256':('b'*64 if scenario=='semantic' else h)},
-                    image_sha256=('b'*64 if scenario=='semantic' else h), evidence_sha256=h, contract_sha256=h, model_sha256=h,
+                    image_sha256=('b'*64 if scenario=='semantic' else h), evidence_sha256=h, contract_sha256=h, model_sha256=(ref*64), capabilities_sha256=(ref*64),
                     package_sha256=h if phase=='final' else None, runtime_sha256=runtime, check_ids=['toy/ok'], checks=[{'id':'toy/ok','passed':True}]))
-            refs.append(dict(id=ref,model_sha256=('b' if ref=='b' else 'a')*64,passed=True,runs=ids))
+            refs.append(dict(id=ref,model_sha256=('b' if ref=='b' else 'a')*64,passed=True,runs=ids,execution_inputs={r['id']:{k:r[k] for k in ('model_sha256','capabilities_sha256')} for r in runs if r['id'] in ids}))
         mutants=[]
         for name in ('constant','scale','signedness','stale','false-drift'):
             run=copy.deepcopy(runs[0]); run.update(id=name,passed=False,check_ids=['toy/'+name],checks=[{'id':'toy/'+name,'passed':False,'reason':'value mismatch'}]); runs.append(run)
             mutants.append(dict(id=name,rejected=True,run=name,source_sha256=h,mutated_sha256='b'*64,
-                expected_failed_checks=['toy/'+name],failed_checks=['toy/'+name]))
+                expected_failed_checks=['toy/'+name],failed_checks=['toy/'+name],execution_input={k:run[k] for k in ('model_sha256','capabilities_sha256')}))
         false=mutants[-1];false.update(expected_failed_checks=['maintenance/false-drift'],failed_checks=['maintenance/false-drift'],
             source_assessment_sha256=canonical_digest({'maintenance_claim':'unchanged'}),
             mutated_assessment_sha256=canonical_digest({'maintenance_claim':'drift'}))
@@ -99,7 +99,7 @@ class AdmissionTests(unittest.TestCase):
     def test_incomplete_or_self_reported_success_cannot_qualify(self):
         from generative_driver.benchmark_support.calibration import validate_calibration
         for defect in ('backend','image','identity','reference','same-model','mutant','both-lists','unchanged',
-                       'wrong-failure','run','process','package','analysis','tools','malformed','false-control','false-decision','false-digest','input-inventory','runtime','scenario-image','tool-type','native-type','ordinary-reason','false-reason','false-host','duplicate-check','duplicate-run','analysis-type'):
+                       'wrong-failure','run','process','package','analysis','tools','malformed','false-control','false-decision','false-digest','input-inventory','runtime','scenario-image','tool-type','native-type','ordinary-reason','false-reason','false-host','duplicate-check','duplicate-run','analysis-type','executed-model','executed-capabilities'):
             manifest,record=self.fixture()
             if defect=='backend':record['backend']='python-socket-fixture'
             if defect=='image':record['images']={}
@@ -128,6 +128,8 @@ class AdmissionTests(unittest.TestCase):
             if defect=='duplicate-run':record['runs'].append(copy.deepcopy(record['runs'][0]))
             if defect=='analysis-type':record['analysis']['firmware.bin']['returncode']=False
             if defect=='input-inventory':record['input_hashes']={'inventory':'a'*64};manifest['calibration']['input_hashes']=record['input_hashes']
+            if defect=='executed-model':record['runs'][0]['model_sha256']='e'*64
+            if defect=='executed-capabilities':record['runs'][0]['capabilities_sha256']='e'*64
             if defect=='runtime':record['runs'][0]['runtime_sha256']='c'*64
             if defect=='false-digest':record['mutants'][-1]['mutated_assessment_sha256']='c'*64
             with self.subTest(defect=defect):self.assertFalse(validate_calibration(manifest,record)['ok'])
@@ -276,10 +278,26 @@ class FamilyAdmissionBoundaryTests(unittest.TestCase):
             row['source_sha256']=canonical_digest({'model':model,'capabilities':capabilities,'assessment':{'maintenance_claim':'unchanged'}})
             row['mutated_sha256']=canonical_digest({'model':model if row['id']=='false-drift' else {'toy':{'value':7}},
                 'capabilities':capabilities,'assessment':assessment})
+        truth['oracle']={'semantic_model_patches':{ref:[{'op':'replace','path':'/toy/value','value':9}] for ref in ('a','b')}}
         identifiers=['toy/ok','toy/constant','toy/scale','toy/signedness','toy/stale']
         checks=[{'id':name,'revision':0,'kind':'boolean','expected':True,'unit':'boolean','channel':'runtime-transcript'} for name in identifiers]
         phase={'contract':{'schema':'benchmark-behavior/1','artifact_sha256':'a'*64,'checks':checks},'actions':[]}
         truth['scenario_phases']={scenario:{name:copy.deepcopy(phase) for name in ('diagnostic','final','maintenance')} for scenario in ('semantic','control')}
+        def identity(model,caps):
+            import json
+            return {'model_sha256':hashlib.sha256((json.dumps({**model,'channel':{'type':'tcp'}},indent=2,allow_nan=False)+'\n').encode()).hexdigest(),
+                    'capabilities_sha256':canonical_digest(caps)}
+        for ref in record['references']:
+            ref['execution_inputs']={}
+            for name in ref['runs']:
+                measured=next(r for r in record['runs'] if r['id']==name)
+                expected_model={'toy':{'value':9}} if measured['scenario']=='semantic' else truth['references'][ref['id']]['model']
+                expected=identity(expected_model,capabilities)
+                measured.update(expected);ref['execution_inputs'][name]=expected
+        for row in record['mutants']:
+            expected=identity(model if row['id']=='false-drift' else {'toy':{'value':7}},capabilities)
+            next(r for r in record['runs'] if r['id']==row['run']).update(expected)
+            row['execution_input']=expected
         for measured in record['runs']:
             failed={c['id']:c for c in measured['checks'] if not c['passed']}
             measured['check_ids']=list(identifiers)
@@ -290,6 +308,19 @@ class FamilyAdmissionBoundaryTests(unittest.TestCase):
         with patch('generative_driver.benchmark_support.registry.pin_case',return_value=pin),patch(
                 'generative_driver.benchmark_support.emulator.truth_for_case',return_value=truth):
             self.assertTrue(require_calibration(pin,{})['ok'])
+            for index in (0,2,4,8):
+                measured=record['runs'][index]
+                original_model=measured['model_sha256'];original_contract=measured['contract_sha256']
+                owner=next((ref['execution_inputs'][measured['id']] for ref in record['references'] if measured['id'] in ref['runs']),None)
+                if owner is None:owner=next(row['execution_input'] for row in record['mutants'] if row['run']==measured['id'])
+                measured['model_sha256']='e'*64;owner['model_sha256']='e'*64
+                measured['contract_sha256']=canonical_digest({**phase['contract'],
+                    'artifact_sha256':measured['package_sha256'] or measured['model_sha256']})
+                manifest['calibration']['evidence_sha256']=canonical_digest(record)
+                with self.subTest(executed_run=measured['id']),self.assertRaisesRegex(ValueError,'Calibration'):
+                    require_calibration(pin,{})
+                measured['model_sha256']=original_model;owner['model_sha256']=original_model;measured['contract_sha256']=original_contract
+            manifest['calibration']['evidence_sha256']=canonical_digest(record)
             original=record['mutants'][0]['source_sha256']
             record['mutants'][0]['source_sha256']='e'*64
             manifest['calibration']['evidence_sha256']=canonical_digest(record)
@@ -336,13 +367,38 @@ class StoreReuseTests(unittest.TestCase):
                  'before_observation':before,'observation':observation}
                 for op,observation in (('update',committed),('stage',staged),('abort',committed),('read',committed))]
         self.assertTrue(parameter_store.reuse_passed(events,caps))
-        for defect in ('read','abort','bank','commit'):
+        for defect in ('read','abort','bank','commit','left-pending'):
             bad=copy.deepcopy(events)
             if defect=='read':bad[-1]['result']['outputs']['v']=0
             if defect=='abort':bad[2]['observation']['pending_active']=True
             if defect=='bank':bad[-1]['observation']['cell_A_1']=-7
             if defect=='commit':bad[-1]['observation']['generation']=0
+            if defect=='left-pending':bad.append(copy.deepcopy(bad[1]))
             with self.subTest(defect=defect):self.assertFalse(parameter_store.reuse_passed(bad,caps))
+
+    def test_explicit_commit_and_harmless_reads_satisfy_same_observed_mission(self):
+        from generative_driver.benchmark_support import parameter_store
+        caps={'tasks':{k:{'operation':'toy_'+k,'outputs':{'value':{'output':'v'}} if k=='read' else {}}
+                       for k in ('read','update','stage','commit','abort')}}
+        before={**{'cell_'+bank+'_'+str(i):0 for bank in ('A','B') for i in range(4)},
+                'generation':4,'pending_active':False}
+        committed={**before,'cell_B_1':-7,'generation':5}
+        first_stage={**before,'pending_active':True,'pending_B_1':-7}
+        last_stage={**committed,'pending_active':True,'pending_B_1':9}
+        plans={
+            'explicit-commit':[('stage',first_stage),('commit',committed),('stage',last_stage),
+                               ('abort',committed),('read',committed)],
+            'harmless-reads':[('read',before),('update',committed),('read',committed),
+                              ('stage',last_stage),('abort',committed),('read',committed)],
+        }
+        for name,plan in plans.items():
+            events=[];previous=before
+            for operation,observed in plan:
+                events.append({'operation':'toy_'+operation,'before_observation':previous,
+                    'observation':observed,'result':{'ok':True,'outputs':{'v':observed['cell_B_1']} if operation=='read' else {}}})
+                previous=observed
+            with self.subTest(composition=name):
+                self.assertTrue(parameter_store.reuse_passed(events,caps))
 
 class StageDispatchTests(unittest.TestCase):
     def test_diagnostic_stage_uses_family_contract_and_monitor_units(self):

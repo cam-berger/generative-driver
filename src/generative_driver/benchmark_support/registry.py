@@ -275,7 +275,7 @@ def require_calibration(pin: dict, options: dict) -> dict:
         raise ValueError('V2 case requires independently validated passed calibration before a run')
     from ..benchmark import case_root
     from .emulator import truth_for_case
-    from .reference_calibration import input_hashes, validate_record, CORE_MUTANTS
+    from .reference_calibration import input_hashes, validate_record, CORE_MUTANTS, tq9_execution_inputs
     from .snapshots import canonical_digest
     manifest = pin['manifest']
     try:
@@ -288,12 +288,14 @@ def require_calibration(pin: dict, options: dict) -> dict:
     record = truth.get('calibration', {})
     try:
         if manifest.get('family') in ('sampled-sensor', 'parameter-store'):
-            from .calibration import validate_calibration, apply_mutation
+            from .calibration import validate_calibration, apply_mutation, execution_input_identity
             expected = {r['id']: r['expected_failed_checks'] for r in truth['mutations']['mutants']}
             changes = {}
+            mutant_inputs = {}
             for mutation in truth['mutations']['mutants']:
                 source = truth['references'][mutation['reference']]
                 changed = apply_mutation(source['model'], source['capabilities'], mutation)
+                mutant_inputs[mutation['id']]=execution_input_identity(changed['model'],changed['capabilities'])
                 changes[mutation['id']] = (changed['source_sha256'], changed['mutated_sha256'])
             valid = (truth.get('inventory_state') == 'qualified'
                      and canonical_digest(record) == manifest['calibration']['evidence_sha256']
@@ -307,6 +309,16 @@ def require_calibration(pin: dict, options: dict) -> dict:
             from .emulated import family_for
             family=family_for(pin['case_id'])
             runs={r['id']:r for r in record['runs']}
+            for reference in record['references']:
+                source=truth['references'][reference['id']]
+                for name in reference['runs']:
+                    run=runs[name];model=source['model']
+                    if run['scenario']=='semantic':
+                        patches=[{'target':'model',**p} for p in truth['oracle']['semantic_model_patches'][reference['id']]]
+                        model=apply_mutation(model,source['capabilities'],{'id':'semantic','patches':patches})['model']
+                    valid = (valid and reference['execution_inputs'][name]==execution_input_identity(model,source['capabilities']))
+            for row in record['mutants']:
+                valid = (valid and row['execution_input']==mutant_inputs[row['id']])
             for run in runs.values():
                 scenario='control' if run['scenario']=='original' else run['scenario']
                 artifact=run['package_sha256'] or run['model_sha256']
@@ -325,6 +337,7 @@ def require_calibration(pin: dict, options: dict) -> dict:
                      and input_hashes(truth) == record['input_hashes']
                      and truth['images'] == manifest['images']
                      and set(record['required_mutants']) == set(CORE_MUTANTS) | set(truth['mutations']['required'])
+                     and record['execution_inputs']==tq9_execution_inputs(truth)
                      and validate_record(manifest, record)['ok'])
     except (KeyError, TypeError, ValueError):
         valid = False

@@ -87,6 +87,9 @@ def validate_scoped_approval(spec):
 def case_options(spec):
     case=spec.get('case')
     options={**(case.get('options',{}) if isinstance(case,dict) else {}),**spec.get('case_options',{})}
+    options.pop('_execution_run_dir', None)
+    if spec.get('_snapshot_sha256'):
+        options['_execution_run_dir'] = spec['_execution_run_dir']
     if spec.get('binding'):
         options['binding']=spec['binding']
     return {**options,'revision':spec.get('_revision',0),'feedback':spec.get('_feedback'),
@@ -262,6 +265,9 @@ class Controller:
                 agent={'runtime':spec['executor'],'model':config.get('model'),
                     'provider':config.get('provider') or ('openai' if spec['executor']=='codex' else None),
                     'version':config.get('version'),'settings':{k:config[k] for k in ('reasoning_effort','max_turns') if k in config}})
+            if spec.get('_snapshot_sha256'):
+                out['snapshot_sha256'] = spec['_snapshot_sha256']
+                out['case_pin'] = spec['_case_pin']
             with self._db() as db:
                 for table, key in (('reports', 'worker_reports'), ('handoffs', 'accepted_handoffs'), ('verdicts', 'evaluator_verdicts')):
                     out[key] = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM ' + table + ' WHERE run_id=? ORDER BY created', (run_id,))]
@@ -313,6 +319,7 @@ class Controller:
                     raise ValueError('Outstanding effect is uncertain; operator must respond with confirmed_safe after reconciliation')
                 original_spec=json.loads(row['spec'])
                 spec = dict(original_spec)
+                self._verify_snapshot(spec, self.home / 'runs' / run_id)
                 budget_change=None
                 if params.get('budget_seconds') is not None:
                     budget=params['budget_seconds']
@@ -352,6 +359,21 @@ class Controller:
         raise ValueError('Unknown method: ' + str(method))
 
     def start(self, params):
+        # Submitted intent is compared before reading mutable defaults or resources.
+        params = json.loads(_json(params))
+        with self._lock:
+            if params.get('request_id'):
+                with self._db() as db:
+                    found = db.execute('SELECT id,spec FROM runs WHERE request_id=?', (params['request_id'],)).fetchone()
+                if found:
+                    saved = json.loads(found['spec'])
+                    if '_submitted_intent' in saved:
+                        if _json(saved['_submitted_intent']) != _json(params):
+                            raise ValueError('request_id was already used with different inputs')
+                        return {'ok': True, 'run_id': found['id'], 'duplicate': True}
+            return self._start_new(params)
+
+    def _start_new(self, params):
         goal = params.get('goal')
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError('start requires a nonempty goal')
@@ -369,7 +391,8 @@ class Controller:
         if config_path.is_file():
             config = json.loads(config_path.read_text(encoding='utf-8')).get('executors', {}).get(executor, {})
         config = {**config, **params.get('executor_config', {}), 'runtime': executor}
-        spec = {**params, 'executor': executor, 'executor_config': config, 'budget_seconds': budget, 'effects': effects}
+        spec = {**params, 'executor': executor, 'executor_config': config, 'budget_seconds': budget, 'effects': effects,
+                '_submitted_intent': params}
         case=spec.get('case')
         option_bindings=[spec.get('case_options',{}).get('binding')]
         if isinstance(case,dict): option_bindings.append(case.get('options',{}).get('binding'))
@@ -384,10 +407,23 @@ class Controller:
                 if params.get('request_id'):
                     found = db.execute('SELECT id,spec FROM runs WHERE request_id=?', (params['request_id'],)).fetchone()
                     if found:
-                        if found['spec'] != encoded:
+                        if {k:v for k,v in json.loads(found['spec']).items() if k != '_submitted_intent'} != {k:v for k,v in spec.items() if k != '_submitted_intent'}:
                             raise ValueError('request_id was already used with different inputs')
                         return {'ok': True, 'run_id': found['id'], 'duplicate': True}
                 run_id = 'run-' + uuid.uuid4().hex[:16]
+                if case:
+                    from .benchmark_support.registry import pin_case
+                    from .benchmark_support.snapshots import snapshot_case, execution_provenance
+                    options = case_options(spec)
+                    pin = pin_case(case['id'] if isinstance(case, dict) else case,
+                                   options.get('scenario_id'), options.get('case_seed', 0))
+                    if pin['manifest'].get('schema') == 'benchmark-case/2':
+                        raise ValueError('V2 case requires independently validated passed calibration before a run')
+                    spec['_case_pin'] = pin
+                    saved = snapshot_case(self.home / 'runs' / run_id, pin, execution_provenance(config))
+                    spec['_snapshot_sha256'] = saved['snapshot_sha256']
+                    spec['_execution_run_dir'] = str(self.home / 'runs' / run_id)
+                    encoded = _json(spec)
                 self._claim_binding(spec.get('binding'),run_id,db)
                 now = time.time()
                 db.execute('INSERT INTO runs(id,request_id,spec,status,stage,created,updated) VALUES(?,?,?,?,?,?,?)',
@@ -582,7 +618,20 @@ class Controller:
             if digest(path) != expected:
                 raise ValueError('Stale handoff: an assigned input was altered: ' + path)
 
+    @staticmethod
+    def _verify_snapshot(spec, run_dir):
+        if '_snapshot_sha256' not in spec:
+            return None  # Historical runs have no execution evidence to reconstruct.
+        from .benchmark_support.snapshots import require_snapshot, execution_provenance
+        saved = require_snapshot(run_dir, spec['_case_pin'])
+        if saved['snapshot_sha256'] != spec['_snapshot_sha256']:
+            raise ValueError('Execution snapshot hash differs from saved run')
+        if execution_provenance(spec['executor_config']) != saved['executed']:
+            raise ValueError('Execution snapshot implementation or runtime environment changed; start a new run')
+        return saved
+
     def _prepare(self, spec, stage, run_dir, workspace, accepted):
+        self._verify_snapshot(spec, run_dir)
         case = spec.get('case')
         if case:
             from .benchmark import prepare_stage

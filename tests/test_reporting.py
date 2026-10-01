@@ -121,3 +121,47 @@ class ReportTests(unittest.TestCase):
         self.assertIn("export",report["provenance_meaning"]["toolchain_revision"])
         self.assertEqual(report["elapsed_seconds"],590)
         self.assertNotIn("active_seconds",report)
+
+    def test_export_uses_execution_snapshot_when_installed_manifest_and_exporter_drift(self):
+        import shutil
+        from unittest.mock import patch
+        from generative_driver.benchmark import case_root
+        from generative_driver.configurator import Controller
+        from generative_driver.reporting import report_run
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            installed = root / 'installation'
+            shutil.copytree(case_root(), installed)
+            def scripted(request, config, cancel):
+                return {'runtime': 'codex', 'status': 'blocked', 'reason': 'scripted fixture',
+                        'elapsed_seconds': 0, 'usage': None, 'report': None}
+            with patch('generative_driver.benchmark.case_root', return_value=installed), patch('generative_driver.configurator.execute', scripted):
+                controller = Controller(root / 'home')
+                try:
+                    run = controller.start({'goal': 'report pinned execution', 'case': 'tq9',
+                        'executor_config': {'model': 'original'}})
+                    until = time.monotonic() + 5
+                    while time.monotonic() < until:
+                        status = controller.call('status', run)
+                        if status['status'] == 'blocked' and not status['stopping']:
+                            break
+                        time.sleep(.01)
+                    saved = json.loads((root / 'home/runs' / run['run_id'] / 'benchmark/execution.json').read_text())
+                    manifest_path = installed / 'cases/tq9/case.json'
+                    manifest = json.loads(manifest_path.read_text())
+                    manifest.update(version='exporter-new', evaluator_version='exporter-new', execution='wrong-exporter-track')
+                    manifest_path.write_text(json.dumps(manifest))
+                    with patch('generative_driver.client.call', side_effect=lambda method, params, **kwargs: controller.call(method, params)), patch('generative_driver.reporting._tree_hash', return_value='exporter-new'):
+                        report = report_run(run['run_id'], home=root / 'home')
+                    self.assertEqual(report['case_version'], '1')
+                    self.assertEqual(report['evaluator_version'], '1')
+                    self.assertEqual(report['execution'], 'actual-agent-emulation')
+                    self.assertEqual(report['snapshot_sha256'], saved['snapshot_sha256'])
+                    self.assertEqual(report['toolchain_revision'], saved['executed']['toolchain_revision'])
+                    self.assertEqual(report['evaluator_revision'], saved['executed']['evaluator_revision'])
+                    self.assertEqual(report['case_pin'], saved['case_pin'])
+                    self.assertEqual(report['scenario_id'], 'identity')
+                    self.assertEqual(report['case_seed'], 0)
+                    self.assertNotIn('exporting installation', report['provenance_meaning']['toolchain_revision'])
+                finally:
+                    controller.close()

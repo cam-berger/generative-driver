@@ -43,11 +43,21 @@ def _accepted_package(accepted, fallback):
     return Path(fallback)
 
 
+def _case_inputs(run_dir=None):
+    from ..benchmark import case_root
+    if run_dir is not None and (Path(run_dir) / 'benchmark/execution.json').is_file():
+        from .snapshots import read_snapshot
+        saved = read_snapshot(run_dir)
+        return Path(run_dir) / 'benchmark/inputs', saved['case_pin']['manifest']
+    root = case_root() / 'cases/tq9'
+    return root, json.loads((root / 'case.json').read_text())
+
+
 def _load_case(options):
     from ..benchmark import case_root
     from .emulator import truth_for_case
     root = case_root()
-    manifest = json.loads((root / 'cases/tq9/case.json').read_text())
+    _, manifest = _case_inputs(options.get('_execution_run_dir'))
     return root, manifest, truth_for_case(root, manifest, options)
 
 
@@ -58,7 +68,8 @@ def _session(state, options, restart=False):
         RenodeSession(state['session']).stop()
         state.pop('session', None)
     if not state.get('session'):
-        image = root / 'cases/tq9' / ('firmware-next.bin' if state.get('firmware_revision', 0) else 'firmware.bin')
+        inputs, _ = _case_inputs(options.get('_execution_run_dir'))
+        image = inputs / ('firmware-next.bin' if state.get('firmware_revision', 0) else 'firmware.bin')
         state['session'] = RenodeSession.start(options.get('renode'), image, truth).info
     return state['session'], truth
 
@@ -72,9 +83,9 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
     state_path, state = _state(run_dir)
     ws = Path(workspace).resolve()
     ws.mkdir(parents=True, exist_ok=True)
-    manifest = json.loads((case_root() / 'cases/tq9/case.json').read_text())
+    inputs_root, manifest = _case_inputs(run_dir)
     image_name = 'firmware-next.bin' if state.get('firmware_revision', 0) else 'firmware.bin'
-    image = case_root() / 'cases/tq9' / image_name
+    image = inputs_root / image_name
     if hashlib.sha256(image.read_bytes()).hexdigest() != manifest['images'][image_name]:
         raise ValueError('Benchmark firmware does not match the case hash')
     if stage == 'acquire':
@@ -204,7 +215,7 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
     if case_id != 'tq9':
         raise ValueError('Unknown benchmark agent case: ' + case_id)
     if stage == 'acquire':
-        manifest = json.loads((case_root() / 'cases/tq9/case.json').read_text())
+        _, manifest = _case_inputs(run_dir)
         # The import tool is independently observed through its provenance artifact.
         matches = []
         for provenance in ws.rglob('provenance.json'):

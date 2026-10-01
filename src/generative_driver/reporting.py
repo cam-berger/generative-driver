@@ -196,8 +196,9 @@ def markdown(report):
             else:
                 detail = event.get("reason") or event.get("scoped_tool_approval") or ("Content omitted" if event["kind"] == "operator.response" else "Recorded")
             lines.append(f"| {when} | {event['kind']} | {str(detail).replace(chr(10), ' ').replace('|', '/')} |")
-    lines += ["", "Wall time includes stopped intervals; no pause-adjusted active time is inferred. "
-              "Source and environment fields describe the exporting installation; consult execution snapshot history for earlier attempts."]
+    lines += ["", "Wall time includes stopped intervals; no pause-adjusted active time is inferred. " +
+              ("Source and environment fields come from the saved execution snapshot." if report.get('snapshot_sha256') else
+               "Source and environment fields describe the exporting installation; consult execution snapshot history for earlier attempts.")]
     if report.get("reason"):
         lines += ["", "Run outcome: " + report["reason"]]
     if report.get("limitations"):
@@ -222,28 +223,60 @@ def report_run(run_id, home=None, output=None):
         cursor = page["cursor"]
     config = result.get("configuration") or {k: result.get(k) for k in ("case", "budget_seconds", "limits", "agent")}
     case = config.get("case")
+    snapshot = None
+    if result.get('snapshot_sha256'):
+        from .benchmark_support.snapshots import require_snapshot
+        snapshot = require_snapshot(root / 'runs' / run_id, result['case_pin'])
+        if snapshot['snapshot_sha256'] != result['snapshot_sha256']:
+            raise ValueError('Execution snapshot hash differs from saved run')
     manifest_path = case_root() / "cases" / case / "case.json" if case else None
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path and manifest_path.is_file() else {}
+    manifest = snapshot["case_pin"]["manifest"] if snapshot else (json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path and manifest_path.is_file() else {})
     state_path = root / "runs" / run_id / "benchmark/state.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
-    package_root = Path(__file__).parent
-    agent = config.get("agent")
-    if not agent and result.get("worker_reports"):
-        record = result["worker_reports"][0]
-        agent = {key: record.get(key) for key in ("runtime", "provider", "model", "version", "settings")}
-    provenance = {"agent": agent, "environment": {"system": platform.system(), "release": platform.release(),
-                   "architecture": platform.machine(), "python": platform.python_version()},
-                  "budget_seconds": config.get("budget_seconds"), "attempt_limits": config.get("limits"),
-                  "toolchain_revision": hashlib.sha256(
-                      (_tree_hash(package_root) + _tree_hash(package_root.parent / "interface_runtime")).encode()
-                  ).hexdigest(),
-                  "skills_revision": _tree_hash(package_root / "resources/toolchain/skills"),
-                  "truth_sha256": manifest.get("truth", {}).get("sha256"), "case_inputs": manifest.get("images"),
-                  "time_policy": manifest.get("time_policy", state.get("time_policy")),
-                  "artifact_hashes": [{"stage": h["stage"], "revision": h.get("revision", 0),
-                     "artifacts": [{"name": Path(a["path"]).name, "sha256": a["sha256"], "kind": a.get("kind")}
-                                   for a in h["artifacts"]]} for h in result.get("accepted_handoffs", [])]}
+    if snapshot:
+        executed = snapshot['executed']
+        runtime = executed['runtime_configuration']
+        provenance = {**executed, 'agent': {'runtime': runtime.get('runtime'), 'model': runtime.get('model'),
+            'provider': runtime.get('provider') or ('openai' if runtime.get('runtime') == 'codex' else None),
+            'version': runtime.get('version'),
+            'settings': {k: runtime[k] for k in ('reasoning_effort', 'max_turns') if k in runtime}},
+            'budget_seconds': config.get('budget_seconds'), 'attempt_limits': config.get('limits'),
+            'truth_sha256': snapshot['case_pin']['truth_sha256'],
+            'case_inputs': snapshot['case_pin']['image_hashes'], 'time_policy': snapshot['case_pin']['time_policy'],
+            'artifact_hashes': [{'stage': h['stage'], 'revision': h.get('revision', 0),
+                'artifacts': [{'name': Path(a['path']).name, 'sha256': a['sha256'], 'kind': a.get('kind')}
+                    for a in h['artifacts']]} for h in result.get('accepted_handoffs', [])]}
+    else:
+        package_root = Path(__file__).parent
+        agent = config.get("agent")
+        if not agent and result.get("worker_reports"):
+            record = result["worker_reports"][0]
+            agent = {key: record.get(key) for key in ("runtime", "provider", "model", "version", "settings")}
+        provenance = {"agent": agent, "environment": {"system": platform.system(), "release": platform.release(),
+                       "architecture": platform.machine(), "python": platform.python_version()},
+                      "budget_seconds": config.get("budget_seconds"), "attempt_limits": config.get("limits"),
+                      "toolchain_revision": hashlib.sha256(
+                          (_tree_hash(package_root) + _tree_hash(package_root.parent / "interface_runtime")).encode()
+                      ).hexdigest(),
+                      "skills_revision": _tree_hash(package_root / "resources/toolchain/skills"),
+                      "truth_sha256": manifest.get("truth", {}).get("sha256"), "case_inputs": manifest.get("images"),
+                      "time_policy": manifest.get("time_policy", state.get("time_policy")),
+                      "artifact_hashes": [{"stage": h["stage"], "revision": h.get("revision", 0),
+                         "artifacts": [{"name": Path(a["path"]).name, "sha256": a["sha256"], "kind": a.get("kind")}
+                                       for a in h["artifacts"]]} for h in result.get("accepted_handoffs", [])]}
     report = summarize(result, events, case_manifest=manifest, case_state=state, provenance=provenance)
+    if snapshot:
+        report.update(snapshot_sha256=snapshot['snapshot_sha256'], case_pin=snapshot['case_pin'],
+                      scenario_id=snapshot['case_pin']['scenario_id'], case_seed=snapshot['case_pin']['case_seed'],
+                      evaluator_revision=snapshot['executed']['evaluator_revision'],
+                      executed=snapshot['executed'])
+        report['provenance_meaning'] = {
+            'toolchain_revision': 'Implementation captured before execution; pinned by execution snapshot.',
+            'skills_revision': 'Skills captured before execution; pinned by execution snapshot.',
+            'evaluator_revision': 'Evaluator implementation captured before execution.',
+            'environment': 'Environment captured before execution.',
+            'agent': 'Effective runtime configuration captured before execution; individual worker records retain reported identity.',
+            'case_metadata': 'Case manifest and input hashes captured before execution.'}
     report["evaluator_verdicts"] = result.get("evaluator_verdicts", [])
     report = _public(report, root)
     destination = Path(output).resolve() if output else root / "runs" / run_id / "report.json"

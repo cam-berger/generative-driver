@@ -67,6 +67,7 @@ def main(argv=None):
     scoring = commands.add_parser('score')
     scoring.add_argument('report')
     scoring.add_argument('--password-file')
+    scoring.add_argument('--evidence')
     evaluator = commands.add_parser('truth')
     evaluator.add_argument('action', choices=['unlock','rekey','rebuild'])
     evaluator.add_argument('--case',default='tq9',choices=case_ids())
@@ -94,7 +95,7 @@ def main(argv=None):
         elif args.command == 'compare':
             result = compare(args.before, args.after)
         else:
-            result = score(args.report, args.password_file)
+            result = score(args.report, args.password_file, evidence_path=args.evidence)
         print(json.dumps(result, indent=2, allow_nan=False))
         return 0 if not isinstance(result, dict) or result.get('verdict') != 'failed' else 1
     except (OSError, ValueError, RuntimeError) as error:
@@ -245,9 +246,12 @@ def cleanup(case_id, run_dir, options=None):
     return adapter_for(case_id).cleanup(case_id, run_dir, options)
 
 
-def score(report, password_file=None):
+def score(report, password_file=None, *, evidence_path=None):
     from .benchmark_support.registry import adapter_for
     data = _read(report)
+    if data.get('schema') == 'benchmark-report/2':
+        from .benchmark_support.evidence import regrade_v2
+        return regrade_v2(data, evidence_path, password_file)
     case = data.get('case')
     case_id = case.get('id') if isinstance(case, dict) else case
     return adapter_for(case_id).score(data, password_file)

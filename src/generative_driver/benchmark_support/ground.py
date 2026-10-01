@@ -33,6 +33,17 @@ def prepare(accepted, workspace):
         raise ValueError('Accepted observations and model hashes disagree')
     evidence_dir = ws/'evidence'; evidence_dir.mkdir(parents=True, exist_ok=True)
     model_copy = evidence_dir/'model.json'; model_copy.write_bytes(contents[model_hash])
+    if raw.get('schema') == 'benchmark-observations/2':
+        from .behavior import project_feedback
+        records = [record for group in raw.get('diagnostics', [])
+                   if group.get('phase') == 'diagnostic' for record in group.get('records', [])]
+        evidence = ws / 'independent-observations.json'
+        evidence.write_text(json.dumps({'schema': 'benchmark-ground-evidence/2',
+            'model_sha256': model_hash, **project_feedback(records)}, allow_nan=False) + '\n', encoding='utf-8')
+        return {'objective': 'Assess the accepted diagnostic observations against the candidate model. '
+                'Report disagreement or missing evidence. Distinguish candidate decoding from independent measurements.',
+                'inputs': [str(evidence), str(model_copy)], 'allowed_tools': [],
+                'context': {'evidence_scope': 'accepted diagnostics'}}
     inputs, calls, probe_documents = [str(model_copy)], [], []
     for index, call in enumerate(raw.get('calls', []), 1):
         digest = call.get('probe_sha256')

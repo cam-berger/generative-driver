@@ -278,7 +278,13 @@ def report_run(run_id, home=None, output=None):
             'agent': 'Effective runtime configuration captured before execution; individual worker records retain reported identity.',
             'case_metadata': 'Case manifest and input hashes captured before execution.'}
     report["evaluator_verdicts"] = result.get("evaluator_verdicts", [])
-    report = _public(report, root)
+    if snapshot and manifest.get('schema') == 'benchmark-case/2':
+        from .benchmark_support.evidence import public_v2_report
+        report.update({key: state[key] for key in ('evaluations', 'accepted_gates', 'maintenance', 'final_evaluation') if key in state})
+        report['progress'] = result.get('progress', {})
+        report = public_v2_report(report)
+    else:
+        report = _public(report, root)
     destination = Path(output).resolve() if output else root / "runs" / run_id / "report.json"
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")

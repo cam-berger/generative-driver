@@ -315,6 +315,10 @@ class Controller:
                     raise ValueError('Previous worker is still stopping')
                 if row['status'] not in ('blocked','failed','cancelled'):
                     raise ValueError('Only a stopped incomplete run can resume')
+                with self._db() as db:
+                    saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run_id,)).fetchone()
+                if saved and json.loads(saved['payload']).get('terminal_final_failure'):
+                    raise ValueError('Frozen final evaluation failure is terminal; start a new trial')
                 if row['uncertain']:
                     raise ValueError('Outstanding effect is uncertain; operator must respond with confirmed_safe after reconciliation')
                 original_spec=json.loads(row['spec'])
@@ -533,6 +537,14 @@ class Controller:
                     return
                 self._verify_inputs(input_hashes)
                 if not checked.get('ok'):
+                    if checked.get('final_evaluation') is True and checked.get('fault') == 'model' and not checked.get('route'):
+                        progress['terminal_final_failure'] = True
+                        with self._db() as db:
+                            db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)', (run_id, _json(progress)))
+                            self._event(run_id, 'evaluation.final_failed',
+                                {'assignment_id': attempt, 'revision': revision, 'fault': 'model'}, db)
+                        self._state(run_id, 'failed', 'Frozen final evaluation failed')
+                        return
                     if checked.get('route') == 'interpret' and checked.get('fault') == 'model' and stage in ('interpret','probe','ground'):
                         if progress['repairs'] >= int(spec.get('max_revisions',2)):
                             self._state(run_id,'blocked','Model repair budget exhausted: '+checked.get('reason','checks failed'))

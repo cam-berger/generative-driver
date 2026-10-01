@@ -216,8 +216,11 @@ def regrade_v2(report: dict, evidence_path: Path, password_file: Path) -> dict:
         raise ValueError('Report and sealed execution identity mismatch')
     expected_aliases = {key: payload['case_pin'].get(key) for key in
                         ('case_version', 'evaluator_version', 'scenario_id', 'case_seed')}
-    expected_aliases.update(case=payload['case_pin']['case_id'],
-        evaluator_revision=snapshot['executed']['evaluator_revision'])
+    execution = payload['case_pin'].get('execution', 'unclassified')
+    expected_aliases.update(case=payload['case_pin']['case_id'], execution=execution,
+        model_benchmark=execution in ('actual-agent-emulation', 'actual-agent-physical'),
+        **{key: snapshot['executed'][key] for key in
+           ('evaluator_revision', 'toolchain_revision', 'skills_revision')})
     if any(key in report and report[key] != value for key, value in expected_aliases.items()):
         raise ValueError('Conflicting public execution identity')
     identity_fields = ('phase', 'revision', 'frozen_artifact_sha256')

@@ -148,6 +148,18 @@ def operation_effects(name, arguments):
     return {operations[item].get('effect','actuate') for item in names}
 
 
+def _has_terminal_final_failure(db, run_id):
+    saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run_id,)).fetchone()
+    if saved and json.loads(saved['payload']).get('terminal_final_failure'):
+        return True
+    # Also recognize verdicts saved by versions that could lose the progress
+    # marker to cancellation, or by a process that stopped after saving a verdict.
+    verdicts = db.execute('SELECT payload FROM verdicts WHERE run_id=?', (run_id,)).fetchall()
+    return any(value.get('final_evaluation') is True and value.get('fault') == 'model'
+               and value.get('verdict') == 'failed' and not value.get('route')
+               for value in (json.loads(row['payload']) for row in verdicts))
+
+
 class Controller:
     """Public request interface; the daemon owns this object, clients do not."""
     def __init__(self, home):
@@ -186,6 +198,12 @@ class Controller:
                     run_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
             ''')
             for row in db.execute("SELECT * FROM runs WHERE status IN ('queued','running')").fetchall():
+                if _has_terminal_final_failure(db, row['id']):
+                    db.execute("UPDATE runs SET status='failed',reason=?,updated=? WHERE id=?",
+                               ('Frozen final evaluation failed', time.time(), row['id']))
+                    db.execute("UPDATE assignments SET state='failed' WHERE run_id=? AND state='active'", (row['id'],))
+                    self._event(row['id'], 'run.recovered', {'terminal_final_failure': True}, db)
+                    continue
                 spec = json.loads(row['spec'])
                 uncertain = row['uncertain'] or bool(set(spec.get('effects',[])) & {'write','actuate'})
                 db.execute("UPDATE runs SET status='blocked',reason=?,uncertain=?,updated=? WHERE id=?",
@@ -316,9 +334,8 @@ class Controller:
                 if row['status'] not in ('blocked','failed','cancelled'):
                     raise ValueError('Only a stopped incomplete run can resume')
                 with self._db() as db:
-                    saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run_id,)).fetchone()
-                if saved and json.loads(saved['payload']).get('terminal_final_failure'):
-                    raise ValueError('Frozen final evaluation failure is terminal; start a new trial')
+                    if _has_terminal_final_failure(db, run_id):
+                        raise ValueError('Frozen final evaluation failure is terminal; start a new trial')
                 if row['uncertain']:
                     raise ValueError('Outstanding effect is uncertain; operator must respond with confirmed_safe after reconciliation')
                 original_spec=json.loads(row['spec'])
@@ -526,10 +543,21 @@ class Controller:
                     return
                 self._verify_inputs(input_hashes)
                 checked = self._check(current_spec, stage, run_dir, workspace, report, accepted, assignment)
-                if checked.get('evaluator') is not None:
+                terminal_final = (not checked.get('ok') and checked.get('final_evaluation') is True
+                                  and checked.get('fault') == 'model' and not checked.get('route'))
+                if checked.get('evaluator') is not None or terminal_final:
                     with self._db() as db:
-                        db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)', (attempt, run_id, stage,
-                            _json({'stage':stage, 'assignment_id':attempt, **checked['evaluator']}), time.time()))
+                        if checked.get('evaluator') is not None:
+                            db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)', (attempt, run_id, stage,
+                                _json({'stage':stage, 'assignment_id':attempt, **checked['evaluator']}), time.time()))
+                        if terminal_final:
+                            progress['terminal_final_failure'] = True
+                            db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)', (run_id, _json(progress)))
+                            self._event(run_id, 'evaluation.final_failed',
+                                {'assignment_id': attempt, 'revision': revision, 'fault': 'model'}, db)
+                if terminal_final:
+                    self._state(run_id, 'failed', 'Frozen final evaluation failed')
+                    return
                 if cancel.is_set():
                     return
                 if self._row(run_id)['uncertain']:
@@ -537,14 +565,6 @@ class Controller:
                     return
                 self._verify_inputs(input_hashes)
                 if not checked.get('ok'):
-                    if checked.get('final_evaluation') is True and checked.get('fault') == 'model' and not checked.get('route'):
-                        progress['terminal_final_failure'] = True
-                        with self._db() as db:
-                            db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)', (run_id, _json(progress)))
-                            self._event(run_id, 'evaluation.final_failed',
-                                {'assignment_id': attempt, 'revision': revision, 'fault': 'model'}, db)
-                        self._state(run_id, 'failed', 'Frozen final evaluation failed')
-                        return
                     if checked.get('route') == 'interpret' and checked.get('fault') == 'model' and stage in ('interpret','probe','ground'):
                         if progress['repairs'] >= int(spec.get('max_revisions',2)):
                             self._state(run_id,'blocked','Model repair budget exhausted: '+checked.get('reason','checks failed'))

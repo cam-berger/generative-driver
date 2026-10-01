@@ -1,0 +1,72 @@
+{
+  "schema": "benchmark-case/2",
+  "id": "sampled-sensor-v1",
+  "family": "sampled-sensor",
+  "version": "1",
+  "evaluator_version": "2",
+  "adapter_key": "emulator-v2",
+  "execution": "actual-agent-emulation",
+  "evidence_track": "firmware",
+  "scope": "full-workflow",
+  "scenarios": [
+    "semantic",
+    "control"
+  ],
+  "scenario_descriptors": {
+    "semantic": {
+      "kind": "behavior-change"
+    },
+    "control": {
+      "kind": "no-change"
+    }
+  },
+  "required_stages": [
+    "acquire",
+    "interpret",
+    "probe",
+    "ground",
+    "emit",
+    "reuse",
+    "maintain"
+  ],
+  "images": {
+    "firmware.bin": "637370d3d7192a17b6abeb79a3fcbc60ec2f47eb14e199627798756c02bbb1e9",
+    "firmware-drift.bin": "dd13b6d213907f86bd4211bc544e687a8b93a2baecc9a9270113414b2e79b379"
+  },
+  "truth": {
+    "path": "groundtruth/sampled-sensor-v1.enc",
+    "sha256": "8694cc3bc729ba938bed9d5dbcac8622c1a8186ce2a5681e9bed45d28cb6d9fe"
+  },
+  "default_effects": [
+    "write"
+  ],
+  "approval_scope": "emulator",
+  "calibration": {
+    "status": "pending",
+    "input_hashes": {
+      "source": "22db46bf51be6ec5fdd141211385ac88b48eaa825527130fb00af1bc8cbc5918",
+      "contract": "3b5a5c5a3d35f0a1bc6cdb4979c77efe7d4e537abad1d4920a46406b30c3e97b"
+    }
+  },
+  "provenance": {
+    "source": "Independently authored family firmware",
+    "source_archive": "encrypted evaluator bundle",
+    "license": "Apache-2.0",
+    "build_execution": "reference-build",
+    "build_tools": {
+      "compiler": "arm-none-eabi-gcc (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 14.2.1 20241119",
+      "objcopy": "GNU objcopy (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119"
+    },
+    "build": "Two byte-identical native binary builds"
+  },
+  "time_policy": {
+    "probe": "continuous emulator virtual time",
+    "package_calls": "paused between calls",
+    "limitation": "Thinking time excluded; not a real-time control benchmark"
+  },
+  "limitations": [
+    "Reference calibration pending",
+    "UART-over-TCP does not prove wire baud correctness",
+    "Independent emulator observation is not physical measurement"
+  ]
+}

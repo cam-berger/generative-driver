@@ -84,7 +84,14 @@ def build_case(authoring_dir: Path, compiler: Path, output_dir: Path) -> dict:
         for index, arg in enumerate(step[1:], 1):
             if not isinstance(arg, str) or not arg or any(c in arg for c in '\n\r\x00'):
                 raise ValueError('Invalid build argument')
-            if arg.startswith('{authoring}/') or arg.startswith('{output}/'):
+            prefix_map = re.fullmatch(r'(-f(?:file|debug)-prefix-map)=\{authoring\}(/source)?=\.', arg)
+            if prefix_map and step[0] == '{compiler}':
+                relative = 'source' if prefix_map.group(2) else ''
+                if relative and not any(name.startswith('source/') for name in sources):
+                    raise ValueError('Prefix-map source root is absent from hash inventory')
+                target = author / relative
+                argv.append(prefix_map.group(1) + '=' + str(target) + '=.')
+            elif arg.startswith('{authoring}/') or arg.startswith('{output}/'):
                 token, relative = arg.split('/', 1)
                 if '{' in relative or '}' in relative:
                     raise ValueError('Invalid build substitution')
@@ -117,21 +124,30 @@ def build_case(authoring_dir: Path, compiler: Path, output_dir: Path) -> dict:
                 argv.append(arg)
         commands.append(argv)
     versions = {}
+    output.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         for name, tool in paths.items():
             result = subprocess.run([str(tool), '--version'], cwd=author, check=True,
-                                    timeout=120, capture_output=True, text=True)
-            versions[name] = result.stdout.strip().splitlines()[0]
+                                    timeout=120, capture_output=True, text=True, shell=False)
+            lines = result.stdout.strip().splitlines()
+            if not lines:
+                raise RuntimeError('Native tool returned an empty version')
+            versions[name] = lines[0]
             if versions[name] != tools[name]['version']:
                 raise ValueError('Native tool version does not match pin: ' + name)
-        output.mkdir(parents=True, exist_ok=True, mode=0o700)
         for argv in commands:
-            subprocess.run(argv, cwd=author, check=True, timeout=120, capture_output=True, text=True)
-    except (subprocess.SubprocessError, OSError) as error:
-        raise RuntimeError('Native reference build failed; no successful build report was written') from error
-    output_paths = {name: _within(output, name) for name in outputs}
-    if any(not path.is_file() for path in output_paths.values()):
-        raise RuntimeError('Native build did not produce all expected outputs')
+            subprocess.run(argv, cwd=author, check=True, timeout=120, capture_output=True, text=True, shell=False)
+        output_paths = {name: _within(output, name) for name in outputs}
+        if any(not path.is_file() or path.stat().st_size == 0 for path in output_paths.values()):
+            raise RuntimeError('Native build did not produce all nonempty expected outputs')
+    except (subprocess.SubprocessError, OSError, RuntimeError, ValueError) as error:
+        diagnostic = {'schema': 'benchmark-build-failure/1', 'error': str(error)[:8192],
+                      'stdout': str(getattr(error, 'stdout', '') or '')[:8192],
+                      'stderr': str(getattr(error, 'stderr', '') or '')[:8192]}
+        (output / 'build-failure.json').write_text(json.dumps(diagnostic, indent=2) + '\n', encoding='utf-8')
+        if isinstance(error, ValueError):
+            raise ValueError('Native tool version does not match pin') from None
+        raise RuntimeError('Native reference build failed; inspect private build-failure.json') from None
     result = {'schema': 'benchmark-build-report/1', 'ok': True, 'execution': 'reference-build',
               'model_benchmark': False, 'images': {name: _hash(path) for name, path in output_paths.items()},
               'input_hashes': {**sources, 'build.json': _hash(manifest_path)},

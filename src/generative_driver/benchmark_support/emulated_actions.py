@@ -47,9 +47,14 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
                     units = monitor_units if check['channel'] == 'independent-monitor' else result.get('units', {})
                     if suffix == 'refused_without_io':
                         units = {'refused_without_io': 'boolean'}
+                    if suffix == 'operation_ok' and check['channel'] == 'runtime-transcript':
+                        units = {'operation_ok': 'boolean'}
+                        value = result.get('ok') is True
+                    else:
+                        value = measured.get(suffix)
                     records.append({'id': identifier, 'task_id': suffix, 'revision': check['revision'],
                         'artifact_sha256': contract['artifact_sha256'], 'channel': check['channel'],
-                        'value': measured.get(suffix), 'unit': units.get(suffix)})
+                        'value': value, 'unit': units.get(suffix)})
             else:
                 raise ValueError('Unknown evaluator action')
             raw_events.append(event)

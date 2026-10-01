@@ -16,6 +16,35 @@ SAMPLE_OUTPUTS = {
 }
 
 
+def records_for(contract, observed):
+    return [{**{key: check[key] for key in ("id", "revision", "unit", "channel")},
+             "artifact_sha256": contract["artifact_sha256"],
+             "value": observed[check["id"].rsplit("/", 1)[1]]}
+            for check in contract["checks"]]
+
+
+def toy_sensor_phase():
+    rows = [("temperature", -5.0, "degC", "runtime-transcript"),
+            ("reference_temperature", -5.0, "degC", "independent-monitor"),
+            ("sequence", 3, "count", "runtime-transcript"),
+            ("monitor_sequence", 3, "count", "independent-monitor"),
+            ("operation_ok", True, "boolean", "runtime-transcript")]
+    checks = []
+    for name, expected, unit, channel in rows:
+        check = {"id": "toy/measure/" + name, "revision": 0,
+                 "kind": "boolean" if type(expected) is bool else "number",
+                 "expected": expected, "unit": unit, "channel": channel}
+        if check["kind"] == "number":
+            check["absolute_tolerance"] = 0
+        checks.append(check)
+    contract = {"schema": "benchmark-behavior/1", "artifact_sha256": "a" * 64, "checks": checks}
+    pin = {"id": "toy-sampled-oracle", "family": "sampled-sensor"}
+    truth = {"family": "sampled-sensor", "artifact_sha256": "a" * 64,
+             "phases": {"diagnostic": {"contract": contract, "actions": [
+                 {"episode": "toy", "step": "input", "kind": "stimulate", "values": {"source_q4": -80}}]}}}
+    return pin, truth
+
+
 def sample_reply(raw_temperature, sequence):
     payload = raw_temperature.to_bytes(2, "little", signed=True)
     payload += sequence.to_bytes(4, "little")

@@ -288,3 +288,64 @@ class RegistryTests(unittest.TestCase):
             path.write_text(json.dumps(manifest))
             with self.assertRaisesRegex(ValueError, 'effect'):
                 load_definition(path, resource_root=root)
+
+    def test_malformed_optional_resource_maps_are_validation_errors(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from generative_driver.benchmark_support.registry import load_definition
+        for field in ('images', 'assets', 'truth'):
+            for value in (None, [], 'invalid', 3):
+                with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    case = root / 'tq9'
+                    case.mkdir()
+                    manifest = {'schema': 'benchmark-case/1', 'id': 'tq9',
+                                'version': '1', 'evaluator_version': '1', 'execution': 'actual-agent-emulation',
+                                field: value}
+                    path = case / 'case.json'
+                    path.write_text(json.dumps(manifest))
+                    with self.assertRaises(ValueError):
+                        load_definition(path, resource_root=root)
+
+    def test_corrupted_installed_v2_is_invalid_not_unbuilt_pending(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.registry import case_descriptors
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._v2_case(root)
+            (root / 'cases' / 'tq9-v2' / 'image.bin').write_bytes(b'corrupt')
+            with patch('generative_driver.benchmark.case_root', return_value=root):
+                rows = {row['id']: row for row in case_descriptors()}
+            self.assertEqual(rows['tq9-v2']['status'], 'invalid')
+            self.assertIn('hash mismatch', rows['tq9-v2']['error'])
+
+    def test_built_v2_with_pending_calibration_is_discovered_as_pending(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.registry import case_descriptors
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._v2_case(root)
+            with patch('generative_driver.benchmark.case_root', return_value=root):
+                row = next(row for row in case_descriptors() if row['id'] == 'tq9-v2')
+            self.assertEqual(row['status'], 'pending')
+            self.assertEqual(row['calibration'], {'status': 'pending'})
+
+    def test_malformed_calibration_is_invalid_during_discovery(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.registry import case_descriptors
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = self._v2_case(root)
+            manifest['calibration'] = None
+            (root / 'cases' / 'tq9-v2' / 'case.json').write_text(json.dumps(manifest))
+            with patch('generative_driver.benchmark.case_root', return_value=root):
+                row = next(row for row in case_descriptors() if row['id'] == 'tq9-v2')
+            self.assertEqual(row['status'], 'invalid')

@@ -70,10 +70,11 @@ def main(argv=None):
     evaluator = commands.add_parser('truth')
     evaluator.add_argument('action', choices=['unlock','rekey','rebuild'])
     evaluator.add_argument('--case',default='tq9',choices=case_ids())
-    evaluator.add_argument('--password-file',required=True)
+    evaluator.add_argument('--password-file')
     evaluator.add_argument('--output',required=True)
     evaluator.add_argument('--new-password-file')
     evaluator.add_argument('--compiler')
+    evaluator.add_argument('--authoring-dir')
     args = parser.parse_args(argv)
     try:
         if args.command == 'cases':
@@ -89,7 +90,7 @@ def main(argv=None):
                           'scoped_tool_approval': 'bound-device' if args.approve_bound_device_tools else 'emulator' if args.approve_emulator_tools else None}.items() if v is not None})
         elif args.command == 'truth':
             from .benchmark_support.evaluator_cli import manage
-            result = manage(args.action,args.case,args.password_file,args.output,args.new_password_file,args.compiler)
+            result = manage(args.action,args.case,args.password_file,args.output,args.new_password_file,args.compiler,args.authoring_dir)
         elif args.command == 'compare':
             result = compare(args.before, args.after)
         else:

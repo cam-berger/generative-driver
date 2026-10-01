@@ -24,6 +24,10 @@ class CaseDefinition:
     manifest_sha256: str
 
 
+class PendingCaseError(ValueError):
+    """A registered case is missing distributable build outputs."""
+
+
 _BUILTINS = {
     'setup-smoke': ('setup-smoke', 'smoke'),
     'tq9': ('tq9', 'legacy-emulator'),
@@ -48,12 +52,16 @@ def case_descriptors() -> list[dict]:
             continue
         try:
             case = resolve_case(case_id)
-        except ValueError:
+        except ValueError as error:
             if case_id in ('tq9', 'bme280'):
                 raise
-            rows.append({'id': case_id, 'status': 'pending'})
+            rows.append({'id': case_id, 'status': 'pending' if isinstance(error, PendingCaseError) else 'invalid',
+                         'error': str(error)})
             continue
-        rows.append({'id': case.id, 'status': 'available', 'family': case.family,
+        calibration = case.manifest.get('calibration', {})
+        status = 'pending' if case.adapter_key == 'emulator-v2' and calibration.get('status') != 'passed' else 'available'
+        rows.append({'id': case.id, 'status': status, 'family': case.family,
+                     **({'calibration': copy.deepcopy(calibration)} if case.adapter_key == 'emulator-v2' else {}),
                      'version': case.version, 'execution': case.execution,
                      'evidence_track': case.evidence_track,
                      'scenarios': copy.deepcopy(case.manifest.get('scenarios', ['identity'] if case.id == 'tq9' else []))})
@@ -104,7 +112,7 @@ def resolve_case(case_id: str) -> CaseDefinition:
                               'smoke', None, (), root/'cases'/case_id, {}, '')
     path = root/'cases'/case_id/'case.json'
     if not path.is_file():
-        raise ValueError('Benchmark case is pending: ' + case_id)
+        raise PendingCaseError('Benchmark case is pending: ' + case_id)
     return load_definition(path, resource_root=root)
 
 
@@ -180,21 +188,32 @@ def load_definition(path: Path, *, resource_root: Path) -> CaseDefinition:
             raise ValueError('Invalid v2 default effects')
         if manifest['execution'] != 'actual-agent-emulation' or manifest['evidence_track'] != 'firmware':
             raise ValueError('Unsupported v2 execution or evidence track')
+    if 'calibration' in manifest and not isinstance(manifest['calibration'], dict):
+        raise ValueError('Invalid calibration map')
+    for field in ('images', 'assets', 'truth'):
+        if field in manifest and not isinstance(manifest[field], dict):
+            raise ValueError('Invalid case resource map: ' + field)
     for name, expected in manifest.get('images', {}).items():
         _sha(expected)
         image = resource_path(path.parent, name)
-        if not image.is_file() or hashlib.sha256(image.read_bytes()).hexdigest() != expected:
+        if not image.is_file():
+            raise PendingCaseError('Case image is unbuilt: ' + name)
+        if hashlib.sha256(image.read_bytes()).hexdigest() != expected:
             raise ValueError('Case image hash mismatch: ' + name)
     for name, expected in manifest.get('assets', {}).items():
         _sha(expected)
         asset = resource_path(path.parent, name)
-        if not asset.is_file() or hashlib.sha256(asset.read_bytes()).hexdigest() != expected:
+        if not asset.is_file():
+            raise PendingCaseError('Case asset is unbuilt: ' + name)
+        if hashlib.sha256(asset.read_bytes()).hexdigest() != expected:
             raise ValueError('Case asset hash mismatch: ' + name)
     truth = manifest.get('truth', {})
     if truth:
         _sha(truth.get('sha256'))
         truth_path = resource_path(root, truth.get('path'))
-        if not truth_path.is_file() or hashlib.sha256(truth_path.read_bytes()).hexdigest() != truth['sha256']:
+        if not truth_path.is_file():
+            raise PendingCaseError('Case truth is unbuilt')
+        if hashlib.sha256(truth_path.read_bytes()).hexdigest() != truth['sha256']:
             raise ValueError('Case truth hash mismatch')
     if case_id == 'tq9':
         family, track, approval, effects = 'tq9', 'firmware', 'emulator', ('write', 'actuate')

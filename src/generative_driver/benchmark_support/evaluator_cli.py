@@ -5,12 +5,20 @@ import subprocess
 from pathlib import Path
 
 
-def manage(action, case, password_file, output, new_password_file=None, compiler=None):
+def manage(action, case, password_file, output, new_password_file=None, compiler=None, authoring_dir=None):
     from ..benchmark import case_root
     from .registry import resolve_case
     from .truth import seal
     from .emulator import truth_for_case
     from .cases import _write
+    if authoring_dir is not None:
+        from .registry import case_ids
+        from .authoring import build_case
+        if action != 'rebuild' or case not in case_ids() or case in ('tq9', 'bme280', 'setup-smoke'):
+            raise ValueError('Private authoring rebuild requires a registered v2 case')
+        if not compiler:
+            raise ValueError('Provide --compiler for native authoring')
+        return build_case(Path(authoring_dir), Path(compiler), Path(output))
     root = case_root()
     definition = resolve_case(case)
     if not definition.manifest.get('truth'):

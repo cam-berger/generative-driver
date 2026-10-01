@@ -458,7 +458,7 @@ class PublicBoundaryFixTests(unittest.TestCase):
 
     def test_all_projected_duration_fields_reject_negative_nonfinite_and_boolean_values(self):
         from generative_driver.benchmark_support.suite_reporting import aggregate_suite
-        groups={'report':('elapsed_seconds','worker_seconds','tool_seconds','worker_tool_seconds','evaluator_tool_seconds','repair_seconds'),
+        groups={'report':('elapsed_seconds','worker_seconds','tool_seconds','worker_tool_seconds','evaluator_tool_seconds','repair_seconds','original_budget_seconds','effective_budget_seconds'),
             'stage':('worker_seconds','tool_seconds','worker_tool_seconds','evaluator_tool_seconds'),'attempt':('elapsed_seconds',)}
         for level,fields in groups.items():
             for field in fields:
@@ -467,6 +467,19 @@ class PublicBoundaryFixTests(unittest.TestCase):
                     if level=='attempt':record=record['attempts'][0]
                     record[field]=invalid
                     with self.subTest(level=level,field=field,invalid=invalid),self.assertRaises(ValueError):aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
+
+        from generative_driver.benchmark_support.suite_reporting import _public_report
+        for value in (None,0,1.5):
+            m,t,r,e=fixture()
+            r['r1'].update(original_budget_seconds=value,effective_budget_seconds=value)
+            aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
+            public=_public_report(r['r1'])
+            self.assertEqual(public['original_budget_seconds'],value)
+            self.assertEqual(public['effective_budget_seconds'],value)
+        m,t,r,e=fixture()
+        aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
+        self.assertNotIn('original_budget_seconds',_public_report(r['r1']))
+        self.assertNotIn('effective_budget_seconds',_public_report(r['r1']))
 
     def test_published_intervention_durations_are_validated(self):
         from generative_driver.benchmark_support.suite_reporting import aggregate_suite

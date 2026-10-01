@@ -159,7 +159,8 @@ def _validate_trials(manifest,trials,reports,experiment):
                 or report.get('case_seed')!=slot['case_seed'] or public_pin(report.get('case_pin',{}))!=pin
                 or report.get('snapshot_sha256')!=snapshot['snapshot_sha256'] or not _sha(snapshot['snapshot_sha256'])):
             raise ValueError('Report does not match frozen trial identity')
-        for key in ('elapsed_seconds','worker_seconds','tool_seconds','worker_tool_seconds','evaluator_tool_seconds','repair_seconds'):_number(report.get(key))
+        for key in ('elapsed_seconds','worker_seconds','tool_seconds','worker_tool_seconds','evaluator_tool_seconds',
+                    'repair_seconds','original_budget_seconds','effective_budget_seconds'):_number(report.get(key))
         _usage_measurements(report.get('usage'))
         _intervention_measurements(report.get('interventions',[]))
         for stage in report.get('stages',{}).values():

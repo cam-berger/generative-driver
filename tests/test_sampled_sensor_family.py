@@ -76,6 +76,16 @@ class SampledSensorOracleTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             sampled_sensor.contract(self.pin, self.truth, "diagnostic")
 
+    def test_scenario_phase_selects_exact_scenario(self):
+        selected = copy.deepcopy(self.truth["phases"])
+        selected["diagnostic"]["actions"][0]["values"]["source_q4"] = 112
+        self.truth["scenario_phases"] = {"control": selected}
+        self.pin["scenario_id"] = "control"
+        self.assertEqual(sampled_sensor.build_plan(self.pin, self.truth, "diagnostic")[0]["values"], {"source_q4": 112})
+        self.pin["scenario_id"] = "missing"
+        with self.assertRaises(KeyError):
+            sampled_sensor.build_plan(self.pin, self.truth, "diagnostic")
+
     def test_helper_rejects_boolean_and_out_of_range_words(self):
         for word in (True, -1, 65536):
             with self.subTest(word=word), self.assertRaises(ValueError):

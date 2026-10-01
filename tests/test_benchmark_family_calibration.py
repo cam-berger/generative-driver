@@ -233,10 +233,21 @@ class ReferenceExecutionTests(unittest.TestCase):
                 self.assertEqual(result['grade']['verdict'],'passed')
                 self.assertTrue(session.stopped)
                 self.assertFalse(result['native_process_observed'])
-                with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()):
+                original_write=Path.write_text
+                def windows_default_write(path,data,*args,**kwargs):
+                    if path.name=='model.json' and path.parent.name=='model' and 'newline' not in kwargs:
+                        kwargs['newline']='\r\n'
+                    return original_write(path,data,*args,**kwargs)
+                with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()), \
+                     patch.object(Path,'write_text',windows_default_write):
                     modeled=reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
                         output_dir=Path(temp)/'modeled',package_final=False)
                 self.assertEqual(modeled['grade']['verdict'],'passed')
+                from generative_driver.benchmark_support.calibration import execution_input_identity
+                expected=execution_input_identity(toy_sample_model(),caps)
+                self.assertEqual(modeled['model_sha256'],expected['model_sha256'])
+                self.assertEqual(modeled['capabilities_sha256'],expected['capabilities_sha256'])
+                self.assertNotIn(b'\r\n',(Path(temp)/'modeled/model/model.json').read_bytes())
                 self.assertIsNone(modeled['package_sha256'])
                 self.assertEqual(modeled['contract']['artifact_sha256'],modeled['model_sha256'])
                 package=Path(result['package_dir']);frozen=result['package_sha256']

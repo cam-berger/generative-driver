@@ -43,11 +43,15 @@ def _sha(value):
     return isinstance(value,str) and len(value)==64 and all(c in '0123456789abcdef' for c in value)
 
 
-def execution_input_identity(model, capabilities):
-    """Predict the normalized model file bytes and canonical task-map identity."""
+def reference_model_bytes(model):
+    """Portable reference input: explicit UTF-8 and LF, independent of host I/O."""
     normalized={**model,'channel':{'type':'tcp'}}
-    encoded=(json.dumps(normalized,indent=2,allow_nan=False)+'\n').encode()
-    return {'model_sha256':hashlib.sha256(encoded).hexdigest(),
+    return (json.dumps(normalized,indent=2,allow_nan=False)+'\n').encode('utf-8')
+
+
+def execution_input_identity(model, capabilities):
+    """Predict the exact model file bytes and canonical task-map identity."""
+    return {'model_sha256':hashlib.sha256(reference_model_bytes(model)).hexdigest(),
             'capabilities_sha256':canonical_digest(capabilities)}
 
 

@@ -282,7 +282,9 @@ def reference_execute(pin, truth, model, capabilities, *, renode, image, output_
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     model_dir = output/'model'
-    _write(model_dir/'model.json', candidate)
+    from .calibration import reference_model_bytes
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir/'model.json').write_bytes(reference_model_bytes(candidate))
     model_hash = hashlib.sha256((model_dir/'model.json').read_bytes()).hexdigest()
     probes = []
     session = NativeSession.start(renode=renode, image=image, recipe=truth['recipe'])

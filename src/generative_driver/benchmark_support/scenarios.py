@@ -4,6 +4,12 @@ import os
 from pathlib import Path
 import tempfile
 import hashlib
+import re
+
+
+def _require_sha256(value: str) -> None:
+    if not isinstance(value, str) or re.fullmatch(r'[0-9a-f]{64}', value) is None:
+        raise ValueError('Expected a lowercase SHA-256 digest')
 
 
 def maintain_objective(scenario: str) -> str:
@@ -71,6 +77,7 @@ def maintenance_decision(*, scenario: str, claim: str, diagnostic: dict, repaire
 
 
 def next_action_state(current, nonce, action_sha256):
+    _require_sha256(action_sha256)
     if current.get('status') == 'applying':
         raise ValueError('Scenario effect requires reconciliation')
     if current.get('status') in ('applied', 'observed'):
@@ -109,14 +116,24 @@ class ScenarioJournal:
         return current if state is current else self._save(state)
 
     def applied(self, nonce: str, observation: dict) -> dict:
+        """Commit a Task 7 producer's explicit success wrapper, not raw device fields.
+
+        The producer must establish success and bind the native response to this
+        stimulus before constructing the wrapper.
+        """
         current = self.state()
         if current.get('status') != 'applying' or current.get('nonce') != nonce:
             raise ValueError('No matching applying scenario action')
-        if not isinstance(observation, dict) or not observation:
+        native = observation.get('native_acknowledgement') if isinstance(observation, dict) else None
+        if (not isinstance(observation, dict) or observation.get('success') is not True or
+                observation.get('action_sha256') != current['action_sha256'] or
+                not isinstance(native, dict) or
+                not isinstance(native.get('response'), str) or not native['response'].strip()):
             raise ValueError('Scenario action requires a verifiable acknowledgement')
         return self._save({**current, 'status': 'applied', 'observation': observation})
 
     def observed(self, nonce: str, evidence_sha256: str) -> dict:
+        _require_sha256(evidence_sha256)
         current = self.state()
         if current.get('nonce') != nonce or current.get('status') not in ('applied', 'observed'):
             raise ValueError('No matching applied scenario action')

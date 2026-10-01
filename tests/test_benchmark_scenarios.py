@@ -98,7 +98,8 @@ class ScenarioTests(unittest.TestCase):
             root = Path(temp)
             journal = ScenarioJournal(root)
             journal.begin('action-1', 'a' * 64)
-            applied = journal.applied('action-1', {'ack': 'device-response'})
+            applied = journal.applied('action-1', {'success': True, 'action_sha256': 'a' * 64,
+                'native_acknowledgement': {'response': 'device-response'}})
             self.assertEqual(applied['status'], 'applied')
             reopened = ScenarioJournal(root)
             self.assertEqual(reopened.begin('action-1', 'a' * 64), applied)
@@ -117,6 +118,40 @@ class ScenarioTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'acknowledgement'):
                 journal.applied('action-1', {})
             self.assertEqual(ScenarioJournal(Path(temp)).state()['status'], 'applying')
+
+    def test_journal_rejects_negative_or_unrelated_acknowledgement(self):
+        with tempfile.TemporaryDirectory() as temp:
+            journal = ScenarioJournal(Path(temp))
+            journal.begin('action-1', 'a' * 64)
+            for acknowledgement in ({'ack': 'device-response'}, {'ok': False},
+                    {'success': False, 'action_sha256': 'a' * 64,
+                     'native_acknowledgement': {'response': 'failure'}},
+                    {'success': True, 'action_sha256': 'b' * 64,
+                     'native_acknowledgement': {'response': 'other action'}},
+                    {'success': True, 'action_sha256': 'a' * 64, 'native_acknowledgement': {}},
+                    {'success': True, 'action_sha256': 'a' * 64,
+                     'native_acknowledgement': {'response': ''}}):
+                with self.subTest(acknowledgement=acknowledgement):
+                    with self.assertRaisesRegex(ValueError, 'acknowledgement'):
+                        journal.applied('action-1', acknowledgement)
+                    self.assertEqual(ScenarioJournal(Path(temp)).state()['status'], 'applying')
+
+    def test_journal_requires_sha256_action_and_independent_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            journal = ScenarioJournal(Path(temp))
+            for invalid in ('short', 'g' * 64, '', 42):
+                with self.subTest(action=invalid):
+                    with self.assertRaisesRegex(ValueError, 'SHA-256'):
+                        journal.begin('action-1', invalid)
+            self.assertEqual(journal.state(), {})
+            journal.begin('action-1', 'a' * 64)
+            journal.applied('action-1', {'success': True, 'action_sha256': 'a' * 64,
+                'native_acknowledgement': {'response': 'device-response'}})
+            for invalid in ('short', 'g' * 64, '', 42):
+                with self.subTest(evidence=invalid):
+                    with self.assertRaisesRegex(ValueError, 'SHA-256'):
+                        journal.observed('action-1', invalid)
+                    self.assertEqual(ScenarioJournal(Path(temp)).state()['status'], 'applied')
 
     def test_transition_blocks_uncertain_and_changed_action(self):
         applying = next_action_state({}, 'action-1', 'a' * 64)

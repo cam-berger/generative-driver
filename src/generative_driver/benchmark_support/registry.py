@@ -280,15 +280,52 @@ def require_calibration(pin: dict, options: dict) -> dict:
     manifest = pin['manifest']
     try:
         truth = truth_for_case(case_root(), manifest, options)
+        if truth.get('schema') == 'benchmark-family-truth/1':
+            from .calibration import hydrate_truth
+            truth = hydrate_truth(truth)
     except (OSError, ValueError) as error:
         raise ValueError('Authenticated calibration evidence requires the evaluator password file') from error
     record = truth.get('calibration', {})
     try:
-        valid = (canonical_digest(record) == manifest['calibration']['evidence_sha256']
-                 and input_hashes(truth) == record['input_hashes']
-                 and truth['images'] == manifest['images']
-                 and set(record['required_mutants']) == set(CORE_MUTANTS) | set(truth['mutations']['required'])
-                 and validate_record(manifest, record)['ok'])
+        if manifest.get('family') in ('sampled-sensor', 'parameter-store'):
+            from .calibration import validate_calibration, apply_mutation
+            expected = {r['id']: r['expected_failed_checks'] for r in truth['mutations']['mutants']}
+            changes = {}
+            for mutation in truth['mutations']['mutants']:
+                source = truth['references'][mutation['reference']]
+                changed = apply_mutation(source['model'], source['capabilities'], mutation)
+                changes[mutation['id']] = (changed['source_sha256'], changed['mutated_sha256'])
+            valid = (truth.get('inventory_state') == 'qualified'
+                     and canonical_digest(record) == manifest['calibration']['evidence_sha256']
+                     and truth['input_hashes'] == record['input_hashes']
+                     and truth['images'] == manifest['images']
+                     and {r['id']: r['expected_failed_checks'] for r in record['mutants']} == expected
+                     and {r['id']: (r['source_sha256'], r['mutated_sha256']) for r in record['mutants']} == changes
+                     and {r['id']: r['model_sha256'] for r in record['references']} ==
+                         {name: canonical_digest(ref['model']) for name, ref in truth['references'].items()}
+                     and validate_calibration(manifest, record)['ok'])
+            from .emulated import family_for
+            family=family_for(pin['case_id'])
+            runs={r['id']:r for r in record['runs']}
+            for run in runs.values():
+                scenario='control' if run['scenario']=='original' else run['scenario']
+                artifact=run['package_sha256'] or run['model_sha256']
+                contract=family.contract({'family':manifest['family'],'scenario_id':scenario,'case_seed':0,'revision':0},
+                    {**truth,'artifact_sha256':artifact},run['phase'])
+                valid = (valid and canonical_digest(contract)==run['contract_sha256']
+                         and [c['id'] for c in contract['checks']]==run['check_ids'])
+            rows={r['id']:r for r in record['mutants']}
+            for mutation in truth['mutations']['mutants']:
+                run=runs[rows[mutation['id']]['run']]
+                valid = (valid and run['phase']==mutation['phase']
+                         and run['scenario']==mutation.get('scenario','original'))
+
+        else:
+            valid = (canonical_digest(record) == manifest['calibration']['evidence_sha256']
+                     and input_hashes(truth) == record['input_hashes']
+                     and truth['images'] == manifest['images']
+                     and set(record['required_mutants']) == set(CORE_MUTANTS) | set(truth['mutations']['required'])
+                     and validate_record(manifest, record)['ok'])
     except (KeyError, TypeError, ValueError):
         valid = False
     if not valid:

@@ -30,4 +30,13 @@ def private_phase(pin, truth, phase):
     result["contract"]["artifact_sha256"] = truth["artifact_sha256"]
     for check in result["contract"]["checks"]:
         check["revision"] = pin.get("revision", 0)
+    seed = pin.get('case_seed', 0)
+    if seed and result['actions'] and result['actions'][0]['kind'] == 'reset':
+        episodes = []
+        for action in result['actions']:
+            if action['kind'] == 'reset':
+                episodes.append([])
+            episodes[-1].append(action)
+        offset = seed % len(episodes)
+        result['actions'] = [action for episode in episodes[offset:] + episodes[:offset] for action in episode]
     return result

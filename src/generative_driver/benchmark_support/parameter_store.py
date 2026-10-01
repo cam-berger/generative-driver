@@ -66,3 +66,27 @@ observations.monitor_units = {
        for prefix in ("cell_", "pending_") for bank in ("A", "B") for slot in range(4)},
     "generation": "count", "pending_active": "boolean",
 }
+
+
+def reuse_passed(events, capabilities):
+    """Public mission: commit B1=-7, stage B1=9, abort, read committed B1."""
+    tasks=capabilities['tasks']
+    ordered=[]
+    for event in events:
+        if event['result'].get('ok') is True:
+            for task in ('update','stage','abort','read'):
+                if event.get('operation')==tasks[task]['operation']:
+                    ordered.append((task,event))
+    if [name for name,_ in ordered]!=['update','stage','abort','read']:return False
+    first,staged,aborted,last=[event for _,event in ordered]
+    before=first.get('before_observation',{}); final=last['observation']
+    if type(before.get('generation')) is not int:return False
+    cells=['cell_'+bank+'_'+str(i) for bank in ('A','B') for i in range(4)]
+    if any(final.get(name)!=(-7 if name=='cell_B_1' else before.get(name)) for name in cells):return False
+    return (final.get('generation')==before['generation']+1
+        and first['observation'].get('cell_B_1')==-7
+        and staged['observation'].get('pending_active') is True
+        and staged['observation'].get('pending_B_1')==9
+        and aborted['observation'].get('pending_active') is False
+        and final.get('pending_active') is False
+        and last['result'].get('outputs',{}).get(tasks['read']['outputs']['value']['output'])==-7)

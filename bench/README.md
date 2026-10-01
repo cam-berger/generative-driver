@@ -138,3 +138,11 @@ python -m generative_driver benchmark score "reports/trial.json" --evidence "/pr
 ```
 
 The Python adapter accepts `score(report, password_file=None, *, evidence_path=None)` with the same explicit-sidecar requirement. Calibration/reference executions and scripted Controller tests are evaluator checks, not measurements of model performance.
+
+## Additional firmware families
+
+`sampled-sensor-v1` tests fresh acquisition, framed signed readings and sequence counters. `parameter-store-v1` tests committed and pending values, bank isolation, generation, transaction ordering and abort. Both expose semantic-change and unchanged-control scenarios through the shared evaluator and UART-over-TCP binding. Discover their current calibration status with `benchmark cases`; agent preflight rejects pending or stale records before service, device or worker startup.
+
+Qualification uses two independently authored references per family, native binary rebuilds, actual Ghidra import/decompile, native Renode observations and required behavioral mutants. Final episodes execute frozen emitted packages. False-drift rejection requires correct native control observations and a rejected changed maintenance claim. [Private calibration commands](groundtruth/README.md#authored-family-calibration) retain exact stimuli, replies and failed-check details in evaluator evidence.
+
+The available pilot scope is three independently authored families on one emulated STM32 platform, with six paired semantic/control entries. UART-over-TCP does not establish wire baud correctness; independent emulator observations provide no physical grounding. Reference calibration measures evaluator correctness. No model-performance pilot is implied by qualification, and native macOS observations do not qualify native Windows execution.

@@ -44,3 +44,19 @@ python -m generative_driver benchmark truth calibrate --case tq9-v2 --password-f
 `ARM_NONE_EABI_GCC` or a compiler on PATH may replace `--compiler`. The command emits a private measured record, a new encrypted bundle and a matching public manifest; it never edits installed resources. Publish those two release assets together after reviewing the record. The record commits source, image, recipe, contract, reference, mutation and evaluator identities without hashing its enclosing ciphertext. Admission authenticates that record and its public commitment. Password possession is the local evaluator trust boundary, not third-party attestation or a filesystem sandbox.
 
 Final run sidecars contain actual accepted controller artifact paths and hashes, evaluator action records, and separate worker/evaluator maintenance evidence IDs. Preserve accepted artifacts when archiving a run. Offline scoring verifies those bytes and recomputes grades. Private final vectors, source and monitor recipes must remain outside candidate inputs, logs shown to workers and version control.
+
+## Authored family calibration
+
+`sampled-sensor-v1` and `parameter-store-v1` use exact encrypted inventories. Pending bundles contain source, native recipes, two reference implementations, diagnostic/final/maintenance contracts, mutants and reproducible build evidence. Qualified bundles add only `calibration/calibration.json`; that record excludes itself and its enclosing ciphertext from its input commitment.
+
+Keep the exact authoring directory outside the checkout, installed libraries and worker roots. Place its existing password handle beside it as `<case_id>.password`. Set `ARM_NONE_EABI_GCC` to the absolute GCC executable. The wrapper requires explicit absolute Renode, Ghidra and Java paths and checks the handle before launching native tools:
+
+```sh
+python -m generative_driver.benchmark_support.calibration sampled-sensor-v1 --authoring-root "/private/evaluator/sampled-sensor-v1-authoring" --renode "/absolute/path/to/renode" --ghidra-home "/absolute/path/to/ghidra" --java-home "/absolute/path/to/java-home" --output-dir "/private/evaluator/sampled-calibration"
+```
+
+Repeat with `parameter-store-v1` and its own authoring directory. The compiler must report Arm GNU Toolchain 14.2.Rel1 GCC 14.2.1 (20241119); adjacent objcopy must report 2.43.1.20241119. The measured environment uses Renode 1.16.1, Ghidra 12.1.3 and OpenJDK 21. Native Windows qualification remains unobserved.
+
+The CLI prints only case, execution, outcome, counts and a record commitment. The Python `calibrate(...)` return and output directory contain private evidence and belong only to the evaluator. Failures retain `calibration-record.json`, build diagnostics, Ghidra logs and completed native runs. A failed or stale record cannot admit an agent run. Review and publish the resulting `case.json` and ciphertext together; the command never changes installed assets.
+
+The explicitly selected test gate is `python -m unittest discover -s tests -p native_benchmark_families.py -v`. It requires `GD_FAMILY_AUTHORING` pointing to the private parent containing both `<case_id>-authoring` directories and password handles, plus `GD_NATIVE_RENODE`, `GD_NATIVE_GHIDRA_HOME`, `GD_NATIVE_JAVA_HOME`, and `ARM_NONE_EABI_GCC`. Missing configuration fails rather than skipping. Ordinary discovery uses scripted toy contracts and requires none of these tools or credentials.

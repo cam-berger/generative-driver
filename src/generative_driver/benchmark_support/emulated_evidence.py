@@ -19,7 +19,8 @@ def _private(run_dir, options, value=None):
 
 def _diagnose(case_id, run_dir, model_dir, capabilities, options):
     from .emulated import _session, _truth
-    from . import tq9_v2
+    from .emulated import family_for
+    family = family_for(case_id)
     from .behavior import validate_records
     from .emulated_actions import execute_plan, model_invoker
     session = _session(case_id, run_dir, options)
@@ -29,13 +30,13 @@ def _diagnose(case_id, run_dir, model_dir, capabilities, options):
     pin = {**saved['case_pin'], 'revision': state.get('revision', 0)}
     artifact = hashlib.sha256((Path(model_dir)/'model.json').read_bytes()).hexdigest()
     local = {**truth, 'artifact_sha256': artifact}
-    contract = tq9_v2.contract(pin, local, 'diagnostic')
+    contract = family.contract(pin, local, 'diagnostic')
     probes = []
     output = Path(session.info['private_dir'])/'diagnostic'
     output.mkdir(parents=True, exist_ok=True)
     invoke = model_invoker(model_dir, capabilities, session.binding, Path(run_dir)/'benchmark/probes', probes)
-    records = execute_plan(session, invoke, tq9_v2.build_plan(pin, local, 'diagnostic'), contract,
-                           output/'raw.json', tq9_v2.observations, truth['contracts']['time_policy']['sample_settle_seconds'])
+    records = execute_plan(session, invoke, family.build_plan(pin, local, 'diagnostic'), contract,
+                           output/'raw.json', family.observations, truth['contracts']['time_policy']['sample_settle_seconds'])
     grade = validate_records(contract, records)
     payload = _private(run_dir, options)
     evaluation = {'phase': 'diagnostic', 'revision': pin['revision'], 'frozen_artifact_sha256': artifact,
@@ -54,24 +55,25 @@ def _diagnose(case_id, run_dir, model_dir, capabilities, options):
 def _final(case_id, run_dir, package, capabilities, options):
     from .emulated import _session, _truth
     from .emulated_actions import execute_plan, canonical_package_invoker
-    from . import tq9_v2
+    from .emulated import family_for
+    family = family_for(case_id)
     from .evidence import frozen_final_decision
     from ..configurator import digest
     path, state = _state(run_dir)
     payload = _private(run_dir, options)
     if any(e['phase'] == 'final' and e['revision'] == state.get('revision', 0) for e in payload['evaluations']):
         raise ValueError('Frozen final submission cannot be replayed')
-    session = _session(case_id, run_dir, options)
-    truth = _truth(case_id, run_dir, options)
-    pin = {**read_snapshot(run_dir)['case_pin'], 'revision': state.get('revision', 0)}
     frozen = digest(package)
     if frozen != state['package_sha256']:
         raise ValueError('Frozen package changed before final grading')
+    session = _session(case_id, run_dir, options)
+    truth = _truth(case_id, run_dir, options)
+    pin = {**read_snapshot(run_dir)['case_pin'], 'revision': state.get('revision', 0)}
     local = {**truth, 'artifact_sha256': frozen}
-    contract = tq9_v2.contract(pin, local, 'final')
+    contract = family.contract(pin, local, 'final')
     output = Path(session.info['private_dir'])/'final.json'
     records = execute_plan(session, canonical_package_invoker(package, capabilities, session.binding),
-        tq9_v2.build_plan(pin, local, 'final'), contract, output, tq9_v2.observations,
+        family.build_plan(pin, local, 'final'), contract, output, family.observations,
         truth['contracts']['time_policy']['sample_settle_seconds'])
     if digest(package) != frozen:
         raise ValueError('Frozen package changed during final grading')
@@ -91,7 +93,8 @@ def _final(case_id, run_dir, package, capabilities, options):
 def maintenance_observation(case_id, run_dir, package, capabilities, options):
     from .emulated import _session, _truth
     from .emulated_actions import execute_plan, canonical_package_invoker
-    from . import tq9_v2
+    from .emulated import family_for
+    family = family_for(case_id)
     from .behavior import validate_records
     from ..configurator import digest
     session = _session(case_id, run_dir, options)
@@ -99,11 +102,11 @@ def maintenance_observation(case_id, run_dir, package, capabilities, options):
     truth = _truth(case_id, run_dir, options)
     pin = {**read_snapshot(run_dir)['case_pin'], 'revision': state.get('revision', 0)}
     local = {**truth, 'artifact_sha256': digest(package)}
-    contract = tq9_v2.contract(pin, local, 'maintenance')
+    contract = family.contract(pin, local, 'maintenance')
     output = Path(session.info['private_dir'])/'maintenance.json'
     try:
         records = execute_plan(session, canonical_package_invoker(package, capabilities, session.binding),
-            tq9_v2.build_plan(pin, local, 'maintenance'), contract, output, tq9_v2.observations,
+            family.build_plan(pin, local, 'maintenance'), contract, output, family.observations,
             truth['contracts']['time_policy']['sample_settle_seconds'])
         raw = json.loads(output.read_text())
         host = any(event.get('result', {}).get('error', {}).get('fault') == 'host' for event in raw['events'])

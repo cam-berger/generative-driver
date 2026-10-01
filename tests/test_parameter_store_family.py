@@ -91,7 +91,9 @@ class ParameterStoreOracleTests(unittest.TestCase):
                                ("generation", 2), ("value", 20), ("pending_active", True)):
             with self.subTest(name=name):
                 changed = deepcopy(observed); changed[name] = mutation
-                self.assertEqual(validate_records(contract, records_for(contract, changed))["verdict"], "failed")
+                grade = validate_records(contract, records_for(contract, changed))
+                self.assertEqual(grade["verdict"], "failed")
+                self.assertEqual([c["id"] for c in grade["checks"] if not c["passed"]], ["toy/state/" + name])
 
     def test_missing_or_short_monitor_matrix_is_unavailable(self):
         for values in ({}, {"committed": [0] * 7, "pending": [0] * 8,

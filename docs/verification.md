@@ -48,3 +48,9 @@ The [CI run for `bfce07f`](https://github.com/cam-berger/generative-driver/actio
 ## Remaining qualification
 
 Windows 11 workstation UI setup and the native Windows Renode/Ghidra benchmark have not been run. Goose has contract coverage but no live Goose trial. No physical BME280 baseline has been performed. Password encryption protects groundtruth at rest; worker filesystem isolation is unverified.
+
+## Family calibration boundary
+
+New firmware-family admission validates the authenticated exact private inventory, current evaluator/dependency and executed runtime identities, pinned images, two distinct references, diagnostic and frozen-package final coverage, semantic/control maintenance, and every required changed mutant with its exact required failure IDs. The selected native gate is documented in [evaluator evidence](../bench/groundtruth/README.md#authored-family-calibration). Public toy contract tests cannot qualify distributed assets.
+
+Source and installed-wheel tests require no password, native emulator, analysis tool, inference call or physical device. Native reference calibration is a separate measured gate. Native Windows Renode/Ghidra qualification and model-performance pilot execution remain unobserved.

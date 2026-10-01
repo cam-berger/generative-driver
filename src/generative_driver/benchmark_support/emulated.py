@@ -11,6 +11,15 @@ from .snapshots import read_snapshot
 from .emulated_evidence import _private, _diagnose, _final
 
 
+def family_for(case_id):
+    from . import tq9_v2, sampled_sensor, parameter_store
+    families = {'tq9-v2': tq9_v2, 'sampled-sensor-v1': sampled_sensor,
+                'parameter-store-v1': parameter_store}
+    if case_id not in families:
+        raise ValueError('Unknown native family')
+    return families[case_id]
+
+
 def _inputs(case_id, run_dir):
     if (Path(run_dir)/'benchmark/execution.json').exists():
         saved = read_snapshot(run_dir)
@@ -51,7 +60,12 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         path, state = _state(run_dir)
         state.update(adaptation=adaptation, adapted_model_dir=str(ws/'model'), revision=int(options.get('revision', state.get('revision', 0))))
         _write(path, state)
-        return {'objective': 'Test the supplied immutable model over the emulator binding. Write capabilities.json with schema benchmark-capabilities/2 and tasks temperature, arm, set_duty, disarm. Each task has operation, constants, inputs and outputs. Map canonical set_duty input duty (permille) with copy or affine parameter mapping. Map canonical temperature output to its candidate output and declared unit. Report unsupported capabilities honestly.',
+        objective = 'Test the supplied immutable model over the emulator binding. Write capabilities.json with schema benchmark-capabilities/2 and tasks temperature, arm, set_duty, disarm. Each task has operation, constants, inputs and outputs. Map canonical set_duty input duty (permille) with copy or affine parameter mapping. Map canonical temperature output to its candidate output and declared unit. Report unsupported capabilities honestly.'
+        if case_id == 'sampled-sensor-v1':
+            objective = 'Test the supplied model over the emulator binding. Write benchmark-capabilities/2 tasks measure and read, mapping temperature (degC) and sequence (count) outputs. Measure performs a new acquisition; read returns the current sample. Report unsupported capabilities honestly.'
+        elif case_id == 'parameter-store-v1':
+            objective = 'Test the supplied model over the emulator binding. Write benchmark-capabilities/2 tasks read, update, stage, commit and abort. Read takes bank and slot and maps value (configuration-unit). Update and stage take bank, slot and value; commit and abort have no inputs. Every task declares operation, constants, inputs and outputs.'
+        return {'objective': objective,
                 'inputs': [str(ws/'model/model.json'), str(ws/'model/adaptation.json')],
                 'context': {'model_dir': str(ws/'model'), 'capabilities_output': str(ws/'capabilities.json')},
                 'allowed_tools': ['interface_describe', 'interface_execute', 'probe_run', 'probe_diff', 'model_validate'],
@@ -101,7 +115,12 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
             return {'objective': maintain_objective(read_snapshot(run_dir)['case_pin']['scenario_id']),
                     'inputs': [str(package)], 'allowed_tools': ['benchmark_package_execute'],
                     'context': {'package_dir': str(package)}, 'binding': session.binding}
-        return {'objective': 'Use only the emitted package and this objective: read temperature, enable the device, request 37 percent output, then disarm. Use benchmark_package_execute for each operation. Find names and arguments in the package reference. Report actual observations and limitations.',
+        mission = 'Read temperature, enable the device, request 37 percent output, then disarm.'
+        if case_id == 'sampled-sensor-v1':
+            mission = 'Acquire and read two fresh temperature samples. Report their measured sequence numbers.'
+        elif case_id == 'parameter-store-v1':
+            mission = 'Commit bank B slot 1 to -7. Stage bank B slot 1 to 9, abort that transaction, then read bank B slot 1. Report observations and whether other cells changed.'
+        return {'objective': 'Use only the emitted package and this objective: ' + mission + ' Use benchmark_package_execute for each operation. Find names and arguments in the package reference. Report actual observations and limitations.',
                 'inputs': [str(package)], 'allowed_tools': ['benchmark_package_execute'],
                 'context': {'package_dir': str(package)}, 'binding': session.binding,
                 'boundary': 'fresh package-only mission'}
@@ -195,12 +214,16 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
         events = [json.loads(line) for line in events_path.read_text().splitlines()] if events_path.exists() else []
         events = [e for e in events if e['actor'] == 'worker' and e['stage'] == stage
                   and e['attempt_id'] == state['package_attempts'][stage] and e['revision'] == state.get('revision', 0)]
-        duties = [e['observation']['duty'] for e in events if e['result'].get('ok')]
-        mapping = json.loads(Path(state['capabilities_path']).read_text())['tasks']['temperature']
-        output = mapping['outputs']['temperature']['output']
-        read = any(e.get('operation') == mapping['operation'] and e['result'].get('ok')
-                   and type(e['result'].get('outputs', {}).get(output)) in (int, float) for e in events)
-        fresh = read and any(abs(value - 370) <= 2 for value in duties) and bool(duties) and duties[-1] == 0
+        capabilities = json.loads(Path(state['capabilities_path']).read_text())
+        if case_id in ('sampled-sensor-v1', 'parameter-store-v1'):
+            fresh = family_for(case_id).reuse_passed(events, capabilities)
+        else:
+            duties = [e['observation']['duty'] for e in events if e['result'].get('ok')]
+            mapping = json.loads(Path(state['capabilities_path']).read_text())['tasks']['temperature']
+            output = mapping['outputs']['temperature']['output']
+            read = any(e.get('operation') == mapping['operation'] and e['result'].get('ok')
+                       and type(e['result'].get('outputs', {}).get(output)) in (int, float) for e in events)
+            fresh = read and any(abs(value - 370) <= 2 for value in duties) and bool(duties) and duties[-1] == 0
         if not fresh:
             return {'ok': False, 'checks': [], 'artifacts': [], 'reason': 'Fresh worker mission lacks observed reading, requested effect or disarm'}
         package = Path(state['package_copies'][stage])
@@ -240,32 +263,73 @@ def run_call(session, invoke, request):
         session.set_running(False)
 
 
-def reference_execute(pin, truth, model, capabilities, *, renode, image, output_dir):
-    """Measured evaluator-only reference seam. Never invokes an agent runtime."""
+def reference_execute(pin, truth, model, capabilities, *, renode, image, output_dir,
+                      phase='final', package=None, expected_package_sha256=None, package_final=True):
+    """Measured evaluator-only seam using normal models and frozen packages."""
     from .native import NativeSession
-    from . import tq9_v2
-    from .emulated_actions import execute_plan, model_invoker
+    from .emulated_actions import execute_plan, model_invoker, canonical_package_invoker
     from .behavior import validate_records
+    from .snapshots import canonical_digest
+    from ..configurator import digest
+    from ..toolkit import call_tool
     from interface_runtime.engine import validate_model
     candidate = {**model, 'channel': {'type': 'tcp'}}
     if not validate_model(candidate)['ok']:
         raise ValueError('Reference candidates must be structurally valid before native calibration')
+    if package is not None and (not expected_package_sha256 or digest(package) != expected_package_sha256):
+        raise ValueError('Frozen package changed before reference execution')
+    family = family_for(pin.get('case_id', 'tq9-v2'))
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     model_dir = output/'model'
     _write(model_dir/'model.json', candidate)
-    local = {**truth, 'artifact_sha256': hashlib.sha256((model_dir/'model.json').read_bytes()).hexdigest()}
-    contract = tq9_v2.contract(pin, local, 'final')
+    model_hash = hashlib.sha256((model_dir/'model.json').read_bytes()).hexdigest()
     probes = []
     session = NativeSession.start(renode=renode, image=image, recipe=truth['recipe'])
     try:
-        invoke = model_invoker(model_dir, capabilities, session.binding, output/'tools', probes)
-        records = execute_plan(session, invoke, tq9_v2.build_plan(pin, local, 'final'), contract,
-                               output/'raw.json', tq9_v2.observations, truth['contracts']['time_policy']['sample_settle_seconds'])
+        frozen = None
+        if phase == 'final' and package_final:
+            if package is None:
+                probed = run_call(session, lambda operation, parameters: call_tool('probe_run', {
+                    'run_dir': str(output/'tools'), 'model_dir': str(model_dir), 'operation': operation,
+                    'parameters': {}, 'binding': session.binding, 'n': 1}),
+                    {'operation': candidate['identity']['operation'], 'parameters': {}})
+                if not probed.get('ok') or not probed.get('probe'):
+                    raise ValueError('Reference identity probe could not support package emission')
+                probes.append(probed['probe'])
+                emitted = call_tool('emit_package', {'run_dir': str(output/'tools'),
+                    'model_dir': str(model_dir), 'probe': probed['probe']})
+                if not emitted.get('ok'):raise ValueError('Reference package emission failed')
+                package = Path(emitted['package_dir'])
+                expected_package_sha256 = digest(package)
+            checked = call_tool('emit_check', {'run_dir': str(output/'tools'),
+                'model_dir': str(model_dir), 'package_dir': str(package)})
+            if not all(checked.get(k) for k in ('ok', 'integrity_ok', 'runtime_current')):
+                raise ValueError('Reference package integrity failed')
+            frozen = digest(package)
+            if frozen != expected_package_sha256:
+                raise ValueError('Frozen package changed before final episode')
+            invoke = canonical_package_invoker(package, capabilities, session.binding)
+            runtime_root = Path(package)/'interface_runtime'
+        else:
+            invoke = model_invoker(model_dir, capabilities, session.binding, output/'tools', probes)
+            import interface_runtime
+            runtime_root = Path(interface_runtime.__file__).parent
+        runtime_hash = canonical_digest({p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                                         for p in sorted(runtime_root.glob('*.py'))})
+        local = {**truth, 'artifact_sha256': frozen or model_hash}
+        contract = family.contract(pin, local, phase)
+        records = execute_plan(session, invoke, family.build_plan(pin, local, phase), contract,
+            output/'raw.json', family.observations, truth['contracts']['time_policy']['sample_settle_seconds'])
+        if frozen and digest(package) != frozen:
+            raise ValueError('Frozen package changed during final episode')
         result = {'execution': 'reference-calibration', 'backend': 'native-renode',
-                  'native_process_observed': session.process is not None and session.process.poll() is None,
-                  'process': session.info, 'contract': contract, 'records': records,
-                  'grade': validate_records(contract, records), 'probes': probes}
+            'native_process_observed': session.process is not None and session.process.poll() is None,
+            'process': session.info, 'contract': contract, 'records': records,
+            'grade': validate_records(contract, records), 'probes': probes,
+            'model_sha256': model_hash, 'package_sha256': frozen,
+            'artifact_execution': 'emitted-package' if frozen else 'model-runtime',
+            'package_dir': str(package) if package is not None else None, 'runtime_sha256': runtime_hash}
         _write(output/'evaluation.json', result)
         return result
     finally:
@@ -279,7 +343,11 @@ def _truth(case_id, run_dir, options):
     from ..benchmark import case_root
     from .emulator import truth_for_case
     _, manifest = _inputs(case_id, run_dir)
-    return truth_for_case(case_root(), manifest, options)
+    truth = truth_for_case(case_root(), manifest, options)
+    if case_id in ('sampled-sensor-v1', 'parameter-store-v1'):
+        from .calibration import hydrate_truth
+        return hydrate_truth(truth)
+    return truth
 
 
 def _session(case_id, run_dir, options):
@@ -316,7 +384,7 @@ def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=
                     binding=None, allow_effects=None, options=None):
     from ..configurator import digest
     from .emulated_actions import package_invoker
-    from . import tq9_v2
+    family = family_for(case_id)
     path, state = _state(run_dir)
     package = Path(package_dir).resolve()
     if str(package) != state.get('package_copies', {}).get(stage) or digest(package) != state['package_sha256']:
@@ -324,17 +392,23 @@ def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=
     session = _session(case_id, run_dir, options or {})
     if binding != session.binding:
         raise ValueError('Package binding differs from the evaluator-owned emulator')
+    def public_observation(raw, result):
+        observed = family.observations(raw, result, parameters or {})
+        if case_id == 'tq9-v2':
+            return {'duty': observed['duty'], 'unit': 'permille',
+                    'temperature_reference': raw['values']['temperature'], 'temperature_unit': 'degC',
+                    'phase': 'diagnostic'}
+        return {**{key: observed[key] for key in family.observations.monitor_units},
+                'units': dict(family.observations.monitor_units), 'phase': 'diagnostic'}
+    before = public_observation(session.observe(), {}) if case_id != 'tq9-v2' else {}
     result = run_call(session, package_invoker(package, binding, allow_effects or []),
                       {'operation': operation, 'parameters': parameters or {}})
-    raw = session.observe()
-    observed = tq9_v2.observations(raw, result, parameters or {})
-    public = {'duty': observed['duty'], 'unit': 'permille',
-              'temperature_reference': raw['values']['temperature'], 'temperature_unit': 'degC',
-              'phase': 'diagnostic'}
+    public = public_observation(session.observe(), result)
     events = Path(run_dir)/'benchmark/package-events.jsonl'
     row = {'actor': 'worker', 'stage': stage, 'operation': operation, 'revision': state.get('revision', 0),
            'attempt_id': state['package_attempts'][stage], 'assignment_id': (options or {}).get('assignment_id'),
-           'package_sha256': state['package_sha256'], 'result': result, 'observation': public}
+           'package_sha256': state['package_sha256'], 'result': result, 'observation': public,
+           'before_observation': before}
     with events.open('a') as stream:
         stream.write(json.dumps(row, allow_nan=False)+'\n')
     return {**result, 'observation': public}
@@ -352,8 +426,14 @@ def _apply_scenario(case_id, run_dir, options):
         return
     truth = _truth(case_id, run_dir, options)
     scenario = read_snapshot(run_dir)['case_pin']['scenario_id']
-    definition = truth['contracts']['scenarios'][scenario]
-    stimulus = {'temperature': definition['temperature_vectors'][-1]['stimulus']}
+    if case_id == 'tq9-v2':
+        definition = truth['contracts']['scenarios'][scenario]
+        stimulus = {'temperature': definition['temperature_vectors'][-1]['stimulus']}
+    else:
+        if scenario not in ('semantic', 'control'):
+            raise ValueError('Unknown family scenario')
+        definition = {'next_image': 'firmware-drift.bin' if scenario == 'semantic' else 'firmware.bin'}
+        stimulus = truth['scenario_phases'][scenario]['maintenance']['actions'][0]['values']
     action = {'image': definition['next_image'], 'image_sha256': truth['images'][definition['next_image']], 'values': stimulus}
     nonce, action_hash = uuid.uuid4().hex, canonical_digest(action)
     journal.begin(nonce, action_hash)
@@ -362,8 +442,9 @@ def _apply_scenario(case_id, run_dir, options):
     state['image_name'] = definition['next_image']
     _write(path, state)
     session = _session(case_id, run_dir, options)
-    response = session.stimulate(stimulus)
-    if response['values'].get('temperature') != stimulus['temperature']:
+    response = session.stimulate(stimulus) if case_id == 'tq9-v2' else session.reset(stimulus)
+    if ((case_id == 'tq9-v2' and response['values'].get('temperature') != stimulus['temperature'])
+            or (case_id != 'tq9-v2' and not response.get('controls'))):
         raise RuntimeError('Scenario stimulus was not independently acknowledged')
     acknowledgement = '\n'.join(row['response'] for row in response['controls'])
     journal.applied(nonce, {'success': True, 'action_sha256': action_hash,

@@ -22,3 +22,17 @@ def observations(raw, canonical_task_result, inputs):
 
 
 observations.monitor_units = {"reference_temperature": "degC", "monitor_sequence": "count"}
+
+
+def reuse_passed(events, capabilities):
+    mapping=capabilities['tasks']['measure']
+    readings=[]
+    for event in events:
+        result=event['result']; observed=event['observation']; outputs=result.get('outputs',{})
+        if event.get('operation')!=mapping['operation'] or result.get('ok') is not True:continue
+        temperature=outputs.get(mapping['outputs']['temperature']['output'])
+        sequence=outputs.get(mapping['outputs']['sequence']['output'])
+        if (type(temperature) in (int,float) and type(sequence) is int
+                and temperature==observed.get('reference_temperature') and sequence==observed.get('monitor_sequence')):
+            readings.append(sequence)
+    return len(readings)>=2 and any(b>a for a,b in zip(readings,readings[1:]))

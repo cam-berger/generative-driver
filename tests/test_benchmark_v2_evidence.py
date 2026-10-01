@@ -238,7 +238,7 @@ class SealedEvidenceTests(unittest.TestCase):
         report, path = self.sealed(payload)
         graded = evidence.regrade_v2(report, path, self.password)
         self.assertEqual(graded['verdict'], 'passed')
-        self.assertEqual(graded['maintenance'], {'drift_claimed': True, 'drift_observed': True,
+        self.assertEqual(graded['maintenance'], {'evaluable': True, 'drift_claimed': True, 'drift_observed': True,
             'false_alarm': False, 'repair_completed': True, 'requalified': True, 'fresh_reuse_passed': True})
 
 
@@ -442,3 +442,54 @@ class ReportV2Tests(unittest.TestCase):
             self.assertEqual(report['executed']['evaluator_revision'], snapshot['executed']['evaluator_revision'])
             self.assertNotIn('PRIVATE SENTINEL', (root / 'runs/fixture/report.json').read_text())
             self.assertNotIn('records', json.dumps(report))
+
+
+class MaintenanceEvaluabilityTests(unittest.TestCase):
+    def test_live_maintenance_projects_initial_evaluator_availability_without_private_diagnostic(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import hashlib
+        from generative_driver.benchmark_support.emulated import _maintain
+        from generative_driver.benchmark_support.emulated_evidence import _private
+        from generative_driver.benchmark_support.snapshots import canonical_digest
+        for evaluable,fault,want in ((True,None,True),(False,None,False),(True,'host',False),(True,'operator',False)):
+            with self.subTest(evaluable=evaluable,fault=fault),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary);bench=root/'benchmark';bench.mkdir();workspace=root/'worker';workspace.mkdir()
+                password=root/'password';password.write_text('toy-password',encoding='utf-8')
+                capabilities=root/'capabilities.json';capabilities.write_text('{}',encoding='utf-8')
+                state={'package_copies':{'maintain':str(root/'package')},'capabilities_path':str(capabilities),'fresh_reuse_passed':True}
+                (bench/'state.json').write_text(json.dumps(state),encoding='utf-8')
+                snapshot={'schema':'benchmark-execution-snapshot/1','case_pin':{'scenario_id':'control'},'public_files':{}}
+                snapshot['snapshot_sha256']=canonical_digest(snapshot)
+                (bench/'execution.json').write_text(json.dumps(snapshot),encoding='utf-8')
+                claim=workspace/'maintenance.json'
+                claim.write_text(json.dumps({'schema':'benchmark-maintenance-claim/1','claim':'drift','evidence_ids':['7']}),encoding='utf-8')
+                report={'status':'needs_revision','artifacts':[{'path':'maintenance.json','sha256':hashlib.sha256(claim.read_bytes()).hexdigest()}]}
+                options={'evaluator_password_file':str(password),'assignment_id':'a','worker_events':[{'id':7,'actor':'worker','assignment_id':'a'}]}
+                observation={'evaluable':evaluable,'fault':fault,'contradiction':False,'evidence_ids':['toy-observation'],'private':'PRIVATE'}
+                with patch('generative_driver.benchmark_support.emulated_evidence.maintenance_observation',return_value=observation):
+                    _maintain('toy',root,workspace,report,options)
+                public=evidence.public_v2_report(json.loads((bench/'state.json').read_text()))
+                self.assertIs(public['maintenance'].get('evaluable'),want)
+                self.assertIs(public['maintenance']['false_alarm'],want)
+                self.assertNotIn('PRIVATE',json.dumps(public))
+                self.assertEqual(_private(root,options)['maintenance']['initial']['diagnostic']['private'],'PRIVATE')
+
+    def test_authenticated_regrade_derives_evaluability_including_failed_control_claims(self):
+        import tempfile
+        from pathlib import Path
+        for evaluable,fault,want in ((True,None,True),(False,None,False),(True,'host',False),(True,'operator',False)):
+            with self.subTest(evaluable=evaluable,fault=fault),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary);password=root/'password';password.write_text('toy-password',encoding='utf-8')
+                payload=SealedEvidenceTests().payload()
+                initial=payload['maintenance']['initial'];initial['claim']='drift'
+                initial['diagnostic'].update(evaluable=evaluable,fault=fault,unknown='PRIVATE')
+                sealed=evidence.seal_run_evidence(payload,root/'sidecar.enc',password)
+                report=evidence.public_v2_report({**payload,'snapshot_sha256':payload['execution_snapshot']['snapshot_sha256'],
+                    'executed':payload['execution_snapshot']['executed'],'final_evaluation':{'evidence_sha256':sealed['sha256']}})
+                graded=evidence.regrade_v2(report,root/'sidecar.enc',password)
+                self.assertEqual(graded['verdict'],'failed')
+                self.assertIs(graded['maintenance'].get('evaluable'),want)
+                self.assertIs(graded['maintenance']['false_alarm'],want)
+                self.assertNotIn('PRIVATE',json.dumps(graded))

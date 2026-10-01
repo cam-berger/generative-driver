@@ -144,8 +144,10 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
             'rate':sum(t[key]==value for t in passed)/sum(t[key]==value for t in trials)} for value in sorted({t[key] for t in trials})}
     first=sum(all(reports[t['run_id']]['stages'][stage].get('attempt_count')==1 for stage in STAGES) for t in passed)
     latencies=[r['elapsed_seconds'] for r in observed if r.get('elapsed_seconds') is not None]
-    controls=[reports[t['run_id']].get('maintenance',{}) for t in started if t['scenario']=='control' and t['run_id'] in reports]
-    controls=[m for m in controls if type(m.get('false_alarm')) is bool and type(m.get('drift_observed')) is bool]
+    control_trials=[t for t in trials if t['scenario']=='control']
+    control_measurements=[reports.get(t['run_id'],{}).get('maintenance',{}) for t in control_trials if t.get('run_id')]
+    controls=[m for m in control_measurements if m.get('evaluable') is True]
+    if any(type(m.get('false_alarm')) is not bool for m in controls):raise ValueError('Evaluable control requires false-alarm outcome')
     alarms=sum(m['false_alarm'] for m in controls)
     repairs=[r.get('repair_seconds') for r in observed if r.get('maintenance',{}).get('drift_observed') is True]
     public_trials=[]
@@ -163,6 +165,10 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
         stage_counts={stage:{'accepted':sum(r.get('stages',{}).get(stage,{}).get('workflow_status')=='accepted' for r in observed),
             'attempts':sum(r.get('stages',{}).get(stage,{}).get('attempt_count',0) for r in observed)} for stage in STAGES},
         first_attempt_success=first,repaired_success=len(passed)-first,
+        control_coverage={'planned':len(control_trials),'started':len(control_measurements),'evaluable':len(controls),
+            'unevaluable':sum(m.get('evaluable') is False for m in control_measurements),
+            'unknown':sum(type(m.get('evaluable')) is not bool for m in control_measurements),
+            'not_run':len(control_trials)-len(control_measurements)},
         false_alarms={'count':alarms,'denominator':len(controls),'rate':alarms/len(controls) if controls else None},
         latency={'sample_count':len(latencies),'includes_failed_trials':any(r.get('verdict')!='passed' and r.get('elapsed_seconds') is not None for r in observed),
             'min':min(latencies) if latencies else None,'median':statistics.median(latencies) if latencies else None,'max':max(latencies) if latencies else None},
@@ -283,8 +289,11 @@ def _recorded_success(owner,events,report):
             verdicts=[v for v in owner.get('evaluator_verdicts',[]) if v.get('stage')==stage and v.get('assignment_id')==handoff['assignment_id']]
         if len(verdicts)!=1 or any(verdicts[0].get(key)!=evaluation.get(key) for key in ('verdict','passed','total')):return False
         if phase=='final' and verdicts[0].get('final_evaluation') is not True:return False
-        source='interpret' if phase=='diagnostic' else 'emit'
-        if not any(h['stage']==source and h['revision']==evaluation['revision'] and h['artifacts'][0]['sha256']==evaluation.get('frozen_artifact_sha256') for h in handoffs):return False
+        # Probe accepts the adapted model; interpretation's original bytes differ.
+        # Failed diagnostics have no accepted probe and earn no gate credit.
+        if phase=='final' or evaluation.get('verdict')=='passed':
+            source='probe' if phase=='diagnostic' else 'emit'
+            if not any(h['stage']==source and h['revision']==evaluation['revision'] and h['artifacts'][0]['sha256']==evaluation.get('frozen_artifact_sha256') for h in handoffs):return False
     for handoff in handoffs:
         if handoff['stage']=='emit' and not any(v.get('stage')=='emit' and v.get('assignment_id')==handoff['assignment_id'] and v.get('verdict')=='passed' for v in owner.get('evaluator_verdicts',[])):return False
     return _maintenance_ok(summary.get('maintenance',{}))

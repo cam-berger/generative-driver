@@ -153,7 +153,7 @@ class SummaryTests(unittest.TestCase):
                 safe={'accepted_gates':[{'stage':'reuse','revision':0,'assignment_id':'a','artifact_sha256':'a'*64,'verdict':'passed','passed':2,'total':2}],
                       'evaluations':[{'phase':'final','revision':0,'frozen_artifact_sha256':'a'*64,'verdict':'passed','passed':3,'total':3}],
                       'final_evaluation':{'verdict':'passed','passed':3,'total':3,'evidence_sha256':'e'*64},
-                      'maintenance':{'drift_claimed':False,'drift_observed':False,'false_alarm':False,'repair_completed':False,'requalified':False,'fresh_reuse_passed':True}}
+                      'maintenance':{'evaluable':True,'drift_claimed':False,'drift_observed':False,'false_alarm':False,'repair_completed':False,'requalified':False,'fresh_reuse_passed':True}}
                 state=json.loads(json.dumps(safe));state['alien']='/PRIVATE/raw'
                 state['accepted_gates'][0]['raw']='/PRIVATE/checks'
                 state['evaluations'][0]['records']=['PRIVATE']

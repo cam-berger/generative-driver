@@ -480,7 +480,8 @@ def _maintain(case_id, run_dir, workspace, report, options):
     if journal.state().get('status') == 'applied':
         journal.observed(journal.state()['nonce'], canonical_digest(diagnostic))
     initial = payload['maintenance']['initial']
-    state['maintenance'] = {'drift_claimed': initial['claim'] == 'drift',
+    state['maintenance'] = {'evaluable': initial['diagnostic'].get('evaluable') is True and initial['diagnostic'].get('fault') not in ('host', 'operator'),
+        'drift_claimed': initial['claim'] == 'drift',
         'drift_observed': initial['diagnostic'].get('evaluable') is True and initial['diagnostic'].get('contradiction') is True,
         'false_alarm': result.get('maintenance', {}).get('false_alarm', False),
         'repair_completed': repaired and result['ok'], 'requalified': diagnostic['requalified'],

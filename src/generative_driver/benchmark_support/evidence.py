@@ -2,7 +2,7 @@
 from pathlib import Path
 
 
-MAINTENANCE_FIELDS = ('drift_claimed', 'drift_observed', 'false_alarm',
+MAINTENANCE_FIELDS = ('evaluable', 'drift_claimed', 'drift_observed', 'false_alarm',
                       'repair_completed', 'requalified', 'fresh_reuse_passed')
 COUNTS = ('verdict', 'passed', 'total')
 USAGE = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens',
@@ -187,7 +187,8 @@ def _maintenance_result(payload, evaluations, gates):
     identity_ok = (bool(finals) and initial.get('revision') == finals[0]['revision'] and
                    (not needs_repair or len(finals) == 2 and revision == finals[-1]['revision']) and
                    (needs_repair or len(finals) == 1 and not repaired))
-    fields = {'drift_claimed': initial.get('claim') == 'drift',
+    fields = {'evaluable': diagnostic.get('evaluable') is True and diagnostic.get('fault') not in ('host', 'operator'),
+        'drift_claimed': initial.get('claim') == 'drift',
         'drift_observed': diagnostic.get('evaluable') is True and diagnostic.get('contradiction') is True,
         'false_alarm': first['maintenance']['false_alarm'],
         'repair_completed': needs_repair and bool(repaired) and second['ok'] and requalified,

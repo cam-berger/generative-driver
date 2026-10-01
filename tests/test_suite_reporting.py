@@ -367,3 +367,37 @@ class RepairedQualificationTests(unittest.TestCase):
         owner['benchmark_summary']['evaluations'].insert(0,{'phase':'final','revision':0,'frozen_artifact_sha256':'0'*64,'verdict':'failed','passed':1,'total':2})
         report['evaluations']=copy.deepcopy(owner['benchmark_summary']['evaluations'])
         self.assertFalse(_recorded_success(owner,events,report))
+
+class ControlCoverageTests(unittest.TestCase):
+    def test_evaluable_failed_controls_count_and_host_or_missing_measurements_do_not(self):
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        m,t,r,e=fixture()
+        r['r2']['maintenance']={'evaluable':True,'false_alarm':True,'drift_observed':False}
+        result=aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
+        self.assertEqual(result['false_alarms'],{'count':1,'denominator':1,'rate':1.0})
+        evaluable_result=result
+        self.assertEqual(result['success']['denominator'],3)
+        t[1].update(status='blocked',outcome_category='host');r['r2']['maintenance']['evaluable']=False
+        r['r2']['maintenance']['false_alarm']=False
+        result=aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
+        self.assertEqual(result['false_alarms'],{'count':0,'denominator':0,'rate':None})
+        self.assertEqual(result['control_coverage'],{'planned':2,'started':1,'evaluable':0,'unevaluable':1,'unknown':0,'not_run':1})
+        r['r2']['maintenance'].pop('evaluable')
+        result=aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
+        self.assertEqual(evaluable_result['control_coverage'],{'planned':2,'started':1,'evaluable':1,'unevaluable':0,'unknown':0,'not_run':1})
+        self.assertEqual(result['control_coverage']['unknown'],1)
+        self.assertEqual(result['control_coverage']['evaluable'],0)
+
+class AdaptedDiagnosticIdentityTests(unittest.TestCase):
+    def test_diagnostic_binds_accepted_probe_model_not_pre_adaptation_interpretation(self):
+        from generative_driver.benchmark_support.suite_reporting import _recorded_success
+        owner,events,report=owner_fixture()
+        owner['accepted_handoffs'][2]['artifacts'][0]['sha256']='1'*64
+        owner['benchmark_summary']['accepted_gates'][2]['artifact_sha256']='1'*64
+        owner['benchmark_summary']['evaluations'][0]['frozen_artifact_sha256']='1'*64
+        events[5]['data']=copy.deepcopy(owner['accepted_handoffs'][2])
+        report.update(copy.deepcopy(owner['benchmark_summary']))
+        self.assertTrue(_recorded_success(owner,events,report))
+        owner['benchmark_summary']['evaluations'][0]['frozen_artifact_sha256']='2'*64
+        report.update(copy.deepcopy(owner['benchmark_summary']))
+        self.assertFalse(_recorded_success(owner,events,report))

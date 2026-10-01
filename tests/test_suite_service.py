@@ -419,3 +419,102 @@ class DelayedOperationTests(unittest.TestCase):
                     owner.close()
         finally:
             release.set();server.shutdown();server.server_close();server_thread.join(5)
+
+
+class CleanupFailureTests(unittest.TestCase):
+    def _stopped_suite_at_completion(self, home):
+        """Public durable queue fixture; exercises cleanup, not seven-stage grading."""
+        from generative_driver.configurator import Controller
+        from generative_driver.setup import configure
+        configure('codex',['missing-runtime'],home=home)
+        owner=Controller(home)
+        suite=owner.call('suite_start',{'manifest':legacy_manifest(2)})
+        state=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
+        child=state['active_child_id']
+        # Resume a durable exhausted stage queue so the real _run completion and
+        # finally paths execute, without pretending this is scored success.
+        with owner._db() as db:
+            progress={'revision':0,'next_stage':None,'repairs':0,'maintenance_cycles':0,'feedback':None}
+            db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)',(child,json.dumps(progress)))
+            owner._claim_binding({'host':'127.0.0.1','port':19381},child,db)
+        return owner,suite,child
+
+    def _assert_retained_lease(self, owner, child):
+        with owner._db() as db:
+            lease=db.execute('SELECT run_id FROM bindings WHERE run_id=?',(child,)).fetchone()
+        self.assertIsNotNone(lease)
+        with self.assertRaisesRegex(ValueError,'already owned'):
+            owner.start({'goal':'Competing local lease fixture','binding':{'host':'127.0.0.1','port':19381},
+                         'executor_config':{'command':['missing-runtime']}})
+
+    def test_cleanup_failure_blocks_settlement_and_terminal_recovery_until_reconciled(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as home:
+            owner,suite,child=self._stopped_suite_at_completion(home)
+            try:
+                # Only the external stop boundary fails; scheduling/state/leases are real.
+                with patch('generative_driver.benchmark.cleanup',side_effect=TimeoutError('scripted stop timeout')):
+                    owner.call('suite_resume',suite)
+                    state=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
+                self.assertEqual(state['completed'],0)
+                result=owner.call('result',{'run_id':child})
+                self.assertEqual((result['status'],result['outcome_category']),('blocked','host'))
+                self.assertTrue(result['uncertain_effect'])
+                self._assert_retained_lease(owner,child)
+                rows=owner.call('suite_result',suite)['trials']
+                self.assertEqual([t['run_id'] for t in rows],[child,None])
+                events=owner.call('events',{'run_id':child})['events']
+                self.assertIn('cleanup.failed',[e['kind'] for e in events])
+                # A durable terminal-final verdict cannot override unresolved cleanup.
+                with owner._db() as db:
+                    verdict={'stage':'reuse','assignment_id':'cleanup-final','final_evaluation':True,
+                             'fault':'model','verdict':'failed','passed':0,'total':1}
+                    db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)',('cleanup-final',child,'reuse',json.dumps(verdict),time.time()))
+                owner.close();owner=Controller(home)
+                with self.assertRaises(ValueError):owner.call('suite_resume',suite)
+                still=owner.call('suite_result',suite)
+                self.assertEqual(still['completed'],0)
+                self.assertEqual([t['run_id'] for t in still['trials']],[child,None])
+                self.assertNotIn('terminal_child_settled',[e['kind'] for e in owner.call('suite_events',suite)['events']])
+                self.assertTrue(owner.call('status',{'run_id':child})['uncertain_effect'])
+                self._assert_retained_lease(owner,child)
+            finally:owner.close()
+
+    def test_cleanup_failure_preserves_cancellation_and_unresolved_ownership(self):
+        import threading
+        from unittest.mock import patch
+        entered,release=threading.Event(),threading.Event()
+        def failed_stop(*args,**kwargs):
+            entered.set()
+            if not release.wait(5):raise AssertionError('Fixture cancellation never released cleanup')
+            raise TimeoutError('scripted stop timeout')
+        with tempfile.TemporaryDirectory() as home:
+            owner,suite,child=self._stopped_suite_at_completion(home)
+            cancellation=None
+            try:
+                with patch('generative_driver.benchmark.cleanup',side_effect=failed_stop):
+                    owner.call('suite_resume',suite)
+                    self.assertTrue(entered.wait(5))
+                    replies=[]
+                    cancellation=threading.Thread(target=lambda:replies.append(owner.call('suite_cancel',suite)))
+                    cancellation.start()
+                    deadline=time.monotonic()+5
+                    while time.monotonic()<deadline:
+                        state=owner.call('status',{'run_id':child})
+                        if state['status']=='cancelled':break
+                        time.sleep(.01)
+                    self.assertEqual(state['status'],'cancelled')
+                    release.set();cancellation.join(5)
+                    self.assertFalse(cancellation.is_alive())
+                self.assertEqual(replies[0]['status'],'cancelled')
+                result=wait_child(owner,child)
+                self.assertEqual((result['status'],result['outcome_category']),('cancelled','cancelled'))
+                self.assertTrue(result['uncertain_effect'])
+                self._assert_retained_lease(owner,child)
+                self.assertEqual(owner.call('suite_status',suite)['completed'],0)
+                with self.assertRaisesRegex(ValueError,'uncertain'):owner.call('suite_resume',suite)
+            finally:
+                release.set()
+                if cancellation:cancellation.join(5)
+                owner.close()

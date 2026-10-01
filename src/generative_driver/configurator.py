@@ -873,7 +873,14 @@ class Controller:
                             self._event(run_id, 'evidence.sealing_failed', {'reason':type(error).__name__})
                     cleanup(case['id'] if isinstance(case,dict) else case,run_dir,options)
                 except Exception as exc:
-                    self._event(run_id,'cleanup.failed',{'reason':type(exc).__name__+': '+str(exc)})
+                    # A failed stop may leave an external resource live. Retain its
+                    # lease until explicit reconciliation, even after this worker exits.
+                    with self._lock:
+                        with self._db() as db:
+                            db.execute('UPDATE runs SET uncertain=1 WHERE id=?',(run_id,))
+                            self._event(run_id,'cleanup.failed',{'reason':type(exc).__name__+': '+str(exc)},db)
+                        self._state(run_id,'blocked','Benchmark cleanup failed; operator reconciliation required',
+                                    outcome_category='host')
             with self._lock:
                 with self._db() as db:
                     row = db.execute('SELECT uncertain FROM runs WHERE id=?',(run_id,)).fetchone()

@@ -20,11 +20,15 @@ def _definition(pin, truth, phase):
         plan.append({'episode': episode, 'step': str(step), 'kind': 'observe', 'checks': [identifier]})
     def action(step, kind, **kwargs):
         plan.append({'episode': episode, 'step': str(step), 'kind': kind, **kwargs})
-    all_vectors = _scenario(pin, truth)['temperature_vectors']
+    scenario = _scenario(pin, truth)
+    phases = scenario.get('phases', {})
+    if phase == 'diagnostic' and phase not in phases:
+        raise ValueError('TQ9 diagnostics require a separate private phase inventory')
+    inventory = phases.get(phase, scenario)
+    all_vectors = inventory['temperature_vectors']
+    effects = inventory.get('effect_vectors', truth['contracts'].get('effect_vectors', []))
     vectors = list(enumerate(all_vectors))
-    if phase == 'diagnostic':
-        vectors = vectors[-1:]
-    else:
+    if phase != 'diagnostic':
         offset = pin.get('case_seed', 0) % len(vectors)
         vectors = vectors[offset:] + vectors[:offset]
     for index, vector in vectors:
@@ -33,11 +37,11 @@ def _definition(pin, truth, phase):
         action(step, 'call', task='temperature', inputs={}, grants=[])
         add(step, 'temperature', vector['expected'], 'runtime-transcript', units['temperature'], vector['absolute_tolerance'])
     action('effects-initial', 'reset', values={'temperature': all_vectors[-1]['stimulus']})
-    requested = next(v['inputs'] for v in truth['contracts']['effect_vectors'] if v['task'] == 'set_duty')
+    requested = next(v['inputs'] for v in effects if v['task'] == 'set_duty')
     action('denied', 'call', task='set_duty', inputs=requested, grants=[])
     add('denied', 'refused_without_io', True, 'runtime-transcript', 'boolean', kind='boolean')
     add('denied', 'duty', 0, 'independent-monitor', units['duty'])
-    for index, vector in enumerate(truth['contracts']['effect_vectors']):
+    for index, vector in enumerate(effects):
         step = 'effect-' + str(index)
         action(step, 'call', task=vector['task'], inputs=vector['inputs'], grants=['write', 'actuate'])
         if vector['task'] in ('set_duty', 'disarm'):

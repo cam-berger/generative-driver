@@ -289,8 +289,9 @@ main()
             call('ping', {}, root)
             params = StdioServerParameters(command=sys.executable, args=['-m', 'generative_driver.mcp'],
                 env={'GENERATIVE_DRIVER_HOME': str(root)}, cwd=str(root))
+            expected_error_log = tempfile.TemporaryFile(mode='w+t')
             try:
-                async with stdio_client(params) as (reader, writer):
+                async with stdio_client(params, errlog=expected_error_log) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
                         await session.initialize()
                         for home in (str(other), '', True):
@@ -315,8 +316,13 @@ main()
                                     self.assertIn('validation error', reply.content[0].text.lower())
                                 else:
                                     self.assertFalse(json.loads(reply.content[0].text)['ok'], reply)
+                expected_error_log.seek(0)
+                diagnostics = expected_error_log.read()
+                self.assertIn('validation error', diagnostics.lower())
+                self.assertIn('int_type', diagnostics)
                 self.assertFalse(other.exists())
             finally:
+                expected_error_log.close()
                 call('shutdown', {}, root)
 
     def test_suite_reconnects_with_running_child_and_paginates_every_slot(self):

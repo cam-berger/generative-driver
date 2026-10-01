@@ -172,13 +172,13 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
             except (ValueError, OSError):
                 continue
         ok = bool(matches)
-        return {'ok': ok, 'checks': [{'name': 'imported_firmware_hash', 'passed': ok}],
+        return {'ok': ok, 'fault': None if ok else 'model', 'checks': [{'name': 'imported_firmware_hash', 'passed': ok}],
                 'artifacts': matches, 'reason': None if ok else 'No matching imported firmware'}
     if stage == 'probe':
         ws = Path(workspace)
         capabilities = ws/'capabilities.json'
         if not capabilities.is_file():
-            return {'ok': False, 'checks': [], 'artifacts': [], 'reason': 'Missing capability mapping'}
+            return {'ok': False, 'fault': 'model', 'checks': [], 'artifacts': [], 'reason': 'Missing capability mapping'}
         _, state = _state(run_dir)
         model = Path(state['adapted_model_dir'])/'model.json'
         if hashlib.sha256(model.read_bytes()).hexdigest() != state['adaptation']['adapted_model_sha256']:
@@ -198,10 +198,12 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
     if stage == 'emit':
         from ..toolkit import call_tool
         from ..configurator import digest
+        failures = []
         for manifest_path in Path(workspace).rglob('manifest.json'):
             package = manifest_path.parent
             result = call_tool('emit_check', {'run_dir': str(Path(run_dir)/'benchmark/package-checks'),
                 'package_dir': str(package), 'model_dir': str(Path(workspace)/'model')})
+            failures.append(result)
             if (result.get('ok') and result.get('integrity_ok') and result.get('runtime_current')
                     and result.get('replay_status') == 'passed'):
                 path, state = _state(run_dir)
@@ -209,9 +211,12 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
                 _write(path, state)
                 return {'ok': True, 'checks': [{'name': 'package_integrity_and_replay', 'passed': True}],
                         'artifacts': [str(package)], 'evaluator': {'verdict': 'passed'}}
-        return {'ok': False, 'checks': [], 'artifacts': [], 'reason': 'No package passed integrity and replay'}
+        fault = 'model' if not failures else next((r.get('fault') or r.get('error', {}).get('fault') for r in failures if isinstance(r.get('error', {}), dict) and (r.get('fault') or r.get('error', {}).get('fault')) in ('host', 'operator')), None)
+        if fault is None and failures and all(r.get('ok') is True for r in failures):
+            fault = 'model'
+        return {'ok': False, 'fault': fault, 'checks': [], 'artifacts': [], 'reason': 'No package passed integrity and replay'}
     if stage == 'maintain':
-        return _maintain(case_id, run_dir, workspace, report, options or {})
+        return _maintain(case_id, run_dir, workspace, report, options or {}, accepted=accepted)
     if stage == 'reuse':
         _, state = _state(run_dir)
         events_path = Path(run_dir)/'benchmark/package-events.jsonl'
@@ -457,8 +462,8 @@ def _apply_scenario(case_id, run_dir, options):
                            'native_acknowledgement': {'response': acknowledgement}})
 
 
-def _maintain(case_id, run_dir, workspace, report, options):
-    from .scenarios import read_maintenance_claim, maintenance_decision, ScenarioJournal
+def _maintain(case_id, run_dir, workspace, report, options, accepted=None):
+    from .scenarios import read_maintenance_claim, maintenance_decision, maintenance_history, ScenarioJournal
     from .snapshots import canonical_digest
     from .emulated_evidence import maintenance_observation
     path, state = _state(run_dir)
@@ -468,24 +473,35 @@ def _maintain(case_id, run_dir, workspace, report, options):
     diagnostic = maintenance_observation(case_id, run_dir, package,
         json.loads(Path(state['capabilities_path']).read_text()), options)
     payload = _private(run_dir, options)
-    repaired = 'initial' in payload['maintenance']
-    diagnostic.update(fresh_reuse_passed=bool(state.get('fresh_reuse_passed')),
-                      requalified=bool(repaired and state.get('diagnostic', {}).get('passed')))
+    entries = payload['maintenance']
+    revision = state.get('revision', 0)
+    initial = entries.get('initial', {})
+    transition = next((h for h in (accepted or []) if h.get('stage') == 'maintain'
+        and h.get('route') == 'interpret' and h.get('assignment_id') == initial.get('assignment_id')
+        and h.get('revision') == initial.get('revision') and h['revision'] < revision), None)
+    repaired = transition is not None
+    requalified = repaired and all(any(h.get('stage') == stage and h.get('revision') == revision
+        for h in (accepted or [])) for stage in ('interpret', 'probe', 'ground', 'emit'))
+    fresh = bool(state.get('fresh_reuse_passed'))
+    diagnostic.update(fresh_reuse_passed=fresh, requalified=bool(requalified))
     scenario = read_snapshot(run_dir)['case_pin']['scenario_id']
     result = maintenance_decision(scenario=scenario, claim=claim['claim'], diagnostic=diagnostic, repaired=repaired)
-    payload['maintenance']['repaired' if repaired else 'initial'] = {
-        'revision': state.get('revision', 0), 'claim': claim['claim'], 'worker_evidence_ids': claim['evidence_ids'], 'diagnostic': diagnostic}
+    entry = {'revision': revision, 'assignment_id': options.get('assignment_id'),
+        'phase': 'repaired' if repaired else 'initial', 'claim': claim['claim'],
+        'worker_evidence_ids': claim['evidence_ids'], 'diagnostic': diagnostic}
+    entries.setdefault('attempts', []).append(entry)
+    if result['ok']:
+        entries['repaired' if repaired else 'initial'] = entry
+    fields, history_ok = maintenance_history(scenario, entries, requalified=requalified, fresh=fresh, transition=repaired)
+    if fields['false_alarm'] or any(maintenance_decision(scenario=scenario, claim=e['claim'],
+            diagnostic=e['diagnostic'], repaired=e['phase']=='repaired').get('fault') == 'model'
+            for e in entries['attempts']):
+        result.update(ok=False, fault='model', route=None, reason='Retained evidenced maintenance failure')
     _private(run_dir, options, payload)
     journal = ScenarioJournal(Path(run_dir)/'benchmark')
     if journal.state().get('status') == 'applied':
         journal.observed(journal.state()['nonce'], canonical_digest(diagnostic))
-    initial = payload['maintenance']['initial']
-    state['maintenance'] = {'evaluable': initial['diagnostic'].get('evaluable') is True and initial['diagnostic'].get('fault') not in ('host', 'operator'),
-        'drift_claimed': initial['claim'] == 'drift',
-        'drift_observed': initial['diagnostic'].get('evaluable') is True and initial['diagnostic'].get('contradiction') is True,
-        'false_alarm': result.get('maintenance', {}).get('false_alarm', False),
-        'repair_completed': repaired and result['ok'], 'requalified': diagnostic['requalified'],
-        'fresh_reuse_passed': diagnostic['fresh_reuse_passed']}
+    state['maintenance'] = fields
     if result.get('route'):
         state['fresh_reuse_passed'] = False
     _write(path, state)

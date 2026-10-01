@@ -160,6 +160,8 @@ def _gate_results(payload, evaluations):
     inventory_ok = bool(required) and all(stage in STAGES for stage in required) and bool(final)
     for revision in final:
         for stage in required:
+            if stage == 'maintain':
+                continue  # Maintenance belongs to accepted detection/resolution, not every frozen final.
             target = 0 if stage == 'acquire' else revision
             matches = [row for row in rows if (row['stage'], row['revision']) == (stage, target)]
             inventory_ok = inventory_ok and len(matches) == 1 and matches[0]['verdict'] == 'passed'
@@ -167,34 +169,29 @@ def _gate_results(payload, evaluations):
 
 
 def _maintenance_result(payload, evaluations, gates):
-    from .scenarios import maintenance_decision
+    from .scenarios import maintenance_history
     scenario = payload['case_pin']['scenario_id']
     entries = payload.get('maintenance', {})
     finals = sorted((row for row in evaluations if row['phase'] == 'final'), key=lambda row: row['revision'])
     initial, repaired = entries.get('initial', {}), entries.get('repaired', {})
-    diagnostic = initial.get('diagnostic', {})
-    first = maintenance_decision(scenario=scenario, claim=initial.get('claim'), diagnostic=diagnostic, repaired=False)
     needs_repair = scenario != 'control'
     last = repaired if needs_repair else initial
-    last_diagnostic = last.get('diagnostic', {})
     revision = last.get('revision')
     requalified = all(any(g['stage'] == stage and g['revision'] == revision and g['verdict'] == 'passed'
                          for g in gates) for stage in ('interpret', 'probe', 'ground', 'emit'))
-    fresh = (last_diagnostic.get('fresh_reuse_passed') is True and
+    fresh = (last.get('diagnostic', {}).get('fresh_reuse_passed') is True and
              any(g['stage'] == 'reuse' and g['revision'] == revision and g['verdict'] == 'passed' for g in gates))
-    second = maintenance_decision(scenario=scenario, claim=last.get('claim'),
-        diagnostic={**last_diagnostic, 'requalified': requalified, 'fresh_reuse_passed': fresh}, repaired=needs_repair)
-    identity_ok = (bool(finals) and initial.get('revision') == finals[0]['revision'] and
-                   (not needs_repair or len(finals) == 2 and revision == finals[-1]['revision']) and
-                   (needs_repair or len(finals) == 1 and not repaired))
-    fields = {'evaluable': diagnostic.get('evaluable') is True and diagnostic.get('fault') not in ('host', 'operator'),
-        'drift_claimed': initial.get('claim') == 'drift',
-        'drift_observed': diagnostic.get('evaluable') is True and diagnostic.get('contradiction') is True,
-        'false_alarm': first['maintenance']['false_alarm'],
-        'repair_completed': needs_repair and bool(repaired) and second['ok'] and requalified,
-        'requalified': needs_repair and requalified,
-        'fresh_reuse_passed': fresh}
-    return fields, bool(identity_ok and first['ok'] and second['ok'])
+    def accepted(entry, route=None):
+        return any(g['stage'] == 'maintain' and g['revision'] == entry.get('revision') and g['verdict'] == 'passed'
+            and ('attempts' not in entries or g['assignment_id'] == entry.get('assignment_id') and
+                 (route is None or any(raw.get('assignment_id') == g['assignment_id'] and raw.get('route') == route
+                                      for raw in payload['accepted_gates']))) for g in gates)
+    transition = (needs_repair and type(initial.get('revision')) is int and type(revision) is int
+                  and revision > initial['revision'] and accepted(initial, 'interpret'))
+    fields, ok = maintenance_history(scenario, entries, requalified=requalified, fresh=fresh, transition=transition)
+    identity_ok = (bool(finals) and initial.get('revision') in {f['revision'] for f in finals}
+                   and revision == finals[-1]['revision'] and accepted(initial) and accepted(last))
+    return fields, bool(identity_ok and ok)
 
 
 def regrade_v2(report: dict, evidence_path: Path, password_file: Path) -> dict:

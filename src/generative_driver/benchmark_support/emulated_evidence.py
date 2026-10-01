@@ -143,7 +143,7 @@ def finalize(case_id, run_dir, accepted, options):
         if phase and any(e['phase']==phase and e['revision']==handoff['revision'] for e in payload['evaluations']):
             refs=[{'phase':phase,'revision':handoff['revision']}]
         checks=[{'id':str(c.get('id',c.get('name'))),'passed':c.get('passed') is True} for c in handoff['checks']]
-        gate={**identity,'artifact_sha256':selected['sha256'],'checks':checks,'evaluation_refs':refs}
+        gate={**identity,'artifact_sha256':selected['sha256'],'checks':checks,'evaluation_refs':refs, 'route':handoff.get('route')}
         payload['accepted_gates'].append(gate)
         summaries.append({**identity,'artifact_sha256':selected['sha256'],'verdict':'passed' if checks and all(c['passed'] for c in checks) else 'failed',
                           'passed':sum(c['passed'] for c in checks),'total':len(checks)})

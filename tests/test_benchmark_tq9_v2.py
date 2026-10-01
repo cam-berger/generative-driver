@@ -110,6 +110,27 @@ class TQ9V2Tests(unittest.TestCase):
                                      {'ok': True, 'outputs': {}}, {'duty': .4})
         self.assertEqual(observed['duty'], 0)
 
+    def test_phase_inventories_are_disjoint_and_reject_constant_diagnostics(self):
+        from generative_driver.benchmark_support import tq9_v2
+        from generative_driver.benchmark_support.behavior import validate_records
+        phases = {}
+        for phase, temperatures, duties in (('diagnostic', (-8, 0, 31), (0, 450, 1000)),
+                                            ('final', (-9, 1, 32), (1, 451, 999))):
+            phases[phase] = {'temperature_vectors': [{'stimulus': v, 'expected': v, 'absolute_tolerance': 0} for v in temperatures],
+                'effect_vectors': [{'task': 'arm', 'inputs': {}}] +
+                    [{'task': 'set_duty', 'inputs': {'duty': v}} for v in duties] + [{'task': 'disarm', 'inputs': {}}]}
+        truth = {'artifact_sha256': 'a'*64, 'contracts': {'units': {'temperature': 'degC', 'duty': 'permille'},
+            'scenarios': {'semantic': {**phases['final'], 'phases': phases}}, 'effect_vectors': phases['final']['effect_vectors']}}
+        plans = [tq9_v2.build_plan({'scenario_id': 'semantic'}, truth, phase) for phase in ('diagnostic', 'final')]
+        values = [{a['values']['temperature'] for a in plan if a['kind'] == 'reset'} for plan in plans]
+        targets = [{a['inputs']['duty'] for a in plan if a.get('task') == 'set_duty'} for plan in plans]
+        for inventory in (*values, *targets): self.assertGreaterEqual(len(inventory), 3)
+        self.assertFalse(values[0] & values[1]); self.assertFalse(targets[0] & targets[1])
+        contract = tq9_v2.contract({'scenario_id': 'semantic'}, truth, 'diagnostic')
+        records = [{'id': c['id'], 'revision': 0, 'artifact_sha256': 'a'*64, 'unit': c['unit'],
+            'channel': c['channel'], 'value': 31 if c['id'].endswith('/temperature') else c['expected']} for c in contract['checks']]
+        self.assertEqual(validate_records(contract, records)['verdict'], 'failed')
+
     def test_tq9_monitor_measurement_uses_permille(self):
         # Catches fraction/permille confusion at the actual family boundary.
         from generative_driver.benchmark_support.tq9_v2 import observations
@@ -249,6 +270,10 @@ class TQ9V2Tests(unittest.TestCase):
                     'units':{'temperature':'degC','duty':'permille'},'scenarios':scenarios,
                     'effect_vectors':[{'task':'arm','inputs':{}},{'task':'set_duty','inputs':{'duty':400}},{'task':'disarm','inputs':{}}],
                     'time_policy':{'sample_settle_seconds':0}}}
+                for definition in scenarios.values():
+                    definition['phases'] = {'diagnostic': {
+                        'temperature_vectors': [{'stimulus': v, 'expected': v, 'absolute_tolerance': .01} for v in (-8, 0, 31)],
+                        'effect_vectors': [{'task':'arm','inputs':{}}] + [{'task':'set_duty','inputs':{'duty':v}} for v in (0,450,1000)] + [{'task':'disarm','inputs':{}}]}}
                 manifest['truth']['sha256']=seal(truth,resources/manifest['truth']['path'],password.read_text())
                 manifest['calibration']={'status':'pending'}
                 (case/'case.json').write_text(json.dumps(manifest))
@@ -568,3 +593,15 @@ class TQ9V2Tests(unittest.TestCase):
                         native.assert_not_called()
                         self.assertFalse(controller._workers)
                 finally:controller.close()
+
+class GateCategoryTests(unittest.TestCase):
+    def test_missing_candidate_artifacts_are_model_failures(self):
+        from generative_driver.benchmark_support import emulated
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            with patch.object(emulated,'_inputs',return_value=(root,{'images':{'firmware.bin':'a'*64}})):
+                for stage in ('acquire','probe','emit'):
+                    with self.subTest(stage=stage):
+                        result=emulated.check_stage('tq9-v2',stage,root,root,{'status':'completed'})
+                        self.assertFalse(result['ok']);self.assertEqual(result.get('fault'),'model')

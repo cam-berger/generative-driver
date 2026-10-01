@@ -33,7 +33,7 @@
   },
   "truth": {
     "path": "groundtruth/tq9-v2.enc",
-    "sha256": "e3acab7e6e5f255b47a2a6d58b283a2333734bea356698f8e523d9d949ae1bf0"
+    "sha256": "9869433dff657168cc6507db743fc80d76c3d9019eb0a86d752fb806e92d45b0"
   },
   "calibration": {
     "status": "pending",
@@ -56,7 +56,7 @@
     "observed_platform": "macOS arm64",
     "measured_status": "passed",
     "measured_source_revision": "aee512e7701d6a426df682865a7b5ffc2a7f8544",
-    "limitation": "Current evaluator changed after measurement; final integration native refresh required"
+    "limitation": "Private phase inventory and evaluator changed; final native reference refresh required"
   },
   "time_policy": {
     "probe": "continuous emulator virtual time",

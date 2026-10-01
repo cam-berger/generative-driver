@@ -493,3 +493,99 @@ class MaintenanceEvaluabilityTests(unittest.TestCase):
                 self.assertIs(graded['maintenance'].get('evaluable'),want)
                 self.assertIs(graded['maintenance']['false_alarm'],want)
                 self.assertNotIn('PRIVATE',json.dumps(graded))
+
+class MaintenanceRecoveryTests(SealedEvidenceTests):
+    def live_attempt(self, payload, claim_value, diagnostic, revision=0):
+        import hashlib
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.emulated import _maintain
+        from generative_driver.benchmark_support.emulated_evidence import _private
+        bench=self.root/'benchmark';bench.mkdir(exist_ok=True)
+        workspace=self.root/'worker';workspace.mkdir(exist_ok=True)
+        capabilities=self.root/'capabilities.json';capabilities.write_text('{}')
+        state={'revision':revision,'package_copies':{'maintain':str(self.root/'package')},
+            'capabilities_path':str(capabilities),'fresh_reuse_passed':True,'diagnostic':{'passed':True}}
+        (bench/'state.json').write_text(json.dumps(state))
+        (bench/'execution.json').write_text(json.dumps(payload['execution_snapshot']))
+        assignment='attempt-'+str(len(payload['maintenance'].get('attempts',[])))
+        claim=workspace/'maintenance.json';claim.write_text(json.dumps({'schema':'benchmark-maintenance-claim/1',
+            'claim':claim_value,'evidence_ids':['7']}))
+        report={'status':'needs_revision' if claim_value=='drift' else 'completed',
+            'artifacts':[{'path':'maintenance.json','sha256':hashlib.sha256(claim.read_bytes()).hexdigest()}]}
+        options={'evaluator_password_file':str(self.password),'assignment_id':assignment,
+            'worker_events':[{'id':7,'actor':'worker','assignment_id':assignment}]}
+        _private(self.root,options,payload)
+        accepted=[dict(g,route='interpret' if g['stage']=='maintain' and payload['case_pin']['scenario_id']!='control' and g['revision']==0 else None)
+            for g in payload['accepted_gates'] if g['stage']!='maintain' or g['revision']<revision]
+        with patch('generative_driver.benchmark_support.emulated_evidence.maintenance_observation',return_value=dict(diagnostic)):
+            result=_maintain('toy',self.root,workspace,report,options,accepted=accepted)
+        saved=_private(self.root,options)
+        summary=json.loads((bench/'state.json').read_text())['maintenance']
+        # A successful controller handoff binds the evaluator attempt to this revision.
+        if result['ok']:
+            for gate in saved['accepted_gates']:
+                if gate['stage']=='maintain' and gate['revision']==revision:
+                    old=gate['assignment_id'];gate.update(assignment_id=assignment,route=result.get('route'))
+                    for artifact in saved['accepted_artifacts']:
+                        if artifact['assignment_id']==old:artifact['assignment_id']=assignment
+        return result,saved,summary
+
+    def test_control_retries_preserve_attempts_without_repair_credit_and_regrade_agrees(self):
+        from generative_driver.benchmark_support.suite_reporting import _maintenance_ok
+        good={'evaluable':True,'fault':None,'contradiction':False,'evidence_ids':['toy']}
+        for first_claim, first_observation in (('unknown',good),('unchanged',dict(good,evaluable=False,fault='host'))):
+            with self.subTest(first_claim=first_claim):
+                payload=self.payload();payload['maintenance']={}
+                failed,payload,_=self.live_attempt(payload,first_claim,first_observation)
+                self.assertFalse(failed['ok'])
+                passed,payload,summary=self.live_attempt(payload,'unchanged',good)
+                self.assertTrue(passed['ok']);self.assertTrue(_maintenance_ok(summary))
+                self.assertFalse(summary['repair_completed']);self.assertFalse(summary['requalified'])
+                self.assertTrue(summary['evaluable']);self.assertEqual(len(payload['maintenance']['attempts']),2)
+                report,path=self.sealed(payload);graded=evidence.regrade_v2(report,path,self.password)
+                self.assertEqual(graded['verdict'],'passed');self.assertEqual(graded['maintenance'],summary)
+
+    def test_false_alarm_is_retained_and_cannot_be_erased_by_retry(self):
+        good={'evaluable':True,'fault':None,'contradiction':False,'evidence_ids':['toy']}
+        payload=self.payload();payload['maintenance']={}
+        failed,payload,_=self.live_attempt(payload,'drift',good)
+        self.assertEqual(failed['fault'],'model')
+        later,payload,summary=self.live_attempt(payload,'unchanged',good)
+        self.assertFalse(later['ok']);self.assertTrue(summary['false_alarm'])
+        report,path=self.sealed(payload)
+        self.assertEqual(evidence.regrade_v2(report,path,self.password)['verdict'],'failed')
+
+    def test_semantic_repair_requires_actual_accepted_route(self):
+        drift={'evaluable':True,'fault':None,'contradiction':True,'evidence_ids':['toy']}
+        payload=self.payload('semantic',repaired=True);payload['maintenance']={}
+        first,payload,_=self.live_attempt(payload,'drift',drift)
+        self.assertEqual(first['route'],'interpret')
+        second,payload,summary=self.live_attempt(payload,'unchanged',dict(drift,contradiction=False),revision=1)
+        self.assertTrue(second['ok']);self.assertTrue(summary['repair_completed'])
+        report,path=self.sealed(payload);graded=evidence.regrade_v2(report,path,self.password)
+        self.assertEqual(graded['verdict'],'passed');self.assertEqual(graded['maintenance'],summary)
+        payload['accepted_gates'][6]['route']=None
+        report,path=self.sealed(payload)
+        self.assertEqual(evidence.regrade_v2(report,path,self.password)['verdict'],'failed')
+
+    def test_extra_successful_final_kept_without_inventing_maintenance_gate(self):
+        import copy
+        payload=self.payload('semantic',repaired=True)
+        extra=copy.deepcopy(payload['evaluations'][-1]);extra['revision']=2
+        for row in extra['records']+extra['contract']['checks']:row['revision']=2
+        payload['evaluations'].append(extra)
+        for key in ('accepted_gates','accepted_artifacts'):
+            for row in list(payload[key]):
+                if row['revision']==1 and row['stage']!='maintain':
+                    item=copy.deepcopy(row);item['revision']=2;item['assignment_id']+='-extra'
+                    for ref in item.get('evaluation_refs',[]):ref['revision']=2
+                    payload[key].append(item)
+        payload['maintenance']['repaired']['revision']=2
+        for key in ('accepted_gates','accepted_artifacts'):
+            for row in payload[key]:
+                if row['stage']=='maintain' and row['revision']==1:row['revision']=2
+        report,path=self.sealed(payload);graded=evidence.regrade_v2(report,path,self.password)
+        self.assertEqual(graded['verdict'],'passed');self.assertEqual(len(graded['evaluations']),3)
+        payload['evaluations'][1]['records'][0]['value']=0
+        report,path=self.sealed(payload)
+        self.assertEqual(evidence.regrade_v2(report,path,self.password)['verdict'],'failed')

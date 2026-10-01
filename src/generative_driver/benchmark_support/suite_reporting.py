@@ -123,9 +123,8 @@ def _experiment(value):
         'execution_snapshots':[{'trial_key':row['trial_key'],'snapshot_sha256':row['snapshot_sha256']} for row in value['execution_snapshots']]}
 
 def _maintenance_ok(value):
-    return (value.get('false_alarm') is False and type(value.get('drift_claimed')) is bool
-        and value.get('drift_claimed')==value.get('drift_observed') and value.get('fresh_reuse_passed') is True
-        and (not value['drift_observed'] or value.get('repair_completed') is True and value.get('requalified') is True))
+    from .scenarios import maintenance_summary_ok
+    return maintenance_summary_ok(value)
 
 def _counts_ok(value):
     return (value.get('verdict')=='passed' and type(value.get('total')) is int and value['total']>0

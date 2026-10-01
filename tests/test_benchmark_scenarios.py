@@ -50,6 +50,9 @@ class ScenarioTests(unittest.TestCase):
                                      diagnostic=good, repaired=False)
         self.assertFalse(alarm['ok'])
         self.assertTrue(alarm['maintenance']['false_alarm'])
+        self.assertEqual(alarm['fault'], 'model')
+        missed = maintenance_decision(scenario='semantic', claim='unchanged', diagnostic=dict(good, contradiction=True), repaired=False)
+        self.assertEqual(missed['fault'], 'model')
         unavailable = dict(good, evaluable=False, fault='host', evidence_ids=[])
         blocked = maintenance_decision(scenario='semantic', claim='drift',
                                        diagnostic=unavailable, repaired=False)

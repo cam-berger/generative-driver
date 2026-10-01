@@ -1,4 +1,4 @@
-"""Public suite fixtures; these helpers never execute a runtime or native tools."""
+"""Public suite data and scripted contract helpers; never native tools or inference."""
 import json
 
 
@@ -65,3 +65,62 @@ def public_case_fixture(root, case_id='tq9-v2', *, calibration=None, **changes):
         'limitations': ['Pure suite freeze fixture; not native calibration'], **changes}
     (case / 'case.json').write_text(json.dumps(manifest), encoding='utf-8')
     return manifest
+
+
+def write_scripted_case_worker(directory, *, hold_on_repair=False):
+    """Write a subprocess contract fixture rejected by the real legacy model gate."""
+    import sys
+    from pathlib import Path
+    import generative_driver
+    path = Path(directory)/'scripted_suite_worker.py'
+    source = '''import sys,json,pathlib,hashlib,shutil,time
+sys.path.insert(0,PACKAGE_PARENT)
+from generative_driver.client import call
+from generative_driver.toolkit import resources_root
+prompt=sys.stdin.read()
+if prompt.startswith('Execute exactly'):
+    task=json.loads(prompt.split('\\n',1)[1])
+    args=json.loads(next(a.split('=',1)[1] for a in sys.argv if a.startswith('mcp_servers.stage.args=')))
+    identity={'run_id':args[args.index('--run')+1],'assignment_id':args[args.index('--assignment')+1]}
+    image=pathlib.Path(task['inputs'][0])
+    out=call('tool',{**identity,'name':'acquire_firmware_artifact','arguments':{'source_path':str(image),'expected_sha256':hashlib.sha256(image.read_bytes()).hexdigest(),'origin':'provided_binary'}},args[args.index('--home')+1])
+    assert out.get('available'),out
+    report={'status':'completed','summary':'scripted import','artifacts':[{'path':out[k],'sha256':hashlib.sha256(pathlib.Path(out[k]).read_bytes()).hexdigest(),'kind':'evidence'} for k in ('artifact','provenance')],'checks':[{'name':'import','status':'pass','evidence':[out['provenance']]}],'unresolved':[]}
+    print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps(report)}}))
+else:
+    # An intentionally unrelated, unqualified model. The real case gate rejects it.
+    shutil.copy2(resources_root()/'bench/cases/setup-smoke/model.json','model.json')
+'''
+    if hold_on_repair:
+        source = source.replace('else:\n', "else:\n    if pathlib.Path('DEFECTS.json').exists(): time.sleep(20)\n", 1)
+    source = source.replace('PACKAGE_PARENT', repr(str(Path(generative_driver.__file__).resolve().parents[1])))
+    path.write_text(source, encoding='utf-8')
+    return [sys.executable, str(path)]
+
+
+def wait_suite(call, suite_id, home, predicate):
+    import time
+    hard_stop, idle_stop, cursor = time.monotonic()+60, time.monotonic()+10, 0
+    last_event, child_cursors = None, {}
+    while time.monotonic() < min(hard_stop, idle_stop):
+        state = call('suite_status', {'suite_id':suite_id}, home)
+        page = call('suite_events', {'suite_id':suite_id,'after':cursor}, home)
+        if page['cursor'] > cursor:
+            cursor, idle_stop = page['cursor'], time.monotonic()+10
+            last_event = page['events'][-1]
+        child = state.get('active_child_id')
+        if child:
+            child_page = call('events', {'run_id':child,'after':child_cursors.get(child,0)}, home)
+            if child_page['cursor'] > child_cursors.get(child,0):
+                child_cursors[child] = child_page['cursor']
+                idle_stop, last_event = time.monotonic()+10, child_page['events'][-1]
+        if predicate(state):
+            return state
+        if state['status'] in ('failed','blocked','cancelled','completed'):
+            raise AssertionError({'unexpected_terminal':state,'last_event':last_event})
+        time.sleep(.02)
+    raise AssertionError({'wait_expired':state,'last_event':last_event})
+
+
+def wait_owner_suite(owner, suite_id, predicate):
+    return wait_suite(lambda method,params,home:owner.call(method,params),suite_id,None,predicate)

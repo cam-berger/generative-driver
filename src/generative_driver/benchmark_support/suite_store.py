@@ -81,6 +81,33 @@ class SuiteStore:
                 (status,reason,time.time(),int(status=='cancelled'),suite_id))
             self._event(db,suite_id,'suite.'+status,{})
 
+    def cancel(self, suite_id):
+        with self.open_db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            suite = self._get(db,suite_id)
+            if not suite['cancelled']:
+                db.execute("UPDATE suites SET cancelled=1,status='cancelled',updated=? WHERE id=?",
+                           (time.time(),suite_id))
+                self._event(db,suite_id,'suite.cancel_requested',{})
+
+    def extend_budget(self, suite_id, budget, reason):
+        import math
+        if (type(budget) not in (int,float) or not 0 < budget <= 604800 or not math.isfinite(budget)
+                or not isinstance(reason,str) or not reason.strip()):
+            raise ValueError('Suite budget requires a finite positive total and a nonblank budget_reason')
+        with self.open_db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            suite = self._get(db,suite_id)
+            if budget < suite['budget_seconds']:
+                raise ValueError('Suite total budget cannot decrease')
+            if budget > suite['budget_seconds']:
+                db.execute('UPDATE suites SET budget_seconds=?,updated=? WHERE id=?',(budget,time.time(),suite_id))
+                self._event(db,suite_id,'suite.budget_extended',{
+                    'old_budget_seconds':suite['budget_seconds'],'new_budget_seconds':budget,
+                    'extension_seconds':budget-suite['budget_seconds'],
+                    'old_deadline':suite['created']+suite['budget_seconds'],
+                    'new_deadline':suite['created']+budget})
+
     def reserve(self,suite_id):
         # Keep an interrupted dispatch visible even while its parent is blocked.
         with self.open_db() as db:
@@ -124,7 +151,7 @@ class SuiteStore:
             'data':json.loads(row['payload']),'time':row['created']} for row in rows],
             'cursor':rows[-1]['seq'] if rows else after}
 
-    def settle(self,suite_id,ordinal,result):
+    def settle(self,suite_id,ordinal,result,*,terminal_final=False):
         if (result.get('stopping') is not False or result.get('uncertain_effect') is not False
                 or result.get('status') not in ('completed','failed','cancelled','blocked')):
             raise ValueError('Child must be settled before its slot')
@@ -143,6 +170,8 @@ class SuiteStore:
             db.execute("UPDATE suite_trials SET status='finished',outcome_category=?,result_json=? WHERE suite_id=? AND ordinal=?",
                 (category,_json(public),suite_id,ordinal))
             self._event(db,suite_id,'trial.finished',{'ordinal':ordinal,**public})
+            if terminal_final:
+                self._event(db,suite_id,'terminal_child_settled',{'ordinal':ordinal,**public})
 
     def recover(self):
         with self.open_db() as db:

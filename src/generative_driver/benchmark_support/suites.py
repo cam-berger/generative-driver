@@ -130,3 +130,17 @@ def child_request(frozen: dict, trial: dict) -> dict:
             'request_id': trial['child_request_id'],
             'effects': list(frozen['entry_effects'][trial['entry_index']]),
             'scoped_tool_approval': approval, 'budget_seconds': frozen['manifest']['child_budget_seconds']}
+
+
+def child_disposition(result: dict) -> str:
+    """Only an explicitly settled successful or model-failed child may advance."""
+    if result.get('stopping') or result.get('status') in ('queued', 'running'):
+        return 'wait'
+    if result.get('stopping') is not False or result.get('uncertain_effect') is not False:
+        return 'block'
+    category = result.get('outcome_category', 'unknown')
+    if category == 'completed' and result.get('status') == 'completed':
+        return 'advance'
+    if category == 'model' and result.get('status') in ('failed', 'blocked'):
+        return 'advance'
+    return 'block'

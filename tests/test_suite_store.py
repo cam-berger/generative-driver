@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from generative_driver.configurator import Controller
-from suite_fixtures import legacy_manifest,sqlite_context
+from suite_fixtures import legacy_manifest,sqlite_context,wait_owner_suite
 
 
 class StoreTests(unittest.TestCase):
@@ -205,10 +205,9 @@ class ControllerStorageTests(unittest.TestCase):
             try:
                 started=controller.call('suite_start',request);sid=started['suite_id']
                 self.assertFalse(started['duplicate'])
-                status=controller.call('suite_status',{'suite_id':sid})
-                self.assertEqual((status['status'],status['planned'],status['completed']),('queued',2,0))
-                self.assertIsNone(status['active_child_id']);self.assertFalse(status['stopping'])
-                self.assertFalse((home/'runs').exists())
+                status=wait_owner_suite(controller,sid,lambda s:s['status']=='blocked' and not s['stopping'])
+                self.assertEqual((status['status'],status['planned'],status['completed']),('blocked',2,0))
+                self.assertIsNotNone(status['active_child_id']);self.assertFalse(status['stopping'])
                 config.write_text('INVALID CONFIG',encoding='utf-8')
                 duplicate=controller.call('suite_start',request)
                 self.assertTrue(duplicate['duplicate']);self.assertEqual(duplicate['suite_id'],sid)
@@ -223,10 +222,10 @@ class ControllerStorageTests(unittest.TestCase):
                 self.assertEqual(recovered.call('suite_status',{'suite_id':sid})['status'],'blocked')
                 self.assertEqual(recovered.call('suite_events',{'suite_id':sid})['events'][-1]['kind'],'suite.recovered')
                 page=recovered.call('suite_result',{'suite_id':sid,'limit':1})
-                self.assertEqual(page['trials'][0]['status'],'launching')
+                self.assertEqual(page['trials'][0]['status'],'blocked')
                 self.assertEqual(page['next_offset'],1)
-                self.assertIsNone(page['trials'][0]['run_id'])
-                self.assertFalse((home/'runs').exists())
+                self.assertEqual(page['trials'][0]['run_id'],status['active_child_id'])
+                self.assertEqual(len(list((home/'runs').iterdir())),1)
             finally:recovered.close()
 
     def test_experiment_is_complete_allowlisted_frozen_and_snapshot_bound(self):
@@ -243,6 +242,7 @@ class ControllerStorageTests(unittest.TestCase):
             try:
                 request={'manifest':legacy_manifest(3),'options':{'evaluator_password_files':{'tq9':'PRIVATE-HANDLE'},'renode':'PRIVATE-PATH'}}
                 sid=controller.call('suite_start',request)['suite_id']
+                state=wait_owner_suite(controller,sid,lambda s:s['status']=='blocked' and not s['stopping'])
                 frozen=controller._suites.get(sid)['frozen']
                 first=controller.call('suite_result',{'suite_id':sid,'limit':1})
                 experiment=first['experiment']
@@ -263,15 +263,12 @@ class ControllerStorageTests(unittest.TestCase):
                 self.assertEqual(identity['intervention_policy'],{'scoped_tool_approval':None,'max_model_repairs':2,'max_maintenance_cycles':1})
                 self.assertEqual(set(experiment['dimensions']),{'runtime','model','provider','version','reasoning_effort','max_turns','skills_revision','toolchain_revision'})
                 self.assertEqual(experiment['dimensions']['model'],'frozen-model')
-                self.assertEqual(experiment['execution_snapshots'],[{'trial_key':slot['trial_key'],'snapshot_sha256':None} for slot in frozen['trials']])
+                child=controller.call('result',{'run_id':state['active_child_id']})
+                self.assertEqual(experiment['execution_snapshots'],[{'trial_key':slot['trial_key'],'snapshot_sha256':child['snapshot_sha256'] if slot['ordinal']==0 else None} for slot in frozen['trials']])
                 self.assertNotIn('PRIVATE',json.dumps(first))
                 (home/'config.json').write_text('INVALID CONFIG',encoding='utf-8')
                 self.assertEqual(controller.call('suite_result',{'suite_id':sid,'offset':2})['experiment'],experiment)
-                controller._suites.set_state(sid,'running');slot=controller._suites.reserve(sid)
-                started=controller.start(child_request(frozen,slot))
-                controller._suites.attach(sid,0,slot['child_request_id'],started['run_id'])
                 after=controller.call('suite_result',{'suite_id':sid,'offset':2})['experiment']
-                child=controller.call('result',{'run_id':started['run_id']})
                 self.assertEqual(after['comparison_identity'],identity)
                 self.assertEqual(after['execution_snapshots'][0]['snapshot_sha256'],child['snapshot_sha256'])
                 self.assertIsNone(after['execution_snapshots'][1]['snapshot_sha256'])
@@ -288,10 +285,8 @@ class ControllerStorageTests(unittest.TestCase):
             controller=Controller(home)
             try:
                 sid=controller.call('suite_start',{'manifest':legacy_manifest(2)})['suite_id']
-                frozen=controller._suites.get(sid)['frozen']
-                controller._suites.set_state(sid,'running');slot=controller._suites.reserve(sid)
-                started=controller.start(child_request(frozen,slot));rid=started['run_id']
-                controller._suites.attach(sid,0,slot['child_request_id'],rid)
+                state=wait_owner_suite(controller,sid,lambda s:s['status']=='blocked' and not s['stopping'])
+                slot=controller._suites.get(sid)['trials'][0];rid=slot['run_id']
                 before=controller.call('suite_result',{'suite_id':sid})['experiment']
                 deadline=time.monotonic()+5
                 while time.monotonic()<deadline:

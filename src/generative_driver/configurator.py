@@ -168,6 +168,8 @@ class Controller:
         self.db_path = self.home / 'runs.sqlite3'
         self._lock = threading.RLock()
         self._workers = {}
+        self._suite_threads = {}
+        self._suite_locks = {}
         self._operations = {}
         self._inflight = set()
         self._closing = False
@@ -197,9 +199,12 @@ class Controller:
                 CREATE TABLE IF NOT EXISTS progress (
                     run_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
             ''')
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(runs)')}
+            if 'outcome_category' not in columns:
+                db.execute("ALTER TABLE runs ADD COLUMN outcome_category TEXT NOT NULL DEFAULT 'unknown'")
             for row in db.execute("SELECT * FROM runs WHERE status IN ('queued','running')").fetchall():
                 if _has_terminal_final_failure(db, row['id']):
-                    db.execute("UPDATE runs SET status='failed',reason=?,updated=? WHERE id=?",
+                    db.execute("UPDATE runs SET status='failed',outcome_category='model',reason=?,updated=? WHERE id=?",
                                ('Frozen final evaluation failed', time.time(), row['id']))
                     db.execute("UPDATE assignments SET state='failed' WHERE run_id=? AND state='active'", (row['id'],))
                     self._event(row['id'], 'run.recovered', {'terminal_final_failure': True}, db)
@@ -235,14 +240,17 @@ class Controller:
                    (run_id, kind, _json(payload), time.time()))
         return cursor.lastrowid
 
-    def _state(self, run_id, status, reason=None, stage=None):
+    def _state(self, run_id, status, reason=None, stage=None, *, outcome_category=None):
+        category = status if status in ('completed', 'cancelled') else outcome_category or 'unknown'
+        if category not in ('completed','model','host','operator','cancelled','unknown'):
+            raise ValueError('Invalid owner outcome category')
         with self._db() as db:
-            changed = db.execute('UPDATE runs SET status=?,reason=?,stage=COALESCE(?,stage),updated=? WHERE id=? AND (cancelled=0 OR ?=\'cancelled\')',
-                       (status, reason, stage, time.time(), run_id,status))
+            changed = db.execute('UPDATE runs SET status=?,reason=?,stage=COALESCE(?,stage),updated=?,outcome_category=? WHERE id=? AND (cancelled=0 OR ?=\'cancelled\')',
+                       (status, reason, stage, time.time(), category, run_id,status))
             if changed.rowcount:
                 if status in TERMINAL:
                     db.execute("UPDATE assignments SET state=? WHERE run_id=? AND state='active'",(status,run_id))
-                self._event(run_id, 'run.' + status, {'stage': stage, 'reason': reason}, db)
+                self._event(run_id, 'run.' + status, {'stage': stage, 'reason': reason, 'outcome_category': category}, db)
 
     def _row(self, run_id):
         with self._db() as db:
@@ -270,7 +278,7 @@ class Controller:
         if method == 'status':
             with self._lock:
                 stopping = row['status'] in TERMINAL and (run_id in self._workers or run_id in self._inflight)
-            return {'ok': True, **{k: row[k] for k in ('status', 'stage', 'reason', 'created', 'updated')},
+            return {'ok': True, **{k: row[k] for k in ('status', 'stage', 'reason', 'created', 'updated', 'outcome_category')},
                     'run_id': run_id, 'uncertain_effect': bool(row['uncertain']), 'stopping': stopping}
         if method == 'events':
             with self._db() as db:
@@ -298,6 +306,13 @@ class Controller:
                     out[key] = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM ' + table + ' WHERE run_id=? ORDER BY created', (run_id,))]
                 saved = db.execute('SELECT payload FROM progress WHERE run_id=?',(run_id,)).fetchone()
                 out['progress'] = json.loads(saved['payload']) if saved else None
+            if spec.get('_case_pin',{}).get('manifest',{}).get('schema') == 'benchmark-case/2':
+                from .benchmark_support.evidence import public_v2_report
+                state_path = self.home/'runs'/run_id/'benchmark/state.json'
+                state = json.loads(state_path.read_text(encoding='utf-8')) if state_path.is_file() else {}
+                summary = public_v2_report(state)
+                out['benchmark_summary'] = {key:summary[key] for key in
+                    ('accepted_gates','evaluations','final_evaluation','maintenance')}
             return out
         if method == 'cancel':
             with self._lock:
@@ -380,7 +395,7 @@ class Controller:
                         self._event(run_id,'run.authorization',{'scoped_tool_approval':spec['scoped_tool_approval'],
                             'scope':'Assigned tools only; saved binding and effect grants apply'},db)
                     db.execute("UPDATE assignments SET state='superseded' WHERE run_id=? AND state='active'",(run_id,))
-                    db.execute("UPDATE runs SET cancelled=0,status='queued',reason=NULL,updated=? WHERE id=?",(time.time(),run_id))
+                    db.execute("UPDATE runs SET cancelled=0,status='queued',outcome_category='unknown',reason=NULL,updated=? WHERE id=?",(time.time(),run_id))
                     self._event(run_id,'run.resumed',{},db)
                 self._spawn(run_id)
             return self.call('status',{'run_id':run_id})
@@ -403,23 +418,184 @@ class Controller:
             config={**config,'runtime':executor}
             frozen=freeze_suite(manifest,executor,config,options,execution_provenance(config))
             saved=self._suites.create(frozen,params.get('request_id'))
+            self._suites.set_state(saved['suite_id'],'running')
+            self._spawn_suite(saved['suite_id'])
             return {'ok':True,'suite_id':saved['suite_id'],'duplicate':False}
+
+    def _suite_lock(self, suite_id):
+        with self._lock:
+            return self._suite_locks.setdefault(suite_id, threading.RLock())
+
+    def _spawn_suite(self, suite_id):
+        with self._lock:
+            if self._closing:
+                raise ValueError('Configurator is stopping')
+            if suite_id in self._suite_threads:
+                return
+            wake = threading.Event()
+            thread = threading.Thread(target=self._run_suite, args=(suite_id,wake), daemon=True)
+            self._suite_threads[suite_id] = (wake,thread)
+            thread.start()
+
+    def _run_suite(self, suite_id, wake):
+        from .benchmark_support.suites import child_request, child_disposition
+        try:
+            while not self._closing:
+                with self._suite_lock(suite_id):
+                    suite = self._suites.get(suite_id)
+                    if suite['cancelled'] or suite['status'] != 'running':
+                        return
+                    if time.time() >= suite['created'] + suite['budget_seconds']:
+                        active = next((t for t in suite['trials'] if t['status'] in ('launching','running')),None)
+                        child = active['run_id'] if active else None
+                        self._suites.set_state(suite_id,'blocked','Suite wall-clock budget exhausted')
+                        expired = True
+                    else:
+                        expired = False
+                    if expired:
+                        break
+                    trial = self._suites.reserve(suite_id)
+                    if trial is None:
+                        self._suites.set_state(suite_id,'completed')
+                        return
+                    if trial['run_id'] is None:
+                        started = self.start(child_request(suite['frozen'],trial))
+                        self._suites.attach(suite_id,trial['ordinal'],trial['child_request_id'],started['run_id'])
+                        trial['run_id'] = started['run_id']
+                    observed = self.call('status',{'run_id':trial['run_id']})
+                    decision = child_disposition(observed)
+                    if decision == 'advance':
+                        self._suites.settle(suite_id,trial['ordinal'],observed)
+                        continue
+                    if decision == 'block':
+                        self._suites.set_state(suite_id,'blocked',observed.get('reason'))
+                        return
+                wake.wait(.1)
+                wake.clear()
+            if not self._closing and expired and child:
+                # Cancellation can join a worker; never hold the suite lifecycle lock.
+                self.call('cancel',{'run_id':child})
+        except Exception as error:
+            with self._suite_lock(suite_id):
+                if not self._suites.get(suite_id)['cancelled']:
+                    self._suites.set_state(suite_id,'blocked',str(error))
+        finally:
+            with self._lock:
+                self._suite_threads.pop(suite_id,None)
+
+    def find_request(self, request_id):
+        """Reconcile an already created child without creating or resuming work."""
+        with self._db() as db:
+            row = db.execute('SELECT id FROM runs WHERE request_id=?',(request_id,)).fetchone()
+        return self.call('status',{'run_id':row['id']}) if row else None
+
+    def _suite_cancel(self, suite_id):
+        deadline = time.monotonic()+10
+        with self._suite_lock(suite_id):
+            self._suites.cancel(suite_id)
+            suite = self._suites.get(suite_id)
+            active = next((t for t in suite['trials'] if t['status'] in ('launching','running')),None)
+            child = active['run_id'] if active else None
+            if active and not child:
+                found = self.find_request(active['child_request_id'])
+                if found:
+                    child = found['run_id']
+                    self._suites.attach(suite_id,active['ordinal'],active['child_request_id'],child)
+        with self._lock:
+            scheduler = self._suite_threads.get(suite_id)
+        if scheduler:
+            scheduler[0].set()
+        if child:
+            self.call('cancel',{'run_id':child})
+        if scheduler:
+            scheduler[1].join(max(0,deadline-time.monotonic()))
+        return self._suite_call('suite_status',{'suite_id':suite_id})
+
+    def _verify_suite(self, suite):
+        from .benchmark_support.registry import pin_case
+        from .benchmark_support.snapshots import execution_provenance
+        frozen = suite['frozen']
+        for pin in frozen['entry_pins']:
+            if pin_case(pin['case_id'],pin['scenario_id'],pin['case_seed']) != pin:
+                raise ValueError('Frozen suite case pin changed')
+        if execution_provenance(frozen['executor_config']) != frozen['provenance']:
+            raise ValueError('Frozen suite implementation or execution environment changed')
+        for trial in suite['trials']:
+            found = self.find_request(trial['child_request_id'])
+            if trial['run_id'] and (not found or trial['run_id'] != found['run_id']):
+                raise ValueError('Frozen suite child identity mismatch')
+            if found:
+                spec = json.loads(self._row(found['run_id'])['spec'])
+                if spec.get('_case_pin') != frozen['entry_pins'][trial['entry_index']]:
+                    raise ValueError('Frozen suite child pin mismatch')
+                self._verify_snapshot(spec,self.home/'runs'/found['run_id'])
+
+    def _suite_resume(self, suite_id, params):
+        with self._suite_lock(suite_id):
+            suite = self._suites.get(suite_id)
+            if suite['status'] not in ('blocked','failed','cancelled'):
+                raise ValueError('Only a stopped incomplete suite can resume')
+            if self._suite_call('suite_status',{'suite_id':suite_id})['stopping']:
+                raise ValueError('Previous suite work is still stopping')
+            self._verify_suite(suite)
+            if params.get('suite_budget_seconds') is not None:
+                self._suites.extend_budget(suite_id,params['suite_budget_seconds'],params.get('budget_reason'))
+                suite = self._suites.get(suite_id)
+            if time.time() >= suite['created'] + suite['budget_seconds']:
+                raise ValueError('Suite budget exhausted; supply an explicitly approved larger total budget')
+            active = next((t for t in suite['trials'] if t['status'] in ('launching','running')),None)
+            if active:
+                found = self.find_request(active['child_request_id'])
+                if found:
+                    self._suites.attach(suite_id,active['ordinal'],active['child_request_id'],found['run_id'])
+                    with self._db() as db:
+                        terminal_final = _has_terminal_final_failure(db,found['run_id'])
+                    if (terminal_final and found['status'] in ('failed','blocked')
+                            and not found['stopping'] and not found['uncertain_effect']):
+                        self._state(found['run_id'],'failed','Frozen final evaluation failed',outcome_category='model')
+                        self._suites.settle(suite_id,active['ordinal'],
+                            self.call('status',{'run_id':found['run_id']}),terminal_final=True)
+                    elif found['status'] not in ('running','queued','completed'):
+                        self.call('resume',{'run_id':found['run_id']})
+            self._suites.set_state(suite_id,'running')
+            self._spawn_suite(suite_id)
+        return self._suite_call('suite_status',{'suite_id':suite_id})
 
     def _suite_call(self,method,params):
         if method=='suite_start':return self.suite_start(params)
         suite_id=params.get('suite_id')
         suite=self._suites.get(suite_id)
+        if method=='suite_cancel':return self._suite_cancel(suite_id)
+        if method=='suite_resume':return self._suite_resume(suite_id,params)
         if method=='suite_events':return {'ok':True,**self._suites.events(suite_id,params.get('after',0))}
         active=next((trial for trial in suite['trials'] if trial['status'] in ('launching','running')),None)
+        child = self.call('status',{'run_id':active['run_id']}) if active and active['run_id'] else None
         status={'ok':True,'suite_id':suite_id,**{key:suite[key] for key in ('status','created','updated')},
             'reason':None if suite['reason'] is None else 'Explicit suite resolution required',
             'active_child_id':active['run_id'] if active else None,
             'planned':len(suite['trials']),'completed':sum(trial['status']=='finished' for trial in suite['trials']),
-            'stopping':False}
+            'stopping':(suite['status'] in TERMINAL and suite_id in self._suite_threads) or bool(child and child['stopping'])}
         if method=='suite_status':return status
         if method=='suite_result':
-            return {**status,**self._suites.trials(suite_id,params.get('offset',0),params.get('limit',50)),
-                'experiment':self._suite_experiment(suite)}
+            page = self._suites.trials(suite_id,params.get('offset',0),params.get('limit',50))
+            from .reporting import _interventions
+            from .benchmark_support.evidence import public_v2_report
+            for trial in page['trials']:
+                events, cursor = [], 0
+                if trial['run_id']:
+                    while True:
+                        batch = self.call('events',{'run_id':trial['run_id'],'after':cursor})
+                        events.extend(batch['events'])
+                        if batch['cursor'] == cursor or len(batch['events']) < 500:
+                            break
+                        cursor = batch['cursor']
+                trial['interventions'] = public_v2_report({'interventions':_interventions(events)[0]})['interventions']
+                if trial['run_id'] and trial['status'] != 'finished':
+                    current = self.call('status',{'run_id':trial['run_id']})
+                    trial['outcome_category'] = current['outcome_category']
+                    if current['status'] in ('blocked','failed','cancelled'):
+                        trial['status'] = current['status']
+            return {**status,**page,'experiment':self._suite_experiment(suite)}
         raise ValueError('Unknown suite method: '+str(method))
 
     def _suite_experiment(self,suite):
@@ -616,7 +792,7 @@ class Controller:
                 if cancel.is_set():
                     return
                 if result['status'] != 'completed':
-                    self._state(run_id, result['status'], result.get('reason'))
+                    self._state(run_id, result['status'], result.get('reason'), outcome_category='host')
                     return
                 if self._row(run_id)['uncertain']:
                     self._state(run_id,'blocked','Outstanding effect is uncertain; operator reconciliation is required before further execution')
@@ -640,7 +816,7 @@ class Controller:
                             self._event(run_id, 'evaluation.final_failed',
                                 {'assignment_id': attempt, 'revision': revision, 'fault': 'model'}, db)
                 if terminal_final:
-                    self._state(run_id, 'failed', 'Frozen final evaluation failed')
+                    self._state(run_id, 'failed', 'Frozen final evaluation failed', outcome_category='model')
                     return
                 if cancel.is_set():
                     return
@@ -648,24 +824,25 @@ class Controller:
                     self._state(run_id,'blocked','Evaluator effect is uncertain; operator reconciliation is required before further execution')
                     return
                 self._verify_inputs(input_hashes)
+                category = checked.get('fault') if checked.get('fault') in ('model','host','operator') else 'unknown'
                 if not checked.get('ok'):
                     if checked.get('route') == 'interpret' and checked.get('fault') == 'model' and stage in ('interpret','probe','ground'):
                         if progress['repairs'] >= int(spec.get('max_revisions',2)):
-                            self._state(run_id,'blocked','Model repair budget exhausted: '+checked.get('reason','checks failed'))
+                            self._state(run_id,'blocked','Model repair budget exhausted: '+checked.get('reason','checks failed'), outcome_category='model')
                             return
                         progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=checked.get('feedback'))
                         self._route(run_id,progress,checked.get('reason'))
                         revision = progress['revision']
                         queue = list(STAGES[1:])
                         continue
-                    self._state(run_id, 'blocked', checked.get('reason', 'Independent stage checks failed'))
+                    self._state(run_id, 'blocked', checked.get('reason', 'Independent stage checks failed'), outcome_category=category)
                     return
                 route = checked.get('route')
                 if route:
                     if stage != 'maintain' or route != 'interpret':
                         raise ValueError('Unsupported evaluator revision route')
                     if progress['maintenance_cycles'] >= 1:
-                        self._state(run_id, 'blocked', 'Maintenance cycle limit reached')
+                        self._state(run_id, 'blocked', 'Maintenance cycle limit reached', outcome_category=category)
                         return
                     revision += 1
                     progress.update(revision=revision,next_stage=route,maintenance_cycles=progress['maintenance_cycles']+1,feedback=checked.get('feedback'))
@@ -678,7 +855,7 @@ class Controller:
                     self._event(run_id,'run.revision',{**progress,'reason':checked.get('reason')})
             self._state(run_id, 'completed', 'Seven stages accepted')
         except Exception as exc:
-            self._state(run_id, 'failed', type(exc).__name__ + ': ' + str(exc))
+            self._state(run_id, 'failed', type(exc).__name__ + ': ' + str(exc), outcome_category='host')
         finally:
             if spec and spec.get('case'):
                 try:
@@ -692,7 +869,7 @@ class Controller:
                             finalize(case['id'] if isinstance(case,dict) else case, run_dir,
                                      self.call('result', {'run_id':run_id})['accepted_handoffs'], options)
                         except Exception as error:
-                            self._state(run_id, 'failed', 'Evaluator evidence sealing failed: '+str(error))
+                            self._state(run_id, 'failed', 'Evaluator evidence sealing failed: '+str(error), outcome_category='host')
                             self._event(run_id, 'evidence.sealing_failed', {'reason':type(error).__name__})
                     cleanup(case['id'] if isinstance(case,dict) else case,run_dir,options)
                 except Exception as exc:
@@ -1086,9 +1263,14 @@ class Controller:
         with self._lock:
             self._closing = True
             workers = list(self._workers.values())
+            schedulers = list(self._suite_threads.values())
         deadline = time.monotonic() + timeout
+        for wake, thread in schedulers:
+            wake.set()
         for cancel, thread in workers:
             cancel.set()
         for cancel, thread in workers:
             thread.join(max(0, deadline - time.monotonic()))
-        return not any(thread.is_alive() for _, thread in workers)
+        for wake, thread in schedulers:
+            thread.join(max(0, deadline - time.monotonic()))
+        return not any(thread.is_alive() for _, thread in workers + schedulers)

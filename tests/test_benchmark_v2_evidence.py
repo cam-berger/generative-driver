@@ -297,8 +297,8 @@ class EvidenceBoundaryTests(unittest.TestCase):
                 check_started, cancel_committed = threading.Event(), threading.Event()
                 assigned = []
                 real_state = controller._state
-                def state(run_id, status, reason=None, stage=None):
-                    result = real_state(run_id, status, reason, stage)
+                def state(run_id, status, reason=None, stage=None, **metadata):
+                    result = real_state(run_id, status, reason, stage, **metadata)
                     if status == 'cancelled':
                         cancel_committed.set()
                     return result
@@ -332,6 +332,7 @@ class EvidenceBoundaryTests(unittest.TestCase):
                             self.assertFalse(cancelled['stopping'])
                         result = controller.call('result', run)
                         self.assertEqual(result['evaluator_verdicts'][-1]['verdict'], 'failed')
+                        self.assertEqual(result['outcome_category'], 'cancelled')
                         if simulate_old_marker_gap != 'none':
                             # Model records saved before terminal marker persistence was atomic.
                             with controller._db() as db:

@@ -60,3 +60,25 @@ Repeat with `parameter-store-v1` and its own authoring directory. The compiler m
 The CLI prints only case, execution, outcome, counts and a record commitment. The Python `calibrate(...)` return and output directory contain private evidence and belong only to the evaluator. Failures retain `calibration-record.json`, build diagnostics, Ghidra logs and completed native runs. A failed or stale record cannot admit an agent run. Review and publish the resulting `case.json` and ciphertext together; the command never changes installed assets.
 
 The explicitly selected test gate is `python -m unittest discover -s tests -p native_benchmark_families.py -v`. It requires `GD_FAMILY_AUTHORING` pointing to the private parent containing both `<case_id>-authoring` directories and password handles, plus `GD_NATIVE_RENODE`, `GD_NATIVE_GHIDRA_HOME`, `GD_NATIVE_JAVA_HOME`, and `ARM_NONE_EABI_GCC`. Missing configuration fails rather than skipping. Ordinary discovery uses scripted toy contracts and requires none of these tools or credentials.
+
+## Supplementary TQ9 phase evidence
+
+The final release also carries `groundtruth/tq9-v2-phases.enc`. This separately encrypted reference evidence measures both correct references on diagnostic and maintenance inventories for original, unchanged control, semantic drift and identity drift variants. Ordinary TQ9 admission still authenticates its exact 32-run main calibration; it does not consume or require this supplement. The [final verification index](../../docs/implementation/benchmark-final-verification.json) records the supplement's ciphertext hash, measured phase counts and matching input, evaluator, image and tool commitments.
+
+An authorized evaluator can inspect the supplement through the existing authenticated `unlock` API, using the separately supplied TQ9 evaluator handle and the published ciphertext SHA-256. Keep the returned payload and any extracted records outside the checkout, installed resources and candidate workspace. For example, with operator-selected arguments:
+
+```python
+from pathlib import Path
+from generative_driver.benchmark_support.truth import unlock
+from generative_driver.toolkit import resources_root
+
+# handle_path and expected_sha256 are supplied separately by the evaluator.
+payload = unlock(
+    resources_root() / "bench/groundtruth/tq9-v2-phases.enc",
+    Path(handle_path).read_text(encoding="utf-8").strip(),
+    expected_sha256,
+)
+# Inspect payload privately; do not expose raw records to candidate workers.
+```
+
+The main calibration and supplement are native reference measurements. Neither is a model-performance trial, physical measurement, Windows qualification or independent attestation of the password holder.

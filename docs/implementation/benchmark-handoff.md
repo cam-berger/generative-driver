@@ -1,33 +1,19 @@
 # Benchmark expansion handoff — 2026-10-01
 
-The 17 planned feature tasks were accepted through `0586acfd62911b583e10973e75d1dfbfc0fb2e0b` on `feat/bench`. The final branch review found three Important issues and one Minor. Their combined fix wave began at that base, paused at WIP commit `71c84a33`, and resumed with the user's instruction to finish.
+All 17 planned feature tasks and the scoped final corrections are accepted on `feat/bench`. Final evaluated code is `3116da958bd430b3322c74c1555a0c620e18eaa2`; the subsequent local release commit contains qualified encrypted assets, measured verification records and closing documentation. The [controller decisions](benchmark-expansion-decisions.md) preserve the agreed scope and evidence boundaries.
 
-## Fixes and scoped review
+## Observed local results
 
-TQ9 v2 now uses separate private diagnostic and final inventories. All three scenarios have at least three varying sensor stimuli and effect targets in diagnostic, final and maintenance phases, including signed sensor coverage. A constant decoder fails the public toy diagnostics. Original pending material is retained privately; public calibration remains pending. All eight legacy and baseline file hashes still match.
+- Native macOS reference qualification: 59 main runs plus 16 TQ9 phase sessions passed. Both correct references measured diagnostic/maintenance endpoints on original, control and repaired semantic/identity variants. The separate encrypted phase asset is inspectable through the [evaluator API](../../bench/groundtruth/README.md#supplementary-tq9-phase-evidence); ordinary admission still validates the main 32-run TQ9 record.
+- Source Python 3.13.12 and installed Python 3.11.15/3.13.14: 412 tests each, no skips. The exact wheel and source archive are hashed in the [final index](benchmark-final-verification.json).
+- Installed replay/discovery and all seven authenticated scenario admissions passed. All 75 saved native grades matched offline recomputation; scripted full-suite fixtures cover authenticated run regrade and saved suite comparison.
+- All eight frozen legacy/baseline hashes match. Public source and archives passed private-payload/credential/bytecode audits. Evaluator and packaged-resource bytes match the tested wheel.
+- The six-entry, three-repeat pilot was frozen into 18 slots only. No child, selected model or performance trial was dispatched.
 
-Maintenance retains attempted observations separately from successful detection and repair entries. Repair credit requires an accepted controller route to interpretation at an earlier revision. Unknown claims can recover explicitly; host uncertainty requires explicit reconciliation. Successful controls earn no repair credit. Live results, direct qualification and authenticated regrading agree, including extra successful final revisions. Evidenced failures, resources and every frozen final remain retained; a failed frozen final remains terminal.
+The immutable artifacts were built from accepted code plus matching qualified assets, phase ciphertext and setup/evaluator instructions. Their final verification prose/index was written afterward; those newer documents do not change evaluator/resource identity. Historical measurements remain associated with their original revisions, including `aee512e` native evidence and the 411-test fix checkpoint at `1c09654e`.
 
-Independently established candidate failures carry the model category. The bounded two-slot regression confirms a measured false alarm finishes as a failed measurement and advances only after cleanup. Host, operator and ambiguous evidence remain blocked. The audit covers the same category boundary in acquisition, interpretation, probe, ground, emit and reuse. Expected MCP pagination rejection stderr is captured and asserted.
+## Remaining external qualification
 
-The scoped re-review at `1c09654e` accepted all four original findings and found one additional reuse-category regression: untyped package failures could be counted as model failures. The bounded correction preserves unknown for ambiguous failures, including mixed unknown/model calls. Explicit host/operator results remain blocked; typed model failures and otherwise successful but incomplete missions remain model failures. Only the reuse category branch and its regression test changed, alongside this handoff.
+A model-performance pilot requires explicit runtime/model selection and execution authorization. New Windows CI, Windows 11 workstation/native Windows Renode/Ghidra, live Goose and physical-device measurements remain unobserved. Password possession remains the local evaluator trust boundary; stronger worker filesystem isolation is unverified. No push, PR, merge, model inference or physical operation was performed for this release. The branch and checkout remain available; remote integration is a separate action.
 
-## Observed verification
-
-Using Python 3.13.12 and `PYTHONPATH=src:tests .venv/bin/python -m unittest`:
-
-- Covering modules: 144 tests passed in 59.491 seconds.
-- Final acquisition category checks: 4 tests passed; calibration fixture checks: 24 tests passed.
-- Full source discovery at `1c09654e`: 411 tests in 79.051 seconds, OK with one expected unset-`GD_TEST_WHEEL` archive skip.
-- Residual correction: focused RED reproduced six ambiguous-category failures; focused GREEN passed 2 tests; the full amended TQ9 module passed 31 tests in 31.969 seconds. The final verifier owns the next full source gate.
-- `git diff --check` passed; all eight legacy/baseline SHA-256 commitments matched.
-
-Focused RED/GREEN and unsuccessful runs are retained. The first covering run found an incorrect stderr-marker expectation. The first full run found three calibration tests with the old literal false-alarm category; the fixture was updated to the new producer contract, and the affected module and full suite then passed. No admission or validation check was weakened.
-
-The scripted controller checks use public toy peers and subprocess workers. They establish lifecycle and evidence behavior, not measured native firmware or model performance.
-
-## Remaining delivery gates
-
-The scoped re-review of `0586acfd..1c09654e` is complete. Root adjudicates the bounded reuse correction, then the final verifier runs the scheduled exact-code native refresh and source/installed-wheel Python 3.11/3.13 gates, preserving all attempts and checking baseline bytes again. Calibration must remain pending until matching native evidence is produced; historical native measurements do not qualify this head. Full fix reports, logs, private originals and commitments are retained outside the scratch workspace.
-
-Windows Server CI, Windows 11 native behavior, selected-model execution and physical validation remain external or separately authorized gates. This fix wave ran no native or wheel campaign, model or physical operation, push, PR or merge.
+Full raw evidence, failed attempts, task/review/fix reports, exact distributions and command/environment commitments are retained privately. The public index exposes safe hashes and counts, never handles or hidden numeric vectors.

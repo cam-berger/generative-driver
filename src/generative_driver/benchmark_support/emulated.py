@@ -161,7 +161,7 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
     import json
     _, manifest = _inputs(case_id, run_dir)
     if stage == 'acquire':
-        matches = []
+        matches, unreadable = [], False
         for provenance in Path(workspace).rglob('provenance.json'):
             try:
                 record = json.loads(provenance.read_text())
@@ -169,10 +169,12 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
                     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
                     if digest == manifest['images']['firmware.bin']:
                         matches.extend([str(binary), str(provenance)])
-            except (ValueError, OSError):
+            except ValueError:
                 continue
+            except OSError:
+                unreadable = True
         ok = bool(matches)
-        return {'ok': ok, 'fault': None if ok else 'model', 'checks': [{'name': 'imported_firmware_hash', 'passed': ok}],
+        return {'ok': ok, 'fault': None if ok else 'host' if unreadable else 'model', 'checks': [{'name': 'imported_firmware_hash', 'passed': ok}],
                 'artifacts': matches, 'reason': None if ok else 'No matching imported firmware'}
     if stage == 'probe':
         ws = Path(workspace)
@@ -193,7 +195,7 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
     if stage == 'ground':
         _, state = _state(run_dir)
         ok = bool(state.get('diagnostic', {}).get('passed') and report.get('status') == 'completed')
-        return {'ok': ok, 'checks': [{'name': 'independent_diagnostic_grounding', 'passed': ok}],
+        return {'ok': ok, 'fault': 'model' if not ok and type(state.get('diagnostic', {}).get('passed')) is bool else None, 'checks': [{'name': 'independent_diagnostic_grounding', 'passed': ok}],
                 'artifacts': [str(Path(workspace)/'ground-evidence')]}
     if stage == 'emit':
         from ..toolkit import call_tool
@@ -211,8 +213,11 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
                 _write(path, state)
                 return {'ok': True, 'checks': [{'name': 'package_integrity_and_replay', 'passed': True}],
                         'artifacts': [str(package)], 'evaluator': {'verdict': 'passed'}}
-        fault = 'model' if not failures else next((r.get('fault') or r.get('error', {}).get('fault') for r in failures if isinstance(r.get('error', {}), dict) and (r.get('fault') or r.get('error', {}).get('fault')) in ('host', 'operator')), None)
-        if fault is None and failures and all(r.get('ok') is True for r in failures):
+        faults = [r.get('fault') or (r.get('error', {}).get('fault')
+                  if isinstance(r.get('error'), dict) else None) for r in failures]
+        fault = next((f for f in faults if f in ('host', 'operator')), None)
+        if fault is None and (not failures or all(r.get('integrity_ok') is False
+                or r.get('runtime_current') is False or r.get('replay_status') == 'failed' for r in failures)):
             fault = 'model'
         return {'ok': False, 'fault': fault, 'checks': [], 'artifacts': [], 'reason': 'No package passed integrity and replay'}
     if stage == 'maintain':
@@ -234,7 +239,10 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
                        and type(e['result'].get('outputs', {}).get(output)) in (int, float) for e in events)
             fresh = read and any(abs(value - 370) <= 2 for value in duties) and bool(duties) and duties[-1] == 0
         if not fresh:
-            return {'ok': False, 'checks': [], 'artifacts': [], 'reason': 'Fresh worker mission lacks observed reading, requested effect or disarm'}
+            faults = [e['result'].get('error', {}).get('fault') for e in events
+                      if isinstance(e.get('result', {}).get('error', {}), dict)]
+            fault = next((f for f in faults if f in ('host', 'operator')), 'model')
+            return {'ok': False, 'fault': fault, 'checks': [], 'artifacts': [], 'reason': 'Fresh worker mission lacks observed reading, requested effect or disarm'}
         package = Path(state['package_copies'][stage])
         decision = _final(case_id, run_dir, package, json.loads(Path(state['capabilities_path']).read_text()), options or {})
         return {**decision, 'checks': [{'name': 'fresh_worker_mission', 'passed': True},
@@ -254,8 +262,11 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
         ok = bool(result.get('ok') and validation.get('ok') and qualified)
         state.update(model_dir=str(out), interpret_collect=result)
         _write(state_path, state)
+        model_failure = not ok and (result.get('ok') is True
+            or result.get('sealed_inputs_unchanged') is False
+            or result.get('sealed_inputs_unchanged') is True and result.get('frozen_copy') is True)
         return {'ok': ok, 'route': 'interpret' if not ok and result.get('ok') else None,
-                'fault': 'model' if not ok and result.get('ok') else None,
+                'fault': 'model' if model_failure else None,
                 'feedback': {'structural_defects': validation.get('defects', []), 'qualification': qualification},
                 'checks': [{'name': 'sealed_inputs', 'passed': bool(result.get('ok'))},
                            {'name': 'executable_model', 'passed': bool(validation.get('ok'))},
@@ -497,6 +508,8 @@ def _maintain(case_id, run_dir, workspace, report, options, accepted=None):
             diagnostic=e['diagnostic'], repaired=e['phase']=='repaired').get('fault') == 'model'
             for e in entries['attempts']):
         result.update(ok=False, fault='model', route=None, reason='Retained evidenced maintenance failure')
+    elif result['ok'] and not result.get('route') and not history_ok:
+        result.update(ok=False, fault=None, reason='Retained maintenance history is not qualified')
     _private(run_dir, options, payload)
     journal = ScenarioJournal(Path(run_dir)/'benchmark')
     if journal.state().get('status') == 'applied':

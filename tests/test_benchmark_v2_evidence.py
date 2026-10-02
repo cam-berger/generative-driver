@@ -40,7 +40,7 @@ class V2EvidenceTests(unittest.TestCase):
         self.assertNotIn('records', public)
 
 
-class SealedEvidenceTests(unittest.TestCase):
+class SealedEvidenceFixture:
     def setUp(self):
         import tempfile
         from pathlib import Path
@@ -97,6 +97,7 @@ class SealedEvidenceTests(unittest.TestCase):
             'final_evaluation': {'evidence_sha256': sealed['sha256']}})
         return report, self.root / sealed['path']
 
+class SealedEvidenceTests(SealedEvidenceFixture, unittest.TestCase):
     def test_offline_regrades_values_without_service_or_process(self):
         from unittest.mock import patch
         from generative_driver.benchmark import score
@@ -474,7 +475,9 @@ class MaintenanceEvaluabilityTests(unittest.TestCase):
                 self.assertIs(public['maintenance'].get('evaluable'),want)
                 self.assertIs(public['maintenance']['false_alarm'],want)
                 self.assertNotIn('PRIVATE',json.dumps(public))
-                self.assertEqual(_private(root,options)['maintenance']['initial']['diagnostic']['private'],'PRIVATE')
+                history = _private(root,options)['maintenance']
+                self.assertNotIn('initial', history)
+                self.assertEqual(history['attempts'][0]['diagnostic']['private'],'PRIVATE')
 
     def test_authenticated_regrade_derives_evaluability_including_failed_control_claims(self):
         import tempfile
@@ -494,7 +497,7 @@ class MaintenanceEvaluabilityTests(unittest.TestCase):
                 self.assertIs(graded['maintenance']['false_alarm'],want)
                 self.assertNotIn('PRIVATE',json.dumps(graded))
 
-class MaintenanceRecoveryTests(SealedEvidenceTests):
+class MaintenanceRecoveryTests(SealedEvidenceFixture, unittest.TestCase):
     def live_attempt(self, payload, claim_value, diagnostic, revision=0):
         import hashlib
         from unittest.mock import patch
@@ -530,6 +533,44 @@ class MaintenanceRecoveryTests(SealedEvidenceTests):
                         if artifact['assignment_id']==old:artifact['assignment_id']=assignment
         return result,saved,summary
 
+    def assert_direct_and_regrade(self, payload, summary):
+        import copy
+        from generative_driver.benchmark_support.suite_reporting import _recorded_success
+        report,path=self.sealed(payload)
+        graded=evidence.regrade_v2(report,path,self.password)
+        self.assertEqual(graded['verdict'],'passed')
+        self.assertEqual(graded['maintenance'],summary)
+        handoffs=[{'stage':g['stage'],'revision':g['revision'],'assignment_id':g['assignment_id'],
+            'route':g.get('route'),'checks':[{'name':'toy-check','passed':True}],
+            'artifacts':[{'sha256':g['artifact_sha256']}]} for g in payload['accepted_gates']]
+        gates=[{k:g[k] for k in ('stage','revision','assignment_id','artifact_sha256')} |
+            {'verdict':'passed','passed':1,'total':1} for g in payload['accepted_gates']]
+        evaluations=[{k:e[k] for k in ('phase','revision','frozen_artifact_sha256')} |
+            {'verdict':'passed','passed':1,'total':1} for e in payload['evaluations']]
+        verdicts=[{'stage':h['stage'],'assignment_id':h['assignment_id'],'verdict':'passed',
+            **({'passed':1,'total':1,'final_evaluation':True} if h['stage']=='reuse' else {})}
+            for h in handoffs if h['stage'] in ('emit','reuse')]
+        public={**report,'verdict':'passed','workflow_status':'completed','maintenance':summary,
+            'accepted_gates':gates,'evaluations':evaluations,'evaluator_verdicts':verdicts,
+            'final_evaluation':{'verdict':'passed','passed':1,'total':1,'evidence_sha256':report['final_evaluation']['evidence_sha256']},
+            'stages':{h['stage']:{'workflow_status':'accepted','evaluator_status':'passed',
+                'attempts':[{'assignment_id':h['assignment_id'],'accepted':True}]} for h in handoffs}}
+        owner={'status':'completed','outcome_category':'completed','stopping':False,'uncertain_effect':False,
+            'progress':{'next_stage':None},'accepted_handoffs':handoffs,'evaluator_verdicts':verdicts,
+            'benchmark_summary':{k:copy.deepcopy(public[k]) for k in ('accepted_gates','evaluations','final_evaluation','maintenance')}}
+        events=[]
+        for handoff in handoffs:
+            events.extend([{'kind':'stage.assigned','data':{'id':handoff['assignment_id'],'stage':handoff['stage'],'revision':handoff['revision']}},
+                           {'kind':'stage.accepted','data':copy.deepcopy(handoff)}])
+        self.assertTrue(_recorded_success(owner,events,public))
+        if summary['drift_observed']:
+            for handoff in handoffs:
+                if handoff.get('route')=='interpret':handoff['route']=None
+            for event in events:
+                if event['kind']=='stage.accepted':event['data']['route']=None
+            self.assertFalse(_recorded_success(owner,events,public))
+        return graded
+
     def test_control_retries_preserve_attempts_without_repair_credit_and_regrade_agrees(self):
         from generative_driver.benchmark_support.suite_reporting import _maintenance_ok
         good={'evaluable':True,'fault':None,'contradiction':False,'evidence_ids':['toy']}
@@ -542,8 +583,7 @@ class MaintenanceRecoveryTests(SealedEvidenceTests):
                 self.assertTrue(passed['ok']);self.assertTrue(_maintenance_ok(summary))
                 self.assertFalse(summary['repair_completed']);self.assertFalse(summary['requalified'])
                 self.assertTrue(summary['evaluable']);self.assertEqual(len(payload['maintenance']['attempts']),2)
-                report,path=self.sealed(payload);graded=evidence.regrade_v2(report,path,self.password)
-                self.assertEqual(graded['verdict'],'passed');self.assertEqual(graded['maintenance'],summary)
+                self.assert_direct_and_regrade(payload,summary)
 
     def test_false_alarm_is_retained_and_cannot_be_erased_by_retry(self):
         good={'evaluable':True,'fault':None,'contradiction':False,'evidence_ids':['toy']}
@@ -562,8 +602,7 @@ class MaintenanceRecoveryTests(SealedEvidenceTests):
         self.assertEqual(first['route'],'interpret')
         second,payload,summary=self.live_attempt(payload,'unchanged',dict(drift,contradiction=False),revision=1)
         self.assertTrue(second['ok']);self.assertTrue(summary['repair_completed'])
-        report,path=self.sealed(payload);graded=evidence.regrade_v2(report,path,self.password)
-        self.assertEqual(graded['verdict'],'passed');self.assertEqual(graded['maintenance'],summary)
+        self.assert_direct_and_regrade(payload,summary)
         payload['accepted_gates'][6]['route']=None
         report,path=self.sealed(payload)
         self.assertEqual(evidence.regrade_v2(report,path,self.password)['verdict'],'failed')
@@ -584,8 +623,57 @@ class MaintenanceRecoveryTests(SealedEvidenceTests):
         for key in ('accepted_gates','accepted_artifacts'):
             for row in payload[key]:
                 if row['stage']=='maintain' and row['revision']==1:row['revision']=2
-        report,path=self.sealed(payload);graded=evidence.regrade_v2(report,path,self.password)
-        self.assertEqual(graded['verdict'],'passed');self.assertEqual(len(graded['evaluations']),3)
+        payload['accepted_gates'].sort(key=lambda g:(g['revision'], ('acquire','interpret','probe','ground','emit','reuse','maintain').index(g['stage'])))
+        payload['accepted_gates'][6]['route']='interpret'
+        summary={'evaluable':True,'drift_claimed':True,'drift_observed':True,'false_alarm':False,
+            'repair_completed':True,'requalified':True,'fresh_reuse_passed':True}
+        graded=self.assert_direct_and_regrade(payload,summary)
+        self.assertEqual(len(graded['evaluations']),3)
         payload['evaluations'][1]['records'][0]['value']=0
         report,path=self.sealed(payload)
         self.assertEqual(evidence.regrade_v2(report,path,self.password)['verdict'],'failed')
+
+    def test_control_extra_successful_final_agrees_without_earlier_maintenance(self):
+        payload=self.payload(repaired=True)
+        payload['maintenance'].pop('repaired');payload['maintenance']['initial']['revision']=1
+        for key in ('accepted_gates','accepted_artifacts'):
+            payload[key]=[g for g in payload[key] if not (g['stage']=='maintain' and g['revision']==0)]
+        self.assert_direct_and_regrade(payload,{'evaluable':True,'drift_claimed':False,'drift_observed':False,
+            'false_alarm':False,'repair_completed':False,'requalified':False,'fresh_reuse_passed':True})
+
+    def test_attempt_inventory_must_bind_accepted_detection_and_resolution(self):
+        import copy
+        good={'evaluable':True,'fault':None,'contradiction':False,'evidence_ids':['toy']}
+        payload=self.payload();payload['maintenance']={}
+        _,payload,summary=self.live_attempt(payload,'unchanged',good)
+        for mutate in (lambda p:p['maintenance'].update(attempts=[]),
+                       lambda p:p['maintenance']['attempts'].append(copy.deepcopy(p['maintenance']['attempts'][0])),
+                       lambda p:p['maintenance']['initial'].update(assignment_id='missing'),
+                       lambda p:p['maintenance']['attempts'][0].update(phase='repaired')):
+            with self.subTest(mutation=mutate):
+                bad=copy.deepcopy(payload);mutate(bad)
+                report,path=self.sealed(bad)
+                self.assertEqual(evidence.regrade_v2(report,path,self.password)['verdict'],'failed')
+
+    def test_resolution_route_and_extra_maintenance_gates_are_not_accepted(self):
+        import copy
+        good={'evaluable':True,'fault':None,'contradiction':False,'evidence_ids':['toy']}
+        payload=self.payload();payload['maintenance']={}
+        _,payload,_=self.live_attempt(payload,'unchanged',good)
+        payload['accepted_gates'][-1]['route']='interpret'
+        report,path=self.sealed(payload)
+        self.assertEqual(evidence.regrade_v2(report,path,self.password)['verdict'],'failed')
+        payload['accepted_gates'][-1]['route']=None
+        extra=copy.deepcopy(payload['accepted_gates'][-1]);extra.update(revision=2,assignment_id='extra')
+        payload['accepted_gates'].append(extra)
+        payload['accepted_artifacts'].append({'stage':'maintain','revision':2,'assignment_id':'extra','sha256':extra['artifact_sha256']})
+        report,path=self.sealed(payload)
+        self.assertEqual(evidence.regrade_v2(report,path,self.password)['verdict'],'failed')
+
+    def test_live_rejects_incoherent_retained_attempt_history(self):
+        good={'evaluable':True,'fault':None,'contradiction':False,'evidence_ids':['toy']}
+        payload=self.payload();payload['maintenance']={}
+        _,payload,_=self.live_attempt(payload,'unknown',good)
+        payload['maintenance']['attempts'][0]['assignment_id']=None
+        decision,_,_=self.live_attempt(payload,'unchanged',good)
+        self.assertFalse(decision['ok']);self.assertIsNone(decision['fault'])

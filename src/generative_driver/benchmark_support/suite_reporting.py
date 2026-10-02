@@ -331,10 +331,19 @@ def _recorded_success(owner,events,report):
     for final in finals:
         revision=final.get('revision');digest=final.get('frozen_artifact_sha256')
         for stage in STAGES:
+            if stage=='maintain':continue
             selected=[h for h in handoffs if h['stage']==stage and h['revision']==(0 if stage=='acquire' else revision)]
             if len(selected)!=1:return False
             if stage in ('emit','reuse','maintain') and selected[0]['artifacts'][0]['sha256']!=digest:return False
+    maintenance=[h for h in handoffs if h['stage']=='maintain']
     last=finals[-1]
+    if maintenance[-1]['revision']!=last['revision']:return False
+    for handoff in maintenance:
+        if not any(f['revision']==handoff['revision'] and f['frozen_artifact_sha256']==handoff['artifacts'][0]['sha256'] for f in finals):return False
+    if summary.get('maintenance',{}).get('drift_observed'):
+        if (len(maintenance)!=2 or maintenance[0].get('route')!='interpret'
+                or maintenance[0]['revision']>=maintenance[1]['revision']):return False
+    elif len(maintenance)!=1:return False
     if any(summary['final_evaluation'].get(key)!=last.get(key) for key in ('verdict','passed','total')):return False
     if handoffs[-1]['stage']!='maintain' or handoffs[-1].get('route'):return False
     for evaluation in evaluations:

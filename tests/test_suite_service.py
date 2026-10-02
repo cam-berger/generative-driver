@@ -518,3 +518,59 @@ class CleanupFailureTests(unittest.TestCase):
                 release.set()
                 if cancellation:cancellation.join(5)
                 owner.close()
+
+class MaintenanceCategorySchedulingTests(unittest.TestCase):
+    _stopped_suite_at_completion = CleanupFailureTests._stopped_suite_at_completion
+
+    def test_false_alarm_settles_and_next_slot_waits_for_cleanup(self):
+        import threading
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.scenarios import maintenance_decision
+        from generative_driver import configurator, benchmark
+        with tempfile.TemporaryDirectory() as home:
+            owner,suite,child=self._stopped_suite_at_completion(home)
+            entered,release,cleaned=threading.Event(),threading.Event(),threading.Event()
+            with owner._db() as db:
+                progress={'revision':0,'next_stage':'maintain','repairs':0,'maintenance_cycles':0,'feedback':None}
+                db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)',(child,json.dumps(progress)))
+            prepare,check,execute,cleanup=owner._prepare,owner._check,configurator.execute,benchmark.cleanup
+            def fixture_prepare(spec,stage,*args):
+                if stage=='maintain':return {'inputs':[],'allowed_tools':[]}
+                self.assertTrue(cleaned.is_set(),'Next slot began before previous cleanup')
+                return prepare(spec,stage,*args)
+            def fixture_execute(request,*args):
+                if request.stage=='maintain':
+                    return {'status':'completed','runtime':'scripted-contract-fixture','report':{'status':'needs_revision'}}
+                return execute(request,*args)
+            def fixture_check(spec,stage,*args):
+                if stage=='maintain':
+                    return maintenance_decision(scenario='control',claim='drift',repaired=False,
+                        diagnostic={'evaluable':True,'fault':None,'contradiction':False,
+                                    'evidence_ids':['toy-independent-observation'],'fresh_reuse_passed':True})
+                return check(spec,stage,*args)
+            def delayed_cleanup(case,run_dir,options):
+                if Path(run_dir).name==child:
+                    entered.set()
+                    if not release.wait(5):raise AssertionError('Cleanup release deadline')
+                    result=cleanup(case,run_dir,options);cleaned.set();return result
+                return cleanup(case,run_dir,options)
+            try:
+                with patch.object(owner,'_prepare',side_effect=fixture_prepare),patch.object(owner,'_check',side_effect=fixture_check), \
+                     patch('generative_driver.configurator.execute',side_effect=fixture_execute), \
+                     patch('generative_driver.benchmark.cleanup',side_effect=delayed_cleanup):
+                    owner.call('suite_resume',suite)
+                    self.assertTrue(entered.wait(5),'Measured failure did not reach cleanup')
+                    result=owner.call('result',{'run_id':child})
+                    self.assertEqual(result['outcome_category'],'model');self.assertTrue(result['stopping'])
+                    self.assertEqual([t['run_id'] for t in owner.call('suite_result',suite)['trials']],[child,None])
+                    release.set()
+                    state=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
+                    self.assertEqual(state['completed'],1)
+                    rows=owner.call('suite_result',suite)['trials']
+                    self.assertEqual(rows[0]['outcome_category'],'model');self.assertEqual(rows[0]['status'],'finished')
+                    self.assertIsNotNone(rows[1]['run_id']);self.assertNotEqual(rows[1]['run_id'],child)
+                    self.assertEqual(rows[1]['outcome_category'],'host')
+                    kinds=[e['kind'] for e in owner.call('suite_events',suite)['events']]
+                    self.assertLess(kinds.index('trial.finished'),max(i for i,k in enumerate(kinds) if k=='trial.started'))
+            finally:
+                release.set();owner.close()

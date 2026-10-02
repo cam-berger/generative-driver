@@ -165,7 +165,7 @@ def _gate_results(payload, evaluations):
             target = 0 if stage == 'acquire' else revision
             matches = [row for row in rows if (row['stage'], row['revision']) == (stage, target)]
             inventory_ok = inventory_ok and len(matches) == 1 and matches[0]['verdict'] == 'passed'
-    return rows, bool(inventory_ok)
+    return rows, bool(inventory_ok and all(row['verdict'] == 'passed' for row in rows))
 
 
 def _maintenance_result(payload, evaluations, gates):
@@ -181,16 +181,19 @@ def _maintenance_result(payload, evaluations, gates):
                          for g in gates) for stage in ('interpret', 'probe', 'ground', 'emit'))
     fresh = (last.get('diagnostic', {}).get('fresh_reuse_passed') is True and
              any(g['stage'] == 'reuse' and g['revision'] == revision and g['verdict'] == 'passed' for g in gates))
-    def accepted(entry, route=None):
+    def accepted(entry, route):
         return any(g['stage'] == 'maintain' and g['revision'] == entry.get('revision') and g['verdict'] == 'passed'
             and ('attempts' not in entries or g['assignment_id'] == entry.get('assignment_id') and
-                 (route is None or any(raw.get('assignment_id') == g['assignment_id'] and raw.get('route') == route
-                                      for raw in payload['accepted_gates']))) for g in gates)
+                 any(raw.get('assignment_id') == g['assignment_id'] and raw.get('stage') == 'maintain'
+                     and raw.get('revision') == g['revision'] and raw.get('route') == route
+                     for raw in payload['accepted_gates'])) for g in gates)
     transition = (needs_repair and type(initial.get('revision')) is int and type(revision) is int
                   and revision > initial['revision'] and accepted(initial, 'interpret'))
     fields, ok = maintenance_history(scenario, entries, requalified=requalified, fresh=fresh, transition=transition)
     identity_ok = (bool(finals) and initial.get('revision') in {f['revision'] for f in finals}
-                   and revision == finals[-1]['revision'] and accepted(initial) and accepted(last))
+                   and revision == finals[-1]['revision'] and accepted(initial, 'interpret' if needs_repair else None)
+                   and accepted(last, None)
+                   and len([g for g in gates if g['stage'] == 'maintain']) == (2 if needs_repair else 1))
     return fields, bool(identity_ok and ok)
 
 

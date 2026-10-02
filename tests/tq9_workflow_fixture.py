@@ -56,7 +56,7 @@ class Silicon:
                         owner.paused_requests.append(command)
                         return
                     if command=='ID?': reply='DEMO-42'
-                    elif command=='T': reply='T:'+str(42 if getattr(owner,'wrong_hidden',False) and owner.temperature<0 else owner.temperature*(10 if owner.semantic else 1))
+                    elif command=='T': reply='T:'+str(42 if getattr(owner,'wrong_hidden',False) and owner.temperature == -7 else owner.temperature*(10 if owner.semantic else 1))
                     elif command=='A': owner.armed=True; reply='OK'
                     elif command=='D': owner.armed=False; owner.duty=0; reply='OK'
                     elif command.startswith('W '):

@@ -63,7 +63,7 @@ class AdmissionTests(unittest.TestCase):
         false=mutants[-1];false.update(expected_failed_checks=['maintenance/false-drift'],failed_checks=['maintenance/false-drift'],
             source_assessment_sha256=canonical_digest({'maintenance_claim':'unchanged'}),
             mutated_assessment_sha256=canonical_digest({'maintenance_claim':'drift'}))
-        runs[-1].update(passed=True,check_ids=['toy/ok'],phase='maintenance',scenario='control',native_control_passed=True,assessment_decision={'ok':False,'fault':None,'route':None,'reason':'Control maintenance claim failed','maintenance':{'false_alarm':True}},
+        runs[-1].update(passed=True,check_ids=['toy/ok'],phase='maintenance',scenario='control',native_control_passed=True,assessment_decision={'ok':False,'fault':'model','route':None,'reason':'Control maintenance claim failed','maintenance':{'false_alarm':True}},
             checks=[{'id':'toy/ok','passed':True},{'id':'maintenance/false-drift','passed':False,'reason':'false drift claim'}])
         record=dict(schema='benchmark-calibration/1',status='passed',case='toy-case',execution='reference-calibration',
             backend='native-renode',evaluator_version='2',images={'firmware.bin':h,'firmware-drift.bin':'b'*64},
@@ -99,7 +99,7 @@ class AdmissionTests(unittest.TestCase):
     def test_incomplete_or_self_reported_success_cannot_qualify(self):
         from generative_driver.benchmark_support.calibration import validate_calibration
         for defect in ('backend','image','identity','reference','same-model','mutant','both-lists','unchanged',
-                       'wrong-failure','run','process','package','analysis','tools','malformed','false-control','false-decision','false-digest','input-inventory','runtime','scenario-image','tool-type','native-type','ordinary-reason','false-reason','false-host','duplicate-check','duplicate-run','analysis-type','executed-model','executed-capabilities'):
+                       'wrong-failure','run','process','package','analysis','tools','malformed','false-control','false-decision','false-digest','input-inventory','runtime','scenario-image','tool-type','native-type','ordinary-reason','false-reason','false-host','false-unknown','duplicate-check','duplicate-run','analysis-type','executed-model','executed-capabilities'):
             manifest,record=self.fixture()
             if defect=='backend':record['backend']='python-socket-fixture'
             if defect=='image':record['images']={}
@@ -124,6 +124,7 @@ class AdmissionTests(unittest.TestCase):
             if defect=='ordinary-reason':record['runs'][-5]['checks'][0]['reason']='false drift claim'
             if defect=='false-reason':record['runs'][-1]['checks'][-1]['reason']='value mismatch'
             if defect=='false-host':record['runs'][-1]['assessment_decision']['fault']='host'
+            if defect=='false-unknown':record['runs'][-1]['assessment_decision']['fault']=None
             if defect=='duplicate-check':record['runs'][0]['checks']*=2
             if defect=='duplicate-run':record['runs'].append(copy.deepcopy(record['runs'][0]))
             if defect=='analysis-type':record['analysis']['firmware.bin']['returncode']=False

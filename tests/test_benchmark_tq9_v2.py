@@ -52,6 +52,7 @@ class TQ9V2Tests(unittest.TestCase):
             checked = check_stage('tq9-v2', 'interpret', root/'run', ws, {})
             self.assertFalse(checked['ok'])
             self.assertFalse(next(c for c in checked['checks'] if c['name'] == 'sealed_inputs')['passed'])
+            self.assertEqual(checked.get('fault'),'model')
 
     def test_action_records_keep_measured_units_and_pause_on_error(self):
         # Catches filling observed units from expected units and running during observation.
@@ -253,7 +254,7 @@ class TQ9V2Tests(unittest.TestCase):
         from generative_driver.benchmark_support.truth import seal, unlock
         from generative_driver.configurator import Controller, digest
         from tq9_workflow_fixture import Silicon, WORKER
-        for scenario, mode in (('control','normal'),('semantic','normal'),('control','hidden-wrong'),('control','monitor-missing'),('control','snapshot-next')):
+        for scenario, mode in (('control','normal'),('semantic','normal'),('control','unknown-retry'),('control','host-retry'),('control','hidden-wrong'),('control','monitor-missing'),('control','snapshot-next')):
             with self.subTest(scenario=scenario,mode=mode), tempfile.TemporaryDirectory() as temp:
                 root=Path(temp); resources=root/'resources'; case=resources/'cases/tq9-v2';case.mkdir(parents=True)
                 manifest=json.loads((case_root()/'cases/tq9-v2/case.json').read_text())
@@ -296,6 +297,21 @@ class TQ9V2Tests(unittest.TestCase):
                 script=root/'scripted_worker.py'
                 script.write_text(WORKER.replace('PACKAGE_PARENT',repr(str(Path(generative_driver.__file__).resolve().parents[1])))
                     .replace('FIXTURE_PARENT',repr(str(Path(__file__).parent))).replace('SERVICE_URL',repr('http://127.0.0.1:'+str(server.server_port))))
+                if mode == 'unknown-retry':
+                    source = script.read_text()
+                    source = source.replace("        pathlib.Path('maintenance.json').write_text",
+                        "        if not pathlib.Path(" + repr(str(root/'unknown-claimed')) + ").exists():\n" +
+                        "            claim['claim']='unknown';pathlib.Path(" + repr(str(root/'unknown-claimed')) + ").touch()\n" +
+                        "        pathlib.Path('maintenance.json').write_text")
+                    script.write_text(source)
+                from generative_driver.benchmark_support.emulated_evidence import maintenance_observation
+                observations = []
+                def observed_maintenance(*args, **kwargs):
+                    value = maintenance_observation(*args, **kwargs)
+                    if mode == 'host-retry' and not observations:
+                        value = dict(value, evaluable=False, fault='host')
+                    observations.append(value)
+                    return value
                 def native_start(**kwargs):
                     peer=Silicon(kwargs['image']);peers.append(peer)
                     peer.wrong_hidden = mode == 'hidden-wrong'
@@ -310,17 +326,31 @@ class TQ9V2Tests(unittest.TestCase):
                 try:
                     with patch.object(controller,'_accept',side_effect=accept), patch('generative_driver.benchmark.case_root',return_value=resources), \
                          patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True}), \
-                         patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=native_start):
+                         patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=native_start), \
+                         patch('generative_driver.benchmark_support.emulated_evidence.maintenance_observation',side_effect=observed_maintenance):
                         run=controller.start({'goal':'scripted-contract-fixture','case':'tq9-v2','budget_seconds':60,
                             'effects':['write','actuate'],'case_options':{'scenario_id':scenario,'evaluator_password_file':str(password),'renode':'synthetic TCP fixture'},
                             'executor_config':{'command':[sys.executable,str(script)]}})
                         deadline=time.monotonic()+60
+                        recovered=False
                         while True:
                             status=controller.call('status',run)
-                            if status['status'] in ('completed','failed','blocked','cancelled') and not status['stopping']:break
+                            if status['status'] in ('completed','failed','blocked','cancelled') and not status['stopping']:
+                                if mode in ('unknown-retry','host-retry') and not recovered:
+                                    self.assertEqual(status['status'],'blocked',status)
+                                    self.assertEqual(status['outcome_category'],'unknown')
+                                    if mode == 'host-retry':
+                                        self.assertTrue(status['uncertain_effect'])
+                                        with self.assertRaisesRegex(ValueError,'uncertain'):controller.call('resume',run)
+                                        self.assertEqual(peers[-1].duty,0)
+                                        controller.call('respond',{**run,'observation':{'source':'scripted independent peer',
+                                            'effect_resolution':'confirmed_safe','evidence':'Toy peer duty is zero after disarm'}})
+                                    controller.call('resume',run);recovered=True
+                                    continue
+                                break
                             if time.monotonic()>deadline:self.fail('Scripted controller deadline: '+str(status))
                             time.sleep(.03)
-                        if mode != 'normal':
+                        if mode not in ('normal','unknown-retry','host-retry'):
                             self.assertEqual(status['status'],'failed',status)
                             result=controller.call('result',run)
                             assigned=[e['data'] for e in controller.call('events',run)['events'] if e['kind']=='stage.assigned']
@@ -370,6 +400,23 @@ class TQ9V2Tests(unittest.TestCase):
                         public=public_v2_report({**sealed,'snapshot_sha256':sealed['execution_snapshot']['snapshot_sha256'],
                             'executed':sealed['execution_snapshot']['executed'],'final_evaluation':state['final_evaluation']})
                         self.assertEqual(score(public,password,evidence_path=sidecar)['verdict'],'passed')
+                        from generative_driver.reporting import report_run
+                        from generative_driver.benchmark_support.suite_reporting import _recorded_success
+                        with patch('generative_driver.client.call',side_effect=lambda method,params,**kw:controller.call(method,params)):
+                            actual_report=report_run(run['run_id'],home=root/'home')
+                        self.assertTrue(_recorded_success(result,events,actual_report))
+                        authenticated=score(actual_report,password,evidence_path=sidecar)
+                        self.assertEqual(authenticated['verdict'],'passed')
+                        self.assertEqual(authenticated['maintenance'],actual_report['maintenance'])
+                        if mode in ('unknown-retry','host-retry'):
+                            self.assertTrue(recovered)
+                            self.assertEqual(len(sealed['maintenance']['attempts']),2)
+                            self.assertEqual(actual_report['stages']['maintain']['attempt_count'],2)
+                            self.assertEqual([a['accepted'] for a in actual_report['stages']['maintain']['attempts']],[False,True])
+                            self.assertGreaterEqual(actual_report['stages']['maintain']['worker_seconds'],0)
+                            self.assertFalse(actual_report['maintenance']['repair_completed'])
+                            self.assertFalse(actual_report['maintenance']['requalified'])
+
                         from generative_driver.benchmark_support.registry import adapter_for
                         adapter=adapter_for('tq9-v2')
                         with self.assertRaisesRegex(ValueError,'evidence'):
@@ -525,6 +572,12 @@ class TQ9V2Tests(unittest.TestCase):
             result=check_stage('tq9-v2','reuse',root,root,{'status':'completed'})
             self.assertFalse(result['ok'])
             self.assertIn('reading',result['reason'])
+            self.assertEqual(result.get('fault'),'model')
+            for fault in ('host','operator'):
+                rows[0]['result']={'ok':False,'error':{'fault':fault}}
+                (root/'benchmark/package-events.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+                blocked=check_stage('tq9-v2','reuse',root,root,{'status':'completed'})
+                self.assertEqual(blocked.get('fault'),fault)
 
     def test_unavailable_native_tools_leave_a_pending_calibration_release(self):
         # Synthetic encrypted authoring input, not a native qualification claim.
@@ -605,3 +658,39 @@ class GateCategoryTests(unittest.TestCase):
                     with self.subTest(stage=stage):
                         result=emulated.check_stage('tq9-v2',stage,root,root,{'status':'completed'})
                         self.assertFalse(result['ok']);self.assertEqual(result.get('fault'),'model')
+
+    def test_ground_failure_uses_observed_diagnostic_not_missing_state(self):
+        from generative_driver.benchmark_support import emulated
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            for diagnostic,want in (({'passed':False},'model'),({},None)):
+                with self.subTest(diagnostic=diagnostic),patch.object(emulated,'_inputs',return_value=(root,{})), \
+                     patch.object(emulated,'_state',return_value=(root/'state',{'diagnostic':diagnostic})):
+                    result=emulated.check_stage('tq9-v2','ground',root,root,{'status':'completed'})
+                    self.assertFalse(result['ok']);self.assertEqual(result.get('fault'),want)
+
+    def test_emit_categories_follow_typed_validation_and_host_evidence(self):
+        from generative_driver.benchmark_support import emulated
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);(root/'manifest.json').write_text('{}')
+            outcomes=[({'ok':False,'integrity_ok':False},'model'),
+                ({'ok':False,'integrity_ok':True,'runtime_current':True,'replay_status':'failed'},'model'),
+                ({'ok':False,'error':{'fault':'host'}},'host'),
+                ({'ok':False,'fault':'operator'},'operator'),({'ok':False},None)]
+            for result,want in outcomes:
+                with self.subTest(result=result),patch.object(emulated,'_inputs',return_value=(root,{})), \
+                     patch('generative_driver.toolkit.call_tool',return_value=result):
+                    checked=emulated.check_stage('tq9-v2','emit',root,root,{'status':'completed'})
+                    self.assertFalse(checked['ok']);self.assertEqual(checked.get('fault'),want)
+
+    def test_unreadable_acquisition_is_host_failure_not_candidate_failure(self):
+        from generative_driver.benchmark_support import emulated
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);(root/'provenance.json').write_text('{}');(root/'firmware.bin').write_bytes(b'toy')
+            with patch.object(emulated,'_inputs',return_value=(root,{'images':{'firmware.bin':'a'*64}})), \
+                 patch.object(Path,'read_bytes',side_effect=OSError('toy filesystem unavailable')):
+                result=emulated.check_stage('tq9-v2','acquire',root,root,{'status':'completed'})
+                self.assertFalse(result['ok']);self.assertEqual(result.get('fault'),'host')

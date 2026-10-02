@@ -14,6 +14,15 @@ from generative_driver.benchmark_support.scenarios import (
 
 
 class ScenarioTests(unittest.TestCase):
+    def test_ambiguous_diagnostic_never_becomes_a_model_failure(self):
+        for changes in ({'contradiction':None},{'fault':'unknown'}):
+            with self.subTest(changes=changes):
+                diagnostic={'evaluable':True,'fault':None,'contradiction':False,
+                    'evidence_ids':['toy'],'fresh_reuse_passed':True,**changes}
+                result=maintenance_decision(scenario='control',claim='drift',diagnostic=diagnostic,repaired=False)
+                self.assertFalse(result['ok']);self.assertIsNone(result['fault'])
+                self.assertFalse(result['maintenance']['false_alarm'])
+
     def test_neutral_objective_is_identical_across_scenarios(self):
         self.assertEqual(maintain_objective('control'), maintain_objective('semantic'))
         self.assertIn('maintenance.json', maintain_objective('control'))

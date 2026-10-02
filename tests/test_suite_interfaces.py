@@ -318,8 +318,9 @@ main()
                                     self.assertFalse(json.loads(reply.content[0].text)['ok'], reply)
                 expected_error_log.seek(0)
                 diagnostics = expected_error_log.read()
-                self.assertIn('validation error', diagnostics.lower())
-                self.assertIn('int_type', diagnostics)
+                self.assertEqual(diagnostics.count('rejected arguments'), 3)
+                for field in ('offset', 'limit', 'after'):
+                    self.assertIn("['" + field + "']", diagnostics)
                 self.assertFalse(other.exists())
             finally:
                 expected_error_log.close()

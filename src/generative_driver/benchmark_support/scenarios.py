@@ -53,6 +53,10 @@ def maintenance_decision(*, scenario: str, claim: str, diagnostic: dict, repaire
         return {'ok': False, 'fault': fault or 'host', 'route': None,
                 'reason': 'Independent maintenance observation is unavailable',
                 'maintenance': {'false_alarm': False}}
+    if type(diagnostic.get('contradiction')) is not bool or fault not in (None, 'model'):
+        return {'ok': False, 'fault': None, 'route': None,
+                'reason': 'Independent maintenance observation is ambiguous',
+                'maintenance': {'false_alarm': False}}
     evidence = diagnostic.get('evidence_ids')
     if (claim not in ('unchanged', 'drift') or not isinstance(evidence, list) or
             not evidence or any(not isinstance(item, str) or not item for item in evidence)):
@@ -92,6 +96,21 @@ def maintenance_history(scenario, entries, *, requalified, fresh, transition):
     initial = entries.get('initial', {})
     attempts = entries.get('attempts', [dict(e, phase=phase) for phase, e in
         (('initial', initial), ('repaired', entries.get('repaired'))) if e])
+    inventory_ok = True
+    if 'attempts' in entries:
+        identities = [e.get('assignment_id') for e in attempts]
+        inventory_ok = (bool(attempts) and all(isinstance(i, str) and i for i in identities)
+            and len(set(identities)) == len(identities)
+            and all(type(e.get('revision')) is int and e['revision'] >= 0
+                    and e.get('phase') in ('initial', 'repaired') for e in attempts))
+        for phase in ('initial', 'repaired'):
+            entry = entries.get(phase)
+            if entry:
+                inventory_ok = inventory_ok and entry.get('phase') == phase and sum(e == entry for e in attempts) == 1
+        if entries.get('repaired'):
+            inventory_ok = (inventory_ok and bool(initial) and initial in attempts
+                and entries['repaired'] in attempts and attempts.index(initial) < attempts.index(entries['repaired'])
+                and entries['repaired'].get('revision', -1) > initial.get('revision', -1))
     decisions = [maintenance_decision(scenario=scenario, claim=e.get('claim'),
         diagnostic=e.get('diagnostic', {}), repaired=e.get('phase') == 'repaired') for e in attempts]
     false_alarm = any(d['maintenance']['false_alarm'] for d in decisions)
@@ -112,7 +131,7 @@ def maintenance_history(scenario, entries, *, requalified, fresh, transition):
         'drift_observed': diagnostic.get('evaluable') is True and diagnostic.get('contradiction') is True,
         'false_alarm': false_alarm, 'repair_completed': completed,
         'requalified': bool(needs_repair and transition and requalified), 'fresh_reuse_passed': bool(fresh)}
-    ok = bool(first['ok'] and second['ok'] and not model_failure and (transition if needs_repair else not entries.get('repaired')))
+    ok = bool(inventory_ok and first['ok'] and second['ok'] and not model_failure and (transition if needs_repair else not entries.get('repaired')))
     return fields, ok
 
 

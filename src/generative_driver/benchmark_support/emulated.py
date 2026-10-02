@@ -239,9 +239,12 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
                        and type(e['result'].get('outputs', {}).get(output)) in (int, float) for e in events)
             fresh = read and any(abs(value - 370) <= 2 for value in duties) and bool(duties) and duties[-1] == 0
         if not fresh:
-            faults = [e['result'].get('error', {}).get('fault') for e in events
-                      if isinstance(e.get('result', {}).get('error', {}), dict)]
-            fault = next((f for f in faults if f in ('host', 'operator')), 'model')
+            failed = [e['result'] for e in events if e['result'].get('ok') is not True]
+            faults = [r['error'].get('fault') if isinstance(r.get('error'), dict) else None for r in failed]
+            # Untyped package errors can include host failures; mixed evidence is
+            # not enough to attribute this incomplete mission to the candidate.
+            default = None if any(f != 'model' for f in faults) else 'model'
+            fault = next((f for f in faults if f in ('host', 'operator')), default)
             return {'ok': False, 'fault': fault, 'checks': [], 'artifacts': [], 'reason': 'Fresh worker mission lacks observed reading, requested effect or disarm'}
         package = Path(state['package_copies'][stage])
         decision = _final(case_id, run_dir, package, json.loads(Path(state['capabilities_path']).read_text()), options or {})

@@ -579,6 +579,38 @@ class TQ9V2Tests(unittest.TestCase):
                 blocked=check_stage('tq9-v2','reuse',root,root,{'status':'completed'})
                 self.assertEqual(blocked.get('fault'),fault)
 
+    def test_reuse_failed_calls_need_trusted_attribution_before_model_blame(self):
+        from unittest.mock import patch
+        from generative_driver.benchmark_support import emulated
+        from generative_driver.benchmark_support.suites import child_disposition
+        from tq9_workflow_fixture import capabilities
+        untyped={'ok':False,'error':{'code':'package_error','message':'Toy package filesystem read failed'}}
+        modeled={'ok':False,'error':{'fault':'model'}}
+        cases=[([untyped],None),([{'ok':False}],None),([{'ok':False,'error':'opaque'}],None),
+            ([{'ok':False,'error':{'fault':'unknown'}}],None),([modeled],'model'),
+            ([untyped,modeled],None),([modeled,untyped],None),
+            ([untyped,{'ok':False,'error':{'fault':'host'}}],'host'),
+            ([modeled,{'ok':False,'error':{'fault':'operator'}}],'operator'),
+            ([{'ok':True,'outputs':{'ack':1}}],'model')]
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);caps=root/'caps.json';caps.write_text(json.dumps(capabilities()))
+            emulated._write(root/'benchmark/state.json',{'revision':0,'package_attempts':{'reuse':'current'},
+                'capabilities_path':str(caps)})
+            def event(result,attempt='current',revision=0):
+                return {'actor':'worker','stage':'reuse','attempt_id':attempt,'revision':revision,
+                    'operation':'disarm','result':result,'observation':{'duty':0}}
+            for results,want in cases:
+                with self.subTest(results=results):
+                    # Other attempts/revisions cannot make a conclusive current failure ambiguous.
+                    rows=[event(untyped,'old'),event(untyped,revision=1)]+[event(r) for r in results]
+                    (root/'benchmark/package-events.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+                    with patch.object(emulated,'_inputs',return_value=(root,{})):
+                        checked=emulated.check_stage('tq9-v2','reuse',root,root,{'status':'completed'})
+                    self.assertFalse(checked['ok']);self.assertEqual(checked.get('fault'),want)
+                    disposition=child_disposition({'status':'blocked','stopping':False,'uncertain_effect':False,
+                        'outcome_category':checked.get('fault') or 'unknown'})
+                    self.assertEqual(disposition,'advance' if want=='model' else 'block')
+
     def test_unavailable_native_tools_leave_a_pending_calibration_release(self):
         # Synthetic encrypted authoring input, not a native qualification claim.
         from unittest.mock import patch

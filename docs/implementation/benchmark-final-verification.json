@@ -10,10 +10,10 @@
     "emit",
     "reuse"
   ],
-  "tested_resource_revision": "6ce42581786706611086638d067cd8cb73aa57ec",
+  "tested_resource_revision": "f1f1a68a88b09764a441b15ce57bf4a3d737a7f9",
   "model_benchmark": false,
   "physical_device_used": false,
-  "evaluator_identity_sha256": "7e4e7bbaf79c6eca2a0330d18c6eb493a609631fac7bac09e196a6c91bd616d5",
+  "evaluator_identity_sha256": "7f239957c6702cc556e19e23fe126bc52ee0ec47134ef439ad53ba0cdc2e376c",
   "runtime_dependencies": {
     "mcp": "2.2.0",
     "cryptography": "50.0.1"
@@ -23,12 +23,12 @@
       "name": "source-suite",
       "python": "3.13.12",
       "tests": 417,
-      "seconds": 60.103,
+      "seconds": 71.072,
       "skips": 0,
       "failures": 0,
       "errors": 0,
-      "log": "suite-final-review-source.log",
-      "log_sha256": "13f46560d198dc3fb6c1b8dfb183b4c8c0c2ff75d41ef5f5e1e35b2be69645b1",
+      "log": "suite-residual-i1-source.log",
+      "log_sha256": "6336cba7dac7435464a5d6bc95a300c631c727120c78c4023e7c517491a29785",
       "command": "<python> -m unittest discover -s tests -v",
       "archive_gates": [
         "GD_TEST_WHEEL",
@@ -40,12 +40,12 @@
       "name": "installed-wheel-suite",
       "python": "3.11.15",
       "tests": 417,
-      "seconds": 56.058,
+      "seconds": 60.484,
       "skips": 0,
       "failures": 0,
       "errors": 0,
-      "log": "suite-final-review-311.log",
-      "log_sha256": "ffbef6ff9696e4111bcd83d5108d3b91539773d4c3e504a6e4a5b35acb3d3a33",
+      "log": "suite-residual-i1-retry-311.log",
+      "log_sha256": "bf29b8dbae6a0218a3d8098fefd742d5315f3aae5a982f16a895f2ab98209652",
       "command": "<python> -m unittest discover -s tests -v",
       "archive_gates": [
         "GD_TEST_WHEEL",
@@ -57,12 +57,12 @@
       "name": "installed-wheel-suite",
       "python": "3.13.14",
       "tests": 417,
-      "seconds": 60.973,
+      "seconds": 72.253,
       "skips": 0,
       "failures": 0,
       "errors": 0,
-      "log": "suite-final-review-313.log",
-      "log_sha256": "25348c480414a886516ea065294629867caf7302c4bc27d71c410659c2dc434b",
+      "log": "suite-residual-i1-313.log",
+      "log_sha256": "02fff98406cd2474ec9b8b342f92a4cb95b5d923f56aff82ae3f854c9fe485b8",
       "command": "<python> -m unittest discover -s tests -v",
       "archive_gates": [
         "GD_TEST_WHEEL",
@@ -73,7 +73,7 @@
     {
       "name": "installed-integration",
       "python": "3.11.15",
-      "seconds": 1.4673195829964243,
+      "seconds": 1.4634612080117222,
       "cases": 6,
       "suite_slots": 9,
       "replay": "passed",
@@ -87,13 +87,13 @@
       "offline_six_gate_score": "passed",
       "offline_compare": "compatible",
       "worker_launched": false,
-      "log": "integration-final-review-311.log",
-      "log_sha256": "51f106e6c2d447322781d5cbefd78fdaa68dd9e90bcee8a471efe8b2d1989e39"
+      "log": "integration-residual-i1-311.log",
+      "log_sha256": "894d78965b85ec6f678e2a82914f05173a6daa490af1167f8ffae4e754c392bb"
     },
     {
       "name": "installed-integration",
       "python": "3.13.14",
-      "seconds": 1.6089926660060883,
+      "seconds": 1.6016356660111342,
       "cases": 6,
       "suite_slots": 9,
       "replay": "passed",
@@ -107,14 +107,14 @@
       "offline_six_gate_score": "passed",
       "offline_compare": "compatible",
       "worker_launched": false,
-      "log": "integration-final-review-313.log",
-      "log_sha256": "dc99f6ead457b3910b02491ef91aa1cf3532d4198497c794980e9eb3266e103b"
+      "log": "integration-residual-i1-313.log",
+      "log_sha256": "03701c70844aae8986bcabc46645f93cf67d39dc30a769bb413f368023c8d4dd"
     }
   ],
   "distribution": {
     "strategy": "clean tracked git archive; final documentation rebuild preserves tested wheel module/resource bytes",
     "wheel_module_resource_files": 118,
-    "wheel_payload_sha256": "6b1d9992c8f554b1b7023c589101f4199546cd3990534f6d12eba3e7becd346d",
+    "wheel_payload_sha256": "3cc0ec9c0ce0d7799c2b2b2b9cb855ccbe8412c611b423e932e4311182138017",
     "wheel_files": 125,
     "sdist_files": 195,
     "tracked_markdown": 36,
@@ -128,7 +128,7 @@
     "full_archive_hashes": "external evaluator-owned verification manifest; final sdist cannot hash itself"
   },
   "native_reference_qualification": {
-    "scope": "Fresh final-review native sessions against the corrected frozen evaluator; prior qualifications preserved. Installed gates authenticate and regrade saved evidence.",
+    "scope": "Fresh residual-i1 native sessions against the corrected frozen evaluator; prior qualifications preserved. Installed gates authenticate and regrade saved evidence.",
     "family_sessions": 30,
     "reference_sessions": 12,
     "mutant_sessions": 18,
@@ -138,22 +138,22 @@
       {
         "case": "sampled-sensor-v1",
         "native_sessions": 8,
-        "evidence_sha256": "623f242f308d497e3068a66907dc4c6489b6abee5b2240aa4809eb06b6edd6f6",
-        "ciphertext_sha256": "285f7d31e1a54a5aa650d592e90166fbbba77aad083ef74f7c6f309306aaa34e",
+        "evidence_sha256": "e5482c67c1fad09c5ab025cd3de5d1267250f98092dcad9e670dd61c70897d2d",
+        "ciphertext_sha256": "a2ee5fba182a9a754da6d0c4bca37dc7181eff0fb0bd835c89dc5cd917c7e92a",
         "image_sha256": "637370d3d7192a17b6abeb79a3fcbc60ec2f47eb14e199627798756c02bbb1e9"
       },
       {
         "case": "parameter-store-v1",
         "native_sessions": 9,
-        "evidence_sha256": "62d2b4fcdebb44892232c0510571c3c50ad45314332ce0ccaa0ef1e25f4f12a2",
-        "ciphertext_sha256": "dac9510ab3f47698e8b6575ef9f9d80b5fa4cc435c69a1dbbbd4ed7443b8aef4",
+        "evidence_sha256": "7412248b61fecef32769a5290bfb20912d92aaa84201b824cc1b8b1b83ffd5e8",
+        "ciphertext_sha256": "38b7731ce26deaaee731d5011652117e110498920c9700eac9fb0c25ab5871c8",
         "image_sha256": "e7a580834861f7fa96868245bf969d69350ee0acdab1ee8eda30abc1fdf1faf1"
       },
       {
         "case": "tq9-v2",
         "native_sessions": 13,
-        "evidence_sha256": "27bb0c0596fe5a706f8d9fd95296d0105e2a7141c63353ac8e262139eacce430",
-        "ciphertext_sha256": "c32ba21b5c45f7f142bcfcbb6fbd17a194dc8e3a741af437134ea294a2ac2c1c",
+        "evidence_sha256": "7d7f7689b0aee39a7d75a26d02f6ce438f2fa661d7baf6ff24c670f080a9d024",
+        "ciphertext_sha256": "a0b7003189e66a476da45ae6ef4ec32901c7644b3c31544330fb6ac5c31cc5e2",
         "image_sha256": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e"
       }
     ],
@@ -166,14 +166,14 @@
       "java": "21.0.12.1"
     },
     "log_hashes": {
-      "sampled-sensor-v1-native-final-review-complete.log": "e1f145c0b79bbc2f4f1ecc05cc323aeb9fd718a5500ff15f5de650c2ccb58747",
-      "parameter-store-v1-native-final-review-complete.log": "b67ca123c1132ba1836af8da22502183838bf103b82b10fc344ac4ce5b430d3a",
-      "tq9-v2-native-final-review-complete.log": "c466e53cb3d9fafd270217f1a36a1b855239dc1a90c9486b9b5556bef64cf910",
-      "tq9-original-native-final-review-complete.log": "86162219056cfc88562019ea2f642c067d3534bf1ff29a62567f7a98d0ab5c66",
-      "verify-release-final-review-complete.log": "55b0aa4c1e2d331c5cff462dc4cc9b79bd494053290fe8cba9ad8517985fd6ee"
+      "sampled-sensor-v1-native-residual-i1.log": "88653a4360b4d5d12e7ed70b240fb5ba86b99b79c2a104b1d21577849e5d5006",
+      "parameter-store-v1-native-residual-i1.log": "37ca2ca8c0e08bf3b5222fde0b1dedc5a9b060d14033da31e74f86eac61f447d",
+      "tq9-v2-native-residual-i1.log": "192f28e88b93dc62633f0a7024d7ce8bd3818da1a3bfac2ab18587848b63a57e",
+      "tq9-original-native-residual-i1.log": "86162219056cfc88562019ea2f642c067d3534bf1ff29a62567f7a98d0ab5c66",
+      "verify-release-residual-i1.log": "94ef74c3a927053662e58b6c883e4453dcd2816b61dda7d6df8b1d07fe3e5600"
     }
   },
-  "independent_whole_branch_review": "completed: With fixes; I1/I2/M1/M3 corrected and qualified; scoped parent rereview pending; benign M2 warnings deferred",
+  "independent_whole_branch_review": "completed: With fixes; scoped rereview completed and identified residual I1; residual priority corrected and freshly qualified; parent residual verification pending; benign M2 warnings deferred",
   "unobserved": [
     "current model performance",
     "physical device performance",
@@ -184,9 +184,12 @@
   ],
   "publication_exception": "Other owner untracked docs/research draft preserved outside tracked export and archives.",
   "review_fixes": {
-    "legacy_final": "Observed legacy behavioral contradiction is terminal failed/model and durable across restart; unavailable observations retain host/operator/unknown recovery.",
+    "legacy_final": "An observed legacy contradiction remains terminal failed/model across restart despite unrelated host/operator/unknown failed calls before or after it. Raw failures remain recorded; unavailable-only and positive incomplete evidence retain recovery.",
     "physical_export": "Offline BME280 score accepts an explicit evaluator-owned reference file via --evidence while retaining digest and measurement-time validation and private path removal.",
     "public_projection": "Retained max_model_repairs is published; obsolete cycle limits remain excluded.",
     "documentation": "V2 phase/reference evidence is scoped explicitly; physical agreement uses operator uncertainty."
-  }
+  },
+  "verification_notes": [
+    "The first concurrent installed Python 3.11 suite failed test_shutdown_drains_an_accepted_tool_before_confirming_exit at entered.wait(5). The unchanged isolated lifecycle suite passed 7 tests in 1.178s, and the repeated complete installed 3.11 gate passed. Original failed and repeat logs remain preserved; the precise transient cause was not established."
+  ]
 }

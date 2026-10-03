@@ -2,7 +2,7 @@
 
 Installed `resources/bench/groundtruth/*.enc` bundles use AES-256-GCM authenticated encryption with PBKDF2-HMAC-SHA256 (600,000 iterations, random salt and nonce). Each manifest pins ciphertext SHA-256. Hashes identify bytes; they do not establish physical truth or a sandbox.
 
-Firmware groundtruth contains owned sources, exact build recipes, source/image/input hashes, two distinct reference implementations, diagnostic/final contracts, native observations and known incorrect models. Every case evaluates one stable original firmware image. Final episodes execute frozen emitted packages; fresh worker use is separately required. Physical BME280 truth contains vendor document provenance, independent reference criteria and expected discovery-to-reuse gates. Vendor PDFs are fetched rather than redistributed.
+Calibrated V2 firmware groundtruth contains owned sources, exact build recipes, source/image/input hashes, two distinct reference implementations, diagnostic/final contracts, native observations and known incorrect models. Each firmware case evaluates one stable original image. V2 final episodes execute frozen emitted packages; fresh worker use is separately required. Legacy TQ9 retains its separate reference/mutant qualifier and recorded mission checks. Physical BME280 truth contains vendor document provenance, operator reference agreement criteria within supplied uncertainty and expected discovery-to-reuse gates. Vendor PDFs are fetched rather than redistributed.
 
 ## Obtain and handle the password
 

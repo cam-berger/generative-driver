@@ -68,7 +68,7 @@ Codex receives plugin metadata, MCP wiring and skills. Goose receives a recipe a
 
 Protocol checks and semantic correctness receive separate evidence. A valid frame or executable package can still return the wrong value or perform the wrong effect. Fresh reuse must establish that a new agent can operate the package from its published interface.
 
-Each groundtruth case includes source/build provenance, pinned input hashes, hand-auditable vectors, an independent oracle or primary documentation, observations from the reference channel, expected stage outcomes and known incorrect outputs that the evaluator must reject. The BME280 evidence establishes response to stimulus within its measured scope; it does not establish absolute sensor calibration.
+Each groundtruth case includes source/build provenance, pinned input hashes, hand-auditable vectors, an independent oracle or primary documentation, observations from the reference channel, expected stage outcomes and known incorrect outputs that the evaluator must reject. The BME280 evidence establishes stable-environment agreement with operator references within their supplied uncertainty; it does not establish absolute sensor calibration.
 
 A benchmark can execute completely and report that the model failed its task. Reports distinguish execution status, accepted workflow state and evaluator verdict. Overall task success requires all six acceptance gates, the fresh worker mission and independent final behavior; averaging stage scores cannot erase a failed required gate. Blocked, failed, unrun and inapplicable stages remain explicit.
 

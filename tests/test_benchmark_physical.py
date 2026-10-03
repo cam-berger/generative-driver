@@ -277,3 +277,56 @@ class PhysicalPrerequisitesTests(unittest.TestCase):
                 report['case_state']['physical_final']['measurement_time']=observed['observed_at']+120
                 with self.assertRaisesRegex(ValueError,'reference'):
                     score(report,options['evaluator_password_file'])
+
+    def test_exported_physical_report_scores_with_explicit_reference_from_another_directory(self):
+        # Catches losing the private reference path at export without a portable resolver.
+        import contextlib, io, json, os, shutil
+        from unittest.mock import patch
+        from generative_driver.reporting import report_run
+        from generative_driver.benchmark import main
+        from generative_driver.benchmark_support.physical import check_stage
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory);home=base/'private-home';root=home/'runs/toy';root.mkdir(parents=True)
+            resources,observed,options,state=self.prepared_reuse_fixture(root)
+            self.write_measurement(root,state['package_attempts']['reuse'],observed['observed_at'])
+            with patch('generative_driver.benchmark.case_root',return_value=resources):
+                self.assertTrue(check_stage('bme280','reuse',root,root/'worker',{'status':'completed'},options=options)['ok'])
+            state=json.loads((root/'benchmark/state.json').read_text())
+            stages=('acquire','interpret','probe','ground','emit','reuse')
+            state['stage_verdicts']={s:{'status':'passed'} for s in stages}
+            (root/'benchmark/state.json').write_text(json.dumps(state))
+            result={'ok':True,'run_id':'toy','status':'completed','created':0,'updated':1,
+                    'configuration':{'case':'bme280','limits':{'max_model_repairs':2}},
+                    'worker_reports':[{'stage':s,'assignment_id':s,'status':'completed'} for s in stages],
+                    'accepted_handoffs':[{'stage':s,'assignment_id':s,'artifacts':[]} for s in stages]}
+            def saved_client(method,*args,**kwargs):
+                return result if method=='result' else {'events':[],'cursor':0}
+            output=base/'export/report.json'
+            with patch('generative_driver.client.call',side_effect=saved_client), patch('generative_driver.benchmark.case_root',return_value=resources):
+                public=report_run('toy',home=home,output=output,autostart=False)
+            self.assertNotIn(str(base),output.read_text())
+            saved=Path(state['physical_final']['reference']['evidence_path'])
+            portable=base/'evaluator/reference.txt';portable.parent.mkdir();shutil.copy2(saved,portable)
+            elsewhere=base/'elsewhere';elsewhere.mkdir();previous=Path.cwd()
+            try:
+                os.chdir(elsewhere)
+                def invoke(evidence):
+                    capture=io.StringIO()
+                    args=['score',str(output),'--password-file',options['evaluator_password_file']]
+                    if evidence is not None:args+=['--evidence',str(evidence)]
+                    with patch('generative_driver.benchmark_support.legacy.case_root',return_value=resources), contextlib.redirect_stdout(capture):
+                        status=main(args)
+                    self.assertNotIn(str(base),capture.getvalue())
+                    return status,json.loads(capture.getvalue())
+                status,score=invoke(portable)
+                self.assertEqual(status,0,score);self.assertEqual(score['verdict'],'passed')
+                self.assertEqual(invoke(None)[0],1)
+                self.assertEqual(invoke(base/'missing.txt')[0],1)
+                portable.write_text('tampered')
+                self.assertEqual(invoke(portable)[0],1)
+                shutil.copy2(saved,portable)
+                public['case_state']['physical_final']['measurement_time']=observed['observed_at']+120
+                output.write_text(json.dumps(public))
+                self.assertEqual(invoke(portable)[0],1)
+            finally:
+                os.chdir(previous)

@@ -288,20 +288,35 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
         attempt = state.get('package_attempts', {}).get(stage)
         events = [e for e in events if attempt and e.get('attempt_id') == attempt
                   and e['stage'] == stage and e['revision'] == state.get('revision', 0)]
-        if stage == 'reuse':
-            _, _, truth = _load_case(options or {})
-            contract = truth['reuse_goal']
-            duties = [e['observation']['duty'] for e in events if e.get('ok') and e.get('observation')]
-            reached = any(abs(d-contract['fraction']) <= contract['tolerance'] for d in duties)
-            disarmed = bool(duties) and abs(duties[-1]-contract['final_fraction']) <= contract['tolerance']
-            temperature_spec = state['probe_evaluation']['capabilities']['temperature']
-            reference = next(c for c in truth['checks'] if c['id'] == 'temperature')
-            readings = [e['result'].get('outputs', {}).get(temperature_spec['output']) for e in events
-                        if e.get('ok') and e['operation'] == temperature_spec['operation']]
-            read_ok = any(type(v) in (int, float) and abs(v-reference['expected']) <= reference['absolute_tolerance'] for v in readings)
-            ok = reached and disarmed and read_ok
-            return {'ok': ok, 'reason': None if ok else 'Fresh package execution did not establish requested output and disarm',
-                    'checks': [{'name': 'fresh_package_temperature', 'passed': read_ok},
-                               {'name': 'fresh_package_requested_output', 'passed': reached},
-                               {'name': 'fresh_package_disarm', 'passed': disarmed}], 'artifacts': [str(events_path)]}
+        _, _, truth = _load_case(options or {})
+        contract = truth['reuse_goal']
+        successful = [e for e in events if e.get('ok')]
+        duties = [e['observation']['duty'] for e in successful
+                  if isinstance(e.get('observation'), dict) and 'duty' in e['observation']]
+        temperature_spec = state['probe_evaluation']['capabilities']['temperature']
+        reference = next(c for c in truth['checks'] if c['id'] == 'temperature')
+        readings = [e['result'].get('outputs', {}).get(temperature_spec['output']) for e in successful
+                    if e['operation'] == temperature_spec['operation']]
+        import math
+        finite = lambda v: type(v) in (int, float) and math.isfinite(v)
+        reached = any(finite(d) and abs(d-contract['fraction']) <= contract['tolerance'] for d in duties)
+        disarmed = bool(duties) and finite(duties[-1]) and abs(duties[-1]-contract['final_fraction']) <= contract['tolerance']
+        read_ok = any(finite(v) and abs(v-reference['expected']) <= reference['absolute_tolerance'] for v in readings)
+        checks = [{'name': 'fresh_package_temperature', 'passed': read_ok},
+                  {'name': 'fresh_package_requested_output', 'passed': reached},
+                  {'name': 'fresh_package_disarm', 'passed': disarmed}]
+        ok = all(row['passed'] for row in checks)
+        # Successful package calls with available independent channels establish
+        # a behavioral verdict. Missing observations remain recoverable.
+        observed = bool(readings) and bool(duties) and all(finite(d) for d in duties)
+        faults = [e.get('result', {}).get('error', {}).get('fault') or e.get('result', {}).get('fault')
+                  for e in events if not e.get('ok')]
+        fault = None if ok else ('operator' if 'operator' in faults else 'host' if 'host' in faults
+                                else 'model' if observed else None)
+        final = observed and fault not in ('host', 'operator')
+        evaluator = {'verdict': 'passed' if ok else 'failed' if final else 'unscored',
+                     'checks': checks, 'fault': fault, 'final_evaluation': final}
+        return {'ok': ok, 'fault': fault, 'final_evaluation': final, 'evaluator': evaluator,
+                'reason': None if ok else 'Fresh package execution did not establish requested output and disarm',
+                'checks': checks, 'artifacts': [str(events_path)]}
     raise ValueError('Benchmark stage is not implemented yet: ' + stage)

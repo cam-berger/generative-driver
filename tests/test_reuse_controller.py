@@ -23,7 +23,7 @@ class FreshReuseControllerTests(unittest.TestCase):
             time.sleep(.01)
         self.fail(controller.call('result', run))
 
-    def run_scripted(self, root, *, failed_reuse=False):
+    def run_scripted(self, root, *, failed_reuse=False, legacy_events=None):
         """Exercise real external workers and durable acceptance through scripted gates.
 
         The gates validate only fixture artifacts; they make no benchmark claim.
@@ -44,7 +44,19 @@ class FreshReuseControllerTests(unittest.TestCase):
 
         def check(spec, stage, run_dir, workspace, report, accepted, assignment):
             self.assertTrue((workspace / 'model.json').is_file())
+            if stage == 'reuse' and legacy_events is not None:
+                from generative_driver.benchmark_support.cases import check_stage, _write
+                _write(run_dir / 'benchmark/state.json', {
+                    'package_attempts': {'reuse': 'toy-attempt'}, 'revision': 0,
+                    'probe_evaluation': {'capabilities': {'temperature': {'operation': 'read', 'output': 't'}}}})
+                rows = [dict(event, stage='reuse', revision=0, attempt_id='toy-attempt') for event in legacy_events]
+                (run_dir / 'benchmark/package-events.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+                truth = {'reuse_goal': {'fraction': .5, 'final_fraction': 0, 'tolerance': .01},
+                         'checks': [{'id': 'temperature', 'expected': 20, 'absolute_tolerance': 1}]}
+                with patch('generative_driver.benchmark_support.cases._load_case', return_value=(None, None, truth)):
+                    return check_stage('tq9', stage, run_dir, workspace, report)
             if stage == 'reuse' and failed_reuse:
+
                 return {'ok': False, 'fault': 'model', 'final_evaluation': True,
                         'reason': 'Scripted fresh mission failed'}
             if stage == 'emit':
@@ -179,3 +191,47 @@ class FreshReuseControllerTests(unittest.TestCase):
                     reopened.call('resume', run)
             finally:
                 reopened.close()
+
+    def test_actual_legacy_final_contradiction_is_terminal_across_restart(self):
+        # A producer missing the final/model contract must not permit a second final.
+        for temperature, final_duty in ((999, 0), (20, .5)):
+            with self.subTest(temperature=temperature, final_duty=final_duty), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                events = [{'ok': True, 'operation': 'read', 'result': {'ok': True, 'outputs': {'t': temperature}},
+                           'observation': {'duty': .5}},
+                          {'ok': True, 'operation': 'disarm', 'result': {'ok': True}, 'observation': {'duty': final_duty}}]
+                controller, run, result = self.run_scripted(root, legacy_events=events)
+                try:
+                    self.assertEqual((result['status'], result['outcome_category']), ('failed', 'model'))
+                    self.assertTrue(result['progress']['terminal_final_failure'])
+                    self.assertEqual(tuple(h['stage'] for h in result['accepted_handoffs']), SIX_STAGES[:-1])
+                    self.assertEqual(result['evaluator_verdicts'][-1]['verdict'], 'failed')
+                    with self.assertRaisesRegex(ValueError, 'terminal'):
+                        controller.call('resume', run)
+                finally:
+                    controller.close()
+                reopened = Controller(root / 'home')
+                try:
+                    self.assertTrue(reopened.call('result', run)['progress']['terminal_final_failure'])
+                    with self.assertRaisesRegex(ValueError, 'terminal'):
+                        reopened.call('resume', run)
+                finally:
+                    reopened.close()
+
+    def test_legacy_unavailable_observation_preserves_recovery(self):
+        for fault in ('host', 'operator', None):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                events = [{'ok': False, 'operation': 'read', 'result': {'ok': False, 'error': {'fault': fault}}}]
+                controller, run, result = self.run_scripted(root, legacy_events=events)
+                try:
+                    self.assertEqual((result['status'], result['outcome_category']), ('blocked', fault or 'unknown'))
+                    self.assertFalse(result['progress'].get('terminal_final_failure'))
+                finally:
+                    controller.close()
+                reopened = Controller(root / 'home')
+                try:
+                    with patch.object(reopened, '_spawn'):
+                        self.assertTrue(reopened.call('resume', run)['ok'])
+                finally:
+                    reopened.close()

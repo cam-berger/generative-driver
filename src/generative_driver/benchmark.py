@@ -90,7 +90,7 @@ def main(argv=None):
     scoring = commands.add_parser('score')
     scoring.add_argument('report')
     scoring.add_argument('--password-file')
-    scoring.add_argument('--evidence')
+    scoring.add_argument('--evidence', help='V2 sealed evidence, or the saved BME280 independent reference file (digest checked)')
     evaluator = commands.add_parser('truth')
     evaluator.add_argument('action', choices=['unlock','rekey','rebuild','calibrate'])
     evaluator.add_argument('--case',default='tq9',choices=case_ids())
@@ -305,6 +305,8 @@ def score(report, password_file=None, *, evidence_path=None):
         return regrade_v2(data, evidence_path, password_file)
     case = data.get('case')
     case_id = case.get('id') if isinstance(case, dict) else case
+    if case_id == 'bme280':
+        return adapter_for(case_id).score(data, password_file, evidence_path=evidence_path)
     return adapter_for(case_id).score(data, password_file)
 
 

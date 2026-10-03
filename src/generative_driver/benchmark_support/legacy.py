@@ -69,7 +69,7 @@ def cleanup(case_id, run_dir, options=None):
     return {'ok': True}
 
 
-def score(report, password_file=None):
+def score(report, password_file=None, *, evidence_path=None):
     """Regrade recorded behavior; missing stage evidence cannot become overall success."""
     data = _read(report)
     case = data.get('case')
@@ -111,7 +111,11 @@ def score(report, password_file=None):
                 or abs(measured-observed_at)>truth['max_reference_age_seconds']):
             raise ValueError('Recorded final measurement lacks a current independent reference')
         from .physical import grade_physical_reference
-        saved_reference=final.get('reference',{})
+        saved_reference=dict(final.get('reference',{}))
+        if evidence_path is not None:
+            # The caller owns this resolution handle; the recorded digest, values
+            # and measurement time remain authoritative after relocation.
+            saved_reference['evidence_path']=str(evidence_path)
         if (not saved_reference.get('evidence_sha256') or
                 not grade_physical_reference(saved_reference,truth,measured)['ok']):
             raise ValueError('Recorded final independent reference evidence is missing or changed')

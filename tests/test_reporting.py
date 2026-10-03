@@ -185,6 +185,8 @@ class FreshReuseReportTests(unittest.TestCase):
         self.assertEqual(report['verdict'], 'passed')
         self.assertEqual(list(report['stages']), stages)
         self.assertEqual(report['attempt_limits'], {'max_model_repairs': 2})
+        from generative_driver.benchmark_support.evidence import public_v2_report
+        self.assertEqual(public_v2_report(report)['attempt_limits'], {'max_model_repairs': 2})
 
     def test_historical_completed_report_cannot_pass_as_six_gate_workflow(self):
         # Catches silently recasting historical measured successes or a partial gate list.

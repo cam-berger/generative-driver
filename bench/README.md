@@ -60,7 +60,7 @@ From connected Goose/Codex MCP, use `driver_benchmark_run` with `profile`, `exec
 
 ## What fresh reuse must establish
 
-The reuse worker receives the emitted package and its objective without the discovery conversation or workspace. It must call the package's published interface, perform the desired device operations and leave the device in the declared final state. Its own completion claim is checked against observed calls and effects. The evaluator then runs independent sealed final episodes against the frozen package. A successful mission and final behavior are both required.
+The reuse worker receives the emitted package and its objective without the discovery conversation or workspace. It must call the package's published interface, perform the desired device operations and leave the device in the declared final state. Its own completion claim is checked against observed calls and effects. For the calibrated V2 families, the evaluator then runs independent sealed final episodes against the frozen package; both the mission and final behavior must pass. Legacy TQ9 uses its recorded temperature, output and disarm checks. Physical BME280 compares the fresh measurement with an operator reference within supplied uncertainty.
 
 Diagnostic observations may inform up to two bounded model repairs before final grading. Host/operator faults stop for correction. Failed frozen final checks are terminal. Interrupted writes remain uncertain until explicitly reconciled. Unsupported saved workflow state is rejected; old measurements are never relabelled as current results.
 
@@ -113,7 +113,7 @@ Install `.[hardware,docs]`, the host USB driver and supported FTDI adapter descr
 python -m generative_driver benchmark run --case bme280 --executor codex --home "physical state" --password-file "/private/evaluator/bme280.password" --binding-json '{"url":"ftdi://SELECTED_ADAPTER/1"}' --approve-bound-device-tools
 ```
 
-At ground, provide fresh independent temperature, humidity and pressure observations with uncertainty bounds and an evidence path through `driver_respond` or `respond RUN_ID --observation reference.json`. Use Celsius, percent RH and pascals, and keep the reference instruments in the same stable environment. The reference is operator-owned; the candidate worker cannot provide its own answer key. Agreement is bounded by the supplied reference uncertainty. Fresh reuse checks the emitted package against the selected sensor; it is the final stage. No physical performance result is implied by installation or scripted tests.
+At ground, provide fresh independent temperature, humidity and pressure observations with uncertainty bounds and an evidence path through `driver_respond` or `respond RUN_ID --observation reference.json`. Use Celsius, percent RH and pascals, and keep the reference instruments in the same stable environment. The reference is operator-owned; the candidate worker cannot provide its own answer key. Agreement is bounded by the supplied reference uncertainty. Fresh reuse requires a current independent reference and checks the emitted package against the selected sensor; it is the final stage. No physical performance result is implied by installation or scripted tests.
 
 ## Metrics and comparisons
 
@@ -122,3 +122,9 @@ Reports retain six-stage attempts, accepted handoffs, independent verdicts, orig
 Overall success requires every declared stage, the fresh mission and final behavior. Preserve failed, blocked and unrun trials. Compare matching case/evaluator versions, stable inputs, execution mode, seeds, time policies and budgets. Multiple changed model/runtime/toolchain dimensions are labelled a combined-system comparison. Replay and native reference qualification are separate from model performance.
 
 Run repeated fresh IDs per configuration, retain individual outcomes, report success counts and uncertainty, and summarize time/usage with coverage. Current local qualification and its limits are recorded in [verification](../docs/verification.md). This repository's software and reference checks do not imply that the nine-trial model study has run.
+
+Exported physical reports omit private absolute paths. Preserve the saved `benchmark/reference-reuse-<attempt>.*` file with the report in evaluator-owned storage. Supply that file explicitly when scoring from any directory; its bytes must match the report's pinned digest, and the recorded measurement must remain within the reference time window. The handle changes only file resolution, never reference values or acceptance criteria.
+
+```bash
+python -m generative_driver benchmark score "reports/physical.json" --evidence "/private/evaluator/saved-reference.txt" --password-file "/private/evaluator/bme280.password"
+```

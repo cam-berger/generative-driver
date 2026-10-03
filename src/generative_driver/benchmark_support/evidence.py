@@ -57,7 +57,7 @@ def public_v2_report(payload: dict) -> dict:
     result['evaluator_verdicts'] = [_scalars(row, ('stage', 'assignment_id', 'revision', 'fault', 'final_evaluation', *COUNTS))
                                     for row in payload.get('evaluator_verdicts', [])]
     result['progress'] = _scalars(payload.get('progress', {}), ('revision', 'repairs', 'terminal_final_failure'))
-    result['attempt_limits'] = _scalars(payload.get('attempt_limits', {}), ('max_revisions',))
+    result['attempt_limits'] = _scalars(payload.get('attempt_limits', {}), ('max_model_repairs',))
     result['usage'] = _scalars(payload.get('usage', {}), USAGE)
     result['executed'] = _executed(payload.get('executed', {}))
     result['stages'] = {}

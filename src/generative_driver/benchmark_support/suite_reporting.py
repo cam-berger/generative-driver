@@ -65,6 +65,8 @@ def _experiment(value):
             elif key.endswith('_sha256'):
                 if item is not None and not _sha(item):raise ValueError('Invalid pin digest')
             elif item is not None and (not isinstance(item,str) or not item.strip()):raise ValueError('Invalid pin identity value')
+        from .registry import validate_public_workflow_identity
+        validate_public_workflow_identity(pin)
         if any(pin.get(k)!=entry[v] for k,v in (('case_id','case'),('scenario_id','scenario'),('case_seed','case_seed'))):raise ValueError('Entry pin mismatch')
         if any(pin.get(k)!=identity[k] for k in ('execution','evidence_track','scope')) or not pin.get('family'):raise ValueError('Mixed or missing pin scope')
         if any(not _sha(pin.get(k)) for k in ('manifest_sha256','truth_sha256','pin_sha256')) or not pin.get('case_version') or not pin.get('evaluator_version'):raise ValueError('Incomplete pin identity')
@@ -91,10 +93,10 @@ def _experiment(value):
         _number(override['budget_seconds'])
         if position<=prior or not original['child_budget_seconds']<override['budget_seconds']<=604800:raise ValueError('Invalid child budget override')
         prior=position
-    _exact(identity['intervention_policy'],('scoped_tool_approval','max_model_repairs','max_maintenance_cycles'))
+    _exact(identity['intervention_policy'],('scoped_tool_approval','max_model_repairs'))
     policy=identity['intervention_policy']
     if policy['scoped_tool_approval'] is not None and policy['scoped_tool_approval']!='emulator':raise ValueError('Invalid intervention approval')
-    for key in ('max_model_repairs','max_maintenance_cycles'):
+    for key in ('max_model_repairs',):
         if type(policy[key]) is not int or policy[key]<0:raise ValueError('Invalid intervention limit')
     dimensions=value['dimensions']
     dimension_fields=('runtime','model','provider','version','reasoning_effort','max_turns','skills_revision','toolchain_revision')
@@ -118,13 +120,9 @@ def _experiment(value):
         'budgets':{'original':{key:original[key] for key in ('child_budget_seconds','suite_budget_seconds')},
             'effective':{**{key:effective[key] for key in ('child_budget_seconds','suite_budget_seconds')},
                 'child_budget_overrides':[{'trial_key':row['trial_key'],'budget_seconds':row['budget_seconds']} for row in effective['child_budget_overrides']]}},
-        'intervention_policy':{key:policy[key] for key in ('scoped_tool_approval','max_model_repairs','max_maintenance_cycles')}},
+        'intervention_policy':{key:policy[key] for key in ('scoped_tool_approval','max_model_repairs')}},
         'dimensions':{key:dimensions[key] for key in dimension_fields if key in dimensions},
         'execution_snapshots':[{'trial_key':row['trial_key'],'snapshot_sha256':row['snapshot_sha256']} for row in value['execution_snapshots']]}
-
-def _maintenance_ok(value):
-    from .scenarios import maintenance_summary_ok
-    return maintenance_summary_ok(value)
 
 def _counts_ok(value):
     return (value.get('verdict')=='passed' and type(value.get('total')) is int and value['total']>0
@@ -133,11 +131,20 @@ def _counts_ok(value):
 def _report_success(report):
     if report.get('verdict')!='passed' or report.get('workflow_status')!='completed':return False
     stages=report.get('stages',{})
+    if set(stages) != set(STAGES):return False
     if any(stages.get(stage,{}).get('workflow_status')!='accepted' or stages.get(stage,{}).get('evaluator_status')!='passed' for stage in STAGES):return False
     if report.get('schema')=='benchmark-report/1':return report.get('case')=='tq9'
     gates=report.get('accepted_gates',[])
+    if any(gate.get('stage') not in STAGES for gate in gates):return False
+    finals=[row for row in report.get('evaluations',[]) if row.get('phase')=='final']
+    if len(finals)!=1 or not _counts_ok(finals[0]):return False
+    revision=finals[0].get('revision')
+    if type(revision) is not int or revision<0:return False
+    for stage in STAGES:
+        selected=[g for g in gates if g.get('stage')==stage and g.get('revision')==(0 if stage=='acquire' else revision)]
+        if len(selected)!=1 or not _counts_ok(selected[0]):return False
     return (all(any(gate.get('stage')==stage and _counts_ok(gate) for gate in gates) for stage in STAGES)
-        and _counts_ok(report.get('final_evaluation',{})) and _maintenance_ok(report.get('maintenance',{})))
+        and _counts_ok(report.get('final_evaluation',{})))
 
 def _validate_trials(manifest,trials,reports,experiment):
     expected=expand_trials(manifest);identity=experiment['comparison_identity']
@@ -205,18 +212,12 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
             'rate':sum(t[key]==value for t in passed)/sum(t[key]==value for t in trials)} for value in sorted({t[key] for t in trials})}
     first=sum(all(reports[t['run_id']]['stages'][stage].get('attempt_count')==1 for stage in STAGES) for t in passed)
     latencies=[r['elapsed_seconds'] for r in observed if r.get('elapsed_seconds') is not None]
-    control_trials=[t for t in trials if t['scenario']=='control']
-    control_measurements=[reports.get(t['run_id'],{}).get('maintenance',{}) for t in control_trials if t.get('run_id')]
-    controls=[m for m in control_measurements if m.get('evaluable') is True]
-    if any(type(m.get('false_alarm')) is not bool for m in controls):raise ValueError('Evaluable control requires false-alarm outcome')
-    alarms=sum(m['false_alarm'] for m in controls)
-    repairs=[r.get('repair_seconds') for r in observed if r.get('maintenance',{}).get('drift_observed') is True]
     public_trials=[]
     for trial in trials:
         report=reports.get(trial.get('run_id'),{})
         safe=public_v2_report(report)
         row={key:trial[key] for key in ('trial_key','ordinal','entry_index','repeat_index','case','family','scenario','case_seed','run_id','status','outcome_category')}
-        row.update({key:safe[key] for key in ('verdict','stages','maintenance','final_evaluation','elapsed_seconds','worker_seconds','tool_seconds','usage') if key in safe})
+        row.update({key:safe[key] for key in ('verdict','stages','final_evaluation','elapsed_seconds','worker_seconds','tool_seconds','usage') if key in safe})
         if row.get('verdict')=='passed' and trial not in passed:row['verdict']='unqualified'
         row['report_sha256']=_digest(_public_report(report)) if report else None
         row['interventions']=[{key:item[key] for key in ('event_id','kind','time','effect_resolution','scoped_tool_approval','old_budget_seconds','new_budget_seconds','extension_seconds','old_deadline','new_deadline','stage','uncertain_effect','has_observation')
@@ -226,14 +227,8 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
         stage_counts={stage:{'accepted':sum(r.get('stages',{}).get(stage,{}).get('workflow_status')=='accepted' for r in observed),
             'attempts':sum(r.get('stages',{}).get(stage,{}).get('attempt_count',0) for r in observed)} for stage in STAGES},
         first_attempt_success=first,repaired_success=len(passed)-first,
-        control_coverage={'planned':len(control_trials),'started':len(control_measurements),'evaluable':len(controls),
-            'unevaluable':sum(m.get('evaluable') is False for m in control_measurements),
-            'unknown':sum(type(m.get('evaluable')) is not bool for m in control_measurements),
-            'not_run':len(control_trials)-len(control_measurements)},
-        false_alarms={'count':alarms,'denominator':len(controls),'rate':alarms/len(controls) if controls else None},
         latency={'sample_count':len(latencies),'includes_failed_trials':any(r.get('verdict')!='passed' and r.get('elapsed_seconds') is not None for r in observed),
             'min':min(latencies) if latencies else None,'median':statistics.median(latencies) if latencies else None,'max':max(latencies) if latencies else None},
-        repair_seconds=sum(repairs) if repairs and all(v is not None for v in repairs) else None,
         tool_seconds=sum(r['tool_seconds'] for r in observed) if started and len(observed)==len(started) and all(r.get('tool_seconds') is not None for r in observed) else None)
     return result
 
@@ -313,39 +308,30 @@ def _recorded_success(owner,events,report):
         latest=accepted[-1];attempts=report.get('stages',{}).get(stage,{}).get('attempts',[])
         if not attempts or attempts[-1].get('assignment_id')!=latest['assignment_id'] or attempts[-1].get('accepted') is not True:return False
     if report.get('schema')=='benchmark-report/1':
-        if owner.get('case')!='tq9' or owner.get('case_pin',{}).get('evaluator_version')!='1':return False
+        if owner.get('case')!='tq9' or owner.get('case_pin',{}).get('evaluator_version')!='2':return False
         revision=handoffs[-1]['revision']
         for stage in STAGES:
             selected=[h for h in handoffs if h['stage']==stage and h['revision']==(0 if stage=='acquire' else revision)]
             if len(selected)!=1:return False
             def check_identity(rows):return [(row.get('name',row.get('id')),row.get('passed')) for row in rows]
             if check_identity(report['stages'][stage].get('checks',[]))!=check_identity(selected[0]['checks']):return False
-        return handoffs[-1]['stage']=='maintain' and not handoffs[-1].get('route')
+        return handoffs[-1]['stage']=='reuse' and not handoffs[-1].get('route')
     summary=owner.get('benchmark_summary',{})
-    if any(report.get(key)!=summary.get(key) for key in ('accepted_gates','evaluations','final_evaluation','maintenance')):return False
+    if any(report.get(key)!=summary.get(key) for key in ('accepted_gates','evaluations','final_evaluation')):return False
     if gates!=summary.get('accepted_gates') or not _sha(summary.get('final_evaluation',{}).get('evidence_sha256')):return False
     safe_verdicts=public_v2_report({'evaluator_verdicts':owner.get('evaluator_verdicts',[])})['evaluator_verdicts']
     if report.get('evaluator_verdicts',[])!=safe_verdicts:return False
     evaluations=summary.get('evaluations',[]);finals=[row for row in evaluations if row.get('phase')=='final']
-    if not finals or any(not _counts_ok(row) for row in finals):return False
+    if len(finals)!=1 or any(not _counts_ok(row) for row in finals):return False
     for final in finals:
         revision=final.get('revision');digest=final.get('frozen_artifact_sha256')
         for stage in STAGES:
-            if stage=='maintain':continue
             selected=[h for h in handoffs if h['stage']==stage and h['revision']==(0 if stage=='acquire' else revision)]
             if len(selected)!=1:return False
-            if stage in ('emit','reuse','maintain') and selected[0]['artifacts'][0]['sha256']!=digest:return False
-    maintenance=[h for h in handoffs if h['stage']=='maintain']
+            if stage in ('emit','reuse') and selected[0]['artifacts'][0]['sha256']!=digest:return False
     last=finals[-1]
-    if maintenance[-1]['revision']!=last['revision']:return False
-    for handoff in maintenance:
-        if not any(f['revision']==handoff['revision'] and f['frozen_artifact_sha256']==handoff['artifacts'][0]['sha256'] for f in finals):return False
-    if summary.get('maintenance',{}).get('drift_observed'):
-        if (len(maintenance)!=2 or maintenance[0].get('route')!='interpret'
-                or maintenance[0]['revision']>=maintenance[1]['revision']):return False
-    elif len(maintenance)!=1:return False
     if any(summary['final_evaluation'].get(key)!=last.get(key) for key in ('verdict','passed','total')):return False
-    if handoffs[-1]['stage']!='maintain' or handoffs[-1].get('route'):return False
+    if handoffs[-1]['stage']!='reuse' or handoffs[-1].get('route'):return False
     for evaluation in evaluations:
         phase=evaluation.get('phase');stage='probe' if phase=='diagnostic' else 'reuse' if phase=='final' else None
         matching=[h for h in handoffs if h['stage']==stage and h['revision']==evaluation.get('revision')]
@@ -366,7 +352,7 @@ def _recorded_success(owner,events,report):
             if not any(h['stage']==source and h['revision']==evaluation['revision'] and h['artifacts'][0]['sha256']==evaluation.get('frozen_artifact_sha256') for h in handoffs):return False
     for handoff in handoffs:
         if handoff['stage']=='emit' and not any(v.get('stage')=='emit' and v.get('assignment_id')==handoff['assignment_id'] and v.get('verdict')=='passed' for v in owner.get('evaluator_verdicts',[])):return False
-    return _maintenance_ok(summary.get('maintenance',{}))
+    return True
 
 
 def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_files=None):

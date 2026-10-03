@@ -1,11 +1,12 @@
 """Historical benchmark package execution, cleanup, and scoring."""
 import json
+import math
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-from ..benchmark import _read, case_root, score_observations, score_stimulus
+from ..benchmark import _read, case_root, score_observations
 
 
 def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=None,
@@ -83,6 +84,8 @@ def score(report, password_file=None):
     for key, expected in {'case_version':manifest['version'], 'evaluator_version':manifest['evaluator_version'], 'truth_sha256':manifest['truth']['sha256']}.items():
         if key in data and data[key] != expected:
             raise ValueError('Report '+key+' does not match installed case')
+    from .registry import validate_workflow_manifest
+    validate_workflow_manifest(manifest)
     from .emulator import truth_for_case
     truth = truth_for_case(case_root(), manifest, {'evaluator_password_file':password_file})
     state = data.get('case_state', {})
@@ -94,15 +97,21 @@ def score(report, password_file=None):
     observations = data.get('observations', state.get('probe_evaluation', {}).get('observations', {}))
     if case == 'bme280':
         grounding = state.get('physical_grounding', {})
-        observations = grounding.get('observations', {})
-        reference = grounding.get('reference', {}).get('reference', {})
+        observations = state.get('physical_final', {}).get('observations', {})
+        reference = state.get('physical_final', {}).get('reference', grounding.get('reference', {})).get('reference', {})
         if set(reference) != set(truth['max_tolerances']) or any(
                 type(v.get('absolute_tolerance')) not in (int,float) or not 0<v['absolute_tolerance']<=truth['max_tolerances'][k]
                 for k,v in reference.items()):
             raise ValueError('Recorded physical reference is incomplete or exceeds evaluator uncertainty limits')
+        final=state.get('physical_final', {})
+        measured=final.get('measurement_time')
+        observed_at=final.get('reference', {}).get('observed_at')
+        if (type(measured) not in (int,float) or type(observed_at) not in (int,float)
+                or not math.isfinite(measured) or not math.isfinite(observed_at)
+                or abs(measured-observed_at)>truth['max_reference_age_seconds']):
+            raise ValueError('Recorded final measurement lacks a current independent reference')
         contract = {'checks':[{'id':k,'expected':v['value'],'absolute_tolerance':v['absolute_tolerance']} for k,v in reference.items()]}
-        baseline_reference=grounding.get('reference',{}).get('baseline_reference',{})
-        grade = score_stimulus(baseline_reference, reference, observations) if truth.get('require_maintain_stimulus') else score_observations(contract, observations)
+        grade = score_observations(contract, observations)
     else:
         grade = score_observations(truth, observations) if truth.get('checks') else {'verdict':'unscored','checks':[]}
     stages = data.get('stages', state.get('stage_verdicts', {}))
@@ -112,8 +121,6 @@ def score(report, password_file=None):
         if data.get('workflow_status') != 'completed':
             missing.append('completed_workflow')
         missing.extend(s+'_accepted_handoff' for s in manifest['required_stages'] if stages.get(s, {}).get('workflow_status') != 'accepted')
-    if case == 'tq9' and not state.get('drift_detected'):
-        missing.append('observed_identity_drift')
     return {'schema':'benchmark-score/1','case':case,'execution':manifest['execution'],
             'model_benchmark':True,'verdict':'passed' if grade['verdict']=='passed' and not missing else 'failed',
             'behavior':grade,'missing_required_gates':missing,'truth_sha256':manifest['truth']['sha256'],

@@ -4,20 +4,20 @@ from suite_fixtures import pilot_manifest
 
 
 class ManifestTests(unittest.TestCase):
-    def test_repeat_slots_preserve_six_entries_and_three_families(self):
+    def test_repeat_slots_preserve_three_entries_and_three_families(self):
         from generative_driver.benchmark_support.suites import normalize_manifest, expand_trials
         manifest = normalize_manifest(pilot_manifest())
         slots = expand_trials(manifest)
-        self.assertEqual(len(slots), 18)
-        self.assertEqual([s['entry_index'] for s in slots[:6]], list(range(6)))
-        self.assertEqual([s['repeat_index'] for s in slots], [0]*6 + [1]*6 + [2]*6)
-        self.assertEqual(slots[6]['trial_key'], 'entry-000-repeat-001')
+        self.assertEqual(len(slots), 9)
+        self.assertEqual([s['entry_index'] for s in slots[:3]], list(range(3)))
+        self.assertEqual([s['repeat_index'] for s in slots], [0]*3 + [1]*3 + [2]*3)
+        self.assertEqual(slots[3]['trial_key'], 'entry-000-repeat-001')
         self.assertEqual(len({s['case'] for s in slots}), 3)
         self.assertEqual({s['case_seed'] for s in slots}, {0})
-        self.assertEqual([s['ordinal'] for s in slots], list(range(18)))
+        self.assertEqual([s['ordinal'] for s in slots], list(range(9)))
         changed = copy.deepcopy(manifest)
         changed['repetitions'] = 1
-        self.assertEqual(len(expand_trials(changed)), 6)
+        self.assertEqual(len(expand_trials(changed)), 3)
 
     def test_normalization_rejects_incomplete_unknown_and_blank_fields(self):
         from generative_driver.benchmark_support.suites import normalize_manifest
@@ -67,7 +67,7 @@ class ManifestTests(unittest.TestCase):
         normalized = normalize_manifest(original)
         self.assertEqual(normalized, original)
         normalized['entries'][0]['scenario'] = 'changed'
-        self.assertEqual(original['entries'][0]['scenario'], 'control')
+        self.assertEqual(original['entries'][0]['scenario'], 'original')
         slots = expand_trials(original)
         slots[0]['case_seed'] = 22
         self.assertEqual(slots[6]['case_seed'], -1)
@@ -80,10 +80,10 @@ class ManifestTests(unittest.TestCase):
         manifest = json.loads((case_root() / 'suites/development-pilot.json').read_text())
         self.assertEqual(manifest, pilot_manifest())
         slots = expand_trials(manifest)
-        self.assertEqual(len(slots), 18)
-        self.assertEqual(slots[-1], {'case': 'parameter-store-v1', 'scenario': 'control', 'case_seed': 0,
-                                    'ordinal': 17, 'entry_index': 5, 'repeat_index': 2,
-                                    'trial_key': 'entry-005-repeat-002'})
+        self.assertEqual(len(slots), 9)
+        self.assertEqual(slots[-1], {'case': 'parameter-store-v1', 'scenario': 'original', 'case_seed': 0,
+                                    'ordinal': 8, 'entry_index': 2, 'repeat_index': 2,
+                                    'trial_key': 'entry-002-repeat-002'})
 
 
 class FreezeTests(unittest.TestCase):
@@ -107,7 +107,7 @@ class FreezeTests(unittest.TestCase):
             self.assertFalse(home.exists())
         digest = hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
         self.assertEqual(frozen['manifest_sha256'], digest)
-        self.assertEqual(frozen['entry_pins'], [pin_case('tq9', 'identity', 0)])
+        self.assertEqual(frozen['entry_pins'], [pin_case('tq9', 'original', 0)])
         self.assertEqual(frozen['entry_effects'], [['write', 'actuate']])
         self.assertEqual(frozen['entry_pins'][0]['calibration'], {'status': 'legacy-not-required'})
         self.assertEqual(frozen['scope'], 'full-workflow')
@@ -129,7 +129,7 @@ class FreezeTests(unittest.TestCase):
             with patch.dict('os.environ', {'GENERATIVE_DRIVER_HOME': str(home)}):
                 for case in ('setup-smoke', 'bme280', 'unknown-case', 'tq9'):
                     manifest = pilot_manifest()
-                    manifest['entries'] = [{'case': case, 'scenario': 'control', 'case_seed': 0}]
+                    manifest['entries'] = [{'case': case, 'scenario': 'original', 'case_seed': 0}]
                     with self.subTest(case=case), self.assertRaises(ValueError):
                         freeze_suite(manifest, 'codex', {'command': ['scripted-runtime']}, {}, {})
             self.assertFalse(home.exists())
@@ -188,7 +188,7 @@ class FreezeTests(unittest.TestCase):
             root = Path(tmp)
             public_case_fixture(root)
             public_case_fixture(root, 'sampled-sensor-v1')
-            manifest = pilot_manifest(); manifest['entries'] = [manifest['entries'][0], manifest['entries'][3]]
+            manifest = pilot_manifest(); manifest['entries'] = [manifest['entries'][0], manifest['entries'][1]]
             manifest['entries'][1]['case_seed'] = 73
             config = {'command': ['scripted-contract-fixture'], 'model': 'toy-model'}
             options = {'renode': 'C:/Tools/renode.exe', 'ghidra_home': 'C:/Tools/Ghidra',
@@ -207,11 +207,11 @@ class FreezeTests(unittest.TestCase):
             self.assertEqual(child['scoped_tool_approval'], 'emulator')
             self.assertEqual(child['case_options'], {'renode': 'C:/Tools/renode.exe', 'ghidra_home': 'C:/Tools/Ghidra',
                 'java_home': 'C:/Tools/Java', 'evaluator_password_file': 'second.private',
-                'scenario_id': 'control', 'case_seed': 73})
+                'scenario_id': 'original', 'case_seed': 73})
             self.assertNotIn('first.private', str(child))
             self.assertNotIn('scenario', child['goal'])
             self.assertNotIn('development-pilot', child['goal'])
-            self.assertEqual(case_options(child)['scenario_id'], 'control')
+            self.assertEqual(case_options(child)['scenario_id'], 'original')
             self.assertEqual(case_options(child)['case_seed'], 73)
             child['executor_config']['command'].clear(); child['case_pin']['manifest'].clear()
             child['case_options'].clear()
@@ -224,7 +224,7 @@ class FreezeTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import freeze_suite, child_request
         frozen = freeze_suite(legacy_manifest(), 'codex', {'command': ['toy']}, {}, {})
         original = dict(frozen['trials'][0], child_request_id='suite-child-toy')
-        mutations = [lambda t: t.update(case='tq9-v2'), lambda t: t.update(scenario='control'),
+        mutations = [lambda t: t.update(case='tq9-v2'), lambda t: t.update(scenario='semantic'),
                      lambda t: t.update(case_seed=1), lambda t: t.update(entry_index=-1),
                      lambda t: t.update(entry_index=True), lambda t: t.update(ordinal=-1),
                      lambda t: t.update(repeat_index=True), lambda t: t.update(trial_key='other-slot'),

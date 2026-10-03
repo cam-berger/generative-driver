@@ -13,7 +13,7 @@ class TQ9V2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             prepared = prepare_stage('tq9-v2', 'acquire', root/'run', root/'worker',
-                options={'scenario_id': 'semantic', 'case_seed': 0,
+                options={'scenario_id': 'original', 'case_seed': 0,
                          'evaluator_password_file': '/private/never-copy'})
             self.assertEqual(len(prepared['inputs']), 1)
             binary = Path(prepared['inputs'][0])
@@ -90,13 +90,15 @@ class TQ9V2Tests(unittest.TestCase):
         from generative_driver.benchmark_support import tq9_v2
         from generative_driver.benchmark_support.behavior import validate_records
         truth = {'artifact_sha256': 'b'*64, 'contracts': {'units': {'temperature': 'degC', 'duty': 'fraction'},
-            'scenarios': {'semantic': {'temperature_vectors': [
+            'scenarios': {'original': {'temperature_vectors': [
                 {'stimulus': -7, 'expected': -7, 'absolute_tolerance': .1},
                 {'stimulus': 29, 'expected': 29, 'absolute_tolerance': .1}]}},
             'effect_vectors': [{'task': 'arm', 'inputs': {}},
                                {'task': 'set_duty', 'inputs': {'duty': .4}},
                                {'task': 'disarm', 'inputs': {}}]}}
-        pin = {'scenario_id': 'semantic', 'case_seed': 0, 'revision': 0}
+        definition = truth['contracts']['scenarios']['original']
+        definition['phases'] = {'final':dict(definition)}
+        pin = {'scenario_id': 'original', 'case_seed': 0, 'revision': 0}
         contract = tq9_v2.contract(pin, truth, 'final')
         plan = tq9_v2.build_plan(pin, truth, 'final')
         ids = [identifier for action in plan if action['kind'] == 'observe' for identifier in action['checks']]
@@ -121,13 +123,13 @@ class TQ9V2Tests(unittest.TestCase):
                 'effect_vectors': [{'task': 'arm', 'inputs': {}}] +
                     [{'task': 'set_duty', 'inputs': {'duty': v}} for v in duties] + [{'task': 'disarm', 'inputs': {}}]}
         truth = {'artifact_sha256': 'a'*64, 'contracts': {'units': {'temperature': 'degC', 'duty': 'permille'},
-            'scenarios': {'semantic': {**phases['final'], 'phases': phases}}, 'effect_vectors': phases['final']['effect_vectors']}}
-        plans = [tq9_v2.build_plan({'scenario_id': 'semantic'}, truth, phase) for phase in ('diagnostic', 'final')]
+            'scenarios': {'original': {**phases['final'], 'phases': phases}}, 'effect_vectors': phases['final']['effect_vectors']}}
+        plans = [tq9_v2.build_plan({'scenario_id': 'original'}, truth, phase) for phase in ('diagnostic', 'final')]
         values = [{a['values']['temperature'] for a in plan if a['kind'] == 'reset'} for plan in plans]
         targets = [{a['inputs']['duty'] for a in plan if a.get('task') == 'set_duty'} for plan in plans]
         for inventory in (*values, *targets): self.assertGreaterEqual(len(inventory), 3)
         self.assertFalse(values[0] & values[1]); self.assertFalse(targets[0] & targets[1])
-        contract = tq9_v2.contract({'scenario_id': 'semantic'}, truth, 'diagnostic')
+        contract = tq9_v2.contract({'scenario_id': 'original'}, truth, 'diagnostic')
         records = [{'id': c['id'], 'revision': 0, 'artifact_sha256': 'a'*64, 'unit': c['unit'],
             'channel': c['channel'], 'value': 31 if c['id'].endswith('/temperature') else c['expected']} for c in contract['checks']]
         self.assertEqual(validate_records(contract, records)['verdict'], 'failed')
@@ -146,20 +148,6 @@ class TQ9V2Tests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'accepted interpret'):
                 prepare_stage('tq9-v2', 'probe', root/'run', root/'worker')
 
-    def test_unknown_maintenance_claim_is_recorded_without_credit(self):
-        # Catches treating a valid unknown claim as malformed rather than unsuccessful.
-        from generative_driver.benchmark_support.scenarios import read_maintenance_claim, maintenance_decision
-        with tempfile.TemporaryDirectory() as temp:
-            ws = Path(temp)
-            path = ws/'maintenance.json'
-            path.write_text(json.dumps({'schema': 'benchmark-maintenance-claim/1', 'claim': 'unknown', 'evidence_ids': ['10']}))
-            report = {'status': 'completed', 'artifacts': [{'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}]}
-            claim = read_maintenance_claim(ws, report, 'assigned', [{'id': '10', 'assignment_id': 'assigned', 'actor': 'worker'}])
-            self.assertEqual(claim['claim'], 'unknown')
-            outcome = maintenance_decision(scenario='semantic', claim=claim['claim'],
-                diagnostic={'evaluable': True, 'contradiction': True, 'evidence_ids': ['evaluator-20']}, repaired=False)
-            self.assertFalse(outcome['ok'])
-            self.assertIsNone(outcome['route'])
 
     def test_cleanup_refuses_lost_native_ownership(self):
         # Catches PID-only termination or silently treating an attached process as owned.
@@ -176,9 +164,11 @@ class TQ9V2Tests(unittest.TestCase):
         # Catches omitting denied-effect checks or accepting a refusal after I/O.
         from generative_driver.benchmark_support import tq9_v2
         truth = {'artifact_sha256': 'b'*64, 'contracts': {'units': {'temperature': 'degC', 'duty': 'permille'},
-            'scenarios': {'semantic': {'temperature_vectors': [{'stimulus': 20, 'expected': 20, 'absolute_tolerance': .1}]}},
+            'scenarios': {'original': {'temperature_vectors': [{'stimulus': 20, 'expected': 20, 'absolute_tolerance': .1}]}},
             'effect_vectors': [{'task': 'arm', 'inputs': {}}, {'task': 'set_duty', 'inputs': {'duty': 400}}, {'task': 'disarm', 'inputs': {}}]}}
-        plan = tq9_v2.build_plan({'scenario_id': 'semantic'}, truth, 'final')
+        definition = truth['contracts']['scenarios']['original']
+        definition['phases'] = {'final':dict(definition)}
+        plan = tq9_v2.build_plan({'scenario_id': 'original'}, truth, 'final')
         denied = [a for a in plan if a['kind']=='call' and a['task']=='set_duty' and not a['grants']]
         self.assertEqual(len(denied), 1)
         result = {'ok': False, 'error': {'fault':'operator'}, 'transcript': [{'tx':'00'}]}
@@ -199,34 +189,18 @@ class TQ9V2Tests(unittest.TestCase):
                 else:
                     with self.assertRaises(RuntimeError): session.observe()
 
-    def test_control_scenario_can_be_pinned_without_evaluator_password(self):
+    def test_original_scenario_can_be_pinned_without_evaluator_password(self):
         # Catches omitting the unchanged-firmware environmental control from discovery.
         from generative_driver.benchmark_support.registry import pin_case
-        pin = pin_case('tq9-v2', 'control', 0)
-        self.assertEqual(pin['scenario_id'], 'control')
+        pin = pin_case('tq9-v2', 'original', 0)
+        self.assertEqual(pin['scenario_id'], 'original')
         self.assertNotIn('evaluator_password_file', pin)
 
-    def test_pending_scenario_blocks_before_any_new_native_launch(self):
-        # Catches replay of a crash-interrupted scenario during next preparation.
-        from generative_driver.benchmark_support.scenarios import ScenarioJournal
-        from generative_driver.configurator import digest
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            package = root/'accepted/package'; package.mkdir(parents=True)
-            (package/'manifest.json').write_text('{}')
-            caps = root/'accepted/capabilities.json'; caps.write_text('{}')
-            (root/'run/benchmark').mkdir(parents=True)
-            (root/'run/benchmark/state.json').write_text(json.dumps({'package_sha256':digest(package)}))
-            ScenarioJournal(root/'run/benchmark').begin('interrupted', 'a'*64)
-            accepted = [{'stage':'emit','artifacts':[{'path':str(package),'sha256':digest(package)}]},
-                        {'stage':'probe','artifacts':[{'path':str(caps),'sha256':digest(caps)}]}]
-            with self.assertRaisesRegex(RuntimeError, 'reconciliation'):
-                prepare_stage('tq9-v2','maintain',root/'run',root/'worker',accepted)
 
     def test_passed_manifest_label_cannot_bypass_calibration_admission(self):
         # Catches trusting a mutable public 'passed' label without authenticated evidence.
         from generative_driver.benchmark_support.registry import require_calibration, pin_case
-        pin = pin_case('tq9-v2','semantic',0)
+        pin = pin_case('tq9-v2','original',0)
         pin['calibration'] = {'status':'passed','evidence_sha256':'a'*64}
         with self.assertRaises(ValueError):
             require_calibration(pin, {'evaluator_password_file':'/does/not/exist'})
@@ -235,87 +209,67 @@ class TQ9V2Tests(unittest.TestCase):
         # Catches pinned seeds being ignored or dropping final coverage during variation.
         from generative_driver.benchmark_support import tq9_v2
         truth = {'artifact_sha256':'a'*64,'contracts':{'units':{'temperature':'degC','duty':'permille'},
-            'scenarios':{'semantic':{'temperature_vectors':[
+            'scenarios':{'original':{'temperature_vectors':[
                 {'stimulus':-7,'expected':-7,'absolute_tolerance':0},
                 {'stimulus':29,'expected':29,'absolute_tolerance':0}]}},
             'effect_vectors':[{'task':'arm','inputs':{}},{'task':'set_duty','inputs':{'duty':400}},{'task':'disarm','inputs':{}}]}}
-        a=tq9_v2.build_plan({'scenario_id':'semantic','case_seed':0},truth,'final')
-        b=tq9_v2.build_plan({'scenario_id':'semantic','case_seed':1},truth,'final')
+        definition = truth['contracts']['scenarios']['original']
+        definition['phases'] = {'final':dict(definition)}
+        a=tq9_v2.build_plan({'scenario_id':'original','case_seed':0},truth,'final')
+        b=tq9_v2.build_plan({'scenario_id':'original','case_seed':1},truth,'final')
         self.assertNotEqual([x['values'] for x in a if x['kind']=='reset'], [x['values'] for x in b if x['kind']=='reset'])
         self.assertEqual(sorted(i for x in a if x['kind']=='observe' for i in x['checks']),sorted(i for x in b if x['kind']=='observe' for i in x['checks']))
         self.assertEqual([x['task'] for x in a if x['kind']=='call' and x['task']!='temperature'],[x['task'] for x in b if x['kind']=='call' and x['task']!='temperature'])
 
-    def test_scripted_controller_seals_actual_acceptances_for_control_and_semantic(self):
-        # Catches sealing proposed paths, missing final maintenance, and bypassed worker reuse.
-        import copy, http.server, shutil, sys, threading, time
+    def test_scripted_controller_seals_six_acceptances_and_independent_final(self):
+        # Real TCP peer, external worker processes and emitted package; no inference/native qualification.
+        import http.server, sys, threading, time
         from unittest.mock import patch
         import generative_driver
-        from generative_driver.benchmark import case_root
         from generative_driver.benchmark_support.truth import seal, unlock
-        from generative_driver.configurator import Controller, digest
+        from generative_driver.configurator import Controller
         from tq9_workflow_fixture import Silicon, WORKER
-        for scenario, mode in (('control','normal'),('semantic','normal'),('control','unknown-retry'),('control','host-retry'),('control','hidden-wrong'),('control','monitor-missing'),('control','snapshot-next')):
-            with self.subTest(scenario=scenario,mode=mode), tempfile.TemporaryDirectory() as temp:
-                root=Path(temp); resources=root/'resources'; case=resources/'cases/tq9-v2';case.mkdir(parents=True)
-                manifest=json.loads((case_root()/'cases/tq9-v2/case.json').read_text())
-                for name, content in [('firmware.bin',b'original'),('firmware-semantic.bin',b'semantic'),('firmware-identity.bin',b'identity')]:
-                    (case/name).write_bytes(content);manifest['images'][name]=hashlib.sha256(content).hexdigest()
+        from suite_fixtures import public_case_fixture
+        for mode in ('normal','hidden-wrong','missing-mission','monitor-missing','snapshot-next'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
+                root=Path(temp); resources=root/'resources'
+                manifest=public_case_fixture(resources,calibration={'status':'pending'})
+                case=resources/'cases/tq9-v2'
                 password=root/'password';password.write_text('synthetic fixture credential')
                 recipe={'stimuli':{'temperature':{'minimum':-100,'maximum':100,'command':'temp {value}'}},
                     'observations':{'compare':{'command':'compare','width':32,'count':1},'reload':{'command':'reload','width':32,'count':1},
                         'temperature':{'kind':'scalar','command':'temperature','unit':'degC'}},'reset_commands':['reset']}
-                scenarios={name:{'base_image':'firmware.bin','next_image':'firmware-semantic.bin' if name=='semantic' else 'firmware.bin',
-                    'temperature_vectors':[{'stimulus':-7,'expected':-7,'absolute_tolerance':.01},{'stimulus':29,'expected':29,'absolute_tolerance':.01}]}
-                    for name in ('semantic','control','identity')}
-                truth={'private_sentinel':'EVALUATOR SENTINEL','images':manifest['images'],'recipe':recipe,'contracts':{
-                    'units':{'temperature':'degC','duty':'permille'},'scenarios':scenarios,
-                    'effect_vectors':[{'task':'arm','inputs':{}},{'task':'set_duty','inputs':{'duty':400}},{'task':'disarm','inputs':{}}],
-                    'time_policy':{'sample_settle_seconds':0}}}
-                for definition in scenarios.values():
-                    definition['phases'] = {'diagnostic': {
-                        'temperature_vectors': [{'stimulus': v, 'expected': v, 'absolute_tolerance': .01} for v in (-8, 0, 31)],
-                        'effect_vectors': [{'task':'arm','inputs':{}}] + [{'task':'set_duty','inputs':{'duty':v}} for v in (0,450,1000)] + [{'task':'disarm','inputs':{}}]}}
+                effects=[{'task':'arm','inputs':{}},{'task':'set_duty','inputs':{'duty':400}},{'task':'disarm','inputs':{}}]
+                phases={'diagnostic':{'temperature_vectors':[{'stimulus':v,'expected':v,'absolute_tolerance':.01} for v in (-8,0,31)],
+                    'effect_vectors':[{'task':'arm','inputs':{}}]+[{'task':'set_duty','inputs':{'duty':v}} for v in (0,450,1000)]+[{'task':'disarm','inputs':{}}]},
+                    'final':{'temperature_vectors':[{'stimulus':v,'expected':v,'absolute_tolerance':.01} for v in (-7,29)],'effect_vectors':effects}}
+                truth={'private_sentinel':'EVALUATOR SENTINEL','images':manifest['images'],'recipe':recipe,
+                    'contracts':{'units':{'temperature':'degC','duty':'permille'},'scenarios':{'original':{'phases':phases}},
+                                 'time_policy':{'sample_settle_seconds':0}}}
                 manifest['truth']['sha256']=seal(truth,resources/manifest['truth']['path'],password.read_text())
-                manifest['calibration']={'status':'pending'}
                 (case/'case.json').write_text(json.dumps(manifest))
-                controller=Controller(root/'home'); peers=[]; worker_live=[]
+                controller=Controller(root/'home');peers=[];worker_live=[]
                 class Handler(http.server.BaseHTTPRequestHandler):
                     def do_POST(self):
                         request=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                         try:
-                            before=len(peers[-1].commands) if peers else 0
                             response=controller.call(request['method'],request['params'])
                             if request['params'].get('name') in ('interface_execute','probe_run'):
-                                worker_live.append((request['params']['name'],response.get('ok'),peers[-1].running,peers[-1].commands[before:]))
-                                if mode == 'monitor-missing' and request['params']['name'] == 'probe_run':
-                                    peers[-1].monitor_available = False
-                        except Exception as error: response={'fixture_error':str(error)}
+                                worker_live.append((request['params']['name'],response.get('ok'),peers[-1].running))
+                                if mode=='monitor-missing' and request['params']['name']=='probe_run':peers[-1].monitor_available=False
+                        except Exception as error:response={'fixture_error':str(error)}
                         body=json.dumps(response).encode();self.send_response(200);self.end_headers();self.wfile.write(body)
                     def log_message(self,*args):pass
                 server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
                 threading.Thread(target=server.serve_forever,daemon=True).start()
                 script=root/'scripted_worker.py'
-                script.write_text(WORKER.replace('PACKAGE_PARENT',repr(str(Path(generative_driver.__file__).resolve().parents[1])))
-                    .replace('FIXTURE_PARENT',repr(str(Path(__file__).parent))).replace('SERVICE_URL',repr('http://127.0.0.1:'+str(server.server_port))))
-                if mode == 'unknown-retry':
-                    source = script.read_text()
-                    source = source.replace("        pathlib.Path('maintenance.json').write_text",
-                        "        if not pathlib.Path(" + repr(str(root/'unknown-claimed')) + ").exists():\n" +
-                        "            claim['claim']='unknown';pathlib.Path(" + repr(str(root/'unknown-claimed')) + ").touch()\n" +
-                        "        pathlib.Path('maintenance.json').write_text")
-                    script.write_text(source)
-                from generative_driver.benchmark_support.emulated_evidence import maintenance_observation
-                observations = []
-                def observed_maintenance(*args, **kwargs):
-                    value = maintenance_observation(*args, **kwargs)
-                    if mode == 'host-retry' and not observations:
-                        value = dict(value, evaluable=False, fault='host')
-                    observations.append(value)
-                    return value
+                source=WORKER.replace('PACKAGE_PARENT',repr(str(Path(generative_driver.__file__).resolve().parents[1])))\
+                    .replace('FIXTURE_PARENT',repr(str(Path(__file__).parent))).replace('SERVICE_URL',repr('http://127.0.0.1:'+str(server.server_port)))
+                if mode=='missing-mission':source=source.replace("('set_duty',{'duty':370}),",'')
+                script.write_text(source)
                 def native_start(**kwargs):
-                    peer=Silicon(kwargs['image']);peers.append(peer)
-                    peer.wrong_hidden = mode == 'hidden-wrong'
-                    peer.monitor_available = True
+                    self.assertEqual(Path(kwargs['image']).name,'firmware.bin')
+                    peer=Silicon(kwargs['image']);peers.append(peer);peer.wrong_hidden=mode=='hidden-wrong'
                     return peer.session(kwargs['recipe'],root/('native-'+str(len(peers))))
                 original_accept=controller._accept
                 def accept(*args,**kwargs):
@@ -324,118 +278,61 @@ class TQ9V2Tests(unittest.TestCase):
                         (root/'home/runs'/args[0]/'benchmark/inputs/firmware.bin').write_bytes(b'tampered after acceptance')
                     return handoff
                 try:
-                    with patch.object(controller,'_accept',side_effect=accept), patch('generative_driver.benchmark.case_root',return_value=resources), \
-                         patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True}), \
-                         patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=native_start), \
-                         patch('generative_driver.benchmark_support.emulated_evidence.maintenance_observation',side_effect=observed_maintenance):
+                    with patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
+                         patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True}),\
+                         patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=native_start):
                         run=controller.start({'goal':'scripted-contract-fixture','case':'tq9-v2','budget_seconds':60,
-                            'effects':['write','actuate'],'case_options':{'scenario_id':scenario,'evaluator_password_file':str(password),'renode':'synthetic TCP fixture'},
+                            'effects':['write','actuate'],'case_options':{'scenario_id':'original','evaluator_password_file':str(password)},
                             'executor_config':{'command':[sys.executable,str(script)]}})
                         deadline=time.monotonic()+60
-                        recovered=False
                         while True:
                             status=controller.call('status',run)
-                            if status['status'] in ('completed','failed','blocked','cancelled') and not status['stopping']:
-                                if mode in ('unknown-retry','host-retry') and not recovered:
-                                    self.assertEqual(status['status'],'blocked',status)
-                                    self.assertEqual(status['outcome_category'],'unknown')
-                                    if mode == 'host-retry':
-                                        self.assertTrue(status['uncertain_effect'])
-                                        with self.assertRaisesRegex(ValueError,'uncertain'):controller.call('resume',run)
-                                        self.assertEqual(peers[-1].duty,0)
-                                        controller.call('respond',{**run,'observation':{'source':'scripted independent peer',
-                                            'effect_resolution':'confirmed_safe','evidence':'Toy peer duty is zero after disarm'}})
-                                    controller.call('resume',run);recovered=True
-                                    continue
-                                break
+                            if status['status'] in ('completed','failed','blocked','cancelled') and not status['stopping']:break
                             if time.monotonic()>deadline:self.fail('Scripted controller deadline: '+str(status))
-                            time.sleep(.03)
-                        if mode not in ('normal','unknown-retry','host-retry'):
-                            self.assertEqual(status['status'],'failed',status)
-                            result=controller.call('result',run)
-                            assigned=[e['data'] for e in controller.call('events',run)['events'] if e['kind']=='stage.assigned']
-                            self.assertEqual(result['progress']['maintenance_cycles'],0)
-                            if mode=='hidden-wrong':
-                                self.assertEqual([a['stage'] for a in assigned],['acquire','interpret','probe','ground','emit','reuse'])
-                                self.assertTrue(result['progress']['terminal_final_failure'])
-                                with self.assertRaisesRegex(ValueError,'final'):controller.call('resume',run)
-                                sidecar=root/'home/runs'/run['run_id']/'benchmark/run-evidence.enc'
-                                self.assertTrue(sidecar.exists())
-                            elif mode=='monitor-missing':
-                                self.assertTrue(status['uncertain_effect'])
-                                self.assertNotIn('maintain',[a['stage'] for a in assigned])
-                            else:
-                                self.assertEqual([a['stage'] for a in assigned],['acquire'])
-                                self.assertIn('Snapshot input',status['reason'])
-                            continue
-                        self.assertEqual(status['status'],'completed',{'status':status,'progress':controller.call('result',run).get('progress')})
-                        result=controller.call('result',run);accepted=result['accepted_handoffs']
-                        self.assertEqual(result['progress']['maintenance_cycles'],int(scenario=='semantic'))
-                        self.assertEqual({a['stage'] for a in accepted},{'acquire','interpret','probe','ground','emit','reuse','maintain'})
-                        self.assertTrue(worker_live)
-                        self.assertEqual([row[:2] for row in worker_live[:3]],
-                            [('interface_execute',False),('interface_execute',True),('probe_run',True)])
-                        self.assertTrue(all(not running and commands == ['start','pause'] for _,_,running,commands in worker_live))
-                        self.assertFalse(any(peer.paused_requests for peer in peers))
-                        events=controller.call('events',run)['events']
-                        live_events=[e for e in events if e['kind']=='tool.finished' and e['data'].get('name') in ('interface_execute','probe_run')]
-                        self.assertEqual(len(live_events),len(worker_live))
-                        self.assertTrue(all(e['data']['actor']=='worker' for e in live_events))
+                            time.sleep(.01)
+                        result=controller.call('result',run);events=controller.call('events',run)['events']
                         assignments=[e['data'] for e in events if e['kind']=='stage.assigned']
                         self.assertNotIn('EVALUATOR SENTINEL',json.dumps(assignments))
-                        reuse=[a for a in assignments if a['stage']=='reuse']
-                        self.assertTrue(all(len(a['inputs'])==1 for a in reuse))
-                        self.assertEqual(len({a['workspace'] for a in reuse}),len(reuse))
-                        run_dir=root/'home/runs'/run['run_id']
-                        state=json.loads((run_dir/'benchmark/state.json').read_text())
+                        self.assertNotIn('maintain',[a['stage'] for a in assignments])
+                        self.assertNotIn('maintenance_cycles',result['progress'])
+                        if mode!='normal':
+                            self.assertNotEqual(status['status'],'completed')
+                            if mode=='hidden-wrong':
+                                self.assertTrue(result['progress']['terminal_final_failure'])
+                                with self.assertRaisesRegex(ValueError,'final'):controller.call('resume',run)
+                            if mode=='monitor-missing':self.assertEqual(status['outcome_category'],'host')
+                            if mode=='snapshot-next':
+                                self.assertIn('hash',status['reason']);self.assertEqual(len(assignments),1);self.assertFalse(peers)
+                            continue
+                        self.assertEqual(status['status'],'completed',result)
+                        self.assertEqual([a['stage'] for a in assignments],['acquire','interpret','probe','ground','emit','reuse'])
+                        self.assertEqual(len(peers),1)
+                        self.assertEqual([entry[1] for entry in worker_live],[False,True,True])
+                        self.assertTrue(all(not entry[2] for entry in worker_live));self.assertFalse(peers[0].paused_requests)
+                        reuse=assignments[-1];self.assertEqual(len(reuse['inputs']),1)
+                        self.assertEqual(Path(next(iter(reuse['inputs']))).name,'package')
+                        run_dir=root/'home/runs'/run['run_id'];state=json.loads((run_dir/'benchmark/state.json').read_text())
                         sidecar=run_dir/'benchmark/run-evidence.enc'
                         sealed=unlock(sidecar,password.read_text(),state['final_evaluation']['evidence_sha256'])
-                        self.assertEqual(len(sealed['accepted_gates']),len(accepted))
+                        self.assertEqual(len(sealed['accepted_gates']),6);self.assertEqual(sealed['accepted_gates'][-1]['stage'],'reuse')
                         self.assertTrue(all('/accepted/' in a['path'] for a in sealed['accepted_artifacts']))
-                        self.assertEqual(sealed['accepted_gates'][-1]['stage'],'maintain')
-                        self.assertEqual(state['maintenance']['drift_claimed'],scenario=='semantic')
-                        self.assertEqual(state['maintenance']['drift_observed'],scenario=='semantic')
-                        from generative_driver.benchmark_support.evidence import public_v2_report
-                        from generative_driver.benchmark import score
-                        public=public_v2_report({**sealed,'snapshot_sha256':sealed['execution_snapshot']['snapshot_sha256'],
-                            'executed':sealed['execution_snapshot']['executed'],'final_evaluation':state['final_evaluation']})
-                        self.assertEqual(score(public,password,evidence_path=sidecar)['verdict'],'passed')
+                        self.assertNotIn('maintenance',sealed)
                         from generative_driver.reporting import report_run
                         from generative_driver.benchmark_support.suite_reporting import _recorded_success
+                        from generative_driver.benchmark import score
                         with patch('generative_driver.client.call',side_effect=lambda method,params,**kw:controller.call(method,params)):
-                            actual_report=report_run(run['run_id'],home=root/'home')
-                        self.assertTrue(_recorded_success(result,events,actual_report))
-                        authenticated=score(actual_report,password,evidence_path=sidecar)
-                        self.assertEqual(authenticated['verdict'],'passed')
-                        self.assertEqual(authenticated['maintenance'],actual_report['maintenance'])
-                        if mode in ('unknown-retry','host-retry'):
-                            self.assertTrue(recovered)
-                            self.assertEqual(len(sealed['maintenance']['attempts']),2)
-                            self.assertEqual(actual_report['stages']['maintain']['attempt_count'],2)
-                            self.assertEqual([a['accepted'] for a in actual_report['stages']['maintain']['attempts']],[False,True])
-                            self.assertGreaterEqual(actual_report['stages']['maintain']['worker_seconds'],0)
-                            self.assertFalse(actual_report['maintenance']['repair_completed'])
-                            self.assertFalse(actual_report['maintenance']['requalified'])
-
-                        from generative_driver.benchmark_support.registry import adapter_for
-                        adapter=adapter_for('tq9-v2')
-                        with self.assertRaisesRegex(ValueError,'evidence'):
-                            adapter.score(public,password)
-                        self.assertEqual(adapter.score(public,password,evidence_path=sidecar)['verdict'],'passed')
-                        if scenario == 'control':
-                            # A resumed partial run must reseal newly accepted handoffs.
-                            from generative_driver.benchmark_support.emulated_evidence import finalize
-                            options={'evaluator_password_file':str(password)}
-                            for handoffs in (accepted[:1], accepted):
-                                finalize('tq9-v2',run_dir,handoffs,options)
-                                latest=json.loads((run_dir/'benchmark/state.json').read_text())
-                                updated=unlock(sidecar,password.read_text(),latest['final_evaluation']['evidence_sha256'])
-                                self.assertEqual(len(updated['accepted_gates']),len(handoffs))
-                        initial=sealed['maintenance']['initial']
-                        self.assertTrue(set(initial['worker_evidence_ids']).isdisjoint(initial['diagnostic']['evidence_ids']))
+                            report=report_run(run['run_id'],home=root/'home')
+                        self.assertTrue(_recorded_success(result,events,report))
+                        self.assertEqual(score(report,password,evidence_path=sidecar)['verdict'],'passed')
+                        self.assertNotIn('maintenance',report)
                         self.assertTrue(any(e['kind']=='tool.finished' and e['data'].get('actor')=='evaluator' for e in events))
-                        with self.assertRaisesRegex(ValueError, 'inactive'):
-                            controller.call('tools',{**run,'assignment_id':assignments[0]['id']})
+                        with self.assertRaisesRegex(ValueError,'inactive'):controller.call('tools',{**run,'assignment_id':assignments[0]['id']})
+                        from generative_driver.benchmark_support.emulated_evidence import finalize
+                        for handoffs in (result['accepted_handoffs'][:1],result['accepted_handoffs']):
+                            finalize('tq9-v2',run_dir,handoffs,{'evaluator_password_file':str(password)})
+                            latest=json.loads((run_dir/'benchmark/state.json').read_text())
+                            updated=unlock(sidecar,password.read_text(),latest['final_evaluation']['evidence_sha256'])
+                            self.assertEqual(len(updated['accepted_gates']),len(handoffs))
                 finally:
                     controller.close();server.shutdown();server.server_close()
                     for peer in peers:
@@ -525,7 +422,7 @@ class TQ9V2Tests(unittest.TestCase):
         from generative_driver.benchmark_support.emulated import reference_execute
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaisesRegex(ValueError,'structurally valid'):
-                reference_execute({}, {}, {'schema':'invalid'}, {}, renode='/absent',image='/absent',output_dir=Path(temp))
+                reference_execute({'scenario_id':'original'}, {}, {'schema':'invalid'}, {}, renode='/absent',image='/absent',output_dir=Path(temp))
 
     def test_action_host_failure_cannot_be_a_behavioral_rejection(self):
         # Synthetic runtime fault: an unavailable channel cannot reject a mutant.
@@ -552,7 +449,7 @@ class TQ9V2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);password=root/'password';password.write_text('fixture')
             options={'evaluator_password_file':str(password)}
-            _private(root,options,{'evaluations':[{'phase':'final','revision':0}],'maintenance':{}})
+            _private(root,options,{'evaluations':[{'phase':'final','revision':0}]})
             with patch('generative_driver.benchmark_support.emulated._session',side_effect=AssertionError('device accessed')):
                 with self.assertRaisesRegex(ValueError,'cannot be replayed'):
                     _final('tq9-v2',root,root/'absent',{},options)
@@ -667,7 +564,7 @@ class TQ9V2Tests(unittest.TestCase):
         for grants in (None, ['read'], ['write'], ['actuate']):
             with self.subTest(grants=grants), tempfile.TemporaryDirectory() as temp:
                 controller=Controller(Path(temp)/'home')
-                spec={'goal':'scripted no-effects fixture','case':'tq9-v2','case_options':{'scenario_id':'control'},
+                spec={'goal':'scripted no-effects fixture','case':'tq9-v2','case_options':{'scenario_id':'original'},
                       'executor_config':{'command':[sys.executable,'-c','raise SystemExit(0)']}}
                 if grants is not None:spec['effects']=grants
                 try:

@@ -69,3 +69,96 @@ class PhysicalPrerequisitesTests(unittest.TestCase):
                 'ok':True,'values':{'t':21.5,'h':40,'p':101325}})+'\n')
             checked=check_stage('bme280','reuse',root/'run',root/'worker',{'status':'completed'})
             self.assertFalse(checked['ok'])
+
+    def reference_fixture(self, root, age=0):
+        import hashlib,json,time
+        from generative_driver.benchmark_support.truth import seal
+        resources=root/'resources';case=resources/'cases/bme280';case.mkdir(parents=True)
+        password=root/'password';password.write_text('public toy fixture password')
+        truth={'max_reference_age_seconds':60,'max_tolerances':{'temperature':.2,'humidity':1,'pressure':10}}
+        encrypted=resources/'groundtruth/bme280.enc'
+        digest=seal(truth,encrypted,password.read_text())
+        (case/'case.json').write_text(json.dumps({'schema':'benchmark-case/1','id':'bme280','version':'3','evaluator_version':'3',
+            'execution':'actual-agent-physical','scenarios':['original'],
+            'required_stages':['acquire','interpret','probe','ground','emit','reuse'],
+            'truth':{'path':'groundtruth/bme280.enc','sha256':digest}}))
+        evidence=root/'reference.txt';evidence.write_text('Scripted independent reference; no physical observation claimed.')
+        observed={'stage':'ground','channel':'scripted independent meter','observed_at':time.time()-age,
+            'evidence_path':str(evidence),'evidence_sha256':hashlib.sha256(evidence.read_bytes()).hexdigest(),
+            'reference':{'temperature':{'value':21.5,'absolute_tolerance':.2},'humidity':{'value':40,'absolute_tolerance':1},
+                         'pressure':{'value':101325,'absolute_tolerance':10}}}
+        return resources,observed,{'evaluator_password_file':str(password)}
+
+    def test_fresh_measurement_must_match_independent_reference(self):
+        import json
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.physical import check_stage
+        for temperature, expected in ((21.5, True), (999, False)):
+            with self.subTest(temperature=temperature), tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);bench=root/'benchmark';bench.mkdir()
+                resources,observed,options=self.reference_fixture(root)
+                (bench/'state.json').write_text(json.dumps({'capabilities':{'temperature':'t','humidity':'h','pressure':'p'},
+                    'package_attempts':{'reuse':'current'},'physical_grounding':{'reference':observed}}))
+                (bench/'physical-package-events.jsonl').write_text(json.dumps({'stage':'reuse','attempt_id':'current',
+                    'ok':True,'values':{'t':temperature,'h':40,'p':101325}})+'\n')
+                with patch('generative_driver.benchmark.case_root',return_value=resources):
+                    checked=check_stage('bme280','reuse',root,root/'worker',{'status':'completed'},options=options)
+                self.assertEqual(checked['ok'],expected)
+
+    def test_stale_reference_blocks_reuse_until_a_new_independent_reference_arrives(self):
+        import json
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.physical import prepare_stage
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);bench=root/'benchmark';bench.mkdir()
+            resources,observed,options=self.reference_fixture(root,age=120)
+            (bench/'state.json').write_text(json.dumps({'physical_grounding':{'reference':observed}}))
+            options.update(binding={'url':'ftdi://scripted/1'},configured_effects=['write'])
+            with patch('generative_driver.benchmark.case_root',return_value=resources):
+                prepared=prepare_stage('bme280','reuse',root,root/'worker',options=options)
+            self.assertIn('blocked',prepared)
+            self.assertIn('driver_respond',prepared['blocked'])
+            import time
+            emitted=root/'emitted';emitted.mkdir();(emitted/'manifest.json').write_text('{}')
+            (bench/'state.json').write_text(json.dumps({'package_dir':str(emitted),'physical_grounding':{'reference':observed}}))
+            options['operator_observations']=[dict(observed,stage='reuse',observed_at=time.time())]
+            with patch('generative_driver.benchmark.case_root',return_value=resources):
+                prepared=prepare_stage('bme280','reuse',root,root/'fresh-worker',options=options)
+            self.assertNotIn('blocked',prepared)
+            self.assertEqual(len(prepared['inputs']),1)
+            self.assertEqual(Path(prepared['inputs'][0]).name,'package')
+
+    def test_stale_reference_cannot_grade_finite_final_values(self):
+        import json
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.physical import check_stage
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);bench=root/'benchmark';bench.mkdir()
+            resources,observed,options=self.reference_fixture(root,age=120)
+            (bench/'state.json').write_text(json.dumps({'capabilities':{'temperature':'t','humidity':'h','pressure':'p'},
+                'package_attempts':{'reuse':'current'},'physical_grounding':{'reference':observed}}))
+            (bench/'physical-package-events.jsonl').write_text(json.dumps({'stage':'reuse','attempt_id':'current','ok':True,
+                'values':{'t':21.5,'h':40,'p':101325}})+'\n')
+            with patch('generative_driver.benchmark.case_root',return_value=resources):
+                checked=check_stage('bme280','reuse',root,root/'worker',{'status':'completed'},options=options)
+            self.assertFalse(checked['ok'])
+            self.assertEqual(checked['fault'],'operator')
+
+    def test_offline_physical_grade_rechecks_final_values_and_measurement_reference_age(self):
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.legacy import score
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);resources,observed,options=self.reference_fixture(root)
+            report={'schema':'benchmark-report/1','case':'bme280','case_version':'3','evaluator_version':'3',
+                'workflow_status':'completed','stages':{s:{'workflow_status':'accepted','evaluator_status':'passed'}
+                    for s in ('acquire','interpret','probe','ground','emit','reuse')},
+                'case_state':{'physical_final':{'reference':observed,'measurement_time':observed['observed_at'],
+                    'observations':{'temperature':21.5,'humidity':40,'pressure':101325}}}}
+            with patch('generative_driver.benchmark_support.legacy.case_root',return_value=resources):
+                self.assertEqual(score(report,options['evaluator_password_file'])['verdict'],'passed')
+                report['case_state']['physical_final']['observations']['temperature']=999
+                self.assertEqual(score(report,options['evaluator_password_file'])['verdict'],'failed')
+                report['case_state']['physical_final']['observations']['temperature']=21.5
+                report['case_state']['physical_final']['measurement_time']=observed['observed_at']+120
+                with self.assertRaisesRegex(ValueError,'reference'):
+                    score(report,options['evaluator_password_file'])

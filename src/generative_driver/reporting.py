@@ -111,11 +111,12 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
         reason = "Unsupported historical stage inventory; this report cannot be scored as a fresh reuse workflow"
     execution = case_manifest.get("execution", "unclassified")
     evidence = {"stage_verdicts": verdicts,
-                "probe_evaluation": {"observations": case_state.get("probe_evaluation", {}).get("observations", {})},
-                "drift_detected": case_state.get("drift_detected", False)}
+                "probe_evaluation": {"observations": case_state.get("probe_evaluation", {}).get("observations", {})}}
     if "physical_grounding" in case_state:
         evidence["physical_grounding"] = {k: v for k, v in case_state["physical_grounding"].items()
                                          if k in {"observations", "reference", "physical", "score"}}
+    if 'physical_final' in case_state:
+        evidence['physical_final'] = {k: v for k, v in case_state['physical_final'].items() if k in {'observations', 'score', 'reference', 'measurement_time'}}
     return {"schema": "benchmark-report/1", "run_id": result["run_id"],
             "case": case_manifest.get("id"), "case_version": case_manifest.get("version"),
             "evaluator_version": case_manifest.get("evaluator_version"), "seed": 0,

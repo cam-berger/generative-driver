@@ -31,7 +31,7 @@ class ReportTests(unittest.TestCase):
                  "physical_grounding": {"observations": {"temperature_c": 22.3}, "physical": True}}
         report = summarize(result, [], case_state=state)
         self.assertEqual(report["case_state"]["probe_evaluation"]["observations"], {"temperature": 22.3})
-        self.assertTrue(report["case_state"]["drift_detected"])
+        self.assertNotIn("drift_detected", report["case_state"])
         self.assertEqual(report["case_state"]["physical_grounding"], state["physical_grounding"])
         self.assertNotIn("excluded", json.dumps(report))
 

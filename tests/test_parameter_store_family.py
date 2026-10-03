@@ -6,7 +6,6 @@ from pathlib import Path
 from generative_driver.benchmark_support import parameter_store
 from generative_driver.benchmark_support.behavior import validate_records
 from generative_driver.benchmark_support.emulated_actions import execute_plan
-from generative_driver.benchmark_support.scenarios import maintenance_decision
 from interface_runtime.engine import execute, validate_model
 from benchmark_family_fixtures import FourCellStoreDevice, records_for, toy_store_model_four_cell
 
@@ -111,8 +110,8 @@ class ParameterStoreOracleTests(unittest.TestCase):
                  "actions": [{"kind": "observe", "checks": ["toy/state/generation"]}]}
         truth = {"family": "parameter-store", "artifact_sha256": "b" * 64,
                  "phases": {"diagnostic": phase},
-                 "scenario_phases": {"control": {"diagnostic": phase}}}
-        pin = {"family": "parameter-store", "scenario_id": "control", "revision": 4}
+                 "phases": {"diagnostic": phase}}
+        pin = {"family": "parameter-store", "scenario_id": "original", "revision": 4}
         contract = parameter_store.contract(pin, truth, "diagnostic")
         self.assertEqual(contract["artifact_sha256"], "b" * 64)
         self.assertEqual(contract["checks"][0]["revision"], 4)
@@ -209,20 +208,6 @@ class ParameterStoreOracleTests(unittest.TestCase):
         self.assertEqual(next(row["reason"] for row in grade["checks"]
                               if row["id"].endswith("/value")), "unit mismatch")
 
-    def test_unchanged_control_is_not_false_alarm(self):
-        device = FourCellStoreDevice(list(range(8)))
-        observed = parameter_store.observations(device.observe(), {"ok": True}, {})
-        self.assertEqual(observed["generation"], 0)
-        diagnostic = {"evaluable": True, "fault": None, "contradiction": False,
-                      "evidence_ids": ["control/read"], "fresh_reuse_passed": True}
-        control = maintenance_decision(scenario="control", claim="unchanged",
-                                       diagnostic=diagnostic, repaired=False)
-        self.assertTrue(control["ok"])
-        self.assertFalse(control["maintenance"]["false_alarm"])
-        alarm = maintenance_decision(scenario="control", claim="drift",
-                                     diagnostic=diagnostic, repaired=False)
-        self.assertFalse(alarm["ok"])
-        self.assertTrue(alarm["maintenance"]["false_alarm"])
 
 
 if __name__ == "__main__":

@@ -2,8 +2,6 @@
 from pathlib import Path
 
 
-MAINTENANCE_FIELDS = ('evaluable', 'drift_claimed', 'drift_observed', 'false_alarm',
-                      'repair_completed', 'requalified', 'fresh_reuse_passed')
 COUNTS = ('verdict', 'passed', 'total')
 USAGE = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens',
          'total_tokens', 'observed_total_tokens', 'reported_attempts', 'attempts', 'coverage', 'counting')
@@ -58,9 +56,8 @@ def public_v2_report(payload: dict) -> dict:
                                 for row in payload.get('accepted_gates', [])]
     result['evaluator_verdicts'] = [_scalars(row, ('stage', 'assignment_id', 'revision', 'fault', 'final_evaluation', *COUNTS))
                                     for row in payload.get('evaluator_verdicts', [])]
-    result['maintenance'] = _scalars(payload.get('maintenance', {}), MAINTENANCE_FIELDS)
-    result['progress'] = _scalars(payload.get('progress', {}), ('revision', 'repairs', 'maintenance_cycles', 'terminal_final_failure'))
-    result['attempt_limits'] = _scalars(payload.get('attempt_limits', {}), ('max_revisions', 'maintenance_cycles'))
+    result['progress'] = _scalars(payload.get('progress', {}), ('revision', 'repairs', 'terminal_final_failure'))
+    result['attempt_limits'] = _scalars(payload.get('attempt_limits', {}), ('max_revisions',))
     result['usage'] = _scalars(payload.get('usage', {}), USAGE)
     result['executed'] = _executed(payload.get('executed', {}))
     result['stages'] = {}
@@ -95,6 +92,8 @@ def _validate_payload(payload):
         raise ValueError('Execution snapshot identity mismatch')
     if payload['case_pin']['manifest'].get('schema') != 'benchmark-case/2':
         raise ValueError('Run evidence requires a v2 case')
+    from .registry import validate_pinned_workflow
+    validate_pinned_workflow(payload['case_pin'])
     seen = set()
     for evaluation in payload['evaluations']:
         key = (evaluation['phase'], evaluation['revision'])
@@ -150,51 +149,21 @@ def _gate_results(payload, evaluations):
         for ref in refs:
             matches = [row for row in evaluations if (row['phase'], row['revision']) == (ref.get('phase'), ref.get('revision'))]
             ok = ok and ref.get('revision') == key[1] and len(matches) == 1 and matches[0]['verdict'] == 'passed'
-        if key[0] in ('emit', 'reuse', 'maintain') and key[1] in final:
+        if key[0] in ('emit', 'reuse') and key[1] in final:
             ok = ok and identity[3] == final[key[1]]['frozen_artifact_sha256']
         if key[0] == 'reuse':
-            ok = ok and {'phase': 'final', 'revision': key[1]} in refs
+            ok = (ok and {'phase': 'final', 'revision': key[1]} in refs
+                  and {'fresh_worker_mission', 'frozen_final_behavior'} <= {c.get('id') for c in checks})
         rows.append({**_scalars(gate, ('stage', 'revision', 'assignment_id', 'artifact_sha256')),
                      'verdict': 'passed' if ok else 'failed', 'passed': int(bool(ok)), 'total': 1})
     required = payload['case_pin']['manifest'].get('required_stages', [])
-    inventory_ok = bool(required) and all(stage in STAGES for stage in required) and bool(final)
+    inventory_ok = required == list(STAGES) and len(final) == 1
     for revision in final:
         for stage in required:
-            if stage == 'maintain':
-                continue  # Maintenance belongs to accepted detection/resolution, not every frozen final.
             target = 0 if stage == 'acquire' else revision
             matches = [row for row in rows if (row['stage'], row['revision']) == (stage, target)]
             inventory_ok = inventory_ok and len(matches) == 1 and matches[0]['verdict'] == 'passed'
     return rows, bool(inventory_ok and all(row['verdict'] == 'passed' for row in rows))
-
-
-def _maintenance_result(payload, evaluations, gates):
-    from .scenarios import maintenance_history
-    scenario = payload['case_pin']['scenario_id']
-    entries = payload.get('maintenance', {})
-    finals = sorted((row for row in evaluations if row['phase'] == 'final'), key=lambda row: row['revision'])
-    initial, repaired = entries.get('initial', {}), entries.get('repaired', {})
-    needs_repair = scenario != 'control'
-    last = repaired if needs_repair else initial
-    revision = last.get('revision')
-    requalified = all(any(g['stage'] == stage and g['revision'] == revision and g['verdict'] == 'passed'
-                         for g in gates) for stage in ('interpret', 'probe', 'ground', 'emit'))
-    fresh = (last.get('diagnostic', {}).get('fresh_reuse_passed') is True and
-             any(g['stage'] == 'reuse' and g['revision'] == revision and g['verdict'] == 'passed' for g in gates))
-    def accepted(entry, route):
-        return any(g['stage'] == 'maintain' and g['revision'] == entry.get('revision') and g['verdict'] == 'passed'
-            and ('attempts' not in entries or g['assignment_id'] == entry.get('assignment_id') and
-                 any(raw.get('assignment_id') == g['assignment_id'] and raw.get('stage') == 'maintain'
-                     and raw.get('revision') == g['revision'] and raw.get('route') == route
-                     for raw in payload['accepted_gates'])) for g in gates)
-    transition = (needs_repair and type(initial.get('revision')) is int and type(revision) is int
-                  and revision > initial['revision'] and accepted(initial, 'interpret'))
-    fields, ok = maintenance_history(scenario, entries, requalified=requalified, fresh=fresh, transition=transition)
-    identity_ok = (bool(finals) and initial.get('revision') in {f['revision'] for f in finals}
-                   and revision == finals[-1]['revision'] and accepted(initial, 'interpret' if needs_repair else None)
-                   and accepted(last, None)
-                   and len([g for g in gates if g['stage'] == 'maintain']) == (2 if needs_repair else 1))
-    return fields, bool(identity_ok and ok)
 
 
 def regrade_v2(report: dict, evidence_path: Path, password_file: Path) -> dict:
@@ -207,8 +176,6 @@ def regrade_v2(report: dict, evidence_path: Path, password_file: Path) -> dict:
                      report['final_evaluation']['evidence_sha256'])
     _validate_payload(payload)
     snapshot = payload['execution_snapshot']
-    if payload['case_pin'].get('evaluator_version') != '2':
-        raise ValueError('Unsupported installed evaluator version')
     if snapshot['executed']['evaluator_revision'] != _tree_hash(Path(__file__).parent):
         raise ValueError('Installed evaluator implementation hash mismatch')
     if (report.get('schema') != 'benchmark-report/2' or report.get('case_pin') != public_pin(payload['case_pin']) or
@@ -231,12 +198,11 @@ def regrade_v2(report: dict, evidence_path: Path, password_file: Path) -> dict:
     evaluations = [{**_scalars(row, identity_fields), **_scalars(validate_records(row['contract'], row['records']), COUNTS)}
                    for row in payload['evaluations']]
     gates, gates_ok = _gate_results(payload, evaluations)
-    maintenance, maintenance_ok = _maintenance_result(payload, evaluations, gates)
     finals = [row for row in evaluations if row['phase'] == 'final']
     passed, total = sum(row['passed'] for row in finals), sum(row['total'] for row in finals)
-    ok = bool(finals) and all(row['verdict'] == 'passed' for row in finals) and gates_ok and maintenance_ok
+    ok = bool(finals) and all(row['verdict'] == 'passed' for row in finals) and gates_ok
     return public_v2_report({**report, 'evaluations': evaluations, 'accepted_gates': gates,
-        'maintenance': maintenance, 'verdict': 'passed' if ok else 'failed',
+        'verdict': 'passed' if ok else 'failed',
         'final_evaluation': {'verdict': 'passed' if finals and passed == total else 'failed',
             'passed': passed, 'total': total, 'evidence_sha256': report['final_evaluation']['evidence_sha256']}})
 

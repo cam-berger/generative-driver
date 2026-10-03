@@ -308,24 +308,6 @@ def score(report, password_file=None, *, evidence_path=None):
     return adapter_for(case_id).score(data, password_file)
 
 
-def score_stimulus(initial_reference, changed_reference, observations):
-    """Require independent ambient change beyond combined uncertainty and a matching fresh reading."""
-    changed=[]
-    for name, current in changed_reference.items():
-        previous=initial_reference.get(name)
-        if not isinstance(previous,dict) or not isinstance(current,dict):
-            continue
-        values=[previous.get('value'),current.get('value'),previous.get('absolute_tolerance'),current.get('absolute_tolerance')]
-        if all(type(v) in (int,float) and math.isfinite(v) for v in values) and min(values[2:])>0 and abs(values[1]-values[0])>sum(values[2:]):
-            changed.append(name)
-    contract={'checks':[{'id':name,'expected':row['value'],'absolute_tolerance':row['absolute_tolerance']}
-                        for name,row in changed_reference.items()]}
-    behavior=score_observations(contract,observations)
-    return {'verdict':'passed' if changed and behavior['verdict']=='passed' else 'failed',
-            'changed_channels':changed,'behavior':behavior,
-            'criterion':'At least one independently measured change exceeds the sum of both stated uncertainties'}
-
-
 def evaluation_fault(evaluation):
     """Assign an independently observed failure; expected refusal is not a defect."""
     if evaluation.get('score',{}).get('verdict')=='passed':

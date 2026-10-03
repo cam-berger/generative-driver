@@ -4,17 +4,17 @@ import hashlib
 import json
 import unittest
 
-STAGES=('acquire','interpret','probe','ground','emit','reuse','maintain')
+STAGES=('acquire','interpret','probe','ground','emit','reuse')
 
 def fixture():
     manifest={'schema':'benchmark-suite/1','id':'toy','version':'1','entries':[
-        {'case':'toy-a','scenario':'semantic','case_seed':0},
-        {'case':'toy-b','scenario':'control','case_seed':0},
-        {'case':'toy-c','scenario':'control','case_seed':0}],
+        {'case':'tq9-v2','scenario':'original','case_seed':0},
+        {'case':'sampled-sensor-v1','scenario':'original','case_seed':0},
+        {'case':'parameter-store-v1','scenario':'original','case_seed':0}],
         'repetitions':1,'child_budget_seconds':10,'suite_budget_seconds':60,'max_active_children':1}
     pins=[];slots=[];trials=[];snapshots=[];reports={}
     for index,(entry,family) in enumerate(zip(manifest['entries'],('one','one','two'))):
-        pin={'case_id':entry['case'],'case_version':'1','evaluator_version':'2','family':family,
+        pin={'case_id':entry['case'],'case_version':'3','evaluator_version':'3','family':family,
             'scenario_id':entry['scenario'],'case_seed':0,'execution':'actual-agent-emulation','evidence_track':'firmware',
             'scope':'full-workflow','manifest_sha256':'a'*64,'truth_sha256':'b'*64,'image_hashes':{'image.bin':'c'*64},'pin_sha256':str(index+1)*64}
         pins.append(pin)
@@ -35,14 +35,14 @@ def fixture():
             'accepted_gates':[{'stage':stage,'revision':0,'assignment_id':stage,'artifact_sha256':'e'*64,'verdict':'passed','passed':1,'total':1} for stage in STAGES] if passed else [],
             'evaluations':[{'phase':phase,'revision':0,'frozen_artifact_sha256':'e'*64,'verdict':'passed','passed':2,'total':2} for phase in ('diagnostic','final')] if passed else [],
             'final_evaluation':{'verdict':'passed','passed':2,'total':2,'evidence_sha256':'f'*64} if passed else {},
-            'maintenance':{'drift_claimed':True,'drift_observed':True,'false_alarm':False,'repair_completed':True,'requalified':True,'fresh_reuse_passed':True} if passed else {}}
+            'progress':{'revision':0,'repairs':0}}
     policy={'child_budget_seconds':10,'suite_budget_seconds':60}
     experiment={'schema':'benchmark-suite-experiment/1','comparison_identity':{
         'manifest':manifest,'manifest_sha256':hashlib.sha256(json.dumps(manifest,sort_keys=True,separators=(',',':')).encode()).hexdigest(),
         'entry_pins':pins,'trials':slots,'repetitions':1,'execution':'actual-agent-emulation','evidence_track':'firmware','scope':'full-workflow',
         'time_policy':[{} for _ in pins],'evaluator_revision':'a'*64,
         'budgets':{'original':policy,'effective':{**policy,'child_budget_overrides':[]}},
-        'intervention_policy':{'scoped_tool_approval':None,'max_model_repairs':2,'max_maintenance_cycles':1}},
+        'intervention_policy':{'scoped_tool_approval':None,'max_model_repairs':2}},
         'dimensions':{'runtime':'codex','model':'toy','skills_revision':'b'*64,'toolchain_revision':'c'*64},'execution_snapshots':snapshots}
     return manifest,trials,reports,experiment
 
@@ -62,7 +62,7 @@ class AggregateTests(unittest.TestCase):
         def changes():
             yield lambda m,t,r,e:t.pop()
             yield lambda m,t,r,e:t[1].update(ordinal=0)
-            yield lambda m,t,r,e:t[0].update(case='toy-b')
+            yield lambda m,t,r,e:t[0].update(case='sampled-sensor-v1')
             yield lambda m,t,r,e:t[0].update(family='invented')
             yield lambda m,t,r,e:t[1].update(run_id='r1')
             yield lambda m,t,r,e:e['comparison_identity'].update(manifest_sha256='0'*64)
@@ -81,9 +81,24 @@ class AggregateTests(unittest.TestCase):
 
     def test_bare_verdict_or_incomplete_final_gates_never_earns_success(self):
         from generative_driver.benchmark_support.suite_reporting import aggregate_suite
-        for field in ('stages','accepted_gates','final_evaluation','maintenance'):
+        for field in ('stages','accepted_gates','final_evaluation'):
             m,t,r,e=fixture();r['r1'].pop(field)
             self.assertEqual(aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)['success']['passed'],0,field)
+
+    def test_stale_case_versions_are_rejected_even_when_report_and_experiment_agree(self):
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        m,t,r,e=fixture()
+        e['comparison_identity']['entry_pins'][0]['case_version']='2'
+        r['r1']['case_pin']['case_version']='2'
+        with self.assertRaisesRegex(ValueError,'version|identity'):
+            aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
+
+    def test_obsolete_extra_gate_cannot_qualify_current_aggregate(self):
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        m,t,r,e=fixture()
+        r['r1']['accepted_gates'].append({'stage':'maintain','revision':0,'assignment_id':'obsolete',
+            'artifact_sha256':'e'*64,'verdict':'passed','passed':1,'total':1})
+        self.assertEqual(aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)['success']['passed'],0)
 
     def test_missing_report_preserves_known_time_without_inventing_total(self):
         from generative_driver.benchmark_support.suite_reporting import aggregate_suite
@@ -105,10 +120,10 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(result['trials'][0]['interventions'],[{'event_id':3,'kind':'operator.response','time':7}])
         self.assertEqual(result['first_attempt_success'],1);self.assertEqual(result['repaired_success'],0)
         self.assertEqual(result['latency'],{'sample_count':2,'includes_failed_trials':True,'min':5,'median':6.5,'max':8})
-        self.assertEqual(result['false_alarms'],{'count':0,'denominator':0,'rate':None})
-        self.assertIsNone(result['repair_seconds'])
-        self.assertEqual(result['case_success']['toy-a'],{'passed':1,'denominator':1,'rate':1.0})
-        self.assertEqual(result['scenario_success']['control']['denominator'],2)
+        self.assertNotIn('false_alarms', result)
+        self.assertNotIn('repair_seconds', result)
+        self.assertEqual(result['case_success']['tq9-v2'],{'passed':1,'denominator':1,'rate':1.0})
+        self.assertEqual(result['scenario_success']['original']['denominator'],3)
         self.assertEqual(result['stage_counts']['probe']['accepted'],1)
         r['r1']['stages']['probe']['attempt_count']=2
         result=aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
@@ -158,15 +173,15 @@ class ComparisonTests(unittest.TestCase):
 
 
 def owner_fixture():
-    m,t,r,e=fixture();report=r['r1'];report['maintenance']={key:False for key in ('drift_claimed','drift_observed','false_alarm','repair_completed','requalified')};report['maintenance']['fresh_reuse_passed']=True
+    m,t,r,e=fixture();report=r['r1']
     handoffs=[{'stage':stage,'revision':0,'assignment_id':stage,'route':None,
         'artifacts':[{'path':'/private/candidate','sha256':'e'*64,'kind':'evidence'}],
         'checks':[{'name':'toy-check','passed':True}]} for stage in STAGES]
-    owner={'ok':True,'run_id':'r1','case':'toy-a','case_pin':dict(report['case_pin'],manifest={'schema':'benchmark-case/2'}),
+    owner={'ok':True,'run_id':'r1','case':'tq9-v2','case_pin':dict(report['case_pin'],manifest={'schema':'benchmark-case/2'}),
         'snapshot_sha256':'d'*64,'status':'completed','outcome_category':'completed','stopping':False,'uncertain_effect':False,
         'progress':{'revision':0,'next_stage':None},'accepted_handoffs':handoffs,
         'evaluator_verdicts':[{'stage':stage,'assignment_id':stage,'verdict':'passed',**({'passed':2,'total':2} if stage!='emit' else {}),**({'final_evaluation':True} if stage=='reuse' else {})} for stage in ('probe','emit','reuse')],
-        'benchmark_summary':{key:copy.deepcopy(report[key]) for key in ('accepted_gates','evaluations','final_evaluation','maintenance')}}
+        'benchmark_summary':{key:copy.deepcopy(report[key]) for key in ('accepted_gates','evaluations','final_evaluation')}}
     report['evaluator_verdicts']=copy.deepcopy(owner['evaluator_verdicts'])
     events=[]
     for index,handoff in enumerate(handoffs):
@@ -181,7 +196,7 @@ class QualificationTests(unittest.TestCase):
         self.assertTrue(_recorded_success(owner,events,report))
         mutations=[lambda o,e,r:o.update(stopping=True),lambda o,e,r:o.update(uncertain_effect=True),
             lambda o,e,r:o.update(outcome_category='unknown'),lambda o,e,r:o['accepted_handoffs'][2]['checks'][0].update(passed=False),
-            lambda o,e,r:e.pop(),lambda o,e,r:o['benchmark_summary']['maintenance'].update(false_alarm=True),
+            lambda o,e,r:e.pop(),lambda o,e,r:o['benchmark_summary']['final_evaluation'].update(verdict='failed'),
             lambda o,e,r:o['benchmark_summary']['final_evaluation'].pop('evidence_sha256'),
             lambda o,e,r:o['evaluator_verdicts'][0].update(passed=1),
             lambda o,e,r:o['accepted_handoffs'][4]['artifacts'][0].update(sha256='0'*64),
@@ -195,9 +210,9 @@ class QualificationTests(unittest.TestCase):
     def test_legacy_uses_coherent_owner_handoffs_without_invented_v2_fields(self):
         from generative_driver.benchmark_support.suite_reporting import _recorded_success
         owner,events,report=owner_fixture()
-        owner.update(case='tq9',case_pin={'case_id':'tq9','evaluator_version':'1'});owner.pop('benchmark_summary')
+        owner.update(case='tq9',case_pin={'case_id':'tq9','evaluator_version':'2'});owner.pop('benchmark_summary')
         report.update(schema='benchmark-report/1',case='tq9')
-        for key in ('accepted_gates','evaluations','final_evaluation','maintenance'):report.pop(key)
+        for key in ('accepted_gates','evaluations','final_evaluation'):report.pop(key)
         for stage in STAGES:report['stages'][stage]['checks']=[{'name':'toy-check','passed':True}]
         self.assertTrue(_recorded_success(owner,events,report))
         report['stages']['probe']['checks'][0]['name']='different'
@@ -235,7 +250,7 @@ def export_fixture(root):
     from generative_driver.benchmark_support.snapshots import canonical_digest
     manifest,trials,_,experiment=fixture()
     manifest['entries']=manifest['entries'][:2]
-    manifest['entries'][0]['scenario']='control'
+    manifest['entries'][0]['scenario']='original'
     manifest['entries'][0]['case_seed']=manifest['entries'][1]['case_seed']=7
     experiment['comparison_identity'].update(manifest=manifest,manifest_sha256=_test_digest(manifest),trials=[] ,entry_pins=[],time_policy=[{},{}])
     experiment['execution_snapshots']=[]
@@ -243,7 +258,7 @@ def export_fixture(root):
     for index,entry in enumerate(manifest['entries']):
         rid=f'r{index+1}';payload=SealedEvidenceTests().payload()
         pin=payload['case_pin'];pin.update(case_id=entry['case'],family='toy-family',scope='full-workflow',evidence_track='firmware',execution='actual-agent-emulation')
-        pin['manifest'].update(id=entry['case'],version='2',evaluator_version='2',execution='actual-agent-emulation')
+        pin['manifest'].update(id=entry['case'],version='3',evaluator_version='3',execution='actual-agent-emulation')
         snapshot=payload['execution_snapshot'];snapshot['snapshot_sha256']=canonical_digest({k:v for k,v in snapshot.items() if k!='snapshot_sha256'})
         private=root/'runs'/rid/'benchmark';private.mkdir(parents=True)
         (private/'execution.json').write_text(json.dumps(snapshot),encoding='utf-8')
@@ -258,8 +273,7 @@ def export_fixture(root):
                 {'id':2*n+2,'kind':'stage.accepted','data':handoff,'time':n+.5}])
         gates=[{k:g[k] for k in ('stage','revision','assignment_id','artifact_sha256')}|{'verdict':'passed','passed':1,'total':1} for g in payload['accepted_gates']]
         summary={'accepted_gates':gates,'evaluations':[{'phase':'final','revision':0,'frozen_artifact_sha256':'a'*64,'verdict':'passed','passed':1,'total':1}],
-            'final_evaluation':{'verdict':'passed','passed':1,'total':1,'evidence_sha256':sealed['sha256']},
-            'maintenance':{'drift_claimed':False,'drift_observed':False,'false_alarm':False,'repair_completed':False,'requalified':False,'fresh_reuse_passed':True}}
+            'final_evaluation':{'verdict':'passed','passed':1,'total':1,'evidence_sha256':sealed['sha256']}}
         state={**summary,'stage_verdicts':{s:{'status':'passed','checks':[{'name':'toy','passed':True}]} for s in STAGES},'unknown':{'answer':'PRIVATE'}}
         (private/'state.json').write_text(json.dumps(state),encoding='utf-8')
         owner={'ok':True,'run_id':rid,'case':entry['case'],'case_pin':pin,'snapshot_sha256':snapshot['snapshot_sha256'],'created':0,'updated':10,
@@ -368,25 +382,6 @@ class RepairedQualificationTests(unittest.TestCase):
         report['evaluations']=copy.deepcopy(owner['benchmark_summary']['evaluations'])
         self.assertFalse(_recorded_success(owner,events,report))
 
-class ControlCoverageTests(unittest.TestCase):
-    def test_evaluable_failed_controls_count_and_host_or_missing_measurements_do_not(self):
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
-        m,t,r,e=fixture()
-        r['r2']['maintenance']={'evaluable':True,'false_alarm':True,'drift_observed':False}
-        result=aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
-        self.assertEqual(result['false_alarms'],{'count':1,'denominator':1,'rate':1.0})
-        evaluable_result=result
-        self.assertEqual(result['success']['denominator'],3)
-        t[1].update(status='blocked',outcome_category='host');r['r2']['maintenance']['evaluable']=False
-        r['r2']['maintenance']['false_alarm']=False
-        result=aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
-        self.assertEqual(result['false_alarms'],{'count':0,'denominator':0,'rate':None})
-        self.assertEqual(result['control_coverage'],{'planned':2,'started':1,'evaluable':0,'unevaluable':1,'unknown':0,'not_run':1})
-        r['r2']['maintenance'].pop('evaluable')
-        result=aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
-        self.assertEqual(evaluable_result['control_coverage'],{'planned':2,'started':1,'evaluable':1,'unevaluable':0,'unknown':0,'not_run':1})
-        self.assertEqual(result['control_coverage']['unknown'],1)
-        self.assertEqual(result['control_coverage']['evaluable'],0)
 
 class AdaptedDiagnosticIdentityTests(unittest.TestCase):
     def test_diagnostic_binds_accepted_probe_model_not_pre_adaptation_interpretation(self):
@@ -408,7 +403,7 @@ class PublicBoundaryFixTests(unittest.TestCase):
         private={'unfamiliar':'/private/PRIVATE_POLICY'}
         changes=[lambda e:e['comparison_identity']['intervention_policy'].update(scoped_tool_approval=private),
             lambda e:e['comparison_identity']['intervention_policy'].update(max_model_repairs=private),
-            lambda e:e['comparison_identity']['intervention_policy'].update(max_maintenance_cycles=True),
+            lambda e:e['comparison_identity']['intervention_policy'].update(max_model_repairs=True),
             lambda e:e['comparison_identity']['intervention_policy'].update(scoped_tool_approval='physical'),
             lambda e:e['comparison_identity']['entry_pins'][0].update(variant=private),
             lambda e:e['comparison_identity']['entry_pins'][0].update(case_version=private),

@@ -69,4 +69,5 @@
 - [x] Update current instructions, benchmark metrics, default suite and final acceptance explanation. Replace obsolete public plans/verification/baseline documents with concise current records; preserve old observations through Git instead of editing measurements. Update the agent-facing domain and skill text using the same glossary.
 - [x] Build wheel and sdist; run complete source and installed-wheel tests on available Python 3.11/3.13 environments, replay, case admission/discovery, offline score/compare and distribution/document audits. Check archived bytes contain no private material or obsolete public instructions. Do not run model trials or physical devices.
 - [x] Record actual outcomes and limitations and commit the coherent documentation/distribution result. Retain exact gate/TDD evidence privately.
-- [ ] Parent: perform the independent whole-branch review, address load-bearing findings with covering tests, and leave the branch ready for user integration.
+- [x] Complete the whole-branch review (With fixes), correct I1/I2/M1/M3 with covering regressions and freshly qualify the frozen production bytes. Defer benign M2 build warnings.
+- [ ] Parent: complete the scoped final-fix rereview and leave the branch ready for user integration.

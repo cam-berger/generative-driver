@@ -10,10 +10,10 @@
     "emit",
     "reuse"
   ],
-  "tested_resource_revision": "f9fc91e",
+  "tested_resource_revision": "6ce42581786706611086638d067cd8cb73aa57ec",
   "model_benchmark": false,
   "physical_device_used": false,
-  "evaluator_identity_sha256": "4563ebf4a66f680342044674a299d0ffa1f7a035ed20737fc56de1c35619b710",
+  "evaluator_identity_sha256": "7e4e7bbaf79c6eca2a0330d18c6eb493a609631fac7bac09e196a6c91bd616d5",
   "runtime_dependencies": {
     "mcp": "2.2.0",
     "cryptography": "50.0.1"
@@ -22,13 +22,13 @@
     {
       "name": "source-suite",
       "python": "3.13.12",
-      "tests": 414,
-      "seconds": 56.452,
+      "tests": 417,
+      "seconds": 60.103,
       "skips": 0,
       "failures": 0,
       "errors": 0,
-      "log": "suite-release-source.log",
-      "log_sha256": "7bb7961b754ef76f03d227b001f7e16e2472b6f1dcbe04f7ec6f3abd5675b712",
+      "log": "suite-final-review-source.log",
+      "log_sha256": "13f46560d198dc3fb6c1b8dfb183b4c8c0c2ff75d41ef5f5e1e35b2be69645b1",
       "command": "<python> -m unittest discover -s tests -v",
       "archive_gates": [
         "GD_TEST_WHEEL",
@@ -39,13 +39,13 @@
     {
       "name": "installed-wheel-suite",
       "python": "3.11.15",
-      "tests": 414,
-      "seconds": 52.547,
+      "tests": 417,
+      "seconds": 56.058,
       "skips": 0,
       "failures": 0,
       "errors": 0,
-      "log": "suite-release-311.log",
-      "log_sha256": "dad2b8d7819acd77b3aa197c62fe97424b1b79e00e0ca42e44fcf8339709ae4c",
+      "log": "suite-final-review-311.log",
+      "log_sha256": "ffbef6ff9696e4111bcd83d5108d3b91539773d4c3e504a6e4a5b35acb3d3a33",
       "command": "<python> -m unittest discover -s tests -v",
       "archive_gates": [
         "GD_TEST_WHEEL",
@@ -56,13 +56,13 @@
     {
       "name": "installed-wheel-suite",
       "python": "3.13.14",
-      "tests": 414,
-      "seconds": 56.472,
+      "tests": 417,
+      "seconds": 60.973,
       "skips": 0,
       "failures": 0,
       "errors": 0,
-      "log": "suite-release-313.log",
-      "log_sha256": "a5769a3612666be9ae865f830c233427e6a9aebb3ad9c7046d9bb9e83c6cc866",
+      "log": "suite-final-review-313.log",
+      "log_sha256": "25348c480414a886516ea065294629867caf7302c4bc27d71c410659c2dc434b",
       "command": "<python> -m unittest discover -s tests -v",
       "archive_gates": [
         "GD_TEST_WHEEL",
@@ -73,7 +73,7 @@
     {
       "name": "installed-integration",
       "python": "3.11.15",
-      "seconds": 1.4027979590173345,
+      "seconds": 1.4673195829964243,
       "cases": 6,
       "suite_slots": 9,
       "replay": "passed",
@@ -87,13 +87,13 @@
       "offline_six_gate_score": "passed",
       "offline_compare": "compatible",
       "worker_launched": false,
-      "log": "integration-311.log",
-      "log_sha256": "76a6b1633c147542aa8bf6ddf2ef9ffc75347c10d24d464e8046dbc19e7e31b1"
+      "log": "integration-final-review-311.log",
+      "log_sha256": "51f106e6c2d447322781d5cbefd78fdaa68dd9e90bcee8a471efe8b2d1989e39"
     },
     {
       "name": "installed-integration",
       "python": "3.13.14",
-      "seconds": 1.5346747090225108,
+      "seconds": 1.6089926660060883,
       "cases": 6,
       "suite_slots": 9,
       "replay": "passed",
@@ -107,14 +107,14 @@
       "offline_six_gate_score": "passed",
       "offline_compare": "compatible",
       "worker_launched": false,
-      "log": "integration-313.log",
-      "log_sha256": "71e15bcb63633a9860ea7698c241f29ad33c426469db44d18dd86cfa1f60eb02"
+      "log": "integration-final-review-313.log",
+      "log_sha256": "dc99f6ead457b3910b02491ef91aa1cf3532d4198497c794980e9eb3266e103b"
     }
   ],
   "distribution": {
     "strategy": "clean tracked git archive; final documentation rebuild preserves tested wheel module/resource bytes",
     "wheel_module_resource_files": 118,
-    "wheel_payload_sha256": "6ec76f2c6575e00ed6376127174792a66663a77df27ad07730d2217cc37c9349",
+    "wheel_payload_sha256": "6b1d9992c8f554b1b7023c589101f4199546cd3990534f6d12eba3e7becd346d",
     "wheel_files": 125,
     "sdist_files": 195,
     "tracked_markdown": 36,
@@ -128,7 +128,7 @@
     "full_archive_hashes": "external evaluator-owned verification manifest; final sdist cannot hash itself"
   },
   "native_reference_qualification": {
-    "scope": "Task3 final native sessions; Task4 authenticates and regrades saved evidence without launching a native process",
+    "scope": "Fresh final-review native sessions against the corrected frozen evaluator; prior qualifications preserved. Installed gates authenticate and regrade saved evidence.",
     "family_sessions": 30,
     "reference_sessions": 12,
     "mutant_sessions": 18,
@@ -138,22 +138,22 @@
       {
         "case": "sampled-sensor-v1",
         "native_sessions": 8,
-        "evidence_sha256": "3614ac5e3aa6aad708ae740eac2e194cc8badc4fdfbd5758abb617c0cd6417aa",
-        "ciphertext_sha256": "2394f88591d213e02ecd5b7cdda2c8bfbea9ed4484e195479497bee090d2d281",
+        "evidence_sha256": "623f242f308d497e3068a66907dc4c6489b6abee5b2240aa4809eb06b6edd6f6",
+        "ciphertext_sha256": "285f7d31e1a54a5aa650d592e90166fbbba77aad083ef74f7c6f309306aaa34e",
         "image_sha256": "637370d3d7192a17b6abeb79a3fcbc60ec2f47eb14e199627798756c02bbb1e9"
       },
       {
         "case": "parameter-store-v1",
         "native_sessions": 9,
-        "evidence_sha256": "4eebe6de11e2b1ad9679aca1ad96870a3a9486ca312ae0c74abe70fff2b3f38f",
-        "ciphertext_sha256": "a1340ecad774f185be56ffa1f246fbfbef0109767230655d656fb783725a6e10",
+        "evidence_sha256": "62d2b4fcdebb44892232c0510571c3c50ad45314332ce0ccaa0ef1e25f4f12a2",
+        "ciphertext_sha256": "dac9510ab3f47698e8b6575ef9f9d80b5fa4cc435c69a1dbbbd4ed7443b8aef4",
         "image_sha256": "e7a580834861f7fa96868245bf969d69350ee0acdab1ee8eda30abc1fdf1faf1"
       },
       {
         "case": "tq9-v2",
         "native_sessions": 13,
-        "evidence_sha256": "7143d8699143600839ca63ed87eccc1ea5a44e919f41141a5b974a932e3b4c3a",
-        "ciphertext_sha256": "1fbeb84b6a7a9d483be1d0669bc0a51e2b632c4b9e67d901bccfbfb0da7442d8",
+        "evidence_sha256": "27bb0c0596fe5a706f8d9fd95296d0105e2a7141c63353ac8e262139eacce430",
+        "ciphertext_sha256": "c32ba21b5c45f7f142bcfcbb6fbd17a194dc8e3a741af437134ea294a2ac2c1c",
         "image_sha256": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e"
       }
     ],
@@ -166,14 +166,14 @@
       "java": "21.0.12.1"
     },
     "log_hashes": {
-      "sampled-sensor-v1-native-fix1-final.log": "e68a9eaaad45d28ead82a01fa0f0df79cfdec9a0433361574dbc9b70cb4a6ee2",
-      "parameter-store-v1-native-fix1-final.log": "af82a87ed4a3475ca9c082fe30e0771a65ea267893c4f8ec3493b350617cef46",
-      "tq9-v2-native-fix1-final.log": "c0088dea39e016441b58d0279490ad95f31ecd49b3252e30ecade7ba0a8fcd51",
-      "tq9-original-native-fix1-final.log": "86162219056cfc88562019ea2f642c067d3534bf1ff29a62567f7a98d0ab5c66",
-      "verify-release-fix1-final.log": "184c68ed788f31aff3a93b2a204773ca93ec9c7bb0583f3d66c710faa162614c"
+      "sampled-sensor-v1-native-final-review-complete.log": "e1f145c0b79bbc2f4f1ecc05cc323aeb9fd718a5500ff15f5de650c2ccb58747",
+      "parameter-store-v1-native-final-review-complete.log": "b67ca123c1132ba1836af8da22502183838bf103b82b10fc344ac4ce5b430d3a",
+      "tq9-v2-native-final-review-complete.log": "c466e53cb3d9fafd270217f1a36a1b855239dc1a90c9486b9b5556bef64cf910",
+      "tq9-original-native-final-review-complete.log": "86162219056cfc88562019ea2f642c067d3534bf1ff29a62567f7a98d0ab5c66",
+      "verify-release-final-review-complete.log": "55b0aa4c1e2d331c5cff462dc4cc9b79bd494053290fe8cba9ad8517985fd6ee"
     }
   },
-  "independent_whole_branch_review": "pending parent review",
+  "independent_whole_branch_review": "completed: With fixes; I1/I2/M1/M3 corrected and qualified; scoped parent rereview pending; benign M2 warnings deferred",
   "unobserved": [
     "current model performance",
     "physical device performance",
@@ -182,5 +182,11 @@
     "live Goose execution",
     "worker OS filesystem isolation"
   ],
-  "publication_exception": "Other owner untracked docs/research draft preserved outside tracked export and archives."
+  "publication_exception": "Other owner untracked docs/research draft preserved outside tracked export and archives.",
+  "review_fixes": {
+    "legacy_final": "Observed legacy behavioral contradiction is terminal failed/model and durable across restart; unavailable observations retain host/operator/unknown recovery.",
+    "physical_export": "Offline BME280 score accepts an explicit evaluator-owned reference file via --evidence while retaining digest and measurement-time validation and private path removal.",
+    "public_projection": "Retained max_model_repairs is published; obsolete cycle limits remain excluded.",
+    "documentation": "V2 phase/reference evidence is scoped explicitly; physical agreement uses operator uncertainty."
+  }
 }

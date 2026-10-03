@@ -232,5 +232,23 @@
       "generative_driver-0.1.0.tar.gz": "b180fd99fba019e9a596ad55d3618c90f28f9161523b4ca61b8bb8de2c73e00b"
     },
     "note": "Audited before adding this final verification metadata. All 125 wheel entries are byte-identical to the installed-tested wheel."
+  },
+  "gateway_readiness_test_correction": {
+    "observed_run_url": "https://github.com/cam-berger/generative-driver/actions/runs/37156868254",
+    "observed_job_id": 111301931411,
+    "platform": "Windows Python 3.13",
+    "test": "test_worker_gateway_rejects_unassigned_tools_and_cancelled_assignments",
+    "reason": "The existing test read stage.assigned before the separately committed running state, then expected tool-assignment rejection from an inactive run.",
+    "reproduction": "Delaying the running-state transition by 0.25 seconds reproduced the same inactive-or-unknown error before the correction.",
+    "correction": "Wait for both the assignment event and public running state, retaining the exact tool rejection and cancellation assertions.",
+    "validation": {
+      "delayed_transition_regression": "passed",
+      "configurator_module_tests": 10,
+      "seconds": 1.132,
+      "failures": 0,
+      "errors": 0,
+      "skips": 0
+    },
+    "production_code_changed": false
   }
 }

@@ -215,9 +215,12 @@ class ConfiguratorTests(unittest.TestCase):
                 while time.monotonic() < until:
                     events = controller.call('events', run)['events']
                     assignment = next((e['data'] for e in events if e['kind'] == 'stage.assigned'), None)
-                    if assignment:
+                    state = controller.call('status', run)
+                    if assignment and state['status'] == 'running':
                         break
                     time.sleep(.02)
+                self.assertIsNotNone(assignment)
+                self.assertEqual(state['status'], 'running', state)
                 request = {**run, 'assignment_id':assignment['id'], 'name':'model_validate', 'arguments':{}}
                 with self.assertRaisesRegex(ValueError, 'not assigned'):
                     controller.call('tool', request)

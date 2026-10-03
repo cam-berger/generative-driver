@@ -39,7 +39,7 @@ Use new output directories. From `smoke output/relocated package`, run `python -
 
 ## CI and limits
 
-The initial fix commit's [CI run](https://github.com/cam-berger/generative-driver/actions/runs/37155861839) passed macOS Python 3.11 and 3.13 and eliminated Windows truth-hash failures. Both Windows jobs then exposed one existing test that assumed POSIX path separators. The assertion now checks native path containment; the focused local suite passes. The follow-up PR checks provide the final platform results. Initial failed jobs and temporary GitHub log-access failures are retained in the review record.
+The initial fix commit's [CI run](https://github.com/cam-berger/generative-driver/actions/runs/37155861839) passed macOS Python 3.11 and 3.13 and eliminated Windows truth-hash failures. Both Windows jobs then exposed one existing test that assumed POSIX path separators. The assertion now checks native path containment; the focused local suite passes. A later Windows 3.13 job exposed a gateway test that raced the transition to running; the test now waits for both assignment and public running state. A delayed-transition reproduction failed before and passed after correction, and all ten configurator tests pass. These later changes affect tests only. The follow-up PR checks provide the final platform results. Initial failed jobs and temporary GitHub log-access failures are retained in the review record.
 
 PR #1 also recorded an intermittent macOS suite reconnect failure. The unchanged 11-test interface suite and 12 consecutive repetitions of the affected test passed locally. No scheduler fix is claimed. Earlier failures and retries remain part of the evidence.
 

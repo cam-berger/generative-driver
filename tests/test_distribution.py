@@ -25,3 +25,12 @@ class DistributionTests(unittest.TestCase):
             document = archive.extractfile(prefix + "/docs/verification.md").read().decode("utf-8")
             self.assertIn("implementation/benchmark-final-verification.json", document)
             self.assertIn(prefix + "/docs/implementation/benchmark-final-verification.json", names)
+
+    @unittest.skipUnless(os.environ.get("GD_TEST_SDIST"), "Set GD_TEST_SDIST for the source archive gate")
+    def test_source_archive_includes_helpers_for_documented_test_commands(self):
+        with tarfile.open(os.environ["GD_TEST_SDIST"]) as archive:
+            names = archive.getnames()
+            prefix = names[0].split("/")[0]
+            for helper in ("benchmark_family_fixtures.py", "tq9_workflow_fixture.py",
+                           "suite_fixtures.py", "native_benchmark_families.py"):
+                self.assertIn(prefix + "/tests/" + helper, names)

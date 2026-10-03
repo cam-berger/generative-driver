@@ -24,7 +24,7 @@
   "limitations": [
     "No physical run is shipped as a new measurement",
     "Operator supplied reference must be independent; this is not authenticated laboratory metrology",
-    "No firmware identity drift injection for physical profile"
+    "One stable physical sensor session through fresh reuse"
   ],
   "time_policy": {
     "physical": "Real elapsed device time; no timing pause"

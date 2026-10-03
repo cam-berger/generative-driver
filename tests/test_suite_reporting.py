@@ -32,7 +32,7 @@ def fixture():
             'usage':{'total_tokens':10 if passed else None,'observed_total_tokens':10 if passed else 7},
             'stages':{stage:{'workflow_status':'accepted','evaluator_status':'passed','attempt_count':1,
                 'attempts':[{'assignment_id':stage,'accepted':True,'status':'completed'}]} for stage in STAGES} if passed else {},
-            'accepted_gates':[{'stage':stage,'revision':0,'assignment_id':stage,'artifact_sha256':'e'*64,'verdict':'passed','passed':1,'total':1} for stage in STAGES] if passed else [],
+            'accepted_gates':[{'stage':stage,'revision':0,'assignment_id':stage,'artifact_sha256':'e'*64,'verdict':'passed','passed':2 if stage=='reuse' else 1,'total':2 if stage=='reuse' else 1} for stage in STAGES] if passed else [],
             'evaluations':[{'phase':phase,'revision':0,'frozen_artifact_sha256':'e'*64,'verdict':'passed','passed':2,'total':2} for phase in ('diagnostic','final')] if passed else [],
             'final_evaluation':{'verdict':'passed','passed':2,'total':2,'evidence_sha256':'f'*64} if passed else {},
             'progress':{'revision':0,'repairs':0}}
@@ -176,7 +176,8 @@ def owner_fixture():
     m,t,r,e=fixture();report=r['r1']
     handoffs=[{'stage':stage,'revision':0,'assignment_id':stage,'route':None,
         'artifacts':[{'path':'/private/candidate','sha256':'e'*64,'kind':'evidence'}],
-        'checks':[{'name':'toy-check','passed':True}]} for stage in STAGES]
+        'checks':[{'name':name,'passed':True} for name in ('fresh_worker_mission','frozen_final_behavior')]
+            if stage=='reuse' else [{'name':'toy-check','passed':True}]} for stage in STAGES]
     owner={'ok':True,'run_id':'r1','case':'tq9-v2','case_pin':dict(report['case_pin'],manifest={'schema':'benchmark-case/2'}),
         'snapshot_sha256':'d'*64,'status':'completed','outcome_category':'completed','stopping':False,'uncertain_effect':False,
         'progress':{'revision':0,'next_stage':None},'accepted_handoffs':handoffs,
@@ -207,13 +208,25 @@ class QualificationTests(unittest.TestCase):
             o,e,r=owner_fixture();mutate(o,e,r)
             with self.subTest(index=index):self.assertFalse(_recorded_success(o,e,r))
 
+    def test_recorded_v2_requires_both_fresh_mission_and_frozen_behavior_checks(self):
+        from generative_driver.benchmark_support.suite_reporting import _recorded_success
+        for missing in ('fresh_worker_mission','frozen_final_behavior'):
+            with self.subTest(missing=missing):
+                owner,events,report=owner_fixture()
+                reuse=owner['accepted_handoffs'][-1]
+                reuse['checks']=[c for c in reuse['checks'] if c['name']!=missing]
+                events[-1]['data']=copy.deepcopy(reuse)
+                for gates in (report['accepted_gates'],owner['benchmark_summary']['accepted_gates']):
+                    gates[-1].update(passed=1,total=1)
+                self.assertFalse(_recorded_success(owner,events,report))
+
     def test_legacy_uses_coherent_owner_handoffs_without_invented_v2_fields(self):
         from generative_driver.benchmark_support.suite_reporting import _recorded_success
         owner,events,report=owner_fixture()
         owner.update(case='tq9',case_pin={'case_id':'tq9','evaluator_version':'2'});owner.pop('benchmark_summary')
         report.update(schema='benchmark-report/1',case='tq9')
         for key in ('accepted_gates','evaluations','final_evaluation'):report.pop(key)
-        for stage in STAGES:report['stages'][stage]['checks']=[{'name':'toy-check','passed':True}]
+        for handoff in owner['accepted_handoffs']:report['stages'][handoff['stage']]['checks']=copy.deepcopy(handoff['checks'])
         self.assertTrue(_recorded_success(owner,events,report))
         report['stages']['probe']['checks'][0]['name']='different'
         self.assertFalse(_recorded_success(owner,events,report))
@@ -267,11 +280,11 @@ def export_fixture(root):
         handoffs=[];events=[]
         for n,gate in enumerate(payload['accepted_gates']):
             handoff={k:gate[k] for k in ('stage','revision','assignment_id')}
-            handoff.update(route=None,artifacts=[{'path':'/private/package','sha256':gate['artifact_sha256'],'kind':'evidence'}],checks=[{'name':'toy','passed':True}])
+            handoff.update(route=None,artifacts=[{'path':'/private/package','sha256':gate['artifact_sha256'],'kind':'evidence'}],checks=[{'name':check['id'],'passed':check['passed']} for check in gate['checks']])
             handoffs.append(handoff)
             events.extend([{'id':2*n+1,'kind':'stage.assigned','data':{'id':gate['assignment_id'],'stage':gate['stage'],'revision':0},'time':n},
                 {'id':2*n+2,'kind':'stage.accepted','data':handoff,'time':n+.5}])
-        gates=[{k:g[k] for k in ('stage','revision','assignment_id','artifact_sha256')}|{'verdict':'passed','passed':1,'total':1} for g in payload['accepted_gates']]
+        gates=[{k:g[k] for k in ('stage','revision','assignment_id','artifact_sha256')}|{'verdict':'passed','passed':len(g['checks']),'total':len(g['checks'])} for g in payload['accepted_gates']]
         summary={'accepted_gates':gates,'evaluations':[{'phase':'final','revision':0,'frozen_artifact_sha256':'a'*64,'verdict':'passed','passed':1,'total':1}],
             'final_evaluation':{'verdict':'passed','passed':1,'total':1,'evidence_sha256':sealed['sha256']}}
         state={**summary,'stage_verdicts':{s:{'status':'passed','checks':[{'name':'toy','passed':True}]} for s in STAGES},'unknown':{'answer':'PRIVATE'}}

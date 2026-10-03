@@ -89,17 +89,81 @@ class PhysicalPrerequisitesTests(unittest.TestCase):
                          'pressure':{'value':101325,'absolute_tolerance':10}}}
         return resources,observed,{'evaluator_password_file':str(password)}
 
+    def prepared_reuse_fixture(self, root):
+        import json
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.physical import prepare_stage
+        bench=root/'benchmark';bench.mkdir()
+        resources,observed,options=self.reference_fixture(root)
+        observed=dict(observed,stage='reuse');observed.pop('evidence_sha256')
+        emitted=root/'emitted';emitted.mkdir();(emitted/'manifest.json').write_text('{}')
+        (bench/'state.json').write_text(json.dumps({'package_dir':str(emitted),
+            'capabilities':{'temperature':'t','humidity':'h','pressure':'p'}}))
+        options.update(binding={'url':'ftdi://scripted/1'},configured_effects=['write'],operator_observations=[observed])
+        with patch('generative_driver.benchmark.case_root',return_value=resources):
+            prepared=prepare_stage('bme280','reuse',root,root/'worker',options=options)
+        self.assertNotIn('blocked',prepared)
+        state=json.loads((bench/'state.json').read_text())
+        return resources,observed,options,state
+
+    def write_measurement(self, root, attempt, measured):
+        import json
+        (root/'benchmark/physical-package-events.jsonl').write_text(json.dumps({'stage':'reuse','attempt_id':attempt,
+            'ok':True,'time':measured,'values':{'t':21.5,'h':40,'p':101325}})+'\n')
+
+    def test_prepared_reference_survives_changed_or_deleted_original_evidence(self):
+        import json
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.physical import check_stage
+        for mutation in ('changed','deleted'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);resources,observed,options,state=self.prepared_reuse_fixture(root)
+                saved=state['physical_reuse_reference']
+                source=Path(observed['evidence_path'])
+                if mutation=='changed':source.write_text('Changed original, not the saved independent evidence.')
+                else:source.unlink()
+                self.write_measurement(root,state['package_attempts']['reuse'],observed['observed_at'])
+                with patch('generative_driver.benchmark.case_root',return_value=resources):
+                    checked=check_stage('bme280','reuse',root,root/'worker',{'status':'completed'},options=options)
+                self.assertTrue(checked['ok'],checked)
+                final=json.loads((root/'benchmark/state.json').read_text())['physical_final']
+                self.assertEqual(final['reference'],saved)
+                self.assertEqual(final['measurement_time'],observed['observed_at'])
+
+    def test_final_uses_event_time_even_when_grading_is_delayed(self):
+        import json
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.physical import check_stage
+        for offset,expected in ((-120,False),(0,True)):
+            with self.subTest(offset=offset),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);resources,observed,options,state=self.prepared_reuse_fixture(root)
+                bench=root/'benchmark';measured=observed['observed_at']+offset
+                self.write_measurement(root,state['package_attempts']['reuse'],measured)
+                with patch('generative_driver.benchmark.case_root',return_value=resources),patch(
+                        'generative_driver.benchmark_support.physical.time.time',return_value=observed['observed_at']+(120 if offset==0 else 0)):
+                    checked=check_stage('bme280','reuse',root,root/'worker',{'status':'completed'},options=options)
+                self.assertEqual(checked['ok'],expected,checked)
+                if expected:
+                    final=json.loads((bench/'state.json').read_text())['physical_final']
+                    self.assertEqual(final['measurement_time'],measured)
+                    from generative_driver.benchmark_support.legacy import score
+                    report={'schema':'benchmark-report/1','case':'bme280','case_version':'3','evaluator_version':'3',
+                        'workflow_status':'completed','stages':{stage:{'workflow_status':'accepted','evaluator_status':'passed'}
+                            for stage in ('acquire','interpret','probe','ground','emit','reuse')},
+                        'case_state':{'physical_final':final}}
+                    with patch('generative_driver.benchmark_support.legacy.case_root',return_value=resources):
+                        self.assertEqual(score(report,options['evaluator_password_file'])['verdict'],'passed')
+
     def test_fresh_measurement_must_match_independent_reference(self):
         import json
         from unittest.mock import patch
         from generative_driver.benchmark_support.physical import check_stage
         for temperature, expected in ((21.5, True), (999, False)):
             with self.subTest(temperature=temperature), tempfile.TemporaryDirectory() as directory:
-                root=Path(directory);bench=root/'benchmark';bench.mkdir()
-                resources,observed,options=self.reference_fixture(root)
-                (bench/'state.json').write_text(json.dumps({'capabilities':{'temperature':'t','humidity':'h','pressure':'p'},
-                    'package_attempts':{'reuse':'current'},'physical_grounding':{'reference':observed}}))
-                (bench/'physical-package-events.jsonl').write_text(json.dumps({'stage':'reuse','attempt_id':'current',
+                root=Path(directory);resources,observed,options,state=self.prepared_reuse_fixture(root)
+                bench=root/'benchmark'
+                (bench/'physical-package-events.jsonl').write_text(json.dumps({'stage':'reuse',
+                    'attempt_id':state['package_attempts']['reuse'],'time':observed['observed_at'],
                     'ok':True,'values':{'t':temperature,'h':40,'p':101325}})+'\n')
                 with patch('generative_driver.benchmark.case_root',return_value=resources):
                     checked=check_stage('bme280','reuse',root,root/'worker',{'status':'completed'},options=options)
@@ -133,16 +197,67 @@ class PhysicalPrerequisitesTests(unittest.TestCase):
         from unittest.mock import patch
         from generative_driver.benchmark_support.physical import check_stage
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);bench=root/'benchmark';bench.mkdir()
-            resources,observed,options=self.reference_fixture(root,age=120)
-            (bench/'state.json').write_text(json.dumps({'capabilities':{'temperature':'t','humidity':'h','pressure':'p'},
-                'package_attempts':{'reuse':'current'},'physical_grounding':{'reference':observed}}))
-            (bench/'physical-package-events.jsonl').write_text(json.dumps({'stage':'reuse','attempt_id':'current','ok':True,
-                'values':{'t':21.5,'h':40,'p':101325}})+'\n')
+            root=Path(directory);resources,observed,options,state=self.prepared_reuse_fixture(root)
+            self.write_measurement(root,state['package_attempts']['reuse'],observed['observed_at']+120)
             with patch('generative_driver.benchmark.case_root',return_value=resources):
                 checked=check_stage('bme280','reuse',root,root/'worker',{'status':'completed'},options=options)
             self.assertFalse(checked['ok'])
             self.assertEqual(checked['fault'],'operator')
+
+    def test_reuse_requires_a_finite_event_timestamp(self):
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.physical import check_stage
+        for measured in (None,True,float('nan'),float('inf')):
+            with self.subTest(measured=measured),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);resources,observed,options,state=self.prepared_reuse_fixture(root)
+                self.write_measurement(root,state['package_attempts']['reuse'],measured)
+                with patch('generative_driver.benchmark.case_root',return_value=resources):
+                    checked=check_stage('bme280','reuse',root,root/'worker',{'status':'completed'},options=options)
+                self.assertFalse(checked['ok'])
+
+    def test_new_reference_requires_new_preparation_and_preserves_old_copy(self):
+        import json
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.physical import prepare_stage,check_stage
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);resources,observed,options,state=self.prepared_reuse_fixture(root)
+            saved=state['physical_reuse_reference'];old_attempt=state['package_attempts']['reuse']
+            original_copy=Path(saved['evidence_path']).read_bytes()
+            new=dict(observed,reference={**observed['reference'],'temperature':{'value':999,'absolute_tolerance':.2}})
+            options['operator_observations'].append(new)
+            self.write_measurement(root,old_attempt,observed['observed_at'])
+            with patch('generative_driver.benchmark.case_root',return_value=resources):
+                self.assertTrue(check_stage('bme280','reuse',root,root/'worker',{},options=options)['ok'])
+                prepared=prepare_stage('bme280','reuse',root,root/'new-worker',options=options)
+                self.assertNotIn('blocked',prepared)
+                self.assertFalse(check_stage('bme280','reuse',root,root/'new-worker',{},options=options)['ok'])
+            updated=json.loads((root/'benchmark/state.json').read_text())
+            self.assertNotEqual(updated['package_attempts']['reuse'],old_attempt)
+            self.assertNotEqual(updated['physical_reuse_reference']['evidence_path'],saved['evidence_path'])
+            self.assertEqual(Path(saved['evidence_path']).read_bytes(),original_copy)
+            self.assertEqual(updated['physical_reuse_reference']['reference']['temperature']['value'],999)
+
+    def test_offline_grade_authenticates_the_saved_final_reference_digest(self):
+        import json
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.physical import check_stage
+        from generative_driver.benchmark_support.legacy import score
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);resources,observed,options,state=self.prepared_reuse_fixture(root)
+            Path(observed['evidence_path']).unlink()
+            self.write_measurement(root,state['package_attempts']['reuse'],observed['observed_at'])
+            with patch('generative_driver.benchmark.case_root',return_value=resources):
+                self.assertTrue(check_stage('bme280','reuse',root,root/'worker',{},options=options)['ok'])
+            final=json.loads((root/'benchmark/state.json').read_text())['physical_final']
+            self.assertEqual(final['reference']['evidence_sha256'],state['physical_reuse_reference']['evidence_sha256'])
+            report={'schema':'benchmark-report/1','case':'bme280','case_version':'3','evaluator_version':'3',
+                'workflow_status':'completed','stages':{s:{'workflow_status':'accepted','evaluator_status':'passed'}
+                    for s in ('acquire','interpret','probe','ground','emit','reuse')},'case_state':{'physical_final':final}}
+            with patch('generative_driver.benchmark_support.legacy.case_root',return_value=resources):
+                self.assertEqual(score(report,options['evaluator_password_file'])['verdict'],'passed')
+                Path(final['reference']['evidence_path']).write_text('Tampered saved copy')
+                with self.assertRaisesRegex(ValueError,'reference'):
+                    score(report,options['evaluator_password_file'])
 
     def test_offline_physical_grade_rechecks_final_values_and_measurement_reference_age(self):
         from unittest.mock import patch

@@ -109,7 +109,6 @@ class ParameterStoreOracleTests(unittest.TestCase):
                               "checks": [{"id": "toy/state/generation", "revision": 0}]},
                  "actions": [{"kind": "observe", "checks": ["toy/state/generation"]}]}
         truth = {"family": "parameter-store", "artifact_sha256": "b" * 64,
-                 "phases": {"diagnostic": phase},
                  "phases": {"diagnostic": phase}}
         pin = {"family": "parameter-store", "scenario_id": "original", "revision": 4}
         contract = parameter_store.contract(pin, truth, "diagnostic")

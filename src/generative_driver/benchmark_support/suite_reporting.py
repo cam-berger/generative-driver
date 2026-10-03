@@ -316,6 +316,9 @@ def _recorded_success(owner,events,report):
             def check_identity(rows):return [(row.get('name',row.get('id')),row.get('passed')) for row in rows]
             if check_identity(report['stages'][stage].get('checks',[]))!=check_identity(selected[0]['checks']):return False
         return handoffs[-1]['stage']=='reuse' and not handoffs[-1].get('route')
+    for handoff in handoffs:
+        if handoff['stage']=='reuse' and not {'fresh_worker_mission','frozen_final_behavior'}<= {
+                check.get('name',check.get('id')) for check in handoff['checks']}:return False
     summary=owner.get('benchmark_summary',{})
     if any(report.get(key)!=summary.get(key) for key in ('accepted_gates','evaluations','final_evaluation')):return False
     if gates!=summary.get('accepted_gates') or not _sha(summary.get('final_evaluation',{}).get('evidence_sha256')):return False

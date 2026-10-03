@@ -5,18 +5,23 @@ import math
 import shutil
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from .cases import _state, _write, _accepted_file
 
 
-def _reuse_reference(state, options):
+def _reuse_reference(state, options, measurement_time=None, preparing=False):
     from .emulator import truth_for_case
     from ..benchmark import case_root
     manifest=json.loads((case_root()/'cases/bme280/case.json').read_text())
     truth=truth_for_case(case_root(),manifest,options)
-    supplied=[o for o in options.get('operator_observations',[]) if isinstance(o,dict) and o.get('stage')=='reuse']
-    observed=supplied[-1] if supplied else state.get('physical_reuse_reference',state.get('physical_grounding',{}).get('reference',{}))
-    return observed,grade_physical_reference(observed,truth)
+    observed=state.get('physical_reuse_reference',{})
+    if preparing:
+        supplied=[o for o in options.get('operator_observations',[]) if isinstance(o,dict) and o.get('stage')=='reuse']
+        observed=supplied[-1] if supplied else observed or state.get('physical_grounding',{}).get('reference',{})
+    elif (not observed.get('evidence_sha256') or state.get('physical_reuse_reference_attempt')!=state.get('package_attempts',{}).get('reuse')):
+        return observed,{'ok':False,'reason':'Prepared independent reference missing for this reuse attempt'}
+    return observed,grade_physical_reference(observed,truth,measurement_time)
 
 
 def _reference_request(reason):
@@ -87,9 +92,10 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                 'inputs':[str(model),str(ws/'probe.json')],'allowed_tools':['emit_package','emit_check'],
                 'context':{'model_dir':str(model),'probe':str(ws/'probe.json')}}
     if stage=='reuse':
-        observed,validated=_reuse_reference(state,options)
+        observed,validated=_reuse_reference(state,options,preparing=True)
         if not validated['ok']:return _reference_request(validated['reason'])
-        reference_copy=Path(run_dir)/('benchmark/reference-reuse'+Path(observed['evidence_path']).suffix)
+        attempt=uuid.uuid4().hex
+        reference_copy=Path(run_dir)/('benchmark/reference-reuse-'+attempt+Path(observed['evidence_path']).suffix)
         shutil.copy2(observed['evidence_path'],reference_copy)
         if hashlib.sha256(reference_copy.read_bytes()).hexdigest()!=validated['evidence_sha256']:
             return _reference_request('Independent evidence changed during preparation')
@@ -100,7 +106,8 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                 source=next((Path(a['path']) for a in h['artifacts'] if Path(a['path']).is_dir()),source);break
         package=ws/'package';shutil.copytree(source,package)
         state.setdefault('package_copies',{})[stage]=str(package)
-        state.setdefault('package_attempts',{})[stage]=__import__('uuid').uuid4().hex
+        state.setdefault('package_attempts',{})[stage]=attempt
+        state['physical_reuse_reference_attempt']=attempt
         _write(state_path,state)
         return {'objective':'Using only this package, take a fresh measurement via benchmark_package_execute(operation="measure"). Report all values with units and identify any unsupported output.',
                 'inputs':[str(package)],'allowed_tools':['benchmark_package_execute'],'context':{'package_dir':str(package)},
@@ -175,9 +182,10 @@ def check_stage(case_id,stage,run_dir,workspace,report,accepted=None,options=Non
         outputs=list(state.get('capabilities',{}).values())
         attempt=state.get('package_attempts',{}).get(stage)
         valid=[r for r in rows if attempt and r.get('attempt_id')==attempt and r.get('ok') and r.get('stage')=='reuse' and len(outputs)==3
+               and type(r.get('time')) in (int,float) and math.isfinite(r['time'])
                and all(type(r.get('values',{}).get(name)) in (int,float) and math.isfinite(r['values'][name]) for name in outputs)]
         from ..benchmark import score_observations
-        observed,validated=_reuse_reference(state,options) if valid else ({},{'ok':False,'reason':'Fresh mission missing'})
+        observed,validated=_reuse_reference(state,options,valid[-1]['time']) if valid else ({},{'ok':False,'reason':'Fresh mission missing'})
         if valid and not validated['ok']:
             return answer(False,'fresh_independent_reference',reason=validated['reason'],fault='operator')
         reference=observed.get('reference',{})
@@ -186,16 +194,17 @@ def check_stage(case_id,stage,run_dir,workspace,report,accepted=None,options=Non
                             for key,row in reference.items()]}
         grade=score_observations(contract,observations)
         ok=bool(valid) and set(reference)=={'temperature','humidity','pressure'} and grade['verdict']=='passed'
-        state['physical_final']={'observations':observations,'score':grade,'reference':observed,'measurement_time':time.time()}
+        state['physical_final']={'observations':observations,'score':grade,'reference':observed,'measurement_time':valid[-1]['time'] if valid else None}
         _write(path,state)
         return answer(ok,'fresh_physical_package_measurement',[events] if events.exists() else [],
             evaluator=grade,final_evaluation=bool(valid),fault=None if ok else 'model' if valid else None)
     raise ValueError('Unknown physical stage '+stage)
 
 
-def grade_physical_reference(observed, truth):
+def grade_physical_reference(observed, truth, measurement_time=None):
+    measured=time.time() if measurement_time is None else measurement_time
     if (not observed.get('channel') or type(observed.get('observed_at')) not in (int,float)
-            or not math.isfinite(observed['observed_at']) or abs(time.time()-observed['observed_at'])>truth['max_reference_age_seconds']):
+            or not math.isfinite(observed['observed_at']) or abs(measured-observed['observed_at'])>truth['max_reference_age_seconds']):
         return {'ok':False,'reason':'Reference channel/timestamp missing or stale'}
     path=Path(observed.get('evidence_path',''))
     if not path.is_file():return {'ok':False,'reason':'Independent photo/log evidence file missing'}

@@ -110,6 +110,11 @@ def score(report, password_file=None):
                 or not math.isfinite(measured) or not math.isfinite(observed_at)
                 or abs(measured-observed_at)>truth['max_reference_age_seconds']):
             raise ValueError('Recorded final measurement lacks a current independent reference')
+        from .physical import grade_physical_reference
+        saved_reference=final.get('reference',{})
+        if (not saved_reference.get('evidence_sha256') or
+                not grade_physical_reference(saved_reference,truth,measured)['ok']):
+            raise ValueError('Recorded final independent reference evidence is missing or changed')
         contract = {'checks':[{'id':k,'expected':v['value'],'absolute_tolerance':v['absolute_tolerance']} for k,v in reference.items()]}
         grade = score_observations(contract, observations)
     else:

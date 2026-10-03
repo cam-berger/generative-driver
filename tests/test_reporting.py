@@ -63,7 +63,7 @@ class ReportTests(unittest.TestCase):
         from generative_driver.reporting import summarize
         result = {"run_id": "example", "status": "completed", "created": 0, "updated": 1,
                   "worker_reports": [], "accepted_handoffs": [], "evaluator_verdicts": []}
-        stages = ["acquire", "interpret", "probe", "ground", "emit", "reuse", "maintain"]
+        stages = ["acquire", "interpret", "probe", "ground", "emit", "reuse"]
         state = {"stage_verdicts": {s: {"status": "passed"} for s in stages}}
         manifest = {"required_stages": stages, "execution": "actual-agent-emulation"}
         self.assertEqual(summarize(result, [], case_manifest=manifest, case_state=state)["verdict"], "unscored")
@@ -167,3 +167,33 @@ class ReportTests(unittest.TestCase):
                     self.assertNotIn('exporting installation', report['provenance_meaning']['toolchain_revision'])
                 finally:
                     controller.close()
+
+class FreshReuseReportTests(unittest.TestCase):
+    def completed(self, stages):
+        return {'run_id': 'scripted', 'status': 'completed', 'created': 0, 'updated': 1,
+                'worker_reports': [{'stage': s, 'assignment_id': s, 'status': 'completed'} for s in stages],
+                'accepted_handoffs': [{'stage': s, 'assignment_id': s} for s in stages]}
+
+    def test_complete_six_gate_report_is_passed_and_has_no_cycle_limits(self):
+        # Catches requiring an obsolete seventh gate after accepted fresh reuse.
+        from generative_driver.reporting import summarize
+        stages = ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse']
+        report = summarize(self.completed(stages), [],
+            case_manifest={'required_stages': stages},
+            case_state={'stage_verdicts': {s: {'status': 'passed'} for s in stages}},
+            provenance={'attempt_limits': {'max_model_repairs': 2, 'max_maintenance_cycles': 1}})
+        self.assertEqual(report['verdict'], 'passed')
+        self.assertEqual(list(report['stages']), stages)
+        self.assertEqual(report['attempt_limits'], {'max_model_repairs': 2})
+
+    def test_historical_completed_report_cannot_pass_as_six_gate_workflow(self):
+        # Catches silently recasting historical measured successes or a partial gate list.
+        from generative_driver.reporting import summarize
+        six = ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse']
+        for stages in (six + ['maintain'], six[:-1]):
+            with self.subTest(stages=stages):
+                report = summarize(self.completed(stages), [],
+                    case_manifest={'required_stages': stages},
+                    case_state={'stage_verdicts': {s: {'status': 'passed'} for s in stages}})
+                self.assertEqual(report['verdict'], 'incompatible')
+                self.assertIn('Unsupported', report['reason'])

@@ -240,7 +240,7 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
 ''')
             controller = Controller(root / 'state')
             try:
-                run = controller.call('start', {'goal':'Scripted seven-stage contract, no model',
+                run = controller.call('start', {'goal':'Scripted six-stage contract, no model',
                     'executor_config':{'command':[sys.executable,str(fake)]}})
                 until = time.monotonic() + 10
                 while time.monotonic() < until:

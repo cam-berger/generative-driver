@@ -15,7 +15,7 @@ class SetupBenchmarkTests(unittest.TestCase):
             self.assertIsNone(result['usage'])
             self.assertFalse(result['model_benchmark'])
             self.assertTrue(Path(result['package']).is_dir())
-            self.assertEqual(result['stages']['maintain']['status'], 'not_applicable')
+            self.assertEqual(tuple(result['stages']), ('acquire','interpret','probe','ground','emit','reuse'))
 
 
 if __name__ == '__main__':

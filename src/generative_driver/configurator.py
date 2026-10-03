@@ -17,7 +17,7 @@ from contextlib import contextmanager
 
 from .agents import StageRequest, execute
 
-STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse', 'maintain')
+STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 TERMINAL = {'completed', 'failed', 'cancelled', 'blocked'}
 STAGE_TOOLS = {
     'acquire': ['acquire_firmware_artifact','acquire_datasheet','acquire_protocol_spec','acquire_classify'],
@@ -26,7 +26,6 @@ STAGE_TOOLS = {
     'ground': ['probe_observe','probe_diff','model_validate'],
     'emit': ['emit_package','emit_check'],
     'reuse': ['interface_describe','interface_execute','emit_check','emit_test_live'],
-    'maintain': ['probe_run','probe_diff','emit_check','emit_test_live','model_validate'],
 }
 
 
@@ -211,8 +210,13 @@ class Controller:
                     continue
                 spec = json.loads(row['spec'])
                 uncertain = row['uncertain'] or bool(set(spec.get('effects',[])) & {'write','actuate'})
+                reason = 'Configurator restarted; explicit resume required'
+                try:
+                    self._workflow_progress(row['id'], db)
+                except ValueError as error:
+                    reason = str(error)
                 db.execute("UPDATE runs SET status='blocked',reason=?,uncertain=?,updated=? WHERE id=?",
-                           ('Configurator restarted; explicit resume required', int(uncertain),time.time(),row['id']))
+                           (reason, int(uncertain),time.time(),row['id']))
                 db.execute("UPDATE assignments SET state='interrupted' WHERE run_id=? AND state='active'", (row['id'],))
                 self._event(row['id'],'run.recovered',{'uncertain_effect':bool(uncertain)},db)
 
@@ -294,7 +298,7 @@ class Controller:
             case=spec.get('case')
             out.update(case=case.get('id') if isinstance(case,dict) else case,
                 scoped_tool_approval=spec.get('scoped_tool_approval'),
-                budget_seconds=spec['budget_seconds'],limits={'max_model_repairs':spec.get('max_revisions',2),'max_maintenance_cycles':1},
+                budget_seconds=spec['budget_seconds'],limits={'max_model_repairs':spec.get('max_revisions',2)},
                 agent={'runtime':spec['executor'],'model':config.get('model'),
                     'provider':config.get('provider') or ('openai' if spec['executor']=='codex' else None),
                     'version':config.get('version'),'settings':{k:config[k] for k in ('reasoning_effort','max_turns') if k in config}})
@@ -305,14 +309,15 @@ class Controller:
                 for table, key in (('reports', 'worker_reports'), ('handoffs', 'accepted_handoffs'), ('verdicts', 'evaluator_verdicts')):
                     out[key] = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM ' + table + ' WHERE run_id=? ORDER BY created', (run_id,))]
                 saved = db.execute('SELECT payload FROM progress WHERE run_id=?',(run_id,)).fetchone()
-                out['progress'] = json.loads(saved['payload']) if saved else None
+                out['progress'] = {key: value for key, value in json.loads(saved['payload']).items()
+                    if key != 'maintenance_cycles'} if saved else None
             if spec.get('_case_pin',{}).get('manifest',{}).get('schema') == 'benchmark-case/2':
                 from .benchmark_support.evidence import public_v2_report
                 state_path = self.home/'runs'/run_id/'benchmark/state.json'
                 state = json.loads(state_path.read_text(encoding='utf-8')) if state_path.is_file() else {}
                 summary = public_v2_report(state)
                 out['benchmark_summary'] = {key:summary[key] for key in
-                    ('accepted_gates','evaluations','final_evaluation','maintenance')}
+                    ('accepted_gates','evaluations','final_evaluation')}
             return out
         if method == 'cancel':
             with self._lock:
@@ -360,6 +365,7 @@ class Controller:
                         raise ValueError('Frozen final evaluation failure is terminal; start a new trial')
                 if row['uncertain']:
                     raise ValueError('Outstanding effect is uncertain; operator must respond with confirmed_safe after reconciliation')
+                self._workflow_progress(run_id)
                 original_spec=json.loads(row['spec'])
                 spec = dict(original_spec)
                 self._verify_snapshot(spec, self.home / 'runs' / run_id)
@@ -625,7 +631,7 @@ class Controller:
                 'evaluator_revision':provenance['evaluator_revision'],
                 'budgets':{'original':policy,'effective':{**policy,'suite_budget_seconds':suite['budget_seconds'],'child_budget_overrides':overrides}},
                 'intervention_policy':{'scoped_tool_approval':frozen['options'].get('scoped_tool_approval'),
-                    'max_model_repairs':2,'max_maintenance_cycles':1}},
+                    'max_model_repairs':2}},
             'dimensions':dimensions,'execution_snapshots':snapshots}
 
     def start(self, params):
@@ -709,10 +715,22 @@ class Controller:
                 now = time.time()
                 db.execute('INSERT INTO runs(id,request_id,spec,status,stage,created,updated) VALUES(?,?,?,?,?,?,?)',
                            (run_id, params.get('request_id'), encoded, 'queued', 'acquire', now, now))
-                db.execute('INSERT INTO progress VALUES(?,?)',(run_id,_json({'revision':0,'next_stage':'acquire','repairs':0,'maintenance_cycles':0,'feedback':None})))
+                db.execute('INSERT INTO progress VALUES(?,?)',(run_id,_json({'revision':0,'next_stage':'acquire','repairs':0,'feedback':None})))
                 self._event(run_id, 'run.started', {'goal': goal, 'executor': executor, 'budget_seconds': budget}, db)
             self._spawn(run_id)
         return {'ok': True, 'run_id': run_id, 'duplicate': False}
+
+    def _workflow_progress(self, run_id, db=None):
+        if db is None:
+            with self._db() as own:
+                return self._workflow_progress(run_id, own)
+        saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run_id,)).fetchone()
+        progress = json.loads(saved['payload']) if saved else None
+        if (not isinstance(progress, dict) or 'maintenance_cycles' in progress
+                or not {'revision', 'next_stage', 'repairs', 'feedback'} <= progress.keys()
+                or progress['next_stage'] not in (*STAGES, None)):
+            raise ValueError('Unsupported saved workflow progress; start a new six-stage run')
+        return progress
 
     def _spawn(self, run_id):
         cancel = threading.Event()
@@ -727,7 +745,7 @@ class Controller:
             row = self._row(run_id)
             spec = json.loads(row['spec'])
             accepted = self.call('result', {'run_id': run_id})['accepted_handoffs']
-            progress = self.call('result', {'run_id':run_id}).get('progress') or {'revision':0,'next_stage':row['stage'],'repairs':0,'maintenance_cycles':0,'feedback':None}
+            progress = self._workflow_progress(run_id)
             revision = progress['revision']
             queue = list(STAGES[STAGES.index(progress['next_stage']):]) if progress['next_stage'] else []
             while queue:
@@ -837,23 +855,12 @@ class Controller:
                         continue
                     self._state(run_id, 'blocked', checked.get('reason', 'Independent stage checks failed'), outcome_category=category)
                     return
-                route = checked.get('route')
-                if route:
-                    if stage != 'maintain' or route != 'interpret':
-                        raise ValueError('Unsupported evaluator revision route')
-                    if progress['maintenance_cycles'] >= 1:
-                        self._state(run_id, 'blocked', 'Maintenance cycle limit reached', outcome_category=category)
-                        return
-                    revision += 1
-                    progress.update(revision=revision,next_stage=route,maintenance_cycles=progress['maintenance_cycles']+1,feedback=checked.get('feedback'))
-                    queue = list(STAGES[STAGES.index(route):])
-                else:
-                    progress['next_stage'] = queue[0] if queue else None
+                if checked.get('route'):
+                    raise ValueError('Unsupported evaluator revision route')
+                progress['next_stage'] = queue[0] if queue else None
                 handoff = self._accept(run_id, assignment, checked, run_dir, workspace, progress)
                 accepted.append(handoff)
-                if route:
-                    self._event(run_id,'run.revision',{**progress,'reason':checked.get('reason')})
-            self._state(run_id, 'completed', 'Seven stages accepted')
+            self._state(run_id, 'completed', 'Fresh reuse accepted')
         except Exception as exc:
             self._state(run_id, 'failed', type(exc).__name__ + ': ' + str(exc), outcome_category='host')
         finally:
@@ -945,11 +952,11 @@ class Controller:
             from .benchmark import prepare_stage
             case_id = case['id'] if isinstance(case, dict) else case
             options = case_options(spec)
-            if spec.get('_case_pin', {}).get('manifest', {}).get('schema') == 'benchmark-case/2' and stage in ('probe','maintain'):
+            if spec.get('_case_pin', {}).get('manifest', {}).get('schema') == 'benchmark-case/2' and stage == 'probe':
                 return self._evaluator_operation(run_dir.name, stage, None, options,
                     lambda: prepare_stage(case_id, stage, run_dir, workspace, accepted, options))
             return prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
-        if stage in ('ground','maintain'):
+        if stage == 'ground':
             return {'blocked':stage + ' requires an independent observation/evaluator adapter; none is configured for this device'}
         if stage == 'interpret':
             from .toolkit import call_tool
@@ -968,7 +975,13 @@ class Controller:
         # Reuse receives only the emitted package; other stages get the immediately
         # preceding accepted artifacts. Neither receives the prior conversation.
         previous = next((h for h in reversed(accepted) if h['stage'] == 'emit'), None) if stage == 'reuse' else (accepted[-1] if accepted else None)
-        source = [a['path'] for a in previous['artifacts']] if previous else list(spec.get('inputs', {}).values())
+        if stage == 'reuse':
+            source = [a['path'] for a in previous['artifacts']
+                      if Path(a['path']).is_dir() and (Path(a['path']) / 'manifest.json').is_file()] if previous else []
+            if len(source) != 1:
+                return {'blocked': 'Fresh reuse requires one accepted emitted package'}
+        else:
+            source = [a['path'] for a in previous['artifacts']] if previous else list(spec.get('inputs', {}).values())
         inputs = []
         for index, raw in enumerate(source):
             path = Path(raw).expanduser().resolve()
@@ -1016,7 +1029,7 @@ class Controller:
                     rows = db.execute("SELECT seq,payload FROM events WHERE run_id=? AND kind='tool.finished' ORDER BY seq", (run_dir.name,)).fetchall()
                 options['worker_events'] = [{'id':str(row['seq']), **json.loads(row['payload'])} for row in rows
                     if json.loads(row['payload']).get('actor') == 'worker']
-                if stage in ('probe','reuse','maintain'):
+                if stage in ('probe','reuse'):
                     return self._evaluator_operation(run_dir.name, stage, assignment['id'], options,
                         lambda: check_stage(case['id'] if isinstance(case, dict) else case, stage, run_dir, workspace, report, accepted, options))
             return check_stage(case['id'] if isinstance(case, dict) else case, stage, run_dir, workspace, report, accepted, options)
@@ -1078,7 +1091,7 @@ class Controller:
             if not selected:
                 return {'ok':False,'reason':'No observed successful probe through the owned connection'}
             checks.append({'name':'observed_probe_execution','passed':True,'evidence':selected})
-        elif stage in ('ground','maintain'):
+        elif stage == 'ground':
             return {'ok':False,'reason':stage + ' requires an independent observation/evaluator adapter; none is configured for this device'}
         elif stage == 'emit':
             from .toolkit import call_tool
@@ -1133,7 +1146,7 @@ class Controller:
 
     def _managed_probe(self,run_id,assignment,model_dir,n):
         """Host-only evaluator callback; never exposed by the worker MCP server."""
-        if assignment['stage'] not in ('probe','ground','maintain') or type(n) is not int or not 1<=n<=3:
+        if assignment['stage'] not in ('probe','ground') or type(n) is not int or not 1<=n<=3:
             raise ValueError('Evaluator probe requires an assigned physical stage and one to three samples')
         source=Path(model_dir).resolve()
         if source!=Path(assignment['workspace'])/'model' or str(source) not in assignment['inputs']:
@@ -1170,7 +1183,7 @@ class Controller:
         allowed=assignment['allowed_tools']
         if evaluator_workspace is not None:
             spec=json.loads(run['spec']);case=spec.get('case')
-            if (case.get('id') if isinstance(case,dict) else case)!='bme280' or assignment['stage'] not in ('probe','ground','maintain'):
+            if (case.get('id') if isinstance(case,dict) else case)!='bme280' or assignment['stage'] not in ('probe','ground'):
                 raise ValueError('Managed evaluator probes are restricted to the physical case stages')
             allowed=['probe_run']
         contracts = [copy.deepcopy(t) for t in list_tools() if t['name'] in allowed]

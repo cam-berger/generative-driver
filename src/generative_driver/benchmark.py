@@ -13,7 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 
-STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse', 'maintain')
+STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 
 
 def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=None):
@@ -180,7 +180,7 @@ def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, aut
         home, request_id = options.pop('home', None), options.pop('request_id', None)
         budget = options.pop('budget_seconds', 10800)
         effects = options.pop('effects', list(definition.default_effects))
-        args = {'goal': 'Recover, check, package, freshly reuse and maintain the benchmark device interface.',
+        args = {'goal': 'Recover, check, package and freshly reuse the benchmark device interface for the desired functions.',
                 'case': case, 'executor': executor or 'codex', 'budget_seconds': budget,
                 'effects': effects, 'case_options': options}
         if options.get('binding') is not None:

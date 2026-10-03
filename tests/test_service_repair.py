@@ -39,7 +39,7 @@ class RepairServiceTests(unittest.TestCase):
                 self.assertIn('inactive',old['reason'])
                 result=call('result',run,home)
                 self.assertEqual(result['progress']['repairs'],1)
-                self.assertEqual(result['progress']['maintenance_cycles'],0)
+                self.assertNotIn('maintenance_cycles',result['progress'])
                 self.assertEqual(result['progress']['revision'],1)
             finally:
                 call('cancel',run,home)

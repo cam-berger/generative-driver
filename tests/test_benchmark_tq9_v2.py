@@ -339,83 +339,96 @@ class TQ9V2Tests(unittest.TestCase):
                         if not getattr(peer,'closed',False):peer.close()
 
     def test_measured_calibration_checks_code_and_complete_reference_mutant_coverage(self):
-        # Catches accepting stale evaluator code or incomplete measured qualification.
+        from test_benchmark_family_calibration import AdmissionTests
+        from generative_driver.benchmark_support.reference_calibration import validate_record
         import copy
-        from generative_driver.benchmark_support.reference_calibration import calibration_identity, validate_record
-        identity=calibration_identity()
-        record={'schema':'benchmark-calibration/1','status':'passed','case':'tq9-v2','evaluator_version':'2',
-            'execution':'reference-calibration','backend':'native-renode','native_process_observed':True,
-            'images':{'firmware.bin':'a'*64},'input_hashes':{'source':'b'*64,'contract':'c'*64},
-            'evaluator_identity':identity,'tools':{name:'observed fixture version' for name in ('compiler','objcopy','renode','ghidra','java')},
-            'references':[{'id':name,'model_sha256':digest,'passed':True,'scenarios':['original','semantic','control','identity']}
-                for name,digest in [('reference-a','d'*64),('reference-b','e'*64)]],
-            'required_mutants':['wrong-scale','constant-output','wrong-state','false-drift'],
-            'mutants':[{'id':name,'rejected':True,'failed_checks':['fixture/check'], 'failures':[{'id':'fixture/check','reason':'value mismatch'}], 'scenario':scenario}
-                for name in ('wrong-scale','constant-output','wrong-state','false-drift') for scenario in ('original','semantic','control','identity')],
-            'scenarios':{name:{'passed':True} for name in ('original','semantic','control','identity')}}
-        names=[ref['id']+'-'+scenario for ref in record['references'] for scenario in ref['scenarios']]
-        names += [row['id']+'-'+row['scenario'] for row in record['mutants']]
-        record['execution_inputs']={name:{'model_sha256':'a'*64,'capabilities_sha256':'b'*64} for name in names}
-        record['runs']=[{'id':name,**value} for name,value in record['execution_inputs'].items()]
-        manifest={'id':'tq9-v2','evaluator_version':'2','images':record['images'], 'calibration':{'input_hashes':record['input_hashes']}}
+        manifest,record=AdmissionTests().fixture()
+        manifest.update(id='tq9-v2',family='tq9')
+        record.update(case='tq9-v2')
+        names=['wrong-scale','constant-output','wrong-state','unsigned-temperature','wrong-temperature-scale',
+               'wrong-temperature-unit','wrong-temperature-byteorder','wrong-crc','wrong-duty-effect']
+        template=copy.deepcopy(record['mutants'][0]); measured=copy.deepcopy(record['runs'][4])
+        record['runs']=record['runs'][:4]; record['mutants']=[]
+        for name in names:
+            row=copy.deepcopy(template);row.update(id=name,run=name)
+            run=copy.deepcopy(measured);run.update(id=name)
+            record['mutants'].append(row);record['runs'].append(run)
+        record['required_mutants']=names
+        record['execution_inputs']={r['id']:{k:r[k] for k in ('model_sha256','capabilities_sha256')} for r in record['runs']}
+        record['input_hashes'].pop('inventory');record['input_hashes']['analysis']='a'*64
         self.assertTrue(validate_record(manifest,record)['ok'])
-        for change in ('code','reference','mutant','reason','backend','executed-model','executed-capabilities'):
+        for change in ('code','reference','mutant','reason','backend','executed-model','executed-capabilities','diagnostic','uncovered-run'):
             bad=copy.deepcopy(record)
             if change=='code':bad['evaluator_identity']['sha256']='f'*64
             elif change=='reference':bad['references'].pop()
             elif change=='mutant':bad['mutants'].pop()
-            elif change=='reason':bad['mutants'][0]['failures']=[]
+            elif change=='reason':bad['runs'][-1]['checks'][0]['reason']='host failure'
             elif change=='executed-model':bad['runs'][0]['model_sha256']='f'*64
             elif change=='executed-capabilities':bad['runs'][0]['capabilities_sha256']='f'*64
+            elif change=='diagnostic':bad['runs'][0]['phase']='final'
+            elif change=='uncovered-run':bad['runs'].append({**bad['runs'][0],'id':'extra'})
             else:bad['backend']='scripted TCP fixture'
             with self.subTest(change=change):self.assertFalse(validate_record(manifest,bad)['ok'])
 
-        # Authenticated synthetic calibration exercises admission, never claims native work.
+    def test_tq9_admission_binds_every_executed_input_to_authenticated_definitions(self):
+        from test_benchmark_family_calibration import AdmissionTests
         from unittest.mock import patch
         from generative_driver.benchmark_support.registry import require_calibration
-        from generative_driver.benchmark_support.reference_calibration import input_hashes
+        from generative_driver.benchmark_support.reference_calibration import input_hashes, tq9_execution_inputs, CORE_MUTANTS
         from generative_driver.benchmark_support.snapshots import canonical_digest
-        from generative_driver.benchmark_support.truth import seal
-        truth = {key:{} for key in ('source_hashes','contracts','recipe','references','build','analysis')}
-        truth['images'] = record['images']
-        truth['mutations'] = {'required':[],'mutations':[]}
+        import copy
+        manifest,record=AdmissionTests().fixture()
+        manifest.update(id='tq9-v2',family='tq9',schema='benchmark-case/2')
+        record['case']='tq9-v2'
         model={'operations':{'temp':{'outputs':{'value':{'scale':1,'unit':'degC'}}},'arm':{'toy':1},'disarm':{'toy':0}}}
         caps={'tasks':{'temperature':{'operation':'temp','outputs':{'temperature':{'output':'value','unit':'degC'}}},
                        'arm':{'operation':'arm','outputs':{}},'disarm':{'operation':'disarm','outputs':{}}}}
-        truth['references']={name:{'model':{**model,'toy_reference':name},'semantic_model':{**model,'toy_reference':name+'semantic'},
-            'identity_model':{**model,'toy_reference':name+'identity'},'capabilities':caps} for name in ('reference-a','reference-b')}
-        truth=json.loads(json.dumps(truth,sort_keys=True))
-        from generative_driver.benchmark_support.reference_calibration import tq9_execution_inputs
+        names=['unsigned-temperature','wrong-temperature-scale','wrong-temperature-unit',
+               'wrong-temperature-byteorder','wrong-crc','wrong-duty-effect']
+        truth={key:{} for key in ('source_hashes','contracts','recipe','build','analysis')}
+        truth['images']=record['images']
+        truth['references']={name:{'model':{**copy.deepcopy(model),'toy_reference':name},'capabilities':copy.deepcopy(caps)}
+                             for name in ('reference-a','reference-b')}
+        truth['mutations']={'required':names,'mutations':[{'id':name,'patch':[
+            {'op':'replace','path':'/operations/temp/outputs/value/scale','value':7}]} for name in names]}
+        template=copy.deepcopy(record['runs'][4]);mutant=copy.deepcopy(record['mutants'][0])
+        record['runs']=record['runs'][:4];record['mutants']=[]
+        for ref in record['references']:
+            old=ref['id'];ref['id']='reference-'+old
+            ref['model_sha256']=canonical_digest(truth['references'][ref['id']]['model'])
+            ref['runs']=['reference-'+name for name in ref['runs']]
+        for run in record['runs']:run['id']='reference-'+run['id']
+        for name in [*CORE_MUTANTS,*names]:
+            run_id=name+'-original' if name in CORE_MUTANTS else name
+            record['runs'].append({**copy.deepcopy(template),'id':run_id})
+            record['mutants'].append({**copy.deepcopy(mutant),'id':name,'run':run_id})
+        record['required_mutants']=[*CORE_MUTANTS,*names]
         record['execution_inputs']=tq9_execution_inputs(truth)
-        record['runs']=[{'id':name,**value} for name,value in record['execution_inputs'].items()]
-
-        record['input_hashes'] = input_hashes(truth)
-        manifest.update(schema='benchmark-case/2')
-        manifest['calibration'] = {'status':'passed','input_hashes':record['input_hashes'],
-                                  'evidence_sha256':canonical_digest(record)}
-        with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp);password=root/'password';password.write_text('synthetic admission fixture')
-            truth['calibration']=record
-            manifest['truth']={'path':'truth.enc','sha256':seal(truth,root/'truth.enc',password.read_text())}
-            pin={'case_id':'tq9-v2','scenario_id':'control','case_seed':0,
-                 'manifest':manifest,'calibration':manifest['calibration']}
-            with patch('generative_driver.benchmark_support.registry.pin_case',return_value=pin), \
-                 patch('generative_driver.benchmark.case_root',return_value=root):
-                self.assertTrue(require_calibration(pin,{'evaluator_password_file':str(password)})['ok'])
+        for run in record['runs']:run.update(record['execution_inputs'][run['id']])
+        for ref in record['references']:ref['execution_inputs']={name:copy.deepcopy(record['execution_inputs'][name]) for name in ref['runs']}
+        for row in record['mutants']:row['execution_input']=copy.deepcopy(record['execution_inputs'][row['run']])
+        record['input_hashes']=input_hashes(truth)
+        manifest['calibration']={'status':'passed','input_hashes':record['input_hashes'],'evidence_sha256':canonical_digest(record)}
+        truth['calibration']=record
+        pin={'case_id':'tq9-v2','scenario_id':'original','case_seed':0,'manifest':manifest,'calibration':manifest['calibration']}
+        with patch('generative_driver.benchmark_support.registry.pin_case',return_value=pin),patch(
+             'generative_driver.benchmark_support.emulator.truth_for_case',return_value=truth):
+            self.assertTrue(require_calibration(pin,{})['ok'])
+            for run in record['runs']:
                 for field in ('model_sha256','capabilities_sha256'):
-                    for name in ('reference-a-original','reference-b-semantic','wrong-state-control'):
-                        row=next(row for row in record['runs'] if row['id']==name)
-                        old=row[field];row[field]='f'*64;record['execution_inputs'][name][field]='f'*64
-                        manifest['calibration']['evidence_sha256']=canonical_digest(record)
-                        manifest['truth']['sha256']=seal(truth,root/'truth.enc',password.read_text())
-                        with self.subTest(field=field,run=name),self.assertRaisesRegex(ValueError,'Calibration'):
-                            require_calibration(pin,{'evaluator_password_file':str(password)})
-                        row[field]=old;record['execution_inputs'][name][field]=old
-                manifest['calibration']['evidence_sha256']=canonical_digest(record)
-                truth['recipe']={'changed':True}
-                manifest['truth']['sha256']=seal(truth,root/'truth.enc',password.read_text())
-                with self.assertRaisesRegex(ValueError,'Calibration'):
-                    require_calibration(pin,{'evaluator_password_file':str(password)})
+                    old=run[field];run[field]='f'*64;record['execution_inputs'][run['id']][field]='f'*64
+                    for ref in record['references']:
+                        if run['id'] in ref['execution_inputs']:ref['execution_inputs'][run['id']][field]='f'*64
+                    for row in record['mutants']:
+                        if row['run']==run['id']:row['execution_input'][field]='f'*64
+                    manifest['calibration']['evidence_sha256']=canonical_digest(record)
+                    with self.subTest(run=run['id'],field=field),self.assertRaisesRegex(ValueError,'Calibration'):
+                        require_calibration(pin,{})
+                    run[field]=old;record['execution_inputs'][run['id']][field]=old
+                    for ref in record['references']:
+                        if run['id'] in ref['execution_inputs']:ref['execution_inputs'][run['id']][field]=old
+                    for row in record['mutants']:
+                        if row['run']==run['id']:row['execution_input'][field]=old
 
     def test_reference_gate_refuses_structurally_invalid_mutant_before_native_start(self):
         # Catches recording a malformed model as a measured behavioral rejection.

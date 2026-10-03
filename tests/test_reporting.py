@@ -155,14 +155,14 @@ class ReportTests(unittest.TestCase):
                     manifest_path.write_text(json.dumps(manifest))
                     with patch('generative_driver.client.call', side_effect=lambda method, params, **kwargs: controller.call(method, params)), patch('generative_driver.reporting._tree_hash', return_value='exporter-new'):
                         report = report_run(run['run_id'], home=root / 'home')
-                    self.assertEqual(report['case_version'], '1')
-                    self.assertEqual(report['evaluator_version'], '1')
+                    self.assertEqual(report['case_version'], '2')
+                    self.assertEqual(report['evaluator_version'], '2')
                     self.assertEqual(report['execution'], 'actual-agent-emulation')
                     self.assertEqual(report['snapshot_sha256'], saved['snapshot_sha256'])
                     self.assertEqual(report['toolchain_revision'], saved['executed']['toolchain_revision'])
                     self.assertEqual(report['evaluator_revision'], saved['executed']['evaluator_revision'])
                     self.assertEqual(report['case_pin'], saved['case_pin'])
-                    self.assertEqual(report['scenario_id'], 'identity')
+                    self.assertEqual(report['scenario_id'], 'original')
                     self.assertEqual(report['case_seed'], 0)
                     self.assertNotIn('exporting installation', report['provenance_meaning']['toolchain_revision'])
                 finally:

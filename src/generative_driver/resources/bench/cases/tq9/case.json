@@ -1,16 +1,15 @@
 {
   "schema": "benchmark-case/1",
   "id": "tq9",
-  "version": "1",
-  "evaluator_version": "1",
+  "version": "2",
+  "evaluator_version": "2",
   "execution": "actual-agent-emulation",
   "images": {
-    "firmware.bin": "c1e9ab72e497c13d1e8037a9773c8b229adf6eb63665c3a8f750894c65d92d51",
-    "firmware-next.bin": "0a4b5fa1545bbba2998e55f10fdc65366b7b134da44c584cb693bce448ff6aad"
+    "firmware.bin": "c1e9ab72e497c13d1e8037a9773c8b229adf6eb63665c3a8f750894c65d92d51"
   },
   "truth": {
     "path": "groundtruth/tq9.enc",
-    "sha256": "daf4fda57fe760e5b28726771ce18df771b30fbe320fe6543531967d773e8c67"
+    "sha256": "6a20c056b7fc09986e9844f96e71b3f01846e2389e55a0a578d65db4cbd91588"
   },
   "required_stages": [
     "acquire",
@@ -18,8 +17,7 @@
     "probe",
     "ground",
     "emit",
-    "reuse",
-    "maintain"
+    "reuse"
   ],
   "dependencies": [
     "Renode 1.16.1",
@@ -39,6 +37,9 @@
     "probe": "continuous emulator virtual time",
     "package_calls": "paused between calls, running inside each call; model timing must hold inside each operation",
     "clock": "firmware reset-clock SysTick frequency configured by encrypted reference recipe",
-    "limitation": "Agent thinking time is excluded from device watchdog time during reuse and maintain; this is not a real-time control benchmark"
-  }
+    "limitation": "Agent thinking time is excluded from device watchdog time during reuse; this is not a real-time control benchmark"
+  },
+  "scenarios": [
+    "original"
+  ]
 }

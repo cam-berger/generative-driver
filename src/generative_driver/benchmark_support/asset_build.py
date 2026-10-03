@@ -37,13 +37,11 @@ def build_argv(compiler, source_dir, elf, flags):
             str(source / 'application.c'), '-lgcc', '-o', str(elf)]
 
 
-BUILD_FILES = {'build/build-report.json', 'build/firmware.elf', 'build/firmware-drift.elf',
-               'build/firmware.bin', 'build/firmware-drift.bin'}
+BUILD_FILES = {'build/build-report.json', 'build/firmware.elf', 'build/firmware.bin'}
 _INPUT_FILES = {'AUTHORING.json', 'LICENSE', 'source/startup.c', 'source/board_uart.c',
     'source/application.c', 'source/linker.ld', 'build.py', 'build-recipe.json',
     'native/platform.repl', 'native/device.resc', 'native/observation-map.json',
-    'diagnostic/episodes.json', 'final/episodes.json', 'maintenance/semantic.json',
-    'maintenance/control.json', 'oracle/vectors.json', 'mutants/manifest.json',
+    'diagnostic/episodes.json', 'final/episodes.json', 'oracle/vectors.json', 'mutants/manifest.json',
     *{f'reference-{ref}/{name}.json' for ref in ('a', 'b') for name in ('model', 'capabilities', 'replies')}}
 _FAMILIES = {'sampled-sensor', 'parameter-store'}
 
@@ -118,13 +116,13 @@ def build_family(authoring_root, compiler, output_dir):
         raise ValueError('Require adjacent native objcopy')
     recipe = _json(root / 'build-recipe.json')
     if (recipe.get('schema') != 'benchmark-family-build/1' or not isinstance(recipe.get('flags'), list)
-            or set(recipe.get('variants', {})) != {'firmware', 'firmware-drift'}
+            or set(recipe.get('variants', {})) != {'firmware'}
             or any(not isinstance(v, list) for v in recipe['variants'].values())):
         raise ValueError('Invalid family build recipe')
     inputs = inventory(metadata['family']) - BUILD_FILES
     source_hashes = {name: _hash(root / name) for name in sorted(inputs)}
     steps = []
-    for variant in ('firmware', 'firmware-drift'):
+    for variant in ('firmware',):
         argv = build_argv(compiler, root / 'source', Path('{output}') / (variant + '.elf'),
                           recipe['flags'] + recipe['variants'][variant])
         converted = ['{compiler}']
@@ -139,7 +137,7 @@ def build_family(authoring_root, compiler, output_dir):
         steps.append(['{objcopy}', '-O', 'binary', '{output}/' + variant + '.elf', '{output}/' + variant + '.bin'])
     manifest = {'schema': 'benchmark-build/1', 'tools': {'compiler': {'version': GCC_VERSION},
         'objcopy': {'filename': objcopy_name, 'version': OBJCOPY_VERSION}},
-        'source_hashes': source_hashes, 'outputs': ['firmware.elf', 'firmware-drift.elf', 'firmware.bin', 'firmware-drift.bin'],
+        'source_hashes': source_hashes, 'outputs': ['firmware.elf', 'firmware.bin'],
         'steps': steps}
     output.mkdir(parents=True, mode=0o700, exist_ok=True)
     reports = []
@@ -155,7 +153,7 @@ def build_family(authoring_root, compiler, output_dir):
             report['execution'] = metadata['execution']
             _write(output / ('build-' + str(index)) / 'build-report.json', report)
             reports.append(report)
-    binaries = ('firmware.bin', 'firmware-drift.bin')
+    binaries = ('firmware.bin',)
     if any(reports[0]['images'][name] != reports[1]['images'][name] for name in binaries):
         raise ValueError('Native images are not reproducible; canonical assets were preserved')
     for name in binaries:
@@ -189,14 +187,14 @@ def assemble_release(authoring_root, build_report, password_file, output_dir):
             raise ValueError('Authoring changed after native build')
     if set(report['source_hashes']) != inventory(metadata['family']) - BUILD_FILES:
         raise ValueError('Incomplete source inventory')
-    for name in ('firmware.bin', 'firmware-drift.bin', 'firmware.elf', 'firmware-drift.elf'):
+    for name in ('firmware.bin', 'firmware.elf'):
         if _hash(root / 'build' / name) != report['images'][name]:
             raise ValueError('Built asset changed after native build')
     case_id = metadata['id']
-    allowed = {f'cases/{case_id}/{name}' for name in ('case.json', 'firmware.bin', 'firmware-drift.bin')} | {f'groundtruth/{case_id}.enc'}
+    allowed = {f'cases/{case_id}/{name}' for name in ('case.json', 'firmware.bin')} | {f'groundtruth/{case_id}.enc'}
     if output.exists() and (not output.is_dir() or _files(output) - allowed):
         raise ValueError('Unexpected plaintext or unrelated files under release output')
-    for name in ('firmware.bin', 'firmware-drift.bin'):
+    for name in ('firmware.bin',):
         existing = output / 'cases' / case_id / name
         if existing.exists() and _hash(existing) != report['images'][name]:
             raise ValueError('Release would replace a different pinned image')
@@ -204,7 +202,7 @@ def assemble_release(authoring_root, build_report, password_file, output_dir):
                for name in sorted(inventory(metadata['family']))}
     hashes = {name: entry['sha256'] for name, entry in entries.items()}
     input_hashes = {'source': _canonical({name: value for name, value in hashes.items() if name.startswith('source/')}),
-        'contract': _canonical({name: value for name, value in hashes.items() if name.startswith(('diagnostic/', 'final/', 'maintenance/', 'oracle/'))})}
+        'contract': _canonical({name: value for name, value in hashes.items() if name.startswith(('diagnostic/', 'final/', 'oracle/'))})}
     payload = {'schema': 'benchmark-family-truth/1', 'case_id': case_id, 'family': metadata['family'],
                'inventory_state': 'pending', 'inventory': entries, 'inventory_sha256': _canonical(hashes),
                'input_hashes': input_hashes}
@@ -215,12 +213,11 @@ def assemble_release(authoring_root, build_report, password_file, output_dir):
     if truth.unlock(encrypted, password, digest) != payload:
         raise ValueError('Sealed inventory round-trip failed')
     manifest = {'schema': 'benchmark-case/2', 'id': case_id, 'family': metadata['family'],
-        'version': '1', 'evaluator_version': '2', 'adapter_key': 'emulator-v2',
+        'version': '3', 'evaluator_version': '3', 'adapter_key': 'emulator-v2',
         'execution': 'actual-agent-emulation', 'evidence_track': 'firmware', 'scope': 'full-workflow',
-        'scenarios': ['semantic', 'control'], 'scenario_descriptors': {
-            'semantic': {'kind': 'behavior-change'}, 'control': {'kind': 'no-change'}},
-        'required_stages': ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse', 'maintain'],
-        'images': {name: report['images'][name] for name in ('firmware.bin', 'firmware-drift.bin')},
+        'scenarios': ['original'], 'scenario_descriptors': {'original': {'kind': 'stable'}},
+        'required_stages': ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse'],
+        'images': {name: report['images'][name] for name in ('firmware.bin',)},
         'truth': {'path': 'groundtruth/' + case_id + '.enc', 'sha256': digest},
         'default_effects': ['write'], 'approval_scope': 'emulator',
         'calibration': {'status': 'pending', 'input_hashes': input_hashes},

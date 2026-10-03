@@ -1,41 +1,26 @@
 {
   "schema": "benchmark-suite/1",
   "id": "development-pilot",
-  "version": "1",
+  "version": "2",
   "entries": [
     {
       "case": "tq9-v2",
-      "scenario": "semantic",
-      "case_seed": 0
-    },
-    {
-      "case": "tq9-v2",
-      "scenario": "control",
+      "scenario": "original",
       "case_seed": 0
     },
     {
       "case": "sampled-sensor-v1",
-      "scenario": "semantic",
-      "case_seed": 0
-    },
-    {
-      "case": "sampled-sensor-v1",
-      "scenario": "control",
+      "scenario": "original",
       "case_seed": 0
     },
     {
       "case": "parameter-store-v1",
-      "scenario": "semantic",
-      "case_seed": 0
-    },
-    {
-      "case": "parameter-store-v1",
-      "scenario": "control",
+      "scenario": "original",
       "case_seed": 0
     }
   ],
   "repetitions": 3,
   "child_budget_seconds": 10800,
-  "suite_budget_seconds": 216000,
+  "suite_budget_seconds": 108000,
   "max_active_children": 1
 }

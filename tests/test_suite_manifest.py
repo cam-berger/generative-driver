@@ -129,7 +129,7 @@ class FreezeTests(unittest.TestCase):
             with patch.dict('os.environ', {'GENERATIVE_DRIVER_HOME': str(home)}):
                 for case in ('setup-smoke', 'bme280', 'unknown-case', 'tq9'):
                     manifest = pilot_manifest()
-                    manifest['entries'] = [{'case': case, 'scenario': 'original', 'case_seed': 0}]
+                    manifest['entries'] = [{'case': case, 'scenario': 'unsupported', 'case_seed': 0}]
                     with self.subTest(case=case), self.assertRaises(ValueError):
                         freeze_suite(manifest, 'codex', {'command': ['scripted-runtime']}, {}, {})
             self.assertFalse(home.exists())

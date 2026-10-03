@@ -173,7 +173,7 @@
       "verify-release-residual-i1.log": "94ef74c3a927053662e58b6c883e4453dcd2816b61dda7d6df8b1d07fe3e5600"
     }
   },
-  "independent_whole_branch_review": "completed: With fixes; scoped rereview completed and identified residual I1; residual priority corrected and freshly qualified; parent residual verification pending; benign M2 warnings deferred",
+  "independent_whole_branch_review": "completed With fixes; scoped rereview accepted I2/M1/M3; residual I1 verification accepted; no open Important findings; benign M2 warnings deferred",
   "unobserved": [
     "current model performance",
     "physical device performance",
@@ -191,5 +191,12 @@
   },
   "verification_notes": [
     "The first concurrent installed Python 3.11 suite failed test_shutdown_drains_an_accepted_tool_before_confirming_exit at entered.wait(5). The unchanged isolated lifecycle suite passed 7 tests in 1.178s, and the repeated complete installed 3.11 gate passed. Original failed and repeat logs remain preserved; the precise transient cause was not established."
-  ]
+  ],
+  "review_closure": {
+    "reviewed_head": "49fafa78c9af8cf3bac8f7d60e1c0b7d4206a58c",
+    "residual_review_sha256": "babbc9f2c7cdde90c817d6da6fa5869ae7722c9c650f7ccf72ce652ebbeac1e4",
+    "residual_verdict": "I1 addressed; approved within residual scope",
+    "parent_accepted": true,
+    "integration_status": "ready for user integration; not merged or pushed"
+  }
 }

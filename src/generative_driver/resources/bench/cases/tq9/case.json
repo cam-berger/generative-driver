@@ -9,7 +9,7 @@
   },
   "truth": {
     "path": "groundtruth/tq9.enc",
-    "sha256": "80ff059ecb1214d626e4a129459f89e8572fbd10b94957813e32152a4219c387"
+    "sha256": "e619bcf4897bd64f95ea72a945fdb93a7a4df9e1a5978fdb15237bfa37ad2862"
   },
   "required_stages": [
     "acquire",

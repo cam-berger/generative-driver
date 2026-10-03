@@ -29,7 +29,7 @@ This emits a new ciphertext and pin without changing installed resources. Publis
 
 ## Native reference qualification
 
-Use native GCC, objcopy, Renode, Ghidra and Java to rebuild/analyze the original image and execute two independent references plus required behavioral mutants. Correct references must pass diagnostic/final contracts; wrong models must fail their declared checks. Missing tools, host faults or skipped checks cannot qualify a case. The record commits actual execution inputs and raw observation evidence.
+For calibrated V2 families, use native GCC, objcopy, Renode, Ghidra and Java to rebuild/analyze the original image and execute two independent references plus required behavioral mutants. Correct references must pass diagnostic/final contracts; wrong models must fail their declared checks. Missing tools, host faults or skipped checks cannot qualify a case. The record commits actual execution inputs and raw observation evidence.
 
 ```sh
 python -m generative_driver benchmark truth calibrate --case tq9-v2 --password-file "/private/evaluator/tq9-v2.password" --compiler "/absolute/path/to/arm-none-eabi-gcc" --renode "/absolute/path/to/renode" --ghidra-home "/absolute/path/to/ghidra" --java-home "/absolute/path/to/java-home" --output "/private/evaluator/calibration"

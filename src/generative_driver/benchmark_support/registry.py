@@ -375,7 +375,16 @@ def require_calibration(pin: dict, options: dict) -> dict:
                      and truth['images'] == manifest['images']
                      and set(record['required_mutants']) == set(CORE_MUTANTS) | set(truth['mutations']['required'])
                      and record['execution_inputs']==tq9_execution_inputs(truth)
+                     and {r['id']: r['expected_failed_checks'] for r in record['mutants']} ==
+                         truth['mutations']['expected_failed_checks']
                      and validate_record(manifest, record)['ok'])
+            from .tq9_v2 import contract as tq9_contract
+            for run in record['runs']:
+                artifact=run['package_sha256'] or run['model_sha256']
+                contract=tq9_contract({'scenario_id':run['scenario'],'case_seed':0,'revision':0},
+                    {**truth,'artifact_sha256':artifact},run['phase'])
+                valid = (valid and canonical_digest(contract)==run['contract_sha256']
+                         and [c['id'] for c in contract['checks']]==run['check_ids'])
     except (KeyError, TypeError, ValueError):
         valid = False
     if not valid:

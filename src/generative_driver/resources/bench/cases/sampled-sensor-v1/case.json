@@ -24,7 +24,7 @@
   },
   "truth": {
     "path": "groundtruth/sampled-sensor-v1.enc",
-    "sha256": "52453558e847a2b12b4a81b78de53bf17a8288a10a95cbe34a0c45af0d7f5a9c"
+    "sha256": "2394f88591d213e02ecd5b7cdda2c8bfbea9ed4484e195479497bee090d2d281"
   },
   "default_effects": [
     "write"
@@ -32,15 +32,15 @@
   "approval_scope": "emulator",
   "calibration": {
     "status": "passed",
-    "evidence_sha256": "e4964d992fd2c586627a3fa338edf3065ad1bfe3bc18fa968d3838f45abb7b05",
+    "evidence_sha256": "3614ac5e3aa6aad708ae740eac2e194cc8badc4fdfbd5758abb617c0cd6417aa",
     "input_hashes": {
       "source": "22db46bf51be6ec5fdd141211385ac88b48eaa825527130fb00af1bc8cbc5918",
       "contract": "26cb998bce5fd42e0c8497312546951adc3dfa75d2ab8956ea8bba2ae4397065",
       "recipe": "e8b105d2b902b7eacbfc2d8ea5e8bca6d8141555c7035948394238e7cbb08975",
       "references": "986ae98aeddda6e36a16aaafb35f680d04ee303b80be1391483f4416ca048141",
       "mutations": "3d5bc20a38aae7399e49e48dbbd6c3a4909cfb64fd3601f2aee5888c41fd47ff",
-      "build": "b3465c4625787bc74cf8be8ecf850a0f51bcc71cf4ff3cbafb5e88d690d68476",
-      "inventory": "6af2d97553f6fbb93b973ba9c98ab6c4e5946f7ec7a643c3f88b506fa085a0a2"
+      "build": "a1439c47a203dacbb686edf328b28bb790402b0e024433ec1ca416f2f5f16da8",
+      "inventory": "298ac92651ea80bc1da5324465a6ce100d775ea67671d4dc3fe89bc7ceed2694"
     }
   },
   "provenance": {

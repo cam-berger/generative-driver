@@ -370,7 +370,7 @@ class TQ9V2Tests(unittest.TestCase):
             else:bad['backend']='scripted TCP fixture'
             with self.subTest(change=change):self.assertFalse(validate_record(manifest,bad)['ok'])
 
-    def test_tq9_admission_binds_every_executed_input_to_authenticated_definitions(self):
+    def tq9_admission_fixture(self):
         from test_benchmark_family_calibration import AdmissionTests
         from unittest.mock import patch
         from generative_driver.benchmark_support.registry import require_calibration
@@ -407,28 +407,93 @@ class TQ9V2Tests(unittest.TestCase):
         for run in record['runs']:run.update(record['execution_inputs'][run['id']])
         for ref in record['references']:ref['execution_inputs']={name:copy.deepcopy(record['execution_inputs'][name]) for name in ref['runs']}
         for row in record['mutants']:row['execution_input']=copy.deepcopy(record['execution_inputs'][row['run']])
+        from generative_driver.benchmark_support.tq9_v2 import contract
+        phases={phase:{'temperature_vectors':[{'stimulus':value,'expected':value,'absolute_tolerance':0}],
+            'effect_vectors':[{'task':'arm','inputs':{}},{'task':'set_duty','inputs':{'duty':200}},
+                              {'task':'disarm','inputs':{}}]} for phase,value in [('diagnostic',-7),('final',29)]}
+        truth['contracts']={'units':{'temperature':'degC','duty':'permille'},'scenarios':{'original':{'phases':phases}}}
+        intended=['final/temperature-0/temperature']
+        truth['mutations']['expected_failed_checks']={row['id']:list(intended) for row in record['mutants']}
+        for row in record['mutants']:
+            row['failed_checks']=list(intended);row['expected_failed_checks']=list(intended)
+        for run in record['runs']:
+            if not run['id'].startswith('reference-'):
+                run.update(phase='final',package_sha256='c'*64)
+            scoring=contract({'scenario_id':'original','case_seed':0,'revision':0},
+                {**truth,'artifact_sha256':run['package_sha256'] or run['model_sha256']},run['phase'])
+            run['contract_sha256']=canonical_digest(scoring)
+            run['check_ids']=[check['id'] for check in scoring['checks']]
+            run['checks']=[{'id':identifier,'passed':True} if run['passed'] or identifier not in intended
+                else {'id':identifier,'passed':False,'reason':'value mismatch'} for identifier in run['check_ids']]
         record['input_hashes']=input_hashes(truth)
         manifest['calibration']={'status':'passed','input_hashes':record['input_hashes'],'evidence_sha256':canonical_digest(record)}
         truth['calibration']=record
         pin={'case_id':'tq9-v2','scenario_id':'original','case_seed':0,'manifest':manifest,'calibration':manifest['calibration']}
+        return manifest,record,truth,pin
+
+    def test_tq9_admission_binds_every_executed_input_to_authenticated_definitions(self):
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.registry import require_calibration
+        from generative_driver.benchmark_support.snapshots import canonical_digest
+        from generative_driver.benchmark_support.tq9_v2 import contract
+        manifest,record,truth,pin=self.tq9_admission_fixture()
         with patch('generative_driver.benchmark_support.registry.pin_case',return_value=pin),patch(
              'generative_driver.benchmark_support.emulator.truth_for_case',return_value=truth):
             self.assertTrue(require_calibration(pin,{})['ok'])
             for run in record['runs']:
                 for field in ('model_sha256','capabilities_sha256'):
+                    old_contract=run['contract_sha256']
                     old=run[field];run[field]='f'*64;record['execution_inputs'][run['id']][field]='f'*64
                     for ref in record['references']:
                         if run['id'] in ref['execution_inputs']:ref['execution_inputs'][run['id']][field]='f'*64
                     for row in record['mutants']:
                         if row['run']==run['id']:row['execution_input'][field]='f'*64
+                    run['contract_sha256']=canonical_digest(contract({'scenario_id':'original','case_seed':0,'revision':0},
+                        {**truth,'artifact_sha256':run['package_sha256'] or run['model_sha256']},run['phase']))
                     manifest['calibration']['evidence_sha256']=canonical_digest(record)
                     with self.subTest(run=run['id'],field=field),self.assertRaisesRegex(ValueError,'Calibration'):
                         require_calibration(pin,{})
+                    run['contract_sha256']=old_contract
                     run[field]=old;record['execution_inputs'][run['id']][field]=old
                     for ref in record['references']:
                         if run['id'] in ref['execution_inputs']:ref['execution_inputs'][run['id']][field]=old
                     for row in record['mutants']:
                         if row['run']==run['id']:row['execution_input'][field]=old
+
+    def test_tq9_admission_binds_check_coverage_to_authenticated_phase_contracts(self):
+        import copy
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.registry import require_calibration
+        from generative_driver.benchmark_support.snapshots import canonical_digest
+        from generative_driver.benchmark_support.tq9_v2 import contract
+        for defect in ('inventory','contract','order','intended-failure'):
+            manifest,record,truth,pin=self.tq9_admission_fixture()
+            with patch('generative_driver.benchmark_support.registry.pin_case',return_value=pin),patch(
+                 'generative_driver.benchmark_support.emulator.truth_for_case',return_value=truth):
+                self.assertTrue(require_calibration(pin,{})['ok'])
+                indices=range(len(record['runs'])) if defect in ('contract','order') else (0,1,2,3) if defect=='inventory' else (4,)
+                for index in indices:
+                    saved=copy.deepcopy(record);run=record['runs'][index]
+                    if defect=='inventory':
+                        run['checks']=[{'id':'unrelated/trivial','passed':True}];run['check_ids']=['unrelated/trivial']
+                        run['contract_sha256']=canonical_digest({'schema':'benchmark-behavior/1',
+                            'artifact_sha256':run['package_sha256'] or run['model_sha256'],'checks':[{'id':'unrelated/trivial'}]})
+                    elif defect=='contract':
+                        run['contract_sha256']=canonical_digest(contract({'scenario_id':'original','case_seed':0,'revision':0},
+                            {**truth,'artifact_sha256':'f'*64},run['phase']))
+                    elif defect=='order':run['check_ids'].reverse()
+                    else:
+                        row=next(row for row in record['mutants'] if row['run']==run['id'])
+                        target='final/denied/duty'
+                        row['expected_failed_checks']=[target];row['failed_checks']=[target]
+                        run['checks']=[{'id':identifier,'passed':True} if identifier!=target else
+                            {'id':identifier,'passed':False,'reason':'value mismatch'} for identifier in run['check_ids']]
+                    run['evidence_sha256']=canonical_digest({k:v for k,v in run.items() if k!='evidence_sha256'})
+                    manifest['calibration']['evidence_sha256']=canonical_digest(record)
+                    with self.subTest(defect=defect,run=run['id']),self.assertRaisesRegex(ValueError,'Calibration'):
+                        require_calibration(pin,{})
+                    record.clear();record.update(saved)
+                    manifest['calibration']['evidence_sha256']=canonical_digest(record)
 
     def test_reference_gate_refuses_structurally_invalid_mutant_before_native_start(self):
         # Catches recording a malformed model as a measured behavioral rejection.

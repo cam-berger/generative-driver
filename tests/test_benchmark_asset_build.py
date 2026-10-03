@@ -337,3 +337,7 @@ class DistributedInventoryTests(unittest.TestCase):
                 expected={'case.json'} | ({'firmware.bin'} if case!='bme280' else set())
                 self.assertEqual({p.name for p in (root/'cases'/case).iterdir()},expected)
         self.assertEqual({p.name for p in (root/'groundtruth').iterdir()},{case+'.enc' for case in cases})
+
+    def test_retired_scenario_engine_is_not_distributed(self):
+        import importlib.util
+        self.assertIsNone(importlib.util.find_spec('generative_driver.benchmark_support.scenarios'))

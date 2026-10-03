@@ -86,14 +86,21 @@ def score(report, password_file=None, *, evidence_path=None):
             raise ValueError('Report '+key+' does not match installed case')
     from .registry import validate_workflow_manifest
     validate_workflow_manifest(manifest)
-    from .emulator import truth_for_case
-    truth = truth_for_case(case_root(), manifest, {'evaluator_password_file':password_file})
+    required = manifest['required_stages']
+    if (data.get('verdict') == 'incompatible'
+            or ('workflow_stages' in data and data['workflow_stages'] != required)):
+        raise ValueError('Report workflow is incompatible with the installed fresh reuse case')
     state = data.get('case_state', {})
     run_dir = data.get('run_dir')
     if not state and run_dir:
         path = Path(run_dir)/'benchmark/state.json'
         if path.is_file():
             state = json.loads(path.read_text())
+    if (set(data.get('stages', {})) - set(required)
+            or set(state.get('stage_verdicts', {})) - set(required)):
+        raise ValueError('Report stage evidence is incompatible with the installed fresh reuse case')
+    from .emulator import truth_for_case
+    truth = truth_for_case(case_root(), manifest, {'evaluator_password_file':password_file})
     observations = data.get('observations', state.get('probe_evaluation', {}).get('observations', {}))
     if case == 'bme280':
         grounding = state.get('physical_grounding', {})

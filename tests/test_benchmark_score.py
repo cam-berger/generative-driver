@@ -40,11 +40,55 @@ if __name__ == '__main__':
     unittest.main()
 
 class SavedScoreTests(unittest.TestCase):
+    def test_historical_report_cannot_be_rescored_as_fresh_reuse_success(self):
+        # An exporter can describe old workers using the currently installed manifest.
+        import json
+        from unittest.mock import patch
+        from generative_driver.benchmark import case_root, score
+        from generative_driver.reporting import summarize
+        manifest = json.loads((case_root() / 'cases/tq9/case.json').read_text())
+        historical = ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse', 'maintain']
+        result = {'run_id': 'historical', 'status': 'completed', 'created': 0, 'updated': 1,
+                  'worker_reports': [{'stage': s, 'assignment_id': s, 'status': 'completed'} for s in historical],
+                  'accepted_handoffs': [{'stage': s, 'assignment_id': s} for s in historical]}
+        report = summarize(result, [], case_manifest=manifest, case_state={
+            'stage_verdicts': {s: {'status': 'passed'} for s in historical},
+            'probe_evaluation': {'observations': {'temperature': 21.5}}})
+        self.assertEqual(report['verdict'], 'incompatible')
+        truth = {'checks': [{'id': 'temperature', 'expected': 21.5, 'absolute_tolerance': 0}]}
+        with patch('generative_driver.benchmark_support.emulator.truth_for_case', return_value=truth):
+            with self.assertRaisesRegex(ValueError, 'incompatible'):
+                score(report)
+
     def test_saved_smoke_observations_are_rescored_instead_of_trusting_verdict(self):
         from generative_driver.benchmark import score
         report = {'schema':'benchmark-report/1','case':'setup-smoke','execution':'scripted-replay',
                   'verdict':'passed','observations':{'temperature':215},'stages':{}}
         self.assertEqual(score(report)['verdict'], 'failed')
+
+    def test_obsolete_stage_inventory_is_rejected_despite_a_passing_claim(self):
+        import copy
+        from unittest.mock import patch
+        from generative_driver.benchmark import score
+        six = ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse']
+        base = {'schema': 'benchmark-report/1', 'case': 'tq9', 'verdict': 'passed',
+                'workflow_status': 'completed', 'workflow_stages': six,
+                'stages': {s: {'evaluator_status': 'passed', 'workflow_status': 'accepted'} for s in six},
+                'case_state': {'stage_verdicts': {s: {'status': 'passed'} for s in six}},
+                'observations': {'temperature': 21.5}}
+        truth = {'checks': [{'id': 'temperature', 'expected': 21.5, 'absolute_tolerance': 0}]}
+        with patch('generative_driver.benchmark_support.emulator.truth_for_case', return_value=truth):
+            self.assertEqual(score(base)['verdict'], 'passed')
+            for location in ('workflow_stages', 'stages', 'case_state'):
+                report = copy.deepcopy(base)
+                if location == 'workflow_stages':
+                    report[location].append('maintain')
+                elif location == 'stages':
+                    report[location]['maintain'] = {'evaluator_status': 'passed', 'workflow_status': 'accepted'}
+                else:
+                    report[location]['stage_verdicts']['maintain'] = {'status': 'passed'}
+                with self.subTest(location=location), self.assertRaisesRegex(ValueError, 'incompatible'):
+                    score(report)
 
     def test_wrong_case_version_is_rejected_before_loading_private_truth(self):
         from generative_driver.benchmark import score

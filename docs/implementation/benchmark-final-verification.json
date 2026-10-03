@@ -1,7 +1,7 @@
 {
   "schema": "benchmark-final-verification/2",
   "date": "2026-10-03",
-  "status": "in-progress",
+  "status": "software-qualification-passed",
   "workflow": [
     "acquire",
     "interpret",
@@ -10,13 +10,177 @@
     "emit",
     "reuse"
   ],
+  "tested_resource_revision": "f9fc91e",
   "model_benchmark": false,
-  "starting_baseline": {
-    "source_revision": "7d3344c0e3e8f477dfcf5e6ea1ca00ca7e4f089c",
-    "tests": 412,
-    "seconds": 78.247,
-    "skips": 1,
-    "log_sha256": "50f882c5ca0b26b5e97f3eedadd4694e0e8f91b07c3fc6963bb2e049f43e605f"
+  "physical_device_used": false,
+  "evaluator_identity_sha256": "4563ebf4a66f680342044674a299d0ffa1f7a035ed20737fc56de1c35619b710",
+  "runtime_dependencies": {
+    "mcp": "2.2.0",
+    "cryptography": "50.0.1"
   },
-  "gates": []
+  "gates": [
+    {
+      "name": "source-suite",
+      "python": "3.13.12",
+      "tests": 414,
+      "seconds": 56.452,
+      "skips": 0,
+      "failures": 0,
+      "errors": 0,
+      "log": "suite-release-source.log",
+      "log_sha256": "7bb7961b754ef76f03d227b001f7e16e2472b6f1dcbe04f7ec6f3abd5675b712",
+      "command": "<python> -m unittest discover -s tests -v",
+      "archive_gates": [
+        "GD_TEST_WHEEL",
+        "GD_TEST_SDIST"
+      ],
+      "outside_checkout": false
+    },
+    {
+      "name": "installed-wheel-suite",
+      "python": "3.11.15",
+      "tests": 414,
+      "seconds": 52.547,
+      "skips": 0,
+      "failures": 0,
+      "errors": 0,
+      "log": "suite-release-311.log",
+      "log_sha256": "dad2b8d7819acd77b3aa197c62fe97424b1b79e00e0ca42e44fcf8339709ae4c",
+      "command": "<python> -m unittest discover -s tests -v",
+      "archive_gates": [
+        "GD_TEST_WHEEL",
+        "GD_TEST_SDIST"
+      ],
+      "outside_checkout": true
+    },
+    {
+      "name": "installed-wheel-suite",
+      "python": "3.13.14",
+      "tests": 414,
+      "seconds": 56.472,
+      "skips": 0,
+      "failures": 0,
+      "errors": 0,
+      "log": "suite-release-313.log",
+      "log_sha256": "a5769a3612666be9ae865f830c233427e6a9aebb3ad9c7046d9bb9e83c6cc866",
+      "command": "<python> -m unittest discover -s tests -v",
+      "archive_gates": [
+        "GD_TEST_WHEEL",
+        "GD_TEST_SDIST"
+      ],
+      "outside_checkout": true
+    },
+    {
+      "name": "installed-integration",
+      "python": "3.11.15",
+      "seconds": 1.4027979590173345,
+      "cases": 6,
+      "suite_slots": 9,
+      "replay": "passed",
+      "standalone_replay": "passed",
+      "client_generation": "passed",
+      "authenticated_original_admissions": 3,
+      "family_saved_grades": 30,
+      "legacy_saved_grades": 2,
+      "stale_native_records_rejected": 3,
+      "authoring_recoveries": 2,
+      "offline_six_gate_score": "passed",
+      "offline_compare": "compatible",
+      "worker_launched": false,
+      "log": "integration-311.log",
+      "log_sha256": "76a6b1633c147542aa8bf6ddf2ef9ffc75347c10d24d464e8046dbc19e7e31b1"
+    },
+    {
+      "name": "installed-integration",
+      "python": "3.13.14",
+      "seconds": 1.5346747090225108,
+      "cases": 6,
+      "suite_slots": 9,
+      "replay": "passed",
+      "standalone_replay": "passed",
+      "client_generation": "passed",
+      "authenticated_original_admissions": 3,
+      "family_saved_grades": 30,
+      "legacy_saved_grades": 2,
+      "stale_native_records_rejected": 3,
+      "authoring_recoveries": 2,
+      "offline_six_gate_score": "passed",
+      "offline_compare": "compatible",
+      "worker_launched": false,
+      "log": "integration-313.log",
+      "log_sha256": "71e15bcb63633a9860ea7698c241f29ad33c426469db44d18dd86cfa1f60eb02"
+    }
+  ],
+  "distribution": {
+    "strategy": "clean tracked git archive; final documentation rebuild preserves tested wheel module/resource bytes",
+    "wheel_module_resource_files": 118,
+    "wheel_payload_sha256": "6ec76f2c6575e00ed6376127174792a66663a77df27ad07730d2217cc37c9349",
+    "wheel_files": 125,
+    "sdist_files": 195,
+    "tracked_markdown": 36,
+    "tracked_local_links": 55,
+    "sdist_markdown": 33,
+    "sdist_local_links": 53,
+    "broken_local_links": 0,
+    "private_material_found": false,
+    "retired_workflow_instructions_found": false,
+    "original_firmware_images": 4,
+    "full_archive_hashes": "external evaluator-owned verification manifest; final sdist cannot hash itself"
+  },
+  "native_reference_qualification": {
+    "scope": "Task3 final native sessions; Task4 authenticates and regrades saved evidence without launching a native process",
+    "family_sessions": 30,
+    "reference_sessions": 12,
+    "mutant_sessions": 18,
+    "separate_legacy_sessions": 2,
+    "saved_family_grades_reproduced": 30,
+    "families": [
+      {
+        "case": "sampled-sensor-v1",
+        "native_sessions": 8,
+        "evidence_sha256": "3614ac5e3aa6aad708ae740eac2e194cc8badc4fdfbd5758abb617c0cd6417aa",
+        "ciphertext_sha256": "2394f88591d213e02ecd5b7cdda2c8bfbea9ed4484e195479497bee090d2d281",
+        "image_sha256": "637370d3d7192a17b6abeb79a3fcbc60ec2f47eb14e199627798756c02bbb1e9"
+      },
+      {
+        "case": "parameter-store-v1",
+        "native_sessions": 9,
+        "evidence_sha256": "4eebe6de11e2b1ad9679aca1ad96870a3a9486ca312ae0c74abe70fff2b3f38f",
+        "ciphertext_sha256": "a1340ecad774f185be56ffa1f246fbfbef0109767230655d656fb783725a6e10",
+        "image_sha256": "e7a580834861f7fa96868245bf969d69350ee0acdab1ee8eda30abc1fdf1faf1"
+      },
+      {
+        "case": "tq9-v2",
+        "native_sessions": 13,
+        "evidence_sha256": "7143d8699143600839ca63ed87eccc1ea5a44e919f41141a5b974a932e3b4c3a",
+        "ciphertext_sha256": "1fbeb84b6a7a9d483be1d0669bc0a51e2b632c4b9e67d901bccfbfb0da7442d8",
+        "image_sha256": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e"
+      }
+    ],
+    "tools": {
+      "gcc": "14.2.1 (Arm GNU Toolchain14.2.Rel1)",
+      "objcopy": "2.43.1.20241119",
+      "renode": "1.16.1.16858",
+      "dotnet": "8.0.21",
+      "ghidra": "12.1.3",
+      "java": "21.0.12.1"
+    },
+    "log_hashes": {
+      "sampled-sensor-v1-native-fix1-final.log": "e68a9eaaad45d28ead82a01fa0f0df79cfdec9a0433361574dbc9b70cb4a6ee2",
+      "parameter-store-v1-native-fix1-final.log": "af82a87ed4a3475ca9c082fe30e0771a65ea267893c4f8ec3493b350617cef46",
+      "tq9-v2-native-fix1-final.log": "c0088dea39e016441b58d0279490ad95f31ecd49b3252e30ecade7ba0a8fcd51",
+      "tq9-original-native-fix1-final.log": "86162219056cfc88562019ea2f642c067d3534bf1ff29a62567f7a98d0ab5c66",
+      "verify-release-fix1-final.log": "184c68ed788f31aff3a93b2a204773ca93ec9c7bb0583f3d66c710faa162614c"
+    }
+  },
+  "independent_whole_branch_review": "pending parent review",
+  "unobserved": [
+    "current model performance",
+    "physical device performance",
+    "native Windows Renode/Ghidra",
+    "Windows11 workstation UI",
+    "live Goose execution",
+    "worker OS filesystem isolation"
+  ],
+  "publication_exception": "Other owner untracked docs/research draft preserved outside tracked export and archives."
 }

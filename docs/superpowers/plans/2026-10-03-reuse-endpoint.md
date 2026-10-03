@@ -67,5 +67,6 @@
 **Interfaces:** A single six-stage description across installed CLI/MCP/skills and source documentation, with current verification scope and complete reproducible benchmark commands.
 
 - [x] Update current instructions, benchmark metrics, default suite and final acceptance explanation. Replace obsolete public plans/verification/baseline documents with concise current records; preserve old observations through Git instead of editing measurements. Update the agent-facing domain and skill text using the same glossary.
-- [ ] Build wheel and sdist; run complete source and installed-wheel tests on available Python 3.11/3.13 environments, replay, case admission/discovery, offline score/compare and distribution/document audits. Check archived bytes contain no private material or obsolete public instructions. Do not run model trials or physical devices.
-- [ ] Record actual outcomes and limitations, perform one whole-branch independent review, address load-bearing findings with covering tests, and commit the coherent final result. Retain review/TDD evidence privately and leave the feature branch ready for user integration.
+- [x] Build wheel and sdist; run complete source and installed-wheel tests on available Python 3.11/3.13 environments, replay, case admission/discovery, offline score/compare and distribution/document audits. Check archived bytes contain no private material or obsolete public instructions. Do not run model trials or physical devices.
+- [x] Record actual outcomes and limitations and commit the coherent documentation/distribution result. Retain exact gate/TDD evidence privately.
+- [ ] Parent: perform the independent whole-branch review, address load-bearing findings with covering tests, and leave the branch ready for user integration.

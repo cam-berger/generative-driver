@@ -306,9 +306,12 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
                   {'name': 'fresh_package_requested_output', 'passed': reached},
                   {'name': 'fresh_package_disarm', 'passed': disarmed}]
         ok = all(row['passed'] for row in checks)
-        # Successful package calls with available independent channels establish
-        # a behavioral verdict. Missing observations remain recoverable.
-        observed = bool(readings) and bool(duties) and all(finite(d) for d in duties)
+        # An observed contradiction is conclusive even if another channel is
+        # missing. Unavailable evidence alone remains recoverable.
+        complete = bool(readings) and bool(duties) and all(finite(d) for d in duties)
+        contradiction = (bool(readings) and not read_ok or
+                         bool(duties) and finite(duties[-1]) and not disarmed)
+        observed = complete or contradiction
         faults = [e.get('result', {}).get('error', {}).get('fault') or e.get('result', {}).get('fault')
                   for e in events if not e.get('ok')]
         fault = None if ok else ('operator' if 'operator' in faults else 'host' if 'host' in faults

@@ -194,12 +194,16 @@ class FreshReuseControllerTests(unittest.TestCase):
 
     def test_actual_legacy_final_contradiction_is_terminal_across_restart(self):
         # A producer missing the final/model contract must not permit a second final.
-        for temperature, final_duty in ((999, 0), (20, .5)):
+        for temperature, final_duty in ((999, 0), (20, .5), (999, None), (None, .5)):
             with self.subTest(temperature=temperature, final_duty=final_duty), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 events = [{'ok': True, 'operation': 'read', 'result': {'ok': True, 'outputs': {'t': temperature}},
                            'observation': {'duty': .5}},
                           {'ok': True, 'operation': 'disarm', 'result': {'ok': True}, 'observation': {'duty': final_duty}}]
+                if final_duty is None:
+                    events = [dict(events[0], observation=None)]
+                elif temperature is None:
+                    events = [events[1]]
                 controller, run, result = self.run_scripted(root, legacy_events=events)
                 try:
                     self.assertEqual((result['status'], result['outcome_category']), ('failed', 'model'))

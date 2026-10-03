@@ -2,7 +2,7 @@ global-exclude *.py[cod]
 global-exclude *.password *.secret .env
 prune **/__pycache__
 include NOTICE
-recursive-include docs *.md
+recursive-include docs *.md *.json
 recursive-include plugins *.json *.md
 recursive-include bench *.md *.py *.json
 prune bench/runs

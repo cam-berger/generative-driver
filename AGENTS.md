@@ -8,6 +8,8 @@ Core Python must run on native macOS and Windows 11+. Hardware libraries and ana
 
 Goose/Codex are clients of the background configurator. The configurator owns configured agent runtimes, stages, durable runs and device access. One stage runs at a time. A disconnected UI may reconnect to the same run. Never silently retry an uncertain device write.
 
+All runs have six stages: acquire, interpret, probe, ground, emit, reuse. Fresh reuse is the endpoint: another agent receives the emitted driver and an objective, uses the desired device functions, and supplies evidence for independent acceptance. Diagnostic repair is bounded before frozen final grading.
+
 Only the evaluator receives groundtruth passwords. Candidate workers receive neither password nor plaintext answer keys. Report this password-based separation accurately; do not call hashes a sandbox. Actual model runs, scripted contract tests, replay, emulation and physical observations must remain distinguishable.
 
 Keep public documentation concise and executable. Preserve third-party notices. Do not publish or push private research artifacts. Do not launch actual model baselines or touch physical devices unless assigned explicitly by the primary agent.

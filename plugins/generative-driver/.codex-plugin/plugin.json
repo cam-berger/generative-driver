@@ -11,7 +11,7 @@
   "interface": {
     "displayName": "Generative Driver",
     "shortDescription": "Generate and verify device interfaces.",
-    "longDescription": "Run the seven-stage workflow through a local background configurator.",
+    "longDescription": "Run the six-stage workflow through a local background configurator.",
     "developerName": "Generative Driver contributors",
     "category": "Developer Tools",
     "capabilities": [

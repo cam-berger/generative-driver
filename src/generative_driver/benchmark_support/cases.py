@@ -314,7 +314,9 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
         observed = complete or contradiction
         faults = [e.get('result', {}).get('error', {}).get('fault') or e.get('result', {}).get('fault')
                   for e in events if not e.get('ok')]
-        fault = None if ok else ('operator' if 'operator' in faults else 'host' if 'host' in faults
+        # An unrelated call failure cannot erase an independent contradiction.
+        fault = None if ok else ('model' if contradiction else
+                                'operator' if 'operator' in faults else 'host' if 'host' in faults
                                 else 'model' if observed else None)
         final = observed and fault not in ('host', 'operator')
         evaluator = {'verdict': 'passed' if ok else 'failed' if final else 'unscored',

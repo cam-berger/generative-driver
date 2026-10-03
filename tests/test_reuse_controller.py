@@ -193,9 +193,12 @@ class FreshReuseControllerTests(unittest.TestCase):
                 reopened.close()
 
     def test_actual_legacy_final_contradiction_is_terminal_across_restart(self):
-        # A producer missing the final/model contract must not permit a second final.
-        for temperature, final_duty in ((999, 0), (20, .5), (999, None), (None, .5)):
-            with self.subTest(temperature=temperature, final_duty=final_duty), tempfile.TemporaryDirectory() as directory:
+        # A later unavailable call cannot erase an already observed contradiction.
+        import itertools
+        for (temperature, final_duty), later_fault, error_position in itertools.product(
+                ((999, 0), (20, .5), (999, None), (None, .5)),
+                ('no_failed_event', 'host', 'operator', None), ('before', 'after')):
+            with self.subTest(temperature=temperature, final_duty=final_duty, later_fault=later_fault, error_position=error_position), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 events = [{'ok': True, 'operation': 'read', 'result': {'ok': True, 'outputs': {'t': temperature}},
                            'observation': {'duty': .5}},
@@ -204,12 +207,21 @@ class FreshReuseControllerTests(unittest.TestCase):
                     events = [dict(events[0], observation=None)]
                 elif temperature is None:
                     events = [events[1]]
+                if later_fault != 'no_failed_event':
+                    failed = {'ok': False, 'operation': 'read',
+                              'result': {'ok': False, 'error': {'fault': later_fault, 'message': 'Unrelated call unavailable'}}}
+                    events.insert(0 if error_position == 'before' else len(events), failed)
                 controller, run, result = self.run_scripted(root, legacy_events=events)
                 try:
                     self.assertEqual((result['status'], result['outcome_category']), ('failed', 'model'))
                     self.assertTrue(result['progress']['terminal_final_failure'])
                     self.assertEqual(tuple(h['stage'] for h in result['accepted_handoffs']), SIX_STAGES[:-1])
                     self.assertEqual(result['evaluator_verdicts'][-1]['verdict'], 'failed')
+                    saved = root / 'home/runs' / run['run_id'] / 'benchmark/package-events.jsonl'
+                    if later_fault != 'no_failed_event':
+                        saved_failures = [json.loads(line)['result'] for line in saved.read_text().splitlines()
+                                          if not json.loads(line)['ok']]
+                        self.assertEqual(saved_failures, [failed['result']])
                     with self.assertRaisesRegex(ValueError, 'terminal'):
                         controller.call('resume', run)
                 finally:
@@ -223,10 +235,16 @@ class FreshReuseControllerTests(unittest.TestCase):
                     reopened.close()
 
     def test_legacy_unavailable_observation_preserves_recovery(self):
-        for fault in ('host', 'operator', None):
-            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+        import itertools
+        for fault, available in itertools.product(('host', 'operator', None), ('none', 'temperature', 'disarm')):
+            with self.subTest(fault=fault, available=available), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                events = [{'ok': False, 'operation': 'read', 'result': {'ok': False, 'error': {'fault': fault}}}]
+                events = []
+                if available == 'temperature':
+                    events.append({'ok': True, 'operation': 'read', 'result': {'ok': True, 'outputs': {'t': 20}}})
+                elif available == 'disarm':
+                    events.append({'ok': True, 'operation': 'disarm', 'result': {'ok': True}, 'observation': {'duty': 0}})
+                events.append({'ok': False, 'operation': 'read', 'result': {'ok': False, 'error': {'fault': fault}}})
                 controller, run, result = self.run_scripted(root, legacy_events=events)
                 try:
                     self.assertEqual((result['status'], result['outcome_category']), ('blocked', fault or 'unknown'))

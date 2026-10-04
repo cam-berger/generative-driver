@@ -315,7 +315,8 @@ class TQ9V2Tests(unittest.TestCase):
                         sidecar=run_dir/'benchmark/run-evidence.enc'
                         sealed=unlock(sidecar,password.read_text(),state['final_evaluation']['evidence_sha256'])
                         self.assertEqual(len(sealed['accepted_gates']),6);self.assertEqual(sealed['accepted_gates'][-1]['stage'],'reuse')
-                        self.assertTrue(all('/accepted/' in a['path'] for a in sealed['accepted_artifacts']))
+                        self.assertTrue(all(Path(a['path']).resolve().is_relative_to((run_dir/'accepted').resolve())
+                                            for a in sealed['accepted_artifacts']))
                         self.assertNotIn('maintenance',sealed)
                         from generative_driver.reporting import report_run
                         from generative_driver.benchmark_support.suite_reporting import _recorded_success

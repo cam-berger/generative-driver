@@ -1,0 +1,254 @@
+{
+  "schema": "benchmark-review-followup-verification/1",
+  "date": "2026-10-03",
+  "status": "local-qualification-passed",
+  "reviewed_pr": "https://github.com/cam-berger/generative-driver/pull/1",
+  "reviewed_head": "24d8861fab72a401135a4a71f61e54d73b5ba204",
+  "tested_code_revision": "9b034af8e534cd2efb56e2645ca900c859f49d1c",
+  "model_benchmark": false,
+  "physical_device_used": false,
+  "evaluator_identity_sha256": "612b1a83d061e848e5596917b6c0776fbebfc77302deac998bfef6039d16ea33",
+  "runtime_dependencies": {
+    "mcp": "2.2.0",
+    "cryptography": "50.0.1"
+  },
+  "suites": [
+    {
+      "name": "source-suite",
+      "python": "3.13.12",
+      "tests": 420,
+      "seconds": 67.374,
+      "skips": 0,
+      "failures": 0,
+      "errors": 0,
+      "archive_gates": [
+        "GD_TEST_WHEEL",
+        "GD_TEST_SDIST"
+      ],
+      "outside_checkout": false,
+      "log_sha256": "74f0d9c2a49ed7804c3a43b590445b601cfcd5678400b28a48ca82c46cc4549c"
+    },
+    {
+      "name": "installed-suite-311",
+      "python": "3.11.15",
+      "tests": 420,
+      "seconds": 62.015,
+      "skips": 0,
+      "failures": 0,
+      "errors": 0,
+      "archive_gates": [
+        "GD_TEST_WHEEL",
+        "GD_TEST_SDIST"
+      ],
+      "outside_checkout": true,
+      "log_sha256": "40b6d58ab0b62497c7626e0f642a0066ee33aaf3ccaa714eca3211074c4de0ba"
+    },
+    {
+      "name": "installed-suite-313",
+      "python": "3.13.14",
+      "tests": 420,
+      "seconds": 68.856,
+      "skips": 0,
+      "failures": 0,
+      "errors": 0,
+      "archive_gates": [
+        "GD_TEST_WHEEL",
+        "GD_TEST_SDIST"
+      ],
+      "outside_checkout": true,
+      "log_sha256": "9cc144a6939502a0e8061134fa39bf5ea9d5650f13c6f488913da4c4acc50fec"
+    }
+  ],
+  "other_checks": [
+    {
+      "label": "build",
+      "returncode": 0,
+      "log_sha256": "30963372b7c85d5371a39258ace744c6b7621c84550355d894227697c899fd2d"
+    },
+    {
+      "label": "source-suite",
+      "returncode": 0,
+      "log_sha256": "74f0d9c2a49ed7804c3a43b590445b601cfcd5678400b28a48ca82c46cc4549c"
+    },
+    {
+      "label": "install-311",
+      "returncode": 0,
+      "log_sha256": "e82a612358058a229187a3fe117b1c1ea20c5141f3762d2051e953e5c9bcf4b8"
+    },
+    {
+      "label": "imports-311",
+      "returncode": 0,
+      "log_sha256": "00331c0bbb7491dba01c5e714c8875e6598d414d1bf2d1605acc0b440e06a11a"
+    },
+    {
+      "label": "installed-suite-311",
+      "returncode": 0,
+      "log_sha256": "40b6d58ab0b62497c7626e0f642a0066ee33aaf3ccaa714eca3211074c4de0ba"
+    },
+    {
+      "label": "smoke-311",
+      "returncode": 0,
+      "log_sha256": "17c44e82c0536aaa099943a6cc293d6fa0448b76cb1069ad95a77aae547e3d27"
+    },
+    {
+      "label": "standalone-311",
+      "returncode": 0,
+      "log_sha256": "d626650706577215e22928f7027527e857844b9294037609d8d345d46ed9d7cf"
+    },
+    {
+      "label": "admission-311",
+      "returncode": 0,
+      "log_sha256": "327cf7bb7eb4f5a450b32393f69b3e0bcadbbaddab01e6761907f4d21a529dc6"
+    },
+    {
+      "label": "install-313",
+      "returncode": 0,
+      "log_sha256": "b35be143325c64fbd2ac258efafbc45986ea30651a870fadb5170a7eefd501ba"
+    },
+    {
+      "label": "imports-313",
+      "returncode": 0,
+      "log_sha256": "bdaca4a61cc1e61beef30ccab0e2daac86deeb09e26aae63a918ae33d5005690"
+    },
+    {
+      "label": "installed-suite-313",
+      "returncode": 0,
+      "log_sha256": "9cc144a6939502a0e8061134fa39bf5ea9d5650f13c6f488913da4c4acc50fec"
+    },
+    {
+      "label": "smoke-313",
+      "returncode": 0,
+      "log_sha256": "db76721add7253b6476a822ec1d24790f812c6f6ebd7572945f9fa6e70ef78b7"
+    },
+    {
+      "label": "standalone-313",
+      "returncode": 0,
+      "log_sha256": "d626650706577215e22928f7027527e857844b9294037609d8d345d46ed9d7cf"
+    },
+    {
+      "label": "admission-313",
+      "returncode": 0,
+      "log_sha256": "327cf7bb7eb4f5a450b32393f69b3e0bcadbbaddab01e6761907f4d21a529dc6"
+    }
+  ],
+  "native": {
+    "native_runs": 30,
+    "reference_sessions": 12,
+    "mutant_sessions": 18,
+    "legacy_native_runs": 2,
+    "legacy_saved_grades_reproduced": 2,
+    "saved_grades_reproduced": 30
+  },
+  "cases": [
+    {
+      "case": "sampled-sensor-v1",
+      "status": "passed",
+      "native_runs": 8,
+      "saved_grades_reproduced": 8,
+      "old_identity_rejected": true,
+      "admission_passed": true,
+      "old_admission_rejected": true,
+      "image_sha256": "637370d3d7192a17b6abeb79a3fcbc60ec2f47eb14e199627798756c02bbb1e9",
+      "evidence_sha256": "a129ec3de81d994999a3e35423d084de7e625d5b12a97a8585757d6bb31fe615",
+      "ciphertext_sha256": "3da3bba41709f035722a69344e84472a1bea8584a18dc8fae314653281f65012"
+    },
+    {
+      "case": "parameter-store-v1",
+      "status": "passed",
+      "native_runs": 9,
+      "saved_grades_reproduced": 9,
+      "old_identity_rejected": true,
+      "admission_passed": true,
+      "old_admission_rejected": true,
+      "image_sha256": "e7a580834861f7fa96868245bf969d69350ee0acdab1ee8eda30abc1fdf1faf1",
+      "evidence_sha256": "fe1e88a1f584533fcbef84e636ac73c02a6a8bab699bea9735ffce84cf9cbbbb",
+      "ciphertext_sha256": "2252fef4a0f16c61363e55382b91a99455fed9ebe4d85fd9d66f0eff0016a344"
+    },
+    {
+      "case": "tq9-v2",
+      "status": "passed",
+      "native_runs": 13,
+      "saved_grades_reproduced": 13,
+      "old_identity_rejected": true,
+      "admission_passed": true,
+      "old_admission_rejected": true,
+      "image_sha256": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e",
+      "evidence_sha256": "f1f5ca9649d91b7eeb32b135bdf0b779d252d7bb9329aea5c141ecbd1ed1eea3",
+      "ciphertext_sha256": "54ec0d9462d2b21b97a952de7c71a9bbe901d216f104b7c3ac4d8fa61dcd83ca"
+    }
+  ],
+  "preserved_failures": [
+    {
+      "kind": "native-host",
+      "case": "tq9-v2",
+      "completed_sessions_before_stop": 8,
+      "reason": "Renode monitor socket AddressAlreadyInUse during startup",
+      "retry": "Full unchanged qualification in a new output directory passed",
+      "log_sha256": "0a7f7f68a278a74d8434460cac84d3ec9459a5c2877e759bfcc57463ccdf593e"
+    },
+    {
+      "kind": "upstream-pr-ci",
+      "run_url": "https://github.com/cam-berger/generative-driver/actions/runs/37153901422",
+      "test": "test_suite_reconnects_with_running_child_and_paginates_every_slot",
+      "reason": "Unexpected blocked suite on macOS 3.13",
+      "followup": "11-test interface suite and 12 consecutive affected-test repetitions passed; exact cause unestablished; no scheduler fix claimed"
+    }
+  ],
+  "limits": [
+    "No model-performance trial or physical-device observation.",
+    "No native Windows Renode/Ghidra or Windows 11 UI qualification.",
+    "Worker filesystem isolation remains unverified."
+  ],
+  "initial_fix_ci": {
+    "run_url": "https://github.com/cam-berger/generative-driver/actions/runs/37155861839",
+    "head": "9b034af8e534cd2efb56e2645ca900c859f49d1c",
+    "macos_311": "passed",
+    "macos_313": "passed",
+    "windows_311": "failed",
+    "windows_313": "failed",
+    "diagnostics": "After temporary ReadTimeout/HTTP 503, both Windows logs showed only the existing POSIX-only accepted-artifact assertion. It was changed to native Path.is_relative_to; final platform results are in the follow-up PR checks."
+  },
+  "final_source_suite": {
+    "tested_code_revision": "274ccec1a1ba5d7d0aa6d811d49bf4c74c5ce0c5",
+    "python": "3.13.12",
+    "tests": 420,
+    "seconds": 66.792,
+    "skips": 0,
+    "failures": 0,
+    "errors": 0,
+    "archive_gates": [
+      "GD_TEST_WHEEL",
+      "GD_TEST_SDIST"
+    ],
+    "log_sha256": "ab0efc5e246b8cf294f32384c6b83e31e9bd092801808e655b3867cd957062b2",
+    "note": "After the test-only native path assertion correction; wheel payload is unchanged from the three full distribution verification runs."
+  },
+  "publication_archive_audit": {
+    "wheel_entries_equal_tested": 125,
+    "source_archive_local_links": 72,
+    "credentials_or_private_paths_found": false,
+    "archives": {
+      "generative_driver-0.1.0-py3-none-any.whl": "2e87e9bf54feb15f48fe3eaf6180c44bf201cb27d302ee2cd8332c226f371b39",
+      "generative_driver-0.1.0.tar.gz": "b180fd99fba019e9a596ad55d3618c90f28f9161523b4ca61b8bb8de2c73e00b"
+    },
+    "note": "Audited before adding this final verification metadata. All 125 wheel entries are byte-identical to the installed-tested wheel."
+  },
+  "gateway_readiness_test_correction": {
+    "observed_run_url": "https://github.com/cam-berger/generative-driver/actions/runs/37156868254",
+    "observed_job_id": 111301931411,
+    "platform": "Windows Python 3.13",
+    "test": "test_worker_gateway_rejects_unassigned_tools_and_cancelled_assignments",
+    "reason": "The existing test read stage.assigned before the separately committed running state, then expected tool-assignment rejection from an inactive run.",
+    "reproduction": "Delaying the running-state transition by 0.25 seconds reproduced the same inactive-or-unknown error before the correction.",
+    "correction": "Wait for both the assignment event and public running state, retaining the exact tool rejection and cancellation assertions.",
+    "validation": {
+      "delayed_transition_regression": "passed",
+      "configurator_module_tests": 10,
+      "seconds": 1.132,
+      "failures": 0,
+      "errors": 0,
+      "skips": 0
+    },
+    "production_code_changed": false
+  }
+}

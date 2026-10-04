@@ -15,6 +15,8 @@ Measure whether an agent can recover a device interface, emit a portable driver,
 
 Canonical assets are installed from [`src/generative_driver/resources/bench`](../src/generative_driver/resources/bench/). Each firmware trial uses one stable original image. Manifests pin inputs, encrypted groundtruth and evaluator versions. Source and private answers stay evaluator-owned. See [groundtruth setup](groundtruth/README.md) and [observed verification](../docs/verification.md).
 
+The current research core has three firmware families and nine planned trials. The [benchmark growth plan](../docs/research/2026-10-03-benchmark-growth-plan.md) proposes a 12-lineage pilot, a first comparison on 30 untouched lineages, and a mature corpus of approximately 100 lineages and 200 missions. Its [source review](../docs/research/2026-10-03-benchmark-source-review.md) identifies existing firmware collections to screen; these targets are not yet admitted cases or measured model results.
+
 ## Install and check
 
 Follow [macOS/Windows setup](../docs/setup.md), [Codex](../docs/codex.md) or [Goose](../docs/goose.md). Python 3.11+ is required. Use the same Python environment throughout:

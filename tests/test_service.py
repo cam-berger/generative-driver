@@ -47,7 +47,8 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                 while time.monotonic() < until:
                     assignments = [event['data'] for event in call('events', run, home)['events']
                                    if event['kind'] == 'stage.assigned' and event['data']['stage'] == 'probe']
-                    if assignments:
+                    state = call('status', run, home)
+                    if assignments and (state['status'], state['stage']) == ('running', 'probe'):
                         assignment = assignments[-1]
                         break
                     time.sleep(.02)
@@ -206,11 +207,16 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                 run = call('start', {'goal':'Scripted slow download contract',
                     'executor_config':{'command':[sys.executable,'-c','import time; time.sleep(20)']}},home=home)
                 until = time.monotonic()+5
+                assignments = []
+                state = {}
                 while time.monotonic()<until:
                     events = call('events',run,home=home)['events']
                     assignments = [e['data'] for e in events if e['kind']=='stage.assigned']
-                    if assignments: break
+                    state = call('status',run,home=home)
+                    if assignments and (state['status'],state['stage']) == ('running','acquire'): break
                     time.sleep(.02)
+                self.assertTrue(assignments, call('result',run,home=home))
+                self.assertEqual((state.get('status'),state.get('stage')),('running','acquire'),state)
                 worker = threading.Thread(target=call,args=('tool',{**run,'assignment_id':assignments[0]['id'],
                     'name':'acquire_datasheet','arguments':{'url':f'http://127.0.0.1:{server.server_port}/data','expected_sha256':'0'*64}},home),daemon=True)
                 worker.start()

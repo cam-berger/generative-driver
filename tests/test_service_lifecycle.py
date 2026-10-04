@@ -120,12 +120,16 @@ class ServiceLifecycleTests(unittest.TestCase):
                     'command':[sys.executable, '-c', 'import time; time.sleep(30)']}}, home)
                 deadline = time.monotonic() + 5
                 assignments = []
-                while not assignments and time.monotonic() < deadline:
+                state = {}
+                while time.monotonic() < deadline:
                     assignments = [e['data'] for e in call('events', run, home)['events']
                                    if e['kind'] == 'stage.assigned']
-                    if not assignments:
-                        time.sleep(.01)
+                    state = call('status', run, home)
+                    if assignments and (state['status'], state['stage']) == ('running', 'acquire'):
+                        break
+                    time.sleep(.01)
                 self.assertTrue(assignments, call('result', run, home))
+                self.assertEqual((state.get('status'), state.get('stage')), ('running', 'acquire'), state)
                 replies = {}
                 def invoke():
                     replies['tool'] = call('tool', {**run, 'assignment_id':assignments[0]['id'],
@@ -134,7 +138,7 @@ class ServiceLifecycleTests(unittest.TestCase):
                             'expected_sha256':'0' * 64}}, home)
                 tool_thread = threading.Thread(target=invoke)
                 tool_thread.start()
-                self.assertTrue(entered.wait(5))
+                self.assertTrue(entered.wait(5), replies)
                 stopped = threading.Event()
                 def shutdown():
                     replies['shutdown'] = call('shutdown', {}, home)

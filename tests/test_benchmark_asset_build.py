@@ -60,7 +60,7 @@ class FamilyBuildPipelineTests(unittest.TestCase):
             'id': 'parameter-store-v1', 'family': 'parameter-store', 'execution': 'scripted-contract-fixture'}))
         (author / 'build-recipe.json').write_text(json.dumps({'schema': 'benchmark-family-build/1',
             'flags': ['-Os', '-mcpu=cortex-m4', '-mthumb', '-nostdlib'],
-            'variants': {'firmware': ['-DWIRE_MULTIPLIER=1'], 'firmware-drift': ['-DWIRE_MULTIPLIER=2']}}))
+            'variants': {'firmware': ['-DWIRE_MULTIPLIER=1']}}))
         compiler = root / 'tools with spaces/arm-none-eabi-gcc'
         compiler.parent.mkdir(); compiler.touch()
         compiler.with_name('arm-none-eabi-objcopy').touch()
@@ -92,7 +92,7 @@ else:
             result = real([sys.executable, str(script), Path(argv[0]).name, *argv[1:]], **kwargs)
             if '-O' in argv:
                 calls[0] += 1
-                if change_second and calls[0] > 2:
+                if change_second and calls[0] > 1:
                     Path(argv[-1]).write_bytes(b'changed second build')
             return result
         return execute
@@ -116,6 +116,11 @@ else:
             manifest = json.loads((release / 'cases/parameter-store-v1/case.json').read_text())
             self.assertEqual(manifest['calibration']['status'], 'pending')
             self.assertEqual(manifest['family'], 'parameter-store')
+            self.assertEqual(manifest['scenarios'], ['original'])
+            self.assertEqual(manifest['version'], '3')
+            self.assertEqual(manifest['evaluator_version'], '3')
+            self.assertEqual(set(manifest['images']), {'firmware.bin'})
+            self.assertEqual(manifest['required_stages'], ['acquire','interpret','probe','ground','emit','reuse'])
             self.assertNotIn(str(author), json.dumps(manifest))
             unlocked = truth.unlock(release / manifest['truth']['path'], password.read_text(), manifest['truth']['sha256'])
             self.assertEqual(set(unlocked['inventory']), asset_build.inventory('parameter-store'))
@@ -124,7 +129,7 @@ else:
             self.assertEqual(entry['sha256'], hashlib.sha256(b'toy BINoriginal').hexdigest())
             self.assertEqual(result['status'], 'pending')
             self.assertFalse((author / 'build.json').exists())
-            self.assertEqual(len(list(release.rglob('*.*'))), 4)
+            self.assertEqual(len(list(release.rglob('*.*'))), 3)
 
     def test_nonreproducible_build_never_creates_canonical_images(self):
         from unittest.mock import patch
@@ -289,3 +294,50 @@ class PlacementTests(unittest.TestCase):
                 for base in ('packages', 'native-packages'):
                     with self.subTest(base=base), self.assertRaises(ValueError):
                         require_private_root(root / base / 'unrelated-package', [])
+
+class LegacyBuildTests(unittest.TestCase):
+    def test_rebuild_uses_only_the_authenticated_original_source(self):
+        import hashlib
+        import subprocess
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.evaluator_cli import manage
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);compiler=root/'arm-none-eabi-gcc';compiler.touch()
+            expected={'firmware.bin':hashlib.sha256(b'toy original').hexdigest()}
+            manifest={'truth':{'path':'toy.enc'},'images':expected}
+            truth={'build':{'flags':[]},'source_files':{'main.c':'toy source','link.ld':'toy link'}}
+            def execute(argv, **kwargs):
+                if argv[0].endswith('objcopy'):
+                    Path(argv[-1]).write_bytes(b'toy original')
+                else:
+                    self.assertEqual((Path(kwargs['cwd'])/'main.c').read_text(),'toy source')
+                    Path(argv[-1]).write_bytes(b'toy ELF')
+                return subprocess.CompletedProcess(argv,0,'','')
+            with patch('generative_driver.benchmark_support.registry.resolve_case',return_value=SimpleNamespace(manifest=manifest)),patch(
+                'generative_driver.benchmark_support.emulator.truth_for_case',return_value=truth),patch(
+                'generative_driver.benchmark_support.evaluator_cli.subprocess.run',side_effect=execute),patch(
+                'generative_driver.benchmark_support.evaluator_cli.subprocess.check_output',return_value='toy compiler'):
+                result=manage('rebuild','tq9',root/'password',root/'output',compiler=compiler)
+            self.assertTrue(result['ok'])
+            self.assertEqual(result['images'],expected)
+            self.assertEqual({p.name for p in (root/'output').glob('*.bin')},{'firmware.bin'})
+
+class DistributedInventoryTests(unittest.TestCase):
+    def test_every_registered_firmware_pin_has_only_its_original_image_and_truth(self):
+        from generative_driver.benchmark import case_root
+        from generative_driver.benchmark_support.registry import pin_case
+        root=case_root()
+        cases={'tq9':'2','tq9-v2':'3','sampled-sensor-v1':'3','parameter-store-v1':'3','bme280':'3'}
+        for case,version in cases.items():
+            with self.subTest(case=case):
+                pin=pin_case(case,'original',0)
+                self.assertEqual(pin['manifest']['version'],version)
+                self.assertEqual(pin['manifest']['evaluator_version'],version)
+                expected={'case.json'} | ({'firmware.bin'} if case!='bme280' else set())
+                self.assertEqual({p.name for p in (root/'cases'/case).iterdir()},expected)
+        self.assertEqual({p.name for p in (root/'groundtruth').iterdir()},{case+'.enc' for case in cases})
+
+    def test_retired_scenario_engine_is_not_distributed(self):
+        import importlib.util
+        self.assertIsNone(importlib.util.find_spec('generative_driver.benchmark_support.scenarios'))

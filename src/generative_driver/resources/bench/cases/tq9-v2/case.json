@@ -2,8 +2,8 @@
   "schema": "benchmark-case/2",
   "id": "tq9-v2",
   "family": "tq9",
-  "version": "2",
-  "evaluator_version": "2",
+  "version": "3",
+  "evaluator_version": "3",
   "execution": "actual-agent-emulation",
   "evidence_track": "firmware",
   "adapter_key": "emulator-v2",
@@ -13,9 +13,7 @@
     "actuate"
   ],
   "scenarios": [
-    "semantic",
-    "identity",
-    "control"
+    "original"
   ],
   "required_stages": [
     "acquire",
@@ -23,38 +21,27 @@
     "probe",
     "ground",
     "emit",
-    "reuse",
-    "maintain"
+    "reuse"
   ],
   "images": {
-    "firmware.bin": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e",
-    "firmware-semantic.bin": "a04ad1f63e4a43e28897b65d021f32d73d2fa47c846df1252097611081e18d81",
-    "firmware-identity.bin": "0c0962263eee131ce6785b0eec4dc452e65d74fa8ce5c330bdccf636fffb417d"
+    "firmware.bin": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e"
   },
   "truth": {
     "path": "groundtruth/tq9-v2.enc",
-    "sha256": "fe8b407895c1112cd7e691b6554d88b91d7d022c5bed17bd34555b2f2eaaf214"
+    "sha256": "54ec0d9462d2b21b97a952de7c71a9bbe901d216f104b7c3ac4d8fa61dcd83ca"
   },
   "calibration": {
     "status": "passed",
-    "evidence_sha256": "0c4da6322d026d3d6fef00504a683099fde389a1a1a48b1023b20b5cdd439d28",
+    "evidence_sha256": "f1f5ca9649d91b7eeb32b135bdf0b779d252d7bb9329aea5c141ecbd1ed1eea3",
     "input_hashes": {
       "source": "7ab030a6849a88ae0f1fd4faff1432fab6f3a0bcc20f90bb96869fa72c4d7411",
-      "contract": "9bcef7695db3a5204e2a6d82e4b2a69a32aa42f5fd495e6a237e81620ae14265",
+      "contract": "196b735f1e8ce6629cf7bb3d253373283c1d5d5dcf669b92f3636a49c6812295",
       "recipe": "c28b6e320c8184caba57f6f3c9c029f8a15f232fdc879e9b9ecf0b1c3eac9e7b",
-      "references": "99af0d4033898775ad72755338ae47975098869a5ac3fb8bb473fef5b48327fd",
-      "mutations": "41af47ad038cc02c68afb1c10c9c912937a9ebec216bd1e9dd3e81607ae9e731",
-      "build": "970318318a5ac8ac09852cc60a7e77df481af2665edffa0952fedd2c4d46f8d2",
+      "references": "3348e733e1eafc1a7043a27ae5e5990e476ae71efc456c15d65adaec12d310b9",
+      "mutations": "aaa3b634bc524a0fc8eb65ddacd78b79b16c658f1a82dbafb70eec32812095ad",
+      "build": "c78c8e069bd4b205e24264f5b95100efb0df612dbe82a121b7e7e77e8dfcf8ce",
       "analysis": "838f9a43ebceb3ffb7445cb6cf601ce1430a0d4dea53a3b618fea72b41f68b7e"
-    },
-    "execution": "reference-calibration",
-    "backend": "native-renode",
-    "references": 2,
-    "reference_runs": 8,
-    "mutants": 24,
-    "measured_source_revision": "3116da958bd430b3322c74c1555a0c620e18eaa2",
-    "native_runs": 32,
-    "observed_platform": "macOS arm64"
+    }
   },
   "time_policy": {
     "probe": "continuous emulator virtual time",

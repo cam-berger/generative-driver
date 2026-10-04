@@ -14,8 +14,8 @@ import tempfile
 
 from .snapshots import canonical_digest
 
-REQUIRED_SCENARIOS = ('original', 'semantic', 'control', 'identity')
-CORE_MUTANTS = ('wrong-scale', 'constant-output', 'wrong-state', 'false-drift')
+REQUIRED_SCENARIOS = ('original',)
+CORE_MUTANTS = ('wrong-scale', 'constant-output', 'wrong-state')
 
 
 def calibration_identity():
@@ -50,8 +50,8 @@ def input_hashes(truth):
 def tq9_candidate(truth, reference_name, scenario, mutation=None):
     """Derive the declared legacy reference variant without executing it."""
     reference=truth['references'][reference_name]
-    key=scenario+'_model' if scenario in ('semantic','identity') else 'model'
-    candidate=copy.deepcopy(reference['model' if isinstance(mutation,dict) else key])
+    if scenario != 'original':raise ValueError('Unknown reference scenario')
+    candidate=copy.deepcopy(reference['model'])
     caps=copy.deepcopy(reference['capabilities'])
     if isinstance(mutation,str):
         task=caps['tasks']['temperature']
@@ -59,7 +59,7 @@ def tq9_candidate(truth, reference_name, scenario, mutation=None):
         if mutation=='wrong-scale':decoder['scale']=decoder.get('scale',1)*10
         elif mutation=='constant-output':decoder.update(scale=0,offset_value=0)
         elif mutation=='wrong-state':candidate['operations'][caps['tasks']['arm']['operation']]=copy.deepcopy(candidate['operations'][caps['tasks']['disarm']['operation']])
-        elif mutation!='false-drift':raise ValueError('Unknown legacy mutation')
+        else:raise ValueError('Unknown legacy mutation')
     elif mutation is not None:
         for patch in mutation['patch']:
             if patch['op']!='replace':raise ValueError('Unsupported reference mutant patch')
@@ -77,56 +77,26 @@ def tq9_execution_inputs(truth):
     from .calibration import execution_input_identity
     result={}
     for name in truth['references']:
-        for scenario in REQUIRED_SCENARIOS:
-            result[name+'-'+scenario]=execution_input_identity(*tq9_candidate(truth,name,scenario))
+        for phase in ('diagnostic','final'):
+            result[name+'-'+phase+'-original']=execution_input_identity(*tq9_candidate(truth,name,'original'))
     for scenario in REQUIRED_SCENARIOS:
         for mutation in CORE_MUTANTS:
             result[mutation+'-'+scenario]=execution_input_identity(*tq9_candidate(truth,'reference-a',scenario,mutation))
     for mutation in truth['mutations']['mutations']:
-        scenario='semantic' if mutation['id']=='stale-semantic-decoder' else 'identity' if mutation['id']=='stale-identity' else 'original'
+        scenario='original'
         result[mutation['id']]=execution_input_identity(*tq9_candidate(truth,'reference-a',scenario,mutation))
     return result
 
 
 def validate_record(manifest, record):
-    failures=[]
-    expected={'schema':'benchmark-calibration/1','status':'passed','case':manifest['id'],
-        'execution':'reference-calibration','backend':'native-renode','evaluator_version':manifest['evaluator_version'],
-        'images':manifest['images'],'input_hashes':manifest['calibration']['input_hashes'],
-        'native_process_observed':True,'evaluator_identity':calibration_identity()}
-    for key,value in expected.items():
-        if record.get(key)!=value:failures.append('identity:'+key)
-    references=record.get('references',[])
-    if (len(references)!=2 or len({r.get('id') for r in references})!=2
-            or len({r.get('model_sha256') for r in references})!=2
-            or any(r.get('passed') is not True or set(r.get('scenarios',[]))!=set(REQUIRED_SCENARIOS) for r in references)):
-        failures.append('two distinct references on every scenario required')
-    required=set(record.get('required_mutants',[]))
-    if not set(CORE_MUTANTS)<=required:failures.append('required mutant inventory')
-    mutants=record.get('mutants',[])
-    for mutant in required:
-        rows=[row for row in mutants if row.get('id')==mutant]
-        if not rows or any(row.get('rejected') is not True or not row.get('failed_checks') for row in rows):
-            failures.append('mutant:'+mutant)
-        for row in rows:
-            reasons = row.get('failures', [])
-            if ({r.get('id') for r in reasons} != set(row.get('failed_checks', []))
-                    or any(r.get('reason') not in ('value mismatch', 'unit mismatch', 'invalid observation', 'false drift claim') for r in reasons)):
-                failures.append('mutant reasons:'+mutant)
-        if mutant in CORE_MUTANTS and {r.get('scenario') for r in rows}!=set(REQUIRED_SCENARIOS):
-            failures.append('mutant scenarios:'+mutant)
-    if any(record.get('scenarios',{}).get(name,{}).get('passed') is not True for name in REQUIRED_SCENARIOS):
-        failures.append('scenario coverage')
-    if any(not record.get('tools',{}).get(name) for name in ('compiler','objcopy','renode','ghidra','java')):
-        failures.append('native tool evidence')
+    from .calibration import validate_calibration
+    checked=validate_calibration({**manifest,'family':'tq9'},record)
     try:
-        expected_names={ref['id']+'-'+scenario for ref in references for scenario in REQUIRED_SCENARIOS}
-        expected_names|={row['id']+'-'+row['scenario'] if row['id'] in CORE_MUTANTS else row['id'] for row in mutants}
         measured={run['id']:{k:run[k] for k in ('model_sha256','capabilities_sha256')} for run in record['runs']}
-        if (len(measured)!=len(record['runs']) or set(measured)!=expected_names
-                or measured!=record['execution_inputs']):failures.append('executed input identities')
-    except (KeyError,TypeError):failures.append('missing executed input identities')
-    return {'ok':not failures,'failures':failures}
+        if len(measured)!=len(record['runs']) or measured!=record['execution_inputs']:
+            checked['failures'].append('executed input identities')
+    except (KeyError,TypeError):checked['failures'].append('missing executed input identities')
+    return {'ok':not checked['failures'],'failures':checked['failures']}
 
 
 def calibrate(case_id, options):
@@ -143,7 +113,6 @@ def calibrate(case_id, options):
     from .emulated import reference_execute
     from .truth import seal
     from .cases import _write
-    from .scenarios import maintenance_decision
     from ..benchmark import case_root
     from ..toolkit import resources_root
     definition=resolve_case(case_id)
@@ -236,13 +205,8 @@ def calibrate(case_id, options):
                 'export_hashes':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in exports.iterdir() if p.is_file()}}
             save()
         def run(model, capabilities, scenario, name, phase='final', package_final=True):
-            if family_case:
-                image='firmware-drift.bin' if scenario=='semantic' else 'firmware.bin'
-                selected='control' if scenario=='original' else scenario
-            else:
-                image='firmware.bin' if scenario in ('original','control') else truth['contracts']['scenarios'][scenario]['next_image']
-                selected='semantic' if scenario=='original' else scenario
-            pin=pin_case(case_id,selected,0)
+            image='firmware.bin'
+            pin=pin_case(case_id,'original',0)
             result=reference_execute(pin,truth,model,capabilities,renode=tool_paths['renode'],phase=phase,package_final=package_final,
                 image=build_dir/image,output_dir=output/'runs'/name)
             record['runs'].append({'id':name,'scenario':scenario,'phase':phase,
@@ -255,14 +219,11 @@ def calibrate(case_id, options):
             save()
             return result
         if family_case:
-            phases=(('diagnostic','original'),('final','original'),('maintenance','semantic'),('maintenance','control'))
+            phases=(('diagnostic','original'),('final','original'))
             for name,reference in truth['references'].items():
                 run_ids=[];passes=[];execution_inputs={}
                 for phase,scenario in phases:
                     model=reference['model']
-                    if scenario=='semantic':
-                        patches=[{'target':'model',**p} for p in truth['oracle']['semantic_model_patches'][name]]
-                        model=apply_mutation(model,reference['capabilities'],{'id':'semantic','patches':patches})['model']
                     run_id=name+'-'+phase+'-'+scenario
                     execution_inputs[run_id]=execution_input_identity(model,reference['capabilities'])
                     result=run(model,reference['capabilities'],scenario,run_id,phase)
@@ -279,59 +240,39 @@ def calibrate(case_id, options):
                 scenario=mutation.get('scenario','original')
                 result=run(changed['model'],changed['capabilities'],scenario,mutation['id'],mutation['phase'])
                 failures=[c for c in result['grade']['checks'] if not c['passed']]
-                if mutation['id']=='false-drift':
-                    decision=maintenance_decision(scenario='control',claim=changed['assessment']['maintenance_claim'],repaired=False,
-                        diagnostic={'evaluable':True,'contradiction':result['grade']['verdict']!='passed',
-                            'evidence_ids':['native-control'],'fresh_reuse_passed':True})
-                    failures=([{'id':'maintenance/false-drift','passed':False,'reason':'false drift claim'}]
-                        if result['grade']['verdict']=='passed' and not decision['ok'] else [])
-                    record['runs'][-1].update(native_control_passed=result['grade']['verdict']=='passed',assessment_decision=decision)
-                    record['runs'][-1]['checks']=result['grade']['checks']+failures
-                    _write(output/'runs'/mutation['id']/'assessment.json',{
-                        'source':{'maintenance_claim':'unchanged'},'mutated':changed['assessment'],'decision':decision})
                 record['mutants'].append({'id':mutation['id'],'run':mutation['id'],'rejected':bool(failures),
                     'failed_checks':[c['id'] for c in failures],'expected_failed_checks':mutation['expected_failed_checks'],
                     'execution_input':execution_input_identity(changed['model'],changed['capabilities']),
-                    'source_sha256':changed['source_sha256'],'mutated_sha256':changed['mutated_sha256'],
-                    **({'source_assessment_sha256':canonical_digest({'maintenance_claim':'unchanged'}),
-                        'mutated_assessment_sha256':canonical_digest(changed['assessment'])} if mutation['id']=='false-drift' else {})})
+                    'source_sha256':changed['source_sha256'],'mutated_sha256':changed['mutated_sha256']})
                 save()
         else:
+            from .calibration import execution_input_identity
             for name,reference in truth['references'].items():
-                passes=[]
-                for scenario in REQUIRED_SCENARIOS:
-                    key=scenario+'_model' if scenario in ('semantic','identity') else 'model'
-                    result=run(reference[key],reference['capabilities'],scenario,name+'-'+scenario)
-                    passes.append(result['grade']['verdict']=='passed')
+                run_ids=[];passes=[]
+                for phase in ('diagnostic','final'):
+                    run_id=name+'-'+phase+'-original'
+                    result=run(reference['model'],reference['capabilities'],'original',run_id,phase)
+                    run_ids.append(run_id);passes.append(result['grade']['verdict']=='passed')
                 record['references'].append({'id':name,'model_sha256':canonical_digest(reference['model']),
-                                             'passed':all(passes),'scenarios':list(REQUIRED_SCENARIOS)})
+                    'passed':all(passes),'runs':run_ids,
+                    'execution_inputs':{n:record['execution_inputs'][n] for n in run_ids}})
                 save()
             reference=truth['references']['reference-a']
-            for scenario in REQUIRED_SCENARIOS:
-                key=scenario+'_model' if scenario in ('semantic','identity') else 'model'
-                for mutation in CORE_MUTANTS:
-                    candidate,caps=tq9_candidate(truth,'reference-a',scenario,mutation)
-                    result=run(candidate,caps,scenario,mutation+'-'+scenario,phase='final',package_final=False)
-                    failures=[c for c in result['grade']['checks'] if not c['passed']]
-                    failed=[c['id'] for c in failures]
-                    if mutation=='false-drift':
-                        decision=maintenance_decision(scenario='control',claim='drift',repaired=False,
-                            diagnostic={'evaluable':True,'contradiction':result['grade']['verdict']!='passed',
-                                        'evidence_ids':['native-reference'],'fresh_reuse_passed':True})
-                        failed=['maintenance/false-drift'] if not decision['ok'] and result['grade']['verdict']=='passed' else []
-                        failures=[{'id':identifier,'reason':'false drift claim'} for identifier in failed]
-                    record['mutants'].append({'id':mutation,'scenario':scenario,'rejected':bool(failed),'failed_checks':failed,'failures':failures})
-                    save()
-            for mutation in truth['mutations']['mutations']:
-                scenario='semantic' if mutation['id']=='stale-semantic-decoder' else 'identity' if mutation['id']=='stale-identity' else 'original'
-                candidate,caps=tq9_candidate(truth,'reference-a',scenario,mutation)
-                result=run(candidate,caps,scenario,mutation['id'],phase='final',package_final=False)
+            for mutation in [*CORE_MUTANTS,*truth['mutations']['mutations']]:
+                name=mutation+'-original' if isinstance(mutation,str) else mutation['id']
+                identifier=mutation if isinstance(mutation,str) else mutation['id']
+                candidate,caps=tq9_candidate(truth,'reference-a','original',mutation)
+                result=run(candidate,caps,'original',name,phase='final')
                 failures=[c for c in result['grade']['checks'] if not c['passed']]
-                failed=[c['id'] for c in failures]
-                record['mutants'].append({'id':mutation['id'],'scenario':scenario,'rejected':bool(failed),'failed_checks':failed,'failures':failures})
+                record['mutants'].append({'id':identifier,'run':name,'rejected':bool(failures),
+                    'failed_checks':[c['id'] for c in failures],
+                    'expected_failed_checks':truth['mutations']['expected_failed_checks'][identifier],
+                    'execution_input':execution_input_identity(candidate,caps),
+                    'source_sha256':canonical_digest({'model':reference['model'],'capabilities':reference['capabilities']}),
+                    'mutated_sha256':canonical_digest({'model':candidate,'capabilities':caps})})
                 save()
         record['native_process_observed']=all(r['native_process_observed'] for r in record['runs']) and bool(record['runs'])
-        record['scenarios']={name:{'passed':all(r['passed'] for r in record['runs'] if r['scenario']==name and (r['id'].startswith(('a-','b-')) if family_case else r['id'].startswith('reference-')))} for name in (('semantic','control') if family_case else REQUIRED_SCENARIOS)}
+        record['scenarios']={name:{'passed':all(r['passed'] for r in record['runs'] if r['scenario']==name and (r['id'].startswith(('a-','b-')) if family_case else r['id'].startswith('reference-')))} for name in REQUIRED_SCENARIOS}
         record['status']='passed'
         manifest=copy.deepcopy(definition.manifest)
         manifest['calibration']={'input_hashes':record['input_hashes']}

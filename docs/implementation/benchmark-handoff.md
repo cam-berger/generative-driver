@@ -1,19 +1,9 @@
-# Benchmark expansion handoff — 2026-10-01
+# Benchmark review and growth handoff — 2026-10-03
 
-All 17 planned feature tasks and the scoped final corrections are accepted on `feat/bench`. Final evaluated code is `3116da958bd430b3322c74c1555a0c620e18eaa2`; the subsequent local release commit contains qualified encrypted assets, measured verification records and closing documentation. The [controller decisions](benchmark-expansion-decisions.md) preserve the agreed scope and evidence boundaries.
+The workflow is acquire, interpret, probe, ground, emit, reuse. All six gates, a fresh agent's package-only mission and independent final behavior are required for acceptance. The current research core has three original firmware families and a nine-slot default suite; the model study has not run.
 
-## Observed local results
+The [follow-up PR #2](https://github.com/cam-berger/generative-driver/pull/2), branch `codex/benchmark-growth-review`, builds on PR #1 at `24d8861`. It rejects incompatible historical offline scores, preserves benchmark/evaluator bytes across Git checkouts, and publishes the [growth roadmap](../research/2026-10-03-benchmark-growth-plan.md), [source review](../research/2026-10-03-benchmark-source-review.md) and [PR review](../research/2026-10-03-pr1-review.md).
 
-- Native macOS reference qualification: 59 main runs plus 16 TQ9 phase sessions passed. Both correct references measured diagnostic/maintenance endpoints on original, control and repaired semantic/identity variants. The separate encrypted phase asset is inspectable through the [evaluator API](../../bench/groundtruth/README.md#supplementary-tq9-phase-evidence); ordinary admission still validates the main 32-run TQ9 record.
-- Source Python 3.13.12 and installed Python 3.11.15/3.13.14: 412 tests each, no skips. The exact wheel and source archive are hashed in the [final index](benchmark-final-verification.json).
-- Installed replay/discovery and all seven authenticated scenario admissions passed. All 75 saved native grades matched offline recomputation; scripted full-suite fixtures cover authenticated run regrade and saved suite comparison.
-- All eight frozen legacy/baseline hashes match. Public source and archives passed private-payload/credential/bytecode audits. Evaluator and packaged-resource bytes match the tested wheel.
-- The six-entry, three-repeat pilot was frozen into 18 slots only. No child, selected model or performance trial was dispatched.
+Local source and installed Python 3.11/3.13 suites each pass 420 tests with archive gates enabled. Thirty native family sessions and two legacy sessions qualify the refreshed evaluator; all saved grades reproduce and stale admissions fail. A failed TQ9 startup attempt is preserved alongside its successful unchanged retry. [Verification](../verification.md) and its [follow-up index](pr1-followup-verification.json) give identities and limits. The initial fix commit eliminated Windows hash errors and exposed a POSIX-only path assertion in a test. That assertion is now portable. A later gateway-test readiness race was reproduced with a delayed running transition and corrected by waiting for the public running state; all ten configurator tests pass. Final platform results are in PR #2 checks.
 
-The immutable artifacts were built from accepted code plus matching qualified assets, phase ciphertext and setup/evaluator instructions. Their final verification prose/index was written afterward; those newer documents do not change evaluator/resource identity. Historical measurements remain associated with their original revisions, including `aee512e` native evidence and the 411-test fix checkpoint at `1c09654e`.
-
-## Remaining external qualification
-
-A model-performance pilot requires explicit runtime/model selection and execution authorization. New Windows CI, Windows 11 workstation/native Windows Renode/Ghidra, live Goose and physical-device measurements remain unobserved. Password possession remains the local evaluator trust boundary; stronger worker filesystem isolation is unverified. No push, PR, merge, model inference or physical operation was performed for this release. The branch and checkout remain available; remote integration is a separate action.
-
-Full raw evidence, failed attempts, task/review/fix reports, exact distributions and command/environment commitments are retained privately. The public index exposes safe hashes and counts, never handles or hidden numeric vectors.
+Next research step: admit three external feasibility candidates (P2IM Gateway, P2IM CNC and Zephyr Modbus) using independent functional contracts and provenance checks. Use their admission yield, coverage and cost to guide the 12-lineage pilot. The roadmap is proposed work, not model-run or hardware authorization. No physical device or model inference was used in this follow-up.

@@ -1,8 +1,8 @@
 {
   "schema": "benchmark-case/1",
   "id": "bme280",
-  "version": "2",
-  "evaluator_version": "2",
+  "version": "3",
+  "evaluator_version": "3",
   "execution": "actual-agent-physical",
   "required_stages": [
     "acquire",
@@ -10,12 +10,11 @@
     "probe",
     "ground",
     "emit",
-    "reuse",
-    "maintain"
+    "reuse"
   ],
   "truth": {
     "path": "groundtruth/bme280.enc",
-    "sha256": "2f83185b925b7458f63c1c7cd6e235f4bcc8286c622e9498f436e8af51e8549a"
+    "sha256": "0eaaca4a7dcd6ffe7ee1eb638857966e3152d1c7be420b4aa691e2e76844f82c"
   },
   "prerequisites": [
     "BME280 on explicitly selected FTDI I2C adapter",
@@ -25,9 +24,12 @@
   "limitations": [
     "No physical run is shipped as a new measurement",
     "Operator supplied reference must be independent; this is not authenticated laboratory metrology",
-    "No firmware identity drift injection for physical profile"
+    "One stable physical sensor session through fresh reuse"
   ],
   "time_policy": {
     "physical": "Real elapsed device time; no timing pause"
-  }
+  },
+  "scenarios": [
+    "original"
+  ]
 }

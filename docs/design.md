@@ -1,6 +1,6 @@
 # Generative Driver: accepted design
 
-This brief records the public repository requested on 28 September 2026. It incorporates the accepted decisions Q1–Q10. Implementation will follow the agreed public test seams using one failing behavior test and its implementation at a time.
+This brief records the public repository and the six-stage workflow confirmed on 3 October 2026. Implementation follows the agreed public test seams using one failing behavior test and its implementation at a time.
 
 ## Agreed outcome
 
@@ -8,7 +8,7 @@ Developers can install the toolchain, skills and workflow through documented Goo
 
 Goose and Codex provide the developer-facing interface. A local background configurator owns the workflow, controls the orchestrating agent and stage agents, manages their configured runtime connections and device access, and retains progress independently of the UI. The first release launches configured agent runtimes rather than implementing a provider API agent loop. Codex and Goose execution adapters share the same stage contract; the runtime, provider and model identities are recorded separately.
 
-The configurator retains the existing seven roles: acquire, interpret, probe, ground, emit, reuse and maintain. One stage is active per run. Agents make stage decisions and report their work; deterministic checks control whether reports become accepted handoffs. This distribution adds the durable lifecycle controller missing from the source research toolchain.
+The configurator owns six roles: acquire, interpret, probe, ground, emit and reuse. One stage is active per run. Agents make stage decisions and report their work; deterministic checks control whether reports become accepted handoffs. A run ends when a fresh agent uses the emitted driver to perform the requested device functions and independent checks accept that behavior.
 
 ## Architecture
 
@@ -34,7 +34,7 @@ Device bindings belong to the operator. Managed workers share exclusive device o
 
 Blind interpret receives only its prepared description and generic kit. Fresh reuse receives only the emitted package, objective and permitted operating information. Each execution records the restrictions actually enforced. The developer-facing chat's history, benchmark answer keys and previous candidate outputs are excluded from these worker inputs.
 
-Maintain is triggered after an accepted package exists. The initial benchmark deliberately changes the firmware revision, requires detection of incompatibility, routes repair and requalification, and checks fresh reuse of the revised package. A harder change to physical meaning with unchanged identity is a later benchmark variant.
+Each benchmark uses one stable firmware image. Diagnostic observations may support bounded interpretation repairs before emission. Frozen final checks qualify the submitted package after fresh worker use; their failure is terminal.
 
 ## Public repository
 
@@ -51,7 +51,6 @@ bench/README.md           prerequisites, run/score/compare instructions and metr
 bench/cases/              versioned benchmark inputs and execution manifests
 bench/groundtruth/        independent evidence, reference vectors and evaluator keys
 bench/evaluators/         scoring outside candidate access
-bench/baselines/          selected publishable reports with provenance
 .github/workflows/        macOS and Windows installation and behavior checks
 ```
 
@@ -64,18 +63,18 @@ Codex receives plugin metadata, MCP wiring and skills. Goose receives a recipe a
 | Profile | Execution | Evidence and purpose |
 |---|---|---|
 | Installation check | Scripted fixture and recorded replay, no paid inference or hardware | Exercises installed CLI/MCP, workflow records, package emission and independent package replay. Labelled as setup smoke, excluded from model-performance scores. |
-| Emulated STM32 controller | Actual configured agents against the owned TQ9 firmware in Renode | Main performance benchmark. Independent emulator observations score values and effects. Adds fresh-agent reuse and deliberate firmware drift to the existing stage evidence. |
-| Physical BME280 sensor | Optional real sensor and supported adapter, with operator-supplied stimulus | Exercises actual transport and fresh reuse against physical observations. Its score remains distinguishable from emulation and replay. |
+| Emulated STM32 families | Actual configured agents against owned TQ9, sampled-sensor and parameter-store firmware in Renode | Independent observations score readings, effects and state transitions, followed by package-only use by a fresh agent. |
+| Physical BME280 sensor | Optional real sensor and supported adapter, with operator-supplied reference measurements | Exercises actual transport and fresh reuse against physical observations. Its score remains distinguishable from emulation and replay. |
 
-The existing TQ9 experiment shows why protocol checks and semantics need separate scores: its framing qualification passed while several decoders were wrong. Its package exercise did not establish fresh-agent reuse or maintenance. Those are new benchmark requirements, not historical successes; the independent benchmark evidence records that limitation.
+Protocol checks and semantic correctness receive separate evidence. A valid frame or executable package can still return the wrong value or perform the wrong effect. Fresh reuse must establish that a new agent can operate the package from its published interface.
 
-Each groundtruth case includes source/build provenance, pinned input hashes, hand-auditable vectors, an independent oracle or primary documentation, observations from the reference channel, expected stage outcomes and known incorrect outputs that the evaluator must reject. The BME280 evidence establishes response to stimulus within its measured scope; it does not establish absolute sensor calibration.
+Each groundtruth case includes source/build provenance, pinned input hashes, hand-auditable vectors, an independent oracle or primary documentation, observations from the reference channel, expected stage outcomes and known incorrect outputs that the evaluator must reject. The BME280 evidence establishes stable-environment agreement with operator references within their supplied uncertainty; it does not establish absolute sensor calibration.
 
-A benchmark can execute completely and report that the model failed its task. Reports distinguish execution status, accepted workflow state and evaluator verdict. Overall task success requires every declared acceptance gate; averaging stage scores cannot erase a failed required gate. Blocked, failed, unrun and inapplicable stages remain explicit.
+A benchmark can execute completely and report that the model failed its task. Reports distinguish execution status, accepted workflow state and evaluator verdict. Overall task success requires all six acceptance gates, the fresh worker mission and independent final behavior; averaging stage scores cannot erase a failed required gate. Blocked, failed, unrun and inapplicable stages remain explicit.
 
 Record case and evaluator versions, toolchain revision, agent runtime/version, provider/model/settings, skill revision, attempt limits, environment, generated model/package hashes, stage scores, false capability claims, elapsed time, tool calls, reported usage, retries and human input. Missing usage remains unknown. Comparing different agent runtimes is a comparison of complete systems. A comparison that changes several variables labels that fact.
 
-Provide a one-run development mode and a repeat mode for baselines. Repeated outcomes remain visible; summaries include success counts and median time/usage. The first repeat default is three fresh runs. Inference execution and its configured limits are explicit, separate from installation smoke.
+Provide a one-run development mode and a repeat mode for baselines. Repeated outcomes remain visible; summaries include success counts and median time/usage. The default suite runs three firmware families with three fresh repetitions each: nine trials. Inference execution and its configured limits are explicit, separate from installation smoke.
 
 ## Approved TDD seams
 
@@ -86,7 +85,7 @@ These four interfaces were confirmed before new tests were written. Existing use
 | Installed CLI and MCP | A built package installs in a clean environment, works outside its checkout including paths with spaces, exposes the configurator, completes setup smoke and reports unavailable optional dependencies. |
 | Configurator and worker execution | Real runtime adapters receive the correct stage context/tools. Assignments advance only after checked reports. Duplicate starts, stale results and altered inputs cannot advance twice. UI disconnect/reconnect, cancellation and process recovery preserve one consistent run and fresh reuse. |
 | Device runtime and emitted package | Bindings and effect grants are checked before I/O. Managed operations have exclusive access. A relocated package describes, replays and executes through its public interface; tampering is rejected; uncertain writes are not retried automatically. |
-| Benchmark run, score and compare | Independent known-good and deliberately wrong submissions receive expected verdicts. All seven roles are observable in the agent benchmark. Replay is labelled, missing data stays missing, incompatible comparisons are identified, and seeded drift is detected and repaired through requalification. |
+| Benchmark run, score and compare | Independent known-good and deliberately wrong submissions receive expected verdicts. All six roles are observable in the agent benchmark. Replay is labelled, missing data stays missing, incompatible comparisons are identified, and fresh use of the frozen package is required for success. |
 
 Tests exercise the actual installed CLI, stdio MCP protocol, process boundaries and package interface where those are the seam. External devices, provider execution and clocks may have controlled substitutes for deterministic contract tests. Substitute workers and replay never count as actual model benchmark results. Native macOS and Windows runners validate the portable release; optional backend and physical validation are reported separately.
 
@@ -96,4 +95,4 @@ The design and four public test seams were confirmed. Groundtruth uses password-
 
 Scores measure functional equivalence: the same supported inputs must produce the expected outputs and effects within the declared tolerances. Candidate code need not resemble reference code.
 
-The initial validation is one real Codex benchmark on the development machine, bounded to three hours, with up to two interpretation repairs. Its failures and unavailable measurements remain in the report. Repeated studies and physical runs are separate selections.
+Native reference qualification and scripted release checks establish evaluator and software behavior. Model-performance trials select an actual runtime/model and explicit budgets separately. Their failures and unavailable measurements remain in the reports.

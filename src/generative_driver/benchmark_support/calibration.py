@@ -32,11 +32,12 @@ def decode_inventory(payload):
         raise ValueError('Malformed family inventory') from error
 
 REQUIRED_MUTANTS = {
-    'sampled-sensor': {'constant','scale','signedness','stale','false-drift'},
-    'parameter-store': {'constant','scale','order','wrong-bank','abort','false-drift'},
+    'tq9': {'wrong-scale','constant-output','wrong-state','unsigned-temperature','wrong-temperature-scale',
+            'wrong-temperature-unit','wrong-temperature-byteorder','wrong-crc','wrong-duty-effect'},
+    'sampled-sensor': {'constant','scale','signedness','stale'},
+    'parameter-store': {'constant','scale','order','wrong-bank','abort'},
 }
-_REFERENCE_PHASES = {('diagnostic','original'), ('final','original'),
-                     ('maintenance','semantic'), ('maintenance','control')}
+_REFERENCE_PHASES = {('diagnostic','original'), ('final','original')}
 
 
 def _sha(value):
@@ -58,7 +59,6 @@ def execution_input_identity(model, capabilities):
 def validate_calibration(manifest, record):
     """Validate measured coverage, not candidate success flags. Local trust only."""
     from .reference_calibration import calibration_identity
-    from .scenarios import maintenance_decision
     failures=[]
     try:
         expected={'schema':'benchmark-calibration/1','status':'passed','case':manifest['id'],
@@ -70,9 +70,10 @@ def validate_calibration(manifest, record):
             if record.get(key)!=value:failures.append('identity:'+key)
         if record.get('native_process_observed') is not True:
             failures.append('native process type')
-        if set(manifest['images'])!={'firmware.bin','firmware-drift.bin'}:
+        if set(manifest['images'])!={'firmware.bin'}:
             failures.append('image inventory')
-        if (set(record['input_hashes'])!={'source','contract','recipe','references','mutations','build','inventory'}
+        if (set(record['input_hashes'])!=({'source','contract','recipe','references','mutations','build'} |
+                ({'analysis'} if manifest['family']=='tq9' else {'inventory'}))
                 or any(not _sha(v) for v in record['input_hashes'].values())):
             failures.append('input commitment inventory')
         runtime=canonical_digest({k.split('/',1)[1]:v for k,v in expected['evaluator_identity']['files'].items()
@@ -84,7 +85,7 @@ def validate_calibration(manifest, record):
         if not runs or len(runs)!=len(record['runs']):failures.append('run inventory')
         for run in runs.values():
             process=run['process']
-            expected_image=manifest['images']['firmware-drift.bin' if run['scenario']=='semantic' else 'firmware.bin']
+            expected_image=manifest['images']['firmware.bin']
             if (run['phase'],run['scenario']) not in _REFERENCE_PHASES or type(run['passed']) is not bool:
                 failures.append('run phase:'+run['id'])
             if (run['native_process_observed'] is not True or type(process.get('pid')) is not int
@@ -94,8 +95,7 @@ def validate_calibration(manifest, record):
                     or any(not _sha(run.get(k)) for k in ('evidence_sha256','contract_sha256','model_sha256','capabilities_sha256','runtime_sha256'))
                     or run['runtime_sha256']!=runtime or not run['checks']):failures.append('run evidence:'+run['id'])
             if (len(run['check_ids'])!=len(set(run['check_ids']))
-                    or {c['id'] for c in run['checks']} != set(run['check_ids']) |
-                        ({'maintenance/false-drift'} if run['id']=='false-drift' else set())
+                    or {c['id'] for c in run['checks']} != set(run['check_ids'])
                     or len(run['checks']) != len({c['id'] for c in run['checks']})):
                 failures.append('run check inventory:'+run['id'])
             if run['phase']=='final' and not _sha(run.get('package_sha256')):
@@ -110,7 +110,7 @@ def validate_calibration(manifest, record):
                     or any(ref['execution_inputs'][r['id']]!={k:r[k] for k in ('model_sha256','capabilities_sha256')} for r in selected)):
                 failures.append('reference execution inputs:'+ref['id'])
             if (ref['passed'] is not True or not _sha(ref['model_sha256'])
-                    or len(selected)!=4 or {(r['phase'],r['scenario']) for r in selected}!=_REFERENCE_PHASES
+                    or len(selected)!=2 or {(r['phase'],r['scenario']) for r in selected}!=_REFERENCE_PHASES
                     or any(r['passed'] is not True or any(c['passed'] is not True for c in r['checks']) for r in selected)):
                 failures.append('reference coverage:'+ref['id'])
         mutants=record['mutants']
@@ -118,34 +118,24 @@ def validate_calibration(manifest, record):
         for row in mutants:
             run=runs[row['run']];used.append(row['run'])
             failed={c['id'] for c in run['checks'] if not c['passed']}
-            reasons = {'false drift claim'} if row['id']=='false-drift' else {'value mismatch','unit mismatch','invalid observation'}
+            reasons = {'value mismatch','unit mismatch','invalid observation'}
             if row['execution_input']!={k:run[k] for k in ('model_sha256','capabilities_sha256')}:
                 failures.append('mutant execution inputs:'+row['id'])
             if (row['rejected'] is not True or not row['expected_failed_checks']
-                    or not set(row['expected_failed_checks'])<=set(row['failed_checks'])
+                    or set(row['expected_failed_checks'])!=set(row['failed_checks'])
                     or len(row['expected_failed_checks'])!=len(set(row['expected_failed_checks']))
                     or len(row['failed_checks'])!=len(set(row['failed_checks']))
                     or failed!=set(row['failed_checks'])
                     or any(c.get('reason') not in reasons
                            for c in run['checks'] if not c['passed'])
-                    or not failed <= set(run['check_ids']) | ({'maintenance/false-drift'} if row['id']=='false-drift' else set())
+                    or not failed <= set(run['check_ids'])
                     or not _sha(row['source_sha256']) or not _sha(row['mutated_sha256'])
                     or row['source_sha256']==row['mutated_sha256']):
                 failures.append('mutant evidence:'+row['id'])
-            if row['id']!='false-drift' and run['passed'] is not False:
+            if run['passed'] is not False:
                 failures.append('mutant did not fail its native run')
-            if row['id']=='false-drift':
-                decision=maintenance_decision(scenario='control',claim='drift',repaired=False,
-                    diagnostic={'evaluable':True,'contradiction':False,'evidence_ids':['native-control'],'fresh_reuse_passed':True})
-                if (run['phase']!='maintenance' or run['scenario']!='control'
-                        or run.get('native_control_passed') is not True
-                        or run.get('assessment_decision')!=decision or run['passed'] is not True
-                        or row['failed_checks']!=['maintenance/false-drift']
-                        or row.get('source_assessment_sha256')!=canonical_digest({'maintenance_claim':'unchanged'})
-                        or row.get('mutated_assessment_sha256')!=canonical_digest({'maintenance_claim':'drift'})):
-                    failures.append('false-drift control evidence')
         if len(used)!=len(set(used)) or set(used)!=set(runs):failures.append('run coverage')
-        for scenario in ('semantic','control'):
+        for scenario in ('original',):
             if record['scenarios'][scenario]['passed'] is not True:failures.append('scenario:'+scenario)
         if (set(record['tools'])!={'compiler','objcopy','renode','ghidra','java'}
                 or any(not isinstance(v,str) or not v.strip() for v in record['tools'].values())):
@@ -160,21 +150,15 @@ def validate_calibration(manifest, record):
 
 
 def apply_mutation(model, capabilities, mutation):
-    """Apply bounded data patches; assessment mutations have one exact meaning."""
+    """Apply bounded model or capability patches with input commitments."""
     from copy import deepcopy
-    source={'model':model,'capabilities':capabilities,'assessment':{'maintenance_claim':'unchanged'}}
+    source={'model':model,'capabilities':capabilities}
     changed=deepcopy(source)
     patches=mutation['patches']
     if not patches:raise ValueError('Empty mutation')
-    if mutation['id']=='false-drift':
-        if (mutation.get('reference') not in ('a','b') or mutation.get('phase')!='maintenance'
-                or mutation.get('scenario')!='control'
-                or mutation.get('expected_failed_checks')!=['maintenance/false-drift']
-                or patches!=[{'target':'assessment','op':'replace','path':'/maintenance_claim','value':'drift'}]):
-            raise ValueError('Invalid false-drift assessment mutation')
     for patch in patches:
         kind=patch['target']; op=patch['op']
-        if kind not in ('model','capabilities') and not (kind=='assessment' and mutation['id']=='false-drift'):
+        if kind not in ('model','capabilities'):
             raise ValueError('Invalid mutation target')
         if op not in ('replace','add','remove') or set(patch)!={'target','op','path'} | ({'value'} if op!='remove' else set()):
             raise ValueError('Invalid mutation patch')
@@ -203,7 +187,7 @@ def hydrate_truth(payload):
     def read(name):return json.loads(files[name])
     hashes={name:hashlib.sha256(data).hexdigest() for name,data in files.items()
             if name!='calibration/calibration.json'}
-    groups={'source':('source/',),'contract':('diagnostic/','final/','maintenance/','oracle/'),
+    groups={'source':('source/',),'contract':('diagnostic/','final/','oracle/'),
             'recipe':('native/',),'references':('reference-',),'mutations':('mutants/',),
             'build':('build/','build-recipe.json','build.py','AUTHORING.json','LICENSE')}
     inputs={key:canonical_digest({n:h for n,h in hashes.items() if n.startswith(prefixes)})
@@ -215,8 +199,7 @@ def hydrate_truth(payload):
         raise ValueError('Recipe source outside authenticated native inventory')
     recipe['source_files']={local:files[name].decode('utf-8') for local,name in sources.items()}
     phases={'diagnostic':read('diagnostic/episodes.json'),'final':read('final/episodes.json')}
-    scenario_phases={name:{**deepcopy(phases),'maintenance':read('maintenance/'+name+'.json')}
-                     for name in ('semantic','control')}
+    scenario_phases={'original':deepcopy(phases)}
     for selected in scenario_phases.values():
         for phase in selected.values():
             actions=phase['actions']; checks=phase['contract']['checks']
@@ -226,7 +209,7 @@ def hydrate_truth(payload):
                     or not actions or actions[0]['kind']!='reset'):
                 raise ValueError('Scored phase lacks complete reset/call/observe coverage')
     return {**payload,'recipe':recipe,'input_hashes':inputs,'phases':phases,'scenario_phases':scenario_phases,
-        'images':{name:hashes['build/'+name] for name in ('firmware.bin','firmware-drift.bin')},
+        'images':{name:hashes['build/'+name] for name in ('firmware.bin',)},
         'references':{ref:{key:read('reference-'+ref+'/'+key+'.json') for key in ('model','capabilities')}
                       for ref in ('a','b')},'mutations':read('mutants/manifest.json'),
         'oracle':read('oracle/vectors.json'),

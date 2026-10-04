@@ -97,25 +97,33 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
     if status in ("failed", "cancelled") or any(v.get("status") == "failed" for v in verdicts.values()):
         verdict = "failed"
     required = case_manifest.get("required_stages", list(STAGES))
-    if status == "completed" and required and all(
+    compatible = (required == list(STAGES) and
+                  all(w["stage"] in STAGES for w in workers) and
+                  all(h["stage"] in STAGES for h in accepted.values()))
+    if status == "completed" and compatible and all(
         verdicts.get(s, {}).get("status") == "passed" and stages[s]["workflow_status"] == "accepted"
         for s in required
     ):
         verdict = "passed"
+    reason = result.get("reason")
+    if not compatible:
+        verdict = "incompatible"
+        reason = "Unsupported historical stage inventory; this report cannot be scored as a fresh reuse workflow"
     execution = case_manifest.get("execution", "unclassified")
     evidence = {"stage_verdicts": verdicts,
-                "probe_evaluation": {"observations": case_state.get("probe_evaluation", {}).get("observations", {})},
-                "drift_detected": case_state.get("drift_detected", False)}
+                "probe_evaluation": {"observations": case_state.get("probe_evaluation", {}).get("observations", {})}}
     if "physical_grounding" in case_state:
         evidence["physical_grounding"] = {k: v for k, v in case_state["physical_grounding"].items()
                                          if k in {"observations", "reference", "physical", "score"}}
+    if 'physical_final' in case_state:
+        evidence['physical_final'] = {k: v for k, v in case_state['physical_final'].items() if k in {'observations', 'score', 'reference', 'measurement_time'}}
     return {"schema": "benchmark-report/1", "run_id": result["run_id"],
             "case": case_manifest.get("id"), "case_version": case_manifest.get("version"),
             "evaluator_version": case_manifest.get("evaluator_version"), "seed": 0,
             "execution": execution,
             "model_benchmark": execution in ("actual-agent-emulation", "actual-agent-physical"),
             "workflow_status": status, "verdict": verdict,
-            "reason": result.get("reason"), "stages": stages,
+            "reason": reason, "stages": stages, "workflow_stages": list(STAGES),
             "case_state": evidence,
             "elapsed_seconds": max(0, result["updated"] - result["created"]),
             "worker_seconds": sum(w.get("elapsed_seconds", 0) for w in workers),
@@ -140,7 +148,9 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
             "limitations": case_manifest.get("limitations", []),
             **{k: v for k, v in (provenance or {}).items() if k in {
                 "agent", "environment", "budget_seconds", "attempt_limits", "toolchain_revision",
-                "skills_revision", "time_policy", "artifact_hashes", "truth_sha256", "case_inputs"}}}
+                "skills_revision", "time_policy", "artifact_hashes", "truth_sha256", "case_inputs"} and k != "attempt_limits"},
+            "attempt_limits": {k: v for k, v in ((provenance or {}).get("attempt_limits") or {}).items()
+                               if k == "max_model_repairs"}}
 
 
 def _tree_hash(root):
@@ -280,7 +290,7 @@ def report_run(run_id, home=None, output=None, *, autostart=True):
     report["evaluator_verdicts"] = result.get("evaluator_verdicts", [])
     if snapshot and manifest.get('schema') == 'benchmark-case/2':
         from .benchmark_support.evidence import public_v2_report
-        report.update({key: state[key] for key in ('evaluations', 'accepted_gates', 'maintenance', 'final_evaluation') if key in state})
+        report.update({key: state[key] for key in ('evaluations', 'accepted_gates', 'final_evaluation') if key in state})
         report['progress'] = result.get('progress', {})
         report = public_v2_report(report)
     else:

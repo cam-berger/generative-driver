@@ -13,7 +13,7 @@ def _private(run_dir, options, value=None):
         seal(value, path, password)
         return value
     if not path.exists():
-        return {'evaluations': [], 'maintenance': {}}
+        return {'evaluations': []}
     return unlock(path, password, hashlib.sha256(path.read_bytes()).hexdigest())
 
 
@@ -85,41 +85,9 @@ def _final(case_id, run_dir, package, capabilities, options):
     summary = {k: decision['evaluator'][k] for k in ('verdict', 'passed', 'total')}
     state.setdefault('evaluations', []).append({k: evaluation[k] for k in ('phase', 'revision', 'frozen_artifact_sha256')} | summary)
     state['final_evaluation'] = summary
-    state['fresh_reuse_passed'] = decision['ok']
     _write(path, state)
     return decision
 
-
-def maintenance_observation(case_id, run_dir, package, capabilities, options):
-    from .emulated import _session, _truth
-    from .emulated_actions import execute_plan, canonical_package_invoker
-    from .emulated import family_for
-    family = family_for(case_id)
-    from .behavior import validate_records
-    from ..configurator import digest
-    session = _session(case_id, run_dir, options)
-    _, state = _state(run_dir)
-    truth = _truth(case_id, run_dir, options)
-    pin = {**read_snapshot(run_dir)['case_pin'], 'revision': state.get('revision', 0)}
-    local = {**truth, 'artifact_sha256': digest(package)}
-    contract = family.contract(pin, local, 'maintenance')
-    output = Path(session.info['private_dir'])/'maintenance.json'
-    try:
-        records = execute_plan(session, canonical_package_invoker(package, capabilities, session.binding),
-            family.build_plan(pin, local, 'maintenance'), contract, output, family.observations,
-            truth['contracts']['time_policy']['sample_settle_seconds'])
-        raw = json.loads(output.read_text())
-        host = any(event.get('result', {}).get('error', {}).get('fault') == 'host' for event in raw['events'])
-        grade = validate_records(contract, records)
-        diagnostic = {'evaluable': not host, 'fault': 'host' if host else None,
-                      'contradiction': grade['verdict'] != 'passed', 'evidence_ids': options.get('evaluator_evidence_ids') or ['reference-' + hashlib.sha256(output.read_bytes()).hexdigest()]}
-    except RuntimeError:
-        raw = json.loads(output.read_text()) if output.exists() else {}
-        diagnostic = {'evaluable': False, 'fault': 'host', 'contradiction': False, 'evidence_ids': []}
-    payload = _private(run_dir, options)
-    payload.setdefault('maintenance_observations', []).append({'revision': pin['revision'], 'contract': contract, 'raw': raw})
-    _private(run_dir, options, payload)
-    return diagnostic
 
 def finalize(case_id, run_dir, accepted, options):
     """Seal actual copied controller handoffs, including partial/failed trials."""
@@ -139,7 +107,7 @@ def finalize(case_id, run_dir, accepted, options):
             continue
         selected=artifacts[0]
         refs=[]
-        phase='final' if handoff['stage'] in ('reuse','maintain') else 'diagnostic' if handoff['stage'] in ('probe','ground') else None
+        phase='final' if handoff['stage'] == 'reuse' else 'diagnostic' if handoff['stage'] in ('probe','ground') else None
         if phase and any(e['phase']==phase and e['revision']==handoff['revision'] for e in payload['evaluations']):
             refs=[{'phase':phase,'revision':handoff['revision']}]
         checks=[{'id':str(c.get('id',c.get('name'))),'passed':c.get('passed') is True} for c in handoff['checks']]

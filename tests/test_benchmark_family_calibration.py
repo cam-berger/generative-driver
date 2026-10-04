@@ -48,31 +48,26 @@ class AdmissionTests(unittest.TestCase):
         refs=[]
         for ref in ('a','b'):
             ids=[]
-            for phase,scenario in (('diagnostic','original'),('final','original'),('maintenance','semantic'),('maintenance','control')):
+            for phase,scenario in (('diagnostic','original'),('final','original')):
                 name=ref+'-'+phase+'-'+scenario; ids.append(name)
                 runs.append(dict(id=name, phase=phase, scenario=scenario, passed=True,
-                    native_process_observed=True, process={'pid':123,'executable':'/toy/renode','image_sha256':('b'*64 if scenario=='semantic' else h)},
-                    image_sha256=('b'*64 if scenario=='semantic' else h), evidence_sha256=h, contract_sha256=h, model_sha256=(ref*64), capabilities_sha256=(ref*64),
+                    native_process_observed=True, process={'pid':123,'executable':'/toy/renode','image_sha256':h},
+                    image_sha256=h, evidence_sha256=h, contract_sha256=h, model_sha256=(ref*64), capabilities_sha256=(ref*64),
                     package_sha256=h if phase=='final' else None, runtime_sha256=runtime, check_ids=['toy/ok'], checks=[{'id':'toy/ok','passed':True}]))
             refs.append(dict(id=ref,model_sha256=('b' if ref=='b' else 'a')*64,passed=True,runs=ids,execution_inputs={r['id']:{k:r[k] for k in ('model_sha256','capabilities_sha256')} for r in runs if r['id'] in ids}))
         mutants=[]
-        for name in ('constant','scale','signedness','stale','false-drift'):
+        for name in ('constant','scale','signedness','stale'):
             run=copy.deepcopy(runs[0]); run.update(id=name,passed=False,check_ids=['toy/'+name],checks=[{'id':'toy/'+name,'passed':False,'reason':'value mismatch'}]); runs.append(run)
             mutants.append(dict(id=name,rejected=True,run=name,source_sha256=h,mutated_sha256='b'*64,
                 expected_failed_checks=['toy/'+name],failed_checks=['toy/'+name],execution_input={k:run[k] for k in ('model_sha256','capabilities_sha256')}))
-        false=mutants[-1];false.update(expected_failed_checks=['maintenance/false-drift'],failed_checks=['maintenance/false-drift'],
-            source_assessment_sha256=canonical_digest({'maintenance_claim':'unchanged'}),
-            mutated_assessment_sha256=canonical_digest({'maintenance_claim':'drift'}))
-        runs[-1].update(passed=True,check_ids=['toy/ok'],phase='maintenance',scenario='control',native_control_passed=True,assessment_decision={'ok':False,'fault':'model','route':None,'reason':'Control maintenance claim failed','maintenance':{'false_alarm':True}},
-            checks=[{'id':'toy/ok','passed':True},{'id':'maintenance/false-drift','passed':False,'reason':'false drift claim'}])
         record=dict(schema='benchmark-calibration/1',status='passed',case='toy-case',execution='reference-calibration',
-            backend='native-renode',evaluator_version='2',images={'firmware.bin':h,'firmware-drift.bin':'b'*64},
+            backend='native-renode',evaluator_version='3',images={'firmware.bin':h},
             input_hashes={k:h for k in ('source','contract','recipe','references','mutations','build','inventory')},evaluator_identity=calibration_identity(),native_process_observed=True,
             references=refs,mutants=mutants,required_mutants=[r['id'] for r in mutants],runs=runs,
-            scenarios={'semantic':{'passed':True},'control':{'passed':True}},
+            scenarios={'original':{'passed':True}},
             tools={k:'toy-version' for k in ('compiler','objcopy','renode','ghidra','java')},
-            analysis={name:{'returncode':0,'export_hashes':{'decompiled.c':h}} for name in ('firmware.bin','firmware-drift.bin')})
-        manifest=dict(id='toy-case',family='sampled-sensor',evaluator_version='2',images=record['images'],
+            analysis={name:{'returncode':0,'export_hashes':{'decompiled.c':h}} for name in ('firmware.bin',)})
+        manifest=dict(id='toy-case',family='sampled-sensor',evaluator_version='3',images=record['images'],
             calibration={'input_hashes':record['input_hashes']})
         return manifest,record
 
@@ -80,13 +75,15 @@ class AdmissionTests(unittest.TestCase):
         from generative_driver.benchmark_support.calibration import validate_calibration
         self.assertTrue(validate_calibration(*self.fixture())['ok'])
 
-    def test_extra_declared_behavioral_failures_are_allowed_but_anchor_is_required(self):
+    def test_exact_intended_behavioral_failures_are_required(self):
         from generative_driver.benchmark_support.calibration import validate_calibration
         manifest,record=self.fixture()
         row=record['mutants'][0];run=next(r for r in record['runs'] if r['id']==row['run'])
         run['check_ids'].append('toy/secondary')
         run['checks'].append({'id':'toy/secondary','passed':False,'reason':'value mismatch'})
         row['failed_checks'].append('toy/secondary')
+        self.assertFalse(validate_calibration(manifest,record)['ok'])
+        row['expected_failed_checks'].append('toy/secondary')
         self.assertTrue(validate_calibration(manifest,record)['ok'])
         for defect in ('anchor','unknown','structural','duplicate'):
             bad=copy.deepcopy(record);mutant=bad['mutants'][0];measured=next(r for r in bad['runs'] if r['id']==mutant['run'])
@@ -99,7 +96,7 @@ class AdmissionTests(unittest.TestCase):
     def test_incomplete_or_self_reported_success_cannot_qualify(self):
         from generative_driver.benchmark_support.calibration import validate_calibration
         for defect in ('backend','image','identity','reference','same-model','mutant','both-lists','unchanged',
-                       'wrong-failure','run','process','package','analysis','tools','malformed','false-control','false-decision','false-digest','input-inventory','runtime','scenario-image','tool-type','native-type','ordinary-reason','false-reason','false-host','false-unknown','duplicate-check','duplicate-run','analysis-type','executed-model','executed-capabilities'):
+                       'wrong-failure','run','process','package','analysis','tools','malformed','input-inventory','runtime','scenario-image','tool-type','native-type','ordinary-reason','duplicate-check','duplicate-run','analysis-type','executed-model','executed-capabilities'):
             manifest,record=self.fixture()
             if defect=='backend':record['backend']='python-socket-fixture'
             if defect=='image':record['images']={}
@@ -113,18 +110,13 @@ class AdmissionTests(unittest.TestCase):
             if defect=='run':record['runs'].pop(0)
             if defect=='process':record['runs'][0]['process']={}
             if defect=='package':record['runs'][1]['package_sha256']=None
-            if defect=='analysis':record['analysis'].pop('firmware-drift.bin')
+            if defect=='analysis':record['analysis'].pop('firmware.bin')
             if defect=='tools':record['tools']['java']=''
             if defect=='malformed':record['references']=None
-            if defect=='false-control':record['runs'][-1]['native_control_passed']=False
-            if defect=='false-decision':record['runs'][-1]['assessment_decision']['ok']=True
-            if defect=='scenario-image':record['runs'][2]['image_sha256']='a'*64;record['runs'][2]['process']['image_sha256']='a'*64
+            if defect=='scenario-image':record['runs'][2]['image_sha256']='b'*64;record['runs'][2]['process']['image_sha256']='b'*64
             if defect=='tool-type':record['tools']['renode']=True
             if defect=='native-type':record['native_process_observed']=1
-            if defect=='ordinary-reason':record['runs'][-5]['checks'][0]['reason']='false drift claim'
-            if defect=='false-reason':record['runs'][-1]['checks'][-1]['reason']='value mismatch'
-            if defect=='false-host':record['runs'][-1]['assessment_decision']['fault']='host'
-            if defect=='false-unknown':record['runs'][-1]['assessment_decision']['fault']=None
+            if defect=='ordinary-reason':record['runs'][-4]['checks'][0]['reason']='false drift claim'
             if defect=='duplicate-check':record['runs'][0]['checks']*=2
             if defect=='duplicate-run':record['runs'].append(copy.deepcopy(record['runs'][0]))
             if defect=='analysis-type':record['analysis']['firmware.bin']['returncode']=False
@@ -132,23 +124,14 @@ class AdmissionTests(unittest.TestCase):
             if defect=='executed-model':record['runs'][0]['model_sha256']='e'*64
             if defect=='executed-capabilities':record['runs'][0]['capabilities_sha256']='e'*64
             if defect=='runtime':record['runs'][0]['runtime_sha256']='c'*64
-            if defect=='false-digest':record['mutants'][-1]['mutated_assessment_sha256']='c'*64
             with self.subTest(defect=defect):self.assertFalse(validate_calibration(manifest,record)['ok'])
 
 class MutationTests(unittest.TestCase):
-    def test_assessment_patch_has_exact_typed_allowlist(self):
+    def test_assessment_patch_cannot_qualify_as_behavior(self):
         from generative_driver.benchmark_support.calibration import apply_mutation
-        model={'toy':{'value':2}}; caps={'tasks':{}}
-        mutation={'id':'false-drift','reference':'a','phase':'maintenance','scenario':'control',
-            'expected_failed_checks':['maintenance/false-drift'],
-            'patches':[{'target':'assessment','op':'replace','path':'/maintenance_claim','value':'drift'}]}
-        changed=apply_mutation(model,caps,mutation)
-        self.assertEqual(changed['assessment'],{'maintenance_claim':'drift'})
-        self.assertEqual(changed['model'],model)
-        self.assertNotEqual(changed['source_sha256'],changed['mutated_sha256'])
-        for field,value in (('path','/other'),('value','unchanged'),('op','add'),('target','callback')):
-            bad=copy.deepcopy(mutation);bad['patches'][0][field]=value
-            with self.subTest(field=field),self.assertRaises(ValueError):apply_mutation(model,caps,bad)
+        with self.assertRaises(ValueError):
+            apply_mutation({'toy':2},{'tasks':{}},{'id':'false-drift','patches':[
+                {'target':'assessment','op':'replace','path':'/maintenance_claim','value':'drift'}]})
 
     def test_model_patch_changes_only_named_value_without_mutating_reference(self):
         from generative_driver.benchmark_support.calibration import apply_mutation
@@ -180,15 +163,14 @@ class HydrationTests(unittest.TestCase):
             {'kind':'observe','checks':[c['id'] for c in phase['contract']['checks']],'episode':'toy','step':2}]
         payload=InventoryTests().fixture()
         values={'native/observation-map.json':{'source_file_paths':{'device.resc':'native/device.resc'},'settle_seconds':0},
-            'diagnostic/episodes.json':phase,'final/episodes.json':phase,
-            'maintenance/semantic.json':phase,'maintenance/control.json':phase}
+            'diagnostic/episodes.json':phase,'final/episodes.json':phase}
         import json
         for name,value in values.items():
             data=json.dumps(value).encode();payload['inventory'][name]={'sha256':hashlib.sha256(data).hexdigest(),'base64':base64.b64encode(data).decode()}
         payload['inventory_sha256']=canonical_digest({k:v['sha256'] for k,v in payload['inventory'].items()})
         hydrated=hydrate_truth(payload)
         self.assertEqual(hydrated['recipe']['source_files'],{'device.resc':'{}'})
-        self.assertEqual(hydrated['scenario_phases']['control']['final'],phase)
+        self.assertEqual(hydrated['scenario_phases']['original']['final'],phase)
         self.assertEqual(hydrated['input_hashes']['inventory'],payload['inventory_sha256'])
         self.assertNotIn('artifact_sha256',hydrated)
 
@@ -268,7 +250,7 @@ class FamilyAdmissionBoundaryTests(unittest.TestCase):
         manifest,record=AdmissionTests().fixture()
         manifest.update(schema='benchmark-case/2')
         manifest['calibration'].update(status='passed',evidence_sha256=canonical_digest(record))
-        pin={'case_id':'sampled-sensor-v1','scenario_id':'control','case_seed':0,'manifest':manifest,
+        pin={'case_id':'sampled-sensor-v1','scenario_id':'original','case_seed':0,'manifest':manifest,
              'calibration':manifest['calibration']}
         truth={'calibration':record,'images':manifest['images'],'input_hashes':record['input_hashes'],
                'family':'sampled-sensor','inventory_state':'qualified','mutations':{'mutants':[
@@ -278,23 +260,15 @@ class FamilyAdmissionBoundaryTests(unittest.TestCase):
                              'b':{'model':{'toy':{'value':3}},'capabilities':capabilities}}
         for ref in record['references']:ref['model_sha256']=canonical_digest(truth['references'][ref['id']]['model'])
         for definition,row in zip(truth['mutations']['mutants'],record['mutants']):
-            assessment={'maintenance_claim':'drift' if row['id']=='false-drift' else 'unchanged'}
-            definition.update(reference='a',phase='maintenance' if row['id']=='false-drift' else 'final',
-                patches=[{'target':'assessment' if row['id']=='false-drift' else 'model','op':'replace',
-                    'path':'/maintenance_claim' if row['id']=='false-drift' else '/toy/value',
-                    'value':'drift' if row['id']=='false-drift' else 7}])
-            if row['id']=='false-drift':definition['scenario']='control'
+            definition.update(reference='a',phase='final',patches=[{'target':'model','op':'replace','path':'/toy/value','value':7}])
             measured=next(r for r in record['runs'] if r['id']==row['run'])
-            measured['phase']=definition['phase']
-            if definition['phase']=='final':measured['package_sha256']='c'*64
-            row['source_sha256']=canonical_digest({'model':model,'capabilities':capabilities,'assessment':{'maintenance_claim':'unchanged'}})
-            row['mutated_sha256']=canonical_digest({'model':model if row['id']=='false-drift' else {'toy':{'value':7}},
-                'capabilities':capabilities,'assessment':assessment})
-        truth['oracle']={'semantic_model_patches':{ref:[{'op':'replace','path':'/toy/value','value':9}] for ref in ('a','b')}}
+            measured['phase']='final';measured['package_sha256']='c'*64
+            row['source_sha256']=canonical_digest({'model':model,'capabilities':capabilities})
+            row['mutated_sha256']=canonical_digest({'model':{'toy':{'value':7}},'capabilities':capabilities})
         identifiers=['toy/ok','toy/constant','toy/scale','toy/signedness','toy/stale']
         checks=[{'id':name,'revision':0,'kind':'boolean','expected':True,'unit':'boolean','channel':'runtime-transcript'} for name in identifiers]
         phase={'contract':{'schema':'benchmark-behavior/1','artifact_sha256':'a'*64,'checks':checks},'actions':[]}
-        truth['scenario_phases']={scenario:{name:copy.deepcopy(phase) for name in ('diagnostic','final','maintenance')} for scenario in ('semantic','control')}
+        truth['phases']={name:copy.deepcopy(phase) for name in ('diagnostic','final')}
         def identity(model,caps):
             import json
             return {'model_sha256':hashlib.sha256((json.dumps({**model,'channel':{'type':'tcp'}},indent=2,allow_nan=False)+'\n').encode()).hexdigest(),
@@ -303,24 +277,23 @@ class FamilyAdmissionBoundaryTests(unittest.TestCase):
             ref['execution_inputs']={}
             for name in ref['runs']:
                 measured=next(r for r in record['runs'] if r['id']==name)
-                expected_model={'toy':{'value':9}} if measured['scenario']=='semantic' else truth['references'][ref['id']]['model']
+                expected_model=truth['references'][ref['id']]['model']
                 expected=identity(expected_model,capabilities)
                 measured.update(expected);ref['execution_inputs'][name]=expected
         for row in record['mutants']:
-            expected=identity(model if row['id']=='false-drift' else {'toy':{'value':7}},capabilities)
+            expected=identity({'toy':{'value':7}},capabilities)
             next(r for r in record['runs'] if r['id']==row['run']).update(expected)
             row['execution_input']=expected
         for measured in record['runs']:
             failed={c['id']:c for c in measured['checks'] if not c['passed']}
             measured['check_ids']=list(identifiers)
             measured['checks']=[failed.get(name,{'id':name,'passed':True}) for name in identifiers]
-            if measured['id']=='false-drift':measured['checks'].append(failed['maintenance/false-drift'])
             measured['contract_sha256']=canonical_digest({**phase['contract'],'artifact_sha256':measured['package_sha256'] or measured['model_sha256']})
         manifest['calibration']['evidence_sha256']=canonical_digest(record)
         with patch('generative_driver.benchmark_support.registry.pin_case',return_value=pin),patch(
                 'generative_driver.benchmark_support.emulator.truth_for_case',return_value=truth):
             self.assertTrue(require_calibration(pin,{})['ok'])
-            for index in (0,2,4,8):
+            for index in (0,2,4,7):
                 measured=record['runs'][index]
                 original_model=measured['model_sha256'];original_contract=measured['contract_sha256']
                 owner=next((ref['execution_inputs'][measured['id']] for ref in record['references'] if measured['id'] in ref['runs']),None)
@@ -524,30 +497,6 @@ class PublicObservationTests(unittest.TestCase):
             row=json.loads((root/'benchmark/package-events.jsonl').read_text())
             self.assertEqual(row['before_observation']['monitor_sequence'],3)
 
-class ScenarioDispatchTests(unittest.TestCase):
-    def test_control_installs_original_image_and_exact_family_reset(self):
-        import tempfile
-        from pathlib import Path
-        from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated import _apply_scenario
-        from generative_driver.benchmark_support.cases import _state
-        from generative_driver.benchmark_support.scenarios import ScenarioJournal
-        with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp)
-            truth={'images':{'firmware.bin':'a'*64,'firmware-drift.bin':'b'*64},
-                   'scenario_phases':{'control':{'maintenance':{'actions':[{'kind':'reset','values':{'toy_source':2}}]}}}}
-            class Session:
-                def reset(self,values):
-                    if values!={'toy_source':2}:raise AssertionError('Wrong family reset')
-                    return {'values':values,'controls':[{'response':'toy reset acknowledged'}]}
-            with patch('generative_driver.benchmark_support.emulated._truth',return_value=truth),patch(
-                'generative_driver.benchmark_support.emulated.read_snapshot',return_value={'case_pin':{'scenario_id':'control'}}),patch(
-                'generative_driver.benchmark_support.emulated.cleanup'),patch(
-                'generative_driver.benchmark_support.emulated._session',return_value=Session()):
-                _apply_scenario('sampled-sensor-v1',root,{})
-            self.assertEqual(_state(root)[1]['image_name'],'firmware.bin')
-            self.assertEqual(ScenarioJournal(root/'benchmark').state()['status'],'applied')
-
 class WrapperTests(unittest.TestCase):
     def test_missing_native_configuration_fails_before_shared_runner(self):
         from pathlib import Path
@@ -566,7 +515,7 @@ class SeedEpisodeTests(unittest.TestCase):
                  {'kind':'call','episode':'b'},{'kind':'observe','episode':'b'}]
         truth={'family':'sampled-sensor','artifact_sha256':'a'*64,
                'phases':{'final':{'contract':{'checks':[]},'actions':actions}}}
-        result=private_phase({'family':'sampled-sensor','case_seed':1},truth,'final')
+        result=private_phase({'family':'sampled-sensor','scenario_id':'original','case_seed':1},truth,'final')
         self.assertEqual([a['episode'] for a in result['actions']],['b','b','b','a','a','a'])
         self.assertEqual([a['kind'] for a in result['actions']],['reset','call','observe','reset','call','observe'])
         self.assertEqual(truth['phases']['final']['actions'][0]['episode'],'a')
@@ -588,8 +537,7 @@ class FailedProducerTests(unittest.TestCase):
             values={'AUTHORING.json':{'schema':'benchmark-authoring/1','id':'sampled-sensor-v1',
                 'family':'sampled-sensor','execution':'reference-build'},
                 'native/observation-map.json':{'source_file_paths':{},'settle_seconds':0},
-                'diagnostic/episodes.json':phase,'final/episodes.json':phase,
-                'maintenance/semantic.json':phase,'maintenance/control.json':phase}
+                'diagnostic/episodes.json':phase,'final/episodes.json':phase}
             for name,value in values.items():(author/name).write_text(json.dumps(value))
             result=calibrate('sampled-sensor-v1',{'authoring_root':str(author),'output':str(root/'out'),
                 'compiler':'/missing-compiler','renode':'/missing-renode','ghidra_home':'/missing-ghidra',

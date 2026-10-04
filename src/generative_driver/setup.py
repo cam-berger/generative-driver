@@ -63,7 +63,7 @@ def integration_assets(host, output, *, command=None, arguments=None, home=None)
                     "skills": "./skills/", "mcpServers": "./.mcp.json",
                     "interface": {"displayName": "Generative Driver",
                                   "shortDescription": "Generate and verify device interfaces.",
-                                  "longDescription": "Run the seven-stage workflow through a local background configurator.",
+                                  "longDescription": "Run the six-stage workflow through a local background configurator.",
                                   "developerName": "Generative Driver contributors", "category": "Developer Tools",
                                   "capabilities": ["Read", "Write"],
                                   "defaultPrompt": ["Check my setup and help me generate a device interface."]}}

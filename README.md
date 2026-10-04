@@ -2,7 +2,7 @@
 
 Attach a supported device, state an objective, and generate a portable driver with evidence of what it can do.
 
-Generative Driver distills a research toolchain into an installable Python package. A local configurator owns seven stages: **acquire → interpret → probe → ground → emit → reuse → maintain**. Codex, Goose and the command line connect to the same background process. Closing the interface leaves the run and its evidence available for reconnection.
+Generative Driver distills a research toolchain into an installable Python package. A local configurator owns six stages: **acquire → interpret → probe → ground → emit → reuse**. The final stage gives a new agent the emitted driver and an objective, then checks that it can use the desired device functions. Codex, Goose and the command line connect to the same background process. Closing the interface leaves the run and its evidence available for reconnection.
 
 This is an experimental developer tool. Supported paths and their verification status are recorded in [support](docs/support.md). A successful model validation is not proof that a driver describes the device correctly; independent observations provide that evidence.
 
@@ -44,7 +44,6 @@ Choose a new output directory on each run. The smoke check validates a model, re
 - [Goose Desktop or CLI](docs/goose.md)
 - [Runtime configuration and hardware](docs/setup.md)
 - [Benchmark setup, run, score and compare](bench/README.md)
-- [Measured Codex development baseline](bench/baselines/codex-tq9-2026-09-28.md)
 
 Agent execution uses your separately configured Codex or Goose runtime and its supported authentication. The configurator does not implement another provider API loop. Original code is [Apache-2.0](LICENSE); included third-party material retains its [notices](NOTICE).
 

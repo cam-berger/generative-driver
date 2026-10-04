@@ -27,7 +27,7 @@ class SuiteCliTests(unittest.TestCase):
             resources, home = root/'resources', root/'absent owner'
             public_case_fixture(resources, calibration={'status': 'pending'})
             manifest = legacy_manifest()
-            manifest['entries'] = [{'case': 'tq9-v2', 'scenario': 'semantic', 'case_seed': 0}]
+            manifest['entries'] = [{'case': 'tq9-v2', 'scenario': 'original', 'case_seed': 0}]
             path = root/'manifest.json'
             path.write_text(json.dumps(manifest), encoding='utf-8')
             code = """import sys
@@ -105,9 +105,9 @@ raise SystemExit(main())
     def test_invalid_selection_is_refused_before_owner_creation(self):
         from generative_driver.client import call
         selections = [
-            ('not-registered', 'semantic', 0), ('setup-smoke', 'identity', 0),
-            ('bme280', 'identity', 0), ('tq9', 'not-a-scenario', 0),
-            ('tq9', 'identity', 1)]
+            ('not-registered', 'original', 0), ('setup-smoke', 'original', 0),
+            ('bme280', 'original', 0), ('tq9', 'not-a-scenario', 0),
+            ('tq9', 'original', 1)]
         with tempfile.TemporaryDirectory(prefix='suite CLI preflight ') as temporary:
             root = Path(temporary)
             for index, (case, scenario, seed) in enumerate(selections):

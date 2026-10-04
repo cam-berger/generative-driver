@@ -13,7 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 
-STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse', 'maintain')
+STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 
 
 def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=None):
@@ -90,7 +90,7 @@ def main(argv=None):
     scoring = commands.add_parser('score')
     scoring.add_argument('report')
     scoring.add_argument('--password-file')
-    scoring.add_argument('--evidence')
+    scoring.add_argument('--evidence', help='V2 sealed evidence, or the saved BME280 independent reference file (digest checked)')
     evaluator = commands.add_parser('truth')
     evaluator.add_argument('action', choices=['unlock','rekey','rebuild','calibrate'])
     evaluator.add_argument('--case',default='tq9',choices=case_ids())
@@ -180,7 +180,7 @@ def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, aut
         home, request_id = options.pop('home', None), options.pop('request_id', None)
         budget = options.pop('budget_seconds', 10800)
         effects = options.pop('effects', list(definition.default_effects))
-        args = {'goal': 'Recover, check, package, freshly reuse and maintain the benchmark device interface.',
+        args = {'goal': 'Recover, check, package and freshly reuse the benchmark device interface for the desired functions.',
                 'case': case, 'executor': executor or 'codex', 'budget_seconds': budget,
                 'effects': effects, 'case_options': options}
         if options.get('binding') is not None:
@@ -305,25 +305,9 @@ def score(report, password_file=None, *, evidence_path=None):
         return regrade_v2(data, evidence_path, password_file)
     case = data.get('case')
     case_id = case.get('id') if isinstance(case, dict) else case
+    if case_id == 'bme280':
+        return adapter_for(case_id).score(data, password_file, evidence_path=evidence_path)
     return adapter_for(case_id).score(data, password_file)
-
-
-def score_stimulus(initial_reference, changed_reference, observations):
-    """Require independent ambient change beyond combined uncertainty and a matching fresh reading."""
-    changed=[]
-    for name, current in changed_reference.items():
-        previous=initial_reference.get(name)
-        if not isinstance(previous,dict) or not isinstance(current,dict):
-            continue
-        values=[previous.get('value'),current.get('value'),previous.get('absolute_tolerance'),current.get('absolute_tolerance')]
-        if all(type(v) in (int,float) and math.isfinite(v) for v in values) and min(values[2:])>0 and abs(values[1]-values[0])>sum(values[2:]):
-            changed.append(name)
-    contract={'checks':[{'id':name,'expected':row['value'],'absolute_tolerance':row['absolute_tolerance']}
-                        for name,row in changed_reference.items()]}
-    behavior=score_observations(contract,observations)
-    return {'verdict':'passed' if changed and behavior['verdict']=='passed' else 'failed',
-            'changed_channels':changed,'behavior':behavior,
-            'criterion':'At least one independently measured change exceeds the sum of both stated uncertainties'}
 
 
 def evaluation_fault(evaluation):

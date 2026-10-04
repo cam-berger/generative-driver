@@ -23,6 +23,8 @@ def family_for(case_id):
 def _inputs(case_id, run_dir):
     if (Path(run_dir)/'benchmark/execution.json').exists():
         saved = read_snapshot(run_dir)
+        from .registry import validate_pinned_workflow
+        validate_pinned_workflow(saved['case_pin'])
         if saved['case_pin']['case_id'] != case_id:
             raise ValueError('Execution snapshot case mismatch')
         return Path(run_dir)/'benchmark/inputs', saved['case_pin']['manifest']
@@ -32,6 +34,8 @@ def _inputs(case_id, run_dir):
 
 def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=None):
     options = options or {}
+    if options.get('scenario_id') not in (None, 'original'):
+        raise ValueError('Unknown case scenario')
     ws = Path(workspace).resolve()
     ws.mkdir(parents=True, exist_ok=True)
     inputs, manifest = _inputs(case_id, run_dir)
@@ -93,7 +97,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                         'context': {'model_dir': str(ws/'model'), 'probe': str(ws/'probe.json')},
                         'allowed_tools': ['emit_package', 'emit_check']}
         raise ValueError('No accepted successful executable probe')
-    if stage in ('reuse', 'maintain'):
+    if stage == 'reuse':
         from .cases import _accepted_package, _accepted_file
         from ..configurator import digest
         import uuid
@@ -107,14 +111,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         state.setdefault('package_attempts', {})[stage] = uuid.uuid4().hex
         state['capabilities_path'] = str(_accepted_file(accepted, 'probe', 'capabilities.json', ws/'missing'))
         _write(path, state)
-        if stage == 'maintain':
-            _apply_scenario(case_id, run_dir, options)
         session = _session(case_id, run_dir, options)
-        if stage == 'maintain':
-            from .scenarios import maintain_objective
-            return {'objective': maintain_objective(read_snapshot(run_dir)['case_pin']['scenario_id']),
-                    'inputs': [str(package)], 'allowed_tools': ['benchmark_package_execute'],
-                    'context': {'package_dir': str(package)}, 'binding': session.binding}
         mission = 'Read temperature, enable the device, request 37 percent output, then disarm.'
         if case_id == 'sampled-sensor-v1':
             mission = 'Acquire and read two fresh temperature samples. Report their measured sequence numbers.'
@@ -128,7 +125,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         from ..toolkit import call_tool, resources_root
         state_path, state = _state(run_dir)
         state['revision'] = int(options.get('revision', state.get('revision', 0)))
-        image = inputs/state.get('image_name', 'firmware.bin')
+        image = inputs/'firmware.bin'
         sources = {'image.bin': str(image),
                    'ghidra_run.py': str(resources_root()/'tools/workspace/ghidra_run.py'),
                    'ExportDecomp.java': str(resources_root()/'toolchain/skills/interpret-firmware-binary/ExportDecomp.java'),
@@ -220,8 +217,6 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
                 or r.get('runtime_current') is False or r.get('replay_status') == 'failed' for r in failures)):
             fault = 'model'
         return {'ok': False, 'fault': fault, 'checks': [], 'artifacts': [], 'reason': 'No package passed integrity and replay'}
-    if stage == 'maintain':
-        return _maintain(case_id, run_dir, workspace, report, options or {}, accepted=accepted)
     if stage == 'reuse':
         _, state = _state(run_dir)
         events_path = Path(run_dir)/'benchmark/package-events.jsonl'
@@ -289,6 +284,10 @@ def run_call(session, invoke, request):
 def reference_execute(pin, truth, model, capabilities, *, renode, image, output_dir,
                       phase='final', package=None, expected_package_sha256=None, package_final=True):
     """Measured evaluator-only seam using normal models and frozen packages."""
+    if pin.get('scenario_id') != 'original':
+        raise ValueError('Unknown case scenario')
+    if phase not in ('diagnostic', 'final'):
+        raise ValueError('Unknown behavior phase')
     from .native import NativeSession
     from .emulated_actions import execute_plan, model_invoker, canonical_package_invoker
     from .behavior import validate_records
@@ -385,7 +384,7 @@ def _session(case_id, run_dir, options):
         raise RuntimeError('Native process ownership was lost; operator reconciliation is required')
     inputs, _ = _inputs(case_id, run_dir)
     session = NativeSession.start(renode=options.get('renode'),
-        image=inputs/state.get('image_name', 'firmware.bin'), recipe=_truth(case_id, run_dir, options)['recipe'])
+        image=inputs/'firmware.bin', recipe=_truth(case_id, run_dir, options)['recipe'])
     _OWNERS[key] = session
     state['session'] = session.info
     _write(path, state)
@@ -437,93 +436,6 @@ def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=
     with events.open('a') as stream:
         stream.write(json.dumps(row, allow_nan=False)+'\n')
     return {**result, 'observation': public}
-
-
-def _apply_scenario(case_id, run_dir, options):
-    import uuid
-    from .scenarios import ScenarioJournal
-    from .snapshots import canonical_digest
-    journal = ScenarioJournal(Path(run_dir)/'benchmark')
-    current = journal.state()
-    if current.get('status') == 'applying':
-        raise RuntimeError('Scenario application requires reconciliation; no automatic replay')
-    if current.get('status') in ('applied', 'observed'):
-        return
-    truth = _truth(case_id, run_dir, options)
-    scenario = read_snapshot(run_dir)['case_pin']['scenario_id']
-    if case_id == 'tq9-v2':
-        definition = truth['contracts']['scenarios'][scenario]
-        stimulus = {'temperature': definition['temperature_vectors'][-1]['stimulus']}
-    else:
-        if scenario not in ('semantic', 'control'):
-            raise ValueError('Unknown family scenario')
-        definition = {'next_image': 'firmware-drift.bin' if scenario == 'semantic' else 'firmware.bin'}
-        stimulus = truth['scenario_phases'][scenario]['maintenance']['actions'][0]['values']
-    action = {'image': definition['next_image'], 'image_sha256': truth['images'][definition['next_image']], 'values': stimulus}
-    nonce, action_hash = uuid.uuid4().hex, canonical_digest(action)
-    journal.begin(nonce, action_hash)
-    cleanup(case_id, run_dir, options)
-    path, state = _state(run_dir)
-    state['image_name'] = definition['next_image']
-    _write(path, state)
-    session = _session(case_id, run_dir, options)
-    response = session.stimulate(stimulus) if case_id == 'tq9-v2' else session.reset(stimulus)
-    if ((case_id == 'tq9-v2' and response['values'].get('temperature') != stimulus['temperature'])
-            or (case_id != 'tq9-v2' and not response.get('controls'))):
-        raise RuntimeError('Scenario stimulus was not independently acknowledged')
-    acknowledgement = '\n'.join(row['response'] for row in response['controls'])
-    journal.applied(nonce, {'success': True, 'action_sha256': action_hash,
-                           'native_acknowledgement': {'response': acknowledgement}})
-
-
-def _maintain(case_id, run_dir, workspace, report, options, accepted=None):
-    from .scenarios import read_maintenance_claim, maintenance_decision, maintenance_history, ScenarioJournal
-    from .snapshots import canonical_digest
-    from .emulated_evidence import maintenance_observation
-    path, state = _state(run_dir)
-    events = [e for e in options.get('worker_events', []) if e.get('actor') == 'worker']
-    claim = read_maintenance_claim(Path(workspace), report, options.get('assignment_id'), events)
-    package = Path(state['package_copies']['maintain'])
-    diagnostic = maintenance_observation(case_id, run_dir, package,
-        json.loads(Path(state['capabilities_path']).read_text()), options)
-    payload = _private(run_dir, options)
-    entries = payload['maintenance']
-    revision = state.get('revision', 0)
-    initial = entries.get('initial', {})
-    transition = next((h for h in (accepted or []) if h.get('stage') == 'maintain'
-        and h.get('route') == 'interpret' and h.get('assignment_id') == initial.get('assignment_id')
-        and h.get('revision') == initial.get('revision') and h['revision'] < revision), None)
-    repaired = transition is not None
-    requalified = repaired and all(any(h.get('stage') == stage and h.get('revision') == revision
-        for h in (accepted or [])) for stage in ('interpret', 'probe', 'ground', 'emit'))
-    fresh = bool(state.get('fresh_reuse_passed'))
-    diagnostic.update(fresh_reuse_passed=fresh, requalified=bool(requalified))
-    scenario = read_snapshot(run_dir)['case_pin']['scenario_id']
-    result = maintenance_decision(scenario=scenario, claim=claim['claim'], diagnostic=diagnostic, repaired=repaired)
-    entry = {'revision': revision, 'assignment_id': options.get('assignment_id'),
-        'phase': 'repaired' if repaired else 'initial', 'claim': claim['claim'],
-        'worker_evidence_ids': claim['evidence_ids'], 'diagnostic': diagnostic}
-    entries.setdefault('attempts', []).append(entry)
-    if result['ok']:
-        entries['repaired' if repaired else 'initial'] = entry
-    fields, history_ok = maintenance_history(scenario, entries, requalified=requalified, fresh=fresh, transition=repaired)
-    if fields['false_alarm'] or any(maintenance_decision(scenario=scenario, claim=e['claim'],
-            diagnostic=e['diagnostic'], repaired=e['phase']=='repaired').get('fault') == 'model'
-            for e in entries['attempts']):
-        result.update(ok=False, fault='model', route=None, reason='Retained evidenced maintenance failure')
-    elif result['ok'] and not result.get('route') and not history_ok:
-        result.update(ok=False, fault=None, reason='Retained maintenance history is not qualified')
-    _private(run_dir, options, payload)
-    journal = ScenarioJournal(Path(run_dir)/'benchmark')
-    if journal.state().get('status') == 'applied':
-        journal.observed(journal.state()['nonce'], canonical_digest(diagnostic))
-    state['maintenance'] = fields
-    if result.get('route'):
-        state['fresh_reuse_passed'] = False
-    _write(path, state)
-    return {**result, 'checks': [{'name': 'evidenced_maintenance_claim', 'passed': result['ok']}],
-            'artifacts': [str(package), str(Path(workspace)/'maintenance.json')],
-            'feedback': {'reason': 'Diagnostic package behavior requires requalification'} if result.get('route') else None}
 
 
 def score(report, password_file=None, *, evidence_path=None):

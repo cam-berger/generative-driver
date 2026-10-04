@@ -7,30 +7,12 @@ from generative_driver.configurator import validate_scoped_approval
 class RegistryTests(unittest.TestCase):
     @staticmethod
     def _v2_case(root, *, calibration=None):
-        import hashlib
-        import json
-        case = root / 'cases' / 'tq9-v2'
-        case.mkdir(parents=True)
-        image = case / 'image.bin'
-        image.write_bytes(b'fixture image')
-        truth = root / 'groundtruth' / 'tq9-v2.enc'
-        truth.parent.mkdir()
-        truth.write_bytes(b'ciphertext fixture')
-        digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
-        manifest = {'schema': 'benchmark-case/2', 'id': 'tq9-v2', 'family': 'tq9',
-                    'version': '2', 'evaluator_version': '2',
-                    'execution': 'actual-agent-emulation', 'evidence_track': 'firmware',
-                    'adapter_key': 'emulator-v2', 'approval_scope': 'emulator',
-                    'default_effects': ['write', 'actuate'], 'scenarios': ['semantic'],
-                    'required_stages': ['acquire'], 'images': {'image.bin': digest(image)},
-                    'truth': {'path': 'groundtruth/tq9-v2.enc', 'sha256': digest(truth)},
-                    'time_policy': {'probe': 'continuous'}, 'provenance': {'license': 'test'},
-                    'limitations': ['fixture'], 'calibration': calibration or {'status': 'pending'}}
-        (case / 'case.json').write_text(json.dumps(manifest))
-        return manifest
+        from suite_fixtures import public_case_fixture
+        return public_case_fixture(root, calibration=calibration or {'status':'pending'}, family='tq9',
+            default_effects=['write','actuate'])
 
-    def test_legacy_identity_and_emulator_grant_boundary(self):
-        self.assertEqual(resolve_case('tq9').version, '1')
+    def test_legacy_current_version_and_emulator_grant_boundary(self):
+        self.assertEqual(resolve_case('tq9').version, '2')
         self.assertEqual(resolve_case('tq9').family, 'tq9')
         self.assertTrue({'setup-smoke', 'tq9', 'bme280'} <= set(case_ids()))
         with self.assertRaises(ValueError):
@@ -116,7 +98,7 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'scenario'):
             run('tq9', options={'scenario_id': 'semantic'}, autostart=False)
 
-    def test_cli_accepts_scenario_and_rejects_it_for_legacy(self):
+    def test_cli_rejects_obsolete_scenario_for_legacy(self):
         import contextlib
         import io
         import json
@@ -137,7 +119,7 @@ class RegistryTests(unittest.TestCase):
             self._v2_case(root, calibration={'status': 'passed'})
             with patch('generative_driver.benchmark.case_root', return_value=root):
                 with self.assertRaisesRegex(ValueError, 'calibration'):
-                    run('tq9-v2', options={'scenario_id': 'semantic'}, autostart=False)
+                    run('tq9-v2', options={'scenario_id': 'original'}, autostart=False)
 
     def test_registered_emulated_v2_uses_registry_approval_scope(self):
         import tempfile
@@ -170,7 +152,7 @@ class RegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             manifest = self._v2_case(root)
-            manifest['scenarios'] = ['semantic', 'semantic']
+            manifest['scenarios'] = ['original', 'original']
             path = root / 'cases' / 'tq9-v2' / 'case.json'
             path.write_text(json.dumps(manifest))
             with self.assertRaisesRegex(ValueError, 'duplicate scenario'):
@@ -258,12 +240,12 @@ class RegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._v2_case(root)
-            (root / 'cases' / 'tq9-v2' / 'image.bin').unlink()
+            (root / 'cases' / 'tq9-v2' / 'firmware.bin').unlink()
             with patch('generative_driver.benchmark.case_root', return_value=root):
                 rows = {row['id']: row for row in case_descriptors()}
                 self.assertEqual(rows['tq9-v2']['status'], 'pending')
                 with self.assertRaises(ValueError):
-                    pin_case('tq9-v2', 'semantic', 0)
+                    pin_case('tq9-v2', 'original', 0)
 
     def test_extracted_legacy_package_checks_assignment_before_execution(self):
         import tempfile
@@ -316,7 +298,7 @@ class RegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._v2_case(root)
-            (root / 'cases' / 'tq9-v2' / 'image.bin').write_bytes(b'corrupt')
+            (root / 'cases' / 'tq9-v2' / 'firmware.bin').write_bytes(b'corrupt')
             with patch('generative_driver.benchmark.case_root', return_value=root):
                 rows = {row['id']: row for row in case_descriptors()}
             self.assertEqual(rows['tq9-v2']['status'], 'invalid')

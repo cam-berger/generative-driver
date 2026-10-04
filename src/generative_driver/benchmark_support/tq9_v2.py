@@ -3,11 +3,13 @@
 
 def _scenario(pin, truth):
     scenarios = truth['contracts']['scenarios']
-    return scenarios.get(pin['scenario_id'], scenarios['semantic'])
+    if pin.get('scenario_id') != 'original' or 'original' not in scenarios:
+        raise ValueError('Unknown case scenario')
+    return scenarios['original']
 
 
 def _definition(pin, truth, phase):
-    if phase not in ('diagnostic', 'final', 'maintenance'):
+    if phase not in ('diagnostic', 'final'):
         raise ValueError('Unknown behavior phase')
     checks, plan = [], []
     revision = pin.get('revision', 0)
@@ -22,9 +24,9 @@ def _definition(pin, truth, phase):
         plan.append({'episode': episode, 'step': str(step), 'kind': kind, **kwargs})
     scenario = _scenario(pin, truth)
     phases = scenario.get('phases', {})
-    if phase == 'diagnostic' and phase not in phases:
-        raise ValueError('TQ9 diagnostics require a separate private phase inventory')
-    inventory = phases.get(phase, scenario)
+    if phase not in phases:
+        raise ValueError('TQ9 behavior requires a separate private phase inventory')
+    inventory = phases[phase]
     all_vectors = inventory['temperature_vectors']
     effects = inventory.get('effect_vectors', truth['contracts'].get('effect_vectors', []))
     vectors = list(enumerate(all_vectors))

@@ -1,499 +1,202 @@
 {
-  "schema": "benchmark-final-verification/1",
-  "date": "2026-10-01",
-  "code_revision": "3116da958bd430b3322c74c1555a0c620e18eaa2",
-  "branch": "feat/bench",
-  "execution": "native-reference-calibration-and-scripted-release-gates",
+  "schema": "benchmark-final-verification/2",
+  "date": "2026-10-03",
+  "status": "software-qualification-passed",
+  "workflow": [
+    "acquire",
+    "interpret",
+    "probe",
+    "ground",
+    "emit",
+    "reuse"
+  ],
+  "tested_resource_revision": "f1f1a68a88b09764a441b15ce57bf4a3d737a7f9",
   "model_benchmark": false,
-  "environment": {
-    "os": "macOS 26.5.1",
-    "architecture": "arm64",
-    "source_python": "3.13.12",
-    "installed_python": [
-      "3.11.15",
-      "3.13.14"
-    ],
-    "cryptography": "50.0.1",
+  "physical_device_used": false,
+  "evaluator_identity_sha256": "7f239957c6702cc556e19e23fe126bc52ee0ec47134ef439ad53ba0cdc2e376c",
+  "runtime_dependencies": {
     "mcp": "2.2.0",
-    "pydantic": "2.13.5"
-  },
-  "evaluator_identity_sha256": "bc3b0c4178b1a41673fdfa822e627dee5764e58aa1b18d0aee59eeea8168b696",
-  "build_snapshot": {
-    "sha256": "60e73c64adf23221bee0760b6d12ad7d28aad675993acfcdca2bee3b008c148d",
-    "description": "Accepted code plus newly qualified public case/ciphertext pairs, encrypted phase supplement, setup/evaluator instructions and closing decisions. Final measured verification prose/index is newer than this immutable sdist snapshot.",
-    "wheel_package_bytes_equal_final_checkout": true
-  },
-  "artifacts": {
-    "generative_driver-0.1.0-py3-none-any.whl": {
-      "sha256": "1a1726bd9ee61e0bdaad8a370564a1850b03386272b78befc1b700a17502826e",
-      "bytes": 2935220
-    },
-    "generative_driver-0.1.0.tar.gz": {
-      "sha256": "b1fff7dbc23c7a1b025cd578ec1f73a1ccf8e8b662763a2c5bababcee7bac570",
-      "bytes": 3117914
-    }
-  },
-  "native": {
-    "main_runs": 59,
-    "supplementary_runs": 16,
-    "total_runs": 75,
-    "tools": {
-      "compiler": "arm-none-eabi-gcc (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 14.2.1 20241119",
-      "objcopy": "GNU objcopy (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119",
-      "renode": "Renode v1.16.1.16858\n  build: d66b0c2a-202602160921\n  build type: Release\n  runtime: .NET 8.0.21",
-      "java": "openjdk version \"21.0.12.1\" 2026-08-18\nOpenJDK Runtime Environment Homebrew (build 21.0.12.1)\nOpenJDK 64-Bit Server VM Homebrew (build 21.0.12.1, mixed mode, sharing)",
-      "ghidra": "12.1.3"
-    },
-    "cases": [
-      {
-        "case": "tq9-v2",
-        "runs": 32,
-        "references": 2,
-        "mutants": 24,
-        "record_sha256": "4a8c5dba7dba43dbdd7aa5489a03cb2739bfb526b60822885710332d4621d49e",
-        "evidence_sha256": "0c4da6322d026d3d6fef00504a683099fde389a1a1a48b1023b20b5cdd439d28",
-        "images": {
-          "firmware.bin": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e",
-          "firmware-semantic.bin": "a04ad1f63e4a43e28897b65d021f32d73d2fa47c846df1252097611081e18d81",
-          "firmware-identity.bin": "0c0962263eee131ce6785b0eec4dc452e65d74fa8ce5c330bdccf636fffb417d"
-        },
-        "input_hashes": {
-          "source": "7ab030a6849a88ae0f1fd4faff1432fab6f3a0bcc20f90bb96869fa72c4d7411",
-          "contract": "9bcef7695db3a5204e2a6d82e4b2a69a32aa42f5fd495e6a237e81620ae14265",
-          "recipe": "c28b6e320c8184caba57f6f3c9c029f8a15f232fdc879e9b9ecf0b1c3eac9e7b",
-          "references": "99af0d4033898775ad72755338ae47975098869a5ac3fb8bb473fef5b48327fd",
-          "mutations": "41af47ad038cc02c68afb1c10c9c912937a9ebec216bd1e9dd3e81607ae9e731",
-          "build": "970318318a5ac8ac09852cc60a7e77df481af2665edffa0952fedd2c4d46f8d2",
-          "analysis": "838f9a43ebceb3ffb7445cb6cf601ce1430a0d4dea53a3b618fea72b41f68b7e"
-        },
-        "manifest_sha256": "3e403c33125478fa9ed30de98abc0b283b018de7e92b0224a6f69c56fe5f7989",
-        "ciphertext_sha256": "fe8b407895c1112cd7e691b6554d88b91d7d022c5bed17bd34555b2f2eaaf214"
-      },
-      {
-        "case": "sampled-sensor-v1",
-        "runs": 13,
-        "references": 2,
-        "mutants": 5,
-        "record_sha256": "6e66d34812ea15c50dff22f982463107ec45e493458f254d225eacb4511c4581",
-        "evidence_sha256": "dffbc4e84fca9c297ea71f179004b83339f041d65f6e60e6d8d42d89a525fbb4",
-        "images": {
-          "firmware.bin": "637370d3d7192a17b6abeb79a3fcbc60ec2f47eb14e199627798756c02bbb1e9",
-          "firmware-drift.bin": "dd13b6d213907f86bd4211bc544e687a8b93a2baecc9a9270113414b2e79b379"
-        },
-        "input_hashes": {
-          "source": "22db46bf51be6ec5fdd141211385ac88b48eaa825527130fb00af1bc8cbc5918",
-          "contract": "3b5a5c5a3d35f0a1bc6cdb4979c77efe7d4e537abad1d4920a46406b30c3e97b",
-          "recipe": "e8b105d2b902b7eacbfc2d8ea5e8bca6d8141555c7035948394238e7cbb08975",
-          "references": "986ae98aeddda6e36a16aaafb35f680d04ee303b80be1391483f4416ca048141",
-          "mutations": "8f742280bcda61215272d0935bf6723140675013222e5730341b17889c3a39d8",
-          "build": "0b0193d940812cf01dea1671bd67cd9d379753d6ff2403932783b1cecdb940a0",
-          "inventory": "6838144975dcf858b900c19d57f56fcd15013d59802d8f28cf38069dfd3ccc7b"
-        },
-        "manifest_sha256": "218c6f910eeb15687bf0cb624d5bb1e5c20cd69bfce418aafeb0e8d9bc5b0afb",
-        "ciphertext_sha256": "9dcd2994872606e3d84353ac4235177e46d2e4e0640e2bf1c0ccdc97fa3552e5"
-      },
-      {
-        "case": "parameter-store-v1",
-        "runs": 14,
-        "references": 2,
-        "mutants": 6,
-        "record_sha256": "88fd54eac3b4d41b3dc6981f35539c1c6d5ce853fc56286de9805ce73ee2cebc",
-        "evidence_sha256": "4b581adfa301e3505bcff55c705763004fd82d8fb93114e1ccae8621228da3ab",
-        "images": {
-          "firmware.bin": "e7a580834861f7fa96868245bf969d69350ee0acdab1ee8eda30abc1fdf1faf1",
-          "firmware-drift.bin": "65ba020fec14ab1ad071c7c4eae03dc995692241cb5efbeefa346d5db5cc6637"
-        },
-        "input_hashes": {
-          "source": "d7cdd72a59fdadf66f605418347b63661fa4655745e268c08fc62bf4961eb8cf",
-          "contract": "5bb8891352ce4a895257717cfabf3f1b0247f2ccb5998e93c67d713fe0ec1a4e",
-          "recipe": "2112ee8d59bb53b21345166d24a6020bc0d80173ff0c57ca86ca62a71b42d1e0",
-          "references": "54419b3f87d24296d9dee0d00814cbf74524260a8db186424ef13cbc449db2ec",
-          "mutations": "70ad3e62faa74c4ba181c6b2964aa70a000e01957794a1dd4cadb030fded4aa9",
-          "build": "112f7270ebf2f47244e6d5a5a2badc573d2ea9c28b54f014e7991e9c9e0077c6",
-          "inventory": "e50d797acc82fe410dad7f0cc8f1f8a370494c84ad8763bda4d10f2b1904fbf2"
-        },
-        "manifest_sha256": "0c6e2246bd3898e356a4cf84b7d1b99f209763cf02c78bf312a8ee354c9ffc5f",
-        "ciphertext_sha256": "d9ee850896d99a992956686488266eeda389dc39253e6ac8f1154977c688e539"
-      }
-    ],
-    "supplement": {
-      "resource": "generative_driver/resources/bench/groundtruth/tq9-v2-phases.enc",
-      "ciphertext_sha256": "d5850a8e76e1731fe9843cdc2dd7d3eaca9be9d67a48a3b6b9e1a9254ca3869a",
-      "summary_sha256": "57f22053b0ee670a13083645162689d129073516d94aad1a0978e43db0f771ff",
-      "raw_evidence_sha256": "47496c18383ca60998cc509ca4a55e10959d4cbffa1e0cb44af8ddf87ffbd880",
-      "main_evidence_sha256": "0c4da6322d026d3d6fef00504a683099fde389a1a1a48b1023b20b5cdd439d28",
-      "input_hashes": {
-        "source": "7ab030a6849a88ae0f1fd4faff1432fab6f3a0bcc20f90bb96869fa72c4d7411",
-        "contract": "9bcef7695db3a5204e2a6d82e4b2a69a32aa42f5fd495e6a237e81620ae14265",
-        "recipe": "c28b6e320c8184caba57f6f3c9c029f8a15f232fdc879e9b9ecf0b1c3eac9e7b",
-        "references": "99af0d4033898775ad72755338ae47975098869a5ac3fb8bb473fef5b48327fd",
-        "mutations": "41af47ad038cc02c68afb1c10c9c912937a9ebec216bd1e9dd3e81607ae9e731",
-        "build": "970318318a5ac8ac09852cc60a7e77df481af2665edffa0952fedd2c4d46f8d2",
-        "analysis": "838f9a43ebceb3ffb7445cb6cf601ce1430a0d4dea53a3b618fea72b41f68b7e"
-      },
-      "images": {
-        "firmware.bin": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e",
-        "firmware-semantic.bin": "a04ad1f63e4a43e28897b65d021f32d73d2fa47c846df1252097611081e18d81",
-        "firmware-identity.bin": "0c0962263eee131ce6785b0eec4dc452e65d74fa8ce5c330bdccf636fffb417d"
-      },
-      "contract_inventory_sha256": "9bcef7695db3a5204e2a6d82e4b2a69a32aa42f5fd495e6a237e81620ae14265",
-      "ordinary_admission_requires_supplement": false,
-      "phase_counts": {
-        "diagnostic": 8,
-        "maintenance": 8
-      },
-      "checks_per_session": 9,
-      "total_checks": 144,
-      "matrix": [
-        {
-          "id": "reference-a-original-diagnostic",
-          "reference": "reference-a",
-          "variant": "original",
-          "scenario": "semantic",
-          "phase": "diagnostic",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e",
-          "model_sha256": "b275d8693787e1b807a74a299befe1921b42fd1cea9c606531fa0d6c093ad5f5",
-          "capabilities_sha256": "2dd78f2a88a58b3355628d5d2b9ff8e2d87aedcfa909afe5644233aa500cf709",
-          "evaluation_sha256": "c225c8008bbdf72abfed3f51d49b197ef7c6d007cd3d29103fb50afe976b4361"
-        },
-        {
-          "id": "reference-a-original-maintenance",
-          "reference": "reference-a",
-          "variant": "original",
-          "scenario": "semantic",
-          "phase": "maintenance",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e",
-          "model_sha256": "b275d8693787e1b807a74a299befe1921b42fd1cea9c606531fa0d6c093ad5f5",
-          "capabilities_sha256": "2dd78f2a88a58b3355628d5d2b9ff8e2d87aedcfa909afe5644233aa500cf709",
-          "evaluation_sha256": "6b759a5fe52b180af60434e2e5651860657bcf24f80e59e0d2e67918d28a806b"
-        },
-        {
-          "id": "reference-a-control-diagnostic",
-          "reference": "reference-a",
-          "variant": "control",
-          "scenario": "control",
-          "phase": "diagnostic",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e",
-          "model_sha256": "b275d8693787e1b807a74a299befe1921b42fd1cea9c606531fa0d6c093ad5f5",
-          "capabilities_sha256": "2dd78f2a88a58b3355628d5d2b9ff8e2d87aedcfa909afe5644233aa500cf709",
-          "evaluation_sha256": "5a4acb77aaf16b2d5f930bbfe7d3befc056df9997f4ceb9a4064e437870b07c4"
-        },
-        {
-          "id": "reference-a-control-maintenance",
-          "reference": "reference-a",
-          "variant": "control",
-          "scenario": "control",
-          "phase": "maintenance",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e",
-          "model_sha256": "b275d8693787e1b807a74a299befe1921b42fd1cea9c606531fa0d6c093ad5f5",
-          "capabilities_sha256": "2dd78f2a88a58b3355628d5d2b9ff8e2d87aedcfa909afe5644233aa500cf709",
-          "evaluation_sha256": "141ef993190cb6b65f1c76409df95c680ad4fbd1275f77d7734a80a7b9e9c4b4"
-        },
-        {
-          "id": "reference-a-semantic-diagnostic",
-          "reference": "reference-a",
-          "variant": "semantic",
-          "scenario": "semantic",
-          "phase": "diagnostic",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "a04ad1f63e4a43e28897b65d021f32d73d2fa47c846df1252097611081e18d81",
-          "model_sha256": "47f034e378b00481b0b3f7edc29c3e728bf37e6021f6ed7cf31f5775ed6a3452",
-          "capabilities_sha256": "2dd78f2a88a58b3355628d5d2b9ff8e2d87aedcfa909afe5644233aa500cf709",
-          "evaluation_sha256": "32b0d4cb0430e0182c5b24c41147eefe16476db19922ffc6292d6fdb3fbb74b4"
-        },
-        {
-          "id": "reference-a-semantic-maintenance",
-          "reference": "reference-a",
-          "variant": "semantic",
-          "scenario": "semantic",
-          "phase": "maintenance",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "a04ad1f63e4a43e28897b65d021f32d73d2fa47c846df1252097611081e18d81",
-          "model_sha256": "47f034e378b00481b0b3f7edc29c3e728bf37e6021f6ed7cf31f5775ed6a3452",
-          "capabilities_sha256": "2dd78f2a88a58b3355628d5d2b9ff8e2d87aedcfa909afe5644233aa500cf709",
-          "evaluation_sha256": "4f4c82858581b4889c77836dafc02ba6230e0ac8e639627e19539bb3166ab0a1"
-        },
-        {
-          "id": "reference-a-identity-diagnostic",
-          "reference": "reference-a",
-          "variant": "identity",
-          "scenario": "identity",
-          "phase": "diagnostic",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "0c0962263eee131ce6785b0eec4dc452e65d74fa8ce5c330bdccf636fffb417d",
-          "model_sha256": "4a8b13b43d54b333bd4ceae19b5bec660b81ec7c7c82909150a3adfa65332043",
-          "capabilities_sha256": "2dd78f2a88a58b3355628d5d2b9ff8e2d87aedcfa909afe5644233aa500cf709",
-          "evaluation_sha256": "9ab0af92a5404ac677a4171697cfe6fc5f0e7ccc55682a3fae21ec4052809546"
-        },
-        {
-          "id": "reference-a-identity-maintenance",
-          "reference": "reference-a",
-          "variant": "identity",
-          "scenario": "identity",
-          "phase": "maintenance",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "0c0962263eee131ce6785b0eec4dc452e65d74fa8ce5c330bdccf636fffb417d",
-          "model_sha256": "4a8b13b43d54b333bd4ceae19b5bec660b81ec7c7c82909150a3adfa65332043",
-          "capabilities_sha256": "2dd78f2a88a58b3355628d5d2b9ff8e2d87aedcfa909afe5644233aa500cf709",
-          "evaluation_sha256": "b406f44c2a5d11755089ebee1cb4cc2b0366c0db8ef5c092110a9a84db7feb80"
-        },
-        {
-          "id": "reference-b-original-diagnostic",
-          "reference": "reference-b",
-          "variant": "original",
-          "scenario": "semantic",
-          "phase": "diagnostic",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e",
-          "model_sha256": "cbcc0cacc213eed7b859760dbbf945e62b121e0d32e03ee4f460a268ebcdca8f",
-          "capabilities_sha256": "a52671773de0e3e9b084acc06f077999c45dd5ecadfcd012876584d3a8efc2e9",
-          "evaluation_sha256": "a8f0810514ad17df3291377cf1737e55d52e47f060a3db2df13d8472b8f808bb"
-        },
-        {
-          "id": "reference-b-original-maintenance",
-          "reference": "reference-b",
-          "variant": "original",
-          "scenario": "semantic",
-          "phase": "maintenance",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e",
-          "model_sha256": "cbcc0cacc213eed7b859760dbbf945e62b121e0d32e03ee4f460a268ebcdca8f",
-          "capabilities_sha256": "a52671773de0e3e9b084acc06f077999c45dd5ecadfcd012876584d3a8efc2e9",
-          "evaluation_sha256": "65a449521a63db50740e43f44697bda7030cd374e313477adb53334a9d69e35e"
-        },
-        {
-          "id": "reference-b-control-diagnostic",
-          "reference": "reference-b",
-          "variant": "control",
-          "scenario": "control",
-          "phase": "diagnostic",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e",
-          "model_sha256": "cbcc0cacc213eed7b859760dbbf945e62b121e0d32e03ee4f460a268ebcdca8f",
-          "capabilities_sha256": "a52671773de0e3e9b084acc06f077999c45dd5ecadfcd012876584d3a8efc2e9",
-          "evaluation_sha256": "ac3ecfcfb8eeb719efa401477b2c43235240670b576cb31fc8733051bb3338f5"
-        },
-        {
-          "id": "reference-b-control-maintenance",
-          "reference": "reference-b",
-          "variant": "control",
-          "scenario": "control",
-          "phase": "maintenance",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e",
-          "model_sha256": "cbcc0cacc213eed7b859760dbbf945e62b121e0d32e03ee4f460a268ebcdca8f",
-          "capabilities_sha256": "a52671773de0e3e9b084acc06f077999c45dd5ecadfcd012876584d3a8efc2e9",
-          "evaluation_sha256": "4a4146f11ead5578baf9ccf365b5f1f15d349510f89a1e039a8a173af2a701e4"
-        },
-        {
-          "id": "reference-b-semantic-diagnostic",
-          "reference": "reference-b",
-          "variant": "semantic",
-          "scenario": "semantic",
-          "phase": "diagnostic",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "a04ad1f63e4a43e28897b65d021f32d73d2fa47c846df1252097611081e18d81",
-          "model_sha256": "41a2ef1c6bf3834c7bfb6474c1fbe2305d5821e24220b693edf4b98e9098356b",
-          "capabilities_sha256": "a52671773de0e3e9b084acc06f077999c45dd5ecadfcd012876584d3a8efc2e9",
-          "evaluation_sha256": "057eb9f99aca58c69db22784e2f00695456baf8265663e119748aa6440181875"
-        },
-        {
-          "id": "reference-b-semantic-maintenance",
-          "reference": "reference-b",
-          "variant": "semantic",
-          "scenario": "semantic",
-          "phase": "maintenance",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "a04ad1f63e4a43e28897b65d021f32d73d2fa47c846df1252097611081e18d81",
-          "model_sha256": "41a2ef1c6bf3834c7bfb6474c1fbe2305d5821e24220b693edf4b98e9098356b",
-          "capabilities_sha256": "a52671773de0e3e9b084acc06f077999c45dd5ecadfcd012876584d3a8efc2e9",
-          "evaluation_sha256": "e07247a15e11ef234f767e13f0f295b9026e97f735cc3330a8eab4bab78ac365"
-        },
-        {
-          "id": "reference-b-identity-diagnostic",
-          "reference": "reference-b",
-          "variant": "identity",
-          "scenario": "identity",
-          "phase": "diagnostic",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "0c0962263eee131ce6785b0eec4dc452e65d74fa8ce5c330bdccf636fffb417d",
-          "model_sha256": "17a0d1935e032095e6d7c685683f2c3d72782fa8e7e60c2577f359e3036645ef",
-          "capabilities_sha256": "a52671773de0e3e9b084acc06f077999c45dd5ecadfcd012876584d3a8efc2e9",
-          "evaluation_sha256": "18419e93c34a5ed59a877e4c0af9bca7788d917aafcc7dc2fb659f83ef69525e"
-        },
-        {
-          "id": "reference-b-identity-maintenance",
-          "reference": "reference-b",
-          "variant": "identity",
-          "scenario": "identity",
-          "phase": "maintenance",
-          "sensor_checks": 3,
-          "effect_checks": 4,
-          "phase_inventory_sha256": "e1b88ec424562dfba7b039d60e963f41fef023684073b49eb48f1f2245da7144",
-          "image_sha256": "0c0962263eee131ce6785b0eec4dc452e65d74fa8ce5c330bdccf636fffb417d",
-          "model_sha256": "17a0d1935e032095e6d7c685683f2c3d72782fa8e7e60c2577f359e3036645ef",
-          "capabilities_sha256": "a52671773de0e3e9b084acc06f077999c45dd5ecadfcd012876584d3a8efc2e9",
-          "evaluation_sha256": "487bd34e4aa50b287179bb5d84311a187b8a4da82089d47a82b65a65cc9bd829"
-        }
-      ]
-    }
+    "cryptography": "50.0.1"
   },
   "gates": [
     {
-      "id": "source-full",
-      "command": "python -m unittest discover -s \"$REPO/tests\" -v",
-      "environment": "GD_TEST_WHEEL selects exact built wheel; PYTHONPATH and optional native/credential environment removed",
-      "outcome": "passed",
-      "tests": 412,
-      "seconds": 81.606,
+      "name": "source-suite",
+      "python": "3.13.12",
+      "tests": 417,
+      "seconds": 71.072,
       "skips": 0,
-      "log_sha256": "38893e5631ee848d4768a355ca4f224ee695e548de853b2e622bf075f56eb912"
+      "failures": 0,
+      "errors": 0,
+      "log": "suite-residual-i1-source.log",
+      "log_sha256": "6336cba7dac7435464a5d6bc95a300c631c727120c78c4023e7c517491a29785",
+      "command": "<python> -m unittest discover -s tests -v",
+      "archive_gates": [
+        "GD_TEST_WHEEL",
+        "GD_TEST_SDIST"
+      ],
+      "outside_checkout": false
     },
     {
-      "id": "311-full",
-      "command": "python -m unittest discover -s \"$REPO/tests\" -v",
-      "environment": "GD_TEST_WHEEL selects exact built wheel; PYTHONPATH and optional native/credential environment removed",
-      "outcome": "passed",
-      "tests": 412,
-      "seconds": 77.036,
+      "name": "installed-wheel-suite",
+      "python": "3.11.15",
+      "tests": 417,
+      "seconds": 60.484,
       "skips": 0,
-      "log_sha256": "f74872fdb9d354148555b1cdda131d924f66a7a31248e279cad112564ec5b761"
+      "failures": 0,
+      "errors": 0,
+      "log": "suite-residual-i1-retry-311.log",
+      "log_sha256": "bf29b8dbae6a0218a3d8098fefd742d5315f3aae5a982f16a895f2ab98209652",
+      "command": "<python> -m unittest discover -s tests -v",
+      "archive_gates": [
+        "GD_TEST_WHEEL",
+        "GD_TEST_SDIST"
+      ],
+      "outside_checkout": true
     },
     {
-      "id": "313-full",
-      "command": "python -m unittest discover -s \"$REPO/tests\" -v",
-      "environment": "GD_TEST_WHEEL selects exact built wheel; PYTHONPATH and optional native/credential environment removed",
-      "outcome": "passed",
-      "tests": 412,
-      "seconds": 80.671,
+      "name": "installed-wheel-suite",
+      "python": "3.13.14",
+      "tests": 417,
+      "seconds": 72.253,
       "skips": 0,
-      "log_sha256": "7851618ab66f6c0052fb8c842234cb3765a699bc1d18e60c8944b88764e271bd"
+      "failures": 0,
+      "errors": 0,
+      "log": "suite-residual-i1-313.log",
+      "log_sha256": "02fff98406cd2474ec9b8b342f92a4cb95b5d923f56aff82ae3f854c9fe485b8",
+      "command": "<python> -m unittest discover -s tests -v",
+      "archive_gates": [
+        "GD_TEST_WHEEL",
+        "GD_TEST_SDIST"
+      ],
+      "outside_checkout": true
     },
     {
-      "id": "311-cases",
-      "outcome": "passed",
-      "log_sha256": "2104fa99fe5317ddfdbbe2581068fd80c36baeb8f7acba8a65aed38fc0075ab7"
+      "name": "installed-integration",
+      "python": "3.11.15",
+      "seconds": 1.4634612080117222,
+      "cases": 6,
+      "suite_slots": 9,
+      "replay": "passed",
+      "standalone_replay": "passed",
+      "client_generation": "passed",
+      "authenticated_original_admissions": 3,
+      "family_saved_grades": 30,
+      "legacy_saved_grades": 2,
+      "stale_native_records_rejected": 3,
+      "authoring_recoveries": 2,
+      "offline_six_gate_score": "passed",
+      "offline_compare": "compatible",
+      "worker_launched": false,
+      "log": "integration-residual-i1-311.log",
+      "log_sha256": "894d78965b85ec6f678e2a82914f05173a6daa490af1167f8ffae4e754c392bb"
     },
     {
-      "id": "311-smoke",
-      "outcome": "passed",
-      "log_sha256": "99093cdc308df7c0b4ad2d7652e4b77c6ad6e498bacc295eb19eb14212d0ef2d"
-    },
-    {
-      "id": "311-admission-freeze",
-      "outcome": "passed",
-      "authenticated_scenarios": 7,
-      "planned_slots": 18,
-      "dispatched": false,
-      "evidence_sha256": "89d9766074573e2ee919d888b9848b82ab50b9eddb3468bc96e8010720f25d1f"
-    },
-    {
-      "id": "313-cases",
-      "outcome": "passed",
-      "log_sha256": "2104fa99fe5317ddfdbbe2581068fd80c36baeb8f7acba8a65aed38fc0075ab7"
-    },
-    {
-      "id": "313-smoke",
-      "outcome": "passed",
-      "log_sha256": "2263d4e400cf4f1f6b88be527de06ee8865fe2d8b195e56036f6d08375701f57"
-    },
-    {
-      "id": "313-admission-freeze",
-      "outcome": "passed",
-      "authenticated_scenarios": 7,
-      "planned_slots": 18,
-      "dispatched": false,
-      "evidence_sha256": "d569db4bee6c544db6917b94104d0471bcf963010bd63e00b60cfaaae215a27f"
-    },
-    {
-      "id": "native-families",
-      "outcome": "passed",
-      "command": "python -m unittest discover -s tests -p native_benchmark_families.py -v (explicit native configuration)",
-      "log_sha256": "54feb7617added77fdef32b9ac42461f5d089dc2286a989409f1c4b569989207"
-    },
-    {
-      "id": "native-tq9",
-      "outcome": "passed",
-      "command": "python -m generative_driver benchmark truth calibrate --case tq9-v2 --password-file \"$HANDLE\" --output \"$PRIVATE_OUTPUT\" --compiler \"$GCC\" --renode \"$RENODE\" --ghidra-home \"$GHIDRA\" --java-home \"$JAVA\"",
-      "log_sha256": "5dd82851c0d184ca2ed79900ef5c292a99464c5d4be6221b3e3a59c62d6e0650"
-    },
-    {
-      "id": "native-tq9-phases",
-      "outcome": "passed",
-      "command": "Existing reference_execute: 2 references x 4 image/model variants x diagnostic/maintenance",
-      "log_sha256": "159a37a6e08d0422a471a2f785aadb7c867a2b6d38461bfbf8137c0ad5ebb038"
-    },
-    {
-      "id": "release-audit",
-      "outcome": "passed",
-      "command": "Private release audit: legacy8, source/wheel bytes, exact assets, archive and private-content checks",
-      "log_sha256": "fd771a8e36cbbf5a30fdcf63eccbeb0e847a2bfe7099d82770e5861b4f378d33"
-    },
-    {
-      "id": "final-public-archive-audit",
-      "outcome": "passed",
-      "log_sha256": "fd771a8e36cbbf5a30fdcf63eccbeb0e847a2bfe7099d82770e5861b4f378d33",
-      "scope": "All tracked changes and new public files, source/wheel/sdist package assets, credentials/private complete payloads, legacy8."
-    },
-    {
-      "id": "final-installed-byte-identity",
-      "outcome": "passed",
-      "package_files_per_interpreter": 125,
-      "evidence_sha256": "02935569d424e8565019f6000b7323d6dfefa511592e608ee0fd62e411e5fb30"
+      "name": "installed-integration",
+      "python": "3.13.14",
+      "seconds": 1.6016356660111342,
+      "cases": 6,
+      "suite_slots": 9,
+      "replay": "passed",
+      "standalone_replay": "passed",
+      "client_generation": "passed",
+      "authenticated_original_admissions": 3,
+      "family_saved_grades": 30,
+      "legacy_saved_grades": 2,
+      "stale_native_records_rejected": 3,
+      "authoring_recoveries": 2,
+      "offline_six_gate_score": "passed",
+      "offline_compare": "compatible",
+      "worker_launched": false,
+      "log": "integration-residual-i1-313.log",
+      "log_sha256": "03701c70844aae8986bcabc46645f93cf67d39dc30a769bb413f368023c8d4dd"
     }
   ],
-  "offline_reference_regrade": {
-    "evaluations": 75,
-    "outcome": "passed",
-    "evidence_sha256": "1ee8c0df89841bed5db455349047c3c3de05ec82ad9d1052d3d4c4ec03acce0b",
-    "full_agent_run": false
+  "distribution": {
+    "strategy": "clean tracked git archive; final documentation rebuild preserves tested wheel module/resource bytes",
+    "wheel_module_resource_files": 118,
+    "wheel_payload_sha256": "3cc0ec9c0ce0d7799c2b2b2b9cb855ccbe8412c611b423e932e4311182138017",
+    "wheel_files": 125,
+    "sdist_files": 195,
+    "tracked_markdown": 36,
+    "tracked_local_links": 57,
+    "sdist_markdown": 33,
+    "sdist_local_links": 55,
+    "broken_local_links": 0,
+    "private_material_found": false,
+    "retired_workflow_instructions_found": false,
+    "original_firmware_images": 4,
+    "full_archive_hashes": "external evaluator-owned verification manifest; final sdist cannot hash itself"
   },
-  "frozen_legacy_files": 8,
-  "pilot": {
-    "planned_trials": 18,
-    "dispatched_trials": 0,
-    "runtime_model_selected": false,
-    "performance_observed": false
+  "native_reference_qualification": {
+    "scope": "Fresh residual-i1 native sessions against the corrected frozen evaluator; prior qualifications preserved. Installed gates authenticate and regrade saved evidence.",
+    "family_sessions": 30,
+    "reference_sessions": 12,
+    "mutant_sessions": 18,
+    "separate_legacy_sessions": 2,
+    "saved_family_grades_reproduced": 30,
+    "families": [
+      {
+        "case": "sampled-sensor-v1",
+        "native_sessions": 8,
+        "evidence_sha256": "e5482c67c1fad09c5ab025cd3de5d1267250f98092dcad9e670dd61c70897d2d",
+        "ciphertext_sha256": "a2ee5fba182a9a754da6d0c4bca37dc7181eff0fb0bd835c89dc5cd917c7e92a",
+        "image_sha256": "637370d3d7192a17b6abeb79a3fcbc60ec2f47eb14e199627798756c02bbb1e9"
+      },
+      {
+        "case": "parameter-store-v1",
+        "native_sessions": 9,
+        "evidence_sha256": "7412248b61fecef32769a5290bfb20912d92aaa84201b824cc1b8b1b83ffd5e8",
+        "ciphertext_sha256": "38b7731ce26deaaee731d5011652117e110498920c9700eac9fb0c25ab5871c8",
+        "image_sha256": "e7a580834861f7fa96868245bf969d69350ee0acdab1ee8eda30abc1fdf1faf1"
+      },
+      {
+        "case": "tq9-v2",
+        "native_sessions": 13,
+        "evidence_sha256": "7d7f7689b0aee39a7d75a26d02f6ce438f2fa661d7baf6ff24c670f080a9d024",
+        "ciphertext_sha256": "a0b7003189e66a476da45ae6ef4ec32901c7644b3c31544330fb6ac5c31cc5e2",
+        "image_sha256": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e"
+      }
+    ],
+    "tools": {
+      "gcc": "14.2.1 (Arm GNU Toolchain14.2.Rel1)",
+      "objcopy": "2.43.1.20241119",
+      "renode": "1.16.1.16858",
+      "dotnet": "8.0.21",
+      "ghidra": "12.1.3",
+      "java": "21.0.12.1"
+    },
+    "log_hashes": {
+      "sampled-sensor-v1-native-residual-i1.log": "88653a4360b4d5d12e7ed70b240fb5ba86b99b79c2a104b1d21577849e5d5006",
+      "parameter-store-v1-native-residual-i1.log": "37ca2ca8c0e08bf3b5222fde0b1dedc5a9b060d14033da31e74f86eac61f447d",
+      "tq9-v2-native-residual-i1.log": "192f28e88b93dc62633f0a7024d7ce8bd3818da1a3bfac2ab18587848b63a57e",
+      "tq9-original-native-residual-i1.log": "86162219056cfc88562019ea2f642c067d3534bf1ff29a62567f7a98d0ab5c66",
+      "verify-release-residual-i1.log": "94ef74c3a927053662e58b6c883e4453dcd2816b61dda7d6df8b1d07fe3e5600"
+    }
   },
-  "limits": [
-    "No new Windows CI, Windows 11 workstation or native Windows Renode/Ghidra result.",
-    "No model-performance pilot, live Goose trial or physical measurement.",
-    "Password holder is trusted; stronger worker filesystem isolation is unverified.",
-    "Separate encrypted TQ9 phase evidence is not consumed or required by ordinary admission.",
-    "The exact tested artifacts are retained unchanged; closing verification prose/index postdates their build."
-  ]
+  "independent_whole_branch_review": "completed With fixes; scoped rereview accepted I2/M1/M3; residual I1 verification accepted; no open Important findings; benign M2 warnings deferred",
+  "unobserved": [
+    "current model performance",
+    "physical device performance",
+    "native Windows Renode/Ghidra",
+    "Windows11 workstation UI",
+    "live Goose execution",
+    "worker OS filesystem isolation"
+  ],
+  "publication_exception": "Other owner untracked docs/research draft preserved outside tracked export and archives.",
+  "review_fixes": {
+    "legacy_final": "An observed legacy contradiction remains terminal failed/model across restart despite unrelated host/operator/unknown failed calls before or after it. Raw failures remain recorded; unavailable-only and positive incomplete evidence retain recovery.",
+    "physical_export": "Offline BME280 score accepts an explicit evaluator-owned reference file via --evidence while retaining digest and measurement-time validation and private path removal.",
+    "public_projection": "Retained max_model_repairs is published; obsolete cycle limits remain excluded.",
+    "documentation": "V2 phase/reference evidence is scoped explicitly; physical agreement uses operator uncertainty."
+  },
+  "verification_notes": [
+    "The first concurrent installed Python 3.11 suite failed test_shutdown_drains_an_accepted_tool_before_confirming_exit at entered.wait(5). The unchanged isolated lifecycle suite passed 7 tests in 1.178s, and the repeated complete installed 3.11 gate passed. Original failed and repeat logs remain preserved; the precise transient cause was not established."
+  ],
+  "review_closure": {
+    "reviewed_head": "49fafa78c9af8cf3bac8f7d60e1c0b7d4206a58c",
+    "residual_review_sha256": "babbc9f2c7cdde90c817d6da6fa5869ae7722c9c650f7ccf72ce652ebbeac1e4",
+    "residual_verdict": "I1 addressed; approved within residual scope",
+    "parent_accepted": true,
+    "integration_status": "ready for user integration; not merged or pushed"
+  }
 }

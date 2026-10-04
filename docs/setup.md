@@ -2,6 +2,8 @@
 
 Install the base package using the [README](../README.md). Use the Python executable from the environment containing Generative Driver in every command below (`.venv/bin/python` on macOS, `.venv\Scripts\python.exe` on Windows). The `python` examples stand for that executable; this is separate from the installed Codex or Goose executable. Paths containing spaces remain one quoted argument. No shell activation is required.
 
+For a Windows source installation upgraded from a checkout without `.gitattributes`, build from a fresh clone. Existing files may retain converted line endings after an update, changing the bytes pinned by benchmark hashes. The repository's checkout policy preserves these bytes; keep integrity checks enabled.
+
 ## Select an agent runtime
 
 Install and authenticate Codex or Goose through its own supported setup. For Codex, run the selected executable with `--version` and confirm the output starts with `codex-cli`; an unrelated Python application shares the `codex` command name. Use a verified absolute OpenAI CLI path if there is a collision; see the [Codex identity check and macOS example](codex.md#verify-the-openai-cli). Then record the runtime's executable and model:
@@ -57,7 +59,7 @@ python -m generative_driver resume RUN_ID --budget-seconds 21600 --budget-reason
 
 This example sets a six-hour total measured from the original start. `driver_resume` accepts the equivalent `budget_seconds` and `budget_reason` fields from Goose or Codex. The total can increase up to seven days; repeating the same total adds no further time. A durable `run.budget_extended` event records the previous and new totals/deadlines, added seconds and reason. Start time, prior attempts and accepted evidence remain intact, and recovery checks still apply.
 
-Benchmark suites use this same configurator. Save the `suite_id` from `benchmark suite start` or `driver_benchmark_suite_start`, and reconnect with suite status/events/result from either interface. Keep the leading CLI `--home` and MCP `GENERATIVE_DRIVER_HOME` consistent; another `options.home` is refused. Windows suite MCP tools require the independent owner described above. Suite cancellation/resume preserves the current child. Suite and child wall-clock budgets are separate and include stopped time; increasing one does not increase the other. [Suite commands and authorization gates](../bench/README.md#durable-benchmark-suites) cover manifest copying, private evaluator options, pagination, export and offline comparison.
+Benchmark suites use this same configurator. Save the `suite_id` from `benchmark suite start` or `driver_benchmark_suite_start`, and reconnect with suite status/events/result from either interface. Keep the leading CLI `--home` and MCP `GENERATIVE_DRIVER_HOME` consistent; another `options.home` is refused. Windows suite MCP tools require the independent owner described above. Suite cancellation/resume preserves the current child. Suite and child wall-clock budgets are separate and include stopped time; increasing one does not increase the other. [Suite commands and authorization gates](../bench/README.md#run-a-repeated-suite) cover manifest copying, private evaluator options, pagination, export and offline comparison.
 
 ## Developer command line
 

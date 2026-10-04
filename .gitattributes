@@ -1,0 +1,4 @@
+# Evaluator identities and manifests hash source/resource bytes on every host.
+* text=auto eol=lf
+*.bin -text
+*.enc -text

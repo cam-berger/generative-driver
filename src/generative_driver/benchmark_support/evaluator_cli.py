@@ -63,10 +63,8 @@ def manage(action, case, password_file, output, new_password_file=None, compiler
     for name in ('main.c','link.ld'):
         (destination/name).write_text(truth['source_files'][name],encoding='utf-8')
     actual = {}
-    for image in ('firmware.bin','firmware-next.bin'):
+    for image in ('firmware.bin',):
         source = truth['source_files']['main.c']
-        if image.endswith('-next.bin'):
-            source = source.replace(*recipe['drift_replace'])
         (destination/'main.c').write_text(source,encoding='utf-8')
         elf = destination/(image+'.elf')
         built = subprocess.run([str(compiler),*recipe['flags'],'main.c','-lgcc','-o',str(elf)],cwd=destination,capture_output=True,text=True)

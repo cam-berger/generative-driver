@@ -38,6 +38,42 @@ _BUILTINS = {
 }
 
 
+CURRENT_VERSIONS = {'tq9': '2', 'bme280': '3', 'tq9-v2': '3',
+                    'sampled-sensor-v1': '3', 'parameter-store-v1': '3'}
+
+
+def validate_workflow_manifest(manifest):
+    from ..benchmark import STAGES
+    case_id = manifest.get('id')
+    version = CURRENT_VERSIONS.get(case_id)
+    if version is None or manifest.get('version') != version or manifest.get('evaluator_version') != version:
+        raise ValueError('Unsupported case or evaluator version identity')
+    if manifest.get('required_stages') != list(STAGES):
+        raise ValueError('Incompatible required stage inventory: six acceptance gates are required')
+    scenarios = [row.get('id') if isinstance(row, dict) else row for row in manifest.get('scenarios', [])]
+    if scenarios != ['original']:
+        raise ValueError('Unsupported case scenario inventory: original is required')
+    if case_id != 'bme280' and list(manifest.get('images', {})) != ['firmware.bin']:
+        raise ValueError('Stable case requires one original firmware image')
+
+
+def validate_public_workflow_identity(pin):
+    version = CURRENT_VERSIONS.get(pin.get('case_id'))
+    if (version is None or pin.get('case_version') != version or pin.get('evaluator_version') != version
+            or pin.get('scenario_id') != 'original'):
+        raise ValueError('Unsupported pinned workflow identity or version')
+
+
+def validate_pinned_workflow(pin):
+    validate_public_workflow_identity(pin)
+    manifest = pin.get('manifest', {})
+    validate_workflow_manifest(manifest)
+    if (pin.get('case_id') != manifest['id'] or pin.get('case_version') != manifest['version']
+            or pin.get('evaluator_version') != manifest['evaluator_version']
+            or pin.get('scenario_id') != 'original'):
+        raise ValueError('Conflicting pinned case identity or version')
+
+
 def case_ids() -> tuple[str, ...]:
     return tuple(_BUILTINS)
 
@@ -64,7 +100,7 @@ def case_descriptors() -> list[dict]:
                      **({'calibration': copy.deepcopy(calibration)} if case.adapter_key == 'emulator-v2' else {}),
                      'version': case.version, 'execution': case.execution,
                      'evidence_track': case.evidence_track,
-                     'scenarios': copy.deepcopy(case.manifest.get('scenarios', ['identity'] if case.id == 'tq9' else []))})
+                     'scenarios': copy.deepcopy(case.manifest.get('scenarios', []))})
     return rows
 
 
@@ -193,6 +229,7 @@ def load_definition(path: Path, *, resource_root: Path) -> CaseDefinition:
             raise ValueError('Invalid v2 default effects')
         if manifest['execution'] != 'actual-agent-emulation' or manifest['evidence_track'] != 'firmware':
             raise ValueError('Unsupported v2 execution or evidence track')
+    validate_workflow_manifest(manifest)
     if 'calibration' in manifest and not isinstance(manifest['calibration'], dict):
         raise ValueError('Invalid calibration map')
     for field in ('images', 'assets', 'truth'):
@@ -237,9 +274,11 @@ def load_definition(path: Path, *, resource_root: Path) -> CaseDefinition:
 def pin_case(case_id: str, scenario_id: str | None, case_seed: int) -> dict:
     if type(case_seed) is not int:
         raise ValueError('case_seed must be an integer')
+    if scenario_id not in (None, 'original'):
+        raise ValueError('Unknown case scenario')
     definition = resolve_case(case_id)
     if definition.id in ('tq9', 'bme280', 'setup-smoke'):
-        default = 'identity' if definition.id == 'tq9' else None
+        default = None if definition.id == 'setup-smoke' else 'original'
         if scenario_id not in (None, default) or case_seed != 0:
             raise ValueError('Legacy case does not support the selected scenario or seed')
         scenario_id = default
@@ -247,6 +286,7 @@ def pin_case(case_id: str, scenario_id: str | None, case_seed: int) -> dict:
     else:
         scenarios = definition.manifest.get('scenarios', [])
         names = [row.get('id') if isinstance(row, dict) else row for row in scenarios]
+        scenario_id = scenario_id or 'original'
         if scenario_id not in names:
             raise ValueError('Unknown case scenario')
         calibration = definition.manifest.get('calibration', {})
@@ -313,14 +353,11 @@ def require_calibration(pin: dict, options: dict) -> dict:
                 source=truth['references'][reference['id']]
                 for name in reference['runs']:
                     run=runs[name];model=source['model']
-                    if run['scenario']=='semantic':
-                        patches=[{'target':'model',**p} for p in truth['oracle']['semantic_model_patches'][reference['id']]]
-                        model=apply_mutation(model,source['capabilities'],{'id':'semantic','patches':patches})['model']
                     valid = (valid and reference['execution_inputs'][name]==execution_input_identity(model,source['capabilities']))
             for row in record['mutants']:
                 valid = (valid and row['execution_input']==mutant_inputs[row['id']])
             for run in runs.values():
-                scenario='control' if run['scenario']=='original' else run['scenario']
+                scenario=run['scenario']
                 artifact=run['package_sha256'] or run['model_sha256']
                 contract=family.contract({'family':manifest['family'],'scenario_id':scenario,'case_seed':0,'revision':0},
                     {**truth,'artifact_sha256':artifact},run['phase'])
@@ -338,7 +375,16 @@ def require_calibration(pin: dict, options: dict) -> dict:
                      and truth['images'] == manifest['images']
                      and set(record['required_mutants']) == set(CORE_MUTANTS) | set(truth['mutations']['required'])
                      and record['execution_inputs']==tq9_execution_inputs(truth)
+                     and {r['id']: r['expected_failed_checks'] for r in record['mutants']} ==
+                         truth['mutations']['expected_failed_checks']
                      and validate_record(manifest, record)['ok'])
+            from .tq9_v2 import contract as tq9_contract
+            for run in record['runs']:
+                artifact=run['package_sha256'] or run['model_sha256']
+                contract=tq9_contract({'scenario_id':run['scenario'],'case_seed':0,'revision':0},
+                    {**truth,'artifact_sha256':artifact},run['phase'])
+                valid = (valid and canonical_digest(contract)==run['contract_sha256']
+                         and [c['id'] for c in contract['checks']]==run['check_ids'])
     except (KeyError, TypeError, ValueError):
         valid = False
     if not valid:

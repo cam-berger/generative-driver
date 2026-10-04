@@ -22,18 +22,18 @@ class McpTests(unittest.TestCase):
             resources = root / 'resources'
             case = resources / 'cases' / 'tq9-v2'
             case.mkdir(parents=True)
-            image = case / 'image.bin'
+            image = case / 'firmware.bin'
             image.write_bytes(b'fixture')
             truth = resources / 'groundtruth' / 'tq9-v2.enc'
             truth.parent.mkdir()
             truth.write_bytes(b'ciphertext')
             sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
             manifest = {'schema': 'benchmark-case/2', 'id': 'tq9-v2', 'family': 'tq9',
-                        'version': '2', 'evaluator_version': '2', 'execution': 'actual-agent-emulation',
+                        'version': '3', 'evaluator_version': '3', 'execution': 'actual-agent-emulation',
                         'evidence_track': 'firmware', 'adapter_key': 'emulator-v2',
                         'approval_scope': 'emulator', 'default_effects': ['write'],
-                        'scenarios': ['semantic'], 'required_stages': ['acquire'],
-                        'images': {'image.bin': sha(image)},
+                        'scenarios': ['original'], 'required_stages': ['acquire','interpret','probe','ground','emit','reuse'],
+                        'images': {'firmware.bin': sha(image)},
                         'truth': {'path': 'groundtruth/tq9-v2.enc', 'sha256': sha(truth)},
                         'time_policy': {}, 'provenance': {}, 'limitations': [],
                         'calibration': {'status': 'pending'}}

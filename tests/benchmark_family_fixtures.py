@@ -38,7 +38,7 @@ def toy_sensor_phase():
             check["absolute_tolerance"] = 0
         checks.append(check)
     contract = {"schema": "benchmark-behavior/1", "artifact_sha256": "a" * 64, "checks": checks}
-    pin = {"id": "toy-sampled-oracle", "family": "sampled-sensor"}
+    pin = {"id": "toy-sampled-oracle", "family": "sampled-sensor", "scenario_id": "original"}
     truth = {"family": "sampled-sensor", "artifact_sha256": "a" * 64,
              "phases": {"diagnostic": {"contract": contract, "actions": [
                  {"episode": "toy", "step": "input", "kind": "stimulate", "values": {"source_q4": -80}}]}}}

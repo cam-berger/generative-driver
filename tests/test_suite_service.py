@@ -137,7 +137,7 @@ class ServiceTests(unittest.TestCase):
 
 
 class SummaryTests(unittest.TestCase):
-    def test_owner_v2_summary_projects_only_gate_identity_counts_and_maintenance(self):
+    def test_owner_v2_summary_projects_only_gate_identity_and_final_counts(self):
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as home:
             owner=Controller(home)
@@ -152,12 +152,11 @@ class SummaryTests(unittest.TestCase):
                     db.execute('UPDATE runs SET spec=? WHERE id=?',(json.dumps(spec),run['run_id']))
                 safe={'accepted_gates':[{'stage':'reuse','revision':0,'assignment_id':'a','artifact_sha256':'a'*64,'verdict':'passed','passed':2,'total':2}],
                       'evaluations':[{'phase':'final','revision':0,'frozen_artifact_sha256':'a'*64,'verdict':'passed','passed':3,'total':3}],
-                      'final_evaluation':{'verdict':'passed','passed':3,'total':3,'evidence_sha256':'e'*64},
-                      'maintenance':{'evaluable':True,'drift_claimed':False,'drift_observed':False,'false_alarm':False,'repair_completed':False,'requalified':False,'fresh_reuse_passed':True}}
+                      'final_evaluation':{'verdict':'passed','passed':3,'total':3,'evidence_sha256':'e'*64}}
                 state=json.loads(json.dumps(safe));state['alien']='/PRIVATE/raw'
                 state['accepted_gates'][0]['raw']='/PRIVATE/checks'
                 state['evaluations'][0]['records']=['PRIVATE']
-                state['maintenance']['diagnostic']={'hidden':'PRIVATE'}
+                state['maintenance']={'diagnostic':{'hidden':'PRIVATE'}}
                 state['final_evaluation']['vectors']=['PRIVATE']
                 path=Path(home)/'runs'/run['run_id']/'benchmark/state.json'
                 path.write_text(json.dumps(state))
@@ -165,7 +164,7 @@ class SummaryTests(unittest.TestCase):
                 self.assertEqual(result.get('benchmark_summary'),safe)
                 self.assertNotIn('PRIVATE',json.dumps(result['benchmark_summary']))
                 path.unlink()
-                self.assertEqual(owner.call('result',run)['benchmark_summary'],{'accepted_gates':[],'evaluations':[],'final_evaluation':{},'maintenance':{}})
+                self.assertEqual(owner.call('result',run)['benchmark_summary'],{'accepted_gates':[],'evaluations':[],'final_evaluation':{}})
             finally:owner.close()
 
 
@@ -423,7 +422,7 @@ class DelayedOperationTests(unittest.TestCase):
 
 class CleanupFailureTests(unittest.TestCase):
     def _stopped_suite_at_completion(self, home):
-        """Public durable queue fixture; exercises cleanup, not seven-stage grading."""
+        """Public durable queue fixture; exercises cleanup, not six-stage grading."""
         from generative_driver.configurator import Controller
         from generative_driver.setup import configure
         configure('codex',['missing-runtime'],home=home)
@@ -434,7 +433,7 @@ class CleanupFailureTests(unittest.TestCase):
         # Resume a durable exhausted stage queue so the real _run completion and
         # finally paths execute, without pretending this is scored success.
         with owner._db() as db:
-            progress={'revision':0,'next_stage':None,'repairs':0,'maintenance_cycles':0,'feedback':None}
+            progress={'revision':0,'next_stage':None,'repairs':0,'feedback':None}
             db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)',(child,json.dumps(progress)))
             owner._claim_binding({'host':'127.0.0.1','port':19381},child,db)
         return owner,suite,child
@@ -519,34 +518,32 @@ class CleanupFailureTests(unittest.TestCase):
                 if cancellation:cancellation.join(5)
                 owner.close()
 
-class MaintenanceCategorySchedulingTests(unittest.TestCase):
+class FreshReuseCategorySchedulingTests(unittest.TestCase):
     _stopped_suite_at_completion = CleanupFailureTests._stopped_suite_at_completion
 
-    def test_false_alarm_settles_and_next_slot_waits_for_cleanup(self):
+    def test_final_failure_settles_and_next_slot_waits_for_cleanup(self):
         import threading
         from unittest.mock import patch
-        from generative_driver.benchmark_support.scenarios import maintenance_decision
         from generative_driver import configurator, benchmark
         with tempfile.TemporaryDirectory() as home:
             owner,suite,child=self._stopped_suite_at_completion(home)
             entered,release,cleaned=threading.Event(),threading.Event(),threading.Event()
             with owner._db() as db:
-                progress={'revision':0,'next_stage':'maintain','repairs':0,'maintenance_cycles':0,'feedback':None}
+                progress={'revision':0,'next_stage':'reuse','repairs':0,'feedback':None}
                 db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)',(child,json.dumps(progress)))
             prepare,check,execute,cleanup=owner._prepare,owner._check,configurator.execute,benchmark.cleanup
             def fixture_prepare(spec,stage,*args):
-                if stage=='maintain':return {'inputs':[],'allowed_tools':[]}
+                if stage=='reuse':return {'inputs':[],'allowed_tools':[]}
                 self.assertTrue(cleaned.is_set(),'Next slot began before previous cleanup')
                 return prepare(spec,stage,*args)
             def fixture_execute(request,*args):
-                if request.stage=='maintain':
+                if request.stage=='reuse':
                     return {'status':'completed','runtime':'scripted-contract-fixture','report':{'status':'needs_revision'}}
                 return execute(request,*args)
             def fixture_check(spec,stage,*args):
-                if stage=='maintain':
-                    return maintenance_decision(scenario='control',claim='drift',repaired=False,
-                        diagnostic={'evaluable':True,'fault':None,'contradiction':False,
-                                    'evidence_ids':['toy-independent-observation'],'fresh_reuse_passed':True})
+                if stage=='reuse':
+                    return {'ok':False, 'fault':'model', 'final_evaluation':True,
+                            'reason':'Scripted frozen final failure'}
                 return check(spec,stage,*args)
             def delayed_cleanup(case,run_dir,options):
                 if Path(run_dir).name==child:

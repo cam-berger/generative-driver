@@ -23,9 +23,13 @@ def integer_vector(values, name, length):
 
 
 def private_phase(pin, truth, phase):
+    if pin.get('scenario_id') != 'original':
+        raise ValueError('Unknown case scenario')
+    if phase not in ('diagnostic', 'final'):
+        raise ValueError('Unknown behavior phase')
     if truth["family"] != pin["family"]:
         raise ValueError("Family evidence mismatch")
-    phases = truth["scenario_phases"][pin["scenario_id"]] if "scenario_phases" in truth else truth["phases"]
+    phases = truth["phases"]
     result = deepcopy(phases[phase])
     result["contract"]["artifact_sha256"] = truth["artifact_sha256"]
     for check in result["contract"]["checks"]:

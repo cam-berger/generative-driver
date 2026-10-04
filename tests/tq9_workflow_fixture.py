@@ -6,11 +6,11 @@ import socketserver
 import threading
 
 
-def model(semantic=False):
+def model():
     from generative_driver.benchmark import case_root
     result = json.loads((case_root()/'cases/setup-smoke/model.json').read_text())
     result['schema'] = 'interface-model/4'
-    result['operations']['measure']['outputs']['temperature'] = {'from':'reply','kind':'kv_number','key':'T:', 'scale':.1 if semantic else 1, 'unit':'degC'}
+    result['operations']['measure']['outputs']['temperature'] = {'from':'reply','kind':'kv_number','key':'T:', 'scale':1, 'unit':'degC'}
     for name, command, effect in [('arm','A','write'),('disarm','D','write'),('set_duty','W ','actuate')]:
         result['operations'][name] = {'effect':effect,'parameters':{},'outputs':{},'steps':[{
             'op':'exchange','tx':[{'text':command+'\n'}],
@@ -41,7 +41,6 @@ def replies():
 
 class Silicon:
     def __init__(self, image):
-        self.semantic = b'semantic' in Path(image).read_bytes()
         self.temperature, self.duty, self.armed = 20, 0, False
         self.monitor_available = True
         self.running = False
@@ -56,7 +55,7 @@ class Silicon:
                         owner.paused_requests.append(command)
                         return
                     if command=='ID?': reply='DEMO-42'
-                    elif command=='T': reply='T:'+str(42 if getattr(owner,'wrong_hidden',False) and owner.temperature == -7 else owner.temperature*(10 if owner.semantic else 1))
+                    elif command=='T': reply='T:'+str(42 if getattr(owner,'wrong_hidden',False) and owner.temperature == -7 else owner.temperature)
                     elif command=='A': owner.armed=True; reply='OK'
                     elif command=='D': owner.armed=False; owner.duty=0; reply='OK'
                     elif command.startswith('W '):
@@ -99,7 +98,7 @@ sys.path[:0]=[PACKAGE_PARENT,FIXTURE_PARENT]
 from tq9_workflow_fixture import model,capabilities,replies
 prompt=sys.stdin.read()
 if not prompt.startswith('Execute exactly'):
-    pathlib.Path('model.json').write_text(json.dumps(model(b'semantic' in pathlib.Path('image.bin').read_bytes())))
+    pathlib.Path('model.json').write_text(json.dumps(model()))
     pathlib.Path('replies.json').write_text(json.dumps(replies()))
     sys.exit(0)
 task=json.loads(prompt.split('\n',1)[1]);stage=task['stage']
@@ -124,15 +123,11 @@ elif stage=='probe':
     pathlib.Path('capabilities.json').write_text(json.dumps(capabilities()));artifacts=['capabilities.json']
 elif stage=='emit':
     result=call('emit_package',task['context']);assert result['ok'];artifacts=[result['package_dir']]
-elif stage in ('reuse','maintain'):
+elif stage=='reuse':
     package=task['inputs'][0]
-    sequence=[('measure',{}),('arm',{}),('set_duty',{'duty':370}),('disarm',{})] if stage=='reuse' else [('measure',{})]
+    sequence=[('measure',{}),('arm',{}),('set_duty',{'duty':370}),('disarm',{})]
     results=[call('benchmark_package_execute',{'package_dir':package,'operation':op,'parameters':params}) for op,params in sequence]
-    if stage=='maintain':
-        result=results[0]
-        drift=not result['ok'] or abs(result['outputs']['temperature']-result['observation']['temperature_reference'])>.01
-        claim={'schema':'benchmark-maintenance-claim/1','claim':'drift' if drift else 'unchanged','evidence_ids':[str(result['evidence_id'])]}
-        pathlib.Path('maintenance.json').write_text(json.dumps(claim));artifacts=['maintenance.json'];status='needs_revision' if drift else 'completed'
+
 def digest(path):
     path=pathlib.Path(path)
     if path.is_file():return hashlib.sha256(path.read_bytes()).hexdigest()

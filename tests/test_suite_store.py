@@ -260,7 +260,7 @@ class ControllerStorageTests(unittest.TestCase):
                 self.assertEqual(identity['time_policy'],[frozen['entry_pins'][0]['time_policy']])
                 self.assertEqual(identity['evaluator_revision'],frozen['provenance']['evaluator_revision'])
                 self.assertEqual(identity['budgets'],{'original':{'child_budget_seconds':120,'suite_budget_seconds':120},'effective':{'child_budget_seconds':120,'suite_budget_seconds':120,'child_budget_overrides':[]}})
-                self.assertEqual(identity['intervention_policy'],{'scoped_tool_approval':None,'max_model_repairs':2,'max_maintenance_cycles':1})
+                self.assertEqual(identity['intervention_policy'],{'scoped_tool_approval':None,'max_model_repairs':2})
                 self.assertEqual(set(experiment['dimensions']),{'runtime','model','provider','version','reasoning_effort','max_turns','skills_revision','toolchain_revision'})
                 self.assertEqual(experiment['dimensions']['model'],'frozen-model')
                 child=controller.call('result',{'run_id':state['active_child_id']})

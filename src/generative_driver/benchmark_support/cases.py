@@ -3,7 +3,6 @@ import hashlib
 import json
 import shutil
 import tempfile
-import time
 from pathlib import Path
 
 
@@ -48,6 +47,8 @@ def _case_inputs(run_dir=None):
     if run_dir is not None and (Path(run_dir) / 'benchmark/execution.json').is_file():
         from .snapshots import read_snapshot
         saved = read_snapshot(run_dir)
+        from .registry import validate_pinned_workflow
+        validate_pinned_workflow(saved['case_pin'])
         return Path(run_dir) / 'benchmark/inputs', saved['case_pin']['manifest']
     root = case_root() / 'cases/tq9'
     return root, json.loads((root / 'case.json').read_text())
@@ -61,15 +62,12 @@ def _load_case(options):
     return root, manifest, truth_for_case(root, manifest, options)
 
 
-def _session(state, options, restart=False):
+def _session(state, options):
     from .emulator import RenodeSession
     root, manifest, truth = _load_case(options)
-    if restart and state.get('session'):
-        RenodeSession(state['session']).stop()
-        state.pop('session', None)
     if not state.get('session'):
         inputs, _ = _case_inputs(options.get('_execution_run_dir'))
-        image = inputs / ('firmware-next.bin' if state.get('firmware_revision', 0) else 'firmware.bin')
+        image = inputs / 'firmware.bin'
         state['session'] = RenodeSession.start(options.get('renode'), image, truth).info
     return state['session'], truth
 
@@ -84,7 +82,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
     ws = Path(workspace).resolve()
     ws.mkdir(parents=True, exist_ok=True)
     inputs_root, manifest = _case_inputs(run_dir)
-    image_name = 'firmware-next.bin' if state.get('firmware_revision', 0) else 'firmware.bin'
+    image_name = 'firmware.bin'
     image = inputs_root / image_name
     if hashlib.sha256(image.read_bytes()).hexdigest() != manifest['images'][image_name]:
         raise ValueError('Benchmark firmware does not match the case hash')
@@ -172,16 +170,12 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                 'inputs': [str(model/'model.json'), str(ws/'probe.json')],
                 'context': {'model_dir': str(model), 'probe': str(ws/'probe.json')},
                 'allowed_tools': ['emit_package', 'emit_check']}
-    if stage in ('reuse', 'maintain'):
+    if stage == 'reuse':
         package = ws/'package'
         source = _accepted_package(accepted, state.get('package_dir', ws/'missing-package'))
         shutil.copytree(source, package, dirs_exist_ok=True)
         state.setdefault('package_copies', {})[stage] = str(package)
         state.setdefault('package_attempts', {})[stage] = __import__('uuid').uuid4().hex
-        if stage == 'maintain' and not state.get('drift_started'):
-            state['firmware_revision'] = 1
-            state['drift_started'] = True
-            _session(state, options, restart=True)
         session, truth = _session(state, options)
         from .emulator import RenodeSession
         RenodeSession(session).monitor('pause')
@@ -192,15 +186,6 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                 'it executes the package and supplies an independent output observation. Find operation/argument names '
                 'in package/REFERENCE.md or package/driver/model.json. Do not import development history. '
                 'Report observed values, operations attempted and limitations.')
-        elif not state.get('drift_detected'):
-            objective = ('The firmware was deliberately updated. Check the existing package identity through '
-                'benchmark_package_execute before attempting any write. If the device contradicts identity, '
-                'report needs_revision and cite the observed model fault. Do not patch the package or bypass its identity guard. '
-                'The configurator will route a fresh interpretation, requalification, emission and reuse.')
-        else:
-            objective = ('The package has been rebuilt and freshly reused after the firmware update. Use '
-                'benchmark_package_execute to check its identity or read operation and report whether the previous '
-                'incompatibility is resolved. Cite the current package and actual result.')
         return {'objective': objective, 'inputs': [str(package)], 'allowed_tools': ['benchmark_package_execute'],
                 'context': {'package_dir': str(package)}, 'binding': session['binding'], 'effects': ['write', 'actuate'],
                 'boundary': 'fresh package-only context; encrypted evaluator evidence'}
@@ -297,44 +282,46 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
                 return {'ok': True, 'checks': [{'name': 'package_integrity_and_replay', 'passed': True}],
                         'artifacts': [str(package)], 'evaluator': checked}
         return {'ok': False, 'reason': 'No emitted package passed the host package check', 'checks': [], 'artifacts': []}
-    if stage in ('reuse', 'maintain'):
+    if stage == 'reuse':
         events_path = Path(run_dir)/'benchmark/package-events.jsonl'
         events = [json.loads(line) for line in events_path.read_text().splitlines()] if events_path.exists() else []
         attempt = state.get('package_attempts', {}).get(stage)
         events = [e for e in events if attempt and e.get('attempt_id') == attempt
                   and e['stage'] == stage and e['revision'] == state.get('revision', 0)]
-        if stage == 'reuse':
-            _, _, truth = _load_case(options or {})
-            contract = truth['reuse_goal']
-            duties = [e['observation']['duty'] for e in events if e.get('ok') and e.get('observation')]
-            reached = any(abs(d-contract['fraction']) <= contract['tolerance'] for d in duties)
-            disarmed = bool(duties) and abs(duties[-1]-contract['final_fraction']) <= contract['tolerance']
-            temperature_spec = state['probe_evaluation']['capabilities']['temperature']
-            reference = next(c for c in truth['checks'] if c['id'] == 'temperature')
-            readings = [e['result'].get('outputs', {}).get(temperature_spec['output']) for e in events
-                        if e.get('ok') and e['operation'] == temperature_spec['operation']]
-            read_ok = any(type(v) in (int, float) and abs(v-reference['expected']) <= reference['absolute_tolerance'] for v in readings)
-            ok = reached and disarmed and read_ok
-            return {'ok': ok, 'reason': None if ok else 'Fresh package execution did not establish requested output and disarm',
-                    'checks': [{'name': 'fresh_package_temperature', 'passed': read_ok},
-                               {'name': 'fresh_package_requested_output', 'passed': reached},
-                               {'name': 'fresh_package_disarm', 'passed': disarmed}], 'artifacts': [str(events_path)]}
-        from interface_runtime.faults import classify_failure
-        if not state.get('drift_detected'):
-            mismatches = [e for e in events if not e.get('ok') and classify_failure(e.get('result', {})) == 'model'
-                          and e.get('result', {}).get('identity_verified') is False
-                          and any(t.get('rx_hex') for t in e.get('result', {}).get('transcript', []))]
-            ok = bool(mismatches)
-            if ok:
-                state['drift_detected'] = True
-                _write(state_path, state)
-            return {'ok': ok, 'route': 'interpret' if ok else None,
-                    'reason': 'Observed identity drift requires repair' if ok else 'No evidenced identity incompatibility',
-                    'checks': [{'name': 'identity_drift_detected', 'passed': ok}], 'artifacts': [str(events_path)]}
-        ok = bool(events) and events[-1].get('ok') is True
-        if ok:
-            from .emulator import RenodeSession
-            RenodeSession(state['session']).stop()
-        return {'ok': ok, 'reason': None if ok else 'Repaired package was not checked against updated firmware',
-                'checks': [{'name': 'requalified_package_current', 'passed': ok}], 'artifacts': [str(events_path)]}
+        _, _, truth = _load_case(options or {})
+        contract = truth['reuse_goal']
+        successful = [e for e in events if e.get('ok')]
+        duties = [e['observation']['duty'] for e in successful
+                  if isinstance(e.get('observation'), dict) and 'duty' in e['observation']]
+        temperature_spec = state['probe_evaluation']['capabilities']['temperature']
+        reference = next(c for c in truth['checks'] if c['id'] == 'temperature')
+        readings = [e['result'].get('outputs', {}).get(temperature_spec['output']) for e in successful
+                    if e['operation'] == temperature_spec['operation']]
+        import math
+        finite = lambda v: type(v) in (int, float) and math.isfinite(v)
+        reached = any(finite(d) and abs(d-contract['fraction']) <= contract['tolerance'] for d in duties)
+        disarmed = bool(duties) and finite(duties[-1]) and abs(duties[-1]-contract['final_fraction']) <= contract['tolerance']
+        read_ok = any(finite(v) and abs(v-reference['expected']) <= reference['absolute_tolerance'] for v in readings)
+        checks = [{'name': 'fresh_package_temperature', 'passed': read_ok},
+                  {'name': 'fresh_package_requested_output', 'passed': reached},
+                  {'name': 'fresh_package_disarm', 'passed': disarmed}]
+        ok = all(row['passed'] for row in checks)
+        # An observed contradiction is conclusive even if another channel is
+        # missing. Unavailable evidence alone remains recoverable.
+        complete = bool(readings) and bool(duties) and all(finite(d) for d in duties)
+        contradiction = (bool(readings) and not read_ok or
+                         bool(duties) and finite(duties[-1]) and not disarmed)
+        observed = complete or contradiction
+        faults = [e.get('result', {}).get('error', {}).get('fault') or e.get('result', {}).get('fault')
+                  for e in events if not e.get('ok')]
+        # An unrelated call failure cannot erase an independent contradiction.
+        fault = None if ok else ('model' if contradiction else
+                                'operator' if 'operator' in faults else 'host' if 'host' in faults
+                                else 'model' if observed else None)
+        final = observed and fault not in ('host', 'operator')
+        evaluator = {'verdict': 'passed' if ok else 'failed' if final else 'unscored',
+                     'checks': checks, 'fault': fault, 'final_evaluation': final}
+        return {'ok': ok, 'fault': fault, 'final_evaluation': final, 'evaluator': evaluator,
+                'reason': None if ok else 'Fresh package execution did not establish requested output and disarm',
+                'checks': checks, 'artifacts': [str(events_path)]}
     raise ValueError('Benchmark stage is not implemented yet: ' + stage)

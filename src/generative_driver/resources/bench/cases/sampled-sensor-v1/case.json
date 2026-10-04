@@ -2,40 +2,29 @@
   "schema": "benchmark-case/2",
   "id": "sampled-sensor-v1",
   "family": "sampled-sensor",
-  "version": "1",
-  "evaluator_version": "2",
+  "version": "3",
+  "evaluator_version": "3",
   "adapter_key": "emulator-v2",
   "execution": "actual-agent-emulation",
   "evidence_track": "firmware",
   "scope": "full-workflow",
   "scenarios": [
-    "semantic",
-    "control"
+    "original"
   ],
-  "scenario_descriptors": {
-    "semantic": {
-      "kind": "behavior-change"
-    },
-    "control": {
-      "kind": "no-change"
-    }
-  },
   "required_stages": [
     "acquire",
     "interpret",
     "probe",
     "ground",
     "emit",
-    "reuse",
-    "maintain"
+    "reuse"
   ],
   "images": {
-    "firmware.bin": "637370d3d7192a17b6abeb79a3fcbc60ec2f47eb14e199627798756c02bbb1e9",
-    "firmware-drift.bin": "dd13b6d213907f86bd4211bc544e687a8b93a2baecc9a9270113414b2e79b379"
+    "firmware.bin": "637370d3d7192a17b6abeb79a3fcbc60ec2f47eb14e199627798756c02bbb1e9"
   },
   "truth": {
     "path": "groundtruth/sampled-sensor-v1.enc",
-    "sha256": "9dcd2994872606e3d84353ac4235177e46d2e4e0640e2bf1c0ccdc97fa3552e5"
+    "sha256": "3da3bba41709f035722a69344e84472a1bea8584a18dc8fae314653281f65012"
   },
   "default_effects": [
     "write"
@@ -43,24 +32,16 @@
   "approval_scope": "emulator",
   "calibration": {
     "status": "passed",
-    "evidence_sha256": "dffbc4e84fca9c297ea71f179004b83339f041d65f6e60e6d8d42d89a525fbb4",
+    "evidence_sha256": "a129ec3de81d994999a3e35423d084de7e625d5b12a97a8585757d6bb31fe615",
     "input_hashes": {
       "source": "22db46bf51be6ec5fdd141211385ac88b48eaa825527130fb00af1bc8cbc5918",
-      "contract": "3b5a5c5a3d35f0a1bc6cdb4979c77efe7d4e537abad1d4920a46406b30c3e97b",
+      "contract": "26cb998bce5fd42e0c8497312546951adc3dfa75d2ab8956ea8bba2ae4397065",
       "recipe": "e8b105d2b902b7eacbfc2d8ea5e8bca6d8141555c7035948394238e7cbb08975",
       "references": "986ae98aeddda6e36a16aaafb35f680d04ee303b80be1391483f4416ca048141",
-      "mutations": "8f742280bcda61215272d0935bf6723140675013222e5730341b17889c3a39d8",
-      "build": "0b0193d940812cf01dea1671bd67cd9d379753d6ff2403932783b1cecdb940a0",
-      "inventory": "6838144975dcf858b900c19d57f56fcd15013d59802d8f28cf38069dfd3ccc7b"
-    },
-    "execution": "reference-calibration",
-    "backend": "native-renode",
-    "references": 2,
-    "reference_runs": 8,
-    "mutants": 5,
-    "measured_source_revision": "3116da958bd430b3322c74c1555a0c620e18eaa2",
-    "native_runs": 13,
-    "observed_platform": "macOS arm64"
+      "mutations": "3d5bc20a38aae7399e49e48dbbd6c3a4909cfb64fd3601f2aee5888c41fd47ff",
+      "build": "860fa0f6d6153f4b30bbec9c77a7c0fa8e24ef5bfb6b391196449751b956d4cf",
+      "inventory": "d5f31d2f597d758b0a0115b03868b9fe7b8f15590c2f432f018b85445d685897"
+    }
   },
   "provenance": {
     "source": "Independently authored family firmware",

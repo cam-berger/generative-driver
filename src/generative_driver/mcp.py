@@ -26,7 +26,7 @@ def driver_start(goal: str, executor: str = "codex", inputs: dict | None = None,
                  binding: dict | None = None, effects: list[str] | None = None,
                  budget_seconds: int = 10800, request_id: str | None = None,
                  scoped_tool_approval: Literal["bound-device"] | None = None) -> str:
-    """Start a durable seven-stage run using a configured runtime. Save the returned run_id.
+    """Start a durable six-stage run using a configured runtime. Save the returned run_id.
     Supply explicit inputs and operator binding; effects default to read. request_id deduplicates starts.
     Set bound-device approval only with the user's explicit consent to assigned tools for that binding/effect scope.
     """

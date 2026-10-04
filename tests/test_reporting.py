@@ -31,7 +31,7 @@ class ReportTests(unittest.TestCase):
                  "physical_grounding": {"observations": {"temperature_c": 22.3}, "physical": True}}
         report = summarize(result, [], case_state=state)
         self.assertEqual(report["case_state"]["probe_evaluation"]["observations"], {"temperature": 22.3})
-        self.assertTrue(report["case_state"]["drift_detected"])
+        self.assertNotIn("drift_detected", report["case_state"])
         self.assertEqual(report["case_state"]["physical_grounding"], state["physical_grounding"])
         self.assertNotIn("excluded", json.dumps(report))
 
@@ -63,7 +63,7 @@ class ReportTests(unittest.TestCase):
         from generative_driver.reporting import summarize
         result = {"run_id": "example", "status": "completed", "created": 0, "updated": 1,
                   "worker_reports": [], "accepted_handoffs": [], "evaluator_verdicts": []}
-        stages = ["acquire", "interpret", "probe", "ground", "emit", "reuse", "maintain"]
+        stages = ["acquire", "interpret", "probe", "ground", "emit", "reuse"]
         state = {"stage_verdicts": {s: {"status": "passed"} for s in stages}}
         manifest = {"required_stages": stages, "execution": "actual-agent-emulation"}
         self.assertEqual(summarize(result, [], case_manifest=manifest, case_state=state)["verdict"], "unscored")
@@ -155,15 +155,47 @@ class ReportTests(unittest.TestCase):
                     manifest_path.write_text(json.dumps(manifest))
                     with patch('generative_driver.client.call', side_effect=lambda method, params, **kwargs: controller.call(method, params)), patch('generative_driver.reporting._tree_hash', return_value='exporter-new'):
                         report = report_run(run['run_id'], home=root / 'home')
-                    self.assertEqual(report['case_version'], '1')
-                    self.assertEqual(report['evaluator_version'], '1')
+                    self.assertEqual(report['case_version'], '2')
+                    self.assertEqual(report['evaluator_version'], '2')
                     self.assertEqual(report['execution'], 'actual-agent-emulation')
                     self.assertEqual(report['snapshot_sha256'], saved['snapshot_sha256'])
                     self.assertEqual(report['toolchain_revision'], saved['executed']['toolchain_revision'])
                     self.assertEqual(report['evaluator_revision'], saved['executed']['evaluator_revision'])
                     self.assertEqual(report['case_pin'], saved['case_pin'])
-                    self.assertEqual(report['scenario_id'], 'identity')
+                    self.assertEqual(report['scenario_id'], 'original')
                     self.assertEqual(report['case_seed'], 0)
                     self.assertNotIn('exporting installation', report['provenance_meaning']['toolchain_revision'])
                 finally:
                     controller.close()
+
+class FreshReuseReportTests(unittest.TestCase):
+    def completed(self, stages):
+        return {'run_id': 'scripted', 'status': 'completed', 'created': 0, 'updated': 1,
+                'worker_reports': [{'stage': s, 'assignment_id': s, 'status': 'completed'} for s in stages],
+                'accepted_handoffs': [{'stage': s, 'assignment_id': s} for s in stages]}
+
+    def test_complete_six_gate_report_is_passed_and_has_no_cycle_limits(self):
+        # Catches requiring an obsolete seventh gate after accepted fresh reuse.
+        from generative_driver.reporting import summarize
+        stages = ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse']
+        report = summarize(self.completed(stages), [],
+            case_manifest={'required_stages': stages},
+            case_state={'stage_verdicts': {s: {'status': 'passed'} for s in stages}},
+            provenance={'attempt_limits': {'max_model_repairs': 2, 'max_maintenance_cycles': 1}})
+        self.assertEqual(report['verdict'], 'passed')
+        self.assertEqual(list(report['stages']), stages)
+        self.assertEqual(report['attempt_limits'], {'max_model_repairs': 2})
+        from generative_driver.benchmark_support.evidence import public_v2_report
+        self.assertEqual(public_v2_report(report)['attempt_limits'], {'max_model_repairs': 2})
+
+    def test_historical_completed_report_cannot_pass_as_six_gate_workflow(self):
+        # Catches silently recasting historical measured successes or a partial gate list.
+        from generative_driver.reporting import summarize
+        six = ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse']
+        for stages in (six + ['maintain'], six[:-1]):
+            with self.subTest(stages=stages):
+                report = summarize(self.completed(stages), [],
+                    case_manifest={'required_stages': stages},
+                    case_state={'stage_verdicts': {s: {'status': 'passed'} for s in stages}})
+                self.assertEqual(report['verdict'], 'incompatible')
+                self.assertIn('Unsupported', report['reason'])

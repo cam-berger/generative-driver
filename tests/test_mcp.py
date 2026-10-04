@@ -326,13 +326,16 @@ class McpTests(unittest.TestCase):
                     "executor_config": {"command": [sys.executable, "-c", "import time; time.sleep(20)"]}}, home=temp)
                 deadline = time.monotonic() + 5
                 assignment = None
+                state = {}
                 while time.monotonic() < deadline:
                     events = call("events", started, home=temp)["events"]
                     assignment = next((e["data"] for e in events if e["kind"] == "stage.assigned"), None)
-                    if assignment:
+                    state = call("status", started, home=temp)
+                    if assignment and (state["status"], state["stage"]) == ("running", "acquire"):
                         break
                     await asyncio.sleep(.02)
                 self.assertIsNotNone(assignment)
+                self.assertEqual((state.get("status"), state.get("stage")), ("running", "acquire"), state)
                 params = StdioServerParameters(command=sys.executable,
                     args=["-m", "generative_driver.worker_tools", "--home", temp,
                           "--run", started["run_id"], "--assignment", assignment["id"]], cwd=temp)

@@ -381,10 +381,14 @@ class DelayedOperationTests(unittest.TestCase):
                     suite=owner.call('suite_start',{'manifest':legacy_manifest(2)})
                     state=wait_owner_suite(owner,suite['suite_id'],lambda s:bool(s['active_child_id']))
                     run={'run_id':state['active_child_id']}
-                    deadline=time.monotonic()+5;assignments=[]
-                    while not assignments and time.monotonic()<deadline:
+                    deadline=time.monotonic()+5;assignments=[];child_state={}
+                    while time.monotonic()<deadline:
                         assignments=[e['data'] for e in owner.call('events',run)['events'] if e['kind']=='stage.assigned']
-                        if not assignments:time.sleep(.01)
+                        child_state=owner.call('status',run)
+                        if assignments and (child_state['status'],child_state['stage'])==('running','acquire'):break
+                        time.sleep(.01)
+                    self.assertTrue(assignments)
+                    self.assertEqual((child_state.get('status'),child_state.get('stage')),('running','acquire'),child_state)
                     assignment=assignments[0]
                     # Public toy assignment fixture reaches the real managed TCP path
                     # without passing the scored legacy interpretation gate or any emulator.

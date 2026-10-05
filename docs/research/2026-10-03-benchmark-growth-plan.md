@@ -6,7 +6,7 @@ Date: 2026-10-03. Status: proposed research and implementation roadmap. Baseline
 
 Keep the small benchmark as a development and evaluator-calibration suite. Grow first to 12 distinct firmware lineages, then reserve 30 additional lineages for a first comparative study. Target 100 admitted lineages and approximately 200 mission cases for the larger release, subject to intake yield, pilot variance and execution cost. Count independent implementations separately from missions and repetitions.
 
-The endpoint implemented in PR #1 follows the [fresh reuse specification](../superpowers/specs/2026-10-03-reuse-endpoint.md): acquire → interpret → probe → ground → emit → reuse, on a stable firmware image. Keep this endpoint and its qualification as the foundation for expansion. The earlier seven-scenario implementation is historical; its maintenance scenarios do not define the expanded benchmark.
+The endpoint implemented in PR #1 follows the [fresh reuse specification](../superpowers/specs/2026-10-03-reuse-endpoint.md): acquire → interpret → probe → ground → emit → reuse, on a stable firmware image. Keep this endpoint and its qualification as the foundation for expansion.
 
 Research question: **Given an unfamiliar, supplied microcontroller firmware image and a device objective, how reliably and efficiently can a configured agent system recover a behaviorally correct interface that a fresh agent can use?** Initially, “acquire” means importing the supplied binary. Reading firmware from an attached chip requires a separate acquisition study.
 

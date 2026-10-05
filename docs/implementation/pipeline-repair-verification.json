@@ -1,0 +1,37 @@
+{
+  "schema": "pipeline-repair-verification/1",
+  "frozen_revision": "9929e3053135257cd8f9940bd2cb5a4709397d49",
+  "model": "gpt-6.1-sol",
+  "reasoning_effort": "medium",
+  "planned_slots": 3,
+  "qualified_autonomous_completions": 0,
+  "final_evaluations_reached": 0,
+  "usage_total_tokens": 5370817,
+  "usage_worker_coverage": {
+    "reported": 17,
+    "total": 17
+  },
+  "managed_operations": 98,
+  "managed_operations_finished": 98,
+  "cleanup_only_confirmations": 1,
+  "resumptions_after_cleanup_confirmation": 0,
+  "suite_minutes_through_last_outcome": 56.1,
+  "suite_minutes_through_cleanup_confirmation": 62.4,
+  "source_follow_up_tests": {
+    "count": 432,
+    "passed": true,
+    "archive_skips": 3
+  },
+  "retained_evidence_sha256": {
+    "results.json": "717b409d9018e1b477cdcffc5de022f8c07469aaf51612d9d180bf1bb9cac4ef",
+    "postflight.json": "f5c71c32f1268ca81385f758f2ebdc81b54469ce868a6e3d9f571b941c922156",
+    "final-measurement-review.md": "8daf9e7b863cce9f3e4559c009338e908ef8cdadab795c8d8dc021cf838749e2",
+    "final-execution-review.md": "58756efd0548404c5590c11ae5f70f8cddf4d2d8b7d858096adb1db2d7befab9",
+    "capability-code-review.md": "114a4cecb0be9ec829800ceb68a3e7de40c68179fd91218a12496285ac632571",
+    "refusal-code-review.md": "28eed3b252d20b82cf6f7552f350ce8931e2a251896fde7b9be6c3e5cdd2c130",
+    "cleanup-snapshot-review.md": "4f3375a30dd1a91f3452c7657570ff19bd88e568445769b71240c2d957198921",
+    "cleanup-snapshot-red.log": "b9300fd8b65085eed5ea6697590dee87da733c5a83f31671325af4ccd74424e9",
+    "cleanup-snapshot-green.log": "601db28daa22b27e6cff503fa54386d6eb1a47a2788028a1fb60ea51c9ce20f3",
+    "final-source-tests.log": "fa3fd49a88147cb46a9920c1c3c8215914d0dcfe8b62b378ee438167d83490a0"
+  }
+}

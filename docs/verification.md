@@ -2,6 +2,10 @@
 
 All workflows end at acquire, interpret, probe, ground, emit, reuse. Scripted tests, installation replay, native reference qualification, model execution and physical observations retain separate labels.
 
+## Pipeline repair — 2026-10-05
+
+The [three-family report](research/2026-10-05-pipeline-repair-results.md) preserves two unsuccessful same-model feasibility experiments. The first pipeline repair made installed analysis usable and reached probing on all three families, but completed 0/3 reuse workflows. Recorded outcomes and independent encrypted-evidence regrades agree. The [verification index](implementation/pipeline-repair-verification.json) records selected measurements and retained log hashes. Subsequent corrections add candidate-only capability validation, actionable mapping feedback, pre-transport refusal classification and atomic cleanup status. Their source suite passes 432 tests with three release-archive gates deferred to installed verification. Model outcomes belong to their frozen implementation; passing software tests do not establish model success.
+
 ## PR #1 follow-up — 2026-10-03
 
 The [review](research/2026-10-03-pr1-review.md) found an offline historical-scoring defect and an existing Windows checkout defect. The follow-up rejects incompatible historical evidence and preserves the bytes hashed by benchmark manifests and evaluator identities.

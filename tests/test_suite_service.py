@@ -425,6 +425,36 @@ class DelayedOperationTests(unittest.TestCase):
 
 
 class CleanupFailureTests(unittest.TestCase):
+    def test_status_does_not_mix_pre_cleanup_row_with_stopped_worker(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as home:
+            owner,suite,child=self._stopped_suite_at_completion(home)
+            try:
+                owner._state(child,'completed','Fixture completed before cleanup')
+                original_row=owner._row
+                transitioned=False
+                def cleanup_between_reads(run_id):
+                    nonlocal transitioned
+                    row=original_row(run_id)
+                    if run_id==child and not transitioned:
+                        transitioned=True
+                        # A cleanup failure can occur after an unlocked database
+                        # read but before status inspects worker ownership.
+                        with owner._lock:
+                            with owner._db() as db:
+                                db.execute('UPDATE runs SET uncertain=1 WHERE id=?',(child,))
+                            owner._state(child,'blocked','Fixture cleanup failed',outcome_category='host')
+                            owner._workers.pop(child,None)
+                    return row
+                with patch.object(owner,'_row',side_effect=cleanup_between_reads):
+                    status=owner.call('status',{'run_id':child})
+                self.assertEqual(status['status'],'blocked')
+                self.assertTrue(status['uncertain_effect'])
+                self.assertFalse(status['stopping'])
+                from generative_driver.benchmark_support.suites import child_disposition
+                self.assertEqual(child_disposition(status),'block')
+            finally:owner.close()
+
     def _stopped_suite_at_completion(self, home):
         """Public durable queue fixture; exercises cleanup, not six-stage grading."""
         from generative_driver.configurator import Controller

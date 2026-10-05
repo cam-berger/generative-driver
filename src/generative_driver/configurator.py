@@ -281,9 +281,12 @@ class Controller:
                     return self._tool(method, params, self._row(run_id))
         if method == 'status':
             with self._lock:
+                # Cleanup updates the durable outcome and worker ownership under
+                # this lock. Read both together before a suite may settle a child.
+                row = self._row(run_id)
                 stopping = row['status'] in TERMINAL and (run_id in self._workers or run_id in self._inflight)
-            return {'ok': True, **{k: row[k] for k in ('status', 'stage', 'reason', 'created', 'updated', 'outcome_category')},
-                    'run_id': run_id, 'uncertain_effect': bool(row['uncertain']), 'stopping': stopping}
+                return {'ok': True, **{k: row[k] for k in ('status', 'stage', 'reason', 'created', 'updated', 'outcome_category')},
+                        'run_id': run_id, 'uncertain_effect': bool(row['uncertain']), 'stopping': stopping}
         if method == 'events':
             with self._db() as db:
                 events = db.execute('SELECT * FROM events WHERE run_id=? AND seq>? ORDER BY seq LIMIT 500',
@@ -1273,7 +1276,14 @@ class Controller:
         with self._db() as db:
             cancelled = db.execute('SELECT cancelled FROM runs WHERE id=?',(run['id'],)).fetchone()['cancelled']
             success = result.get('_exit',0)==0 and bool(result.get('ok',result.get('available',True)))
-            if effectful and not cancelled and success:
+            # A trusted runtime preflight refusal never attempted to open the device.
+            # Empty transcripts alone cannot establish this: opening may itself reset it.
+            executions = result.get('results') if name == 'probe_run' else [result]
+            refused_before_open = (name in ('interface_execute', 'probe_run', 'benchmark_package_execute')
+                and type(executions) is list and bool(executions)
+                and all(type(item) is dict and item.get('schema') == 'interface-result/1'
+                        and item.get('transport_open_attempted') is False for item in executions))
+            if effectful and not cancelled and (success or refused_before_open):
                 db.execute('UPDATE runs SET uncertain=0 WHERE id=?',(run['id'],))
             evidence_id = self._event(run['id'], 'tool.finished', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'ok':success,'result':result,'artifacts':observed_artifacts,
                 'actor':'evaluator' if evaluator_workspace is not None else 'worker'}, db)

@@ -20,6 +20,52 @@ def family_for(case_id):
     return families[case_id]
 
 
+def _required_tasks(case_id):
+    return {'tq9-v2': ('temperature', 'arm', 'set_duty', 'disarm'),
+            'sampled-sensor-v1': ('measure', 'read'),
+            'parameter-store-v1': ('read', 'update', 'stage', 'commit', 'abort')}[case_id]
+
+
+def _capability_guidance(workspace, case_id):
+    from . import capabilities
+    rules = workspace/'_capability_rules.py'
+    shutil.copyfile(capabilities.__file__, rules)
+    helper = workspace/'validate_capabilities.py'
+    helper.write_text('''import json, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _capability_rules import validate_capabilities
+model = json.loads((Path(sys.argv[1])/'model.json').read_text(encoding='utf-8'))
+try:
+    mapping = json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))
+except (ValueError, UnicodeError):
+    result = {'ok': False, 'errors': [{'fault': 'model', 'code': 'capability_mapping',
+        'path': 'capabilities.json', 'message': 'Capability file must contain valid UTF-8 JSON'}]}
+else:
+    result = validate_capabilities(mapping, model, ''' + repr(_required_tasks(case_id)) + ''')
+print(json.dumps(result, allow_nan=False))
+sys.exit(0 if result['ok'] else 1)
+''', encoding='utf-8')
+    guide = workspace/'CAPABILITY_FORMAT.md'
+    guide.write_text('''# Capability mapping format
+
+Declare schema `benchmark-capabilities/2` and a `tasks` object. Every task has `operation`, `constants`, `inputs` and `outputs`; use empty objects when there are none. Operation, parameter and output names must refer to your candidate model. Constants and mapped inputs cover every operation parameter exactly once.
+
+Copy an input with `{"parameter": "candidate_parameter", "kind": "copy"}`. Numeric conversion uses `{"parameter": "candidate_parameter", "kind": "affine", "scale": 1, "offset": 0}`. `mapping` is not the selector key. Affine conversion is canonical input * scale + offset, checked against the candidate type and bounds.
+
+Map an output with `{"output": "candidate_output", "unit": "candidate_unit"}`. Always include `unit`; use JSON `null` when the candidate output has no unit. This field must agree with the candidate model. Canonical physical units still need to match the public task objective. An operation with only acknowledgment text can use empty outputs when no canonical output is requested.
+
+Example shape, using placeholder names rather than inferred device facts:
+
+```json
+{"schema":"benchmark-capabilities/2","tasks":{"task_name":{"operation":"candidate_operation","constants":{},"inputs":{"canonical_input":{"parameter":"candidate_parameter","kind":"copy"}},"outputs":{"canonical_output":{"output":"candidate_output","unit":null}}}}}
+```
+
+Run `python validate_capabilities.py <absolute-model-directory> <absolute-capabilities-json>` before submitting. This pure check uses the same binding rules as the controller, without a device or evaluator answer key. Correct capability-file errors here; report `needs_revision` if the immutable model itself needs repair. Do not edit the supplied validator or rules. A passed mapping check establishes structure, not functional behavior.
+''', encoding='utf-8')
+    return [str(helper), str(rules), str(guide)]
+
+
 def _inputs(case_id, run_dir):
     if (Path(run_dir)/'benchmark/execution.json').exists():
         saved = read_snapshot(run_dir)
@@ -64,18 +110,21 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         path, state = _state(run_dir)
         state.update(adaptation=adaptation, adapted_model_dir=str(ws/'model'), revision=int(options.get('revision', state.get('revision', 0))))
         _write(path, state)
+        guidance = _capability_guidance(ws, case_id)
         objective = 'Test the supplied immutable model over the emulator binding. Write capabilities.json with schema benchmark-capabilities/2 and tasks temperature, arm, set_duty, disarm. Each task has operation, constants, inputs and outputs. Map canonical set_duty input duty (permille) with copy or affine parameter mapping. Map canonical temperature output to its candidate output and declared unit. Report unsupported capabilities honestly.'
         if case_id == 'sampled-sensor-v1':
             objective = 'Test the supplied model over the emulator binding. Write benchmark-capabilities/2 tasks measure and read, mapping temperature (degC) and sequence (count) outputs. Measure performs a new acquisition; read returns the current sample. Report unsupported capabilities honestly.'
         elif case_id == 'parameter-store-v1':
             objective = 'Test the supplied model over the emulator binding. Write benchmark-capabilities/2 tasks read, update, stage, commit and abort. Read takes bank and slot and maps value (configuration-unit). Update and stage take bank, slot and value; commit and abort have no inputs. Every task declares operation, constants, inputs and outputs.'
-        objective += (' Live interface_execute and probe_run results include before_observation and observation '
+        objective += (' Read CAPABILITY_FORMAT.md and run validate_capabilities.py with the supplied model directory '
+            'and your capabilities.json. Correct mapping errors before submission. '
+            'Live interface_execute and probe_run results include before_observation and observation '
             'from an independent monitor, with units. Compare those measured references and effects with your '
             'decoded outputs. Preserve capabilities.json even when incomplete; report needs_revision and the '
             'observed discrepancy if the immutable model needs repair. Do not invent unsupported units or '
             'change the model here. The configurator checks diagnostics and sends feedback to a new interpret agent.')
         return {'objective': objective,
-                'inputs': [str(ws/'model/model.json'), str(ws/'model/adaptation.json')],
+                'inputs': [str(ws/'model/model.json'), str(ws/'model/adaptation.json'), *guidance],
                 'context': {'model_dir': str(ws/'model'), 'capabilities_output': str(ws/'capabilities.json')},
                 'allowed_tools': ['interface_describe', 'interface_execute', 'probe_run', 'probe_diff', 'model_validate'],
                 'binding': session.binding, 'effects': ['write', 'actuate']}
@@ -204,6 +253,12 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
             return {'ok': False, 'fault': 'model', 'route': 'interpret', 'checks': [], 'artifacts': [],
                     'reason': 'Invalid capability JSON',
                     'feedback': {'missing': ['valid capabilities.json'], 'unresolved': (report or {}).get('unresolved', [])}}
+        from .behavior import validate_capabilities
+        validation = validate_capabilities(mapping, json.loads(model.read_text(encoding='utf-8')), _required_tasks(case_id))
+        if not validation['ok']:
+            return {'ok': False, 'fault': 'model', 'route': 'interpret', 'checks': [], 'artifacts': [],
+                    'reason': 'Invalid capability mapping',
+                    'feedback': {'capability_errors': validation['errors']}}
         grade, records, probes, observed = _diagnose(case_id, run_dir, model.parent, mapping, options or {})
         from .behavior import project_feedback
         ok = grade['verdict'] == 'passed'

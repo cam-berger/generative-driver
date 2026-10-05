@@ -230,7 +230,7 @@ class TQ9V2Tests(unittest.TestCase):
         from generative_driver.configurator import Controller
         from tq9_workflow_fixture import Silicon, WORKER
         from suite_fixtures import public_case_fixture
-        for mode in ('normal','repair-mapping','hidden-wrong','missing-mission','monitor-missing','snapshot-next'):
+        for mode in ('normal','rejected-write','repair-mapping','hidden-wrong','missing-mission','monitor-missing','snapshot-next'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
                 root=Path(temp); resources=root/'resources'
                 manifest=public_case_fixture(resources,calibration={'status':'pending'})
@@ -266,6 +266,9 @@ class TQ9V2Tests(unittest.TestCase):
                 source=WORKER.replace('PACKAGE_PARENT',repr(str(Path(generative_driver.__file__).resolve().parents[1])))\
                     .replace('FIXTURE_PARENT',repr(str(Path(__file__).parent))).replace('SERVICE_URL',repr('http://127.0.0.1:'+str(server.server_port)))
                 if mode=='missing-mission':source=source.replace("('set_duty',{'duty':370}),",'')
+                if mode=='rejected-write':
+                    source=source.replace("'operation':'measure','parameters':{'unexpected':1}",
+                                          "'operation':'set_duty','parameters':{'unexpected':1}")
                 if mode=='repair-mapping':
                     source=source.replace("pathlib.Path('capabilities.json').write_text(json.dumps(capabilities()))",
                         "mapping=capabilities()\n    marker=pathlib.Path("+repr(str(root/'first-probe'))+")\n"
@@ -301,7 +304,7 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertNotIn('EVALUATOR SENTINEL',json.dumps(assignments))
                         self.assertNotIn('maintain',[a['stage'] for a in assignments])
                         self.assertNotIn('maintenance_cycles',result['progress'])
-                        if mode not in ('normal','repair-mapping'):
+                        if mode not in ('normal','rejected-write','repair-mapping'):
                             self.assertNotEqual(status['status'],'completed')
                             if mode=='hidden-wrong':
                                 self.assertTrue(result['progress']['terminal_final_failure'])
@@ -317,7 +320,8 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertEqual(result['progress']['repairs'],1)
                             feedback=next(a for a in assignments if a['stage']=='interpret' and a['revision']==1)
                             defects=json.loads((Path(feedback['workspace'])/'DEFECTS.json').read_text())
-                            self.assertTrue(any(r.get('passed') is False for r in defects['records']))
+                            self.assertTrue(any(error['path'] == 'tasks.temperature'
+                                                for error in defects['capability_errors']))
                         self.assertEqual([a['stage'] for a in assignments],expected)
                         self.assertEqual(len(peers),1)
                         self.assertEqual([entry[1] for entry in worker_live],[False,True,True]*(2 if mode=='repair-mapping' else 1))

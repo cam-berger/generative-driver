@@ -12,6 +12,37 @@ from generative_driver.benchmark import prepare_stage, check_stage
 
 
 class InterpretationBindingTests(unittest.TestCase):
+    def test_probe_supplies_executable_capability_validation_before_submission(self):
+        from tq9_workflow_fixture import model, capabilities
+        from generative_driver.configurator import digest
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); source = root/'original'; source.mkdir()
+            (source/'model.json').write_text(json.dumps(model()))
+            handoff = [{'stage': 'interpret', 'artifacts': [
+                {'path': str(source/'model.json'), 'sha256': digest(source/'model.json')}]}]
+            with patch('generative_driver.benchmark_support.emulated._session',
+                       return_value=SimpleNamespace(binding={'host': '127.0.0.1', 'port': 1})):
+                prepared = prepare_stage('tq9-v2', 'probe', root/'run', root/'worker', handoff)
+            ws = root/'worker'
+            helper = ws/'validate_capabilities.py'
+            self.assertTrue(helper.is_file(), 'Probe has no pure capability validator')
+            self.assertTrue((ws/'CAPABILITY_FORMAT.md').is_file())
+            self.assertIn(str(helper.resolve()), prepared['inputs'])
+            self.assertIn('validate_capabilities.py', prepared['objective'])
+            mapping = capabilities()
+            del mapping['tasks']['set_duty']['inputs']['duty']['kind']
+            mapping['tasks']['set_duty']['inputs']['duty']['mapping'] = 'copy'
+            (ws/'capabilities.json').write_text(json.dumps(mapping))
+            command = [sys.executable, str(helper), str(ws/'model'), str(ws/'capabilities.json')]
+            bad = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertEqual(json.loads(bad.stdout)['errors'][0]['path'], 'tasks.set_duty.inputs.duty.kind')
+            (ws/'capabilities.json').write_text(json.dumps(capabilities()))
+            good = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            self.assertEqual(good.returncode, 0, good.stdout + good.stderr)
+            self.assertTrue(json.loads(good.stdout)['ok'])
+
     def test_supplied_emulator_wiring_allows_qualification_without_inventing_uart_baud(self):
         # Catches requiring an unknown physical baud before testing recovered bytes.
         from tq9_workflow_fixture import model, replies
@@ -42,6 +73,22 @@ class InterpretationBindingTests(unittest.TestCase):
 
 
 class IndependentProbeObservationTests(unittest.TestCase):
+    def test_preflight_refusal_is_distinct_from_attempting_to_open_a_transport(self):
+        from tq9_workflow_fixture import model
+        from interface_runtime.engine import execute
+        from unittest.mock import Mock
+        opening = Mock(side_effect=OSError('synthetic opening failure'))
+        refused = execute(model(), 'set_duty', {'unexpected': 1}, allow_effects=['actuate'],
+                          transport_factory=opening)
+        opening.assert_not_called()
+        self.assertFalse(refused['ok'])
+        self.assertIs(refused['transport_open_attempted'], False)
+        uncertain = execute(model(), 'set_duty', {'duty': 5}, allow_effects=['actuate'],
+                            transport_factory=opening)
+        opening.assert_called_once()
+        self.assertFalse(uncertain['ok'])
+        self.assertIs(uncertain['transport_open_attempted'], True)
+
     def test_live_probe_returns_measured_reference_to_compare_with_candidate_decoder(self):
         # Catches probing bytes without exposing the independent observation channel.
         from tq9_workflow_fixture import Silicon, model
@@ -78,6 +125,94 @@ class IndependentProbeObservationTests(unittest.TestCase):
 
 
 class DiagnosticRepairTests(unittest.TestCase):
+    def test_binding_bounds_errors_reach_repair_without_disclosing_evaluator_inputs(self):
+        from tq9_workflow_fixture import model, capabilities
+        from generative_driver.benchmark_support.behavior import project_feedback, validate_records
+        from generative_driver.benchmark_support.emulated_actions import execute_plan, model_invoker
+        class Session:
+            def set_running(self, value):
+                self.running = value
+            def observe(self):
+                return {'duty': 0}
+        def observations(raw, result, inputs):
+            return raw
+        observations.monitor_units = {'duty': 'permille'}
+        contract = {'schema': 'benchmark-behavior/1', 'artifact_sha256': 'a'*64, 'checks': [
+            {'id': 'diagnostic/write/duty', 'revision': 0, 'kind': 'number', 'expected': 700,
+             'absolute_tolerance': 0, 'unit': 'permille', 'channel': 'independent-monitor'}]}
+        plan = [{'kind': 'call', 'task': 'set_duty', 'inputs': {'duty': 700}, 'grants': ['actuate']},
+                {'kind': 'observe', 'checks': ['diagnostic/write/duty']}]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            candidate = model(); candidate['operations']['set_duty']['parameters']['duty']['maximum'] = 100
+            (root/'model.json').write_text(json.dumps(candidate))
+            session = Session()
+            with patch('generative_driver.toolkit.call_tool') as dispatch:
+                invoke = model_invoker(root, capabilities(), {}, root/'tools', [])
+                records = execute_plan(session, invoke, plan, contract, root/'evidence.json', observations)
+            dispatch.assert_not_called()
+            self.assertFalse(session.running)
+            feedback = project_feedback(records, validate_records(contract, records))
+            error = feedback['capability_errors'][0]
+            self.assertEqual(error['task'], 'set_duty')
+            self.assertEqual(error['code'], 'capability_mapping')
+            self.assertIn('bounds', error['message'])
+            for forbidden in ('700', 'expected', 'tolerance', str(root), 'password'):
+                self.assertNotIn(forbidden, json.dumps(feedback))
+
+    def test_malformed_mapping_targets_remain_candidate_errors(self):
+        from tq9_workflow_fixture import model, capabilities
+        from generative_driver.benchmark_support.behavior import validate_capabilities
+        mapping = capabilities()
+        mapping['tasks']['set_duty']['inputs']['duty']['parameter'] = {'wrong': 'shape'}
+        mapping['tasks']['temperature']['outputs']['temperature']['output'] = ['wrong', 'shape']
+        checked = validate_capabilities(mapping, model())
+        self.assertFalse(checked['ok'])
+        self.assertIn('tasks.set_duty.inputs.duty.parameter', {e['path'] for e in checked['errors']})
+        self.assertIn('tasks.temperature.outputs.temperature.output', {e['path'] for e in checked['errors']})
+
+    def test_capability_schema_failures_are_actionable_before_any_device_dispatch(self):
+        # Reproduces the live repair's wrong copy key and missing unit metadata.
+        from tq9_workflow_fixture import model
+        from generative_driver.benchmark_support.behavior import bind_task, validate_capabilities
+        from generative_driver.benchmark_support.cases import _write
+        from hashlib import sha256
+        candidate = model()
+        candidate['operations']['measure']['outputs']['temperature']['unit'] = 'degC'
+        capabilities = {'schema': 'benchmark-capabilities/2', 'tasks': {
+            'temperature': {'operation': 'measure', 'constants': {}, 'inputs': {},
+                'outputs': {'temperature': {'output': 'temperature'}}},
+            'set_duty': {'operation': 'set_duty', 'constants': {},
+                'inputs': {'duty': {'parameter': 'duty', 'mapping': 'copy'}}, 'outputs': {}}}}
+        checked = validate_capabilities(capabilities, candidate)
+        self.assertFalse(checked['ok'])
+        self.assertEqual({error['path'] for error in checked['errors']},
+            {'tasks.temperature.outputs.temperature.unit', 'tasks.set_duty.inputs.duty.kind'})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); ws = root/'worker'; ws.mkdir()
+            model_dir = root/'model'; model_dir.mkdir()
+            raw = json.dumps(candidate).encode()
+            (model_dir/'model.json').write_bytes(raw)
+            (ws/'capabilities.json').write_text(json.dumps(capabilities))
+            _write(root/'run/benchmark/state.json', {'adapted_model_dir': str(model_dir),
+                'adaptation': {'adapted_model_sha256': sha256(raw).hexdigest()}})
+            with patch('generative_driver.benchmark_support.emulated._diagnose') as dispatch:
+                result = check_stage('tq9-v2', 'probe', root/'run', ws, {'status': 'completed'})
+            dispatch.assert_not_called()
+            self.assertEqual(result['fault'], 'model')
+            self.assertEqual(result['route'], 'interpret')
+            errors = result['feedback']['capability_errors']
+            self.assertTrue(all(error['code'] == 'capability_mapping' for error in errors))
+            self.assertIn('kind', json.dumps(errors))
+            self.assertIn('unit', json.dumps(errors))
+            for forbidden in ('expected', 'tolerance', str(root), 'password'):
+                self.assertNotIn(forbidden, json.dumps(errors))
+        capabilities['tasks']['temperature']['outputs']['temperature']['unit'] = 'degC'
+        capabilities['tasks']['set_duty']['inputs']['duty'] = {'parameter': 'duty', 'kind': 'copy'}
+        self.assertTrue(validate_capabilities(capabilities, candidate)['ok'])
+        self.assertEqual(bind_task(capabilities, 'set_duty', {'duty': 500}, candidate),
+            {'operation': 'set_duty', 'parameters': {'duty': 500}})
+
     def test_malformed_candidate_capabilities_route_to_model_repair(self):
         # Catches candidate JSON syntax escaping as a host/evaluator failure.
         from generative_driver.benchmark_support.cases import _write

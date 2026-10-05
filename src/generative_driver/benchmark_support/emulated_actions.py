@@ -52,9 +52,13 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
                         value = result.get('ok') is True
                     else:
                         value = measured.get(suffix)
-                    records.append({'id': identifier, 'task_id': suffix, 'revision': check['revision'],
+                    record = {'id': identifier, 'task_id': suffix, 'revision': check['revision'],
                         'artifact_sha256': contract['artifact_sha256'], 'channel': check['channel'],
-                        'value': value, 'unit': units.get(suffix)})
+                        'value': value, 'unit': units.get(suffix)}
+                    error = result.get('error', {})
+                    if error.get('fault') == 'model' and error.get('code') == 'capability_mapping':
+                        record['capability_error'] = error
+                    records.append(record)
             else:
                 raise ValueError('Unknown evaluator action')
             raw_events.append(event)
@@ -78,7 +82,7 @@ def model_invoker(model_dir, capabilities, binding, output_dir, probes):
             request = bind_task(capabilities, task, inputs, model)
         except ValueError as error:
             return {'ok': False, 'error': {'fault': 'model', 'code': 'capability_mapping',
-                                         'message': str(error)},
+                                         'task': task, 'message': str(error)},
                     'outputs': {}, 'units': {}, 'transcript': []}
         probed = call_tool('probe_run', {'run_dir': str(output_dir), 'model_dir': str(model_dir),
             **request, 'n': 1, 'binding': binding, 'allow_effects': grants})

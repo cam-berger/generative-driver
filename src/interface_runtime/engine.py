@@ -715,11 +715,13 @@ def execute(model, operation, parameters=None, *, binding=None, allow_effects=()
     A trusted ``delay_fn(seconds)`` may replace sleep for replay; models cannot
     select it, and declared delays remain unchanged in the transcript.
     An adapter exposing a positive ``drained_bytes`` adds the optional key
-    ``transport_notes: {drained_bytes}``; every other result key is unchanged.
+    ``transport_notes: {drained_bytes}``. Failed results also report whether
+    transport opening was attempted; even a failed open can have device effects.
     """
     result = {"schema": "interface-result/1", "operation": operation, "ok": False,
               "outputs": {}, "units": {}, "identity_verified": False, "transcript": []}
     transport = None
+    transport_open_attempted = False
     try:
         # Snapshot declarative inputs before validation to avoid model mutation
         # by a caller or injected transport during an active transaction.
@@ -739,6 +741,7 @@ def execute(model, operation, parameters=None, *, binding=None, allow_effects=()
         if transport_factory is None:
             from .transports import open_transport
             transport_factory = open_transport
+        transport_open_attempted = True
         transport = transport_factory(model["channel"], {} if binding is None else dict(binding))
         # Bytes an adapter discarded on open (stale replies to an abandoned transaction) are reported,
         # never silently absorbed; absent means nothing was discarded or the adapter does not drain.
@@ -813,6 +816,7 @@ def execute(model, operation, parameters=None, *, binding=None, allow_effects=()
                     result["ok"] = False
                     result["error"] = {"code": "close_error", "message": str(exc), "fault": Fault.HOST.value}
     if not result["ok"]:
+        result["transport_open_attempted"] = transport_open_attempted
         result["outputs"] = {}
         result["units"] = {}
     return result

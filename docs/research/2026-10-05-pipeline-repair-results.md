@@ -46,6 +46,8 @@ The failures exposed additional mechanical gaps. The follow-up supplies the exac
 
 ## Software and evaluator verification
 
+The separately qualified [capability repair experiment](2026-10-05-capability-repair-results.md) now records the follow-up trial. Its outcomes and 432-test verification belong to that later frozen implementation; the table below retains this experiment's original checks.
+
 | Local macOS environment | Tests | Seconds | Skips | Result |
 |---|---:|---:|---:|---|
 | Source, Python 3.13.12 | 426 | 69.125 | 3 archive gates | Passed |

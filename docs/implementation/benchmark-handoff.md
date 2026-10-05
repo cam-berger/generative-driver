@@ -2,7 +2,18 @@
 
 The workflow is acquire, interpret, probe, ground, emit, reuse. All six gates, a fresh agent's package-only mission and independent final behavior are required for acceptance. The current research core has three original firmware families and a nine-slot default suite; the model study has not run.
 
-Current branch: `fix/pipeline-discovery-repair`. The [pipeline repair report](../research/2026-10-05-pipeline-repair-results.md) records the medium-reasoning feasibility runs and failures. Commit `9929e30` reached probing on all three families but completed 0/3 fresh-reuse workflows. Commit `d3dae7a` fixes capability syntax/feedback, false uncertainty after a refusal before transport opens, and a cleanup status race. Source verification passes 432 tests; installed verification and renewed evaluator qualification are required before inference with this build. Preserve every prior frozen outcome. Close the three-family feasibility check before expanding to external candidates or the nine-trial pilot.
+Current branch: `fix/pipeline-discovery-repair`. The [pipeline repair report](../research/2026-10-05-pipeline-repair-results.md) preserves earlier failures. The [capability repair report](../research/2026-10-05-capability-repair-results.md) freezes source `041c0eb` and records the completed follow-up: 0/3 fresh-reuse workflows; TQ9 passes 9/9 diagnostics but stops at ground, while sensor and store exhaust two repairs. Source and installed Python 3.11/3.13 suites pass 432 tests; installed suites have zero skips. Thirty native sessions and three authenticated admissions qualify the matching evaluator. All saved model grades reproduce; runtime/tools remain unchanged and all managed work has stopped. Preserve every frozen outcome. Close feasibility before external candidates or the nine-trial pilot.
+
+The user requested a break after this run. Results, independent reviews and artifact identities are retained; the experiment's private service is stopped at the checkpoint. No further inference runs during the break. Resume with `gpt-6.1-sol`, medium reasoning.
+
+## First work on resumption
+
+1. Make the actual interpretation repair prompt explicitly permit supplied diagnostic feedback. The sensor's final repair read the measurements and deliberately discarded them under generic blind-interpretation instructions. Some earlier feedback contained useful independent readings; do not claim observations were entirely absent.
+2. Preserve safe same-slot prior model, capability and transaction evidence, plus public task/units/effect semantics. Forward trusted refusal causes separately from decoder/unit failures, without exposing passwords, hidden expected values, tolerances or final vectors. Keep effect grants enforced.
+3. Preserve accepted probe evidence in the ground handoff. Route `needs_revision` through the supported ground-to-interpret path with specific feedback and the remaining repair budget. TQ9 stopped with one repair unused; raw/effect unit labels alone do not prove functional failure.
+4. Start with failing seam tests, implement minimal corrections, review and verify source plus installed Python 3.11/3.13. Refresh native qualification/admission if evaluator identity changes. Freeze a new experiment; do not resume or relabel these candidates under changed code. Store transaction semantics and sensor output/conversion defects still need functional verification.
+
+## Historical verification and future growth
 
 The [follow-up PR #2](https://github.com/cam-berger/generative-driver/pull/2), branch `codex/benchmark-growth-review`, builds on PR #1 at `24d8861`. It rejects incompatible historical offline scores, preserves benchmark/evaluator bytes across Git checkouts, and publishes the [growth roadmap](../research/2026-10-03-benchmark-growth-plan.md), [source review](../research/2026-10-03-benchmark-source-review.md) and [PR review](../research/2026-10-03-pr1-review.md).
 

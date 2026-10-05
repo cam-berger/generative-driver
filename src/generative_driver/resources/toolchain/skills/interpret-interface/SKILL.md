@@ -10,6 +10,10 @@ No `convert.py` is required or executed. This is the shared model/probe/emission
 runtime can fill missing protocol facts. Supplied binary analysis may use the provided Ghidra installation
 and exporter in the supplied workspace. Use only supplied evidence; filesystem and network isolation
 depend on the configured runtime and are not established by the input seal. Do not use internet resources.
+Installed analysis executables and their libraries may run outside the workspace; keep analysis outputs,
+projects, caches and logs here. If `BINDING_CONTEXT.json` is supplied, use its `runtime_channel` for the
+executable model and record inferred or unresolved physical settings in NOTES. A TCP byte stream does
+not verify physical UART baud, framing or pins. Never invent physical settings to satisfy validation.
 
 Run Python commands with the configured Python 3.11+ interpreter. The `python3` examples below stand
 for that interpreter; on Windows use its full path rather than assuming a `python3` command exists.

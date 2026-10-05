@@ -69,6 +69,11 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
             objective = 'Test the supplied model over the emulator binding. Write benchmark-capabilities/2 tasks measure and read, mapping temperature (degC) and sequence (count) outputs. Measure performs a new acquisition; read returns the current sample. Report unsupported capabilities honestly.'
         elif case_id == 'parameter-store-v1':
             objective = 'Test the supplied model over the emulator binding. Write benchmark-capabilities/2 tasks read, update, stage, commit and abort. Read takes bank and slot and maps value (configuration-unit). Update and stage take bank, slot and value; commit and abort have no inputs. Every task declares operation, constants, inputs and outputs.'
+        objective += (' Live interface_execute and probe_run results include before_observation and observation '
+            'from an independent monitor, with units. Compare those measured references and effects with your '
+            'decoded outputs. Preserve capabilities.json even when incomplete; report needs_revision and the '
+            'observed discrepancy if the immutable model needs repair. Do not invent unsupported units or '
+            'change the model here. The configurator checks diagnostics and sends feedback to a new interpret agent.')
         return {'objective': objective,
                 'inputs': [str(ws/'model/model.json'), str(ws/'model/adaptation.json')],
                 'context': {'model_dir': str(ws/'model'), 'capabilities_output': str(ws/'capabilities.json')},
@@ -136,6 +141,15 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                 'when': 'Use only when image evidence establishes a Cortex-M vector table at the start of the imported mapping and a Thumb reset entry inside executable bytes. This generic helper does not identify the architecture or infer a load map.',
                 'usage': 'After independently establishing loader, processor and mapping, add --prescript SeedCortexM.java --script-path <absolute-workspace> to the supplied ghidra_run.py command. Keep the reasoning and native logs in this workspace.'}})
         sources['ANALYSIS_TOOLS.json'] = str(config)
+        wiring = ws/'BINDING_CONTEXT.json'
+        _write(wiring, {'schema': 'interpret-binding-context/1',
+            'runtime_channel': {'type': 'tcp'}, 'physical_channel': {'type': 'uart'},
+            'unverified': ['baudrate', 'bytesize', 'parity', 'stopbits', 'pins'],
+            'instruction': 'The operator supplies a UART byte stream through a TCP emulator binding. '
+                'Use runtime_channel for this executable model; the configurator supplies the endpoint later. '
+                'Recover protocol bytes and semantics from the binary. Record any inferred physical settings '
+                'and unresolved facts in NOTES.md. TCP cannot verify physical UART settings; do not invent them.'})
+        sources['BINDING_CONTEXT.json'] = str(wiring)
         if options.get('feedback'):
             _write(ws/'DEFECTS.json', options['feedback'])
             sources['DEFECTS.json'] = str(ws/'DEFECTS.json')
@@ -177,16 +191,24 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
         ws = Path(workspace)
         capabilities = ws/'capabilities.json'
         if not capabilities.is_file():
-            return {'ok': False, 'fault': 'model', 'checks': [], 'artifacts': [], 'reason': 'Missing capability mapping'}
+            return {'ok': False, 'fault': 'model', 'route': 'interpret', 'checks': [], 'artifacts': [],
+                    'reason': 'Missing capability mapping',
+                    'feedback': {'missing': ['capabilities.json'], 'unresolved': (report or {}).get('unresolved', [])}}
         _, state = _state(run_dir)
         model = Path(state['adapted_model_dir'])/'model.json'
         if hashlib.sha256(model.read_bytes()).hexdigest() != state['adaptation']['adapted_model_sha256']:
             raise ValueError('Probe changed the accepted model')
-        grade, records, probes, observed = _diagnose(case_id, run_dir, model.parent, json.loads(capabilities.read_text()), options or {})
+        try:
+            mapping = json.loads(capabilities.read_text(encoding='utf-8'))
+        except (ValueError, UnicodeError):
+            return {'ok': False, 'fault': 'model', 'route': 'interpret', 'checks': [], 'artifacts': [],
+                    'reason': 'Invalid capability JSON',
+                    'feedback': {'missing': ['valid capabilities.json'], 'unresolved': (report or {}).get('unresolved', [])}}
+        grade, records, probes, observed = _diagnose(case_id, run_dir, model.parent, mapping, options or {})
         from .behavior import project_feedback
         ok = grade['verdict'] == 'passed'
         return {'ok': ok, 'fault': None if ok else 'model', 'route': None if ok else 'interpret',
-                'reason': None if ok else 'Independent diagnostic behavior failed', 'feedback': project_feedback(records),
+                'reason': None if ok else 'Independent diagnostic behavior failed', 'feedback': project_feedback(records, grade),
                 'checks': [{'name': c['id'], 'passed': c['passed']} for c in grade['checks']],
                 'artifacts': [str(model), str(capabilities), str(observed), *probes], 'evaluator': grade}
     if stage == 'ground':
@@ -404,6 +426,18 @@ def cleanup(case_id, run_dir, options=None):
     return {'ok': True}
 
 
+def public_observation(case_id, raw, result, parameters):
+    """Measured diagnostic values only, without monitor access or grading keys."""
+    family = family_for(case_id)
+    observed = family.observations(raw, result, parameters)
+    if case_id == 'tq9-v2':
+        return {'duty': observed['duty'], 'unit': 'permille',
+                'temperature_reference': raw['values']['temperature'], 'temperature_unit': 'degC',
+                'phase': 'diagnostic'}
+    return {**{key: observed[key] for key in family.observations.monitor_units},
+            'units': dict(family.observations.monitor_units), 'phase': 'diagnostic'}
+
+
 def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=None,
                     binding=None, allow_effects=None, options=None):
     from ..configurator import digest
@@ -416,18 +450,10 @@ def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=
     session = _session(case_id, run_dir, options or {})
     if binding != session.binding:
         raise ValueError('Package binding differs from the evaluator-owned emulator')
-    def public_observation(raw, result):
-        observed = family.observations(raw, result, parameters or {})
-        if case_id == 'tq9-v2':
-            return {'duty': observed['duty'], 'unit': 'permille',
-                    'temperature_reference': raw['values']['temperature'], 'temperature_unit': 'degC',
-                    'phase': 'diagnostic'}
-        return {**{key: observed[key] for key in family.observations.monitor_units},
-                'units': dict(family.observations.monitor_units), 'phase': 'diagnostic'}
-    before = public_observation(session.observe(), {}) if case_id != 'tq9-v2' else {}
+    before = public_observation(case_id, session.observe(), {}, parameters or {}) if case_id != 'tq9-v2' else {}
     result = run_call(session, package_invoker(package, binding, allow_effects or []),
                       {'operation': operation, 'parameters': parameters or {}})
-    public = public_observation(session.observe(), result)
+    public = public_observation(case_id, session.observe(), result, parameters or {})
     events = Path(run_dir)/'benchmark/package-events.jsonl'
     row = {'actor': 'worker', 'stage': stage, 'operation': operation, 'revision': state.get('revision', 0),
            'attempt_id': state['package_attempts'][stage], 'assignment_id': (options or {}).get('assignment_id'),
@@ -452,5 +478,9 @@ def worker_tool(case_id, run_dir, name, arguments, options):
     session = _session(case_id, run_dir, options)
     if arguments.get('binding') != session.binding:
         raise ValueError('Worker binding differs from evaluator-owned emulator')
-    return run_call(session, lambda operation, parameters: call_tool(name, arguments),
-                    {'operation': arguments.get('operation'), 'parameters': arguments.get('parameters', {})})
+    parameters = arguments.get('parameters', {})
+    before = public_observation(case_id, session.observe(), {}, parameters)
+    result = run_call(session, lambda operation, parameters: call_tool(name, arguments),
+                      {'operation': arguments.get('operation'), 'parameters': parameters})
+    observed = public_observation(case_id, session.observe(), result, parameters)
+    return {**result, 'before_observation': before, 'observation': observed}

@@ -74,7 +74,12 @@ def model_invoker(model_dir, capabilities, binding, output_dir, probes):
     from .behavior import bind_task
     model = json.loads((Path(model_dir)/'model.json').read_text())
     def invoke(task, inputs, grants):
-        request = bind_task(capabilities, task, inputs, model)
+        try:
+            request = bind_task(capabilities, task, inputs, model)
+        except ValueError as error:
+            return {'ok': False, 'error': {'fault': 'model', 'code': 'capability_mapping',
+                                         'message': str(error)},
+                    'outputs': {}, 'units': {}, 'transcript': []}
         probed = call_tool('probe_run', {'run_dir': str(output_dir), 'model_dir': str(model_dir),
             **request, 'n': 1, 'binding': binding, 'allow_effects': grants})
         if probed.get('probe'):

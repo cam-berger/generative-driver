@@ -789,7 +789,9 @@ class Controller:
                 if prompt is None:
                     prompt = ('Execute exactly the assigned stage. Do not start another stage. Return a JSON stage report. '
                               'Write report.json and include artifact paths and actual SHA-256 hashes. '
-                              'Report checks honestly; use blocked if evidence or permission is missing.\n' + _json({
+                              'Report checks honestly. Use needs_revision for a candidate protocol, decoder, unit or '
+                              'capability discrepancy; preserve partial artifacts and observations for independent checks. '
+                              'Use blocked for missing host tools, operator input or permission.\n' + _json({
                                   'stage': stage, 'objective': prepared.get('objective', spec['goal']),
                                   'inputs': list(input_hashes), 'context': prepared.get('context', {}),
                                   'allowed_tools': assignment['allowed_tools'], 'effect_grants': spec['effects'],

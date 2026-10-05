@@ -25,7 +25,7 @@ Create a random password in a separate evaluator-only file, then:
 python -m generative_driver benchmark truth rekey --case tq9 --password-file "/private/evaluator/old.password" --new-password-file "/private/evaluator/new.password" --output "/private/evaluator/rekeyed"
 ```
 
-This emits a new ciphertext and pin without changing installed resources. Publish the reviewed ciphertext and case manifest together; deliver the password separately. Rekeying retains behavioral expectations. Changed inputs, evidence scope or evaluator implementation require matching qualification and case/evaluator versioning.
+This emits a new ciphertext and pin without changing installed resources. Publish the reviewed ciphertext and case manifest together; deliver the password separately. Rekeying retains behavioral expectations. Changed inputs, evidence scope or behavioral acceptance require matching qualification and case/evaluator versioning. Execution fixes with unchanged behavioral contracts retain case versions but require new authenticated qualification against the exact implementation and dependency digest; stale qualifications cannot admit a run.
 
 ## Native reference qualification
 

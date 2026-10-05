@@ -44,6 +44,10 @@ python -m generative_driver benchmark run --case tq9-v2 --scenario original --ca
 
 `--approve-emulator-tools` explicitly authorizes the selected emulator's assigned tools for noninteractive workers. The MCP equivalent is `scoped_tool_approval: "emulator"`. This approval does not authorize physical devices. To use Goose, configure and select `--executor goose`. For another firmware family, select its case and evaluator handle. V2-family trials use `original`; `case_seed` varies independent test episodes and is separate from model sampling.
 
+Interpretation receives the supplied analysis-tool paths and emulator wiring. Installed Ghidra/Java may run outside the candidate workspace; projects, caches, logs and exports stay inside it. The executable model uses the supplied TCP byte stream. Inferred or unresolved physical UART settings belong in the notes; TCP success does not verify baud, framing or pins.
+
+Live probe calls return independent diagnostic observations with units alongside candidate outputs. Workers compare those readings and effects, preserve partial capability mappings and use `needs_revision` for model discrepancies. The configurator checks diagnostics and permits at most two returns to interpretation with observed feedback. Missing host tools, operator input or permission remain blockers. Final package grading stays frozen and cannot trigger another repair.
+
 Admission authenticates calibration against current evaluator code, dependencies, inputs and images before a trial starts. A stale or pending case cannot launch a worker or native device. Obtain passwords separately and keep their files outside candidate inputs and the checkout. Encryption and pinned hashes provide evaluator separation and provenance; they do not enforce a worker filesystem sandbox.
 
 Save the returned `run_id`. The background configurator continues when the interface disconnects:

@@ -175,20 +175,28 @@ def validate_records(contract: dict, records: list[dict]) -> dict:
     return {'verdict': 'passed' if passed == len(results) else 'failed',
             'passed': passed, 'total': len(results), 'checks': results}
 
-def project_feedback(records: list[dict]) -> dict:
+def project_feedback(records: list[dict], grade=None) -> dict:
     """Expose diagnostics without evaluator-owned expectations or evidence paths."""
     allowed = {'missing evidence', 'duplicate evidence', 'unexpected evidence',
                'invalid evidence', 'revision mismatch', 'artifact mismatch',
                'unit mismatch', 'channel mismatch', 'invalid observation', 'value mismatch'}
     projected = []
+    checks = {row['id']: row for row in (grade or {}).get('checks', [])}
     for record in records:
         if type(record) is not dict:
             continue
         row = {}
-        for field in ('task_id', 'value', 'unit'):
+        for field in ('id', 'task_id', 'value', 'unit'):
             if field in record and type(record[field]) in (str, int, float, bool):
                 row[field] = record[field]
         if record.get('reason') in allowed:
             row['reason'] = record['reason']
+        if record.get('channel') in ('runtime-transcript', 'independent-monitor'):
+            row['channel'] = record['channel']
+        check = checks.get(record.get('id'))
+        if check and type(check.get('passed')) is bool:
+            row['passed'] = check['passed']
+            if check.get('reason') in allowed:
+                row['reason'] = check['reason']
         projected.append(row)
     return {'records': projected}

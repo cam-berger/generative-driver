@@ -65,7 +65,8 @@ def replace_owned(case_id, run_dir, options, cancelled):
                    'binding':replacement.binding}
         proof = {'receipt':receipt, 'old_startup_observation':state['startup_observation'],
                  'new_startup_observation':observed,'old_process':old.info,'new_process':replacement.info,
-                 'unresolved_evidence_ids':options.get('recovery_evidence_ids',[])}
+                 'unresolved_evidence_ids':options.get('recovery_evidence_ids',[]),
+                 'unresolved_dispatch_ids':options.get('recovery_dispatch_ids',[])}
         from .emulated_evidence import _private
         payload = _private(run_dir, options)
         payload.setdefault('emulator_recoveries',[]).append(proof)
@@ -110,6 +111,98 @@ def preserve_failure(run_dir, workspace, accepted, report, feedback):
     remember(run_dir, 'probe', files, feedback, report, workspace=workspace)
 
 
+def diagnostic_faults(finishes, assignment):
+    """Other observed host/operator/unknown runtime failures still block repair."""
+    faults = []
+    for _, event in finishes:
+        if (event.get('actor') != 'worker' or event.get('assignment_id') != assignment['id']
+                or event.get('ok') is not False
+                or event.get('name') not in ('interface_execute','probe_run','benchmark_package_execute','emit_test_live')):
+            continue
+        result = event.get('result')
+        if not isinstance(result,dict):
+            faults.append('unknown')
+            continue
+        items = result.get('results') if 'results' in result else [result]
+        if not isinstance(items,list) or not items:
+            faults.append('unknown')
+            continue
+        if all(isinstance(item,dict) and item.get('transport_open_attempted') is False for item in items):
+            continue  # Trusted refusals before opening cannot establish outstanding effects.
+        outer_error = result.get('error') if isinstance(result.get('error'),dict) else {}
+        outer_fault = result.get('fault') or outer_error.get('fault')
+        if outer_fault in ('host','operator'):
+            faults.append(outer_fault)
+        elif outer_fault not in (None,'model'):
+            faults.append('unknown')
+        for item in items:
+            if not isinstance(item,dict):
+                faults.append('unknown')
+                continue
+            if item.get('ok') is True or item.get('transport_open_attempted') is False:
+                continue
+            error = item.get('error') if isinstance(item.get('error'),dict) else {}
+            fault = error.get('fault')
+            if fault in ('host','operator'):
+                faults.append(fault)
+            elif fault != 'model' or item.get('schema') != 'interface-result/1':
+                faults.append('unknown')
+    return faults
+
+
+def unresolved_outcomes(db, run_id, assignment):
+    """Attribute every pending effect to exactly one trusted dispatch completion."""
+    pending = db.execute('SELECT * FROM pending_effects WHERE run_id=? ORDER BY dispatch_id',(run_id,)).fetchall()
+    rows = db.execute("SELECT seq,kind,payload FROM events WHERE run_id=? AND kind IN ('tool.started','tool.finished') ORDER BY seq",(run_id,)).fetchall()
+    starts = {row['seq']:json.loads(row['payload']) for row in rows if row['kind']=='tool.started'}
+    finishes = [(row['seq'],json.loads(row['payload'])) for row in rows if row['kind']=='tool.finished']
+    faults, failed, dispatches = diagnostic_faults(finishes,assignment), [], []
+    for attempt in pending:
+        dispatch = str(attempt['dispatch_id'])
+        dispatches.append(dispatch)
+        started = starts.get(attempt['dispatch_id'],{})
+        matches = [(identifier,event) for identifier,event in finishes if event.get('dispatch_id')==dispatch]
+        if (attempt['actor'] != 'worker' or attempt['assignment_id'] != assignment['id']
+                or started.get('effectful') is not True or started.get('actor') != attempt['actor']
+                or started.get('assignment_id') != attempt['assignment_id'] or len(matches) != 1):
+            faults.append('unknown')
+            continue
+        identifier, event = matches[0]
+        if (event.get('actor') != started['actor'] or event.get('assignment_id') != started['assignment_id']
+                or event.get('name') != started.get('name') or event.get('effectful') is not True
+                or event.get('effects_reconciled') is not False or event.get('ok') is not False):
+            faults.append('unknown')
+            continue
+        result = event.get('result')
+        items = result.get('results') if isinstance(result,dict) and 'results' in result else [result]
+        if not isinstance(items,list) or not items:
+            faults.append('unknown')
+            continue
+        failures = []
+        for item in items:
+            if not isinstance(item,dict) or item.get('schema') != 'interface-result/1' or type(item.get('ok')) is not bool:
+                faults.append('unknown')
+                continue
+            if item['ok']:
+                continue
+            failures.append(item)
+            error = item.get('error') if isinstance(item.get('error'),dict) else {}
+            fault = error.get('fault')
+            if fault in ('host','operator'):
+                faults.append(fault)
+            elif (fault == 'model' and item.get('identity_verified') is True
+                  and item.get('transport_open_attempted') is True and item.get('transcript')):
+                faults.append('model')
+                failed.append((identifier,item))
+            else:
+                faults.append('unknown')
+        if not failures:
+            faults.append('unknown')
+    category = next((fault for fault in ('operator','host','unknown') if fault in faults),
+                    'model' if pending and faults and all(fault=='model' for fault in faults) else 'unknown')
+    return category, failed, dispatches
+
+
 def reconcile(controller, run_id, spec, assignment, run_dir, workspace, accepted, report, progress):
     """Consume trusted runtime evidence once the worker has exited, under its lease."""
     import threading
@@ -120,22 +213,7 @@ def reconcile(controller, run_id, spec, assignment, run_dir, workspace, accepted
         lock = controller._operations.setdefault(run_id, threading.RLock())
     with lock, controller._active_operation(run_id):
         with controller._db() as db:
-            rows = db.execute("SELECT seq,payload FROM events WHERE run_id=? AND kind='tool.finished' ORDER BY seq", (run_id,)).fetchall()
-            events = [(row['seq'],json.loads(row['payload'])) for row in rows]
-            events = [(identifier,event) for identifier,event in events
-                      if event.get('assignment_id') == assignment['id'] and event.get('actor') == 'worker'
-                      and event.get('ok') is False]
-            results = [(identifier,item) for identifier,event in events
-                       for item in (event.get('result',{}).get('results') or [event.get('result',{})])
-                       if isinstance(item,dict) and item.get('ok') is False and item.get('transport_open_attempted') is not False]
-            faults = [item.get('error',{}).get('fault') for _,item in results]
-            category = 'operator' if 'operator' in faults else 'host' if 'host' in faults else 'unknown'
-            failed = [(identifier,item) for identifier,item in results
-                      if item.get('schema') == 'interface-result/1' and item.get('identity_verified') is True
-                      and item.get('error',{}).get('fault') == 'model' and item.get('transcript')
-                      and item.get('transport_open_attempted') is True]
-            if failed and category == 'unknown':
-                category = 'model'
+            category, failed, dispatches = unresolved_outcomes(db,run_id,assignment)
             allowed = (failed and category == 'model' and assignment['stage'] in ('interpret','probe','ground')
                        and spec.get('_case_pin',{}).get('manifest',{}).get('schema') == 'benchmark-case/2'
                        and spec.get('_case_pin',{}).get('manifest',{}).get('approval_scope') == 'emulator'
@@ -145,10 +223,10 @@ def reconcile(controller, run_id, spec, assignment, run_dir, workspace, accepted
             if progress['repairs'] >= int(spec.get('max_revisions',2)):
                 return {'ok':False,'fault':'model','reason':'Model repair budget exhausted with unresolved effect'}
             feedback = {'runtime_failures':[{'evidence_id':str(identifier),'result':item} for identifier,item in failed],
-                        'effects_uncertain':True, 'reason':'Runtime contradicts candidate model; previous write was not retried'}
+                        'unresolved_dispatch_ids':dispatches, 'effects_uncertain':True, 'reason':'Runtime contradicts candidate model; previous write was not retried'}
             db.execute("UPDATE assignments SET state='superseded' WHERE id=?",(assignment['id'],))
             controller._event(run_id,'emulator.recovery_started',{'assignment_id':assignment['id'],
-                'unresolved_evidence_ids':[str(i) for i,_ in failed],'revision':progress['revision']},db)
+                'unresolved_evidence_ids':sorted({str(i) for i,_ in failed}),'unresolved_dispatch_ids':dispatches,'revision':progress['revision']},db)
         def cancelled():
             return bool(controller._closing or controller._row(run_id)['cancelled']
                         or time.time() >= controller._row(run_id)['created']+spec['budget_seconds'])
@@ -156,7 +234,7 @@ def reconcile(controller, run_id, spec, assignment, run_dir, workspace, accepted
             case = spec['case']
             receipt = recover_emulator(case['id'] if isinstance(case,dict) else case, run_dir,
                 workspace, accepted, report, feedback, {**case_options(spec),
-                    'recovery_evidence_ids':[str(i) for i,_ in failed]}, cancelled)
+                    'recovery_evidence_ids':sorted({str(i) for i,_ in failed}), 'recovery_dispatch_ids':dispatches}, cancelled)
             with controller._lock, controller._db() as db:
                 if cancelled():
                     raise RuntimeError('Recovery cancelled before durable reconciliation')
@@ -164,9 +242,10 @@ def reconcile(controller, run_id, spec, assignment, run_dir, workspace, accepted
                 progress.update(revision=progress['revision']+1,next_stage='interpret',
                     repairs=progress['repairs']+1,feedback=feedback)
                 controller._route(run_id,progress,'Runtime model discrepancy after emulator recovery',db)
+                db.execute('DELETE FROM pending_effects WHERE run_id=?',(run_id,))
                 db.execute('UPDATE runs SET uncertain=0 WHERE id=?',(run_id,))
                 controller._event(run_id,'emulator.recovered',{'assignment_id':assignment['id'],
-                    'unresolved_evidence_ids':[str(i) for i,_ in failed], 'receipt':receipt,
+                    'unresolved_evidence_ids':sorted({str(i) for i,_ in failed}),'unresolved_dispatch_ids':dispatches, 'receipt':receipt,
                     'revision':progress['revision'],'repairs':progress['repairs']},db)
             return {'ok':False,'fault':'model','route':'interpret','reason':'Runtime model discrepancy after emulator recovery',
                     'feedback':feedback,'revision_committed':True}

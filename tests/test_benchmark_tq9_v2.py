@@ -231,6 +231,15 @@ class TQ9V2Tests(unittest.TestCase):
     def test_emulator_recovery_safety_boundaries(self):
         self._scripted_controller_modes(('recover-budget','recover-lost','recover-stop','recover-reset','recover-cancel','recover-commit-cancel','recover-repeat','recover-restart','recover-physical'))
 
+    def test_recovery_requires_outcomes_for_every_uncertain_dispatch(self):
+        self._scripted_controller_modes(('recover-dispatch-exception','recover-mixed-unknown'))
+
+    def test_initial_observation_stop_failure_preserves_controller_uncertainty(self):
+        self._scripted_controller_modes(('recover-initial-stop-raise','recover-initial-stop-live'))
+
+    def test_other_runtime_host_and_operator_faults_block_model_recovery(self):
+        self._scripted_controller_modes(('recover-write-then-host','recover-write-then-operator'))
+
     def _scripted_controller_modes(self, modes):
         # Real TCP peer, external worker processes and emitted package; no inference/native qualification.
         import http.server, sys, threading, time
@@ -317,6 +326,12 @@ class TQ9V2Tests(unittest.TestCase):
                         "    failed=call('interface_execute',{'model_dir':model_dir,'operation':'disarm','parameters':{}})\n"
                         "    if not failed['ok']:status='needs_revision'\n"
                         "    pathlib.Path('capabilities.json').write_text(json.dumps(capabilities()));artifacts=['capabilities.json']")
+                if mode in ('recover-dispatch-exception','recover-mixed-unknown','recover-write-then-host','recover-write-then-operator'):
+                    source=source.replace("    failed=call('interface_execute',{'model_dir':model_dir,'operation':'disarm','parameters':{}})\n    if not failed['ok']:status='needs_revision'",
+                        "    try:\n        failed=call('interface_execute',{'model_dir':model_dir,'operation':'disarm','parameters':{}})\n"
+                        "    except RuntimeError:pass\n"
+                        "    later=call('interface_execute',{'model_dir':model_dir,'operation':'measure','parameters':{}})\n"
+                        "    assert later['error']['fault']==EXPECTED_POST_WRITE_FAULT\n    status='needs_revision'")
                 if mode == 'repair-ground':
                     source = source.replace("elif stage=='emit':",
                         "elif stage=='ground':\n"
@@ -327,6 +342,7 @@ class TQ9V2Tests(unittest.TestCase):
                     source = source.replace("pathlib.Path('model.json').write_text(json.dumps(model()))",
                         "candidate=model();candidate['operations']['set_duty']['parameters']['duty']['maximum']=800\n"
                         "    pathlib.Path('model.json').write_text(json.dumps(candidate))")
+                source=source.replace('EXPECTED_POST_WRITE_FAULT',repr('host' if mode=='recover-write-then-host' else 'operator' if mode=='recover-write-then-operator' else 'model'))
                 source=source.replace('MODE_REPEAT',str(mode=='recover-repeat'))
                 script.write_text(source)
                 def native_start(**kwargs):
@@ -339,10 +355,28 @@ class TQ9V2Tests(unittest.TestCase):
                         session.process=Process()
                         if mode=='recover-lost':session.process=None
                         if mode=='recover-stop':session.stop=lambda:None
+                        if mode in ('recover-initial-stop-raise','recover-initial-stop-live'):
+                            session.observe=lambda:{'values':{},'reads':[]}
+                            def stop():
+                                if mode=='recover-initial-stop-raise':raise RuntimeError('Controlled native stop failure')
+                            session.stop=stop
                         if len(peers)==2 and mode=='recover-reset':peer.temperature=21
                         if len(peers)==2 and mode=='recover-cancel':controller.call('cancel',run)
                     return session
                 from generative_driver.benchmark_support import emulated
+                from generative_driver import toolkit
+                original_call_tool=toolkit.call_tool
+                def runtime_boundary(name,arguments):
+                    outcome=original_call_tool(name,arguments)
+                    if mode in ('recover-dispatch-exception','recover-mixed-unknown','recover-write-then-host','recover-write-then-operator') and name=='interface_execute' and arguments.get('operation')=='disarm':
+                        # Real device I/O happened; the boundary then loses or cannot classify its outcome.
+                        peers[-1].broken_measure=True
+                        if mode=='recover-dispatch-exception':raise RuntimeError('Controlled adapter failure after device I/O')
+                        if mode=='recover-mixed-unknown':outcome['error'].pop('fault',None)
+                    if mode in ('recover-write-then-host','recover-write-then-operator') and name=='interface_execute' and arguments.get('operation')=='measure' and not outcome['ok']:
+                        # The external runtime boundary reports its own host/operator diagnostic ownership.
+                        outcome['error']['fault']='host' if mode=='recover-write-then-host' else 'operator'
+                    return outcome
                 original_recover=emulated.recover_emulator
                 def recover(*args,**kwargs):
                     receipt=original_recover(*args,**kwargs)
@@ -355,7 +389,7 @@ class TQ9V2Tests(unittest.TestCase):
                         (root/'home/runs'/args[0]/'benchmark/inputs/firmware.bin').write_bytes(b'tampered after acceptance')
                     return handoff
                 try:
-                    with patch.object(emulated,'recover_emulator',side_effect=recover),patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
+                    with patch.object(toolkit,'call_tool',side_effect=runtime_boundary),patch.object(emulated,'recover_emulator',side_effect=recover),patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
                          patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True}),\
                          patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=native_start):
                         run=controller.start({'goal':'scripted-contract-fixture','case':'tq9-v2','budget_seconds':60,
@@ -379,7 +413,26 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertEqual(result['progress']['repairs'],2 if mode=='recover-repeat' else 0)
                             self.assertEqual(len(peers),3 if mode=='recover-repeat' else 2 if mode in ('recover-reset','recover-cancel','recover-commit-cancel') else 1)
                             if mode in ('recover-cancel','recover-commit-cancel'):self.assertEqual(status['status'],'cancelled')
-                            else:self.assertEqual(status['outcome_category'],'model' if mode in ('recover-budget','recover-repeat','recover-physical') else 'host')
+                            else:self.assertEqual(status['outcome_category'],'model' if mode in ('recover-budget','recover-repeat','recover-physical') else 'unknown' if mode in ('recover-dispatch-exception','recover-mixed-unknown') else 'operator' if mode=='recover-write-then-operator' else 'host')
+                            if mode in ('recover-dispatch-exception','recover-mixed-unknown'):
+                                starts=[e for e in events if e['kind']=='tool.started' and e['data'].get('effectful') and e['data'].get('actor')=='worker']
+                                self.assertEqual(len(starts),1)
+                                self.assertEqual(peers[0].device_commands.count('D'),1)
+                                with controller._db() as db:
+                                    pending=db.execute('SELECT dispatch_id FROM pending_effects WHERE run_id=?',(run['run_id'],)).fetchall()
+                                self.assertEqual([row['dispatch_id'] for row in pending],[starts[0]['id']])
+                                completions=[e for e in events if e['kind']=='tool.finished' and e['data'].get('dispatch_id')==str(starts[0]['id'])]
+                                self.assertEqual(len(completions),0 if mode=='recover-dispatch-exception' else 1)
+                                reads=[e for e in events if e['kind']=='tool.finished' and e['data'].get('result',{}).get('operation')=='measure' and e['data'].get('result',{}).get('error',{}).get('fault')=='model']
+                                self.assertTrue(reads)
+                            if mode in ('recover-initial-stop-raise','recover-initial-stop-live'):
+                                self.assertEqual(status['status'],'blocked')
+                                key=str((root/'home/runs'/run['run_id']).resolve())
+                                owner=emulated._OWNERS[key]
+                                self.assertIsNone(owner.process.poll())
+                                persisted=json.loads((root/'home/runs'/run['run_id']/'benchmark/state.json').read_text())
+                                self.assertEqual(persisted['session']['session_id'],owner.info['session_id'])
+                                self.assertTrue(any(e['kind']=='cleanup.failed' for e in events))
                             if mode=='recover-reset':self.assertTrue(peers[1].closed)
                             continue
                         if mode not in ('normal','rejected-write','repair-mapping','repair-decoder','repair-ground','recover-write'):
@@ -442,6 +495,11 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertEqual(hashlib.sha256(json.dumps(proof,sort_keys=True).encode()).hexdigest(),receipt['proof_sha256'])
                             self.assertEqual(proof['new_startup_observation']['values'],proof['old_startup_observation']['values'])
                             self.assertTrue(proof['unresolved_evidence_ids'])
+                            self.assertEqual(proof['unresolved_dispatch_ids'],result['emulator_recoveries'][0]['unresolved_dispatch_ids'])
+                            started=next(e for e in events if str(e['id'])==proof['unresolved_dispatch_ids'][0])
+                            finished=next(e for e in events if str(e['id'])==proof['unresolved_evidence_ids'][0])
+                            self.assertTrue(started['data']['effectful'])
+                            self.assertEqual(finished['data']['dispatch_id'],str(started['id']))
                         self.assertTrue(all(Path(a['path']).resolve().is_relative_to((run_dir/'accepted').resolve())
                                             for a in sealed['accepted_artifacts']))
                         self.assertNotIn('maintenance',sealed)
@@ -465,6 +523,7 @@ class TQ9V2Tests(unittest.TestCase):
                     controller.close();server.shutdown();server.server_close()
                     for peer in peers:
                         if not getattr(peer,'closed',False):peer.close()
+                    if 'run' in locals():emulated._OWNERS.pop(str((root/'home/runs'/run['run_id']).resolve()),None)
 
     def test_measured_calibration_checks_code_and_complete_reference_mutant_coverage(self):
         from test_benchmark_family_calibration import AdmissionTests

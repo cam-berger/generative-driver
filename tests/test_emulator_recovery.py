@@ -77,3 +77,24 @@ class EmulatorRecoveryTests(unittest.TestCase):
                     with self.assertRaises(RuntimeError):replace_owned('synthetic',root,{},lambda:False)
                 self.assertIs(emulated._OWNERS.get(key),new)
             finally:emulated._OWNERS.pop(key,None)
+
+    def test_initial_observation_failure_retains_live_owner_when_stop_fails(self):
+        from generative_driver.benchmark_support import emulated
+        from generative_driver.benchmark_support.cases import _state
+        for raises in (True,False):
+            with self.subTest(stop_raises=raises),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary);owner=Owner(1)
+                owner.observe=lambda:{'values':{},'reads':[]}
+                def stop():
+                    if raises:raise RuntimeError('stop unavailable')
+                owner.stop=stop
+                key=str(root.resolve())
+                try:
+                    with patch.object(emulated,'_inputs',return_value=(root,{})),patch.object(emulated,'_truth',return_value={'recipe':owner.recipe}),patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=owner):
+                        with self.assertRaises(RuntimeError):emulated._session('synthetic',root,{})
+                    self.assertIs(emulated._OWNERS.get(key),owner)
+                    self.assertEqual(_state(root)[1]['session']['session_id'],owner.info['session_id'])
+                    self.assertIsNone(owner.process.poll())
+                    with self.assertRaisesRegex(RuntimeError,'stop'):emulated.cleanup('synthetic',root)
+                    self.assertIs(emulated._OWNERS.get(key),owner)
+                finally:emulated._OWNERS.pop(key,None)

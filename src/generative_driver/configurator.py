@@ -195,6 +195,8 @@ class Controller:
                     state TEXT NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS bindings (
                     identity TEXT PRIMARY KEY, run_id TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS pending_effects (
+                    dispatch_id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, assignment_id TEXT, actor TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS progress (
                     run_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
             ''')
@@ -355,6 +357,7 @@ class Controller:
                     if resolution != 'confirmed_safe':
                         raise ValueError('effect_resolution must be confirmed_safe after checking the device')
                     db.execute('UPDATE runs SET uncertain=0 WHERE id=?',(run_id,))
+                    db.execute('DELETE FROM pending_effects WHERE run_id=?',(run_id,))
                 self._event(run_id,'operator.response',{'message':message,'observation':observation,'effect_resolution':resolution},db)
             return self.call('status', {'run_id': run_id})
         if method == 'resume':
@@ -1017,15 +1020,18 @@ class Controller:
                 db.execute('UPDATE runs SET uncertain=1 WHERE id=?',(run_id,))
                 evidence_id = self._event(run_id, 'tool.started', {'actor':'evaluator','stage':stage,
                     'assignment_id':assignment_id,'name':'benchmark_evaluate','effectful':True}, db)
+                db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(evidence_id,run_id,assignment_id,'evaluator'))
             options['evaluator_evidence_ids'] = [str(evidence_id)]
             result = invoke()
             with self._db() as db:
                 cancelled = db.execute('SELECT cancelled FROM runs WHERE id=?',(run_id,)).fetchone()['cancelled']
                 acknowledged = result.get('fault') != 'host'
                 if not cancelled and acknowledged:
-                    db.execute('UPDATE runs SET uncertain=0 WHERE id=?',(run_id,))
+                    db.execute('DELETE FROM pending_effects WHERE dispatch_id=?',(evidence_id,))
+                    db.execute('UPDATE runs SET uncertain=EXISTS(SELECT 1 FROM pending_effects WHERE run_id=?) WHERE id=?',(run_id,run_id))
                 self._event(run_id, 'tool.finished', {'actor':'evaluator','stage':stage,'assignment_id':assignment_id,
-                    'name':'benchmark_evaluate','ok':bool(result.get('ok', True)), 'evaluation_event_id':str(evidence_id)}, db)
+                    'name':'benchmark_evaluate','ok':bool(result.get('ok', True)), 'dispatch_id':str(evidence_id),
+                    'effectful':True,'effects_reconciled':bool(not cancelled and acknowledged), 'evaluation_event_id':str(evidence_id)}, db)
             return result
 
     def _check(self, spec, stage, run_dir, workspace, report, accepted, assignment):
@@ -1251,8 +1257,11 @@ class Controller:
                     raise ValueError('Outstanding effect is uncertain; another effectful operation is refused until operator reconciliation')
                 if effectful:
                     db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run['id'],))
-                self._event(run['id'], 'tool.started', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'effectful':effectful,
+                dispatch_id = self._event(run['id'], 'tool.started', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'effectful':effectful,
                     'actor':'evaluator' if evaluator_workspace is not None else 'worker'}, db)
+                if effectful:
+                    db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(dispatch_id,run['id'],assignment['id'],
+                        'evaluator' if evaluator_workspace is not None else 'worker'))
         if name == 'benchmark_package_execute':
             from .benchmark import package_execute
             spec = json.loads(run['spec'])
@@ -1290,9 +1299,12 @@ class Controller:
                 and type(executions) is list and bool(executions)
                 and all(type(item) is dict and item.get('schema') == 'interface-result/1'
                         and item.get('transport_open_attempted') is False for item in executions))
-            if effectful and not cancelled and (success or refused_before_open):
-                db.execute('UPDATE runs SET uncertain=0 WHERE id=?',(run['id'],))
+            effects_reconciled = bool(effectful and not cancelled and (success or refused_before_open))
+            if effects_reconciled:
+                db.execute('DELETE FROM pending_effects WHERE dispatch_id=?',(dispatch_id,))
+                db.execute('UPDATE runs SET uncertain=EXISTS(SELECT 1 FROM pending_effects WHERE run_id=?) WHERE id=?',(run['id'],run['id']))
             evidence_id = self._event(run['id'], 'tool.finished', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'ok':success,'result':result,'artifacts':observed_artifacts,
+                'dispatch_id':str(dispatch_id),'effectful':effectful,'effects_reconciled':effects_reconciled,
                 'actor':'evaluator' if evaluator_workspace is not None else 'worker'}, db)
         if name == 'benchmark_package_execute':
             result = {**result, 'evidence_id': str(evidence_id)}

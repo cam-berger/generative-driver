@@ -507,17 +507,21 @@ def _session(case_id, run_dir, options):
     inputs, _ = _inputs(case_id, run_dir)
     session = NativeSession.start(renode=options.get('renode'),
         image=inputs/'firmware.bin', recipe=_truth(case_id, run_dir, options)['recipe'])
-    from .emulated_recovery import observed_values
-    try:
-        observation = observed_values(session)
-    except BaseException:
-        session.stop()
-        raise
     import uuid
     session.info['session_id'] = uuid.uuid4().hex
     _OWNERS[key] = session
-    state['startup_observation'] = observation
     state['session'] = session.info
+    _write(path, state)
+    from .emulated_recovery import observed_values
+    try:
+        observation = observed_values(session)
+    except BaseException as failure:
+        try:
+            cleanup(case_id, run_dir, options)
+        except BaseException as stop_error:
+            raise RuntimeError(str(failure)+'; emulator cleanup unverified: '+str(stop_error)) from failure
+        raise
+    state['startup_observation'] = observation
     _write(path, state)
     return session
 

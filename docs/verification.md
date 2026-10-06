@@ -4,7 +4,7 @@ All workflows end at acquire, interpret, probe, ground, emit, reuse. Scripted te
 
 ## Dashboard — 2026-10-06
 
-The [dashboard verification](dashboard-verification.md) records 429 passing tests in each source/installed environment and one successful observed TQ9 run. The observer branch and separately qualified local pipeline installation are identified explicitly.
+The [dashboard verification](dashboard-verification.md) records 430 passing tests in each source/installed environment and one successful observed TQ9 run. The observer branch and separately qualified local pipeline installation are identified explicitly.
 
 ## PR #1 follow-up — 2026-10-03
 

@@ -68,3 +68,10 @@ Interfaces: consume the committed Task 1 and 2 runtime/evaluator changes. Rebuil
 - [x] Exercise trusted recovery against a real owned native emulator with controlled runtime failure, retaining process lifecycle and independent state evidence. Label this deterministic/native verification, not a model result.
 - [x] Record versions/hashes, counts, TDD evidence, source/installed/native outcomes and any real limitations in the verification index. Update accepted design and handoff with current status and next separately frozen model trial (gpt-6.1-sol, medium).
 - [x] Run public-artifact privacy checks, documentation checks and git diff --check. Commit verification/documentation only after evidence exists; report final status and unresolved limitations. No push, PR or paid model run in this task.
+
+## Final rejection review follow-up — 2026-10-06
+
+The version 4 verification was superseded after a final review reproduced candidate first-line framing earning rejection credit. The repaired evaluator requires independently authenticated complete-response witnesses without exact request-byte equality. Version 5 qualification adds the short-rejection-frame mutant and refreshes all three native families and installed payloads. The [version 4 record](transaction-recovery-v4-verification.json) remains frozen; the [current verification index](transaction-recovery-verification.json) records the final version 5 closure.
+
+- [x] Freeze source-derived private response witnesses and all seven independent mutant failure sets before version 5 store measurement.
+- [x] Requalify all three version 5 families, reproduce grades/admissions, refresh native recovery and verify source/installed archives, privacy, links and final handoff.

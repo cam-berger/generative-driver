@@ -9,10 +9,10 @@ class ReuseEndpointTests(SealedEvidenceFixture, unittest.TestCase):
     def current_payload(self):
         payload = self.payload()
         pin = payload['case_pin']
-        pin.update(case_id='tq9-v2', case_version='4', evaluator_version='4', scenario_id='original')
+        pin.update(case_id='tq9-v2', case_version='5', evaluator_version='5', scenario_id='original')
         pin['image_hashes'] = {'firmware.bin': 'e'*64}
         pin['manifest']['images'] = dict(pin['image_hashes'])
-        pin['manifest'].update(id='tq9-v2', version='4', evaluator_version='4', scenarios=['original'],
+        pin['manifest'].update(id='tq9-v2', version='5', evaluator_version='5', scenarios=['original'],
             required_stages=['acquire','interpret','probe','ground','emit','reuse'])
         payload.pop('maintenance', None)
         payload['accepted_gates'][-1]['checks'] = [
@@ -28,15 +28,15 @@ class ReuseEndpointTests(SealedEvidenceFixture, unittest.TestCase):
             ['acquire','interpret','probe','ground','emit','reuse'])
         self.assertNotIn('maintenance', graded)
 
-    def test_current_identity_accepts_version_four_and_rejects_stale_pins(self):
+    def test_current_identity_accepts_version_five_and_rejects_stale_pins(self):
         payload = self.current_payload()
-        payload['case_pin']['evaluator_version'] = '4'
-        payload['case_pin']['manifest']['evaluator_version'] = '4'
+        payload['case_pin']['evaluator_version'] = '5'
+        payload['case_pin']['manifest']['evaluator_version'] = '5'
         snapshot = payload['execution_snapshot']
         snapshot['snapshot_sha256'] = canonical_digest({k:v for k,v in snapshot.items() if k!='snapshot_sha256'})
         report, path = self.sealed(payload)
         self.assertEqual(evidence.regrade_v2(report, path, self.password)['verdict'], 'passed')
-        payload['case_pin']['case_version'] = '3'
+        payload['case_pin']['case_version'] = '4'
         snapshot['snapshot_sha256'] = canonical_digest({k:v for k,v in snapshot.items() if k!='snapshot_sha256'})
         with self.assertRaisesRegex(ValueError, 'identity|version'):
             self.sealed(payload)

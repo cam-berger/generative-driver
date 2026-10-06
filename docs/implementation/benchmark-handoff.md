@@ -12,12 +12,14 @@ The user then requested one unchanged store repeat from scratch. That [repeat](.
 
 The approved [execution plan](transaction-recovery-plan.md) adds mandatory pending-update evaluation and checked recovery of owned emulators. Store update must discard pending edits from either bank, change only the requested committed cell, advance generation once and end idle. Both phases require six named scenarios and complete ending-state evidence; incomplete responses cannot establish rejection. Recovery requires a trusted completed model-failure outcome for every unresolved effectful dispatch, verified disposal, a distinct replacement with independent initial-state reads, and remaining repair budget. Failed commands remain failed. Unknown, host and operator faults, physical bindings, cancellation, lost ownership and final grading retain their existing blockers.
 
-Version 4 release verification completed on October 6. Source and clean installed Python 3.11/3.13 each pass 457 tests with zero archive skips. Thirty-one native sessions reproduce all grades and three source plus six installed admissions pass. Real native adapter recovery and the separate public-controller deterministic regression pass. Firmware sources and flash binaries are unchanged; Windows and a new model trial remain unrun. The [verification index](transaction-recovery-verification.json) records measured snapshot identity, hashes, preserved failures and limits.
+Version 4 verification is superseded by final independent-response evidence repair; its [frozen index](transaction-recovery-v4-verification.json) remains available with the review gap disclosed.
+
+Version 5 release verification completed on October 6. Source and clean installed Python 3.11/3.13 each pass 461 tests with zero archive skips. Thirty-two native sessions reproduce all grades and three source plus six installed admissions pass. Real native adapter recovery and the separate public-controller deterministic regression pass. Firmware sources and flash binaries are unchanged; Windows and a new model trial remain unrun. The [verification index](transaction-recovery-verification.json) records measured snapshot identity, hashes, preserved failures and limits.
 
 ## Next work
 
-1. Preserve the frozen three-family context experiment and unchanged store repeat. Their version 3 probe/final passes retain their original coverage and do not become acceptance under version 4.
-2. Freeze a separate next model trial at `gpt-6.1-sol`, medium reasoning, against the refreshed version 4 evaluator, explicit settings and existing budgets. This implementation task authorizes no inference trial.
+1. Preserve the frozen three-family context experiment and unchanged store repeat. Their version 3 probe/final passes retain their original coverage and do not become acceptance under version 5.
+2. Freeze a separate next model trial at `gpt-6.1-sol`, medium reasoning, against the refreshed version 5 evaluator, explicit settings and existing budgets. This implementation task authorizes no inference trial.
 3. After store feasibility closure, run fixed-configuration repetitions before expanding to external firmware. The nine-trial pilot and larger model study remain future work.
 
 ## Historical verification and future growth

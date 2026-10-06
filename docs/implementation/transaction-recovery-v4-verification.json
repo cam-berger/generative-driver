@@ -1,40 +1,40 @@
 {
-  "schema": "transaction-recovery-verification/2",
-  "started_date": "2026-10-06",
+  "schema": "transaction-recovery-verification/1",
+  "started_date": "2026-10-05",
   "completed_date": "2026-10-06",
-  "completed_at_utc": "2026-10-06T05:08:22.548382+00:00",
+  "completed_at_utc": "2026-10-06T04:04:33.733793+00:00",
   "status": "passed",
   "measured_implementation": {
-    "base_commit": "ef16536ce54544d9cd596dd81e1d981182f67578",
-    "snapshot": "Version 5 registry/builder changes plus transaction/recovery implementation; native qualification measured this working-tree snapshot, not the base commit alone. Final runtime/resources/tests correspond byte-for-byte to the tested archives.",
-    "evaluator_identity_sha256": "7330e0a99136922d04165e094a3abb465d8dc0fc6c497bebf71c7270e2904c04",
+    "base_commit": "a8772808519ba945daa864f55cf1d304e9d65a62",
+    "snapshot": "Version 4 registry/builder changes plus transaction/recovery implementation; native qualification measured this working-tree snapshot, not the base commit alone. Final runtime/resources/tests correspond byte-for-byte to the tested archives.",
+    "evaluator_identity_sha256": "e620a5e8fc51434b37ccbd637247bbf769a3c96caf83bf0381dcaae6516875bb",
     "runtime_resources_tests_files": 166,
-    "runtime_resources_tests_sha256": "60f411e0704dede5b046425cbb64d372ab95ea2384608a492c9f74fb41f1a24b"
+    "runtime_resources_tests_sha256": "5b448967b804cd12e9fc62ad4f76b0bf2620e985d0ad1108cff871550aed373d"
   },
   "archives": {
-    "wheel_sha256": "66a4642181786fa916d6ee51c9f56646b617cbec21a54ece4d1ad415232d7574",
-    "sdist_sha256": "9a9c96096b245015789ca6b93348a2698ec1461ac1136a39cfe73855310095a5",
-    "wheel_runtime_resources_sha256": "309ea0707f97aeb17d95ee92cc350e654abfaacb5bf0145a795592ce5c3b5fd9",
+    "wheel_sha256": "0d0f940449392bdb895f4064ad2b552563f9df9eaaf5fb6ffb5b384a2c036811",
+    "sdist_sha256": "826564b63ca400c2c6852a943c6801fa37250d7c9242accfb322591c923201c5",
+    "wheel_runtime_resources_sha256": "6de04e84f75f7af49f56f64a15fafe1e19505428ec83e33bdbd39fe7c8864c91",
     "reporting_order": "Final verification measurements/reporting prose were written after construction of the frozen tested archives. Exact final docs-only differences are recorded by the final publication audit."
   },
   "software_tests": [
     {
       "environment": "source",
       "python": "3.13.12",
-      "count": 461,
-      "seconds": 117.21,
+      "count": 457,
+      "seconds": 117.526,
       "archive_skips": 0,
       "passed": true,
-      "log_sha256": "1b09dafde373af497965a8ad24897bd73871d4a65cc36036fcce8ca54ca07c7e"
+      "log_sha256": "5d709fdac6d7a7e527cdceb176263cb185b54a75a165f17739f900663d64e198"
     },
     {
       "environment": "installed",
       "python": "3.11.15",
-      "count": 461,
-      "seconds": 112.21,
+      "count": 457,
+      "seconds": 112.503,
       "archive_skips": 0,
       "passed": true,
-      "log_sha256": "43ecdad0fe11acdab7fb6d77bf024a9a687938d1b03cecd00cb8dfb6bd39870c",
+      "log_sha256": "d6fbaea040ec4d3ea069b6db9c5bb87306659bcfcdde8d56967994bcf9abe935",
       "outside_checkout": true,
       "installed_imports_verified": true,
       "credential_checkout_native_overrides_removed": true
@@ -42,11 +42,11 @@
     {
       "environment": "installed",
       "python": "3.13.12",
-      "count": 461,
-      "seconds": 120.62,
+      "count": 457,
+      "seconds": 119.643,
       "archive_skips": 0,
       "passed": true,
-      "log_sha256": "faebab75fe67fe4dee12a1140adfcdfbce1927354f4062ae4279934e69cefb5d",
+      "log_sha256": "0ff28dfe53f6c14d8daf8b3a49413f8733388e52b829685b4620323383a8b0ed",
       "outside_checkout": true,
       "installed_imports_verified": true,
       "credential_checkout_native_overrides_removed": true
@@ -62,8 +62,8 @@
       "authenticated_admissions": 3,
       "candidate_inference": false,
       "physical_devices": false,
-      "wall_seconds": 0.6127714170143008,
-      "log_sha256": "52f035fd5112465509a009f290fc5d956ee214fe44be66174f59cdf2da9dae18"
+      "wall_seconds": 0.6007861670223065,
+      "log_sha256": "25c6643ddb0691e96e8979a6dfc0cdc30a0f1734e32854290dcce4c120618536"
     },
     {
       "label": "313",
@@ -74,18 +74,18 @@
       "authenticated_admissions": 3,
       "candidate_inference": false,
       "physical_devices": false,
-      "wall_seconds": 0.6978133749798872,
-      "log_sha256": "2db02da327524e5072bdeaadf86cf6c3330013611511e51dad338079ad638862"
+      "wall_seconds": 0.6921666670241393,
+      "log_sha256": "049cfb038c6fde74c070e326d362c7fdece641a08b83869bb5b0900f20fb1ebd"
     }
   ],
   "native_qualification": {
     "execution": "reference-calibration",
     "model_benchmark": false,
     "backend": "native-renode",
-    "successful_sessions": 32,
+    "successful_sessions": 31,
     "correct_reference_sessions": 12,
-    "mutant_sessions": 20,
-    "saved_grades_reproduced": 32,
+    "mutant_sessions": 19,
+    "saved_grades_reproduced": 31,
     "source_authenticated_admissions": 3,
     "installed_authenticated_admissions": 6,
     "cases": [
@@ -96,13 +96,13 @@
         "mutants": 9,
         "saved_grades_reproduced": 13,
         "firmware_source_and_binary_unchanged": true,
-        "evidence_sha256": "5cdeefa00b677f2d4ee7f8617401897f554a68a576108d758623627ea87c6c36",
-        "ciphertext_sha256": "82b6944214be1afae7540ecefd4037b0da9ec36d8b1fdb4ea29b373326095519",
-        "manifest_sha256": "ab78c69684444ea7c944222209d63afb1759301daa9c97568070c14703d92f73",
+        "evidence_sha256": "4b3f30bc76876deed8e5ea19de58b3b2cbf9dde2393d6a25a9aa0868d73ace4e",
+        "ciphertext_sha256": "893d43e7380712d29b62acc3b42653a6aea3387e8ce8c9e52822fd0095cbcef0",
+        "manifest_sha256": "945c02a627a29f443e835b606f44e0dfc05dafc2ca0a16f2cd9daa8949b1b9a2",
         "admitted": true,
-        "case_version": "5",
-        "evaluator_version": "5",
-        "seconds": 227.99756287503988,
+        "case_version": "4",
+        "evaluator_version": "4",
+        "seconds": 226.95512658299413,
         "diagnostic_checks": 9,
         "final_checks": 9
       },
@@ -113,30 +113,30 @@
         "mutants": 4,
         "saved_grades_reproduced": 8,
         "firmware_source_and_binary_unchanged": true,
-        "evidence_sha256": "8d154d8b67b15e2f5e0dd0c0b4b5d32d933d108963349a9c9e77bfd6223c232e",
-        "ciphertext_sha256": "b4de23c0f93d502ac2d487de6939760e1cbc3ef1b0ccbc9b1225aa98670d1cbf",
-        "manifest_sha256": "55dac15573d96d3ec0e761535a36cb918080b737c4be72e307f44977439a7baa",
+        "evidence_sha256": "0de1f9985200734789a8b18c219db43d8a4c6a93c6146be3384404fff57d307a",
+        "ciphertext_sha256": "e771eef060e142759b61ff113c366c658faffe14e2d74f9a56267ca537e3433f",
+        "manifest_sha256": "035a8916f8a4ab4ad14554e0903f79a62020e1517682f5e75f7b40b9e9464cc3",
         "admitted": true,
-        "case_version": "5",
-        "evaluator_version": "5",
-        "seconds": 175.68129024998052,
+        "case_version": "4",
+        "evaluator_version": "4",
+        "seconds": 174.61486629204592,
         "diagnostic_checks": 17,
         "final_checks": 85
       },
       {
         "case": "parameter-store-v1",
-        "sessions": 11,
+        "sessions": 10,
         "references": 2,
-        "mutants": 7,
-        "saved_grades_reproduced": 11,
+        "mutants": 6,
+        "saved_grades_reproduced": 10,
         "firmware_source_and_binary_unchanged": true,
-        "evidence_sha256": "00938036905a30ecb9c1b7b1ca0f925a169fe70b928ca26c76a9f0e07a6ec468",
-        "ciphertext_sha256": "6f59c79bced3210ef7649cc9fe3d78d8f34df4f54754e44e7e6076ae2ffa9ba6",
-        "manifest_sha256": "72b6097877b6109b935e57141b91bfaf7d21a57d1a536a7cca581fe553c4c4f1",
+        "evidence_sha256": "2e9a43777fb67681050903af9e1fcd27ed4ff5223a836a032c312a8792d43f67",
+        "ciphertext_sha256": "72fd3eebe501494f91a4dd18d68e8570a301ea585275440decb78d6eb7f9da48",
+        "manifest_sha256": "4b0e75a1ace10fcf7104bef6e619039619fe7811f24ffd588d03a5a3706efd80",
         "admitted": true,
-        "case_version": "5",
-        "evaluator_version": "5",
-        "seconds": 660.9057402499602,
+        "case_version": "4",
+        "evaluator_version": "4",
+        "seconds": 591.4770466670161,
         "diagnostic_checks": 366,
         "final_checks": 891
       }
@@ -146,22 +146,27 @@
       {
         "case": "sampled-sensor-v1",
         "old_elf_sha256": "9b17127367e9a6f35b762d53ed520b3d09789dd39a02aeedc5f8a57d174f883d",
-        "rebuilt_elf_sha256": "c2ba636010b2086179f4b5b5f0314e95d65cd1e5008fae212e5be54ffbe69b6b",
+        "rebuilt_elf_sha256": "b433a80443a574ed99891c922b30203c39f39a0df19e80173a85735b9f6cf99c",
         "elf_byte_identical": false,
         "flash_binary_byte_identical": true
       },
       {
         "case": "parameter-store-v1",
         "old_elf_sha256": "89ce9d2d7d273206ee83f33f7889aa4439e69c58f57ec5be31d295a719d6b560",
-        "rebuilt_elf_sha256": "640172e47f90b5ab633acb1592a6d80bdaeb85da73d3fd66db42b318f21e932a",
+        "rebuilt_elf_sha256": "5de8a2fb377ea877302f31e146c347898a09d425c24cceb935324c5e613a4196",
         "elf_byte_identical": false,
         "flash_binary_byte_identical": true
       }
     ],
-    "preserved_native_attempts": []
+    "preserved_partial_attempt": {
+      "case": "parameter-store-v1",
+      "completed_sessions": 1,
+      "cause": "Renode monitor-port AddressAlreadyInUse startup failure; complete unchanged retry passed.",
+      "startup_log_sha256": "7213d9ec46b2179b2faaf2053d9095d1e3a3eaa997a1b86afc5e4dba2db083ad"
+    }
   },
   "store_prediction_freeze": {
-    "sha256": "6d5fcf3812a67abd0631ff643d9978152edf99e174d741d769764f75a599e111",
+    "sha256": "3ab5eecfaf1002fee11ff2e0a491033c7ab190382a66dd7d1fde072a0f33e1c7",
     "frozen_before_store_native_measurement": true,
     "independent_method": "Symbolic firmware transitions and declared transformations, with effect-grant preflight refusal; no native grades consumed.",
     "expected_failed_check_counts": {
@@ -170,25 +175,15 @@
       "order": 89,
       "wrong-bank": 36,
       "abort": 51,
-      "idle-only-update": 12,
-      "short-rejection-frame": 5
+      "idle-only-update": 12
     },
     "all_measured_failure_sets_match": true,
-    "prior_six_prediction_sha256": "3ab5eecfaf1002fee11ff2e0a491033c7ab190382a66dd7d1fde072a0f33e1c7",
-    "prior_six_sets_retained": true,
-    "private_rejection_witnesses": {
-      "schema": "benchmark-rejection/1",
-      "diagnostic_checks": 2,
-      "final_checks": 5,
-      "derived_from_unchanged_firmware": true,
-      "candidate_receive_boundary_independent": true,
-      "exact_request_bytes_not_required": true
-    },
+    "rejected_preflight_sha256": "e904785d3d15db0c6775189ed40bc296520d5f9786bf97871cf1ba97d4f98116",
+    "rejected_preflight_cause": "Independent derivation initially omitted effect grants; source/contract audit corrected it before store native measurement. Original script/artifact retained.",
     "independent_correct_behavior_review": {
       "diagnostic_checks": 366,
       "final_checks": 891,
-      "derivation_failures": 0,
-      "method": "Prior source-derived normal state/output expectations retained; new deterministic complete-response witnesses independently audited before native measurement."
+      "derivation_failures": 0
     }
   },
   "recovery_verification": {
@@ -203,13 +198,13 @@
       "failed_attempt_preserved": true,
       "original_operation_count": 1,
       "no_replay": true,
-      "adapter_dispatch_and_outcome_labels_preserved": true,
-      "dispatch_outcome_labels": "Synthetic evaluator-owned adapter proof labels; public-controller regression verifies actual durable event linkage.",
-      "encrypted_proof_sha256": "33b3006124a73114f28a6ca598f14925adbbd743e57bbc268d29679bafc03692",
-      "startup_observation_sha256": "69467da575206079c71ce9c9e7d2eaa51e3e3cef70e808a6b85239657e122bef",
-      "encrypted_evidence_sha256": "edf440432d3925eb9791af9a66a420567c3ebe93c052b1d579326859cded4354",
+      "encrypted_proof_sha256": "6b4dd193434c4ca557f4814b4b6e7dc3facaec4a9226ea1cfe0c461ed597aa12",
+      "startup_observation_sha256": "c378181f45b0cf0ce4d53a74569b0fb1c2d9e5661c4249c8f7c32a5961d1961f",
+      "encrypted_evidence_sha256": "044d73c1206938e9b60c02da1e1e425fef3d93bc630d5d7e5cd3d01cb3698395",
       "cleanup_confirmed": true,
-      "wall_seconds": 7.05074366601184
+      "wall_seconds": 7.020172792021185,
+      "adapter_dispatch_and_outcome_labels_preserved": true,
+      "dispatch_outcome_labels": "Synthetic evaluator-owned adapter proof labels; public-controller regression verifies actual durable event linkage."
     },
     "controller_durability": {
       "execution": "public-controller deterministic regression with external scripted worker, TCP runtime and controlled process handles",
@@ -218,13 +213,13 @@
       "proves": "Durable bounded revision, stale-token refusal, failed-write preservation/no replay, new binding claim, six checked gates, fresh reuse and independent regrading.",
       "native_controller_trial": false
     },
-    "preserved_private_harness_preflight_attempts": 0
+    "preserved_private_harness_preflight_attempts": 2
   },
   "tdd_task_3": {
-    "release_version": "Builder RED expected 5 but produced 4; GREEN five pin/build tests passed.",
-    "stale_workflow": "Version 4 workflow identities accepted in RED for all three emulated cases; version 5 registry rejects them in GREEN.",
-    "fixture_refresh": "57 focused tests initially failed on stale version 4 fixtures (7 failures, 29 errors); current version 5 fixtures pass all 57 in 11.220 seconds.",
-    "nonbehavioral_harness_errors": 0
+    "release_version": "Builder RED expected 4 but produced 3; GREEN four build-pipeline tests passed.",
+    "stale_workflow": "Version 3 workflow identities accepted in RED for all three emulated cases; version 4 registry rejects them in GREEN.",
+    "fixture_refresh": "57 focused tests initially failed on stale version 3 fixtures (7 failures, 29 errors); current version 4 fixtures pass all 57 in 11.948 seconds.",
+    "initial_nonbehavioral_harness_errors_preserved": true
   },
   "publication": {
     "privacy_and_local_links": "passed",
@@ -238,21 +233,15 @@
     ],
     "counts": {
       "tracked_markdown": 44,
-      "tracked_local_links": 111,
+      "tracked_local_links": 107,
       "sdist_markdown": 41,
-      "sdist_local_links": 108,
+      "sdist_local_links": 102,
       "wheel_files": 128,
-      "sdist_files": 217,
-      "tracked_files": 214,
+      "sdist_files": 215,
+      "tracked_files": 213,
       "wheel_code_resources": 121,
       "firmware_images": 4
     }
-  },
-  "superseded_verification": {
-    "case_evaluator_version": "4",
-    "index": "transaction-recovery-v4-verification.json",
-    "commit": "f6c055dcc747ec8f6a9d459195c09a68ec4459eb",
-    "reason": "Final review found candidate first-line receive framing could earn rejection credit; v4 evidence does not qualify the independent complete-response repair."
   },
   "next_model_trial": {
     "model": "gpt-6.1-sol",

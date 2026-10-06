@@ -2,8 +2,8 @@
   "schema": "benchmark-case/2",
   "id": "tq9-v2",
   "family": "tq9",
-  "version": "4",
-  "evaluator_version": "4",
+  "version": "5",
+  "evaluator_version": "5",
   "execution": "actual-agent-emulation",
   "evidence_track": "firmware",
   "adapter_key": "emulator-v2",
@@ -28,11 +28,11 @@
   },
   "truth": {
     "path": "groundtruth/tq9-v2.enc",
-    "sha256": "893d43e7380712d29b62acc3b42653a6aea3387e8ce8c9e52822fd0095cbcef0"
+    "sha256": "82b6944214be1afae7540ecefd4037b0da9ec36d8b1fdb4ea29b373326095519"
   },
   "calibration": {
     "status": "passed",
-    "evidence_sha256": "4b3f30bc76876deed8e5ea19de58b3b2cbf9dde2393d6a25a9aa0868d73ace4e",
+    "evidence_sha256": "5cdeefa00b677f2d4ee7f8617401897f554a68a576108d758623627ea87c6c36",
     "input_hashes": {
       "source": "7ab030a6849a88ae0f1fd4faff1432fab6f3a0bcc20f90bb96869fa72c4d7411",
       "contract": "196b735f1e8ce6629cf7bb3d253373283c1d5d5dcf669b92f3636a49c6812295",

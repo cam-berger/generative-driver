@@ -1,0 +1,205 @@
+{
+  "schema": "unchanged-store-repeat-verification/1",
+  "frozen_revision": "21359b466f24d58cdb9a0bfb838a64c58de713b0",
+  "evaluator_identity": "f5eb06ffcf1584cbf0435fc1d0298183c44d0f71474956e6fa6efee236d74914",
+  "wheel_sha256": "c1ad8d66d2920e83be4dcf429ca58bfa412d9a4df58fbd26532d5faa6bcf846c",
+  "model": "gpt-6.1-sol",
+  "reasoning_effort": "medium",
+  "case": "parameter-store-v1",
+  "scenario": "original",
+  "case_seed": 0,
+  "new_trials": 1,
+  "workflow_budget_seconds": 10800,
+  "maximum_model_repairs": 2,
+  "qualified_autonomous_completions": 1,
+  "previous_trial_preserved": true,
+  "previous_trial_outcome": "blocked",
+  "previous_suite_completion": "2/3",
+  "prior_candidate_or_feedback_assigned": false,
+  "additional_candidate_instructions": false,
+  "accepted_stages": [
+    "acquire",
+    "interpret",
+    "probe",
+    "ground",
+    "emit",
+    "reuse"
+  ],
+  "model_repairs": 0,
+  "additional_worker_assignments": 0,
+  "diagnostic_checks": {
+    "passed": 174,
+    "total": 174
+  },
+  "final_checks": {
+    "passed": 696,
+    "total": 696
+  },
+  "elapsed_seconds": 606.1101498603821,
+  "suite_elapsed_seconds": 606.580913066864,
+  "usage": {
+    "input_tokens": 1285702,
+    "cached_input_tokens": 1072384,
+    "output_tokens": 18376,
+    "reasoning_output_tokens": 919,
+    "total_tokens": 1304078,
+    "observed_total_tokens": 1304078,
+    "reported_attempts": 6,
+    "attempts": 6,
+    "coverage": 1.0,
+    "counting": "input + output; cached input and reasoning output are subsets"
+  },
+  "interventions": [],
+  "managed_operations": 38,
+  "all_managed_operations_finished": true,
+  "postflight_unchanged": {
+    "executor_unchanged": true,
+    "installed_provenance_unchanged": true,
+    "native_hashes_unchanged": true,
+    "cli_hash_unchanged": true,
+    "wheel_hash_unchanged": true,
+    "evaluator_identity_unchanged": true
+  },
+  "recorded_regraded_success_agree": true,
+  "private_service_stopped_and_process_absent": true,
+  "known_failure_sequence_exercised_in_visible_probes": false,
+  "update_still_assumes_no_pending_transaction": true,
+  "stage_metrics_all_attempts": {
+    "acquire": {
+      "attempt_count": 1,
+      "worker_seconds": 35.470042624976486,
+      "tool_seconds": 0.016289949417114258,
+      "tool_calls": 1,
+      "usage": {
+        "input_tokens": 58487,
+        "cached_input_tokens": 25472,
+        "output_tokens": 1203,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 59690,
+        "observed_total_tokens": 59690,
+        "reported_attempts": 1,
+        "attempts": 1,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      }
+    },
+    "interpret": {
+      "attempt_count": 1,
+      "worker_seconds": 151.60501587501494,
+      "tool_seconds": 0,
+      "tool_calls": 0,
+      "usage": {
+        "input_tokens": 525441,
+        "cached_input_tokens": 460928,
+        "output_tokens": 5272,
+        "reasoning_output_tokens": 583,
+        "total_tokens": 530713,
+        "observed_total_tokens": 530713,
+        "reported_attempts": 1,
+        "attempts": 1,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      }
+    },
+    "probe": {
+      "attempt_count": 1,
+      "worker_seconds": 125.70153666695114,
+      "tool_seconds": 52.79374098777771,
+      "tool_calls": 29,
+      "usage": {
+        "input_tokens": 244036,
+        "cached_input_tokens": 214784,
+        "output_tokens": 3404,
+        "reasoning_output_tokens": 143,
+        "total_tokens": 247440,
+        "observed_total_tokens": 247440,
+        "reported_attempts": 1,
+        "attempts": 1,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      }
+    },
+    "ground": {
+      "attempt_count": 1,
+      "worker_seconds": 123.76226087502437,
+      "tool_seconds": 0,
+      "tool_calls": 0,
+      "usage": {
+        "input_tokens": 215144,
+        "cached_input_tokens": 168448,
+        "output_tokens": 5083,
+        "reasoning_output_tokens": 163,
+        "total_tokens": 220227,
+        "observed_total_tokens": 220227,
+        "reported_attempts": 1,
+        "attempts": 1,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      }
+    },
+    "emit": {
+      "attempt_count": 1,
+      "worker_seconds": 41.077334041008726,
+      "tool_seconds": 0.07693696022033691,
+      "tool_calls": 2,
+      "usage": {
+        "input_tokens": 61569,
+        "cached_input_tokens": 45440,
+        "output_tokens": 1440,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 63009,
+        "observed_total_tokens": 63009,
+        "reported_attempts": 1,
+        "attempts": 1,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      }
+    },
+    "reuse": {
+      "attempt_count": 1,
+      "worker_seconds": 70.71232058398891,
+      "tool_seconds": 52.69287085533142,
+      "tool_calls": 6,
+      "usage": {
+        "input_tokens": 181025,
+        "cached_input_tokens": 157312,
+        "output_tokens": 1974,
+        "reasoning_output_tokens": 30,
+        "total_tokens": 182999,
+        "observed_total_tokens": 182999,
+        "reported_attempts": 1,
+        "attempts": 1,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      }
+    }
+  },
+  "verification_reused": {
+    "installed_tests_each": 441,
+    "installed_python_versions": [
+      "3.11.15",
+      "3.13.12"
+    ],
+    "archive_skips": 0,
+    "source_code_changed": false,
+    "selected_admission_passed": true,
+    "fresh_scripted_setup_replay_passed": true,
+    "new_native_qualification_sessions": 0
+  },
+  "retained_evidence_sha256": {
+    "run-plan.md": "fb9e327068f0312c00c2355d2bece551ca3c4b4db066c375629379884f3caab2",
+    "manifest.json": "932a9fbf70d9dacf31014a33db76a51aab37679b22baa598763f2652a8c3f888",
+    "preflight.json": "753670d80d317f4b84944abe12cbcf0934eb6b058048cbd3451f561018b54ae1",
+    "unchanged-comparison.json": "56a444afef04311ec7b6921280ad1bbfa30d7dd13e9564b37fee82ab2c4c75db",
+    "frozen-experiment.json": "a26f7ea89d386a4f7ecec706e63c79ac4ee6b575ae6afe636188527f30c583f0",
+    "readiness-design.md": "0af8a361de5ef44e81690341758c72c305f0dcbb70f99233c41cbf846ff1fcc3",
+    "readiness-execution.md": "2d07fa652c219edd527c3599a42a5a172601f1a05643fd416e196edc3c452d48",
+    "results.json": "13c7c3bc10b44fd46c9760187de641f7215a194698863c9fbf7ebe3c3de0241b",
+    "postflight.json": "15234103d433f29941e4dd243c6eafbec4475165918bf2d5073b062a84b36126",
+    "external-workspace-retention.json": "a45513a7d549474f4dc3ba86b4c4c065487fded2c26cf6d8e8763faebc514e4c",
+    "service-stop.json": "16cce3e6e0ecadf4cb1ce8aca423d46ecd9849ee2ccf064cb747787bd7ebbf99",
+    "service-stop-verification.json": "eadde1feb109a6356cd64b2fecad8d4582c046d324cdbe11410b3dbef6319046",
+    "result-execution-review.md": "2bcc1f24c5e63ab0f561e580d19d747624f45398d5b2b2b5548334c855cd75fb",
+    "result-design-review.md": "51ddc79165389567baa1e204a9c44b12e3eddf1076c3a700f3103c432d474afd"
+  }
+}

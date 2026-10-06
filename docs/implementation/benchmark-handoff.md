@@ -1,4 +1,4 @@
-# Benchmark review and growth handoff — 2026-10-05
+# Benchmark review and growth handoff — 2026-10-06
 
 The workflow is acquire, interpret, probe, ground, emit, reuse. All six gates, a fresh agent's package-only mission and independent final behavior are required for acceptance. The current research core has three original firmware families and a nine-slot default suite; the model study has not run.
 
@@ -8,13 +8,17 @@ Implementation `556d5e0` fixes repair instructions/context, ground evidence/rout
 
 The user then requested one unchanged store repeat from scratch. That [repeat](../research/2026-10-05-store-repeat-results.md) completed all six stages, fresh reuse and 696/696 final checks in 10.1 minutes, with zero repairs or intervention. Its settings and installed bytes match the previous trial, and no prior candidate or advice was supplied. Visible probes did not exercise update while a transaction was pending; the generated update still assumes an idle transaction state. Record this as a separate 1/1 repeat, preserving the original 2/3 suite and known edge case. The [repeat index](store-repeat-verification.json) retains provenance; its service is stopped. No pipeline code changed.
 
+## Transaction coverage and recovery amendment
+
+The approved [execution plan](transaction-recovery-plan.md) adds mandatory pending-update evaluation and checked recovery of owned emulators. Store update must discard pending edits from either bank, change only the requested committed cell, advance generation once and end idle. Both phases require six named scenarios and complete ending-state evidence; incomplete responses cannot establish rejection. Recovery requires a trusted completed model-failure outcome for every unresolved effectful dispatch, verified disposal, a distinct replacement with independent initial-state reads, and remaining repair budget. Failed commands remain failed. Unknown, host and operator faults, physical bindings, cancellation, lost ownership and final grading retain their existing blockers.
+
+Version 4 release verification completed on October 6. Source and clean installed Python 3.11/3.13 each pass 457 tests with zero archive skips. Thirty-one native sessions reproduce all grades and three source plus six installed admissions pass. Real native adapter recovery and the separate public-controller deterministic regression pass. Firmware sources and flash binaries are unchanged; Windows and a new model trial remain unrun. The [verification index](transaction-recovery-verification.json) records measured snapshot identity, hashes, preserved failures and limits.
+
 ## Next work
 
-1. Preserve this frozen experiment and its blocked store outcome. Keep medium reasoning. Do not relabel the store's historical probe pass as current acceptance or its zero-check partial verdict as an executed final failure.
-2. Add the known update-while-pending sequence to a fixed behavioral evaluation path and a failing transaction-state regression. The unchanged repeat showed that exploratory probe selection can leave this defect untested. Determine a composition that correctly normalizes transaction state from firmware and measured behavior; preserve other committed cells and finish with no pending transaction.
-3. Design and test trusted emulator reconciliation after verified process disposal/reset so a known candidate discrepancy can use remaining bounded repair. Preserve the physical-device uncertainty guard; never infer that a failed command was side-effect-free merely because its transcript is short or its emulator was later stopped.
-4. Review and verify any further code changes, refresh qualification when evaluator identity changes, then freeze a separate experiment. The sensor demonstrates actual repair-context consumption; the store demonstrates the ground-to-interpret route. Neither establishes general reliability.
-5. After store feasibility closure, run fixed-configuration repetitions before expanding to external firmware. The nine-trial pilot and larger model study remain future work.
+1. Preserve the frozen three-family context experiment and unchanged store repeat. Their version 3 probe/final passes retain their original coverage and do not become acceptance under version 4.
+2. Freeze a separate next model trial at `gpt-6.1-sol`, medium reasoning, against the refreshed version 4 evaluator, explicit settings and existing budgets. This implementation task authorizes no inference trial.
+3. After store feasibility closure, run fixed-configuration repetitions before expanding to external firmware. The nine-trial pilot and larger model study remain future work.
 
 ## Historical verification and future growth
 

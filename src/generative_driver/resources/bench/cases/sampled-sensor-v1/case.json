@@ -2,8 +2,8 @@
   "schema": "benchmark-case/2",
   "id": "sampled-sensor-v1",
   "family": "sampled-sensor",
-  "version": "3",
-  "evaluator_version": "3",
+  "version": "4",
+  "evaluator_version": "4",
   "adapter_key": "emulator-v2",
   "execution": "actual-agent-emulation",
   "evidence_track": "firmware",
@@ -24,7 +24,7 @@
   },
   "truth": {
     "path": "groundtruth/sampled-sensor-v1.enc",
-    "sha256": "d809f1ef762cbb24c1bd70611208b8451dc92a11c38b1b7757e464bc782e737b"
+    "sha256": "e771eef060e142759b61ff113c366c658faffe14e2d74f9a56267ca537e3433f"
   },
   "default_effects": [
     "write"
@@ -32,15 +32,15 @@
   "approval_scope": "emulator",
   "calibration": {
     "status": "passed",
-    "evidence_sha256": "5da85312dbd6afb3d6bec7b163897754e6b4f6b18028f0ab82730282761c954a",
+    "evidence_sha256": "0de1f9985200734789a8b18c219db43d8a4c6a93c6146be3384404fff57d307a",
     "input_hashes": {
       "source": "22db46bf51be6ec5fdd141211385ac88b48eaa825527130fb00af1bc8cbc5918",
       "contract": "26cb998bce5fd42e0c8497312546951adc3dfa75d2ab8956ea8bba2ae4397065",
       "recipe": "e8b105d2b902b7eacbfc2d8ea5e8bca6d8141555c7035948394238e7cbb08975",
       "references": "986ae98aeddda6e36a16aaafb35f680d04ee303b80be1391483f4416ca048141",
       "mutations": "3d5bc20a38aae7399e49e48dbbd6c3a4909cfb64fd3601f2aee5888c41fd47ff",
-      "build": "96de567eb09b587ae39ceae69cb73f6d3dbc75de8b6ccfebde4d92f72a577c0b",
-      "inventory": "686455d7b496df21fe20f9a76d3e5f044b955c4bd6be0ba855fc6bd2e51f0343"
+      "build": "81d5e4d34ce3ce5a92d9103a9304860ea146c0fd1c7625d89ae51e3091c30ab0",
+      "inventory": "62726dc3c484d7ca57810cbeff74b87dc4ed60c60907659bb3ec21681692a636"
     }
   },
   "provenance": {

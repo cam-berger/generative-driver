@@ -2,8 +2,8 @@
   "schema": "benchmark-case/2",
   "id": "parameter-store-v1",
   "family": "parameter-store",
-  "version": "3",
-  "evaluator_version": "3",
+  "version": "4",
+  "evaluator_version": "4",
   "adapter_key": "emulator-v2",
   "execution": "actual-agent-emulation",
   "evidence_track": "firmware",
@@ -24,7 +24,7 @@
   },
   "truth": {
     "path": "groundtruth/parameter-store-v1.enc",
-    "sha256": "7ed839785112e44122ca1b4b9971e8587526221a88d4dc7c169e47205d1e9db5"
+    "sha256": "72fd3eebe501494f91a4dd18d68e8570a301ea585275440decb78d6eb7f9da48"
   },
   "default_effects": [
     "write"
@@ -32,15 +32,15 @@
   "approval_scope": "emulator",
   "calibration": {
     "status": "passed",
-    "evidence_sha256": "9c55aad23cca7aec14456590cb434e6e947b75e1d3d8b38e911ef40eacf8e4c9",
+    "evidence_sha256": "2e9a43777fb67681050903af9e1fcd27ed4ff5223a836a032c312a8792d43f67",
     "input_hashes": {
       "source": "d7cdd72a59fdadf66f605418347b63661fa4655745e268c08fc62bf4961eb8cf",
-      "contract": "429fa63b89a0112f7b97d4479d005ec985f4664b41a7c40e7a74030bf44dcdd2",
+      "contract": "da24108866b8551c311206160f68898b9081b2d8ec7c25c4488d1d8385e44143",
       "recipe": "2112ee8d59bb53b21345166d24a6020bc0d80173ff0c57ca86ca62a71b42d1e0",
-      "references": "54419b3f87d24296d9dee0d00814cbf74524260a8db186424ef13cbc449db2ec",
-      "mutations": "b62c75df261762e3aae90517f95183588ff685776f2b0ba7e9d479cca0b1ce81",
-      "build": "cae2b22332e5fca558856570edbc408008a17234929b5c63abd5ea1c01d8b9c7",
-      "inventory": "91576013cfd8d83279fd21f718ebb05d7d2717183c640207be1bbec1d40496b8"
+      "references": "e7f34a790c8e83dcf973b37266c5b3981296bb5bcf8d1b11a6d31195b6a53e25",
+      "mutations": "f7cad1e720887221adb1bd8474b74b8dee45a20729eb714629765b8ca52db663",
+      "build": "c0ac4d8f8e673591ba8d2eeab3c5cc0a625a40e9f285e9cda137336e19fb93e2",
+      "inventory": "a3553994124e36205831f7f847b60cd7968537d27fcb23708038ce6e38242805"
     }
   },
   "provenance": {

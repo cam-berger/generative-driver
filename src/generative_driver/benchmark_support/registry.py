@@ -38,8 +38,8 @@ _BUILTINS = {
 }
 
 
-CURRENT_VERSIONS = {'tq9': '2', 'bme280': '3', 'tq9-v2': '3',
-                    'sampled-sensor-v1': '3', 'parameter-store-v1': '3'}
+CURRENT_VERSIONS = {'tq9': '2', 'bme280': '3', 'tq9-v2': '4',
+                    'sampled-sensor-v1': '4', 'parameter-store-v1': '4'}
 
 
 def validate_workflow_manifest(manifest):

@@ -29,7 +29,7 @@ class McpTests(unittest.TestCase):
             truth.write_bytes(b'ciphertext')
             sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
             manifest = {'schema': 'benchmark-case/2', 'id': 'tq9-v2', 'family': 'tq9',
-                        'version': '3', 'evaluator_version': '3', 'execution': 'actual-agent-emulation',
+                        'version': '4', 'evaluator_version': '4', 'execution': 'actual-agent-emulation',
                         'evidence_track': 'firmware', 'adapter_key': 'emulator-v2',
                         'approval_scope': 'emulator', 'default_effects': ['write'],
                         'scenarios': ['original'], 'required_stages': ['acquire','interpret','probe','ground','emit','reuse'],

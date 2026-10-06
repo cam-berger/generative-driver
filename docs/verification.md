@@ -2,6 +2,24 @@
 
 All workflows end at acquire, interpret, probe, ground, emit, reuse. Scripted tests, installation replay, native reference qualification, model execution and physical observations retain separate labels.
 
+## Transaction coverage and emulator recovery — 2026-10-06
+
+The [approved plan](implementation/transaction-recovery-plan.md) is complete. Parameter-store evaluation now always includes idle update, pending same-bank update, pending different-bank update, stage/commit, stage/abort and complete rejection, with independent ending-state observations. The configurator can use remaining repair budget after every unresolved effectful dispatch has a trusted completed model-failure outcome and an owned emulator is replaced with independently verified initial state. Failed command evidence remains failed; recovery never replays the uncertain write.
+
+The three emulated cases use case/evaluator version 4. Thirty-one native reference/mutant sessions qualify the measured version 4 working-tree implementation: 12 correct-reference and 19 mutant sessions. All saved grades reproduce and all three authenticated admissions pass; installed admissions pass in both Python environments. Store mutant failure sets match independent predictions frozen before measurement. Firmware sources and loaded flash binaries are unchanged. One store attempt stopped after a diagnostic session on a Renode monitor-port collision; its partial record/log is preserved, and an unchanged fresh retry passed.
+
+| Local macOS environment | Tests | Time | Result |
+|---|---:|---:|---|
+| Source Python 3.13.12 | 457 | 117.526 s | Passed |
+| Installed Python 3.11.15 | 457 | 112.503 s | Passed |
+| Installed Python 3.13.12 | 457 | 119.643 s | Passed |
+
+All three suites enable both archive gates and have zero skips. Installed suites run from the extracted source archive outside the checkout with installed imports and evaluator identity verified, and checkout/credential/native overrides removed. Both installations pass explicit setup smoke, relocated package replay and Codex/Goose setup asset checks. The tested archives contain the final runtime, resources and tests; final measurement/reporting prose follows archive construction. The [verification index](implementation/transaction-recovery-verification.json) records hashes, exact later documentation differences, preserved failures and limits.
+
+Real native recovery confirms disposal of the old owned Renode process, a distinct live replacement/binding, independently matching startup readings, encrypted proof linkage, retained failed-write evidence and cleanup without replay. This adapter lifecycle proof is paired with the public-controller deterministic regression for durable revision, leases, bounded repair, six accepted gates, fresh reuse and independent regrading. It is not a native controller trial or a model result. Two private proof-harness preflight mistakes were preserved and corrected before candidate I/O. Evaluator-only reference reply robustness diagnostics retain inherited unqualified acknowledgment-only/empty-output operations; native functional qualification and admission passed.
+
+Windows CI has not run for these commits. No paid model trial or physical operation ran in this task; live Goose/Codex UI behavior and worker filesystem isolation remain unverified. The next model trial requires a separate freeze at `gpt-6.1-sol`, medium reasoning. Prior feasibility experiments retain their original outcomes and coverage.
+
 ## Pipeline repair — 2026-10-05
 
 The [pipeline report](research/2026-10-05-pipeline-repair-results.md) preserves earlier same-model feasibility experiments and their [verification index](implementation/pipeline-repair-verification.json). Subsequent corrections add candidate-only capability validation, mapping feedback, pre-transport refusal classification and atomic cleanup status. Source tests pass 432 checks with three archive skips; installed Python 3.11.15 and 3.13.12 each pass 432 with zero skips. Final archives and installation replay pass. Thirty native reference/mutant sessions reproduce all saved grades and three authenticated admissions qualify the refreshed evaluator.

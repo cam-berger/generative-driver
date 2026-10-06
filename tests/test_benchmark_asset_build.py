@@ -117,8 +117,8 @@ else:
             self.assertEqual(manifest['calibration']['status'], 'pending')
             self.assertEqual(manifest['family'], 'parameter-store')
             self.assertEqual(manifest['scenarios'], ['original'])
-            self.assertEqual(manifest['version'], '3')
-            self.assertEqual(manifest['evaluator_version'], '3')
+            self.assertEqual(manifest['version'], '4')
+            self.assertEqual(manifest['evaluator_version'], '4')
             self.assertEqual(set(manifest['images']), {'firmware.bin'})
             self.assertEqual(manifest['required_stages'], ['acquire','interpret','probe','ground','emit','reuse'])
             self.assertNotIn(str(author), json.dumps(manifest))
@@ -324,11 +324,19 @@ class LegacyBuildTests(unittest.TestCase):
             self.assertEqual({p.name for p in (root/'output').glob('*.bin')},{'firmware.bin'})
 
 class DistributedInventoryTests(unittest.TestCase):
+    def test_transaction_release_refuses_previous_emulator_version(self):
+        from generative_driver.benchmark_support.registry import validate_public_workflow_identity
+        for case in ('tq9-v2', 'sampled-sensor-v1', 'parameter-store-v1'):
+            with self.subTest(case=case):
+                with self.assertRaisesRegex(ValueError, 'version'):
+                    validate_public_workflow_identity({'case_id':case, 'case_version':'3',
+                        'evaluator_version':'3', 'scenario_id':'original', 'revision':0})
+
     def test_every_registered_firmware_pin_has_only_its_original_image_and_truth(self):
         from generative_driver.benchmark import case_root
         from generative_driver.benchmark_support.registry import pin_case
         root=case_root()
-        cases={'tq9':'2','tq9-v2':'3','sampled-sensor-v1':'3','parameter-store-v1':'3','bme280':'3'}
+        cases={'tq9':'2','tq9-v2':'4','sampled-sensor-v1':'4','parameter-store-v1':'4','bme280':'3'}
         for case,version in cases.items():
             with self.subTest(case=case):
                 pin=pin_case(case,'original',0)

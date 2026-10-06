@@ -53,10 +53,10 @@ class SealedEvidenceFixture:
     def payload(self, scenario='original', repaired=False):
         from generative_driver.benchmark_support.snapshots import canonical_digest, execution_provenance
         stages = ['acquire','interpret','probe','ground','emit','reuse']
-        pin = {'execution':'scripted-contract-fixture', 'case_id':'tq9-v2', 'case_version':'3',
+        pin = {'execution':'scripted-contract-fixture', 'case_id':'tq9-v2', 'case_version':'4',
             'scenario_id':scenario, 'case_seed':7, 'manifest_sha256':'c'*64, 'truth_sha256':'d'*64,
-            'image_hashes':{'firmware.bin':'e'*64}, 'time_policy':{}, 'evaluator_version':'3',
-            'manifest':{'schema':'benchmark-case/2','id':'tq9-v2','version':'3','evaluator_version':'3',
+            'image_hashes':{'firmware.bin':'e'*64}, 'time_policy':{}, 'evaluator_version':'4',
+            'manifest':{'schema':'benchmark-case/2','id':'tq9-v2','version':'4','evaluator_version':'4',
                 'scenarios':['original'], 'images':{'firmware.bin':'e'*64}, 'required_stages':stages}}
         snapshot = {'schema':'benchmark-execution-snapshot/1','case_pin':pin,
             'public_files':{}, 'executed':execution_provenance({'runtime':'scripted-contract-fixture'})}

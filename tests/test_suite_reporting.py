@@ -14,7 +14,7 @@ def fixture():
         'repetitions':1,'child_budget_seconds':10,'suite_budget_seconds':60,'max_active_children':1}
     pins=[];slots=[];trials=[];snapshots=[];reports={}
     for index,(entry,family) in enumerate(zip(manifest['entries'],('one','one','two'))):
-        pin={'case_id':entry['case'],'case_version':'3','evaluator_version':'3','family':family,
+        pin={'case_id':entry['case'],'case_version':'4','evaluator_version':'4','family':family,
             'scenario_id':entry['scenario'],'case_seed':0,'execution':'actual-agent-emulation','evidence_track':'firmware',
             'scope':'full-workflow','manifest_sha256':'a'*64,'truth_sha256':'b'*64,'image_hashes':{'image.bin':'c'*64},'pin_sha256':str(index+1)*64}
         pins.append(pin)
@@ -271,7 +271,7 @@ def export_fixture(root):
     for index,entry in enumerate(manifest['entries']):
         rid=f'r{index+1}';payload=SealedEvidenceTests().payload()
         pin=payload['case_pin'];pin.update(case_id=entry['case'],family='toy-family',scope='full-workflow',evidence_track='firmware',execution='actual-agent-emulation')
-        pin['manifest'].update(id=entry['case'],version='3',evaluator_version='3',execution='actual-agent-emulation')
+        pin['manifest'].update(id=entry['case'],version='4',evaluator_version='4',execution='actual-agent-emulation')
         snapshot=payload['execution_snapshot'];snapshot['snapshot_sha256']=canonical_digest({k:v for k,v in snapshot.items() if k!='snapshot_sha256'})
         private=root/'runs'/rid/'benchmark';private.mkdir(parents=True)
         (private/'execution.json').write_text(json.dumps(snapshot),encoding='utf-8')

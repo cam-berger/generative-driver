@@ -213,7 +213,7 @@ def assemble_release(authoring_root, build_report, password_file, output_dir):
     if truth.unlock(encrypted, password, digest) != payload:
         raise ValueError('Sealed inventory round-trip failed')
     manifest = {'schema': 'benchmark-case/2', 'id': case_id, 'family': metadata['family'],
-        'version': '3', 'evaluator_version': '3', 'adapter_key': 'emulator-v2',
+        'version': '4', 'evaluator_version': '4', 'adapter_key': 'emulator-v2',
         'execution': 'actual-agent-emulation', 'evidence_track': 'firmware', 'scope': 'full-workflow',
         'scenarios': ['original'], 'scenario_descriptors': {'original': {'kind': 'stable'}},
         'required_stages': ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse'],

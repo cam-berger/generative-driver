@@ -35,7 +35,7 @@ REQUIRED_MUTANTS = {
     'tq9': {'wrong-scale','constant-output','wrong-state','unsigned-temperature','wrong-temperature-scale',
             'wrong-temperature-unit','wrong-temperature-byteorder','wrong-crc','wrong-duty-effect'},
     'sampled-sensor': {'constant','scale','signedness','stale'},
-    'parameter-store': {'constant','scale','order','wrong-bank','abort'},
+    'parameter-store': {'constant','scale','order','wrong-bank','abort','idle-only-update'},
 }
 _REFERENCE_PHASES = {('diagnostic','original'), ('final','original')}
 
@@ -85,6 +85,10 @@ def validate_calibration(manifest, record):
         if not runs or len(runs)!=len(record['runs']):failures.append('run inventory')
         for run in runs.values():
             process=run['process']
+            if manifest['family']=='parameter-store':
+                from .parameter_store import REQUIRED_SCENARIOS
+                if not REQUIRED_SCENARIOS <= {c.get('scenario') for c in run['checks']}:
+                    failures.append('transaction scenario coverage:'+run['id'])
             expected_image=manifest['images']['firmware.bin']
             if (run['phase'],run['scenario']) not in _REFERENCE_PHASES or type(run['passed']) is not bool:
                 failures.append('run phase:'+run['id'])
@@ -202,6 +206,9 @@ def hydrate_truth(payload):
     scenario_phases={'original':deepcopy(phases)}
     for selected in scenario_phases.values():
         for phase in selected.values():
+            if payload['family']=='parameter-store':
+                from .parameter_store import validate_phase
+                validate_phase(phase)
             actions=phase['actions']; checks=phase['contract']['checks']
             required={c['id'] for c in checks}; observed=[i for a in actions if a['kind']=='observe' for i in a['checks']]
             if (not required or set(observed)!=required or len(observed)!=len(set(observed))

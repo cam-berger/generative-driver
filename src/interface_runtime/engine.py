@@ -782,6 +782,11 @@ def execute(model, operation, parameters=None, *, binding=None, allow_effects=()
                     _require(data[other:other + rule["size"]] == tx[start:stop],
                              "match", "request/reply match failed")
                 if "expect" in step:
+                    expect = step["expect"]
+                    if (any(line.startswith(prefix) for line in _lines(data)
+                            for prefix in expect.get("reject_line_prefix", ()))
+                            or any(data.startswith(bytes.fromhex(prefix)) for prefix in expect.get("reject_prefix_hex", ()))):
+                        entry["device_rejected"] = True
                     _require(_matches(data, step["expect"]), "expect", "response expectation mismatch")
                 if "capture" in step:
                     captures[step["capture"]] = data

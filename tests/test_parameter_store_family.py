@@ -7,10 +7,84 @@ from generative_driver.benchmark_support import parameter_store
 from generative_driver.benchmark_support.behavior import validate_records
 from generative_driver.benchmark_support.emulated_actions import execute_plan
 from interface_runtime.engine import execute, validate_model
-from benchmark_family_fixtures import FourCellStoreDevice, records_for, toy_store_model_four_cell
+from benchmark_family_fixtures import FourCellStoreDevice, records_for, toy_store_model_four_cell, toy_store_phase
 
 
 class ParameterStoreOracleTests(unittest.TestCase):
+    def test_pending_update_scenarios_are_mandatory_and_reject_idle_only_model(self):
+        # Omitting a reset-delimited pending episode must invalidate the oracle.
+        pin, truth = toy_store_phase()
+        incomplete = deepcopy(truth)
+        incomplete['phases']['diagnostic']['actions'] = [a for a in incomplete['phases']['diagnostic']['actions']
+            if a['episode'] != 'pending-same-bank-update']
+        with self.assertRaises(ValueError):
+            parameter_store.build_plan(pin, incomplete, 'diagnostic')
+        for phase in ('diagnostic', 'final'):
+            for composed in (False, True):
+                device = FourCellStoreDevice([4, 5, 6, 7, 8, 9, 10, 11])
+                model = toy_store_model_four_cell()
+                if composed:
+                    cancel = deepcopy(model['operations']['abort']['steps'][0])
+                    cancel['expect']['reject_line_prefix'] = ['ERR:syntax', 'ERR:range']
+                    model['operations']['update']['steps'].insert(0, cancel)
+                class Session:
+                    def reset(self, values):
+                        device.__init__(values['committed'])
+                        return device.observe()
+                    def set_running(self, value): pass
+                    def observe(self): return device.observe()
+                with tempfile.TemporaryDirectory() as temp:
+                    contract = parameter_store.contract(pin, truth, phase)
+                    rows = execute_plan(Session(), lambda task, inputs, grants: execute(model, task, inputs,
+                        binding={}, allow_effects=grants, transport_factory=device.factory),
+                        parameter_store.build_plan(pin, truth, phase), contract, Path(temp)/'evidence.json',
+                        parameter_store.observations)
+                grade = validate_records(contract, rows)
+                with self.subTest(phase=phase, composed=composed):
+                    self.assertEqual(grade['verdict'], 'passed' if composed else 'failed')
+                    if not composed:
+                        failed = {c['id'].split('/')[0] for c in grade['checks'] if not c['passed']}
+                        self.assertEqual(failed, {'pending-same-bank-update', 'pending-different-bank-update'})
+
+    def test_complete_rejection_cannot_be_replaced_by_incomplete_reply(self):
+        # A truncated rejection must not satisfy operation_ok=False on its own.
+        pin, truth = toy_store_phase()
+        for mode in ('complete', 'incomplete', 'positive-mismatch', 'identity-rejection', 'timeout'):
+            device = FourCellStoreDevice([4, 5, 6, 7, 8, 9, 10, 11])
+            original = device.exchange
+            def exchange(tx, rx, timeout_ms):
+                reply = original(tx, rx, timeout_ms)
+                if mode=='identity-rejection' and tx==b'ID\n': return b'ERR:identity\nREADY\n'
+                if reply.startswith(b'ERR:'):
+                    if mode=='incomplete': return reply.replace(b'READY\n', b'')
+                    if mode=='positive-mismatch': return b'OTHER\nREADY\n'
+                    if mode=='timeout': raise TimeoutError('toy reply timed out')
+                return reply
+            device.exchange = exchange
+            model = toy_store_model_four_cell()
+            if mode=='positive-mismatch':
+                model['operations']['commit']['steps'][0]['expect']['contains_line']='ACCEPTED'
+            class Session:
+                def reset(self, values):
+                    device.__init__(values['committed']); return device.observe()
+                def set_running(self, value): pass
+                def observe(self): return device.observe()
+            contract = parameter_store.contract(pin, truth, 'diagnostic')
+            checks = [c for c in contract['checks'] if c['scenario'] == 'rejection']
+            contract['checks'] = checks; contract.pop('required_scenarios', None)
+            plan = [a for a in truth['phases']['diagnostic']['actions'] if a['episode']=='rejection']
+            with tempfile.TemporaryDirectory() as temp:
+                def run():
+                    return execute_plan(Session(), lambda task, inputs, grants: execute(model, task, inputs,
+                        binding={}, allow_effects=grants, transport_factory=device.factory), plan, contract,
+                        Path(temp)/'evidence.json', parameter_store.observations)
+                if mode=='timeout':
+                    with self.assertRaisesRegex(RuntimeError, 'Host execution failed'): run()
+                    continue
+                rows = run()
+            with self.subTest(mode=mode):
+                self.assertEqual(validate_records(contract, rows)['verdict'], 'passed' if mode=='complete' else 'failed')
+
     def test_commit_changes_one_cell_and_generation_once(self):
         initial = [4, 5, 6, 7, 8, 9, 10, 11]
         state = parameter_store.expected_state(initial, [

@@ -3,11 +3,17 @@ from .family_support import integer, integer_vector, private_phase, signed16
 
 
 def contract(pin, truth, phase):
-    return private_phase(pin, truth, phase)["contract"]
+    selected = private_phase(pin, truth, phase)
+    if "required_scenarios" in selected["contract"]:
+        validate_phase(selected)
+    return selected["contract"]
 
 
 def build_plan(pin, truth, phase):
-    return private_phase(pin, truth, phase)["actions"]
+    selected = private_phase(pin, truth, phase)
+    if "required_scenarios" in selected["contract"]:
+        validate_phase(selected)
+    return selected["actions"]
 
 
 def expected_state(initial: list[int], actions: list[dict]) -> dict:
@@ -96,3 +102,47 @@ def reuse_passed(events, capabilities):
                 and event['result'].get('outputs',{}).get(read['outputs']['value']['output'])==-7):
             progress=4
     return progress==4 and events[-1]['observation'].get('pending_active') is False
+
+
+REQUIRED_SCENARIOS = {'idle-update', 'pending-same-bank-update', 'pending-different-bank-update',
+                      'stage-commit', 'stage-abort', 'rejection'}
+
+
+def validate_phase(phase):
+    """Require named reset-delimited episodes with complete independent state evidence."""
+    contract = phase['contract']
+    names = contract.get('required_scenarios', [])
+    if set(names) != REQUIRED_SCENARIOS or len(names) != len(REQUIRED_SCENARIOS):
+        raise ValueError('Incomplete parameter-store scenarios')
+    state = {prefix+bank+'_'+str(slot) for prefix in ('cell_', 'pending_') for bank in 'AB' for slot in range(4)}
+    state |= {'generation', 'pending_active'}
+    sequences = {'idle-update':['update'], 'pending-same-bank-update':['stage','update'],
+                 'pending-different-bank-update':['stage','update'], 'stage-commit':['stage','commit'],
+                 'stage-abort':['stage','abort']}
+    observed = []
+    for name in names:
+        actions = [a for a in phase['actions'] if a.get('episode') == name]
+        checks = [c for c in contract['checks'] if c.get('scenario') == name]
+        if not actions or actions[0]['kind'] != 'reset' or sum(a['kind']=='reset' for a in actions)!=1:
+            raise ValueError('Scenario requires one initial reset')
+        calls = [a for a in actions if a['kind']=='call']
+        if not calls or (name in sequences and [a['task'] for a in calls] != sequences[name]):
+            raise ValueError('Scenario lacks required task sequence')
+        if name.startswith('pending-'):
+            same = calls[0]['inputs'].get('bank') == calls[1]['inputs'].get('bank')
+            if same != (name=='pending-same-bank-update'):
+                raise ValueError('Pending scenario bank mismatch')
+        ids = {c['id'] for c in checks}
+        observed_ids = [i for a in actions if a['kind']=='observe' for i in a['checks']]
+        if not ids or set(observed_ids)!=ids or len(observed_ids)!=len(set(observed_ids)):
+            raise ValueError('Scenario lacks complete observations')
+        monitor = {c['id'].rsplit('/',1)[-1] for c in checks if c['channel']=='independent-monitor'}
+        if not state <= monitor:
+            raise ValueError('Scenario lacks independent complete state')
+        if name=='rejection' and not any(c['id'].endswith('/operation_rejected') and c['expected'] is True
+                and c['channel']=='runtime-transcript' for c in checks):
+            raise ValueError('Scenario lacks complete rejection evidence')
+        observed.extend(observed_ids)
+    all_observed = [i for a in phase['actions'] if a['kind']=='observe' for i in a['checks']]
+    if set(all_observed)!={c['id'] for c in contract['checks']} or len(all_observed)!=len(set(all_observed)):
+        raise ValueError('Unobserved or duplicate scenario checks')

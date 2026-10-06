@@ -89,6 +89,8 @@ def validate_records(contract: dict, records: list[dict]) -> dict:
         found = by_id.get(check['id'], [])
         reason = 'duplicate evidence' if len(found) > 1 else _record_reason(check, found[0] if found else None, contract['artifact_sha256'])
         result = {'id': check['id'], 'passed': reason is None}
+        if 'scenario' in check:
+            result['scenario'] = check['scenario']
         if reason:
             result['reason'] = reason
         results.append(result)

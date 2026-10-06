@@ -54,7 +54,16 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
                     units = monitor_units if check['channel'] == 'independent-monitor' else result.get('units', {})
                     if suffix == 'refused_without_io':
                         units = {'refused_without_io': 'boolean'}
-                    if suffix == 'operation_ok' and check['channel'] == 'runtime-transcript':
+                    if suffix == 'operation_rejected' and check['channel'] == 'runtime-transcript':
+                        units = {'operation_rejected': 'boolean'}
+                        value = (result.get('ok') is False and result.get('identity_verified') is True
+                            and result.get('error', {}).get('fault') == 'model'
+                            and result.get('error', {}).get('code') == 'execution_error'
+                            and bool(result.get('transcript'))
+                            and result['transcript'][-1].get('operation') == result.get('operation')
+                            and result['transcript'][-1].get('status') == 'completed'
+                            and result['transcript'][-1].get('device_rejected') is True)
+                    elif suffix == 'operation_ok' and check['channel'] == 'runtime-transcript':
                         units = {'operation_ok': 'boolean'}
                         value = result.get('ok') is True
                     else:

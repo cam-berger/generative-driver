@@ -11,8 +11,9 @@ def task_contract(case_id, effects):
     def task(meaning, inputs=None, outputs=None):
         return {'meaning': meaning, 'inputs': inputs or {}, 'outputs': outputs or {}}
     temperature = {'temperature': {'unit': 'degC'}}
-    location = {'bank': {'type': 'string'}, 'slot': {'type': 'integer'}}
-    change = {**location, 'value': {'type': 'integer', 'unit': 'configuration-unit'}}
+    location = {'bank': {'type': 'string', 'enum': ['A', 'B']},
+                'slot': {'type': 'integer', 'minimum': 0, 'maximum': 3}}
+    change = {**location, 'value': {'type': 'integer', 'unit': 'configuration-unit', 'minimum': -32768, 'maximum': 32767}}
     families = {
         'tq9-v2': {
             'temperature': task('Read the current temperature.', outputs=temperature),
@@ -28,10 +29,10 @@ def task_contract(case_id, effects):
         'parameter-store-v1': {
             'read': task('Read the committed value of the selected bank and slot.', location,
                 {'value': {'unit': 'configuration-unit'}}),
-            'update': task('Commit the requested change, preserving all other cells and leaving no pending transaction.', change),
-            'stage': task('Begin and stage the requested change, leaving the transaction pending and committed values unchanged.', change),
-            'commit': task('Apply the pending transaction and close it.'),
-            'abort': task('Discard the pending transaction, preserving committed values, and close it.')},
+            'update': task('Discard any pending uncommitted edits in either bank, commit only the requested value, preserve all other committed cells, advance generation once and finish with no pending transaction. Valid while idle or a transaction is pending.', change),
+            'stage': task('Begin and stage the requested change while idle, leaving the transaction pending and committed values and generation unchanged.', change),
+            'commit': task('Apply an existing pending transaction, advance generation once and close it. Requires a pending transaction.'),
+            'abort': task('Discard an existing pending transaction, preserve committed values and generation, and close it. Requires a pending transaction.')},
     }
     return {'schema': 'candidate-task-contract/1', 'tasks': families[case_id],
             'effect_grants': list(effects),

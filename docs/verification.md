@@ -18,7 +18,13 @@ All three suites enable both archive gates and have zero skips. Installed suites
 
 Real native recovery confirms disposal of the old owned Renode process, a distinct live replacement/binding, independently matching startup readings, encrypted proof linkage, retained failed-write evidence and cleanup without replay. This adapter lifecycle proof is paired with the public-controller deterministic regression for durable revision, leases, bounded repair, six accepted gates, fresh reuse and independent regrading. It is not a native controller trial or a model result. Evaluator-only reference reply robustness diagnostics retain inherited unqualified acknowledgment-only/empty-output operations; native functional qualification and admission passed.
 
-Windows CI has not run for these commits. No paid model trial or physical operation ran in this task; live Goose/Codex UI behavior and worker filesystem isolation remain unverified. The next model trial requires a separate freeze at `gpt-6.1-sol`, medium reasoning. Prior feasibility experiments retain their original outcomes and coverage.
+Windows CI has not run for these commits. This release qualification used no model trial or physical operation; the separately frozen model trial follows below. Live Goose/Codex UI behavior and worker filesystem isolation remain unverified. Prior feasibility experiments retain their original outcomes and coverage.
+
+## Version 5 model trial — 2026-10-06
+
+The [three-family trial](research/2026-10-06-transaction-recovery-results.md) at `272c1b1`, using the exact qualified installation with `gpt-6.1-sol` and medium reasoning, completes **2/3** in 35.2 minutes. TQ9 passes all six stages and 9/9 final checks after one repair and one automatic emulator recovery. Sensor passes all six stages and 85/85 final checks after one repair. Store corrects a capability mapping, then passes 364/366 diagnostic checks; its second revised probe stops on an intentional idle-commit rejection with exhausted repair budget and unresolved effect. Store final behavior was not reached. Its pending-update and ending-state checks passed in the completed diagnostic evaluation.
+
+Recorded and sealed regrades agree. All 23 assignments report usage, all 127 managed operations finish, and postflight confirms unchanged implementation, evaluator, tools, settings, artifacts and budgets. No operator inputs, rescue, extra trials or deadline extensions occurred. The service is stopped and final emulator processes are absent; store uncertainty is retained. Independent result reviews support the negative primary result. The [trial index](implementation/transaction-recovery-trial-verification.json) records stage metrics, hashes and limits. The 3/3 condition for pushing a PR was not met; the next investigation is the expected-negative-probe/reconciliation contract, without claiming the ungraded final candidate is incorrect.
 
 ## Version 4 snapshot — superseded after rejection review
 

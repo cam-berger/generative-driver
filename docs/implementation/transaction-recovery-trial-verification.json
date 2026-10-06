@@ -1,0 +1,665 @@
+{
+  "schema": "benchmark-experiment-verification/1",
+  "date": "2026-10-06",
+  "experiment": "transaction-recovery-three-family",
+  "source_revision": "272c1b1028cd11f8307d55ce12c1c60e0646ce2e",
+  "execution": "actual-agent-emulation",
+  "decision": "hold push and PR; 3/3 primary completion condition not met",
+  "primary_autonomous_completion": {
+    "passed": 2,
+    "denominator": 3
+  },
+  "recorded_and_regraded_success_agree": true,
+  "manifest": {
+    "schema": "benchmark-suite/1",
+    "id": "20261006-sol61-medium-transaction-recovery-12361f98",
+    "version": "1",
+    "entries": [
+      {
+        "case": "tq9-v2",
+        "scenario": "original",
+        "case_seed": 0
+      },
+      {
+        "case": "sampled-sensor-v1",
+        "scenario": "original",
+        "case_seed": 0
+      },
+      {
+        "case": "parameter-store-v1",
+        "scenario": "original",
+        "case_seed": 0
+      }
+    ],
+    "repetitions": 1,
+    "child_budget_seconds": 10800,
+    "suite_budget_seconds": 32400,
+    "max_active_children": 1
+  },
+  "provenance": {
+    "toolchain_revision": "e4b16f02288c95a68fac676f4b00e1713652776bc541915cbee62fb609f2369c",
+    "skills_revision": "784fe3bff758338b046eb59172d48254a723bcb78672deb21d6aab0d6a0e3a12",
+    "evaluator_revision": "ac4b496c3584ae578583699cab96dee1c71d895ced4e9fdcb68e97e3099e16ca",
+    "environment": {
+      "system": "Darwin",
+      "release": "25.5.0",
+      "architecture": "arm64",
+      "python": "3.13.12"
+    },
+    "runtime_configuration": {
+      "model": "gpt-6.1-sol",
+      "provider": "openai",
+      "reasoning_effort": "medium",
+      "version": "codex-cli 0.159.2",
+      "runtime": "codex"
+    }
+  },
+  "evaluator_identity_sha256": "7330e0a99136922d04165e094a3abb465d8dc0fc6c497bebf71c7270e2904c04",
+  "installed_payload": {
+    "files": 121,
+    "sha256": "f35822aedabc15aac68fc45449dfed2f997a6f728fd9a16a57697c975eba83bd"
+  },
+  "wheel_sha256": "66a4642181786fa916d6ee51c9f56646b617cbec21a54ece4d1ad415232d7574",
+  "codex_sha256": "50ac633af64851511f9bbc71032cdae7f1ba20b3234c189687d61ba846c354c5",
+  "max_model_repairs": 2,
+  "actual_queues": 1,
+  "continuations": 0,
+  "additional_trials": 0,
+  "observed_wall_seconds": 2114.163561820984,
+  "observed_wall_scope": "Suite creation to last workflow state update; includes stage preparation and stopped intervals, excludes preflight and later cleanup reconciliation/verification.",
+  "aggregate": {
+    "reported_tokens": 6010356,
+    "cached_input_tokens_subset": 5066624,
+    "worker_assignments": 23,
+    "model_repairs": 4,
+    "emulator_recoveries": 1,
+    "managed_operations": 127,
+    "operator_inputs": 0,
+    "interventions": 0
+  },
+  "trials": [
+    {
+      "case": "tq9-v2",
+      "run_id": "run-b2b8ec0b03ac49e5",
+      "workflow_status": "completed",
+      "outcome_category": "completed",
+      "reason": "Fresh reuse accepted",
+      "accepted_stages": [
+        "acquire",
+        "interpret",
+        "probe",
+        "ground",
+        "emit",
+        "reuse"
+      ],
+      "autonomous_frozen_completion": true,
+      "model_repairs": 1,
+      "emulator_recovery_count": 1,
+      "additional_worker_assignments": 2,
+      "final_behavior_status": "passed",
+      "elapsed_seconds": 613.5122220516205,
+      "usage": {
+        "input_tokens": 2064422,
+        "cached_input_tokens": 1777920,
+        "output_tokens": 23419,
+        "reasoning_output_tokens": 974,
+        "total_tokens": 2087841,
+        "observed_total_tokens": 2087841,
+        "reported_attempts": 8,
+        "attempts": 8,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      },
+      "human_inputs": 0,
+      "interventions": [],
+      "diagnostics_by_revision": [
+        {
+          "phase": "diagnostic",
+          "revision": 1,
+          "frozen_artifact_sha256": "82b6dde7e994c29d0797d59b997b110bd3a5809688f012ec18a7aef199674618",
+          "verdict": "passed",
+          "passed": 9,
+          "total": 9
+        }
+      ],
+      "deviations": [],
+      "case_pin": {
+        "case_id": "tq9-v2",
+        "case_version": "5",
+        "manifest_sha256": "ab78c69684444ea7c944222209d63afb1759301daa9c97568070c14703d92f73",
+        "scenario_id": "original",
+        "case_seed": 0,
+        "truth_sha256": "82b6944214be1afae7540ecefd4037b0da9ec36d8b1fdb4ea29b373326095519",
+        "evaluator_version": "5",
+        "family": "tq9",
+        "execution": "actual-agent-emulation",
+        "evidence_track": "firmware",
+        "scope": "full-workflow",
+        "pin_sha256": "685d84e12ae8694083dded7acb4fab6e454c4a2949bfc145bf176323a2af41c9",
+        "image_hashes": {
+          "firmware.bin": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e"
+        }
+      },
+      "final_checks": {
+        "verdict": "passed",
+        "passed": 9,
+        "total": 9
+      },
+      "independent_regrade_summary_label": "passed",
+      "stage_metrics": {
+        "acquire": {
+          "attempt_count": 1,
+          "workflow_status": "accepted",
+          "evaluator_status": "passed",
+          "worker_seconds": 25.251866750011686,
+          "managed_tool_calls": 1,
+          "managed_tool_seconds": 0.009598970413208008,
+          "usage": {
+            "total_tokens": 47698,
+            "cached_input_tokens": 32896,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0
+          }
+        },
+        "interpret": {
+          "attempt_count": 2,
+          "workflow_status": "accepted",
+          "evaluator_status": "passed",
+          "worker_seconds": 235.0456987079815,
+          "managed_tool_calls": 0,
+          "managed_tool_seconds": 0,
+          "usage": {
+            "total_tokens": 1215969,
+            "cached_input_tokens": 1067008,
+            "reported_attempts": 2,
+            "attempts": 2,
+            "coverage": 1.0
+          }
+        },
+        "probe": {
+          "attempt_count": 2,
+          "workflow_status": "accepted",
+          "evaluator_status": "passed",
+          "worker_seconds": 151.9045310000074,
+          "managed_tool_calls": 29,
+          "managed_tool_seconds": 39.02970266342163,
+          "usage": {
+            "total_tokens": 434097,
+            "cached_input_tokens": 359808,
+            "reported_attempts": 2,
+            "attempts": 2,
+            "coverage": 1.0
+          }
+        },
+        "ground": {
+          "attempt_count": 1,
+          "workflow_status": "accepted",
+          "evaluator_status": "passed",
+          "worker_seconds": 76.8940408329945,
+          "managed_tool_calls": 0,
+          "managed_tool_seconds": 0,
+          "usage": {
+            "total_tokens": 177513,
+            "cached_input_tokens": 139648,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0
+          }
+        },
+        "emit": {
+          "attempt_count": 1,
+          "workflow_status": "accepted",
+          "evaluator_status": "passed",
+          "worker_seconds": 31.35186395799974,
+          "managed_tool_calls": 2,
+          "managed_tool_seconds": 0.05757284164428711,
+          "usage": {
+            "total_tokens": 62501,
+            "cached_input_tokens": 45312,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0
+          }
+        },
+        "reuse": {
+          "attempt_count": 1,
+          "workflow_status": "accepted",
+          "evaluator_status": "passed",
+          "worker_seconds": 57.20121333299903,
+          "managed_tool_calls": 5,
+          "managed_tool_seconds": 18.358213186264038,
+          "usage": {
+            "total_tokens": 150063,
+            "cached_input_tokens": 133248,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0
+          }
+        }
+      },
+      "retained_hashes": {
+        "recorded_report": "0f457ae313740438466acb5b33c1a95d0a399b4994cb8f79f8c5b8b5b35b55db",
+        "regraded_report": "35687134ad7c2d7384b83c3658af00c6916bac0fd5555af7e08c2c5ffce4a3b8",
+        "events": "7c361fe1e48441fc9841243ece324a45e32952f1e323566a6806c8f2cb6b5e66",
+        "result": "7b9589a76b78d15c228bce2072e998e7b32423efe32cfa602b88aee95c803770",
+        "encrypted_evidence": "375e8e00707f67ff7d969bafbcb26de83b68b49a4381108783495da065814697"
+      },
+      "operation_settlement": {
+        "status": "completed",
+        "uncertain_effect": false,
+        "stopping": false,
+        "emulator_recovery_count": 1,
+        "managed_operations": 37,
+        "all_operations_finished": true,
+        "worker_dispatches_correlated": true
+      }
+    },
+    {
+      "case": "sampled-sensor-v1",
+      "run_id": "run-30e8c52500d04d0f",
+      "workflow_status": "completed",
+      "outcome_category": "completed",
+      "reason": "Fresh reuse accepted",
+      "accepted_stages": [
+        "acquire",
+        "interpret",
+        "probe",
+        "ground",
+        "emit",
+        "reuse"
+      ],
+      "autonomous_frozen_completion": true,
+      "model_repairs": 1,
+      "emulator_recovery_count": 0,
+      "additional_worker_assignments": 2,
+      "final_behavior_status": "passed",
+      "elapsed_seconds": 645.2221801280975,
+      "usage": {
+        "input_tokens": 1597771,
+        "cached_input_tokens": 1317376,
+        "output_tokens": 25063,
+        "reasoning_output_tokens": 1216,
+        "total_tokens": 1622834,
+        "observed_total_tokens": 1622834,
+        "reported_attempts": 8,
+        "attempts": 8,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      },
+      "human_inputs": 0,
+      "interventions": [],
+      "diagnostics_by_revision": [
+        {
+          "phase": "diagnostic",
+          "revision": 0,
+          "frozen_artifact_sha256": "5557a182b75cf7b61c6f89f252d3215fe0da426d17bcc0af11d07bc9a6d9e5c8",
+          "verdict": "failed",
+          "passed": 14,
+          "total": 17
+        },
+        {
+          "phase": "diagnostic",
+          "revision": 1,
+          "frozen_artifact_sha256": "6c37334e5ed7055d6cc32f0b1ad2237d624b7f63dbc795fdb7b8e9b446bb9ee5",
+          "verdict": "passed",
+          "passed": 17,
+          "total": 17
+        }
+      ],
+      "deviations": [],
+      "case_pin": {
+        "case_id": "sampled-sensor-v1",
+        "case_version": "5",
+        "manifest_sha256": "55dac15573d96d3ec0e761535a36cb918080b737c4be72e307f44977439a7baa",
+        "scenario_id": "original",
+        "case_seed": 0,
+        "truth_sha256": "b4de23c0f93d502ac2d487de6939760e1cbc3ef1b0ccbc9b1225aa98670d1cbf",
+        "evaluator_version": "5",
+        "family": "sampled-sensor",
+        "execution": "actual-agent-emulation",
+        "evidence_track": "firmware",
+        "scope": "full-workflow",
+        "pin_sha256": "d66bc5c848cbbc0956c8be546a69c0b4cc82f031c7c66ab20bf4697059d5cd7e",
+        "image_hashes": {
+          "firmware.bin": "637370d3d7192a17b6abeb79a3fcbc60ec2f47eb14e199627798756c02bbb1e9"
+        }
+      },
+      "final_checks": {
+        "verdict": "passed",
+        "passed": 85,
+        "total": 85
+      },
+      "independent_regrade_summary_label": "passed",
+      "stage_metrics": {
+        "acquire": {
+          "attempt_count": 1,
+          "workflow_status": "accepted",
+          "evaluator_status": "passed",
+          "worker_seconds": 28.7348678749986,
+          "managed_tool_calls": 1,
+          "managed_tool_seconds": 0.0017888545989990234,
+          "usage": {
+            "total_tokens": 62541,
+            "cached_input_tokens": 51456,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0
+          }
+        },
+        "interpret": {
+          "attempt_count": 2,
+          "workflow_status": "accepted",
+          "evaluator_status": "passed",
+          "worker_seconds": 281.8152791259927,
+          "managed_tool_calls": 0,
+          "managed_tool_seconds": 0,
+          "usage": {
+            "total_tokens": 839023,
+            "cached_input_tokens": 682496,
+            "reported_attempts": 2,
+            "attempts": 2,
+            "coverage": 1.0
+          }
+        },
+        "probe": {
+          "attempt_count": 2,
+          "workflow_status": "accepted",
+          "evaluator_status": "passed",
+          "worker_seconds": 124.41054650000297,
+          "managed_tool_calls": 18,
+          "managed_tool_seconds": 19.28225827217102,
+          "usage": {
+            "total_tokens": 375192,
+            "cached_input_tokens": 303104,
+            "reported_attempts": 2,
+            "attempts": 2,
+            "coverage": 1.0
+          }
+        },
+        "ground": {
+          "attempt_count": 1,
+          "workflow_status": "accepted",
+          "evaluator_status": "passed",
+          "worker_seconds": 88.39476308395388,
+          "managed_tool_calls": 0,
+          "managed_tool_seconds": 0,
+          "usage": {
+            "total_tokens": 143110,
+            "cached_input_tokens": 113280,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0
+          }
+        },
+        "emit": {
+          "attempt_count": 1,
+          "workflow_status": "accepted",
+          "evaluator_status": "passed",
+          "worker_seconds": 33.67819950002013,
+          "managed_tool_calls": 2,
+          "managed_tool_seconds": 0.054403066635131836,
+          "usage": {
+            "total_tokens": 63357,
+            "cached_input_tokens": 51328,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0
+          }
+        },
+        "reuse": {
+          "attempt_count": 1,
+          "workflow_status": "accepted",
+          "evaluator_status": "passed",
+          "worker_seconds": 51.28020983299939,
+          "managed_tool_calls": 5,
+          "managed_tool_seconds": 28.26080822944641,
+          "usage": {
+            "total_tokens": 139611,
+            "cached_input_tokens": 115712,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0
+          }
+        }
+      },
+      "retained_hashes": {
+        "recorded_report": "98ddf2af72238edd97473c5201903f27f113c2e881bb8ad168ac7fcfc147e6b4",
+        "regraded_report": "7d2e308df175c318ed522b7e2282656ba8583b81c5923ee46563ab39f31ef6eb",
+        "events": "206561e869b4c5c71b3035a8b5afa75221e25cf07c36b67b6d779a62caae9004",
+        "result": "70bb80b08f405382eedfb47520e4329576cc9be7a06dedd2d04b32d8337d3b7d",
+        "encrypted_evidence": "b6c8ff800c5aac4d12498390500af0724e9f8a6c984659b2547b74f56aa328c0"
+      },
+      "operation_settlement": {
+        "status": "completed",
+        "uncertain_effect": false,
+        "stopping": false,
+        "emulator_recovery_count": 0,
+        "managed_operations": 26,
+        "all_operations_finished": true,
+        "worker_dispatches_correlated": true
+      }
+    },
+    {
+      "case": "parameter-store-v1",
+      "run_id": "run-b2efeeff93b34963",
+      "workflow_status": "blocked",
+      "outcome_category": "model",
+      "reason": "Model repair budget exhausted with unresolved effect",
+      "accepted_stages": [
+        "acquire",
+        "interpret"
+      ],
+      "autonomous_frozen_completion": false,
+      "model_repairs": 2,
+      "emulator_recovery_count": 0,
+      "additional_worker_assignments": 4,
+      "final_behavior_status": "not_reached",
+      "elapsed_seconds": 854.1088609695435,
+      "usage": {
+        "input_tokens": 2270316,
+        "cached_input_tokens": 1971328,
+        "output_tokens": 29365,
+        "reasoning_output_tokens": 3067,
+        "total_tokens": 2299681,
+        "observed_total_tokens": 2299681,
+        "reported_attempts": 7,
+        "attempts": 7,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      },
+      "human_inputs": 0,
+      "interventions": [],
+      "diagnostics_by_revision": [
+        {
+          "phase": "diagnostic",
+          "revision": 1,
+          "frozen_artifact_sha256": "beb77ed8a2f4b66a18a049d72801736c57400f80de2a2b066bb514e0fcc20941",
+          "verdict": "failed",
+          "passed": 364,
+          "total": 366
+        }
+      ],
+      "deviations": [
+        "Unresolved effect uncertainty"
+      ],
+      "case_pin": {
+        "case_id": "parameter-store-v1",
+        "case_version": "5",
+        "manifest_sha256": "72b6097877b6109b935e57141b91bfaf7d21a57d1a536a7cca581fe553c4c4f1",
+        "scenario_id": "original",
+        "case_seed": 0,
+        "truth_sha256": "6f59c79bced3210ef7649cc9fe3d78d8f34df4f54754e44e7e6076ae2ffa9ba6",
+        "evaluator_version": "5",
+        "family": "parameter-store",
+        "execution": "actual-agent-emulation",
+        "evidence_track": "firmware",
+        "scope": "full-workflow",
+        "pin_sha256": "c3de695e278182ba951bff66900a5738295cd87f319f1c19460646b82e587ee2",
+        "image_hashes": {
+          "firmware.bin": "e7a580834861f7fa96868245bf969d69350ee0acdab1ee8eda30abc1fdf1faf1"
+        }
+      },
+      "final_checks": null,
+      "independent_regrade_summary_label": "failed",
+      "stage_metrics": {
+        "acquire": {
+          "attempt_count": 1,
+          "workflow_status": "accepted",
+          "evaluator_status": "passed",
+          "worker_seconds": 29.3855997499777,
+          "managed_tool_calls": 1,
+          "managed_tool_seconds": 0.0015327930450439453,
+          "usage": {
+            "total_tokens": 49446,
+            "cached_input_tokens": 42752,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0
+          }
+        },
+        "interpret": {
+          "attempt_count": 3,
+          "workflow_status": "accepted",
+          "evaluator_status": "passed",
+          "worker_seconds": 453.4802766258945,
+          "managed_tool_calls": 0,
+          "managed_tool_seconds": 0,
+          "usage": {
+            "total_tokens": 1554926,
+            "cached_input_tokens": 1360896,
+            "reported_attempts": 3,
+            "attempts": 3,
+            "coverage": 1.0
+          }
+        },
+        "probe": {
+          "attempt_count": 3,
+          "workflow_status": "completed",
+          "evaluator_status": "failed",
+          "worker_seconds": 337.9789691660553,
+          "managed_tool_calls": 63,
+          "managed_tool_seconds": 112.47716283798218,
+          "usage": {
+            "total_tokens": 695309,
+            "cached_input_tokens": 567680,
+            "reported_attempts": 3,
+            "attempts": 3,
+            "coverage": 1.0
+          }
+        },
+        "ground": {
+          "attempt_count": 0,
+          "workflow_status": "not_run",
+          "evaluator_status": "not_run",
+          "worker_seconds": 0,
+          "managed_tool_calls": 0,
+          "managed_tool_seconds": 0,
+          "usage": {
+            "total_tokens": null,
+            "cached_input_tokens": null,
+            "reported_attempts": 0,
+            "attempts": 0,
+            "coverage": null
+          }
+        },
+        "emit": {
+          "attempt_count": 0,
+          "workflow_status": "not_run",
+          "evaluator_status": "not_run",
+          "worker_seconds": 0,
+          "managed_tool_calls": 0,
+          "managed_tool_seconds": 0,
+          "usage": {
+            "total_tokens": null,
+            "cached_input_tokens": null,
+            "reported_attempts": 0,
+            "attempts": 0,
+            "coverage": null
+          }
+        },
+        "reuse": {
+          "attempt_count": 0,
+          "workflow_status": "not_run",
+          "evaluator_status": "not_run",
+          "worker_seconds": 0,
+          "managed_tool_calls": 0,
+          "managed_tool_seconds": 0,
+          "usage": {
+            "total_tokens": null,
+            "cached_input_tokens": null,
+            "reported_attempts": 0,
+            "attempts": 0,
+            "coverage": null
+          }
+        }
+      },
+      "retained_hashes": {
+        "recorded_report": "40c0f598300bf71717b23febbf2256b4d20bbcab0063c5fc6f3be30bf40a74db",
+        "regraded_report": "93a7918f15928f4745017eb05b4ac70e5647e2f39446d482d231c0ffaa68cdf9",
+        "events": "be967af8f38ba58cfd5e5ca4269f51aedea2e78912cfa68f4a3e0325efd06699",
+        "result": "e7685b260f1ffe3d9e91e46d04f4edfc4e799f2a07f5c33ac2e3b887547bc73d",
+        "encrypted_evidence": "7b655f416825317228d176f3f032a59de9d67cfcf032875db241ba90a36249ec"
+      },
+      "operation_settlement": {
+        "status": "blocked",
+        "uncertain_effect": true,
+        "stopping": false,
+        "emulator_recovery_count": 0,
+        "managed_operations": 64,
+        "all_operations_finished": true,
+        "worker_dispatches_correlated": true
+      }
+    }
+  ],
+  "verification": {
+    "existing_qualification_reused": "transaction-recovery-verification.json",
+    "fresh_setup_replay": "passed",
+    "authenticated_case_admissions": 3,
+    "postflight": {
+      "ok": true,
+      "executor_unchanged": true,
+      "installed_provenance_unchanged": true,
+      "native_hashes_unchanged": true,
+      "cli_hash_unchanged": true,
+      "wheel_hash_unchanged": true,
+      "evaluator_identity_unchanged": true
+    },
+    "frozen_helpers_and_plan_unchanged": 17,
+    "service_stopped": true,
+    "service_process_absent": true,
+    "retained_final_emulator_processes_absent": 3,
+    "failure_uncertainty_preserved": true,
+    "independent_reviews": {
+      "design": "sound negative primary result; PR held",
+      "execution": "2/3 supported; no visible forbidden access or human rescue",
+      "coverage": {
+        "worker_transcripts": 23,
+        "completed_shell_commands": 168,
+        "assigned_file_hashes": 276,
+        "full_transmitted_stdin_or_argv_retained": false
+      }
+    }
+  },
+  "retained_hashes": {
+    "run-plan.md": "27aaaa8cb53bf5a01fd2ec967f6fb96b7d8d2909b3adf53932936ea3581e7db2",
+    "execution-freeze.json": "33e24eb0bfdb309132aa8f792390e26a3b6be1780737fe549873f8a0e53898ef",
+    "preflight.json": "e39a3fd42b1b80240195d8f86502fd52d730e9e23f6aa5ac5dbaac4ed3d15c39",
+    "results.json": "42b6b34ad16eecb069445eba5cb410dd84820ba09bd66a327b678584d2f32bb5",
+    "postflight.json": "c2267c6a6475d9a345c7d2ac43dcfefc746cf01cf89cbc42a27b8f696e40945b",
+    "cleanup.json": "41481e7ac71df66e4526e8ad81666c7ee5ffd5be460433b387861116e67ef9b6",
+    "emulator-cleanup.json": "d67ca55eaaa5b3314570b474d4e38508aac8cb8fddc340740cc75c9134e3660f",
+    "external-workspace-retention.json": "5d3aae301ad5abbebdce0997d653cf20d170bd1cd8a93881207891f76dd531c9",
+    "result-design-audit.md": "2b6be7a5122a44141e35702edca89bc7695468e59c4902586c255d608a43a70d",
+    "result-execution-audit.md": "7cb2faac1affb5198288a07e3ebfdaca65d495426925db295c65b035164d531d"
+  },
+  "limitations": [
+    "One outcome-aware attempt per familiar authored family; not general reliability, model ranking or causal evidence.",
+    "Version 5 behavior coverage differs from prior version 3/4 results.",
+    "Store final behavior was not reached; its partial 0/0 failed summary is not an executed final test.",
+    "Expected-negative-probe handling requires investigation; candidate-controlled rejection metadata is not independent effect reconciliation.",
+    "Managed tool counts exclude worker shell commands; cumulative worker time is not end-to-end latency.",
+    "Visible trace review is not proof of filesystem isolation; full transmitted stdin prompts and complete argv are not separately retained.",
+    "No physical devices, Windows execution, live client UI validation or broader model study."
+  ]
+}

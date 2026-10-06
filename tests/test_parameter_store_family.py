@@ -79,10 +79,117 @@ class ParameterStoreOracleTests(unittest.TestCase):
                         failed = {c['id'].split('/')[0] for c in grade['checks'] if not c['passed']}
                         self.assertEqual(failed, {'pending-same-bank-update', 'pending-different-bank-update'})
 
+    def _run_composed_diagnostic(self, mutate_model=None, mutate_reply=None, mutate_contract=None, phase='diagnostic', normalize_request=False):
+        pin, truth = toy_store_phase()
+        model = toy_store_model_four_cell()
+        cancel = deepcopy(model['operations']['abort']['steps'][0])
+        cancel['expect']['reject_line_prefix'] = ['ERR:syntax', 'ERR:range']
+        model['operations']['update']['steps'].insert(0, cancel)
+        if mutate_model:
+            mutate_model(model)
+        self.assertTrue(validate_model(model)['ok'])
+        device = FourCellStoreDevice([4, 5, 6, 7, 8, 9, 10, 11])
+        original = device.exchange
+        captures = []
+        def exchange(tx, rx, timeout_ms):
+            reply = original(tx.strip() + b'\n' if normalize_request else tx, rx, timeout_ms)
+            if mutate_reply:
+                reply = mutate_reply(tx, reply)
+            # This transport honors the candidate receive boundary, as a real adapter does.
+            if rx['mode'] == 'until':
+                delimiter = bytes.fromhex(rx['delimiter_hex'])
+                reply = reply.split(delimiter, 1)[0] + delimiter
+                captures.append(reply)
+            return reply
+        device.exchange = exchange
+        class Session:
+            def reset(self, values):
+                device.__init__(values['committed'])
+                return device.observe()
+            def set_running(self, value): pass
+            def observe(self): return device.observe()
+        contract = parameter_store.contract(pin, truth, phase)
+        if mutate_contract:
+            mutate_contract(contract)
+        with tempfile.TemporaryDirectory() as temp:
+            rows = execute_plan(Session(), lambda task, inputs, grants: execute(model, task, inputs,
+                binding={}, allow_effects=grants, transport_factory=device.factory),
+                parameter_store.build_plan(pin, truth, phase), contract, Path(temp)/'evidence.json',
+                parameter_store.observations)
+        return validate_records(contract, rows), rows, captures
+
+    def test_full_diagnostic_refuses_candidate_first_line_rejection_boundary(self):
+        # Candidate framing must not certify its own incomplete rejection, even with weaker expectations.
+        for expectation in ('retained', 'removed', 'weakened'):
+            def mutate(model):
+                step = model['operations']['commit']['steps'][0]
+                step['rx'] = {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 128}
+                if expectation == 'removed':
+                    step['expect'].pop('final_line_equals')
+                    step['expect']['contains_line'] = 'READY'
+                elif expectation == 'weakened':
+                    step['expect'].pop('final_line_equals')
+                    step['expect']['contains_text'] = 'R'
+            with self.subTest(expectation=expectation):
+                grade, rows, captures = self._run_composed_diagnostic(mutate)
+                self.assertEqual(captures, [b'READY\n', b'ERR:order\n'])
+                self.assertEqual((grade['verdict'], grade['passed'], grade['total']), ('failed', 114, 115))
+                self.assertEqual([c['id'] for c in grade['checks'] if not c['passed']],
+                                 ['rejection/end/operation_rejected'])
+                self.assertIs(next(r['value'] for r in rows if r['task_id']=='operation_rejected'), False)
+
+    def test_rejection_witness_is_independent_of_candidate_reject_and_success_expectations(self):
+        for mode in ('genuine-with-positive-mismatch', 'bogus-prefix', 'wrong-terminator', 'malformed'):
+            def mutate(model):
+                step = model['operations']['commit']['steps'][0]
+                step['expect']['contains_line'] = 'ACCEPTED'
+                if mode == 'bogus-prefix':
+                    step['expect']['reject_line_prefix'] = ['OTHER']
+            def reply(tx, data):
+                if tx == b'COMMIT\n' and data.startswith(b'ERR:'):
+                    return {'bogus-prefix': b'OTHER\nREADY\n',
+                            'wrong-terminator': b'ERR:order\nOTHER\n',
+                            'malformed': b'ERR:order\x00\nREADY\n'}.get(mode, data)
+                return data
+            with self.subTest(mode=mode):
+                grade, rows, _ = self._run_composed_diagnostic(mutate, reply)
+                self.assertIs(next(r['value'] for r in rows if r['task_id']=='operation_rejected'),
+                              mode == 'genuine-with-positive-mismatch')
+
+    def test_equivalent_request_encoding_can_satisfy_complete_rejection(self):
+        def mutate(model):
+            model['operations']['commit']['steps'][0]['tx'] = [{'text': ' COMMIT \n'}]
+        grade, rows, _ = self._run_composed_diagnostic(mutate, normalize_request=True)
+        self.assertEqual((grade['verdict'], grade['passed'], grade['total']), ('passed', 115, 115))
+        self.assertIs(next(r['value'] for r in rows if r['task_id']=='operation_rejected'), True)
+
+    def test_missing_or_malformed_private_rejection_witness_refuses_evaluation(self):
+        for witness in (None, {}, {'schema':'unknown'},
+                        {'schema':'benchmark-rejection/1','rx_hex':''},
+                        {'schema':'benchmark-rejection/1','rx_hex':'0'},
+                        {'schema':'benchmark-rejection/1','rx_hex':123},
+                        {'schema':'benchmark-rejection/1','rx_hex':'zz'}):
+            def mutate(contract):
+                check = next(c for c in contract['checks'] if c['id'].endswith('/operation_rejected'))
+                if witness is None: check.pop('rejection_evidence')
+                else: check['rejection_evidence'] = witness
+            _, truth = toy_store_phase()
+            contract = truth['phases']['diagnostic']['contract']
+            mutate(contract)
+            class Session:
+                def reset(inner, values): self.fail('Invalid witness must refuse before device access')
+            with self.subTest(witness=witness):
+                with self.assertRaisesRegex(ValueError, 'rejection evidence'):
+                    execute_plan(Session(), lambda *args: self.fail('Unexpected invocation'),
+                        truth['phases']['diagnostic']['actions'], contract, Path('unused-evidence'),
+                        parameter_store.observations)
+                with self.assertRaisesRegex(ValueError, 'rejection evidence'):
+                    validate_records(contract, [])
+
     def test_complete_rejection_cannot_be_replaced_by_incomplete_reply(self):
         # A truncated rejection must not satisfy operation_ok=False on its own.
         pin, truth = toy_store_phase()
-        for mode in ('complete', 'incomplete', 'positive-mismatch', 'identity-rejection', 'timeout'):
+        for mode in ('complete', 'incomplete', 'positive-mismatch', 'identity-rejection', 'denied-effect', 'timeout'):
             device = FourCellStoreDevice([4, 5, 6, 7, 8, 9, 10, 11])
             original = device.exchange
             def exchange(tx, rx, timeout_ms):
@@ -109,7 +216,8 @@ class ParameterStoreOracleTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temp:
                 def run():
                     return execute_plan(Session(), lambda task, inputs, grants: execute(model, task, inputs,
-                        binding={}, allow_effects=grants, transport_factory=device.factory), plan, contract,
+                        binding={}, allow_effects=[] if mode=='denied-effect' else grants,
+                        transport_factory=device.factory), plan, contract,
                         Path(temp)/'evidence.json', parameter_store.observations)
                 if mode=='timeout':
                     with self.assertRaisesRegex(RuntimeError, 'Host execution failed'): run()

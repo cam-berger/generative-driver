@@ -309,6 +309,9 @@ def toy_store_phase():
                 checks.append({'id':identifier,'scenario':name,'revision':0,'kind':'boolean' if boolean else 'number',
                     'expected':expected,'unit':'boolean' if boolean else 'count' if suffix=='generation' else 'configuration-unit',
                     'channel':'runtime-transcript' if suffix.startswith('operation_') else 'independent-monitor',
+                    **({'rejection_evidence': {'schema': 'benchmark-rejection/1',
+                        'rx_hex': b'ERR:order\nREADY\n'.hex()}}
+                       if suffix=='operation_rejected' else {}),
                     **({} if boolean else {'absolute_tolerance':0})})
             actions.append({'kind':'observe','episode':name,'checks':ids})
         phases[phase]={'contract':{'schema':'benchmark-behavior/1','artifact_sha256':'a'*64,

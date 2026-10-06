@@ -6,6 +6,20 @@ def _sha(value):
     return type(value) is str and len(value) == 64 and all(c in '0123456789abcdef' for c in value)
 
 
+def _check_rejection_evidence(check):
+    """Validate a private complete-response witness, never a candidate receive rule."""
+    if check['id'].rsplit('/', 1)[-1] == 'operation_rejected':
+        witness = check.get('rejection_evidence')
+        if (check['kind'] != 'boolean' or check['channel'] != 'runtime-transcript'
+                or type(witness) is not dict
+                or set(witness) != {'schema', 'rx_hex'}
+                or witness.get('schema') != 'benchmark-rejection/1'
+                or type(witness.get('rx_hex')) is not str or not witness['rx_hex']
+                or len(witness['rx_hex']) % 2
+                or any(c not in '0123456789abcdef' for c in witness['rx_hex'])):
+            raise ValueError('Invalid or missing evaluator rejection evidence')
+
+
 def _check_contract(contract):
     if type(contract) is not dict or contract.get('schema') != 'benchmark-behavior/1' or not _sha(contract.get('artifact_sha256')):
         raise ValueError('Invalid behavior contract')
@@ -21,6 +35,7 @@ def _check_contract(contract):
             raise ValueError('Invalid check definition')
         if type(check.get('unit')) is not str or check.get('channel') not in ('independent-monitor', 'runtime-transcript'):
             raise ValueError('Invalid check unit or channel')
+        _check_rejection_evidence(check)
         kind = check['kind']
         value = check.get('expected')
         if kind == 'number':

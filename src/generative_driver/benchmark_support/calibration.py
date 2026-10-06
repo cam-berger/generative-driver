@@ -35,7 +35,7 @@ REQUIRED_MUTANTS = {
     'tq9': {'wrong-scale','constant-output','wrong-state','unsigned-temperature','wrong-temperature-scale',
             'wrong-temperature-unit','wrong-temperature-byteorder','wrong-crc','wrong-duty-effect'},
     'sampled-sensor': {'constant','scale','signedness','stale'},
-    'parameter-store': {'constant','scale','order','wrong-bank','abort','idle-only-update'},
+    'parameter-store': {'constant','scale','order','wrong-bank','abort','idle-only-update','short-rejection-frame'},
 }
 _REFERENCE_PHASES = {('diagnostic','original'), ('final','original')}
 

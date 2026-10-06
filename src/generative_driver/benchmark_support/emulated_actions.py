@@ -1,4 +1,5 @@
 """Private evaluator action execution; no service, worker gateway or process owner."""
+from .behavior import _check_rejection_evidence
 from .cases import _write
 from .emulated import run_call
 
@@ -16,6 +17,10 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
     observations(raw, result, inputs) returns check suffix -> value. Monitor units
     are supplied by that measurement function's optional ``monitor_units`` map.
     """
+    # Validate evaluator-owned witnesses before any device access. Candidate receive
+    # completion and reject prefixes are diagnostic claims, not protocol truth.
+    for check in contract['checks']:
+        _check_rejection_evidence(check)
     checks = {row['id']: row for row in contract['checks']}
     records, raw_events = [], []
     result, inputs, task = {}, {}, None
@@ -62,7 +67,8 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
                             and bool(result.get('transcript'))
                             and result['transcript'][-1].get('operation') == result.get('operation')
                             and result['transcript'][-1].get('status') == 'completed'
-                            and result['transcript'][-1].get('device_rejected') is True)
+                            and result['transcript'][-1].get('op') in ('exchange', 'usb_control')
+                            and result['transcript'][-1].get('rx_hex') == check['rejection_evidence']['rx_hex'])
                     elif suffix == 'operation_ok' and check['channel'] == 'runtime-transcript':
                         units = {'operation_ok': 'boolean'}
                         value = result.get('ok') is True

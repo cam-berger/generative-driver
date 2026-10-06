@@ -1,0 +1,500 @@
+{
+  "schema": "context-repair-verification/1",
+  "frozen_revision": "21359b466f24d58cdb9a0bfb838a64c58de713b0",
+  "evaluator_identity": "f5eb06ffcf1584cbf0435fc1d0298183c44d0f71474956e6fa6efee236d74914",
+  "wheel_sha256": "c1ad8d66d2920e83be4dcf429ca58bfa412d9a4df58fbd26532d5faa6bcf846c",
+  "sdist_sha256": "51026d5233db6fcc9540e21cff07913984f90136bb3a64c8495b348b9885c46c",
+  "model": "gpt-6.1-sol",
+  "reasoning_effort": "medium",
+  "case_scenario": "original",
+  "case_seed": 0,
+  "replications_per_family": 1,
+  "workflow_budget_seconds": 10800,
+  "maximum_model_repairs": 2,
+  "planned_slots": 3,
+  "qualified_autonomous_completions": 2,
+  "assisted_completions": 0,
+  "final_evaluations_reached": 2,
+  "usage_total_tokens": 4795330,
+  "cached_input_tokens": 3967744,
+  "usage_worker_coverage": {
+    "reported": 20,
+    "total": 20
+  },
+  "model_repairs": 2,
+  "extra_worker_assignments": 4,
+  "managed_operations": 99,
+  "managed_operations_finished": 99,
+  "operator_interventions": 1,
+  "intervention_scope": "One cleanup-only reconciliation of the disposed private store emulator; no resumed trial, candidate edits, budget extensions or extra inference",
+  "frozen_setting_deviations": [],
+  "suite_seconds_through_last_outcome": 1909.0011990070343,
+  "recorded_regraded_success_agree": true,
+  "postflight_unchanged": {
+    "executor_unchanged": true,
+    "installed_provenance_unchanged": true,
+    "native_hashes_unchanged": true,
+    "cli_hash_unchanged": true,
+    "wheel_hash_unchanged": true,
+    "evaluator_identity_unchanged": true
+  },
+  "private_service_stopped_and_process_absent": true,
+  "native_qualification": {
+    "sessions": 30,
+    "correct_reference_sessions": 12,
+    "mutant_sessions": 18,
+    "regrades_reproduced": 30,
+    "authenticated_admissions": 3
+  },
+  "software_tests": [
+    {
+      "environment": "source",
+      "python": "3.13.12",
+      "count": 441,
+      "seconds": 84.782,
+      "archive_skips": 3,
+      "passed": true
+    },
+    {
+      "environment": "installed",
+      "python": "3.11.15",
+      "count": 441,
+      "seconds": 81.807,
+      "archive_skips": 0,
+      "passed": true
+    },
+    {
+      "environment": "installed",
+      "python": "3.13.12",
+      "count": 441,
+      "seconds": 89.967,
+      "archive_skips": 0,
+      "passed": true
+    }
+  ],
+  "trials": [
+    {
+      "case": "tq9-v2",
+      "accepted_stages": [
+        "acquire",
+        "interpret",
+        "probe",
+        "ground",
+        "emit",
+        "reuse"
+      ],
+      "historical_accepted_stages": [
+        "acquire",
+        "interpret",
+        "probe",
+        "ground",
+        "emit",
+        "reuse"
+      ],
+      "model_repairs": 0,
+      "additional_worker_assignments": 0,
+      "elapsed_seconds": 575.0399742126465,
+      "final_behavior_status": "passed",
+      "stage_metrics_all_attempts": {
+        "acquire": {
+          "attempt_count": 1,
+          "worker_seconds": 35.81847908394411,
+          "tool_seconds": 0.01674509048461914,
+          "tool_calls": 1,
+          "usage": {
+            "input_tokens": 59443,
+            "cached_input_tokens": 41600,
+            "output_tokens": 1218,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 60661,
+            "observed_total_tokens": 60661,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        },
+        "interpret": {
+          "attempt_count": 1,
+          "worker_seconds": 176.02892075001728,
+          "tool_seconds": 0,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 462554,
+            "cached_input_tokens": 391424,
+            "output_tokens": 6969,
+            "reasoning_output_tokens": 1189,
+            "total_tokens": 469523,
+            "observed_total_tokens": 469523,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        },
+        "probe": {
+          "attempt_count": 1,
+          "worker_seconds": 95.34402766701533,
+          "tool_seconds": 33.51856851577759,
+          "tool_calls": 17,
+          "usage": {
+            "input_tokens": 260758,
+            "cached_input_tokens": 211840,
+            "output_tokens": 2944,
+            "reasoning_output_tokens": 142,
+            "total_tokens": 263702,
+            "observed_total_tokens": 263702,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        },
+        "ground": {
+          "attempt_count": 1,
+          "worker_seconds": 127.44162904197583,
+          "tool_seconds": 0,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 171627,
+            "cached_input_tokens": 137728,
+            "output_tokens": 5070,
+            "reasoning_output_tokens": 354,
+            "total_tokens": 176697,
+            "observed_total_tokens": 176697,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        },
+        "emit": {
+          "attempt_count": 1,
+          "worker_seconds": 47.69739129196387,
+          "tool_seconds": 0.065032958984375,
+          "tool_calls": 2,
+          "usage": {
+            "input_tokens": 64980,
+            "cached_input_tokens": 46720,
+            "output_tokens": 1654,
+            "reasoning_output_tokens": 38,
+            "total_tokens": 66634,
+            "observed_total_tokens": 66634,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        },
+        "reuse": {
+          "attempt_count": 1,
+          "worker_seconds": 60.066977542010136,
+          "tool_seconds": 18.2955424785614,
+          "tool_calls": 5,
+          "usage": {
+            "input_tokens": 154293,
+            "cached_input_tokens": 142336,
+            "output_tokens": 1805,
+            "reasoning_output_tokens": 27,
+            "total_tokens": 156098,
+            "observed_total_tokens": 156098,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        }
+      }
+    },
+    {
+      "case": "sampled-sensor-v1",
+      "accepted_stages": [
+        "acquire",
+        "interpret",
+        "probe",
+        "ground",
+        "emit",
+        "reuse"
+      ],
+      "historical_accepted_stages": [
+        "acquire",
+        "interpret",
+        "probe",
+        "ground",
+        "emit",
+        "reuse"
+      ],
+      "model_repairs": 1,
+      "additional_worker_assignments": 2,
+      "elapsed_seconds": 678.7723832130432,
+      "final_behavior_status": "passed",
+      "stage_metrics_all_attempts": {
+        "acquire": {
+          "attempt_count": 1,
+          "worker_seconds": 43.99416212498909,
+          "tool_seconds": 0.0028548240661621094,
+          "tool_calls": 1,
+          "usage": {
+            "input_tokens": 78406,
+            "cached_input_tokens": 59392,
+            "output_tokens": 1555,
+            "reasoning_output_tokens": 16,
+            "total_tokens": 79961,
+            "observed_total_tokens": 79961,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        },
+        "interpret": {
+          "attempt_count": 2,
+          "worker_seconds": 217.5147906250204,
+          "tool_seconds": 0,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 734119,
+            "cached_input_tokens": 620416,
+            "output_tokens": 8882,
+            "reasoning_output_tokens": 823,
+            "total_tokens": 743001,
+            "observed_total_tokens": 743001,
+            "reported_attempts": 2,
+            "attempts": 2,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        },
+        "probe": {
+          "attempt_count": 2,
+          "worker_seconds": 154.84617524896748,
+          "tool_seconds": 20.09599995613098,
+          "tool_calls": 20,
+          "usage": {
+            "input_tokens": 443607,
+            "cached_input_tokens": 385280,
+            "output_tokens": 5293,
+            "reasoning_output_tokens": 139,
+            "total_tokens": 448900,
+            "observed_total_tokens": 448900,
+            "reported_attempts": 2,
+            "attempts": 2,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        },
+        "ground": {
+          "attempt_count": 1,
+          "worker_seconds": 123.74612166703446,
+          "tool_seconds": 0,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 251974,
+            "cached_input_tokens": 215424,
+            "output_tokens": 5105,
+            "reasoning_output_tokens": 224,
+            "total_tokens": 257079,
+            "observed_total_tokens": 257079,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        },
+        "emit": {
+          "attempt_count": 1,
+          "worker_seconds": 39.93163199996343,
+          "tool_seconds": 0.07637834548950195,
+          "tool_calls": 2,
+          "usage": {
+            "input_tokens": 88340,
+            "cached_input_tokens": 67712,
+            "output_tokens": 1433,
+            "reasoning_output_tokens": 25,
+            "total_tokens": 89773,
+            "observed_total_tokens": 89773,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        },
+        "reuse": {
+          "attempt_count": 1,
+          "worker_seconds": 62.1140202920069,
+          "tool_seconds": 28.085577964782715,
+          "tool_calls": 5,
+          "usage": {
+            "input_tokens": 119841,
+            "cached_input_tokens": 102528,
+            "output_tokens": 1603,
+            "reasoning_output_tokens": 25,
+            "total_tokens": 121444,
+            "observed_total_tokens": 121444,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        }
+      }
+    },
+    {
+      "case": "parameter-store-v1",
+      "accepted_stages": [
+        "acquire",
+        "interpret"
+      ],
+      "historical_accepted_stages": [
+        "acquire",
+        "interpret",
+        "probe"
+      ],
+      "model_repairs": 1,
+      "additional_worker_assignments": 2,
+      "elapsed_seconds": 653.8196442127228,
+      "final_behavior_status": "not_reached",
+      "stage_metrics_all_attempts": {
+        "acquire": {
+          "attempt_count": 1,
+          "worker_seconds": 32.655827040958684,
+          "tool_seconds": 0.002644062042236328,
+          "tool_calls": 1,
+          "usage": {
+            "input_tokens": 46110,
+            "cached_input_tokens": 22144,
+            "output_tokens": 1176,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 47286,
+            "observed_total_tokens": 47286,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        },
+        "interpret": {
+          "attempt_count": 2,
+          "worker_seconds": 271.91252691700356,
+          "tool_seconds": 0,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 1136503,
+            "cached_input_tokens": 1004800,
+            "output_tokens": 9683,
+            "reasoning_output_tokens": 878,
+            "total_tokens": 1146186,
+            "observed_total_tokens": 1146186,
+            "reported_attempts": 2,
+            "attempts": 2,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        },
+        "probe": {
+          "attempt_count": 2,
+          "worker_seconds": 253.2240804999601,
+          "tool_seconds": 72.49587297439575,
+          "tool_calls": 45,
+          "usage": {
+            "input_tokens": 492408,
+            "cached_input_tokens": 396160,
+            "output_tokens": 7002,
+            "reasoning_output_tokens": 314,
+            "total_tokens": 499410,
+            "observed_total_tokens": 499410,
+            "reported_attempts": 2,
+            "attempts": 2,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        },
+        "ground": {
+          "attempt_count": 1,
+          "worker_seconds": 82.62148079095641,
+          "tool_seconds": 0,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 165527,
+            "cached_input_tokens": 122240,
+            "output_tokens": 3448,
+            "reasoning_output_tokens": 154,
+            "total_tokens": 168975,
+            "observed_total_tokens": 168975,
+            "reported_attempts": 1,
+            "attempts": 1,
+            "coverage": 1.0,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        },
+        "emit": {
+          "attempt_count": 0,
+          "worker_seconds": 0,
+          "tool_seconds": 0,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": null,
+            "cached_input_tokens": null,
+            "output_tokens": null,
+            "reasoning_output_tokens": null,
+            "total_tokens": null,
+            "observed_total_tokens": null,
+            "reported_attempts": 0,
+            "attempts": 0,
+            "coverage": null,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        },
+        "reuse": {
+          "attempt_count": 0,
+          "worker_seconds": 0,
+          "tool_seconds": 0,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": null,
+            "cached_input_tokens": null,
+            "output_tokens": null,
+            "reasoning_output_tokens": null,
+            "total_tokens": null,
+            "observed_total_tokens": null,
+            "reported_attempts": 0,
+            "attempts": 0,
+            "coverage": null,
+            "counting": "input + output; cached input and reasoning output are subsets"
+          }
+        }
+      }
+    }
+  ],
+  "retained_evidence_sha256": {
+    "results.json": "b5f056ac3e100e4fd42db137bdddcff7f0fc3e393abb03f5f10f3b8e5db2ae37",
+    "postflight.json": "e97c3bffa79989c5aeb155d340caf131e45238e17126fc94697463d75b804ccc",
+    "frozen-experiment.json": "79300fa389704cad19002faf2be091b7d660fc8b4a8c702af7fd37057581f0a7",
+    "preflight.json": "c4d014b62226f4233bd8c95a36e6402d172bfa646ff34ff107aad31a834ba53b",
+    "source-tests.log": "b3083700f8771a4e93b9b7a6379719337eb2d403d66895c2a513d7d15d42cae3",
+    "source-tests-pre-final.log": "9eebae0ca0115fdb9b46031647a1ffeedb8e02c512478b94aa95579b65af112a",
+    "installed-tests-311.log": "2e1fe25fb534725170a086120ff1ca749cbfd7e3f2e1ac2e5b215f9412fa64d8",
+    "installed-tests-313.log": "79cb214ec7cc4b61ddeb7b23308045ae3e34ac11645a8fbd1af748be946883f6",
+    "qualification-summary.json": "dd4e5662d8d02b18f24feb056c76ec303fc0c4a4ac0e30eb080e7a0f8c636866",
+    "qualification-accepted.json": "e62b7567a3f304ee4ac0e365c95947f44d6c632542deffd45d5079b1d74bd563",
+    "publication-audit.json": "9daf286287ac6fc06fe9a4f79a773598aa4e52ec77cb73e243b8ffb5c2fb0787",
+    "standalone-replay.json": "d626650706577215e22928f7027527e857844b9294037609d8d345d46ed9d7cf",
+    "implementation-design-review.md": "38cac98949b81cf3fddd5cc047a1f6df889e340ce179e4963e90c41fc8944b15",
+    "implementation-execution-review.md": "a9a92f51b062cc6621a79e0a8620a65ab2c052e8acde2094bce9eebdafba3683",
+    "protocol-design-review.md": "7ea8116e4932bb8c713c320afdc268a470600e44ad27ce087f33d093d529fbdd",
+    "protocol-execution-review.md": "6c95a2b880e1e2cb5ef58c231fae5a159a334102bd524948591ae039eedfacdc",
+    "final-readiness-design.md": "8e2d739ec9541fee8833b5d9b35eb3c2d01d3c708eacb8d643576733771e8a80",
+    "final-readiness-execution.md": "ced3227c3eeb0bb740e3aa718aff0cc183f8af47751233c244bb1f8089508fdb",
+    "tq9-postrun-review.md": "4398de28b96be366ab0d877fd3ac3f68f60c01a2798d16c48778169af451b248",
+    "sensor-postrun-review.md": "d7de59016b42c81e33cdbffa28f9ae22371877a69bd87db2513bfc5d41a43946",
+    "store-postrun-review.md": "d622c7df343e9f06d976ca33e704ee90ffbc3e89c1d04e221e8bea98fe0813b5",
+    "cleanup-observation.json": "1c9244f9fa9e84ec9196a627232fb439e4d1cf3844439e294e96bb8536536bc1",
+    "cleanup-reconciliation.json": "598d72a6414913873375d0293bd99aef8b1df7ed6e038a5cc1eeeeb76284f4da",
+    "service-stop.json": "285eb9fd21e5579e08087c7b09be002ed835638e0de696e820ee9bf69e30add8",
+    "service-stop-verification.json": "2e567dc33c4e036934d65acf9fdd51e71ba17f780c0d6d5c8686194f4fe3f72e",
+    "external-workspace-retention.json": "06e7b8b4a2ddf7ed3274b1302b1776cb8fc0c03f434a026c141a64c63e2b0d28",
+    "final-measurement-review.md": "b1c3263e28d36fa66e15fb98b6a018f251cc34103b069198340085376fb527f3",
+    "final-execution-review.md": "0eb4d80cba5ac816701bec82a5c9ad1374bdc3d111c248c1179c5daeba324ebf",
+    "store-stopped-result.json": "7f417b6bdb47088006ec1641d5eaf7b7cbbd0e6c9546e5bc9c65033cc0b7318e"
+  }
+}

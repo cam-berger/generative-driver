@@ -1,0 +1,90 @@
+{
+  "schema": "pr-integration-verification/1",
+  "date": "2026-10-06",
+  "pull_request": "https://github.com/cam-berger/generative-driver/pull/5",
+  "dashboard_parent_revision": "ca7599b67fe5b471cd4a352f66f89f9126c03ad2",
+  "pipeline_parent_revision": "359f5be7ef02e2dc67cbe6571ffa229517822133",
+  "historical_measured_pipeline_revision": "272c1b1028cd11f8307d55ce12c1c60e0646ce2e",
+  "user_authorized_pipeline_and_all_results": true,
+  "runtime_resources_tests_files": 172,
+  "runtime_resources_tests_sha256": "7f168de890033f09b2e591f03eeb03c45c4c0e5bf062d090105fb901628187a5",
+  "software_checks": [
+    {
+      "environment": "Source",
+      "python": "3.13.12",
+      "tests": 471,
+      "skips": 0,
+      "returncode": 0,
+      "elapsed_seconds": 105.311,
+      "log_sha256": "2cda3c5442d0afab58a690c795eb1b782c04a0586da4ddc584e5b7ba4313a8ba"
+    },
+    {
+      "environment": "Installed wheel",
+      "python": "3.11.15",
+      "tests": 471,
+      "skips": 0,
+      "returncode": 0,
+      "elapsed_seconds": 114.168,
+      "log_sha256": "d2f9b1472ea10218a52d0bba67b61a25cb16d1a05fe8a3ccf688d994540c4a12"
+    },
+    {
+      "environment": "Installed wheel",
+      "python": "3.13.12",
+      "tests": 471,
+      "skips": 0,
+      "returncode": 0,
+      "elapsed_seconds": 122.858,
+      "log_sha256": "2778089fcf83807e59b315f7a31907b8128d83fa0ef291cc7898a547ac23f5cc"
+    }
+  ],
+  "installed_test_dependencies": {
+    "mcp": "2.2.0",
+    "cryptography": "50.0.1"
+  },
+  "source_test_dependencies": {
+    "mcp": "2.3.0",
+    "cryptography": "50.0.2"
+  },
+  "browser_contracts": {
+    "source": "passed",
+    "source_archive": "passed",
+    "local_node": "26.0.0",
+    "ci_node": "22"
+  },
+  "installed_setup_and_relocated_replay": {
+    "python311": "passed",
+    "python313": "passed",
+    "model_inference": false
+  },
+  "evidence_correspondence": {
+    "ok": true,
+    "public_private_trial_fields_matched": 59,
+    "retained_hashes_matched": 10,
+    "primary_completion": "2/3",
+    "failed_trial_preserved": true,
+    "evaluator_identity_sha256": "7330e0a99136922d04165e094a3abb465d8dc0fc6c497bebf71c7270e2904c04",
+    "authenticated_read_only_admissions": [
+      "tq9-v2",
+      "sampled-sensor-v1",
+      "parameter-store-v1"
+    ],
+    "new_model_trials": 0,
+    "native_sessions_launched": 0,
+    "admission_environment": "Fresh combined installed wheel, Python 3.11.15",
+    "admission_dependencies": {
+      "mcp": "2.2.0",
+      "cryptography": "50.0.1"
+    }
+  },
+  "tested_archives": {
+    "generative_driver-0.1.0-py3-none-any.whl": "57739d19da7cd8e25ac04708b96e061257981e7886d40e82d248df59aaed3c1e",
+    "generative_driver-0.1.0.tar.gz": "cfc7202a91b6bdb2ccbe710dfe9e9ad69ba5965ef213271a9058cf6b7abefb1a"
+  },
+  "limits": [
+    "Historical model trials retain their original implementations and coverage; no new candidate trial was launched.",
+    "Two of three v5 family workflows completed; parameter-store final behavior was not reached and uncertainty remains unresolved.",
+    "Local checks are on macOS. Current macOS/Windows matrix status is provided by PR checks, not inferred from earlier branches.",
+    "No physical devices, native Windows analysis tools or live Goose were tested."
+  ],
+  "reporting_order": "Integration metrics and publication/handoff prose follow the tested archive construction; final publication checks verify unchanged runtime/resource payloads."
+}

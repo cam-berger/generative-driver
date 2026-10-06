@@ -273,3 +273,48 @@ class ToyTransport:
 
     def close(self):
         self.closed = True
+
+
+def toy_store_phase():
+    """Unrelated hand-checked vectors; never distributed case answer keys."""
+    initial = [4, 5, 6, 7, 8, 9, 10, 11]
+    names = ['idle-update', 'pending-same-bank-update', 'pending-different-bank-update',
+             'stage-commit', 'stage-abort', 'rejection']
+    phases = {}
+    for phase, value, staged in [('diagnostic', -3, -8), ('final', 2, -6)]:
+        checks, actions = [], []
+        for name in names:
+            actions.append({'kind':'reset', 'episode':name, 'values':{'committed':initial}})
+            def call(task, inputs=None):
+                actions.append({'kind':'call','episode':name,'task':task,'inputs':inputs or {},'grants':['write']})
+            if name.startswith('pending-'):
+                call('stage', {'bank':'B' if name=='pending-same-bank-update' else 'A','slot':0,'value':staged})
+            if name.endswith('update'):
+                call('update', {'bank':'B','slot':2,'value':value})
+            elif name in ('stage-commit','stage-abort'):
+                call('stage', {'bank':'B','slot':2,'value':value})
+                call('commit' if name=='stage-commit' else 'abort')
+            else:
+                call('commit')
+            committed = [4,5,6,7,8,9,value,11] if name.endswith('update') or name=='stage-commit' else initial
+            generation = 1 if name.endswith('update') or name=='stage-commit' else 0
+            values = {prefix+bank+'_'+str(slot):committed[index]
+                      for prefix in ('cell_','pending_') for index,(bank,slot) in enumerate((b,i) for b in 'AB' for i in range(4))}
+            values.update(generation=generation,pending_active=False,operation_ok=name!='rejection')
+            if name=='rejection': values['operation_rejected']=True
+            ids=[]
+            for suffix, expected in values.items():
+                identifier=name+'/end/'+suffix; ids.append(identifier)
+                boolean=type(expected) is bool
+                checks.append({'id':identifier,'scenario':name,'revision':0,'kind':'boolean' if boolean else 'number',
+                    'expected':expected,'unit':'boolean' if boolean else 'count' if suffix=='generation' else 'configuration-unit',
+                    'channel':'runtime-transcript' if suffix.startswith('operation_') else 'independent-monitor',
+                    **({'rejection_evidence': {'schema': 'benchmark-rejection/1',
+                        'rx_hex': b'ERR:order\nREADY\n'.hex()}}
+                       if suffix=='operation_rejected' else {}),
+                    **({} if boolean else {'absolute_tolerance':0})})
+            actions.append({'kind':'observe','episode':name,'checks':ids})
+        phases[phase]={'contract':{'schema':'benchmark-behavior/1','artifact_sha256':'a'*64,
+                       'required_scenarios':names,'checks':checks},'actions':actions}
+    return ({'family':'parameter-store','scenario_id':'original'},
+            {'family':'parameter-store','artifact_sha256':'a'*64,'phases':phases})

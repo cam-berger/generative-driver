@@ -111,7 +111,7 @@
     "The read-only export helper initially imported suite reporting from the wrong module; correction reused existing sealed evidence without model execution."
   ],
   "limitations": [
-    "Observer attached to separately qualified unmerged pipeline installation; dashboard branch alone does not qualify firmware generation on published main.",
+    "Historical observer qualification used a separate qualified pipeline installation. PR #5 subsequently includes that implementation and its unchanged three-family trial results; integration checks are recorded separately.",
     "One descriptive observer example; no model reliability/physical/Windows UI/general Goose claims.",
     "macOS live browser only; Windows compatibility is checked separately in CI.",
     "Goose activity parsing has scripted contracts; no live Goose trial was run.",
@@ -233,5 +233,13 @@
     "unchanged_local_repetitions": 4,
     "unchanged_hosted_rerun_passed": true,
     "legacy_scheduler_fix_claimed": false
+  },
+  "publication_update": {
+    "date": "2026-10-06",
+    "pull_request": "https://github.com/cam-berger/generative-driver/pull/5",
+    "pipeline_branch_head": "359f5be7ef02e2dc67cbe6571ffa229517822133",
+    "user_authorized_pipeline_and_all_results": true,
+    "historical_measurements_unchanged": true,
+    "new_model_execution": false
   }
 }

@@ -327,3 +327,13 @@ def evaluation_fault(evaluation):
             continue
         faults.append(fault or 'host')
     return 'operator' if 'operator' in faults else 'host' if 'host' in faults else 'model'
+
+
+def recover_emulator(case_id, run_dir, workspace, accepted, report, feedback, options, cancelled):
+    """Internal adapter seam: owned pre-final emulation only."""
+    from .benchmark_support.registry import adapter_for
+    adapter = adapter_for(case_id)
+    hook = getattr(adapter, 'recover_emulator', None)
+    if hook is None:
+        raise ValueError('Binding has no trusted owned-emulator recovery adapter')
+    return hook(case_id, run_dir, workspace, accepted, report, feedback, options, cancelled)

@@ -195,6 +195,8 @@ class Controller:
                     state TEXT NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS bindings (
                     identity TEXT PRIMARY KEY, run_id TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS pending_effects (
+                    dispatch_id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, assignment_id TEXT, actor TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS progress (
                     run_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
             ''')
@@ -281,9 +283,12 @@ class Controller:
                     return self._tool(method, params, self._row(run_id))
         if method == 'status':
             with self._lock:
+                # Cleanup updates the durable outcome and worker ownership under
+                # this lock. Read both together before a suite may settle a child.
+                row = self._row(run_id)
                 stopping = row['status'] in TERMINAL and (run_id in self._workers or run_id in self._inflight)
-            return {'ok': True, **{k: row[k] for k in ('status', 'stage', 'reason', 'created', 'updated', 'outcome_category')},
-                    'run_id': run_id, 'uncertain_effect': bool(row['uncertain']), 'stopping': stopping}
+                return {'ok': True, **{k: row[k] for k in ('status', 'stage', 'reason', 'created', 'updated', 'outcome_category')},
+                        'run_id': run_id, 'uncertain_effect': bool(row['uncertain']), 'stopping': stopping}
         if method == 'events':
             with self._db() as db:
                 events = db.execute('SELECT * FROM events WHERE run_id=? AND seq>? ORDER BY seq LIMIT 500',
@@ -308,6 +313,9 @@ class Controller:
             with self._db() as db:
                 for table, key in (('reports', 'worker_reports'), ('handoffs', 'accepted_handoffs'), ('verdicts', 'evaluator_verdicts')):
                     out[key] = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM ' + table + ' WHERE run_id=? ORDER BY created', (run_id,))]
+                recoveries = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='emulator.recovered' ORDER BY seq",(run_id,)).fetchall()
+                out['emulator_recoveries'] = [json.loads(r['payload']) for r in recoveries]
+                out['emulator_recovery_count'] = len(recoveries)
                 saved = db.execute('SELECT payload FROM progress WHERE run_id=?',(run_id,)).fetchone()
                 out['progress'] = {key: value for key, value in json.loads(saved['payload']).items()
                     if key != 'maintenance_cycles'} if saved else None
@@ -349,6 +357,7 @@ class Controller:
                     if resolution != 'confirmed_safe':
                         raise ValueError('effect_resolution must be confirmed_safe after checking the device')
                     db.execute('UPDATE runs SET uncertain=0 WHERE id=?',(run_id,))
+                    db.execute('DELETE FROM pending_effects WHERE run_id=?',(run_id,))
                 self._event(run_id,'operator.response',{'message':message,'observation':observation,'effect_resolution':resolution},db)
             return self.call('status', {'run_id': run_id})
         if method == 'resume':
@@ -789,7 +798,9 @@ class Controller:
                 if prompt is None:
                     prompt = ('Execute exactly the assigned stage. Do not start another stage. Return a JSON stage report. '
                               'Write report.json and include artifact paths and actual SHA-256 hashes. '
-                              'Report checks honestly; use blocked if evidence or permission is missing.\n' + _json({
+                              'Report checks honestly. Use needs_revision for a candidate protocol, decoder, unit or '
+                              'capability discrepancy; preserve partial artifacts and observations for independent checks. '
+                              'Use blocked for missing host tools, operator input or permission.\n' + _json({
                                   'stage': stage, 'objective': prepared.get('objective', spec['goal']),
                                   'inputs': list(input_hashes), 'context': prepared.get('context', {}),
                                   'allowed_tools': assignment['allowed_tools'], 'effect_grants': spec['effects'],
@@ -812,15 +823,16 @@ class Controller:
                 if result['status'] != 'completed':
                     self._state(run_id, result['status'], result.get('reason'), outcome_category='host')
                     return
-                if self._row(run_id)['uncertain']:
-                    self._state(run_id,'blocked','Outstanding effect is uncertain; operator reconciliation is required before further execution')
-                    return
                 report = result.get('report')
                 if assignment['report_required'] and report.get('status') != 'completed' and not (spec.get('case') and report.get('status') == 'needs_revision'):
                     self._state(run_id, 'blocked', report.get('summary', 'Worker could not complete stage'))
                     return
                 self._verify_inputs(input_hashes)
-                checked = self._check(current_spec, stage, run_dir, workspace, report, accepted, assignment)
+                if self._row(run_id)['uncertain']:
+                    from .benchmark_support.emulated_recovery import reconcile
+                    checked = reconcile(self,run_id,current_spec,assignment,run_dir,workspace,accepted,report,progress)
+                else:
+                    checked = self._check(current_spec, stage, run_dir, workspace, report, accepted, assignment)
                 terminal_final = (not checked.get('ok') and checked.get('final_evaluation') is True
                                   and checked.get('fault') == 'model' and not checked.get('route'))
                 if checked.get('evaluator') is not None or terminal_final:
@@ -839,17 +851,18 @@ class Controller:
                 if cancel.is_set():
                     return
                 if self._row(run_id)['uncertain']:
-                    self._state(run_id,'blocked','Evaluator effect is uncertain; operator reconciliation is required before further execution')
+                    self._state(run_id,'blocked',checked.get('reason') or 'Evaluator effect is uncertain; operator reconciliation is required before further execution', outcome_category=checked.get('fault','unknown'))
                     return
                 self._verify_inputs(input_hashes)
                 category = checked.get('fault') if checked.get('fault') in ('model','host','operator') else 'unknown'
                 if not checked.get('ok'):
                     if checked.get('route') == 'interpret' and checked.get('fault') == 'model' and stage in ('interpret','probe','ground'):
-                        if progress['repairs'] >= int(spec.get('max_revisions',2)):
-                            self._state(run_id,'blocked','Model repair budget exhausted: '+checked.get('reason','checks failed'), outcome_category='model')
-                            return
-                        progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=checked.get('feedback'))
-                        self._route(run_id,progress,checked.get('reason'))
+                        if not checked.get('revision_committed'):
+                            if progress['repairs'] >= int(spec.get('max_revisions',2)):
+                                self._state(run_id,'blocked','Model repair budget exhausted: '+checked.get('reason','checks failed'), outcome_category='model')
+                                return
+                            progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=checked.get('feedback'))
+                            self._route(run_id,progress,checked.get('reason'))
                         revision = progress['revision']
                         queue = list(STAGES[1:])
                         continue
@@ -909,12 +922,14 @@ class Controller:
                     if row and row['status'] in TERMINAL and not row['uncertain'] and run_id not in self._workers:
                         db.execute('DELETE FROM bindings WHERE run_id=?',(run_id,))
 
-    def _route(self, run_id, progress, reason):
-        with self._db() as db:
-            db.execute("UPDATE assignments SET state='superseded' WHERE run_id=? AND state='active'",(run_id,))
-            db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)',(run_id,_json(progress)))
-            db.execute('UPDATE runs SET stage=? WHERE id=?',(progress['next_stage'],run_id))
-            self._event(run_id,'run.revision', {**progress,'reason':reason},db)
+    def _route(self, run_id, progress, reason, db=None):
+        if db is None:
+            with self._db() as connection:
+                return self._route(run_id,progress,reason,connection)
+        db.execute("UPDATE assignments SET state='superseded' WHERE run_id=? AND state='active'",(run_id,))
+        db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)',(run_id,_json(progress)))
+        db.execute('UPDATE runs SET stage=? WHERE id=?',(progress['next_stage'],run_id))
+        self._event(run_id,'run.revision', {**progress,'reason':reason},db)
 
     def _claim_binding(self, binding, run_id, db):
         if not binding:
@@ -1005,15 +1020,18 @@ class Controller:
                 db.execute('UPDATE runs SET uncertain=1 WHERE id=?',(run_id,))
                 evidence_id = self._event(run_id, 'tool.started', {'actor':'evaluator','stage':stage,
                     'assignment_id':assignment_id,'name':'benchmark_evaluate','effectful':True}, db)
+                db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(evidence_id,run_id,assignment_id,'evaluator'))
             options['evaluator_evidence_ids'] = [str(evidence_id)]
             result = invoke()
             with self._db() as db:
                 cancelled = db.execute('SELECT cancelled FROM runs WHERE id=?',(run_id,)).fetchone()['cancelled']
                 acknowledged = result.get('fault') != 'host'
                 if not cancelled and acknowledged:
-                    db.execute('UPDATE runs SET uncertain=0 WHERE id=?',(run_id,))
+                    db.execute('DELETE FROM pending_effects WHERE dispatch_id=?',(evidence_id,))
+                    db.execute('UPDATE runs SET uncertain=EXISTS(SELECT 1 FROM pending_effects WHERE run_id=?) WHERE id=?',(run_id,run_id))
                 self._event(run_id, 'tool.finished', {'actor':'evaluator','stage':stage,'assignment_id':assignment_id,
-                    'name':'benchmark_evaluate','ok':bool(result.get('ok', True)), 'evaluation_event_id':str(evidence_id)}, db)
+                    'name':'benchmark_evaluate','ok':bool(result.get('ok', True)), 'dispatch_id':str(evidence_id),
+                    'effectful':True,'effects_reconciled':bool(not cancelled and acknowledged), 'evaluation_event_id':str(evidence_id)}, db)
             return result
 
     def _check(self, spec, stage, run_dir, workspace, report, accepted, assignment):
@@ -1239,8 +1257,11 @@ class Controller:
                     raise ValueError('Outstanding effect is uncertain; another effectful operation is refused until operator reconciliation')
                 if effectful:
                     db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run['id'],))
-                self._event(run['id'], 'tool.started', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'effectful':effectful,
+                dispatch_id = self._event(run['id'], 'tool.started', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'effectful':effectful,
                     'actor':'evaluator' if evaluator_workspace is not None else 'worker'}, db)
+                if effectful:
+                    db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(dispatch_id,run['id'],assignment['id'],
+                        'evaluator' if evaluator_workspace is not None else 'worker'))
         if name == 'benchmark_package_execute':
             from .benchmark import package_execute
             spec = json.loads(run['spec'])
@@ -1271,9 +1292,19 @@ class Controller:
         with self._db() as db:
             cancelled = db.execute('SELECT cancelled FROM runs WHERE id=?',(run['id'],)).fetchone()['cancelled']
             success = result.get('_exit',0)==0 and bool(result.get('ok',result.get('available',True)))
-            if effectful and not cancelled and success:
-                db.execute('UPDATE runs SET uncertain=0 WHERE id=?',(run['id'],))
+            # A trusted runtime preflight refusal never attempted to open the device.
+            # Empty transcripts alone cannot establish this: opening may itself reset it.
+            executions = result.get('results') if name == 'probe_run' else [result]
+            refused_before_open = (name in ('interface_execute', 'probe_run', 'benchmark_package_execute')
+                and type(executions) is list and bool(executions)
+                and all(type(item) is dict and item.get('schema') == 'interface-result/1'
+                        and item.get('transport_open_attempted') is False for item in executions))
+            effects_reconciled = bool(effectful and not cancelled and (success or refused_before_open))
+            if effects_reconciled:
+                db.execute('DELETE FROM pending_effects WHERE dispatch_id=?',(dispatch_id,))
+                db.execute('UPDATE runs SET uncertain=EXISTS(SELECT 1 FROM pending_effects WHERE run_id=?) WHERE id=?',(run['id'],run['id']))
             evidence_id = self._event(run['id'], 'tool.finished', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'ok':success,'result':result,'artifacts':observed_artifacts,
+                'dispatch_id':str(dispatch_id),'effectful':effectful,'effects_reconciled':effects_reconciled,
                 'actor':'evaluator' if evaluator_workspace is not None else 'worker'}, db)
         if name == 'benchmark_package_execute':
             result = {**result, 'evidence_id': str(evidence_id)}

@@ -45,7 +45,7 @@ def _diagnose(case_id, run_dir, model_dir, capabilities, options):
     _private(run_dir, options, payload)
     observed = Path(run_dir)/'benchmark'/f'diagnostic-{pin["revision"]}'/'observations.json'
     _write(observed, {'schema': 'benchmark-observations/2', 'model_sha256': artifact,
-                      'diagnostics': [{'phase': 'diagnostic', 'records': records}]})
+                      'diagnostics': [{'phase': 'diagnostic', 'records': records, 'checks': grade['checks']}]})
     state.setdefault('evaluations', []).append({key: evaluation[key] for key in ('phase', 'revision', 'frozen_artifact_sha256')} | {k: grade[k] for k in ('verdict', 'passed', 'total')})
     state['diagnostic'] = {'passed': grade['verdict'] == 'passed', 'probes': probes, 'observations': str(observed)}
     _write(path, state)

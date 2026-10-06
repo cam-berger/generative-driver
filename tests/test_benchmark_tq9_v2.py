@@ -222,6 +222,25 @@ class TQ9V2Tests(unittest.TestCase):
         self.assertEqual([x['task'] for x in a if x['kind']=='call' and x['task']!='temperature'],[x['task'] for x in b if x['kind']=='call' and x['task']!='temperature'])
 
     def test_scripted_controller_seals_six_acceptances_and_independent_final(self):
+        self._scripted_controller_modes(('normal','rejected-write','repair-mapping','repair-decoder','repair-ground',
+            'final-bounds','hidden-wrong','missing-mission','monitor-missing','snapshot-next'))
+
+    def test_owned_emulator_recovery_revalidates_through_fresh_reuse(self):
+        self._scripted_controller_modes(('recover-write',))
+
+    def test_emulator_recovery_safety_boundaries(self):
+        self._scripted_controller_modes(('recover-budget','recover-lost','recover-stop','recover-reset','recover-cancel','recover-commit-cancel','recover-repeat','recover-restart','recover-physical'))
+
+    def test_recovery_requires_outcomes_for_every_uncertain_dispatch(self):
+        self._scripted_controller_modes(('recover-dispatch-exception','recover-mixed-unknown'))
+
+    def test_initial_observation_stop_failure_preserves_controller_uncertainty(self):
+        self._scripted_controller_modes(('recover-initial-stop-raise','recover-initial-stop-live'))
+
+    def test_other_runtime_host_and_operator_faults_block_model_recovery(self):
+        self._scripted_controller_modes(('recover-write-then-host','recover-write-then-operator'))
+
+    def _scripted_controller_modes(self, modes):
         # Real TCP peer, external worker processes and emitted package; no inference/native qualification.
         import http.server, sys, threading, time
         from unittest.mock import patch
@@ -230,7 +249,7 @@ class TQ9V2Tests(unittest.TestCase):
         from generative_driver.configurator import Controller
         from tq9_workflow_fixture import Silicon, WORKER
         from suite_fixtures import public_case_fixture
-        for mode in ('normal','hidden-wrong','missing-mission','monitor-missing','snapshot-next'):
+        for mode in modes:
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
                 root=Path(temp); resources=root/'resources'
                 manifest=public_case_fixture(resources,calibration={'status':'pending'})
@@ -243,9 +262,13 @@ class TQ9V2Tests(unittest.TestCase):
                 phases={'diagnostic':{'temperature_vectors':[{'stimulus':v,'expected':v,'absolute_tolerance':.01} for v in (-8,0,31)],
                     'effect_vectors':[{'task':'arm','inputs':{}}]+[{'task':'set_duty','inputs':{'duty':v}} for v in (0,450,1000)]+[{'task':'disarm','inputs':{}}]},
                     'final':{'temperature_vectors':[{'stimulus':v,'expected':v,'absolute_tolerance':.01} for v in (-7,29)],'effect_vectors':effects}}
+                if mode == 'final-bounds':
+                    phases['diagnostic']['effect_vectors'][3]['inputs']['duty'] = 800
+                    effects[1]['inputs']['duty'] = 900
                 truth={'private_sentinel':'EVALUATOR SENTINEL','images':manifest['images'],'recipe':recipe,
                     'contracts':{'units':{'temperature':'degC','duty':'permille'},'scenarios':{'original':{'phases':phases}},
                                  'time_policy':{'sample_settle_seconds':0}}}
+                if mode=='recover-physical':manifest['approval_scope']='bound-device'
                 manifest['truth']['sha256']=seal(truth,resources/manifest['truth']['path'],password.read_text())
                 (case/'case.json').write_text(json.dumps(manifest))
                 controller=Controller(root/'home');peers=[];worker_live=[]
@@ -257,6 +280,9 @@ class TQ9V2Tests(unittest.TestCase):
                             if request['params'].get('name') in ('interface_execute','probe_run'):
                                 worker_live.append((request['params']['name'],response.get('ok'),peers[-1].running))
                                 if mode=='monitor-missing' and request['params']['name']=='probe_run':peers[-1].monitor_available=False
+                            if mode=='recover-restart' and request['params'].get('arguments',{}).get('operation')=='disarm' and not response.get('ok'):
+                                from generative_driver.benchmark_support import emulated
+                                emulated._OWNERS.pop(str((root/'home/runs'/run['run_id']).resolve()),None)
                         except Exception as error:response={'fixture_error':str(error)}
                         body=json.dumps(response).encode();self.send_response(200);self.end_headers();self.wfile.write(body)
                     def log_message(self,*args):pass
@@ -266,11 +292,96 @@ class TQ9V2Tests(unittest.TestCase):
                 source=WORKER.replace('PACKAGE_PARENT',repr(str(Path(generative_driver.__file__).resolve().parents[1])))\
                     .replace('FIXTURE_PARENT',repr(str(Path(__file__).parent))).replace('SERVICE_URL',repr('http://127.0.0.1:'+str(server.server_port)))
                 if mode=='missing-mission':source=source.replace("('set_duty',{'duty':370}),",'')
+                if mode=='rejected-write':
+                    source=source.replace("'operation':'measure','parameters':{'unexpected':1}",
+                                          "'operation':'set_duty','parameters':{'unexpected':1}")
+                if mode=='repair-mapping':
+                    source=source.replace("pathlib.Path('capabilities.json').write_text(json.dumps(capabilities()))",
+                        "mapping=capabilities()\n    marker=pathlib.Path("+repr(str(root/'first-probe'))+")\n"
+                        "    if not marker.exists():\n        marker.write_text('first diagnostic')\n"
+                        "        mapping['tasks'].pop('temperature');status='needs_revision'\n"
+                        "    pathlib.Path('capabilities.json').write_text(json.dumps(mapping))")
+                if mode in ('repair-decoder','repair-ground'):
+                    source = source.replace("pathlib.Path('model.json').write_text(json.dumps(model()))",
+                        "candidate=model()\n    context_path=pathlib.Path('REPAIR_CONTEXT.json')\n"
+                        "    if context_path.exists():\n"
+                        "        context=json.loads(context_path.read_text());assert context['mode']=='repair'\n"
+                        "        prior=context['history'][-1]['files']\n"
+                        "        candidate=json.loads(pathlib.Path(prior['model.json']).read_text())\n"
+                        "        tasks=json.loads(pathlib.Path(context['task_contract']).read_text())\n"
+                        "        assert tasks['tasks']['temperature']['outputs']['temperature']['unit']=='degC'\n"
+                        "        rows=[json.loads(line) for line in pathlib.Path(prior['live-observations.jsonl']).read_text().splitlines()]\n"
+                        "        measured=next(row for row in rows if row['operation']=='measure' and row['result'].get('outputs',{}).get('temperature'))\n"
+                        "        candidate['operations']['measure']['outputs']['temperature']['scale'] *= measured['observation']['temperature_reference']/measured['result']['outputs']['temperature']\n"
+                        "    else:\n        candidate['operations']['measure']['outputs']['temperature']['scale']="+('10' if mode=='repair-decoder' else '1')+"\n"
+                        "    pathlib.Path('model.json').write_text(json.dumps(candidate))")
+                if mode.startswith('recover-'):
+                    source = source.replace("pathlib.Path('model.json').write_text(json.dumps(model()))",
+                        "candidate=model()\n    if MODE_REPEAT or not pathlib.Path('REPAIR_CONTEXT.json').exists():\n        candidate['operations']['disarm']['steps'][0]['expect']['final_line_equals']='WRONG'\n"
+                        "    pathlib.Path('model.json').write_text(json.dumps(candidate))")
+                    source = source.replace("pathlib.Path('replies.json').write_text(json.dumps(replies()))",
+                        "captures=replies()\n    if MODE_REPEAT or not pathlib.Path('REPAIR_CONTEXT.json').exists():\n        captures['operations']['disarm']['steps']=[['WRONG']]\n"
+                        "    pathlib.Path('replies.json').write_text(json.dumps(captures))")
+                    source = source.replace("    pathlib.Path('capabilities.json').write_text(json.dumps(capabilities()));artifacts=['capabilities.json']",
+                        "    failed=call('interface_execute',{'model_dir':model_dir,'operation':'disarm','parameters':{}})\n"
+                        "    if not failed['ok']:status='needs_revision'\n"
+                        "    pathlib.Path('capabilities.json').write_text(json.dumps(capabilities()));artifacts=['capabilities.json']")
+                if mode in ('recover-dispatch-exception','recover-mixed-unknown','recover-write-then-host','recover-write-then-operator'):
+                    source=source.replace("    failed=call('interface_execute',{'model_dir':model_dir,'operation':'disarm','parameters':{}})\n    if not failed['ok']:status='needs_revision'",
+                        "    try:\n        failed=call('interface_execute',{'model_dir':model_dir,'operation':'disarm','parameters':{}})\n"
+                        "    except RuntimeError:pass\n"
+                        "    later=call('interface_execute',{'model_dir':model_dir,'operation':'measure','parameters':{}})\n"
+                        "    assert later['error']['fault']==EXPECTED_POST_WRITE_FAULT\n    status='needs_revision'")
+                if mode == 'repair-ground':
+                    source = source.replace("elif stage=='emit':",
+                        "elif stage=='ground':\n"
+                        "    marker=pathlib.Path("+repr(str(root/'first-ground'))+")\n"
+                        "    if not marker.exists():\n        marker.write_text('first ground');status='needs_revision'\n"
+                        "elif stage=='emit':")
+                if mode == 'final-bounds':
+                    source = source.replace("pathlib.Path('model.json').write_text(json.dumps(model()))",
+                        "candidate=model();candidate['operations']['set_duty']['parameters']['duty']['maximum']=800\n"
+                        "    pathlib.Path('model.json').write_text(json.dumps(candidate))")
+                source=source.replace('EXPECTED_POST_WRITE_FAULT',repr('host' if mode=='recover-write-then-host' else 'operator' if mode=='recover-write-then-operator' else 'model'))
+                source=source.replace('MODE_REPEAT',str(mode=='recover-repeat'))
                 script.write_text(source)
                 def native_start(**kwargs):
                     self.assertEqual(Path(kwargs['image']).name,'firmware.bin')
                     peer=Silicon(kwargs['image']);peers.append(peer);peer.wrong_hidden=mode=='hidden-wrong'
-                    return peer.session(kwargs['recipe'],root/('native-'+str(len(peers))))
+                    session=peer.session(kwargs['recipe'],root/('native-'+str(len(peers))))
+                    if mode.startswith('recover-'):
+                        class Process:
+                            def poll(self):return 0 if getattr(peer,'closed',False) else None
+                        session.process=Process()
+                        if mode=='recover-lost':session.process=None
+                        if mode=='recover-stop':session.stop=lambda:None
+                        if mode in ('recover-initial-stop-raise','recover-initial-stop-live'):
+                            session.observe=lambda:{'values':{},'reads':[]}
+                            def stop():
+                                if mode=='recover-initial-stop-raise':raise RuntimeError('Controlled native stop failure')
+                            session.stop=stop
+                        if len(peers)==2 and mode=='recover-reset':peer.temperature=21
+                        if len(peers)==2 and mode=='recover-cancel':controller.call('cancel',run)
+                    return session
+                from generative_driver.benchmark_support import emulated
+                from generative_driver import toolkit
+                original_call_tool=toolkit.call_tool
+                def runtime_boundary(name,arguments):
+                    outcome=original_call_tool(name,arguments)
+                    if mode in ('recover-dispatch-exception','recover-mixed-unknown','recover-write-then-host','recover-write-then-operator') and name=='interface_execute' and arguments.get('operation')=='disarm':
+                        # Real device I/O happened; the boundary then loses or cannot classify its outcome.
+                        peers[-1].broken_measure=True
+                        if mode=='recover-dispatch-exception':raise RuntimeError('Controlled adapter failure after device I/O')
+                        if mode=='recover-mixed-unknown':outcome['error'].pop('fault',None)
+                    if mode in ('recover-write-then-host','recover-write-then-operator') and name=='interface_execute' and arguments.get('operation')=='measure' and not outcome['ok']:
+                        # The external runtime boundary reports its own host/operator diagnostic ownership.
+                        outcome['error']['fault']='host' if mode=='recover-write-then-host' else 'operator'
+                    return outcome
+                original_recover=emulated.recover_emulator
+                def recover(*args,**kwargs):
+                    receipt=original_recover(*args,**kwargs)
+                    if mode=='recover-commit-cancel':controller.call('cancel',run)
+                    return receipt
                 original_accept=controller._accept
                 def accept(*args,**kwargs):
                     handoff=original_accept(*args,**kwargs)
@@ -278,11 +389,11 @@ class TQ9V2Tests(unittest.TestCase):
                         (root/'home/runs'/args[0]/'benchmark/inputs/firmware.bin').write_bytes(b'tampered after acceptance')
                     return handoff
                 try:
-                    with patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
+                    with patch.object(toolkit,'call_tool',side_effect=runtime_boundary),patch.object(emulated,'recover_emulator',side_effect=recover),patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
                          patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True}),\
                          patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=native_start):
                         run=controller.start({'goal':'scripted-contract-fixture','case':'tq9-v2','budget_seconds':60,
-                            'effects':['write','actuate'],'case_options':{'scenario_id':'original','evaluator_password_file':str(password)},
+                            'effects':['write','actuate'],'max_revisions':0 if mode=='recover-budget' else 2,'case_options':{'scenario_id':'original','evaluator_password_file':str(password)},
                             'executor_config':{'command':[sys.executable,str(script)]}})
                         deadline=time.monotonic()+60
                         while True:
@@ -295,26 +406,100 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertNotIn('EVALUATOR SENTINEL',json.dumps(assignments))
                         self.assertNotIn('maintain',[a['stage'] for a in assignments])
                         self.assertNotIn('maintenance_cycles',result['progress'])
-                        if mode!='normal':
+                        if mode.startswith('recover-') and mode!='recover-write':
                             self.assertNotEqual(status['status'],'completed')
-                            if mode=='hidden-wrong':
+                            self.assertTrue(result['uncertain_effect'])
+                            self.assertEqual(result['emulator_recovery_count'],2 if mode=='recover-repeat' else 0)
+                            self.assertEqual(result['progress']['repairs'],2 if mode=='recover-repeat' else 0)
+                            self.assertEqual(len(peers),3 if mode=='recover-repeat' else 2 if mode in ('recover-reset','recover-cancel','recover-commit-cancel') else 1)
+                            if mode in ('recover-cancel','recover-commit-cancel'):self.assertEqual(status['status'],'cancelled')
+                            else:self.assertEqual(status['outcome_category'],'model' if mode in ('recover-budget','recover-repeat','recover-physical') else 'unknown' if mode in ('recover-dispatch-exception','recover-mixed-unknown') else 'operator' if mode=='recover-write-then-operator' else 'host')
+                            if mode in ('recover-dispatch-exception','recover-mixed-unknown'):
+                                starts=[e for e in events if e['kind']=='tool.started' and e['data'].get('effectful') and e['data'].get('actor')=='worker']
+                                self.assertEqual(len(starts),1)
+                                self.assertEqual(peers[0].device_commands.count('D'),1)
+                                with controller._db() as db:
+                                    pending=db.execute('SELECT dispatch_id FROM pending_effects WHERE run_id=?',(run['run_id'],)).fetchall()
+                                self.assertEqual([row['dispatch_id'] for row in pending],[starts[0]['id']])
+                                completions=[e for e in events if e['kind']=='tool.finished' and e['data'].get('dispatch_id')==str(starts[0]['id'])]
+                                self.assertEqual(len(completions),0 if mode=='recover-dispatch-exception' else 1)
+                                reads=[e for e in events if e['kind']=='tool.finished' and e['data'].get('result',{}).get('operation')=='measure' and e['data'].get('result',{}).get('error',{}).get('fault')=='model']
+                                self.assertTrue(reads)
+                            if mode in ('recover-initial-stop-raise','recover-initial-stop-live'):
+                                self.assertEqual(status['status'],'blocked')
+                                key=str((root/'home/runs'/run['run_id']).resolve())
+                                owner=emulated._OWNERS[key]
+                                self.assertIsNone(owner.process.poll())
+                                persisted=json.loads((root/'home/runs'/run['run_id']/'benchmark/state.json').read_text())
+                                self.assertEqual(persisted['session']['session_id'],owner.info['session_id'])
+                                self.assertTrue(any(e['kind']=='cleanup.failed' for e in events))
+                            if mode=='recover-reset':self.assertTrue(peers[1].closed)
+                            continue
+                        if mode not in ('normal','rejected-write','repair-mapping','repair-decoder','repair-ground','recover-write'):
+                            self.assertNotEqual(status['status'],'completed')
+                            if mode in ('hidden-wrong','final-bounds'):
                                 self.assertTrue(result['progress']['terminal_final_failure'])
+                                self.assertEqual(status['outcome_category'], 'model')
+                                self.assertEqual(result['progress']['repairs'], 0)
+                                self.assertTrue((root/'home/runs'/run['run_id']/'benchmark/run-evidence.enc').is_file())
                                 with self.assertRaisesRegex(ValueError,'final'):controller.call('resume',run)
                             if mode=='monitor-missing':self.assertEqual(status['outcome_category'],'host')
                             if mode=='snapshot-next':
                                 self.assertIn('hash',status['reason']);self.assertEqual(len(assignments),1);self.assertFalse(peers)
                             continue
                         self.assertEqual(status['status'],'completed',result)
-                        self.assertEqual([a['stage'] for a in assignments],['acquire','interpret','probe','ground','emit','reuse'])
-                        self.assertEqual(len(peers),1)
-                        self.assertEqual([entry[1] for entry in worker_live],[False,True,True])
+                        expected=['acquire','interpret','probe','ground','emit','reuse']
+                        if mode=='repair-mapping':
+                            expected[3:3]=['interpret','probe']
+                            self.assertEqual(result['progress']['repairs'],1)
+                            feedback=next(a for a in assignments if a['stage']=='interpret' and a['revision']==1)
+                            defects=json.loads((Path(feedback['workspace'])/'DEFECTS.json').read_text())
+                            self.assertTrue(any(error['path'] == 'tasks.temperature'
+                                                for error in defects['capability_errors']))
+                        if mode in ('repair-decoder', 'repair-ground','recover-write'):
+                            start = 4 if mode == 'repair-ground' else 3
+                            expected[start:start] = ['interpret','probe'] + (['ground'] if mode == 'repair-ground' else [])
+                            self.assertEqual(result['progress']['repairs'], 1)
+                        self.assertEqual([a['stage'] for a in assignments],expected)
+                        self.assertEqual(len(peers),2 if mode=='recover-write' else 1)
+                        if mode=='recover-write':
+                            self.assertTrue(peers[0].closed)
+                            self.assertEqual(peers[0].device_commands.count('D'),1)
+                            self.assertEqual(result['emulator_recovery_count'],1)
+                            self.assertEqual(result['emulator_recoveries'][0].get('revision'),1)
+                            self.assertEqual(result['emulator_recoveries'][0].get('repairs'),1)
+                            self.assertFalse(result['uncertain_effect'])
+                            old=next(a for a in assignments if a['stage']=='probe')
+                            with self.assertRaisesRegex(ValueError,'inactive'):
+                                controller.call('tools',{**run,'assignment_id':old['id']})
+                            history=next(a for a in assignments if a['stage']=='interpret' and a['revision']==1)
+                            context=json.loads((Path(history['workspace'])/'REPAIR_CONTEXT.json').read_text())
+                            self.assertIn('live-observations.jsonl',context['history'][-1]['files'])
+                            preserved=Path(history['workspace'])/context['history'][-1]['files']['live-observations.jsonl']
+                            failed=[json.loads(line) for line in preserved.read_text().splitlines() if json.loads(line)['operation']=='disarm']
+                            self.assertEqual(len(failed),1)
+                            self.assertEqual(failed[0]['result']['error']['fault'],'model')
+                            self.assertTrue(failed[0]['result']['transcript'])
+                        self.assertEqual([entry[1] for entry in worker_live],[False,True,True,False,False,True,True,True] if mode=='recover-write' else [False,True,True]*(2 if mode in ('repair-mapping','repair-decoder','repair-ground','recover-write') else 1))
                         self.assertTrue(all(not entry[2] for entry in worker_live));self.assertFalse(peers[0].paused_requests)
                         reuse=assignments[-1];self.assertEqual(len(reuse['inputs']),1)
                         self.assertEqual(Path(next(iter(reuse['inputs']))).name,'package')
                         run_dir=root/'home/runs'/run['run_id'];state=json.loads((run_dir/'benchmark/state.json').read_text())
                         sidecar=run_dir/'benchmark/run-evidence.enc'
                         sealed=unlock(sidecar,password.read_text(),state['final_evaluation']['evidence_sha256'])
-                        self.assertEqual(len(sealed['accepted_gates']),6);self.assertEqual(sealed['accepted_gates'][-1]['stage'],'reuse')
+                        self.assertEqual(len(sealed['accepted_gates']),8 if mode=='repair-ground' else 7 if mode in ('repair-mapping','repair-decoder','recover-write') else 6)
+                        self.assertEqual(sealed['accepted_gates'][-1]['stage'],'reuse')
+                        if mode=='recover-write':
+                            proof=sealed['emulator_recoveries'][0]
+                            receipt=result['emulator_recoveries'][0]['receipt']
+                            self.assertEqual(hashlib.sha256(json.dumps(proof,sort_keys=True).encode()).hexdigest(),receipt['proof_sha256'])
+                            self.assertEqual(proof['new_startup_observation']['values'],proof['old_startup_observation']['values'])
+                            self.assertTrue(proof['unresolved_evidence_ids'])
+                            self.assertEqual(proof['unresolved_dispatch_ids'],result['emulator_recoveries'][0]['unresolved_dispatch_ids'])
+                            started=next(e for e in events if str(e['id'])==proof['unresolved_dispatch_ids'][0])
+                            finished=next(e for e in events if str(e['id'])==proof['unresolved_evidence_ids'][0])
+                            self.assertTrue(started['data']['effectful'])
+                            self.assertEqual(finished['data']['dispatch_id'],str(started['id']))
                         self.assertTrue(all(Path(a['path']).resolve().is_relative_to((run_dir/'accepted').resolve())
                                             for a in sealed['accepted_artifacts']))
                         self.assertNotIn('maintenance',sealed)
@@ -338,6 +523,7 @@ class TQ9V2Tests(unittest.TestCase):
                     controller.close();server.shutdown();server.server_close()
                     for peer in peers:
                         if not getattr(peer,'closed',False):peer.close()
+                    if 'run' in locals():emulated._OWNERS.pop(str((root/'home/runs'/run['run_id']).resolve()),None)
 
     def test_measured_calibration_checks_code_and_complete_reference_mutant_coverage(self):
         from test_benchmark_family_calibration import AdmissionTests

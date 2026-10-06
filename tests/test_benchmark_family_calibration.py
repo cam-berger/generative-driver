@@ -71,6 +71,40 @@ class AdmissionTests(unittest.TestCase):
             calibration={'input_hashes':record['input_hashes']})
         return manifest,record
 
+    def test_store_qualification_requires_named_scenario_evidence(self):
+        from generative_driver.benchmark_support.calibration import validate_calibration
+        manifest, record = self.fixture()
+        manifest['family'] = 'parameter-store'
+        names = ['constant','scale','order','wrong-bank','abort','idle-only-update','short-rejection-frame']
+        base = copy.deepcopy(record['mutants'][0])
+        base_run = copy.deepcopy(next(r for r in record['runs'] if r['id']==base['run']))
+        record['runs'] = [r for r in record['runs'] if r['passed']]
+        record['mutants'] = []
+        for name in names:
+            row=copy.deepcopy(base); row.update(id=name,run=name)
+            run=copy.deepcopy(base_run);run['id']=name
+            record['mutants'].append(row);record['runs'].append(run)
+        record['required_mutants']=names
+        self.assertFalse(validate_calibration(manifest,record)['ok'])
+        scenarios = ['idle-update','pending-same-bank-update','pending-different-bank-update',
+                     'stage-commit','stage-abort','rejection']
+        for run in record['runs']:
+            for index, scenario in enumerate(scenarios):
+                if index==0:run['checks'][0]['scenario']=scenario
+                else:
+                    identifier='coverage/'+scenario
+                    run['check_ids'].append(identifier)
+                    run['checks'].append({'id':identifier,'scenario':scenario,'passed':True})
+        self.assertTrue(validate_calibration(manifest,record)['ok'])
+        # Removing both declarations and measured evidence cannot erase a required mutant.
+        omitted = copy.deepcopy(record)
+        omitted['required_mutants'].remove('short-rejection-frame')
+        omitted['mutants'] = [r for r in omitted['mutants'] if r['id']!='short-rejection-frame']
+        omitted['runs'] = [r for r in omitted['runs'] if r['id']!='short-rejection-frame']
+        rejected = validate_calibration(manifest, omitted)
+        self.assertFalse(rejected['ok'])
+        self.assertIn('family mutant inventory', rejected['failures'])
+
     def test_complete_measured_record_passes(self):
         from generative_driver.benchmark_support.calibration import validate_calibration
         self.assertTrue(validate_calibration(*self.fixture())['ok'])

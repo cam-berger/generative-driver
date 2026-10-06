@@ -5,6 +5,7 @@ import json
 from importlib.resources import files
 from pathlib import Path
 import secrets
+from socketserver import TCPServer
 import threading
 import time
 import webbrowser
@@ -204,7 +205,14 @@ def create_server(run_id, *, home=None, port=0):
 
         do_PUT = do_DELETE = do_PATCH = do_POST
 
-    server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+    class LocalServer(ThreadingHTTPServer):
+        def server_bind(self):
+            # HTTPServer's reverse lookup can stall a loopback-only monitor.
+            TCPServer.server_bind(self)
+            self.server_name = 'localhost'
+            self.server_port = self.server_address[1]
+
+    server = LocalServer(('127.0.0.1', port), Handler)
     server.daemon_threads = True
     server.url = f'http://127.0.0.1:{server.server_port}' + prefix
     return server

@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 import urllib.error
 import urllib.request
 import uuid
@@ -36,6 +37,17 @@ report = {{'status':'completed','summary':'scripted dashboard contract','artifac
 print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text':json.dumps(report)}}}}), flush=True)
 ''', encoding='utf-8')
         return home, ready, release, script
+
+    def test_loopback_dashboard_starts_without_a_reverse_name_lookup(self):
+        # A local observer must start even if the system name service is stalled.
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'socket.getfqdn', side_effect=RuntimeError('Name service is unavailable')):
+            server = self.dashboard().create_server('run-offline', home=Path(directory))
+            try:
+                self.assertGreater(server.server_port, 0)
+                self.assertTrue(server.url.startswith('http://127.0.0.1:'))
+            finally:
+                server.server_close()
 
     def test_repair_progress_does_not_count_superseded_gates_as_accepted(self):
         # Counting the previous revision's handoffs would falsely complete probe.

@@ -119,9 +119,21 @@ def validate_phase(phase):
     sequences = {'idle-update':['update'], 'pending-same-bank-update':['stage','update'],
                  'pending-different-bank-update':['stage','update'], 'stage-commit':['stage','commit'],
                  'stage-abort':['stage','abort']}
-    observed = []
+    episodes = {}
+    current = None
+    for action in phase['actions']:
+        label = action.get('episode')
+        if action['kind'] == 'reset':
+            if label in names and label in episodes:
+                raise ValueError('Required scenario has multiple reset-delimited episodes')
+            current = []
+            episodes.setdefault(label, []).append(current)
+        elif current is None or label != current[0].get('episode'):
+            raise ValueError('Episode actions must follow their own reset contiguously')
+        current.append(action)
     for name in names:
-        actions = [a for a in phase['actions'] if a.get('episode') == name]
+        selected = episodes.get(name, [])
+        actions = selected[0] if len(selected) == 1 else []
         checks = [c for c in contract['checks'] if c.get('scenario') == name]
         if not actions or actions[0]['kind'] != 'reset' or sum(a['kind']=='reset' for a in actions)!=1:
             raise ValueError('Scenario requires one initial reset')
@@ -136,13 +148,16 @@ def validate_phase(phase):
         observed_ids = [i for a in actions if a['kind']=='observe' for i in a['checks']]
         if not ids or set(observed_ids)!=ids or len(observed_ids)!=len(set(observed_ids)):
             raise ValueError('Scenario lacks complete observations')
-        monitor = {c['id'].rsplit('/',1)[-1] for c in checks if c['channel']=='independent-monitor'}
+        last_call = max(i for i, action in enumerate(actions) if action['kind']=='call')
+        ending_ids = {identifier for action in actions[last_call+1:] if action['kind']=='observe'
+                      for identifier in action['checks']}
+        monitor = {c['id'].rsplit('/',1)[-1] for c in checks
+                   if c['channel']=='independent-monitor' and c['id'] in ending_ids}
         if not state <= monitor:
-            raise ValueError('Scenario lacks independent complete state')
+            raise ValueError('Scenario lacks independent complete ending state')
         if name=='rejection' and not any(c['id'].endswith('/operation_rejected') and c['expected'] is True
-                and c['channel']=='runtime-transcript' for c in checks):
+                and c['channel']=='runtime-transcript' and c['id'] in ending_ids for c in checks):
             raise ValueError('Scenario lacks complete rejection evidence')
-        observed.extend(observed_ids)
     all_observed = [i for a in phase['actions'] if a['kind']=='observe' for i in a['checks']]
     if set(all_observed)!={c['id'] for c in contract['checks']} or len(all_observed)!=len(set(all_observed)):
         raise ValueError('Unobserved or duplicate scenario checks')

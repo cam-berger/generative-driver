@@ -11,6 +11,39 @@ from benchmark_family_fixtures import FourCellStoreDevice, records_for, toy_stor
 
 
 class ParameterStoreOracleTests(unittest.TestCase):
+    def test_required_state_evidence_must_follow_final_call_in_contiguous_episode(self):
+        # Pre-call state or an intervening foreign reset cannot prove update's effects.
+        for defect in ('early-observation', 'one-cell-before-update', 'interleaved-reset', 'interleaved-call'):
+            pin, truth = toy_store_phase()
+            phase = truth['phases']['diagnostic']
+            actions = phase['actions']
+            target = 'pending-same-bank-update'
+            start = next(i for i,a in enumerate(actions) if a['episode']==target)
+            end = next(i for i,a in enumerate(actions) if a['episode']==target and a['kind']=='observe')
+            if defect=='early-observation':
+                observation=actions.pop(end);actions.insert(start+1,observation)
+            elif defect=='one-cell-before-update':
+                identifier=next(i for i in actions[end]['checks'] if i.endswith('/cell_A_0'))
+                actions[end]['checks'].remove(identifier)
+                actions.insert(start+1,{'kind':'observe','episode':target,'checks':[identifier]})
+            else:
+                kind='reset' if defect=='interleaved-reset' else 'call'
+                foreign_episode='pending-different-bank-update' if kind=='reset' else 'idle-update'
+                foreign=next(a for a in actions if a['episode']==foreign_episode and a['kind']==kind)
+                actions.remove(foreign);actions.insert(start+2,foreign)
+            with self.subTest(defect=defect), self.assertRaises(ValueError):
+                parameter_store.build_plan(pin,truth,'diagnostic')
+
+    def test_intermediate_state_observations_retain_complete_ending_coverage(self):
+        pin, truth = toy_store_phase()
+        phase=truth['phases']['diagnostic'];actions=phase['actions']
+        index=next(i for i,a in enumerate(actions) if a['episode']=='stage-abort' and a['kind']=='call')
+        identifier='stage-abort/staged/pending_active'
+        phase['contract']['checks'].append({'id':identifier,'scenario':'stage-abort','revision':0,
+            'kind':'boolean','unit':'boolean','channel':'independent-monitor','expected':True})
+        actions.insert(index+1,{'kind':'observe','episode':'stage-abort','checks':[identifier]})
+        self.assertEqual(len(parameter_store.build_plan(pin,truth,'diagnostic')),len(actions))
+
     def test_pending_update_scenarios_are_mandatory_and_reject_idle_only_model(self):
         # Omitting a reset-delimited pending episode must invalidate the oracle.
         pin, truth = toy_store_phase()

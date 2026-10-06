@@ -2,6 +2,7 @@
 from contextlib import suppress
 import hashlib
 import json
+import math
 from multiprocessing.connection import Client
 import os
 from pathlib import Path
@@ -72,11 +73,11 @@ def default_home():
     return Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'generative-driver'
 
 
-def _request(home, method, params):
+def _request(home, method, params, *, reply_timeout=None):
     endpoint = json.loads((home / 'service.json').read_text(encoding='utf-8'))
     with Client(endpoint['address'], family=endpoint['family'], authkey=bytes.fromhex(endpoint['authkey'])) as conn:
         conn.send_bytes(json.dumps({'method': method, 'params': params}).encode('utf-8'))
-        timeout = 620 if method == 'tool' else 30
+        timeout = reply_timeout if reply_timeout is not None else (620 if method == 'tool' else 30)
         if not conn.poll(timeout):
             raise TimeoutError('Configurator request timed out')
         return json.loads(conn.recv_bytes(4 * 1024 * 1024))
@@ -155,13 +156,17 @@ def _start(home):
         shutil.rmtree(lock, ignore_errors=True)
 
 
-def call(method, params=None, home=None, *, autostart=True):
+def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
     """Send one JSON request; starting or disconnecting a UI never owns a run."""
+    if read_timeout is not None and (autostart or method not in ('ping', 'status', 'result', 'events')
+            or type(read_timeout) not in (int, float) or not math.isfinite(read_timeout) or read_timeout <= 0):
+        raise ValueError('read_timeout requires a positive finite deadline and a reconnect-only read')
+    request_options = {'reply_timeout': read_timeout} if read_timeout is not None else {}
     directory = Path(home or default_home()).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     params = params or {}
     try:
-        result = _request(directory, method, params)
+        result = _request(directory, method, params, **request_options)
     except (OSError, EOFError, ValueError):
         if method == 'shutdown':
             try:
@@ -174,7 +179,7 @@ def call(method, params=None, home=None, *, autostart=True):
         if not autostart:
             return {'ok': False, 'reason': 'Configurator is not reachable. Run generative-driver service start from an operator terminal, then reconnect this UI.'}
         _start(directory)
-        return _request(directory, method, params)
+        return _request(directory, method, params, **request_options)
     if method == 'shutdown' and result.get('stopped'):
         return _confirmed_shutdown(result.get('pid'))
     return result

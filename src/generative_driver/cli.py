@@ -34,6 +34,10 @@ def main(argv=None):
     setup.add_argument("--output", required=True)
     service = commands.add_parser("service", help="Manage the independent background configurator")
     service.add_argument("action", choices=["start", "status", "stop"])
+    dashboard = commands.add_parser("dashboard", help="Watch one run's stages and logs in a local browser")
+    dashboard.add_argument("run_id")
+    dashboard.add_argument("--port", type=int, default=0, help="Local port; default selects an available port")
+    dashboard.add_argument("--no-open", action="store_true", help="Print the URL without opening a browser")
     commands.add_parser("benchmark", help="Run, score and compare benchmark profiles")
     run = commands.add_parser("run", help="Start a durable run from a JSON specification")
     run.add_argument("--spec", required=True)
@@ -76,6 +80,9 @@ def main(argv=None):
         from .reporting import report_run
         print(json.dumps(report_run(args.run_id, home=args.home, output=args.output), indent=2))
         return 0
+    if args.command == "dashboard":
+        from .dashboard import watch
+        return watch(args.run_id, home=args.home, port=args.port, open_browser=not args.no_open)
     if args.command in ("tools", "tool"):
         from .toolkit import call_tool, list_tools
         if args.command == "tools":

@@ -1,0 +1,129 @@
+{
+  "schema": "dashboard-verification/1",
+  "date": "2026-10-06",
+  "observer_base_revision": "6bacae4a6ef711015d2e89f2c2e90983c7822040",
+  "software_checks": [
+    {
+      "environment": "Source",
+      "python": "3.13.12",
+      "tests": 429,
+      "skips": 0,
+      "returncode": 0,
+      "elapsed_seconds": 60.652,
+      "log_sha256": "af8514a822865aa247c33a51255824c1bcd09d7280926ead88dd44554156e31c"
+    },
+    {
+      "environment": "Installed wheel",
+      "python": "3.11.15",
+      "tests": 429,
+      "skips": 0,
+      "returncode": 0,
+      "elapsed_seconds": 64.8,
+      "log_sha256": "fa0296789a244c6e55765e3afa2caf857afe9d337e5d3487794b73a9e86aa09e"
+    },
+    {
+      "environment": "Installed wheel",
+      "python": "3.13.12",
+      "tests": 429,
+      "skips": 0,
+      "returncode": 0,
+      "elapsed_seconds": 70.403,
+      "log_sha256": "99f39984116683e371e8d18b6e8f24a8e57d90879f8e309e8c4bbabea1d909b5"
+    }
+  ],
+  "browser_contracts": {
+    "runtime": "Node.js26.0.0",
+    "source_and_sdist_passed": true,
+    "ci_runtime": "Node.js22",
+    "coverage": [
+      "progress and literal text rendering",
+      "stalled fetch deadline",
+      "stale progress retention",
+      "retry and recovery"
+    ]
+  },
+  "installed_setup_and_relocated_replay": {
+    "python311": "passed",
+    "python313": "passed",
+    "execution": "scripted-replay",
+    "model_inference": false
+  },
+  "live_example": {
+    "case": "tq9-v2",
+    "trials": 1,
+    "model": "gpt-6.1-sol",
+    "reasoning_effort": "medium",
+    "workflow_status": "completed",
+    "workflow_verdict": "passed",
+    "workflow_elapsed_seconds": 603.2772881984711,
+    "accepted_count": 6,
+    "repairs": 0,
+    "observations": 20,
+    "connected_observations": 19,
+    "terminal_display_agrees": true,
+    "candidate_interventions": 0,
+    "terminal_disconnect_reconnect_verified": true
+  },
+  "snapshot_agreement": {
+    "matched": 19,
+    "mismatches": 0,
+    "observer_busy": 1,
+    "owner_disconnect_during_candidate": false
+  },
+  "candidate_core": {
+    "source_revision": "272c1b1028cd11f8307d55ce12c1c60e0646ce2e",
+    "previously_qualified_separate_installation": true,
+    "evaluator_version": "5",
+    "evaluator_identity_sha256": "7330e0a99136922d04165e094a3abb465d8dc0fc6c497bebf71c7270e2904c04",
+    "unchanged_through_example": true
+  },
+  "independent_regrade": {
+    "available": true,
+    "verdict": "passed",
+    "recorded_and_regraded_agree": true,
+    "final_checks_passed": 9,
+    "final_checks_total": 9,
+    "qualified_suite_success": "1/1"
+  },
+  "browser_observations": [
+    "active acquisition and interpretation",
+    "changing agent activity and run log",
+    "probe checking while gate pending",
+    "Follow switch",
+    "completed six accepted stages",
+    "disconnect with labeled last received progress",
+    "automatic reconnect without reload",
+    "narrow Codex browser pane layout"
+  ],
+  "review": {
+    "code": "passed after three regression fixes",
+    "design": "passed",
+    "results": "passed"
+  },
+  "cleanup": {
+    "owned_owner_and_monitor_absent": true,
+    "accepted_artifact_hashes_verified": 21,
+    "other_services_untouched": true
+  },
+  "preserved_harness_issues": [
+    "The first private launch helper let its dashboard child exit when the tool session returned. Keeping the CLI session open fixed browser access; candidate was not restarted.",
+    "The read-only export helper initially imported suite reporting from the wrong module; correction reused existing sealed evidence without model execution."
+  ],
+  "limitations": [
+    "Observer attached to separately qualified unmerged pipeline installation; dashboard branch alone does not qualify firmware generation on published main.",
+    "One descriptive observer example; no model reliability/physical/Windows UI/general Goose claims.",
+    "macOS live browser only; Windows compatibility is checked separately in CI.",
+    "Goose activity parsing has scripted contracts; no live Goose trial was run.",
+    "Reply deadlines begin after native IPC connection/authentication; they are not a complete connection deadline."
+  ],
+  "private_evidence_hashes": {
+    "preflight.json": "50fd971b82b08b8f5c98bde5ad1c66255f7a81a0442c929da3e74bd71eeb4941",
+    "observer-preflight.json": "ed9796a76dd296aebee95275d7bcd6e24be05206e7ce2b707c15e63fa1445497",
+    "frozen-experiment.json": "d02abb0772eb114ef36f4ef555a699e9a429930e48c50d510eb29468fde3a5f4",
+    "live-verification.json": "8be36d30253f25fda8a94ee2ac4a5989576216a287f64238898e51ad75b88009",
+    "independent-report.json": "896c5029b63ee4beff1a69505921de157a7824ba9689b42aa084db18840738cf",
+    "postflight.json": "901016e48995eb7306a71bf31d71279b3b301cef67b4e8e9aed9626ae2615469",
+    "result-audit.md": "471af39dfe19b22cb0069f4b0d071eb2a3647b25a77b113825408875c960b85f",
+    "cleanup.json": "a56d33d3d172cf248bbcaa89c25117f5b2f319c92e5f1b74092920a474c81adf"
+  }
+}

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Generative Driver · Run monitor</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><span class="brand">GENERATIVE DRIVER</span><span id="updated">Connecting…</span></header>
+    <div class="heading"><div><h1>Run progress</h1><p id="identity">Waiting for the configurator</p></div><span id="status" class="badge">Connecting</span></div>
+    <p id="notice" role="status" hidden></p>
+    <section class="metrics" aria-label="Run summary">
+      <div><span class="label">Elapsed</span><strong id="elapsed">—</strong></div>
+      <div><span class="label">Accepted stages</span><strong id="accepted">— / 6</strong></div>
+      <div><span class="label">Model repairs</span><strong id="repairs">—</strong></div>
+    </section>
+    <ol id="stages" aria-label="Workflow stages"></ol>
+    <div class="panels">
+      <section class="panel"><div class="panel-heading"><h2>Agent activity</h2><span id="activity-age">Waiting</span></div><div id="activity" aria-live="polite">No current worker activity.</div></section>
+      <section class="panel"><div class="panel-heading"><h2>Run log</h2><label><input id="follow" type="checkbox" checked> Follow</label></div><div id="logs" role="log" aria-label="Run events" tabindex="0"><p class="empty">Waiting for events…</p></div></section>
+    </div>
+    <footer>Status and accepted stages are reported by the configurator. Updates every second.</footer>
+  </main>
+</body>
+</html>

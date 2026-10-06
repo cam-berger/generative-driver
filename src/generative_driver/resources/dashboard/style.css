@@ -1,0 +1,46 @@
+:root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #202b35; background: #f6f7f9; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 1160px; margin: 0 auto; padding: 30px; }
+header, .heading, .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+header { margin-bottom: 36px; font-size: 12px; color: #687580; }
+.brand { letter-spacing: .12em; font-weight: 700; color: #43515e; }
+h1 { font-size: 30px; letter-spacing: -.035em; margin: 0 0 8px; }
+#identity { font-size: 13px; color: #687580; margin: 0; overflow-wrap: anywhere; }
+.badge { padding: 8px 13px; border-radius: 30px; background: #e5eaf0; font-size: 13px; font-weight: 600; white-space: nowrap; text-transform: capitalize; }
+.badge.running, .badge.checking { color: #245ab6; background: #e8f0ff; }
+.badge.completed { color: #18623f; background: #e4f3e9; }
+.badge.blocked, .badge.failed, .badge.disconnected { color: #a02e27; background: #fce9e6; }
+#notice { background: #fff3dc; border: 1px solid #eedab6; border-radius: 9px; padding: 13px 16px; line-height: 1.5; font-size: 14px; overflow-wrap: anywhere; }
+.metrics { display: flex; gap: 50px; margin: 30px 0; }
+.metrics > div { display: flex; flex-direction: column; gap: 7px; }
+.label { color: #687580; font-size: 12px; }
+.metrics strong { font-size: 21px; font-weight: 600; font-variant-numeric: tabular-nums; }
+#stages { display: grid; grid-template-columns: repeat(6, 1fr); padding: 0; list-style: none; gap: 10px; margin: 0 0 26px; }
+.stage { background: #fff; border: 1px solid #dde3e8; border-radius: 10px; padding: 16px; min-width: 0; }
+.stage .number { color: #8995a0; font-size: 12px; display: block; margin-bottom: 14px; }
+.stage .name { font-weight: 600; display: block; text-transform: capitalize; margin-bottom: 6px; }
+.stage .state { color: #687580; font-size: 12px; text-transform: capitalize; }
+.stage.accepted { border-color: #b2d5c0; background: #f1f8f4; }
+.stage.accepted .state { color: #18623f; }
+.stage.running, .stage.checking { border-color: #a2bff0; background: #eef4ff; }
+.stage.running .state, .stage.checking .state { color: #245ab6; }
+.stage.blocked, .stage.failed { border-color: #e8b3ac; background: #fff2ef; }
+.stage.blocked .state, .stage.failed .state { color: #a02e27; }
+.panels { display: grid; grid-template-columns: 1fr 1.7fr; gap: 20px; }
+.panel { border: 1px solid #dde3e8; border-radius: 11px; background: #fff; overflow: hidden; min-width: 0; }
+.panel-heading { padding: 17px 18px; border-bottom: 1px solid #e9edf1; }
+h2 { font-size: 14px; font-weight: 600; margin: 0; }
+.panel-heading > span, .panel-heading label { color: #687580; font-size: 12px; }
+.panel-heading input { accent-color: #245ab6; vertical-align: middle; }
+#activity, #logs { padding: 12px 18px; height: 360px; overflow: auto; }
+#activity { font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+#activity p { margin: 0 0 12px; padding-bottom: 12px; border-bottom: 1px solid #edf0f3; }
+#logs { font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.log-row { display: flex; gap: 13px; padding: 5px 0; }
+.log-time { color: #8995a0; flex-shrink: 0; }
+.log-message { overflow-wrap: anywhere; min-width: 0; }
+.empty { color: #8995a0; }
+footer { margin-top: 22px; font-size: 12px; color: #8995a0; }
+@media (max-width: 800px) { #stages { grid-template-columns: repeat(3, 1fr); } .panels { grid-template-columns: 1fr; } .metrics { gap: 28px; } }
+@media (max-width: 480px) { main { padding: 20px; } header { margin-bottom: 25px; } .heading { align-items: flex-start; } #stages { grid-template-columns: repeat(2, 1fr); } .metrics { gap: 20px; } h1 { font-size: 25px; } }

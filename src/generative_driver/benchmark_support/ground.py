@@ -35,14 +35,49 @@ def prepare(accepted, workspace):
     model_copy = evidence_dir/'model.json'; model_copy.write_bytes(contents[model_hash])
     if raw.get('schema') == 'benchmark-observations/2':
         from .behavior import project_feedback
-        records = [record for group in raw.get('diagnostics', [])
-                   if group.get('phase') == 'diagnostic' for record in group.get('records', [])]
+        groups = [group for group in raw.get('diagnostics', []) if group.get('phase') == 'diagnostic']
+        records = [record for group in groups for record in group.get('records', [])]
+        checks = [check for group in groups for check in group.get('checks', [])]
+        inputs, calls, live = [str(model_copy)], [], None
+        for digest, path in files.items():
+            if path.name.startswith('live-observations') or '-live-observations' in path.name:
+                copied = evidence_dir/'live-observations.jsonl'; copied.write_bytes(contents[digest])
+                inputs.append(str(copied))
+                live = {'artifact': copied.relative_to(ws).as_posix(), 'sha256': digest}
+                continue
+            if path.suffix != '.json':
+                continue
+            document = json.loads(contents[digest])
+            if document.get('schema') != 'interface-probe/1':
+                continue
+            if document.get('model_sha256') != model_hash:
+                raise ValueError('Probe transaction and accepted model hashes disagree')
+            copied = evidence_dir/f'probe-{len(calls)+1}.json'
+            copied.write_bytes(contents[digest])
+            inputs.append(str(copied))
+            calls.append({'operation': document.get('operation'),
+                          'artifact': copied.relative_to(ws).as_posix(), 'sha256': digest})
+        mapping = None
+        for digest, path in files.items():
+            if path.name == 'capabilities.json' or path.name.endswith('-capabilities.json'):
+                copied = evidence_dir/'capabilities.json'; copied.write_bytes(contents[digest])
+                inputs.append(str(copied))
+                mapping = {'artifact': copied.relative_to(ws).as_posix(), 'sha256': digest}
+                break
         evidence = ws / 'independent-observations.json'
         evidence.write_text(json.dumps({'schema': 'benchmark-ground-evidence/2',
-            'model_sha256': model_hash, **project_feedback(records)}, allow_nan=False) + '\n', encoding='utf-8')
-        return {'objective': 'Assess the accepted diagnostic observations against the candidate model. '
-                'Report disagreement or missing evidence. Distinguish candidate decoding from independent measurements.',
-                'inputs': [str(evidence), str(model_copy)], 'allowed_tools': [],
+            'model_sha256': model_hash, 'source_observations_sha256': observed_hash,
+            'capabilities': mapping, 'calls': calls, 'live_observations': live,
+            **project_feedback(records, {'checks': checks})}, allow_nan=False) + '\n', encoding='utf-8')
+        return {'objective': 'Assess the accepted diagnostic observations through the supplied capability mapping. '
+                'Follow the mapped canonical outputs and effects, their units, recorded raw transactions and '
+                'paired before/after live observations. '
+                'Raw outputs outside the canonical mapping need not use the units of independently measured effects. '
+                'Passed diagnostic checks are evidence for the tested observations, not universal correctness. '
+                'Report a specific contradiction or missing evidence as needs_revision; complete when the supplied '
+                'evidence supports the canonical tasks, recording remaining scope limits. Distinguish candidate '
+                'decoding from independent emulated measurements. These supplied diagnostics are authorized evidence.',
+                'inputs': [str(evidence), *inputs], 'allowed_tools': [],
                 'context': {'evidence_scope': 'accepted diagnostics'}}
     inputs, calls, probe_documents = [str(model_copy)], [], []
     for index, call in enumerate(raw.get('calls', []), 1):

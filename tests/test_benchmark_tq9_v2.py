@@ -230,7 +230,8 @@ class TQ9V2Tests(unittest.TestCase):
         from generative_driver.configurator import Controller
         from tq9_workflow_fixture import Silicon, WORKER
         from suite_fixtures import public_case_fixture
-        for mode in ('normal','rejected-write','repair-mapping','hidden-wrong','missing-mission','monitor-missing','snapshot-next'):
+        for mode in ('normal','rejected-write','repair-mapping','repair-decoder','repair-ground',
+                     'final-bounds','hidden-wrong','missing-mission','monitor-missing','snapshot-next'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
                 root=Path(temp); resources=root/'resources'
                 manifest=public_case_fixture(resources,calibration={'status':'pending'})
@@ -243,6 +244,9 @@ class TQ9V2Tests(unittest.TestCase):
                 phases={'diagnostic':{'temperature_vectors':[{'stimulus':v,'expected':v,'absolute_tolerance':.01} for v in (-8,0,31)],
                     'effect_vectors':[{'task':'arm','inputs':{}}]+[{'task':'set_duty','inputs':{'duty':v}} for v in (0,450,1000)]+[{'task':'disarm','inputs':{}}]},
                     'final':{'temperature_vectors':[{'stimulus':v,'expected':v,'absolute_tolerance':.01} for v in (-7,29)],'effect_vectors':effects}}
+                if mode == 'final-bounds':
+                    phases['diagnostic']['effect_vectors'][3]['inputs']['duty'] = 800
+                    effects[1]['inputs']['duty'] = 900
                 truth={'private_sentinel':'EVALUATOR SENTINEL','images':manifest['images'],'recipe':recipe,
                     'contracts':{'units':{'temperature':'degC','duty':'permille'},'scenarios':{'original':{'phases':phases}},
                                  'time_policy':{'sample_settle_seconds':0}}}
@@ -275,6 +279,30 @@ class TQ9V2Tests(unittest.TestCase):
                         "    if not marker.exists():\n        marker.write_text('first diagnostic')\n"
                         "        mapping['tasks'].pop('temperature');status='needs_revision'\n"
                         "    pathlib.Path('capabilities.json').write_text(json.dumps(mapping))")
+                if mode in ('repair-decoder','repair-ground'):
+                    source = source.replace("pathlib.Path('model.json').write_text(json.dumps(model()))",
+                        "candidate=model()\n    context_path=pathlib.Path('REPAIR_CONTEXT.json')\n"
+                        "    if context_path.exists():\n"
+                        "        context=json.loads(context_path.read_text());assert context['mode']=='repair'\n"
+                        "        prior=context['history'][-1]['files']\n"
+                        "        candidate=json.loads(pathlib.Path(prior['model.json']).read_text())\n"
+                        "        tasks=json.loads(pathlib.Path(context['task_contract']).read_text())\n"
+                        "        assert tasks['tasks']['temperature']['outputs']['temperature']['unit']=='degC'\n"
+                        "        rows=[json.loads(line) for line in pathlib.Path(prior['live-observations.jsonl']).read_text().splitlines()]\n"
+                        "        measured=next(row for row in rows if row['operation']=='measure' and row['result'].get('outputs',{}).get('temperature'))\n"
+                        "        candidate['operations']['measure']['outputs']['temperature']['scale'] *= measured['observation']['temperature_reference']/measured['result']['outputs']['temperature']\n"
+                        "    else:\n        candidate['operations']['measure']['outputs']['temperature']['scale']="+('10' if mode=='repair-decoder' else '1')+"\n"
+                        "    pathlib.Path('model.json').write_text(json.dumps(candidate))")
+                if mode == 'repair-ground':
+                    source = source.replace("elif stage=='emit':",
+                        "elif stage=='ground':\n"
+                        "    marker=pathlib.Path("+repr(str(root/'first-ground'))+")\n"
+                        "    if not marker.exists():\n        marker.write_text('first ground');status='needs_revision'\n"
+                        "elif stage=='emit':")
+                if mode == 'final-bounds':
+                    source = source.replace("pathlib.Path('model.json').write_text(json.dumps(model()))",
+                        "candidate=model();candidate['operations']['set_duty']['parameters']['duty']['maximum']=800\n"
+                        "    pathlib.Path('model.json').write_text(json.dumps(candidate))")
                 script.write_text(source)
                 def native_start(**kwargs):
                     self.assertEqual(Path(kwargs['image']).name,'firmware.bin')
@@ -304,10 +332,13 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertNotIn('EVALUATOR SENTINEL',json.dumps(assignments))
                         self.assertNotIn('maintain',[a['stage'] for a in assignments])
                         self.assertNotIn('maintenance_cycles',result['progress'])
-                        if mode not in ('normal','rejected-write','repair-mapping'):
+                        if mode not in ('normal','rejected-write','repair-mapping','repair-decoder','repair-ground'):
                             self.assertNotEqual(status['status'],'completed')
-                            if mode=='hidden-wrong':
+                            if mode in ('hidden-wrong','final-bounds'):
                                 self.assertTrue(result['progress']['terminal_final_failure'])
+                                self.assertEqual(status['outcome_category'], 'model')
+                                self.assertEqual(result['progress']['repairs'], 0)
+                                self.assertTrue((root/'home/runs'/run['run_id']/'benchmark/run-evidence.enc').is_file())
                                 with self.assertRaisesRegex(ValueError,'final'):controller.call('resume',run)
                             if mode=='monitor-missing':self.assertEqual(status['outcome_category'],'host')
                             if mode=='snapshot-next':
@@ -322,16 +353,20 @@ class TQ9V2Tests(unittest.TestCase):
                             defects=json.loads((Path(feedback['workspace'])/'DEFECTS.json').read_text())
                             self.assertTrue(any(error['path'] == 'tasks.temperature'
                                                 for error in defects['capability_errors']))
+                        if mode in ('repair-decoder', 'repair-ground'):
+                            start = 4 if mode == 'repair-ground' else 3
+                            expected[start:start] = ['interpret','probe'] + (['ground'] if mode == 'repair-ground' else [])
+                            self.assertEqual(result['progress']['repairs'], 1)
                         self.assertEqual([a['stage'] for a in assignments],expected)
                         self.assertEqual(len(peers),1)
-                        self.assertEqual([entry[1] for entry in worker_live],[False,True,True]*(2 if mode=='repair-mapping' else 1))
+                        self.assertEqual([entry[1] for entry in worker_live],[False,True,True]*(2 if mode in ('repair-mapping','repair-decoder','repair-ground') else 1))
                         self.assertTrue(all(not entry[2] for entry in worker_live));self.assertFalse(peers[0].paused_requests)
                         reuse=assignments[-1];self.assertEqual(len(reuse['inputs']),1)
                         self.assertEqual(Path(next(iter(reuse['inputs']))).name,'package')
                         run_dir=root/'home/runs'/run['run_id'];state=json.loads((run_dir/'benchmark/state.json').read_text())
                         sidecar=run_dir/'benchmark/run-evidence.enc'
                         sealed=unlock(sidecar,password.read_text(),state['final_evaluation']['evidence_sha256'])
-                        self.assertEqual(len(sealed['accepted_gates']),7 if mode=='repair-mapping' else 6)
+                        self.assertEqual(len(sealed['accepted_gates']),8 if mode=='repair-ground' else 7 if mode in ('repair-mapping','repair-decoder') else 6)
                         self.assertEqual(sealed['accepted_gates'][-1]['stage'],'reuse')
                         self.assertTrue(all(Path(a['path']).resolve().is_relative_to((run_dir/'accepted').resolve())
                                             for a in sealed['accepted_artifacts']))

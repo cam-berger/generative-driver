@@ -111,12 +111,16 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         state.update(adaptation=adaptation, adapted_model_dir=str(ws/'model'), revision=int(options.get('revision', state.get('revision', 0))))
         _write(path, state)
         guidance = _capability_guidance(ws, case_id)
+        from .candidate_context import task_contract
+        _write(ws/'TASKS.json', task_contract(case_id, options.get('configured_effects', [])))
+        guidance.append(str(ws/'TASKS.json'))
         objective = 'Test the supplied immutable model over the emulator binding. Write capabilities.json with schema benchmark-capabilities/2 and tasks temperature, arm, set_duty, disarm. Each task has operation, constants, inputs and outputs. Map canonical set_duty input duty (permille) with copy or affine parameter mapping. Map canonical temperature output to its candidate output and declared unit. Report unsupported capabilities honestly.'
         if case_id == 'sampled-sensor-v1':
             objective = 'Test the supplied model over the emulator binding. Write benchmark-capabilities/2 tasks measure and read, mapping temperature (degC) and sequence (count) outputs. Measure performs a new acquisition; read returns the current sample. Report unsupported capabilities honestly.'
         elif case_id == 'parameter-store-v1':
             objective = 'Test the supplied model over the emulator binding. Write benchmark-capabilities/2 tasks read, update, stage, commit and abort. Read takes bank and slot and maps value (configuration-unit). Update and stage take bank, slot and value; commit and abort have no inputs. Every task declares operation, constants, inputs and outputs.'
-        objective += (' Read CAPABILITY_FORMAT.md and run validate_capabilities.py with the supplied model directory '
+        objective += (' Read TASKS.json for required task semantics, outputs and effect grants. '
+            'Read CAPABILITY_FORMAT.md and run validate_capabilities.py with the supplied model directory '
             'and your capabilities.json. Correct mapping errors before submission. '
             'Live interface_execute and probe_run results include before_observation and observation '
             'from an independent monitor, with units. Compare those measured references and effects with your '
@@ -199,9 +203,11 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                 'Recover protocol bytes and semantics from the binary. Record any inferred physical settings '
                 'and unresolved facts in NOTES.md. TCP cannot verify physical UART settings; do not invent them.'})
         sources['BINDING_CONTEXT.json'] = str(wiring)
+        from .candidate_context import task_contract, repair_sources
+        _write(ws/'TASKS.json', task_contract(case_id, options.get('configured_effects', [])))
+        sources['TASKS.json'] = str(ws/'TASKS.json')
         if options.get('feedback'):
-            _write(ws/'DEFECTS.json', options['feedback'])
-            sources['DEFECTS.json'] = str(ws/'DEFECTS.json')
+            sources.update(repair_sources(run_dir, ws, options['feedback']))
         attempt = int(state.get('interpret_attempt', 0)) + 1
         prepared = call_tool('interpret_run', {'run_dir': str(Path(run_dir).resolve()/'benchmark/tools'),
             'front_end': 'interpret-interface', 'inputs': sources, 'mode': 'prepare', 'attempt': attempt,
@@ -239,10 +245,33 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
     if stage == 'probe':
         ws = Path(workspace)
         capabilities = ws/'capabilities.json'
+        from .candidate_context import require_evidence_path
+        require_evidence_path(capabilities, [ws])
+        def finish(result, probes=()):
+            from .candidate_context import remember
+            files = {'capabilities.json': capabilities}
+            _, current = _state(run_dir)
+            if current.get('adapted_model_dir'):
+                files['model.json'] = Path(current['adapted_model_dir'])/'model.json'
+            files['live-observations.jsonl'] = Path(run_dir)/'benchmark'/f'live-observations-{current.get("revision", 0)}.jsonl'
+            for handoff in reversed(accepted or []):
+                if handoff.get('stage') != 'interpret':
+                    continue
+                for artifact in handoff.get('artifacts', []):
+                    candidate = Path(artifact['path'])
+                    for name in ('replies.json', 'NOTES.md'):
+                        if candidate.name == name or candidate.name.endswith('-'+name):
+                            if hashlib.sha256(candidate.read_bytes()).hexdigest() != artifact['sha256']:
+                                raise ValueError('Accepted interpretation bytes changed')
+                            files[name] = candidate
+                break
+            files.update({f'probe-{i}.json': p for i, p in enumerate(probes, 1)})
+            remember(run_dir, 'probe', files, result.get('feedback', {}), report, workspace=ws)
+            return result
         if not capabilities.is_file():
-            return {'ok': False, 'fault': 'model', 'route': 'interpret', 'checks': [], 'artifacts': [],
+            return finish({'ok': False, 'fault': 'model', 'route': 'interpret', 'checks': [], 'artifacts': [],
                     'reason': 'Missing capability mapping',
-                    'feedback': {'missing': ['capabilities.json'], 'unresolved': (report or {}).get('unresolved', [])}}
+                    'feedback': {'missing': ['capabilities.json'], 'unresolved': (report or {}).get('unresolved', [])}})
         _, state = _state(run_dir)
         model = Path(state['adapted_model_dir'])/'model.json'
         if hashlib.sha256(model.read_bytes()).hexdigest() != state['adaptation']['adapted_model_sha256']:
@@ -250,26 +279,36 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
         try:
             mapping = json.loads(capabilities.read_text(encoding='utf-8'))
         except (ValueError, UnicodeError):
-            return {'ok': False, 'fault': 'model', 'route': 'interpret', 'checks': [], 'artifacts': [],
+            return finish({'ok': False, 'fault': 'model', 'route': 'interpret', 'checks': [], 'artifacts': [],
                     'reason': 'Invalid capability JSON',
-                    'feedback': {'missing': ['valid capabilities.json'], 'unresolved': (report or {}).get('unresolved', [])}}
+                    'feedback': {'missing': ['valid capabilities.json'], 'unresolved': (report or {}).get('unresolved', [])}})
         from .behavior import validate_capabilities
         validation = validate_capabilities(mapping, json.loads(model.read_text(encoding='utf-8')), _required_tasks(case_id))
         if not validation['ok']:
-            return {'ok': False, 'fault': 'model', 'route': 'interpret', 'checks': [], 'artifacts': [],
+            return finish({'ok': False, 'fault': 'model', 'route': 'interpret', 'checks': [], 'artifacts': [],
                     'reason': 'Invalid capability mapping',
-                    'feedback': {'capability_errors': validation['errors']}}
+                    'feedback': {'capability_errors': validation['errors']}})
         grade, records, probes, observed = _diagnose(case_id, run_dir, model.parent, mapping, options or {})
         from .behavior import project_feedback
         ok = grade['verdict'] == 'passed'
-        return {'ok': ok, 'fault': None if ok else 'model', 'route': None if ok else 'interpret',
+        live = Path(run_dir)/'benchmark'/f'live-observations-{state.get("revision", 0)}.jsonl'
+        live_artifacts = [str(live)] if live.is_file() else []
+        return finish({'ok': ok, 'fault': None if ok else 'model', 'route': None if ok else 'interpret',
                 'reason': None if ok else 'Independent diagnostic behavior failed', 'feedback': project_feedback(records, grade),
                 'checks': [{'name': c['id'], 'passed': c['passed']} for c in grade['checks']],
-                'artifacts': [str(model), str(capabilities), str(observed), *probes], 'evaluator': grade}
+                'artifacts': [str(model), str(capabilities), str(observed), *probes, *live_artifacts], 'evaluator': grade}, probes)
     if stage == 'ground':
         _, state = _state(run_dir)
-        ok = bool(state.get('diagnostic', {}).get('passed') and report.get('status') == 'completed')
-        return {'ok': ok, 'fault': 'model' if not ok and type(state.get('diagnostic', {}).get('passed')) is bool else None, 'checks': [{'name': 'independent_diagnostic_grounding', 'passed': ok}],
+        diagnostic = state.get('diagnostic', {}).get('passed')
+        ok = bool(diagnostic and (report or {}).get('status') == 'completed')
+        repair = not ok and type(diagnostic) is bool
+        from .candidate_context import worker_claim
+        claim = worker_claim(report)
+        return {'ok': ok, 'fault': 'model' if repair else None,
+                'route': 'interpret' if repair else None,
+                'reason': 'Ground evidence requires model revision' if repair else None,
+                'feedback': {'worker_claim': claim} if repair else {},
+                'checks': [{'name': 'independent_diagnostic_grounding', 'passed': ok}],
                 'artifacts': [str(Path(workspace)/'ground-evidence')]}
     if stage == 'emit':
         from ..toolkit import call_tool
@@ -331,7 +370,8 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
         result = call_tool('interpret_collect', {'run_dir': tools, 'attempt': state['interpret_attempt'],
             'expected_seal_sha256': prepared['seal_sha256'], 'seal_kind': 'instruction'})
         out = Path(prepared['model_dir'])
-        validation = call_tool('model_validate', {'run_dir': tools, 'model_dir': str(out)}) if result.get('ok') else {'ok': False}
+        intact = result.get('sealed_inputs_unchanged') is True and result.get('frozen_copy') is True
+        validation = call_tool('model_validate', {'run_dir': tools, 'model_dir': str(out)}) if result.get('ok') or intact else {'ok': False}
         qualification = result.get('qualification', {})
         qualified = qualification.get('status') == 'qualified' and not qualification.get('uncovered')
         ok = bool(result.get('ok') and validation.get('ok') and qualified)
@@ -340,9 +380,14 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
         model_failure = not ok and (result.get('ok') is True
             or result.get('sealed_inputs_unchanged') is False
             or result.get('sealed_inputs_unchanged') is True and result.get('frozen_copy') is True)
-        return {'ok': ok, 'route': 'interpret' if not ok and result.get('ok') else None,
+        feedback = {'structural_defects': validation.get('defects', []), 'qualification': qualification}
+        repair = not ok and (result.get('ok') is True or intact)
+        if repair:
+            from .candidate_context import remember
+            remember(run_dir, 'interpret', {name: out/name for name in ('model.json', 'NOTES.md', 'replies.json')}, feedback)
+        return {'ok': ok, 'route': 'interpret' if repair else None,
                 'fault': 'model' if model_failure else None,
-                'feedback': {'structural_defects': validation.get('defects', []), 'qualification': qualification},
+                'feedback': feedback,
                 'checks': [{'name': 'sealed_inputs', 'passed': bool(result.get('ok'))},
                            {'name': 'executable_model', 'passed': bool(validation.get('ok'))},
                            {'name': 'predicted_reply_qualification', 'passed': bool(qualified)}],
@@ -538,4 +583,16 @@ def worker_tool(case_id, run_dir, name, arguments, options):
     result = run_call(session, lambda operation, parameters: call_tool(name, arguments),
                       {'operation': arguments.get('operation'), 'parameters': parameters})
     observed = public_observation(case_id, session.observe(), result, parameters)
+    _, state = _state(run_dir)
+    def measured(value):
+        kept = {key: value[key] for key in ('ok', 'outputs', 'units', 'transcript', 'error', 'transport_open_attempted')
+                if key in value}
+        if isinstance(value.get('results'), list):
+            kept['results'] = [measured(item) for item in value['results'] if isinstance(item, dict)]
+        return kept
+    journal = Path(run_dir)/'benchmark'/f'live-observations-{state.get("revision", 0)}.jsonl'
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    with journal.open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps({'operation': arguments.get('operation'), 'parameters': parameters,
+            'result': measured(result), 'before_observation': before, 'observation': observed}, allow_nan=False)+'\n')
     return {**result, 'before_observation': before, 'observation': observed}

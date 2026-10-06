@@ -50,6 +50,8 @@ Live probe calls return independent diagnostic observations with units alongside
 
 Probe inputs include `CAPABILITY_FORMAT.md` and a standalone `validate_capabilities.py`. Run the helper against the candidate model and mapping before submission. Field-specific mapping errors return to interpretation without diagnostic device I/O. A trusted argument or grant refusal before transport opens does not create an uncertain device effect; failed opening or interrupted execution still requires reconciliation.
 
+Interpretation and probing receive `TASKS.json` with requested behaviors, canonical outputs/units and configured effect grants. A repair also receives `REPAIR_CONTEXT.json`, `DEFECTS.json` and sealed copies of this run's earlier candidate, replies, mappings and observed evidence. These supplied diagnostic measurements are authorized repair inputs. The agent revises root outputs while preserving prior evidence; evaluator passwords, plaintext answer keys and hidden final answers remain excluded. Grounding receives the accepted mapping, transaction captures and diagnostic check results, and a specific model discrepancy can use the remaining repair budget.
+
 Admission authenticates calibration against current evaluator code, dependencies, inputs and images before a trial starts. A stale or pending case cannot launch a worker or native device. Obtain passwords separately and keep their files outside candidate inputs and the checkout. Encryption and pinned hashes provide evaluator separation and provenance; they do not enforce a worker filesystem sandbox.
 
 Save the returned `run_id`. The background configurator continues when the interface disconnects:

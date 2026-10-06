@@ -107,10 +107,19 @@ def project_feedback(records: list[dict], grade=None) -> dict:
                'unit mismatch', 'channel mismatch', 'invalid observation', 'value mismatch'}
     projected = []
     capability_errors = []
+    invocation_errors = []
     checks = {row['id']: row for row in (grade or {}).get('checks', [])}
     for record in records:
         if type(record) is not dict:
             continue
+        invocation = record.get('invocation_error')
+        if (type(invocation) is dict and invocation.get('fault') in ('model', 'operator')
+                and invocation.get('code') in ('effect_grant_required', 'operation_failed')
+                and type(invocation.get('task')) is str):
+            safe = {key: invocation[key] for key in ('fault', 'code')}
+            safe['task'] = invocation['task'][:64]
+            if safe not in invocation_errors:
+                invocation_errors.append(safe)
         error = record.get('capability_error')
         if (type(error) is dict and error.get('fault') == 'model' and error.get('code') == 'capability_mapping'
                 and type(error.get('task')) is str and type(error.get('message')) is str):
@@ -119,6 +128,8 @@ def project_feedback(records: list[dict], grade=None) -> dict:
             if safe not in capability_errors:
                 capability_errors.append(safe)
         row = {}
+        if record.get('invocation_failed') is True:
+            row['invocation_failed'] = True
         for field in ('id', 'task_id', 'value', 'unit'):
             if field in record and type(record[field]) in (str, int, float, bool):
                 row[field] = record[field]
@@ -132,4 +143,6 @@ def project_feedback(records: list[dict], grade=None) -> dict:
             if check.get('reason') in allowed:
                 row['reason'] = check['reason']
         projected.append(row)
-    return {'records': projected, **({'capability_errors': capability_errors} if capability_errors else {})}
+    return {'records': projected,
+            **({'capability_errors': capability_errors} if capability_errors else {}),
+            **({'invocation_errors': invocation_errors} if invocation_errors else {})}

@@ -12,6 +12,117 @@ from generative_driver.benchmark import prepare_stage, check_stage
 
 
 class InterpretationBindingTests(unittest.TestCase):
+    def test_malformed_interpretation_is_retained_for_bounded_repair(self):
+        # Catches intact frozen output being terminal just because collection rejected its schema.
+        for raw in ('{unfinished', '{"schema":"unsupported-model/99"}'):
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                first = prepare_stage('tq9-v2', 'interpret', root/'run', root/'initial')
+                first_ws = Path(first['work_dir']); self.addCleanup(shutil.rmtree, first_ws.parent, True)
+                (first_ws/'model.json').write_text(raw)
+                (first_ws/'NOTES.md').write_text('Partial analysis to preserve.')
+                failed = check_stage('tq9-v2', 'interpret', root/'run', first_ws, None)
+                self.assertEqual(failed['fault'], 'model')
+                self.assertEqual(failed['route'], 'interpret')
+                self.assertTrue(failed['feedback']['structural_defects'])
+                following = prepare_stage('tq9-v2', 'interpret', root/'run', root/'repair',
+                    options={'revision': 1, 'feedback': failed['feedback']})
+                ws = Path(following['work_dir']); self.addCleanup(shutil.rmtree, ws.parent, True)
+                context = json.loads((ws/'REPAIR_CONTEXT.json').read_text())
+                prior = context['history'][-1]['files']
+                self.assertEqual((ws/prior['model.json']).read_text(), raw)
+
+    def test_repair_does_not_follow_candidate_links_outside_the_workspace(self):
+        # Catches turning a candidate symlink into host-copied repair evidence.
+        from tq9_workflow_fixture import model
+        from generative_driver.benchmark_support.cases import _write
+        from generative_driver.configurator import digest
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); ws = root/'worker'; ws.mkdir()
+            model_dir = ws/'model'; model_dir.mkdir()
+            (model_dir/'model.json').write_text(json.dumps(model()))
+            _write(root/'run/benchmark/state.json', {'adapted_model_dir': str(model_dir),
+                'adaptation': {'adapted_model_sha256': digest(model_dir/'model.json')}})
+            private = root/'outside.txt'; private.write_text('PRIVATE OUTSIDE SENTINEL')
+            try:
+                (ws/'capabilities.json').symlink_to(private)
+            except OSError:
+                self.skipTest('Symbolic links unavailable for this test user')
+            with self.assertRaisesRegex(ValueError, 'assigned evidence roots'):
+                check_stage('tq9-v2', 'probe', root/'run', ws, {'status': 'needs_revision'})
+            for saved in (root/'run/benchmark').rglob('*'):
+                if saved.is_file():
+                    self.assertNotIn(b'PRIVATE OUTSIDE SENTINEL', saved.read_bytes())
+
+    def test_structural_revision_preserves_the_failed_interpretation(self):
+        # Catches losing partial analysis when qualification requests another attempt.
+        from tq9_workflow_fixture import model
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            first = prepare_stage('tq9-v2', 'interpret', root/'run', root/'initial')
+            first_ws = Path(first['work_dir']); self.addCleanup(shutil.rmtree, first_ws.parent, True)
+            candidate = model(); candidate['channel'] = {'type': 'tcp'}
+            (first_ws/'model.json').write_text(json.dumps(candidate))
+            (first_ws/'NOTES.md').write_text('Partial handler analysis; predicted replies still missing.')
+            failed = check_stage('tq9-v2', 'interpret', root/'run', first_ws, None)
+            self.assertEqual(failed['route'], 'interpret')
+            following = prepare_stage('tq9-v2', 'interpret', root/'run', root/'repair',
+                options={'revision': 1, 'feedback': failed['feedback']})
+            ws = Path(following['work_dir']); self.addCleanup(shutil.rmtree, ws.parent, True)
+            context = json.loads((ws/'REPAIR_CONTEXT.json').read_text())
+            self.assertTrue(context['history'], 'Structural repair lost the preceding model and notes')
+            prior = context['history'][-1]
+            self.assertEqual(prior['stage'], 'interpret')
+            self.assertEqual(json.loads((ws/prior['files']['model.json']).read_text()), candidate)
+            self.assertIn('replies still missing', (ws/prior['files']['NOTES.md']).read_text())
+
+    def test_repair_receives_immutable_prior_candidate_and_public_task_context(self):
+        # Catches starting binary discovery over after losing the failed candidate.
+        from tq9_workflow_fixture import model, replies
+        from generative_driver.configurator import digest
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); source = root/'run/accepted'; source.mkdir(parents=True)
+            (source/'model.json').write_text(json.dumps(model()))
+            (source/'replies.json').write_text(json.dumps(replies()))
+            (source/'NOTES.md').write_text('Candidate inference; unresolved units need live evidence.')
+            accepted = [{'stage': 'interpret', 'artifacts': [
+                {'path': str(p), 'sha256': digest(p)} for p in source.iterdir()]}]
+            with patch('generative_driver.benchmark_support.emulated._session',
+                       return_value=SimpleNamespace(binding={'host': '127.0.0.1', 'port': 1})):
+                prepare_stage('tq9-v2', 'probe', root/'run', root/'probe', accepted)
+            (root/'probe/capabilities.json').write_text('{"schema":"benchmark-capabilities/2","tasks":{}}')
+            failed = check_stage('tq9-v2', 'probe', root/'run', root/'probe',
+                {'status': 'needs_revision', 'summary': 'Canonical tasks are missing', 'unresolved': ['temperature']}, accepted)
+            prepared = prepare_stage('tq9-v2', 'interpret', root/'run', root/'repair', accepted,
+                options={'revision': 1, 'feedback': failed['feedback'], 'configured_effects': ['write', 'actuate']})
+            ws = Path(prepared['work_dir']); self.addCleanup(shutil.rmtree, ws.parent, True)
+            self.assertTrue((ws/'REPAIR_CONTEXT.json').is_file(), 'Repair has no usable context contract')
+            context = json.loads((ws/'REPAIR_CONTEXT.json').read_text())
+            self.assertEqual(context['mode'], 'repair')
+            self.assertEqual(context['feedback'], 'DEFECTS.json')
+            prior = context['history'][-1]['files']
+            expected_model = model(); expected_model['channel'] = {'type': 'tcp'}
+            self.assertEqual(json.loads((ws/prior['model.json']).read_text()), expected_model)
+            self.assertEqual(json.loads((ws/prior['replies.json']).read_text()), replies())
+            self.assertEqual(json.loads((ws/prior['capabilities.json']).read_text())['tasks'], {})
+            self.assertEqual(json.loads((ws/prior['worker-report.json']).read_text())['summary'], 'Canonical tasks are missing')
+            contract = json.loads((ws/context['task_contract']).read_text())
+            self.assertEqual(contract['tasks']['temperature']['outputs'], {'temperature': {'unit': 'degC'}})
+            self.assertEqual(contract['effect_grants'], ['write', 'actuate'])
+            hashes = json.loads((ws/'INPUT_HASHES.json').read_text())
+            self.assertEqual(hashes[prior['model.json']], digest(ws/prior['model.json']))
+            self.assertIn('REPAIR_CONTEXT.json', hashes)
+            self.assertIn('DEFECTS.json', hashes)
+            # Repair edits the root output, never the sealed prior artifact.
+            (ws/'model.json').write_text('{}')
+            self.assertEqual(json.loads((ws/prior['model.json']).read_text()), expected_model)
+            self.assertNotIn('evaluator_password', json.dumps(context))
+            next((root/'run/benchmark/candidate-history').rglob('model.json')).write_text('{}')
+            with self.assertRaisesRegex(ValueError, 'repair evidence hash changed'):
+                prepare_stage('tq9-v2', 'interpret', root/'run', root/'changed', accepted,
+                    options={'revision': 1, 'feedback': failed['feedback']})
+
     def test_probe_supplies_executable_capability_validation_before_submission(self):
         from tq9_workflow_fixture import model, capabilities
         from generative_driver.configurator import digest
@@ -122,9 +233,91 @@ class IndependentProbeObservationTests(unittest.TestCase):
             self.assertFalse(peer.paused_requests)
             self.assertNotIn('command', json.dumps(result['observation']))
             self.assertNotIn('expected', json.dumps(result['observation']))
+            journal = root/'run/benchmark/live-observations-0.jsonl'
+            self.assertTrue(journal.is_file(), 'Live comparison is lost before the next repair')
+            saved = json.loads(journal.read_text().splitlines()[0])
+            self.assertEqual(saved['result']['outputs']['temperature'], 200)
+            self.assertEqual(saved['observation']['temperature_reference'], 20)
+            self.assertEqual(saved['before_observation']['temperature_reference'], 20)
+            self.assertEqual(saved['operation'], 'measure')
+            self.assertNotIn('private_dir', json.dumps(saved))
 
 
 class DiagnosticRepairTests(unittest.TestCase):
+    def test_runtime_refusal_survives_diagnostic_projection_as_invocation_failure(self):
+        # Catches a missing effect grant being presented only as a decoder mismatch.
+        from tq9_workflow_fixture import model, capabilities
+        from generative_driver.benchmark_support.emulated_actions import execute_plan, model_invoker
+        from generative_driver.benchmark_support.behavior import project_feedback, validate_records
+        class Session:
+            def set_running(self, value): pass
+            def observe(self): return {}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); candidate = model(); candidate['channel'] = {'type': 'tcp'}
+            (root/'model.json').write_text(json.dumps(candidate))
+            invoke = model_invoker(root, capabilities(), {'host': '127.0.0.1', 'port': 1}, root/'tools', [])
+            contract = {'schema': 'benchmark-behavior/1', 'artifact_sha256': 'a'*64, 'checks': [
+                {'id': 'set/operation_ok', 'revision': 0, 'kind': 'boolean', 'expected': True,
+                 'unit': 'boolean', 'channel': 'runtime-transcript'}]}
+            records = execute_plan(Session(), invoke, [
+                {'kind': 'call', 'task': 'set_duty', 'inputs': {'duty': 500}, 'grants': ['write']},
+                {'kind': 'observe', 'checks': ['set/operation_ok']}], contract, root/'raw.json', lambda *args: {})
+            feedback = project_feedback(records, validate_records(contract, records))
+            self.assertIn('invocation_errors', feedback, 'Runtime refusal cause was erased')
+            self.assertEqual(feedback['invocation_errors'][0]['code'], 'effect_grant_required')
+            self.assertEqual(feedback['invocation_errors'][0]['task'], 'set_duty')
+            self.assertNotIn('500', json.dumps(feedback))
+            self.assertNotIn('expected', json.dumps(feedback))
+
+    def test_missing_probe_execution_is_host_failure_without_model_feedback(self):
+        # Catches toolkit startup/I/O envelopes being scored as missing outputs.
+        from tq9_workflow_fixture import model, capabilities
+        from generative_driver.benchmark_support.emulated_actions import model_invoker
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); (root/'model.json').write_text(json.dumps(model()))
+            with patch('generative_driver.toolkit.call_tool', return_value={
+                    'ok': False, '_exit': 1, 'error': 'Cannot create probe evidence directory'}):
+                invoke = model_invoker(root, capabilities(), {'host': '127.0.0.1', 'port': 1}, root/'tools', [])
+                result = invoke('temperature', {}, [])
+            self.assertEqual(result.get('error', {}).get('fault'), 'host')
+            self.assertEqual(result['error']['code'], 'probe_execution_unavailable')
+            self.assertNotIn('capability_mapping', json.dumps(result))
+            self.assertNotIn('transport_open_attempted', result)
+
+    def test_final_candidate_binding_failure_is_a_behavioral_result(self):
+        # Catches final inputs outside candidate bounds escaping as a host crash.
+        from tq9_workflow_fixture import model, capabilities
+        from generative_driver.benchmark_support.emulated_actions import canonical_package_invoker
+        with tempfile.TemporaryDirectory() as temporary:
+            package = Path(temporary); (package/'driver').mkdir()
+            (package/'driver/model.json').write_text(json.dumps(model()))
+            invoke = canonical_package_invoker(package, capabilities(), {'host': '127.0.0.1', 'port': 1})
+            try:
+                result = invoke('set_duty', {'duty': 1001}, ['actuate'])
+            except ValueError as error:
+                self.fail('Final candidate binding escaped behavioral grading: '+str(error))
+            self.assertFalse(result['ok'])
+            self.assertEqual(result['error']['fault'], 'model')
+            self.assertEqual(result['error']['code'], 'capability_mapping')
+            self.assertFalse(result['transport_open_attempted'])
+            self.assertEqual(result['transcript'], [])
+
+    def test_ground_discrepancy_routes_to_interpretation_with_its_claim(self):
+        # Catches dropping a requested ground repair while budget is available.
+        from generative_driver.benchmark_support.cases import _write
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _write(root/'run/benchmark/state.json', {'diagnostic': {'passed': True}})
+            checked = check_stage('tq9-v2', 'ground', root/'run', root/'worker',
+                {'status': 'needs_revision', 'summary': 'Decoded temperature contradicts the paired monitor reading',
+                 'unresolved': ['The decoder needs a measured scale correction']})
+            self.assertFalse(checked['ok'])
+            self.assertEqual(checked.get('route'), 'interpret')
+            self.assertEqual(checked['fault'], 'model')
+            self.assertEqual(checked['feedback']['worker_claim']['unresolved'],
+                             ['The decoder needs a measured scale correction'])
+            self.assertEqual(checked['reason'], 'Ground evidence requires model revision')
+
     def test_binding_bounds_errors_reach_repair_without_disclosing_evaluator_inputs(self):
         from tq9_workflow_fixture import model, capabilities
         from generative_driver.benchmark_support.behavior import project_feedback, validate_records
@@ -190,7 +383,7 @@ class DiagnosticRepairTests(unittest.TestCase):
             {'tasks.temperature.outputs.temperature.unit', 'tasks.set_duty.inputs.duty.kind'})
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); ws = root/'worker'; ws.mkdir()
-            model_dir = root/'model'; model_dir.mkdir()
+            model_dir = ws/'model'; model_dir.mkdir()
             raw = json.dumps(candidate).encode()
             (model_dir/'model.json').write_bytes(raw)
             (ws/'capabilities.json').write_text(json.dumps(capabilities))
@@ -219,7 +412,7 @@ class DiagnosticRepairTests(unittest.TestCase):
         from hashlib import sha256
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); ws = root/'worker'; ws.mkdir()
-            model_dir = root/'model'; model_dir.mkdir()
+            model_dir = ws/'model'; model_dir.mkdir()
             (model_dir/'model.json').write_text('{}')
             _write(root/'run/benchmark/state.json', {'adapted_model_dir': str(model_dir),
                 'adaptation': {'adapted_model_sha256': sha256(b'{}').hexdigest()}})

@@ -3,6 +3,12 @@ from .cases import _write
 from .emulated import run_call
 
 
+def _binding_failure(task, error):
+    return {'ok': False, 'error': {'fault': 'model', 'code': 'capability_mapping',
+                                 'task': task, 'message': str(error)},
+            'outputs': {}, 'units': {}, 'transcript': [], 'transport_open_attempted': False}
+
+
 def execute_plan(session, invoke, plan, contract, evidence_path, observations, settle_seconds=0):
     """Invoke canonical tasks; persist raw responses and IDs before returning records.
 
@@ -12,7 +18,7 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
     """
     checks = {row['id']: row for row in contract['checks']}
     records, raw_events = [], []
-    result, inputs = {}, {}
+    result, inputs, task = {}, {}, None
     needs_settle = False
     if not 0 <= settle_seconds <= 10:
         raise ValueError('Invalid evaluator settle time')
@@ -25,6 +31,7 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
                 needs_settle = True
             elif kind == 'call':
                 inputs = action['inputs']
+                task = action['task']
                 def operation(task, values):
                     if needs_settle:
                         __import__('time').sleep(settle_seconds)
@@ -58,6 +65,13 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
                     error = result.get('error', {})
                     if error.get('fault') == 'model' and error.get('code') == 'capability_mapping':
                         record['capability_error'] = error
+                    if result.get('ok') is False and check['channel'] == 'runtime-transcript':
+                        record['invocation_failed'] = True
+                        if error.get('fault') in ('model', 'operator'):
+                            grant = (error['fault'] == 'operator'
+                                     and error.get('message') == 'operation requires explicit effect grant')
+                            record['invocation_error'] = {'fault': error['fault'], 'task': task,
+                                'code': 'effect_grant_required' if grant else 'operation_failed'}
                     records.append(record)
             else:
                 raise ValueError('Unknown evaluator action')
@@ -81,14 +95,17 @@ def model_invoker(model_dir, capabilities, binding, output_dir, probes):
         try:
             request = bind_task(capabilities, task, inputs, model)
         except ValueError as error:
-            return {'ok': False, 'error': {'fault': 'model', 'code': 'capability_mapping',
-                                         'task': task, 'message': str(error)},
-                    'outputs': {}, 'units': {}, 'transcript': []}
+            return _binding_failure(task, error)
         probed = call_tool('probe_run', {'run_dir': str(output_dir), 'model_dir': str(model_dir),
             **request, 'n': 1, 'binding': binding, 'allow_effects': grants})
+        results = probed.get('results')
+        if not isinstance(results, list) or not results or not isinstance(results[0], dict):
+            return {'ok': False, 'error': {'fault': 'host', 'code': 'probe_execution_unavailable',
+                'message': 'Probe tool returned no runtime execution evidence'},
+                'outputs': {}, 'units': {}, 'transcript': []}
         if probed.get('probe'):
             probes.append(probed['probe'])
-        result = (probed.get('results') or [{}])[0]
+        result = results[0]
         outputs = capabilities['tasks'][task]['outputs']
         return {**result, 'ok': bool(probed.get('ok') and result.get('ok')),
             'outputs': {key: result.get('outputs', {}).get(mapping['output']) for key, mapping in outputs.items()},
@@ -124,7 +141,10 @@ def canonical_package_invoker(package, capabilities, binding):
     from .behavior import bind_task
     model = json.loads((Path(package)/'driver/model.json').read_text())
     def invoke(task, inputs, grants):
-        request = bind_task(capabilities, task, inputs, model)
+        try:
+            request = bind_task(capabilities, task, inputs, model)
+        except ValueError as error:
+            return _binding_failure(task, error)
         result = package_invoker(package, binding, grants)(**request)
         mappings = capabilities['tasks'][task]['outputs']
         return {**result,

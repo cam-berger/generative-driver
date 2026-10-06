@@ -12,6 +12,51 @@ from generative_driver.benchmark import prepare_stage
 
 
 class GroundEvidenceTests(unittest.TestCase):
+    def test_current_grounding_keeps_canonical_mapping_transactions_and_check_results(self):
+        # Catches grounding an unmapped raw model after discarding checked captures.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root/'accepted'; source.mkdir()
+            model = source/'model.json'; model.write_text('{"operations":{}}')
+            model_hash = hashlib.sha256(model.read_bytes()).hexdigest()
+            mapping = source/'capabilities.json'
+            mapping.write_text(json.dumps({'schema': 'benchmark-capabilities/2', 'tasks': {
+                'temperature': {'operation': 'sample', 'constants': {}, 'inputs': {},
+                                'outputs': {'temperature': {'output': 'raw', 'unit': 'degC'}}}}}))
+            probe = source/'interface-1.json'
+            probe.write_text(json.dumps({'schema': 'interface-probe/1', 'model_sha256': model_hash,
+                'operation': 'sample', 'parameters': {}, 'allow_effects': [], 'ok': True,
+                'results': [{'ok': True, 'outputs': {'raw': 21}, 'units': {'raw': 'degC'},
+                             'transcript': [{'tx_hex': '01', 'rx_hex': '15'}]}]}))
+            observed = source/'observations.json'
+            observed.write_text(json.dumps({'schema': 'benchmark-observations/2', 'model_sha256': model_hash,
+                'score': {'expected': 'PRIVATE ORACLE'}, 'diagnostics': [{'phase': 'diagnostic',
+                    'records': [{'id': 'read/temperature', 'task_id': 'temperature', 'value': 21,
+                                 'unit': 'degC', 'channel': 'runtime-transcript'}],
+                    'checks': [{'id': 'read/temperature', 'passed': True, 'expected': 'PRIVATE ORACLE'}]}]}))
+            live = source/'live-observations.jsonl'
+            live.write_text(json.dumps({'operation': 'sample', 'result': {'outputs': {'raw': 21}},
+                'observation': {'temperature_reference': 21, 'temperature_unit': 'degC'}})+'\n')
+            artifacts = [{'path': str(p), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()}
+                         for p in (model, mapping, probe, observed, live)]
+            prepared = prepare_stage('tq9-v2', 'ground', root/'run', root/'worker',
+                accepted=[{'stage': 'probe', 'artifacts': artifacts}])
+            bundle = root/'worker/ground-evidence'
+            evidence = json.loads((bundle/'independent-observations.json').read_text())
+            self.assertIn('capabilities', evidence, 'Ground cannot relate raw outputs to canonical tasks')
+            self.assertEqual((bundle/evidence['capabilities']['artifact']).read_bytes(), mapping.read_bytes())
+            self.assertEqual((bundle/evidence['calls'][0]['artifact']).read_bytes(), probe.read_bytes())
+            self.assertIn(str((bundle/evidence['calls'][0]['artifact']).resolve()), prepared['inputs'])
+            self.assertTrue(evidence['records'][0]['passed'])
+            self.assertIn('live_observations', evidence, 'Paired live reference measurements were lost')
+            self.assertEqual((bundle/evidence['live_observations']['artifact']).read_bytes(), live.read_bytes())
+            self.assertNotIn('PRIVATE', json.dumps(evidence))
+            self.assertNotIn('expected', json.dumps(evidence))
+            probe.write_text('{}')
+            with self.assertRaisesRegex(ValueError, 'hash changed'):
+                prepare_stage('tq9-v2', 'ground', root/'run', root/'changed',
+                    accepted=[{'stage': 'probe', 'artifacts': artifacts}])
+
     def test_evaluation_retains_existing_monitor_reads_and_live_probe_hashes(self):
         from generative_driver.benchmark import case_root
         from generative_driver.benchmark_support.evaluate import evaluate_model

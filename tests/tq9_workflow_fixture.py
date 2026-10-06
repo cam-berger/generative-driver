@@ -45,12 +45,14 @@ class Silicon:
         self.monitor_available = True
         self.running = False
         self.commands = []
+        self.device_commands = []
         self.paused_requests = []
         owner = self
         class UART(socketserver.StreamRequestHandler):
             def handle(self):
                 for line in self.rfile:
                     command=line.decode().strip()
+                    owner.device_commands.append(command)
                     if not owner.running:
                         owner.paused_requests.append(command)
                         return

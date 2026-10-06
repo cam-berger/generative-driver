@@ -507,7 +507,16 @@ def _session(case_id, run_dir, options):
     inputs, _ = _inputs(case_id, run_dir)
     session = NativeSession.start(renode=options.get('renode'),
         image=inputs/'firmware.bin', recipe=_truth(case_id, run_dir, options)['recipe'])
+    from .emulated_recovery import observed_values
+    try:
+        observation = observed_values(session)
+    except BaseException:
+        session.stop()
+        raise
+    import uuid
+    session.info['session_id'] = uuid.uuid4().hex
     _OWNERS[key] = session
+    state['startup_observation'] = observation
     state['session'] = session.info
     _write(path, state)
     return session
@@ -516,11 +525,14 @@ def _session(case_id, run_dir, options):
 def cleanup(case_id, run_dir, options=None):
     key = str(Path(run_dir).resolve())
     path, state = _state(run_dir)
-    session = _OWNERS.pop(key, None)
+    session = _OWNERS.get(key)
     if session is None and state.get('session'):
         raise RuntimeError('Native process ownership was lost; operator reconciliation is required')
     if session is not None:
         session.stop()
+        if session.process is not None and session.process.poll() is None:
+            raise RuntimeError('Owned emulator stop was not confirmed')
+        _OWNERS.pop(key, None)
         state['previous_session'] = state.pop('session', session.info)
         _write(path, state)
     return {'ok': True}
@@ -596,3 +608,9 @@ def worker_tool(case_id, run_dir, name, arguments, options):
         stream.write(json.dumps({'operation': arguments.get('operation'), 'parameters': parameters,
             'result': measured(result), 'before_observation': before, 'observation': observed}, allow_nan=False)+'\n')
     return {**result, 'before_observation': before, 'observation': observed}
+
+
+def recover_emulator(case_id, run_dir, workspace, accepted, report, feedback, options, cancelled):
+    from .emulated_recovery import preserve_failure, replace_owned
+    preserve_failure(run_dir, workspace, accepted, report, feedback)
+    return replace_owned(case_id, run_dir, options, cancelled)

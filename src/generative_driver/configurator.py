@@ -311,6 +311,9 @@ class Controller:
             with self._db() as db:
                 for table, key in (('reports', 'worker_reports'), ('handoffs', 'accepted_handoffs'), ('verdicts', 'evaluator_verdicts')):
                     out[key] = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM ' + table + ' WHERE run_id=? ORDER BY created', (run_id,))]
+                recoveries = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='emulator.recovered' ORDER BY seq",(run_id,)).fetchall()
+                out['emulator_recoveries'] = [json.loads(r['payload']) for r in recoveries]
+                out['emulator_recovery_count'] = len(recoveries)
                 saved = db.execute('SELECT payload FROM progress WHERE run_id=?',(run_id,)).fetchone()
                 out['progress'] = {key: value for key, value in json.loads(saved['payload']).items()
                     if key != 'maintenance_cycles'} if saved else None
@@ -817,15 +820,16 @@ class Controller:
                 if result['status'] != 'completed':
                     self._state(run_id, result['status'], result.get('reason'), outcome_category='host')
                     return
-                if self._row(run_id)['uncertain']:
-                    self._state(run_id,'blocked','Outstanding effect is uncertain; operator reconciliation is required before further execution')
-                    return
                 report = result.get('report')
                 if assignment['report_required'] and report.get('status') != 'completed' and not (spec.get('case') and report.get('status') == 'needs_revision'):
                     self._state(run_id, 'blocked', report.get('summary', 'Worker could not complete stage'))
                     return
                 self._verify_inputs(input_hashes)
-                checked = self._check(current_spec, stage, run_dir, workspace, report, accepted, assignment)
+                if self._row(run_id)['uncertain']:
+                    from .benchmark_support.emulated_recovery import reconcile
+                    checked = reconcile(self,run_id,current_spec,assignment,run_dir,workspace,accepted,report,progress)
+                else:
+                    checked = self._check(current_spec, stage, run_dir, workspace, report, accepted, assignment)
                 terminal_final = (not checked.get('ok') and checked.get('final_evaluation') is True
                                   and checked.get('fault') == 'model' and not checked.get('route'))
                 if checked.get('evaluator') is not None or terminal_final:
@@ -844,17 +848,18 @@ class Controller:
                 if cancel.is_set():
                     return
                 if self._row(run_id)['uncertain']:
-                    self._state(run_id,'blocked','Evaluator effect is uncertain; operator reconciliation is required before further execution')
+                    self._state(run_id,'blocked',checked.get('reason') or 'Evaluator effect is uncertain; operator reconciliation is required before further execution', outcome_category=checked.get('fault','unknown'))
                     return
                 self._verify_inputs(input_hashes)
                 category = checked.get('fault') if checked.get('fault') in ('model','host','operator') else 'unknown'
                 if not checked.get('ok'):
                     if checked.get('route') == 'interpret' and checked.get('fault') == 'model' and stage in ('interpret','probe','ground'):
-                        if progress['repairs'] >= int(spec.get('max_revisions',2)):
-                            self._state(run_id,'blocked','Model repair budget exhausted: '+checked.get('reason','checks failed'), outcome_category='model')
-                            return
-                        progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=checked.get('feedback'))
-                        self._route(run_id,progress,checked.get('reason'))
+                        if not checked.get('revision_committed'):
+                            if progress['repairs'] >= int(spec.get('max_revisions',2)):
+                                self._state(run_id,'blocked','Model repair budget exhausted: '+checked.get('reason','checks failed'), outcome_category='model')
+                                return
+                            progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=checked.get('feedback'))
+                            self._route(run_id,progress,checked.get('reason'))
                         revision = progress['revision']
                         queue = list(STAGES[1:])
                         continue
@@ -914,12 +919,14 @@ class Controller:
                     if row and row['status'] in TERMINAL and not row['uncertain'] and run_id not in self._workers:
                         db.execute('DELETE FROM bindings WHERE run_id=?',(run_id,))
 
-    def _route(self, run_id, progress, reason):
-        with self._db() as db:
-            db.execute("UPDATE assignments SET state='superseded' WHERE run_id=? AND state='active'",(run_id,))
-            db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)',(run_id,_json(progress)))
-            db.execute('UPDATE runs SET stage=? WHERE id=?',(progress['next_stage'],run_id))
-            self._event(run_id,'run.revision', {**progress,'reason':reason},db)
+    def _route(self, run_id, progress, reason, db=None):
+        if db is None:
+            with self._db() as connection:
+                return self._route(run_id,progress,reason,connection)
+        db.execute("UPDATE assignments SET state='superseded' WHERE run_id=? AND state='active'",(run_id,))
+        db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)',(run_id,_json(progress)))
+        db.execute('UPDATE runs SET stage=? WHERE id=?',(progress['next_stage'],run_id))
+        self._event(run_id,'run.revision', {**progress,'reason':reason},db)
 
     def _claim_binding(self, binding, run_id, db):
         if not binding:

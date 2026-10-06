@@ -53,11 +53,27 @@ Each run has a durable ID, immutable accepted artifacts, worker reports, stage c
 
 Benchmarks measure functional compatibility: expected outputs and effects for specified inputs. Generated source code does not have to resemble reference code. Password-encrypted groundtruth and hashes keep evaluator evidence separate from candidate input and record provenance. Password separation is not an operating-system sandbox.
 
+## Watch a run
+
+Open the local dashboard using the ID returned when you start a run:
+
+```sh
+python -m generative_driver dashboard RUN_ID
+```
+
+The page refreshes each second with accepted stages, status, repairs and recent activity. Use the same Python environment and `--home` as the run. Closing the page or dashboard terminal leaves the configurator running. See [dashboard usage](docs/dashboard.md) for connection and browser options.
+
 ## Development
 
 ```sh
 python -m unittest discover -s tests -v
 python -m build
+```
+
+Dashboard browser behavior checks use Node.js 22 or newer, with no npm packages:
+
+```sh
+node tests/dashboard-client.test.js
 ```
 
 Run these with the environment used for installation. CI builds a wheel and tests its installed behavior on macOS and Windows. The approved test seams and design decisions are in [the design](docs/design.md); the red-to-green implementation records are in [docs/implementation](docs/implementation).

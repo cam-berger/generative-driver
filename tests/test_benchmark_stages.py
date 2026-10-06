@@ -26,8 +26,9 @@ class StagePreparationTests(unittest.TestCase):
     def test_interpret_receives_neutral_sealed_inputs_without_evaluator_answers(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            credential = root/'evaluator-credential'; credential.write_text('SYNTHETIC PRIVATE CREDENTIAL')
             prepared = prepare_stage('tq9', 'interpret', root / 'run', root / 'worker',
-                                     options={'evaluator_password_file': '/private/not-a-candidate-input'})
+                                     options={'evaluator_password_file': str(credential.resolve())})
             self.addCleanup(__import__('shutil').rmtree, Path(prepared['work_dir']).parent, True)
             self.assertFalse(prepared['report_required'])
             workspace = Path(prepared['work_dir'])
@@ -36,7 +37,10 @@ class StagePreparationTests(unittest.TestCase):
             self.assertNotIn('tq9.enc', names)
             self.assertNotIn('main.c', names)
             self.assertNotIn('reference_model.json', names)
-            self.assertNotIn('password', json.dumps(prepared).lower())
+            self.assertNotIn('evaluator_password_file', json.dumps(prepared))
+            self.assertNotIn(str(credential.resolve()), json.dumps(prepared))
+            for supplied in prepared['inputs']:
+                self.assertNotIn(b'SYNTHETIC PRIVATE CREDENTIAL', Path(supplied).read_bytes())
             self.assertNotIn('TQ9', prepared['prompt'])
             hashes = json.loads((workspace / 'INPUT_HASHES.json').read_text())
             self.assertEqual(hashes['image.bin'], hashlib.sha256((workspace / 'image.bin').read_bytes()).hexdigest())

@@ -41,7 +41,7 @@ def public_case_fixture(root, case_id='tq9-v2', *, calibration=None, **changes):
     truth.parent.mkdir(exist_ok=True); truth.write_bytes(b'public suite contract opaque fixture')
     manifest = {
         'schema': 'benchmark-case/2', 'id': case_id, 'family': 'toy-family',
-        'version': '3', 'evaluator_version': '3', 'execution': 'actual-agent-emulation',
+        'version': '5', 'evaluator_version': '5', 'execution': 'actual-agent-emulation',
         'evidence_track': 'firmware', 'scope': 'full-workflow', 'adapter_key': 'emulator-v2',
         'approval_scope': 'emulator', 'default_effects': ['write'], 'scenarios': ['original'],
         'required_stages': ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse'],

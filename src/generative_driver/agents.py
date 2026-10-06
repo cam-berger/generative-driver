@@ -28,7 +28,11 @@ REPORT_SCHEMA = {
 }
 
 STAGE_BOUNDARY = ('Use only the assigned workspace, supplied inputs, and assigned tool gateway. '
-    'Do not read personal skills, home-directory instructions, other repositories, prior runs, or evaluator files. '
+    'Supplied diagnostic feedback, independent observations and sealed previous candidates from this same run '
+    'are authorized task evidence. Use them for requested repairs and grounding; worker reports remain claims '
+    'to check against the measurements. Do not discard supplied diagnostics as hidden evaluator data. '
+    'Do not read personal skills, home-directory instructions, other repositories, other runs, evaluator '
+    'passwords, plaintext oracle files or hidden final answers. '
     'Do not search outside the assigned workspace for task evidence or examples. '
     'Installed runtime libraries and explicitly supplied analysis executables may run normally. '
     'Use the assigned gateway for all device or emulator interactions; never bypass a denied tool through the shell. '

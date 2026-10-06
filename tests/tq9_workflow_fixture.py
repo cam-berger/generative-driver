@@ -45,16 +45,19 @@ class Silicon:
         self.monitor_available = True
         self.running = False
         self.commands = []
+        self.device_commands = []
         self.paused_requests = []
         owner = self
         class UART(socketserver.StreamRequestHandler):
             def handle(self):
                 for line in self.rfile:
                     command=line.decode().strip()
+                    owner.device_commands.append(command)
                     if not owner.running:
                         owner.paused_requests.append(command)
                         return
                     if command=='ID?': reply='DEMO-42'
+                    elif command=='T' and getattr(owner,'broken_measure',False):reply='BROKEN'
                     elif command=='T': reply='T:'+str(42 if getattr(owner,'wrong_hidden',False) and owner.temperature == -7 else owner.temperature)
                     elif command=='A': owner.armed=True; reply='OK'
                     elif command=='D': owner.armed=False; owner.duty=0; reply='OK'

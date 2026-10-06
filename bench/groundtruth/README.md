@@ -4,6 +4,8 @@ Installed `resources/bench/groundtruth/*.enc` bundles use AES-256-GCM authentica
 
 Calibrated V2 firmware groundtruth contains owned sources, exact build recipes, source/image/input hashes, two distinct reference implementations, diagnostic/final contracts, native observations and known incorrect models. Each firmware case evaluates one stable original image. V2 final episodes execute frozen emitted packages; fresh worker use is separately required. Legacy TQ9 retains its separate reference/mutant qualifier and recorded mission checks. Physical BME280 truth contains vendor document provenance, operator reference agreement criteria within supplied uncertainty and expected discovery-to-reuse gates. Vendor PDFs are fetched rather than redistributed.
 
+Parameter-store version 5 inventories require all six named transaction scenarios in both phases and the idle-only update and short-rejection-frame mutants alongside the five original mutants. Ending observations follow each reset-delimited scenario’s final call and cover all committed and pending cells, generation and pending state. Every `operation_rejected` check includes private `rejection_evidence` with schema `benchmark-rejection/1` and lowercase complete-response `rx_hex`, derived from independent deterministic protocol evidence. Missing or malformed witnesses refuse evaluation before I/O. Captured response bytes must match this complete witness; candidate framing and reject-prefix claims cannot substitute, and exact request-byte equality is not required. Native qualification authenticates exact expected failure IDs frozen before measurement; predictions cannot be copied from measured failures. Owned-emulator replacement proofs retain independent startup reads and original dispatch/outcome IDs in encrypted evaluator evidence.
+
 ## Obtain and handle the password
 
 The case publisher supplies credentials separately to a human evaluator. No default password, hint or recoverable key is included. Setup smoke requires none; independently scored agent profiles require evaluator access. Store each password alone in a file outside the checkout and candidate workspace, protected by host permissions. Supply its path to the evaluator; keep its contents out of prompts, environments and worker logs.
@@ -25,7 +27,7 @@ Create a random password in a separate evaluator-only file, then:
 python -m generative_driver benchmark truth rekey --case tq9 --password-file "/private/evaluator/old.password" --new-password-file "/private/evaluator/new.password" --output "/private/evaluator/rekeyed"
 ```
 
-This emits a new ciphertext and pin without changing installed resources. Publish the reviewed ciphertext and case manifest together; deliver the password separately. Rekeying retains behavioral expectations. Changed inputs, evidence scope or evaluator implementation require matching qualification and case/evaluator versioning.
+This emits a new ciphertext and pin without changing installed resources. Publish the reviewed ciphertext and case manifest together; deliver the password separately. Rekeying retains behavioral expectations. Changed inputs, evidence scope or behavioral acceptance require matching qualification and case/evaluator versioning. Execution fixes with unchanged behavioral contracts retain case versions but require new authenticated qualification against the exact implementation and dependency digest; stale qualifications cannot admit a run.
 
 ## Native reference qualification
 

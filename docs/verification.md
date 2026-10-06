@@ -2,6 +2,71 @@
 
 All workflows end at acquire, interpret, probe, ground, emit, reuse. Scripted tests, installation replay, native reference qualification, model execution and physical observations retain separate labels.
 
+## PR #5 pipeline and dashboard integration — 2026-10-06
+
+The user authorized combining pipeline branch `359f5be` with dashboard branch `ca7599b` in [PR #5](https://github.com/cam-berger/generative-driver/pull/5), including all previous results despite the unmet original 3/3 publication condition. The original model trial remains **2/3**: TQ9 and sensor completed fresh reuse and final grading; store remains blocked with unresolved effect and final behavior not reached. No new model or native reference trial ran for this integration.
+
+| Local macOS environment | Tests | Time | Result |
+|---|---:|---:|---|
+| Source Python 3.13.12 | 471 | 105.311 s | Passed |
+| Installed wheel, Python 3.11.15 | 471 | 114.168 s | Passed |
+| Installed wheel, Python 3.13.12 | 471 | 122.858 s | Passed |
+
+All three suites enabled both archive gates and had zero skips. Clean installed tests ran outside the checkout from the extracted source archive; installed imports were verified. Browser contracts passed from source and archive, and both installations passed setup replay and relocated-driver replay. The pinned installed evaluator identity remains `7330e0a99136922d04165e094a3abb465d8dc0fc6c497bebf71c7270e2904c04`; all three read-only authenticated version 5 case admissions passed in the fresh installed Python 3.11 environment. Public/private trial fields and all ten indexed evidence hashes matched. The [integration index](implementation/pr5-integration-verification.json) separates this combined software qualification from historical model/native measurements and records dependency versions. [Current PR checks](https://github.com/cam-berger/generative-driver/pull/5/checks) give the platform status; earlier Windows observations retain their original scope.
+
+## Dashboard — 2026-10-06
+
+The [dashboard verification](dashboard-verification.md) preserves the original 430-test observer qualification and one successful observed TQ9 run. PR #5 now also includes the previously qualified pipeline fixes and the three-family results below. Historical measurements retain their original revisions; integration checks are recorded separately.
+## Transaction coverage and emulator recovery — 2026-10-06
+
+The [approved plan](implementation/transaction-recovery-plan.md) and final rejection follow-up are complete. Rejection checks use evaluator-owned deterministic complete-response witnesses against captured bytes, independently of candidate receive delimiters and reject prefixes; equivalent request encodings remain valid. Parameter-store evaluation now always includes idle update, pending same-bank update, pending different-bank update, stage/commit, stage/abort and complete rejection, with independent ending-state observations. The configurator can use remaining repair budget after every unresolved effectful dispatch has a trusted completed model-failure outcome and an owned emulator is replaced with independently verified initial state. Failed command evidence remains failed; recovery never replays the uncertain write.
+
+The three emulated cases use case/evaluator version 5. Thirty-two native reference/mutant sessions qualify the measured version 5 working-tree implementation: 12 correct-reference and 20 mutant sessions. All saved grades reproduce and all three authenticated admissions pass; installed admissions pass in both Python environments. Store mutant failure sets match independent predictions frozen before measurement. Firmware sources and loaded flash binaries are unchanged. The new standalone-commit short-frame mutant fails exactly five predeclared rejection checks while positive commit, composed update and state checks remain correct. Prior version 4 attempts/evidence are preserved separately.
+
+| Local macOS environment | Tests | Time | Result |
+|---|---:|---:|---|
+| Source Python 3.13.12 | 461 | 117.210 s | Passed |
+| Installed Python 3.11.15 | 461 | 112.210 s | Passed |
+| Installed Python 3.13.12 | 461 | 120.620 s | Passed |
+
+All three suites enable both archive gates and have zero skips. Installed suites run from the extracted source archive outside the checkout with installed imports and evaluator identity verified, and checkout/credential/native overrides removed. Both installations pass explicit setup smoke, relocated package replay and Codex/Goose setup asset checks. The tested archives contain the final runtime, resources and tests; final measurement/reporting prose follows archive construction. The [verification index](implementation/transaction-recovery-verification.json) records hashes, exact later documentation differences, preserved failures and limits.
+
+Real native recovery confirms disposal of the old owned Renode process, a distinct live replacement/binding, independently matching startup readings, encrypted proof linkage, retained failed-write evidence and cleanup without replay. This adapter lifecycle proof is paired with the public-controller deterministic regression for durable revision, leases, bounded repair, six accepted gates, fresh reuse and independent regrading. It is not a native controller trial or a model result. Evaluator-only reference reply robustness diagnostics retain inherited unqualified acknowledgment-only/empty-output operations; native functional qualification and admission passed.
+
+Windows CI has not run for these commits. This release qualification used no model trial or physical operation; the separately frozen model trial follows below. Live Goose/Codex UI behavior and worker filesystem isolation remain unverified. Prior feasibility experiments retain their original outcomes and coverage.
+
+## Version 5 model trial — 2026-10-06
+
+The [three-family trial](research/2026-10-06-transaction-recovery-results.md) at `272c1b1`, using the exact qualified installation with `gpt-6.1-sol` and medium reasoning, completes **2/3** in 35.2 minutes. TQ9 passes all six stages and 9/9 final checks after one repair and one automatic emulator recovery. Sensor passes all six stages and 85/85 final checks after one repair. Store corrects a capability mapping, then passes 364/366 diagnostic checks; its second revised probe stops on an intentional idle-commit rejection with exhausted repair budget and unresolved effect. Store final behavior was not reached. Its pending-update and ending-state checks passed in the completed diagnostic evaluation.
+
+Recorded and sealed regrades agree. All 23 assignments report usage, all 127 managed operations finish, and postflight confirms unchanged implementation, evaluator, tools, settings, artifacts and budgets. No operator inputs, rescue, extra trials or deadline extensions occurred. The service is stopped and final emulator processes are absent; store uncertainty is retained. Independent result reviews support the negative primary result. The [trial index](implementation/transaction-recovery-trial-verification.json) records stage metrics, hashes and limits. The original 3/3 publication condition was not met. The user subsequently authorized including the pipeline fixes and all results in [PR #5](https://github.com/cam-berger/generative-driver/pull/5), preserving the 2/3 outcome. The next investigation is the expected-negative-probe/reconciliation contract, without claiming the ungraded final candidate is incorrect.
+
+## Version 4 snapshot — superseded after rejection review
+
+The [frozen version 4 index](implementation/transaction-recovery-v4-verification.json) preserves the checks measured at `f6c055d`. Final integration review then reproduced candidate first-line receive framing earning rejection credit. That snapshot does not qualify the independent complete-response repair; version 5 adds the private witness and short-frame mutant.
+
+Version 4 had 31 native sessions (12 correct-reference, 19 mutant), all grades reproduced under its frozen implementation, and three source plus six installed admissions passed. Its software results remain:
+
+| Local macOS environment | Tests | Time | Result |
+|---|---:|---:|---|
+| Source Python 3.13.12 | 457 | 117.526 s | Passed |
+| Installed Python 3.11.15 | 457 | 112.503 s | Passed |
+| Installed Python 3.13.12 | 457 | 119.643 s | Passed |
+
+All suites had zero archive skips. One store attempt stopped after a diagnostic session on a Renode monitor-port collision; the partial record/log and unchanged successful retry remain preserved. Two native proof-harness preflight mistakes were also retained. Native adapter lifecycle and deterministic controller durability were separate proofs. Firmware sources and flash binaries were unchanged; Windows, live clients, physical devices and a new model trial were unrun. These observations retain their original scope and review gap.
+
+## Pipeline repair — 2026-10-05
+
+The [pipeline report](research/2026-10-05-pipeline-repair-results.md) preserves earlier same-model feasibility experiments and their [verification index](implementation/pipeline-repair-verification.json). Subsequent corrections add candidate-only capability validation, mapping feedback, pre-transport refusal classification and atomic cleanup status. Source tests pass 432 checks with three archive skips; installed Python 3.11.15 and 3.13.12 each pass 432 with zero skips. Final archives and installation replay pass. Thirty native reference/mutant sessions reproduce all saved grades and three authenticated admissions qualify the refreshed evaluator.
+
+The separately frozen [capability repair run](research/2026-10-05-capability-repair-results.md) completes 0/3 fresh-reuse workflows at `gpt-6.1-sol`, medium reasoning. TQ9 passes all diagnostic checks but stops at grounding; sensor and store exhaust repairs. Recorded and independent regrades agree, with final behavior not reached. The [new index](implementation/capability-repair-verification.json) records measurements and log identities. Model outcomes retain their frozen revisions; passing software tests do not establish model success.
+
+The separately frozen [context repair experiment](research/2026-10-05-context-repair-results.md) at `21359b4` completes **2/3** with the same model and reasoning level. TQ9 passes all six stages and 9/9 final checks without repair; sensor consumes measured repair feedback and passes all six stages plus 85/85 final checks after one repair. Store repairs response framing after a ground-stage request, then blocks on an update during a pending transaction; final behavior is not reached. Independent sealed regrades agree. One cleanup-only response reconciles the disposed store emulator without resuming the run. Runtime/tool identities remain unchanged, all 99 managed operations finish, and the private service is stopped.
+
+Implementation `556d5e0` corrects repair instructions/context, ground evidence/routing and invocation-failure attribution. Scripted regressions cover measured decoder repair, ground-to-interpret revision and terminal final binding failure through external workers and an emitted package. Source verification passes 441 tests in 84.782 seconds with three archive-only skips. Installed Python 3.11.15 and 3.13.12 pass 441 tests in 81.807 and 89.967 seconds respectively, with zero skips. Thirty matching native sessions pass and all saved grades reproduce; three authenticated admissions pass with unchanged authored inputs. Publication checks, installation replay and relocated standalone replay pass. Independent source/wheel/install correspondence and visible candidate-boundary reviews are clear. The [context verification index](implementation/context-repair-verification.json) retains measurements and log identities. These observations verify an outcome-aware engineering rerun on three familiar emulated families, not model ranking, physical performance or general reliability.
+
+The user's separately requested [unchanged store repeat](research/2026-10-05-store-repeat-results.md) completes 1/1, with all six stages, fresh reuse and 696/696 final checks, zero repairs and no intervention. Independent regrading agrees; existing test/qualification evidence was reused after identity checks, and the private service is stopped. The original three-family result remains 2/3. The repeat's visible probes omit the previously failing update-while-pending sequence and its candidate retains that state assumption, so completion does not close the known coverage gap. The [repeat index](implementation/store-repeat-verification.json) records the unchanged setup and observed result.
+
 ## PR #1 follow-up — 2026-10-03
 
 The [review](research/2026-10-03-pr1-review.md) found an offline historical-scoring defect and an existing Windows checkout defect. The follow-up rejects incompatible historical evidence and preserves the bytes hashed by benchmark manifests and evaluator identities.

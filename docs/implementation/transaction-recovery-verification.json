@@ -1,0 +1,271 @@
+{
+  "schema": "transaction-recovery-verification/2",
+  "started_date": "2026-10-06",
+  "completed_date": "2026-10-06",
+  "completed_at_utc": "2026-10-06T05:08:22.548382+00:00",
+  "status": "passed",
+  "measured_implementation": {
+    "base_commit": "ef16536ce54544d9cd596dd81e1d981182f67578",
+    "snapshot": "Version 5 registry/builder changes plus transaction/recovery implementation; native qualification measured this working-tree snapshot, not the base commit alone. Final runtime/resources/tests correspond byte-for-byte to the tested archives.",
+    "evaluator_identity_sha256": "7330e0a99136922d04165e094a3abb465d8dc0fc6c497bebf71c7270e2904c04",
+    "runtime_resources_tests_files": 166,
+    "runtime_resources_tests_sha256": "60f411e0704dede5b046425cbb64d372ab95ea2384608a492c9f74fb41f1a24b"
+  },
+  "archives": {
+    "wheel_sha256": "66a4642181786fa916d6ee51c9f56646b617cbec21a54ece4d1ad415232d7574",
+    "sdist_sha256": "9a9c96096b245015789ca6b93348a2698ec1461ac1136a39cfe73855310095a5",
+    "wheel_runtime_resources_sha256": "309ea0707f97aeb17d95ee92cc350e654abfaacb5bf0145a795592ce5c3b5fd9",
+    "reporting_order": "Final verification measurements/reporting prose were written after construction of the frozen tested archives. Exact final docs-only differences are recorded by the final publication audit."
+  },
+  "software_tests": [
+    {
+      "environment": "source",
+      "python": "3.13.12",
+      "count": 461,
+      "seconds": 117.21,
+      "archive_skips": 0,
+      "passed": true,
+      "log_sha256": "1b09dafde373af497965a8ad24897bd73871d4a65cc36036fcce8ca54ca07c7e"
+    },
+    {
+      "environment": "installed",
+      "python": "3.11.15",
+      "count": 461,
+      "seconds": 112.21,
+      "archive_skips": 0,
+      "passed": true,
+      "log_sha256": "43ecdad0fe11acdab7fb6d77bf024a9a687938d1b03cecd00cb8dfb6bd39870c",
+      "outside_checkout": true,
+      "installed_imports_verified": true,
+      "credential_checkout_native_overrides_removed": true
+    },
+    {
+      "environment": "installed",
+      "python": "3.13.12",
+      "count": 461,
+      "seconds": 120.62,
+      "archive_skips": 0,
+      "passed": true,
+      "log_sha256": "faebab75fe67fe4dee12a1140adfcdfbce1927354f4062ae4279934e69cefb5d",
+      "outside_checkout": true,
+      "installed_imports_verified": true,
+      "credential_checkout_native_overrides_removed": true
+    }
+  ],
+  "installed_setup_checks": [
+    {
+      "label": "311",
+      "setup_smoke": true,
+      "relocated_package_replay": true,
+      "codex_setup": true,
+      "goose_setup": true,
+      "authenticated_admissions": 3,
+      "candidate_inference": false,
+      "physical_devices": false,
+      "wall_seconds": 0.6127714170143008,
+      "log_sha256": "52f035fd5112465509a009f290fc5d956ee214fe44be66174f59cdf2da9dae18"
+    },
+    {
+      "label": "313",
+      "setup_smoke": true,
+      "relocated_package_replay": true,
+      "codex_setup": true,
+      "goose_setup": true,
+      "authenticated_admissions": 3,
+      "candidate_inference": false,
+      "physical_devices": false,
+      "wall_seconds": 0.6978133749798872,
+      "log_sha256": "2db02da327524e5072bdeaadf86cf6c3330013611511e51dad338079ad638862"
+    }
+  ],
+  "native_qualification": {
+    "execution": "reference-calibration",
+    "model_benchmark": false,
+    "backend": "native-renode",
+    "successful_sessions": 32,
+    "correct_reference_sessions": 12,
+    "mutant_sessions": 20,
+    "saved_grades_reproduced": 32,
+    "source_authenticated_admissions": 3,
+    "installed_authenticated_admissions": 6,
+    "cases": [
+      {
+        "case": "tq9-v2",
+        "sessions": 13,
+        "references": 2,
+        "mutants": 9,
+        "saved_grades_reproduced": 13,
+        "firmware_source_and_binary_unchanged": true,
+        "evidence_sha256": "5cdeefa00b677f2d4ee7f8617401897f554a68a576108d758623627ea87c6c36",
+        "ciphertext_sha256": "82b6944214be1afae7540ecefd4037b0da9ec36d8b1fdb4ea29b373326095519",
+        "manifest_sha256": "ab78c69684444ea7c944222209d63afb1759301daa9c97568070c14703d92f73",
+        "admitted": true,
+        "case_version": "5",
+        "evaluator_version": "5",
+        "seconds": 227.99756287503988,
+        "diagnostic_checks": 9,
+        "final_checks": 9
+      },
+      {
+        "case": "sampled-sensor-v1",
+        "sessions": 8,
+        "references": 2,
+        "mutants": 4,
+        "saved_grades_reproduced": 8,
+        "firmware_source_and_binary_unchanged": true,
+        "evidence_sha256": "8d154d8b67b15e2f5e0dd0c0b4b5d32d933d108963349a9c9e77bfd6223c232e",
+        "ciphertext_sha256": "b4de23c0f93d502ac2d487de6939760e1cbc3ef1b0ccbc9b1225aa98670d1cbf",
+        "manifest_sha256": "55dac15573d96d3ec0e761535a36cb918080b737c4be72e307f44977439a7baa",
+        "admitted": true,
+        "case_version": "5",
+        "evaluator_version": "5",
+        "seconds": 175.68129024998052,
+        "diagnostic_checks": 17,
+        "final_checks": 85
+      },
+      {
+        "case": "parameter-store-v1",
+        "sessions": 11,
+        "references": 2,
+        "mutants": 7,
+        "saved_grades_reproduced": 11,
+        "firmware_source_and_binary_unchanged": true,
+        "evidence_sha256": "00938036905a30ecb9c1b7b1ca0f925a169fe70b928ca26c76a9f0e07a6ec468",
+        "ciphertext_sha256": "6f59c79bced3210ef7649cc9fe3d78d8f34df4f54754e44e7e6076ae2ffa9ba6",
+        "manifest_sha256": "72b6097877b6109b935e57141b91bfaf7d21a57d1a536a7cca581fe553c4c4f1",
+        "admitted": true,
+        "case_version": "5",
+        "evaluator_version": "5",
+        "seconds": 660.9057402499602,
+        "diagnostic_checks": 366,
+        "final_checks": 891
+      }
+    ],
+    "firmware_source_and_flash_binary_unchanged": true,
+    "rebuilt_elf_provenance": [
+      {
+        "case": "sampled-sensor-v1",
+        "old_elf_sha256": "9b17127367e9a6f35b762d53ed520b3d09789dd39a02aeedc5f8a57d174f883d",
+        "rebuilt_elf_sha256": "c2ba636010b2086179f4b5b5f0314e95d65cd1e5008fae212e5be54ffbe69b6b",
+        "elf_byte_identical": false,
+        "flash_binary_byte_identical": true
+      },
+      {
+        "case": "parameter-store-v1",
+        "old_elf_sha256": "89ce9d2d7d273206ee83f33f7889aa4439e69c58f57ec5be31d295a719d6b560",
+        "rebuilt_elf_sha256": "640172e47f90b5ab633acb1592a6d80bdaeb85da73d3fd66db42b318f21e932a",
+        "elf_byte_identical": false,
+        "flash_binary_byte_identical": true
+      }
+    ],
+    "preserved_native_attempts": []
+  },
+  "store_prediction_freeze": {
+    "sha256": "6d5fcf3812a67abd0631ff643d9978152edf99e174d741d769764f75a599e111",
+    "frozen_before_store_native_measurement": true,
+    "independent_method": "Symbolic firmware transitions and declared transformations, with effect-grant preflight refusal; no native grades consumed.",
+    "expected_failed_check_counts": {
+      "constant": 4,
+      "scale": 4,
+      "order": 89,
+      "wrong-bank": 36,
+      "abort": 51,
+      "idle-only-update": 12,
+      "short-rejection-frame": 5
+    },
+    "all_measured_failure_sets_match": true,
+    "prior_six_prediction_sha256": "3ab5eecfaf1002fee11ff2e0a491033c7ab190382a66dd7d1fde072a0f33e1c7",
+    "prior_six_sets_retained": true,
+    "private_rejection_witnesses": {
+      "schema": "benchmark-rejection/1",
+      "diagnostic_checks": 2,
+      "final_checks": 5,
+      "derived_from_unchanged_firmware": true,
+      "candidate_receive_boundary_independent": true,
+      "exact_request_bytes_not_required": true
+    },
+    "independent_correct_behavior_review": {
+      "diagnostic_checks": 366,
+      "final_checks": 891,
+      "derivation_failures": 0,
+      "method": "Prior source-derived normal state/output expectations retained; new deterministic complete-response witnesses independently audited before native measurement."
+    }
+  },
+  "recovery_verification": {
+    "native_adapter": {
+      "execution": "native-owned-emulator-adapter-lifecycle-proof",
+      "model_benchmark": false,
+      "controller_durability_proof": false,
+      "old_owner_stopped": true,
+      "new_distinct_live_owner_observed": true,
+      "new_binding_distinct": true,
+      "independent_initial_state_verified": true,
+      "failed_attempt_preserved": true,
+      "original_operation_count": 1,
+      "no_replay": true,
+      "adapter_dispatch_and_outcome_labels_preserved": true,
+      "dispatch_outcome_labels": "Synthetic evaluator-owned adapter proof labels; public-controller regression verifies actual durable event linkage.",
+      "encrypted_proof_sha256": "33b3006124a73114f28a6ca598f14925adbbd743e57bbc268d29679bafc03692",
+      "startup_observation_sha256": "69467da575206079c71ce9c9e7d2eaa51e3e3cef70e808a6b85239657e122bef",
+      "encrypted_evidence_sha256": "edf440432d3925eb9791af9a66a420567c3ebe93c052b1d579326859cded4354",
+      "cleanup_confirmed": true,
+      "wall_seconds": 7.05074366601184
+    },
+    "controller_durability": {
+      "execution": "public-controller deterministic regression with external scripted worker, TCP runtime and controlled process handles",
+      "test": "test_owned_emulator_recovery_revalidates_through_fresh_reuse",
+      "full_source_and_both_installed_suites_pass": true,
+      "proves": "Durable bounded revision, stale-token refusal, failed-write preservation/no replay, new binding claim, six checked gates, fresh reuse and independent regrading.",
+      "native_controller_trial": false
+    },
+    "preserved_private_harness_preflight_attempts": 0
+  },
+  "tdd_task_3": {
+    "release_version": "Builder RED expected 5 but produced 4; GREEN five pin/build tests passed.",
+    "stale_workflow": "Version 4 workflow identities accepted in RED for all three emulated cases; version 5 registry rejects them in GREEN.",
+    "fixture_refresh": "57 focused tests initially failed on stale version 4 fixtures (7 failures, 29 errors); current version 5 fixtures pass all 57 in 11.220 seconds.",
+    "nonbehavioral_harness_errors": 0
+  },
+  "publication": {
+    "privacy_and_local_links": "passed",
+    "archive_runtime_resources_tests_correspondence": "passed",
+    "whitespace": "passed",
+    "final_docs_only_differences": [
+      "docs/implementation/benchmark-handoff.md",
+      "docs/implementation/transaction-recovery-plan.md",
+      "docs/implementation/transaction-recovery-verification.json",
+      "docs/verification.md"
+    ],
+    "counts": {
+      "tracked_markdown": 44,
+      "tracked_local_links": 111,
+      "sdist_markdown": 41,
+      "sdist_local_links": 108,
+      "wheel_files": 128,
+      "sdist_files": 217,
+      "tracked_files": 214,
+      "wheel_code_resources": 121,
+      "firmware_images": 4
+    }
+  },
+  "superseded_verification": {
+    "case_evaluator_version": "4",
+    "index": "transaction-recovery-v4-verification.json",
+    "commit": "f6c055dcc747ec8f6a9d459195c09a68ec4459eb",
+    "reason": "Final review found candidate first-line receive framing could earn rejection credit; v4 evidence does not qualify the independent complete-response repair."
+  },
+  "next_model_trial": {
+    "model": "gpt-6.1-sol",
+    "reasoning_effort": "medium",
+    "execution": "unrun; separate freeze required"
+  },
+  "limitations": [
+    "Windows CI matrix has not run for these commits; native Windows tools and workstation UI setup remain unverified.",
+    "No paid/model trial or physical-device operation ran in this task; previous experiments retain their frozen version 3 outcomes.",
+    "Native recovery proves the adapter process lifecycle; controller durability is independently proved by deterministic public-controller regressions, not a native controller/model trial.",
+    "Evaluator-only store reply fixtures cover every operation structurally, but inherited generic robustness checks remain unqualified for five acknowledgment-only/empty-output operations in each reference; native functional qualification/admission passed. Those diagnostic reports are retained privately.",
+    "Regenerated ELF bytes differ from original authoring ELF bytes; firmware sources and loaded flash binaries are byte-identical.",
+    "Passwords/encryption establish evaluator separation and provenance; worker filesystem isolation remains unverified.",
+    "Codex/Goose setup checks generate and verify installation assets; live client behavior is not measured."
+  ]
+}

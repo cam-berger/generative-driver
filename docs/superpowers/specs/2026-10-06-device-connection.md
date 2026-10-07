@@ -8,7 +8,7 @@ This is sub-project 1 of six, each with its own spec, plan and physical check: d
 
 ## Binding
 
-A UART binding is either `{"port": PATH}` or `{"vendor_id": INT, "product_id": INT, "serial_number": STR}` with `serial_number` optional. The runtime resolves an identity binding to the current port path from the operating system's port list each time it connects. No match, or several matches without a serial number, fails with code `binding` as an operator fault. The configurator leases an identity binding by vendor, product and serial number, so one board cannot be reached by two runs through different paths. A `port` binding keeps its current path lease.
+A UART binding is either `{"port": PATH}` or `{"vendor_id": INT, "product_id": INT, "serial_number": STR}` with `serial_number` optional. The runtime resolves an identity binding to the current port path from the operating system's port list each time it connects. No match, or several matches without a serial number, fails with code `binding` as an operator fault. The configurator leases an identity binding product-wide by vendor and product, as it already does for USB bindings, so one board cannot be reached by two runs through different paths or through selectors with and without a serial number. A `port` binding keeps its current path lease.
 
 ## Reset effect
 

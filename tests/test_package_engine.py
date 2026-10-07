@@ -393,6 +393,49 @@ def test_resetting_channel_requires_reset_grant_before_open(model):
     assert run(model, boundary, allow_effects=("reset",))["ok"]
 
 
+def test_session_runs_operations_over_one_open_with_identity_each_time(model):
+    from interface_runtime.engine import Session
+    opens = []
+    boundary = Boundary([(b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:21.5\n"),
+                         (b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:22.0\n")])
+    def factory(channel, binding):
+        opens.append(1); return boundary.factory(channel, binding)
+    with Session(model, binding={}, transport_factory=factory) as session:
+        first, second = session.execute("measure"), session.execute("measure")
+    assert first["outputs"] == {"temperature": 21.5} and second["outputs"] == {"temperature": 22.0}
+    assert len(opens) == 1 and boundary.closed and not boundary.script
+
+
+def test_session_waits_for_boot_line_and_reports_discarded_bytes(model):
+    from interface_runtime.engine import Session
+    model["channel"].update(boot={"line_prefix": "@ boot", "timeout_ms": 2000})
+    boundary = Boundary([(b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:21.5\n")])
+    waits = []
+    boundary.wait_boot = lambda prefix, timeout_ms: waits.append((prefix, timeout_ms)) or 37
+    with Session(model, binding={}, transport_factory=boundary.factory) as session:
+        result = session.execute("measure")
+    assert waits == [("@ boot", 2000)] and result["transport_notes"] == {"drained_bytes": 37}
+
+
+def test_boot_timeout_fails_and_closes(model):
+    from interface_runtime.transports import TransportError
+    model["channel"].update(boot={"line_prefix": "@ boot", "timeout_ms": 50})
+    boundary = Boundary([])
+    def never(prefix, timeout_ms):
+        raise TransportError("boot_timeout", "no boot line after 50 ms; discarded 12 bytes")
+    boundary.wait_boot = never
+    result = run(model, boundary)
+    assert not result["ok"] and result["error"]["code"] == "boot_timeout" and boundary.closed
+
+
+def test_session_validation_failure_never_opens(model):
+    from interface_runtime.engine import Session
+    boundary = Boundary([])
+    with Session(model, binding={}, transport_factory=boundary.factory) as session:
+        result = session.execute("missing")
+    assert not result["ok"] and result["transport_open_attempted"] is False and not boundary.opened
+
+
 class EngineTests(unittest.TestCase):
     pass
 

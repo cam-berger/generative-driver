@@ -709,6 +709,149 @@ def _decode(decoder, captures):
     return result
 
 
+class Session:
+    """One open transport for a sequence of operations; identity is verified before each operation.
+    The transport opens lazily, after the first operation passes validation, and always closes."""
+
+    def __init__(self, model, *, binding=None, allow_effects=(), transport_factory=None, delay_fn=None):
+        self.model, self.binding, self.allow_effects = model, binding, allow_effects
+        self.transport_factory, self.delay_fn = transport_factory, delay_fn
+        self.transport = None
+        self.pending_drained = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def _open(self, model):
+        factory = self.transport_factory
+        if factory is None:
+            from .transports import open_transport
+            factory = open_transport
+        self.transport = factory(model["channel"], {} if self.binding is None else dict(self.binding))
+        boot = model["channel"].get("boot")
+        if boot and hasattr(self.transport, "wait_boot"):
+            self.pending_drained += self.transport.wait_boot(boot["line_prefix"], boot["timeout_ms"])
+
+    def close(self):
+        transport, self.transport = self.transport, None
+        if transport is not None:
+            transport.close()
+
+    def execute(self, operation, parameters=None):
+        result = {"schema": "interface-result/1", "operation": operation, "ok": False,
+                  "outputs": {}, "units": {}, "identity_verified": False, "transcript": []}
+        transport = None
+        transport_open_attempted = False
+        try:
+            # Snapshot declarative inputs before validation to avoid model mutation
+            # by a caller or injected transport during an active transaction.
+            model = json.loads(_json_model(self.model))
+            validation = validate_model(model)
+            _require(validation["ok"], "model", "; ".join(d["where"] + ": " + d["what"] for d in validation["defects"]))
+            _require(type(operation) is str and operation in model["operations"], "operation", "unknown operation", Fault.OPERATOR)
+            allow_effects, binding, delay_fn = self.allow_effects, self.binding, self.delay_fn
+            _require(type(allow_effects) in (tuple, list, set, frozenset) and all(v in GRANTS for v in allow_effects), "allow_effects", "invalid effect grants", Fault.OPERATOR)
+            _require(not model["channel"].get("resets_on_open") or "reset" in allow_effects,
+                     "effect", "channel resets the device on open; requires an explicit reset grant", Fault.OPERATOR, code="effect")
+            selected = model["operations"][operation]
+            _require(selected["effect"] == "read" or selected["effect"] in allow_effects, "effect", "operation requires explicit effect grant", Fault.OPERATOR)
+            parameters = {} if parameters is None else parameters
+            _arguments(selected["parameters"], parameters)
+            parameters = dict(parameters)
+            _require(binding is None or type(binding) is dict, "binding", "binding must be object", Fault.OPERATOR)
+            _require(delay_fn is None or callable(delay_fn), "delay_fn", "delay_fn must be callable or None", Fault.OPERATOR)
+            delay = time.sleep if delay_fn is None else delay_fn
+            transport_open_attempted = self.transport is not None
+            if self.transport is None:
+                transport_open_attempted = True
+                self._open(model)
+            transport = self.transport
+            # Bytes an adapter discarded on open (stale replies to an abandoned transaction) are reported,
+            # never silently absorbed; absent means nothing was discarded or the adapter does not drain.
+            drained = getattr(transport, "drained_bytes", 0)
+            drained = (drained if type(drained) is int and drained > 0 else 0) + self.pending_drained
+            self.pending_drained = 0
+            if drained:
+                result["transport_notes"] = {"drained_bytes": drained}
+
+            def run(name, arguments):
+                op = model["operations"][name]
+                captures = {}
+                decoder_captures = {}
+                for index, step in enumerate(op["steps"]):
+                    entry = {"operation": name, "step": index, "op": step["op"], "tx_hex": "", "rx_hex": "", "status": "attempted"}
+                    result["transcript"].append(entry)
+                    if step["op"] == "delay":
+                        entry["ms"] = step["ms"]
+                        delay(step["ms"] / 1000)
+                        entry["status"] = "completed"
+                        continue
+                    tx = _encode(step["tx"], arguments)
+                    entry["tx_hex"] = tx.hex()
+                    for rule in step.get("match", ()):
+                        _require(len(tx) >= rule["tx_offset"] + rule["size"], "match",
+                                 "encoded request is shorter than its match range")
+                    if step["op"] == "usb_control":
+                        setup = {key: arguments[value["arg"]] if type(value) is dict else value for key, value in step["setup"].items()}
+                        entry["setup"] = setup
+                        data = transport.control(setup, tx, step["rx"], step["timeout_ms"])
+                    else:
+                        data = transport.exchange(tx, step["rx"], step["timeout_ms"])
+                    if type(data) is bytes:
+                        entry["rx_hex"] = data.hex()
+                    _response(data, step["rx"])
+                    entry["status"] = "completed"
+                    for rule in step.get("match", ()):
+                        start, stop = rule["tx_offset"], rule["tx_offset"] + rule["size"]
+                        other = rule["rx_offset"]
+                        _require(data[other:other + rule["size"]] == tx[start:stop],
+                                 "match", "request/reply match failed")
+                    if "expect" in step:
+                        expect = step["expect"]
+                        if (any(line.startswith(prefix) for line in _lines(data)
+                                for prefix in expect.get("reject_line_prefix", ()))
+                                or any(data.startswith(bytes.fromhex(prefix)) for prefix in expect.get("reject_prefix_hex", ()))):
+                            entry["device_rejected"] = True
+                        _require(_matches(data, step["expect"]), "expect", "response expectation mismatch")
+                    if "capture" in step:
+                        captures[step["capture"]] = data
+                        if step["rx"]["mode"] == "frame" and step["rx"]["length"].get("padding") is not None:
+                            spec = checks.frame_spec(step["rx"])
+                            data = data[:checks.frame_data_end(data, spec)]
+                        decoder_captures[step["capture"]] = data
+                return {name: _decode(decoder, captures if decoder["kind"] == "hex" else decoder_captures)
+                        for name, decoder in op["outputs"].items()}
+
+            identity = model["identity"]["operation"]
+            identity_outputs = run(identity, {})
+            result["identity_verified"] = True
+            result["outputs"] = identity_outputs if operation == identity else run(operation, parameters)
+            result["units"] = {name: decoder["unit"] for name, decoder in selected["outputs"].items() if "unit" in decoder}
+            result["ok"] = True
+        except Exception as exc:
+            result["error"] = {"code": getattr(exc, "code", "validation_error" if transport is None else "execution_error"), "message": str(exc)}
+            declared = getattr(exc, 'fault', None)
+            if declared is not None:
+                result['error']['fault'] = declared
+            elif hasattr(exc, 'code'):
+                result['error']['fault'] = classify_failure(result)
+            else:
+                result['error']['fault'] = Fault.MODEL.value if isinstance(exc, UnicodeError) else Fault.HOST.value
+            if self.transport is not None:
+                try:
+                    self.close()
+                except Exception:
+                    pass
+        if not result["ok"]:
+            result["transport_open_attempted"] = transport_open_attempted
+            result["outputs"] = {}
+            result["units"] = {}
+        return result
+
+
 def execute(model, operation, parameters=None, *, binding=None, allow_effects=(), transport_factory=None, delay_fn=None):
     """Validate everything, verify identity, execute once, and always close.
 
@@ -721,112 +864,13 @@ def execute(model, operation, parameters=None, *, binding=None, allow_effects=()
     ``transport_notes: {drained_bytes}``. Failed results also report whether
     transport opening was attempted; even a failed open can have device effects.
     """
-    result = {"schema": "interface-result/1", "operation": operation, "ok": False,
-              "outputs": {}, "units": {}, "identity_verified": False, "transcript": []}
-    transport = None
-    transport_open_attempted = False
+    session = Session(model, binding=binding, allow_effects=allow_effects,
+                      transport_factory=transport_factory, delay_fn=delay_fn)
+    result = session.execute(operation, parameters)
     try:
-        # Snapshot declarative inputs before validation to avoid model mutation
-        # by a caller or injected transport during an active transaction.
-        model = json.loads(_json_model(model))
-        validation = validate_model(model)
-        _require(validation["ok"], "model", "; ".join(d["where"] + ": " + d["what"] for d in validation["defects"]))
-        _require(type(operation) is str and operation in model["operations"], "operation", "unknown operation", Fault.OPERATOR)
-        _require(type(allow_effects) in (tuple, list, set, frozenset) and all(v in GRANTS for v in allow_effects), "allow_effects", "invalid effect grants", Fault.OPERATOR)
-        _require(not model["channel"].get("resets_on_open") or "reset" in allow_effects,
-                 "effect", "channel resets the device on open; requires an explicit reset grant", Fault.OPERATOR, code="effect")
-        selected = model["operations"][operation]
-        _require(selected["effect"] == "read" or selected["effect"] in allow_effects, "effect", "operation requires explicit effect grant", Fault.OPERATOR)
-        parameters = {} if parameters is None else parameters
-        _arguments(selected["parameters"], parameters)
-        parameters = dict(parameters)
-        _require(binding is None or type(binding) is dict, "binding", "binding must be object", Fault.OPERATOR)
-        _require(delay_fn is None or callable(delay_fn), "delay_fn", "delay_fn must be callable or None", Fault.OPERATOR)
-        delay = time.sleep if delay_fn is None else delay_fn
-        if transport_factory is None:
-            from .transports import open_transport
-            transport_factory = open_transport
-        transport_open_attempted = True
-        transport = transport_factory(model["channel"], {} if binding is None else dict(binding))
-        # Bytes an adapter discarded on open (stale replies to an abandoned transaction) are reported,
-        # never silently absorbed; absent means nothing was discarded or the adapter does not drain.
-        drained = getattr(transport, "drained_bytes", 0)
-        if type(drained) is int and drained > 0:
-            result["transport_notes"] = {"drained_bytes": drained}
-
-        def run(name, arguments):
-            op = model["operations"][name]
-            captures = {}
-            decoder_captures = {}
-            for index, step in enumerate(op["steps"]):
-                entry = {"operation": name, "step": index, "op": step["op"], "tx_hex": "", "rx_hex": "", "status": "attempted"}
-                result["transcript"].append(entry)
-                if step["op"] == "delay":
-                    entry["ms"] = step["ms"]
-                    delay(step["ms"] / 1000)
-                    entry["status"] = "completed"
-                    continue
-                tx = _encode(step["tx"], arguments)
-                entry["tx_hex"] = tx.hex()
-                for rule in step.get("match", ()):
-                    _require(len(tx) >= rule["tx_offset"] + rule["size"], "match",
-                             "encoded request is shorter than its match range")
-                if step["op"] == "usb_control":
-                    setup = {key: arguments[value["arg"]] if type(value) is dict else value for key, value in step["setup"].items()}
-                    entry["setup"] = setup
-                    data = transport.control(setup, tx, step["rx"], step["timeout_ms"])
-                else:
-                    data = transport.exchange(tx, step["rx"], step["timeout_ms"])
-                if type(data) is bytes:
-                    entry["rx_hex"] = data.hex()
-                _response(data, step["rx"])
-                entry["status"] = "completed"
-                for rule in step.get("match", ()):
-                    start, stop = rule["tx_offset"], rule["tx_offset"] + rule["size"]
-                    other = rule["rx_offset"]
-                    _require(data[other:other + rule["size"]] == tx[start:stop],
-                             "match", "request/reply match failed")
-                if "expect" in step:
-                    expect = step["expect"]
-                    if (any(line.startswith(prefix) for line in _lines(data)
-                            for prefix in expect.get("reject_line_prefix", ()))
-                            or any(data.startswith(bytes.fromhex(prefix)) for prefix in expect.get("reject_prefix_hex", ()))):
-                        entry["device_rejected"] = True
-                    _require(_matches(data, step["expect"]), "expect", "response expectation mismatch")
-                if "capture" in step:
-                    captures[step["capture"]] = data
-                    if step["rx"]["mode"] == "frame" and step["rx"]["length"].get("padding") is not None:
-                        spec = checks.frame_spec(step["rx"])
-                        data = data[:checks.frame_data_end(data, spec)]
-                    decoder_captures[step["capture"]] = data
-            return {name: _decode(decoder, captures if decoder["kind"] == "hex" else decoder_captures)
-                    for name, decoder in op["outputs"].items()}
-
-        identity = model["identity"]["operation"]
-        identity_outputs = run(identity, {})
-        result["identity_verified"] = True
-        result["outputs"] = identity_outputs if operation == identity else run(operation, parameters)
-        result["units"] = {name: decoder["unit"] for name, decoder in selected["outputs"].items() if "unit" in decoder}
-        result["ok"] = True
+        session.close()
     except Exception as exc:
-        result["error"] = {"code": getattr(exc, "code", "validation_error" if transport is None else "execution_error"), "message": str(exc)}
-        declared = getattr(exc, 'fault', None)
-        if declared is not None:
-            result['error']['fault'] = declared
-        elif hasattr(exc, 'code'):
-            result['error']['fault'] = classify_failure(result)
-        else:
-            result['error']['fault'] = Fault.MODEL.value if isinstance(exc, UnicodeError) else Fault.HOST.value
-    finally:
-        if transport is not None:
-            try:
-                transport.close()
-            except Exception as exc:
-                if result["ok"]:
-                    result["ok"] = False
-                    result["error"] = {"code": "close_error", "message": str(exc), "fault": Fault.HOST.value}
-    if not result["ok"]:
-        result["transport_open_attempted"] = transport_open_attempted
-        result["outputs"] = {}
-        result["units"] = {}
+        if result["ok"]:
+            result.update(ok=False, outputs={}, units={}, transport_open_attempted=True,
+                          error={"code": "close_error", "message": str(exc), "fault": Fault.HOST.value})
     return result

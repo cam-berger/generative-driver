@@ -111,6 +111,9 @@ class RecordingFactory:
                 return data
             def close(self):
                 handle.close()
+            def wait_boot(self, line_prefix, timeout_ms):
+                wait = getattr(handle, 'wait_boot', None)
+                return wait(line_prefix, timeout_ms) if wait else 0
             # Bytes the adapter drained on open reach the engine, which reports them as transport_notes.
             drained_bytes = property(lambda self: getattr(handle, 'drained_bytes', 0))
         return Recorder()

@@ -87,7 +87,7 @@ print(json.dumps({'_exit': 0}))
             image[offset + 1:offset + size] = bytes([i + 1]) * (size - 1)
         return bytes(image)
 
-    def _esp_fake_sh(self, commands, image, app_seen=None, fuses=(0, "SPI_BOOT_CRYPT_CNT = Disable\nSECURE_BOOT_EN = False\n")):
+    def _esp_fake_sh(self, commands, image, app_seen=None, fuses=(0, "SPI_BOOT_CRYPT_CNT = Disable\nSECURE_BOOT_EN = False\n"), convert_ok=True):
         def fake_sh(cmd, cwd=None, env=None, timeout=900):
             commands.append(cmd)
             if "chip-id" in cmd:
@@ -100,6 +100,8 @@ print(json.dumps({'_exit': 0}))
             if any(str(c).endswith("esp_image_to_elf.py") for c in cmd):
                 if app_seen is not None:
                     app_seen.append(Path(cmd[-2]).read_bytes())
+                if not convert_ok:
+                    return 1, "", "conversion failed"
                 Path(cmd[-1]).write_bytes(b"\x7fELF")
                 return 0, "", ""
             return 0, "", ""
@@ -168,6 +170,84 @@ print(json.dumps({'_exit': 0}))
                             self.assertEqual(commands[-1][commands[-1].index("--before") + 1], "no-reset")
                     else:
                         self.assertFalse(any("hard-reset" in c for c in commands))
+
+    @staticmethod
+    def _raw_table_image(entries, size=0x30000):
+        """Dump with a partition table at 0x8000; entries are (type, subtype, offset, size), taken as given."""
+        import struct
+        image = bytearray(b"\xff" * size)
+        for i, (kind, sub, offset, length) in enumerate(entries):
+            at = 0x8000 + 32 * i
+            image[at:at + 32] = b"\xaa\x50" + struct.pack("<BBII", kind, sub, offset, length) + b"x".ljust(16, b"\0") + b"\0" * 4
+        for kind, sub, offset, length in entries:
+            if kind == 0 and 0 < length and offset + length <= size:
+                image[offset:offset + length] = bytes([sub + 1]) * length
+        return bytes(image)
+
+    def test_esp_flash_carving_bounds_and_selection(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        cases = {
+            "entry beyond the dump": (self._raw_table_image([(0, 0x00, 0x2FF00, 0x1000)]), None),
+            "dump shorter than the table": (b"\xff" * 0x8010, None),
+            "zero-size entry skipped": (self._raw_table_image([(0, 0x00, 0x10000, 0), (0, 0x10, 0x20000, 0x40)]), (0x20000, 0x40)),
+            "only an ota entry": (self._raw_table_image([(1, 0x02, 0x9000, 0x100), (0, 0x10, 0x20000, 0x80)]), (0x20000, 0x80)),
+            "bad factory, valid ota_0": (self._raw_table_image([(0, 0x00, 0x2FF00, 0x1000), (0, 0x10, 0x20000, 0x80)]), (0x20000, 0x80)),
+        }
+        for name, (image, want) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temp:
+                seen = []
+                with patch.object(core, "sh", self._esp_fake_sh([], image, seen)):
+                    result = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake", "backend": "esp32"})
+                acquire = Path(temp) / "acquire"
+                if want is None:
+                    self.assertFalse(result["available"], result)
+                    self.assertEqual(result["_exit"], 1)
+                    self.assertEqual((acquire / "flash.bin").read_bytes(), image)
+                    self.assertEqual(result["raw_flash"], str((acquire / "flash.bin").resolve()))
+                    self.assertEqual(seen, [])
+                else:
+                    self.assertTrue(result["available"], result)
+                    self.assertEqual(seen, [image[want[0]:want[0] + want[1]]])
+
+    def test_esp_flash_resets_even_when_a_local_write_fails_after_contact(self):
+        import builtins
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        real_open = builtins.open
+        def failing_open(path, *args, **kwargs):
+            if str(path).endswith("efuse.txt"):
+                raise OSError("disk full")
+            return real_open(path, *args, **kwargs)
+        commands = []
+        image = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
+        with tempfile.TemporaryDirectory() as temp, patch.object(core, "sh", self._esp_fake_sh(commands, image)), \
+                patch("builtins.open", failing_open):
+            result = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake", "backend": "esp32", "allow_reset": True})
+        self.assertFalse(result.get("available"), result)
+        self.assertIn("hard-reset", commands[-1])
+        self.assertIn("chip-id", commands[-1])
+
+    def test_esp_flash_binary_fallback_is_named_as_a_binary_not_an_elf(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        image = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(core, "sh", self._esp_fake_sh([], image, convert_ok=False)):
+                flash = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake", "backend": "esp32"})
+                self.assertTrue(flash["available"], flash)
+                self.assertTrue(flash["interpret_input"].endswith("interpret-input.bin"))
+                self.assertEqual(Path(flash["interpret_input"]).read_bytes(), image[0x10000:0x10100])
+            with tempfile.TemporaryDirectory() as other, patch.object(core, "sh", self._esp_fake_sh([], image, convert_ok=False)):
+                result = call_tool("acquire_classify", {"run_dir": other, "port": "/dev/cu.fake", "flash_backend": "esp32"})
+                self.assertEqual(result["device_class"], 1, result)
+                self.assertTrue(result["interpret_input"].endswith("interpret-input.bin"))
+                self.assertNotIn("elf", result["inputs_for_interpret"])
+                self.assertEqual(result["inputs_for_interpret"], {"image.bin": result["interpret_input"]})
+                self.assertEqual(result["front_end"], "interpret-firmware-binary")
 
     def test_classify_forwards_the_grant_and_reports_the_interpret_input(self):
         from unittest.mock import patch

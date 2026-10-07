@@ -14,9 +14,9 @@
 
   Their per-stage checks become truth-free.
 
-**Tech stack:** Python 3.11+, sqlite3, pytest/unittest. Run tests with the main venv from the worktree root:
-`PYTHONPATH=$PWD/src /Users/cberg/Research/generative-driver/.venv/bin/python -m pytest -q`
-Known pre-existing failure: the `test_dashboard` CLI test, because the editable install points at the main checkout.
+**Tech stack:** Python 3.11+, sqlite3, unittest (pytest is not installed). Run tests with the main venv from the worktree root:
+`env -u GD_TEST_WHEEL -u GD_TEST_SDIST PYTHONPATH="$PWD/src" /Users/cberg/Research/generative-driver/.venv/bin/python -m unittest discover -s tests`
+Single module: `... -m unittest tests.test_configurator -q`. Baseline at `5c842b2`: 518 tests, OK, 3 skips (archive gates).
 
 **Spec:** `docs/superpowers/specs/2026-10-07-assistive-configurator.md`
 

@@ -245,6 +245,22 @@ class CliTests(unittest.TestCase):
             self.assertTrue(Path(report["home"]).is_absolute())
             self.assertEqual(list(Path(temp).iterdir()), [])
 
+    def test_doctor_lists_serial_ports_by_usb_identity(self):
+        import types
+        from unittest.mock import patch
+        from generative_driver.setup import doctor
+        listing = types.ModuleType("serial.tools.list_ports")
+        listing.comports = lambda: [types.SimpleNamespace(device="/dev/cu.usbserial-11140", vid=0x10C4, pid=0xEA60,
+                                                          serial_number="abc", description="CP2102N")]
+        tools = types.ModuleType("serial.tools"); tools.list_ports = listing
+        serial = types.ModuleType("serial"); serial.tools = tools
+        with tempfile.TemporaryDirectory() as home, \
+             patch.dict(sys.modules, {"serial": serial, "serial.tools": tools, "serial.tools.list_ports": listing}):
+            report = doctor(home)
+        self.assertEqual(report["serial_ports"], [{"device": "/dev/cu.usbserial-11140", "vendor_id": 0x10C4,
+            "product_id": 0xEA60, "serial_number": "abc", "description": "CP2102N"}])
+        self.assertTrue(report["serial_ports_available"])
+
 
 if __name__ == "__main__":
     unittest.main()

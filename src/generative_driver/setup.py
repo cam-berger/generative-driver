@@ -114,7 +114,16 @@ def doctor(home=None):
             dependencies[name].update(available=bool(located), path=located, source="configuration",
                                       model=selection.get("model"), provider=selection.get("provider"),
                                       version=selection.get("version"))
+    try:
+        from serial.tools import list_ports
+        serial_ports = [{"device": p.device, "vendor_id": p.vid, "product_id": p.pid,
+                         "serial_number": p.serial_number, "description": p.description}
+                        for p in list_ports.comports() if p.vid is not None]
+        ports_available = True
+    except ImportError:
+        serial_ports, ports_available = [], False
     return {"core": {"ok": sys.version_info >= (3, 11), "python": platform.python_version(),
                      "platform": platform.platform(), "executable": sys.executable},
             "home": str(home_path(home)),
-            "dependencies": dependencies}
+            "dependencies": dependencies,
+            "serial_ports": serial_ports, "serial_ports_available": ports_available}

@@ -16,7 +16,7 @@ The core targets native macOS and Windows 11 or newer. The development machine i
 | Model schema 1 | Register model with conversion code | I2C live; SPI recorded capture |
 | Model schema 2 | Experimental command evidence from firmware | Static collection/validation; not directly executable |
 | Model schemas 3–6 | Executable operations, frames and typed decoding | Capability depends on selected schema and transport |
-| UART / TCP | Serial transport / socket transport | pyserial / Python standard library |
+| UART / TCP | Serial transport (identity binding; reset-on-open devices need the `reset` grant) / socket transport | pyserial / Python standard library |
 | USB execution | Control, bulk and interrupt transfers | PyUSB/libusb; device-specific qualification still required |
 | I2C / SPI execution | Bridge-backed transfers for executable models | PyFtdi/libusb |
 | Ground / reuse | Case-specific independent gates; fresh reuse is the endpoint | Generic runs block when the required evidence adapter is unavailable |

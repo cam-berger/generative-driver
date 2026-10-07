@@ -43,6 +43,8 @@ Optional Python packages support serial ports, USB, FTDI bridges, ESP acquisitio
 
 Supply a concrete operator binding and effect grants with the objective. Use an explicit serial endpoint, USB identity or FTDI adapter URL; automatic discovery alone does not establish which device is authorized. Read access is the default. Generated packages preserve operation effects and validate their declared interface before execution.
 
+Bind a UART by USB identity, copied from `serial_ports` in `doctor`: `{"vendor_id": 4292, "product_id": 60000, "serial_number": "..."}`. It resolves to the current port at each run; no match, or several matches without a `serial_number`, is an operator fault. Effect grants are `read`, `write`, `actuate` and `reset`. Some boards restart when the port opens (ESP32 on common USB bridges): acquisition listens first, and unsolicited output within 500 ms marks the binding as resetting on open. Such a binding requires the `reset` grant before any connection, and ESP flash acquisition resets the chip only with it.
+
 For noninteractive Codex workers, explicitly approve the assigned runtime tools for that run. A device run uses `scoped_tool_approval: "bound-device"` alongside its selected `binding` and `effects`; the TQ9 benchmark uses `"emulator"`. The configurator permits only the assigned tool names and enforces the saved binding and effects. Without approval, the runtime can stop before invoking a tool. Resume an already selected device run with `resume RUN_ID --approve-bound-device-tools`, or an emulator run with `--approve-emulator-tools`. The equivalent `driver_resume` input is `scoped_tool_approval`. These settings do not alter the developer's global Codex configuration.
 
 ## Recovery

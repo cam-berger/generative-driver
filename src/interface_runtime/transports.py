@@ -604,7 +604,7 @@ def validate_binding(channel, binding):
     """Check the operator's binding for a channel without opening anything. A malformed binding fails with code
     `binding`: only the operator can fix it, so it never counts against the model."""
     validate_channel(channel)
-    if channel['type'] == 'uart' and 'port' not in binding:
+    if channel['type'] == 'uart' and isinstance(binding, dict) and 'port' not in binding:
         try:
             _fields(binding, ['vendor_id','product_id','serial_number'], ['vendor_id','product_id'], 'binding')
             for key in ('vendor_id','product_id'):

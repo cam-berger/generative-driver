@@ -4,7 +4,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from interface_runtime.transports import TransportError, open_transport, resolve_serial_port
+from interface_runtime.transports import TransportError, open_transport, resolve_serial_port, validate_binding
 
 CHANNEL = {"type": "uart", "baudrate": 115200}
 
@@ -90,6 +90,18 @@ class SerialTransportTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "boot_timeout")
         self.assertIn("discarded", str(raised.exception))
         transport.close()
+
+    def test_binding_validation(self):
+        bad = [None, 5, {"vendor_id": 70000, "product_id": 1}, {"vendor_id": 1},
+               {"vendor_id": 1, "product_id": 2, "serial_number": 123},
+               {"vendor_id": 1, "product_id": 2, "extra": 1}]
+        for binding in bad:
+            with self.subTest(binding=binding):
+                with self.assertRaises(TransportError) as raised:
+                    validate_binding(CHANNEL, binding)
+                self.assertEqual((raised.exception.code, raised.exception.fault), ("binding", "operator"))
+        validate_binding(CHANNEL, {"port": "/dev/cu.x"})
+        validate_binding(CHANNEL, {"vendor_id": 0x10C4, "product_id": 0xEA60, "serial_number": "abc"})
 
 
 if __name__ == "__main__":

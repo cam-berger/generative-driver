@@ -732,8 +732,14 @@ class Session:
             factory = open_transport
         self.transport = factory(model["channel"], {} if self.binding is None else dict(self.binding))
         boot = model["channel"].get("boot")
+        # Bytes discarded on open (adapter drain, boot wait) are reported once, on the first result.
+        self.pending_drained += self._count(getattr(self.transport, "drained_bytes", 0))
         if boot and hasattr(self.transport, "wait_boot"):
-            self.pending_drained += self.transport.wait_boot(boot["line_prefix"], boot["timeout_ms"])
+            self.pending_drained += self._count(self.transport.wait_boot(boot["line_prefix"], boot["timeout_ms"]))
+
+    @staticmethod
+    def _count(value):
+        return value if type(value) is int and value > 0 else 0
 
     def close(self):
         transport, self.transport = self.transport, None
@@ -745,6 +751,7 @@ class Session:
                   "outputs": {}, "units": {}, "identity_verified": False, "transcript": []}
         transport = None
         transport_open_attempted = False
+        validated = False
         try:
             # Snapshot declarative inputs before validation to avoid model mutation
             # by a caller or injected transport during an active transaction.
@@ -764,6 +771,7 @@ class Session:
             _require(binding is None or type(binding) is dict, "binding", "binding must be object", Fault.OPERATOR)
             _require(delay_fn is None or callable(delay_fn), "delay_fn", "delay_fn must be callable or None", Fault.OPERATOR)
             delay = time.sleep if delay_fn is None else delay_fn
+            validated = True
             transport_open_attempted = self.transport is not None
             if self.transport is None:
                 transport_open_attempted = True
@@ -771,9 +779,7 @@ class Session:
             transport = self.transport
             # Bytes an adapter discarded on open (stale replies to an abandoned transaction) are reported,
             # never silently absorbed; absent means nothing was discarded or the adapter does not drain.
-            drained = getattr(transport, "drained_bytes", 0)
-            drained = (drained if type(drained) is int and drained > 0 else 0) + self.pending_drained
-            self.pending_drained = 0
+            drained, self.pending_drained = self.pending_drained, 0
             if drained:
                 result["transport_notes"] = {"drained_bytes": drained}
 
@@ -840,7 +846,7 @@ class Session:
                 result['error']['fault'] = classify_failure(result)
             else:
                 result['error']['fault'] = Fault.MODEL.value if isinstance(exc, UnicodeError) else Fault.HOST.value
-            if self.transport is not None:
+            if validated and self.transport is not None:
                 try:
                     self.close()
                 except Exception:

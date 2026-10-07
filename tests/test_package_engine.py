@@ -436,6 +436,31 @@ def test_session_validation_failure_never_opens(model):
     assert not result["ok"] and result["transport_open_attempted"] is False and not boundary.opened
 
 
+def test_session_reports_open_drain_only_on_first_result(model):
+    from interface_runtime.engine import Session
+    boundary = Boundary([(b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:21.5\n"),
+                         (b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:22.0\n")])
+    boundary.drained_bytes = 5
+    with Session(model, binding={}, transport_factory=boundary.factory) as session:
+        first, second = session.execute("measure"), session.execute("measure")
+    assert first["transport_notes"] == {"drained_bytes": 5} and "transport_notes" not in second
+
+
+def test_session_validation_refusal_leaves_open_transport_open(model):
+    from interface_runtime.engine import Session
+    opens = []
+    boundary = Boundary([(b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:21.5\n"),
+                         (b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:22.0\n")])
+    def factory(channel, binding):
+        opens.append(1); return boundary.factory(channel, binding)
+    with Session(model, binding={}, transport_factory=factory) as session:
+        assert session.execute("measure")["ok"]
+        refused = session.execute("missing")
+        assert not refused["ok"] and not boundary.closed
+        assert session.execute("measure")["outputs"] == {"temperature": 22.0}
+    assert len(opens) == 1 and boundary.closed
+
+
 class EngineTests(unittest.TestCase):
     pass
 

@@ -116,11 +116,12 @@ def doctor(home=None):
                                       version=selection.get("version"))
     try:
         from serial.tools import list_ports
+        ports = list_ports.comports()
         serial_ports = [{"device": p.device, "vendor_id": p.vid, "product_id": p.pid,
                          "serial_number": p.serial_number, "description": p.description}
-                        for p in list_ports.comports() if p.vid is not None]
+                        for p in ports if p.vid is not None]
         ports_available = True
-    except ImportError:
+    except (ImportError, OSError):
         serial_ports, ports_available = [], False
     return {"core": {"ok": sys.version_info >= (3, 11), "python": platform.python_version(),
                      "platform": platform.platform(), "executable": sys.executable},

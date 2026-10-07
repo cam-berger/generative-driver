@@ -242,6 +242,26 @@ class _Stream(_Handle):
         if len(data) > size:
             _fail('oversized stream read', 'io')
         return data
+    def wait_boot(self, line_prefix, timeout_ms):
+        """Discard input through the first line starting with line_prefix; return the discarded byte count."""
+        deadline = time.monotonic() + timeout_ms / 1000
+        prefix = line_prefix.encode('utf-8')
+        discarded = 0
+        while True:
+            while b'\n' in self.buffer:
+                end = self.buffer.index(b'\n') + 1
+                line = bytes(self.buffer[:end]).rstrip(b'\r\n')
+                del self.buffer[:end]
+                discarded += end
+                if line.startswith(prefix):
+                    return discarded
+            try:
+                self.buffer += self._read(4096, deadline)
+            except TransportError as exc:
+                if exc.code != 'timeout':
+                    raise
+                raise TransportError('boot_timeout', f'no boot line after {timeout_ms} ms; '
+                                     f'discarded {discarded + len(self.buffer)} bytes') from None
     def _line_end(self, rx, bound):
         """Byte count through the first complete line satisfying rx['end'], else None.
         Framing violations and bound overruns fail the transaction."""
@@ -584,6 +604,16 @@ def validate_binding(channel, binding):
     """Check the operator's binding for a channel without opening anything. A malformed binding fails with code
     `binding`: only the operator can fix it, so it never counts against the model."""
     validate_channel(channel)
+    if channel['type'] == 'uart' and 'port' not in binding:
+        try:
+            _fields(binding, ['vendor_id','product_id','serial_number'], ['vendor_id','product_id'], 'binding')
+            for key in ('vendor_id','product_id'):
+                _integer(binding[key], 0, 65535, key)
+            if 'serial_number' in binding:
+                _string(binding['serial_number'], 'serial_number')
+        except TransportError as exc:
+            raise TransportError('binding', str(exc), Fault.OPERATOR) from None
+        return
     fields = {'uart': (['port'], ['port']), 'tcp': (['host','port'], ['host','port']),
               'i2c': (['url'], ['url']), 'spi': (['url'], ['url']),
               'usb': (['vendor_id','product_id','serial_number','allow_set_configuration','allow_detach_kernel_driver'], ['vendor_id','product_id'])}
@@ -614,6 +644,22 @@ def _binding(kind, binding, allowed, required):
                 _fail(f'{key} must be boolean')
 
 
+def resolve_serial_port(binding, ports=None):
+    """Current OS path for a UART binding; identity bindings survive a replug that renames the port."""
+    if 'port' in binding:
+        return binding['port']
+    if ports is None:
+        list_ports = _dependency('serial.tools.list_ports')
+        ports = list_ports.comports()
+    matches = [p for p in ports if p.vid == binding['vendor_id'] and p.pid == binding['product_id']
+               and ('serial_number' not in binding or p.serial_number == binding['serial_number'])]
+    if len(matches) != 1:
+        what = 'no serial port' if not matches else f'{len(matches)} serial ports'
+        raise TransportError('binding', f'{what} match vendor {binding["vendor_id"]:#06x} product '
+                             f'{binding["product_id"]:#06x}; supply serial_number or check the cable', Fault.OPERATOR)
+    return matches[0].device
+
+
 def open_transport(channel, binding):
     validate_binding(channel, binding)
     kind = channel['type']
@@ -622,7 +668,20 @@ def open_transport(channel, binding):
             return _Stream(socket.create_connection((binding['host'], binding['port']), timeout=5), 'tcp')
         if kind == 'uart':
             serial = _dependency('serial')
-            return _Stream(serial.Serial(port=binding['port'], baudrate=channel['baudrate'], bytesize=channel.get('bytesize',8), parity=channel.get('parity','N'), stopbits=channel.get('stopbits',1), timeout=0, write_timeout=0), 'uart')
+            handle = serial.Serial()
+            handle.port = resolve_serial_port(binding)
+            handle.baudrate = channel['baudrate']
+            handle.bytesize = channel.get('bytesize', 8)
+            handle.parity = channel.get('parity', 'N')
+            handle.stopbits = channel.get('stopbits', 1)
+            handle.timeout = 0
+            handle.write_timeout = 0
+            # Released lines keep common auto-reset bridges from pulsing EN; some hosts pulse anyway.
+            handle.dtr = False
+            handle.rts = False
+            handle.open()
+            handle.reset_input_buffer()
+            return _Stream(handle, 'uart')
         if kind == 'usb':
             return _USB(channel, binding)
         return _FTDI(channel, binding)

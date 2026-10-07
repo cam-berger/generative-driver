@@ -127,6 +127,15 @@ def binding_identity(binding):
     raise ValueError('Unsupported binding shape; use host/port, serial port, FTDI url, or USB vendor_id/product_id')
 
 
+def _is_serial_binding(binding):
+    """A serial binding names a port string or a USB vendor/product identity."""
+    if not isinstance(binding, dict):
+        return False
+    if isinstance(binding.get('port'), str) and binding['port'].strip():
+        return True
+    return type(binding.get('vendor_id')) is int and type(binding.get('product_id')) is int
+
+
 def _model_channel(name, arguments):
     model_dir = arguments.get('model_dir')
     path = Path(model_dir)/'model.json' if model_dir else Path(arguments['package_dir'])/'driver/model.json'
@@ -1251,27 +1260,6 @@ class Controller:
         arguments = dict(params.get('arguments', {}))
         if {'run_dir','binding','allow_effects','bus_url','allow_reset','port'} & arguments.keys():
             raise ValueError('Connection, output directory and effect grants are configurator-owned')
-        serial_tool = name in ('acquire_serial_listen','acquire_classify','acquire_flash')
-        model_channel = None
-        if name in ('probe_run','interface_execute','emit_test_live') and not arguments.get('replay'):
-            model_channel = _model_channel(name, arguments)
-        if serial_tool or (model_channel or {}).get('type') == 'uart':
-            binding = assignment.get('binding') or {}
-            if not binding:
-                raise ValueError('No operator-owned device binding for this stage')
-            granted = 'reset' in assignment['effects']
-            state = self._binding_state(run['id'])
-            if name != 'acquire_serial_listen' and not state['listened'] and not granted:
-                raise ValueError('Listen to the bound serial device first, or supply a reset grant')
-            if state['resets_on_open'] and not granted:
-                raise ValueError('The bound device resets when opened; this connection requires a reset grant')
-            if model_channel is not None and state['resets_on_open'] and not model_channel.get('resets_on_open'):
-                raise ValueError('The model omits resets_on_open although this run observed the device reset on open')
-            if serial_tool:
-                from interface_runtime.transports import resolve_serial_port
-                arguments['port'] = resolve_serial_port(binding)
-                if name != 'acquire_serial_listen':
-                    arguments['allow_reset'] = granted
         workspace = Path(evaluator_workspace or assignment['workspace'])
         from .toolkit import _PATH_ARGUMENTS
         for key in _PATH_ARGUMENTS & arguments.keys():
@@ -1284,6 +1272,29 @@ class Controller:
         if 'inputs' in arguments:
             if not isinstance(arguments['inputs'],dict) or any(not isinstance(p,str) or not Path(p).is_absolute() or not Path(p).resolve().is_relative_to(workspace) for p in arguments['inputs'].values()):
                 raise ValueError('Every tool input must be inside this stage workspace')
+        binding = assignment.get('binding') or {}
+        serial_binding = _is_serial_binding(binding)
+        serial_tool = name in ('acquire_serial_listen','acquire_flash') or (name == 'acquire_classify' and serial_binding)
+        model_tool = name in ('probe_run','interface_execute','emit_test_live') and not arguments.get('replay')
+        if name in ('acquire_serial_listen','acquire_flash') and not serial_binding:
+            raise ValueError('No operator-owned serial binding for this stage')
+        if serial_binding and (serial_tool or model_tool):
+            model_channel = _model_channel(name, arguments) if model_tool else None
+            granted = 'reset' in assignment['effects']
+            state = self._binding_state(run['id'])
+            if name != 'acquire_serial_listen' and not state['listened'] and not granted:
+                raise ValueError('Listen to the bound serial device first, or supply a reset grant')
+            if state['resets_on_open'] and not granted:
+                raise ValueError('The bound device resets when opened; this connection requires a reset grant')
+            if model_channel is not None and state['resets_on_open'] and not model_channel.get('resets_on_open'):
+                if model_channel.get('type') == 'uart':
+                    raise ValueError('The model omits resets_on_open although this run observed the device reset on open')
+                raise ValueError('The model channel is not declared as resetting although this run observed the device reset on open')
+            if serial_tool:
+                from interface_runtime.transports import resolve_serial_port
+                arguments['port'] = resolve_serial_port(binding)
+                if name != 'acquire_serial_listen':
+                    arguments['allow_reset'] = granted
         arguments['run_dir'] = str(workspace / 'tools')
         connected = name in ('probe_run','interface_execute','emit_test_live','benchmark_package_execute') and not arguments.get('replay')
         if connected:

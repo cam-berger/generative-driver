@@ -62,13 +62,10 @@ Read the entries for your task.
    - `agents.execute` 'blocked / Cannot start configured runtime' → operator stop.
    - 'failed / exited with an error' → host stop.
    - 'failed / no structured report' or 'schema mismatch' → advance with notes.
-3. **Instrument observations stay worker-visible and ungraded.** Diagnostic stimulus and grading by the evaluator are removed from probe.
-4. **Emulator recipe.** The device provider gets a recipe-only accessor. The evaluator contracts stay inside `finalize` and `score`.
-   - The truth envelope still holds the recipe, so the configurator process decrypts it to start the emulator.
-   - Splitting the envelope needs a rekey, an evaluator version bump and fresh calibration. That is follow-up work.
-   - Docs must state this honestly.
+3. **Device readings are device evidence.** Instrument (monitor) readings of the emulated device stay visible to workers, as any real device's readings would be, and are never graded during the run. Diagnostic stimulus and grading by the evaluator are removed from probe. (User, 2026-10-07: "wouldn't a normal device be visible?")
+4. **The configurator takes no part in truth or emulator decryption** (user direction, 2026-10-07). The configurator is the main coordinating agent. The benchmark harness plays the operator: it decrypts what it needs, starts, owns and recovers the emulator, and hands the configurator a device binding plus a narrow device-control handle that exposes no truth. A separate evaluator grades the frozen driver after the run. The run spec carries no password. Part B is being re-planned around this; until then, Part A must not add any new truth or password use to the configurator. Workers reading files outside their workspace is accepted until a real sandbox exists; docs must not claim isolation.
 5. **Legacy cases (`tq9`, `bme280`)** follow the same adapter interface: truth-free stage checks, grading in `finalize`. Where a legacy stage depended on evaluator-only state, the stage hands off what the worker produced, plus notes.
-6. **Unscored final.** A host or operator fault during finalize records `equivalence.equivalent = null` (`unscored`) and stops as `host`/`operator` with `next_stage = "finalize"`. Resume grades once.
+6. **Unscored final.** For generic runs, a host or operator fault while computing self-evidence stops as `host`/`operator` with `next_stage = "finalize"`, and resume computes it once. For benchmark runs, an unscored grade is a harness state (an event); it never stops the configurator run.
 7. **Generic final verdict is self-evidence.** `equivalent` is true when:
    - the emitted package passed `emit_check` replay of the recorded device exchanges;
    - and every fresh-reuse live operation succeeded.
@@ -182,7 +179,7 @@ Read the entries for your task.
 **Behaviour:**
 - After the stage queue empties, `progress.next_stage = "finalize"` is persisted, then `_finalize(run_id)` runs:
   - **Generic:** self-evidence verdict (Ruling 7).
-  - **Benchmark:** calls `benchmark.finalize`, added in B2. Until B2 lands, benchmark runs keep the current final path. B2 switches them.
+  - **Benchmark (`spec.case`):** do not call any evaluator. Leave the existing benchmark final path untouched until Part B. Part B (B5) replaces it: the run completes with `progress.equivalence = "pending"`, and the bench harness posts the verdict later through `record_evaluation`. Design `_finalize` so a pending branch can be added without restructuring.
 - The verdict is recorded in `verdicts` with id `f"{run_id}:final"` and payload:
   ```
   {stage: "finalize", equivalence: {equivalent: bool|None, basis, checks, diff}, protocol}
@@ -205,112 +202,293 @@ Read the entries for your task.
 
 - [ ] Failing tests → implement → full suite → commit.
 
-## Part B: benchmark adapters
+## Part B: benchmark adapters and the bench harness
 
-### Task B1: truth-free v2 emulated stage checks and preparation
+Design source: `/private/tmp/claude-501/-Users-cberg-Research-generative-driver--claude-worktrees-goose-new-device-trial-5c6f78/7370e2b2-589f-4122-9562-5ac716afd378/scratchpad/provider.json`.
+- `designs[1]` is the clean design: roles, interfaces, lifecycle, recovery, grading, sealing, suites and old protocol, with file:line sites at `52eb018`.
+- `maps[0..2]` map emulator ownership, harness entry points and evaluator identity.
 
-**Files:** `benchmark_support/emulated.py`, `ground.py`, `candidate_context.py`, `behavior.py` (only stop exporting `project_feedback` to the loop), `emulated_recovery.py`, `benchmark.py` (`check_stage` → renamed or kept as truth-free `observe_stage`; stop writing truth `stage_verdicts`), `configurator.py` (`_check` for cases, the `_evaluator_operation` wrapper, `_tool` uncertain marking for pre-I/O refusals), tests (`maps[4]`).
+Find sites by function name, because line numbers drift as Part A changes.
+
+**Simplification of the source design (ruling).** The bench operator, device provider and evaluator are one harness process per trial or suite, not three. Reasons:
+- The harness plays the operator, and the operator may hold the password.
+- Splitting the provider out of the password holder is a later hardening step.
+
+The evaluator runs inside the harness, after the configurator run is terminal, on a fresh emulator it owns.
+
+**Process roles:**
+- **Configurator daemon.** Coordinates stages and workers, and owns grants, uncertainty, leases, notes and handoffs.
+  - It holds a device descriptor: binding, control endpoint file, image sha and instrument units.
+  - It holds the sha256 of an evaluation token.
+  - It never holds a password or password path, the recipe, contracts, drafts, or a grade before its run ends.
+  - It imports nothing that decrypts truth.
+- **Bench harness** (`benchmark_support/harness.py`, `python -m generative_driver.benchmark_support.harness`). One detached process, launched like `client.py`:
+  - an argv list, with `start_new_session` on POSIX or `DETACHED_PROCESS` on Windows;
+  - password file paths arrive on stdin and are never written to disk.
+
+  It does the following, in order:
+  1. admits the case (`require_calibration`);
+  2. projects the recipe;
+  3. starts and owns the emulator, and serves a control endpoint (`multiprocessing.connection` with an authkey, AF_UNIX/AF_PIPE as in `daemon.py`; endpoint file 0600);
+  4. starts the configurator run with the descriptor;
+  5. waits as a reconnecting client;
+  6. confirms the emulator has stopped;
+  7. grades once on a fresh emulator (via `reference_execute`);
+  8. seals the evidence;
+  9. posts the verdict with `record_evaluation`.
+
+  Its state lives under a bench home that is a sibling of the configurator home, never inside it.
+
+### Task B1: truth-free v2 stage observation; no evaluator in the stage loop
+
+The device stays in-process for this task. It moves out in B3.
+
+**Files:** `benchmark_support/emulated.py`, `ground.py`, `candidate_context.py`, `emulated_recovery.py`, `benchmark.py` (replace `check_stage` with `observe_stage`, returning Part A's `checked` contract: `artifacts`, `checks` as notes, `device_diff`, optional `stop`), `configurator.py` (case `_check` path and `_adapter_verdict` interim), `agents.py` `STAGE_BOUNDARY`, `_toolchain/interpret.py` repair prompt, tests.
 
 **Behaviour:**
 - **Probe:**
-  - `_diagnose` no longer runs.
-  - Checks are structural: capabilities present, valid JSON, `validate_capabilities` against the model, model hash unchanged. Failures are notes; a changed model is an integrity stop.
-  - `device_diff` comes only from the worker's own observed tool results in this assignment: failed `interface_execute`/`probe_run` results and `probe_diff` defects.
-  - The handoff contains the worker's successful `probe_run` outputs (from configurator-observed tool events), `capabilities.json` and the adapted model.
+  - `_diagnose` is never called;
+  - structural notes: capabilities presence, valid JSON and `validate_capabilities`;
+  - a changed adapted model → `IntegrityError`;
+  - the handoff contains the worker's observed probe artifacts (from `tool.finished` artifacts of this assignment), `capabilities.json`, the adapted model and the live-observation journal;
+  - `device_diff` uses Part A's helper over this assignment's failed observed runtime results and `probe_diff` defects.
 - **Ground:**
-  - preparation provides the model, the worker probe records and the worker's live observation journal, with no graded projections;
-  - tools: `interface_execute`, `probe_run`, `probe_diff`, `model_validate` over the emulator binding;
-  - the check is structural; the diff is the same as for probe.
-- **Emit:**
-  - uses the latest worker probe if one succeeded; otherwise emit runs with the model only and a note;
-  - an `emit_check` failure is a note;
-  - the package hash is recorded in state as today.
-- **Reuse:**
-  - preparation is unchanged except for wording;
-  - the check records mission events only: no `_final`, no truth mission predicate;
-  - no package → skip with a note.
+  - preparation provides the model, the worker probes and the instrument journal, with no graded projections;
+  - tools: `interface_execute`, `probe_run`, `probe_diff` and `model_validate` over the emulator binding.
+- **Emit:** uses the latest worker `interface-probe/1`; if there is none, it uses the model only, with a note.
+- **Reuse:** the mission predicate becomes a note only, with no `_final`.
 - **Interpret:**
-  - qualification stays as a truth-free self-consistency note, never a stop;
-  - repair sources contain only the device diff and the previous candidate's own files. No graded feedback, and no `remember` of evaluator probes or graded feedback.
-- **Recovery:** `emulated_recovery.reconcile` keeps emulator replacement and the uncertainty discipline. It returns a device diff instead of committing a route itself. Its feedback carries no graded data.
-- **`_evaluator_operation`:**
-  - wrap `invoke()` in try/finally so that a raise before any device effect clears the pending row;
-  - an emulator start in probe preparation is labelled actor `device_provider`, name `emulator_start`, not `benchmark_evaluate`.
-- **Pre-I/O refusals** (digest or binding mismatch) inside adapter dispatch do not leave the run uncertain.
-- **Worker-facing text:** update `STAGE_BOUNDARY` (`agents.py`), the interpret repair prompt (`_toolchain/interpret.py` around 313-318), the `benchmark_package_execute` description, the v2 probe and reuse objectives, and the `REPAIR_CONTEXT` evidence_policy. Drop any promise of evaluator diagnostics. Name instrument observations as device evidence.
+  - qualification and validation are notes;
+  - repair sources hold only the device diff plus the previous candidate's own files (no graded feedback, no evaluator probes).
+- `benchmark.check_stage` no longer writes truth `stage_verdicts`.
+- `reconcile` returns a device diff and no longer commits a route by itself. Part A2's atomic accept-and-revise commits it. Its emulator replacement and uncertainty discipline stay.
+- Worker-facing wording drops every promise of evaluator diagnostics and names instrument readings as device evidence:
+  - `STAGE_BOUNDARY`;
+  - the interpret repair prompt;
+  - the `benchmark_package_execute` description;
+  - the v2 probe and reuse objectives;
+  - the `REPAIR_CONTEXT` `evidence_policy`;
+  - `bench/README.md:49`.
 
 **Tests:**
-- A v2 probe check with a scripted worker produces no evaluator call (assert `_diagnose` and `truth_for_case` are not invoked during the stage loop, via mock).
-- The probe handoff includes worker probes.
-- Ground receives no file containing `passed`/`expected` keys from a grade.
-- Repair DEFECTS.json contains only the device diff.
-- An `_evaluator_operation` raise clears uncertainty.
-- Rewrite the tests in `maps[4]` that asserted diagnostic routing or blocking.
+- Mocks prove that neither `_diagnose`, `_final` nor `truth_for_case` is called from any stage preparation or observation except emulator start (which B3 removes).
+- The probe handoff includes the worker probes.
+- Ground inputs contain no grade fields.
+- Repair `DEFECTS.json` holds only the device diff.
+- Rewrite the tests in `understand.json` `maps[4]` that asserted diagnostic routing or blocking. Keep the safety assertions verbatim.
 
 - [ ] Failing tests → implement → full suite → commit.
 
-### Task B2: single final evaluation through `benchmark.finalize`
+### Task B2: instruments and an in-process device provider
 
-**Files:** `benchmark.py` (new `finalize(case_id, run_dir, accepted, options)`), `emulated.py`/`emulated_evidence.py` (adapter `finalize`: mission acceptance over the evaluator-only package event journal, then `_final`; sealing), `registry.py` adapter interface, `configurator.py` (`_finalize` benchmark branch under `_evaluator_operation`, before sealing and cleanup), tests.
+**Files:** new `benchmark_support/instruments.py` (`family_for` and `public_observation` moved from `emulated.py`), new `benchmark_support/device_provider.py` (class `DeviceProvider(case_id, image, recipe, renode, private_dir)`), tests.
 
 **Behaviour:**
-- After reuse, the configurator calls `benchmark.finalize` once. It returns `equivalence {equivalent, basis: "evaluator", checks: [{id, passed}], diff: sanitized summary}`.
-- The raw records and diff stay in the encrypted draft and the sealed evidence.
-- The public summary contains check ids and pass state only, and only after the run's stages are over.
-- `equivalent` requires the frozen final behaviour to pass. The fresh-mission result is recorded as a separate check.
-- A missing package → `equivalent: false`, reason "no driver emitted". It is never a stop.
-- A host fault → `null`/unscored per Ruling 6.
-- Sealing (`emulated_evidence.finalize`) includes handoffs, notes hashes and the single final evaluation.
-- The run completes regardless of the verdict.
-- Old terminal-final-failure handling remains only for old-protocol records.
+- `DeviceProvider` is constructed from the recipe only. It never takes a password or a truth object.
+- Methods:
+  - `start() -> descriptor`;
+  - `status()`;
+  - `observe()`, returning `instrument-observation/1`: projected values and units only, with no monitor commands, addresses or raw reads;
+  - `window()`, a context manager for the paused-between-calls policy, taken from `run_call`;
+  - `replace(expected_session_id, evidence_ids, dispatch_ids)`, ported from `replace_owned` without `_truth`/`_private`, returning an `emulator-recovery/2` receipt;
+  - `release(session_id)`;
+  - `stop() -> {stopped, confirmed}`.
+- Recovery proof bodies go to a device journal file in the provider's private dir.
+- `emulated._session`, `worker_tool`, `package_execute`, `recover_emulator` and `cleanup` delegate to a `DeviceProvider` built by `device_recipe()`. `device_recipe()` is `_truth()` reduced to returning only the recipe, and is still in-process in this task.
+
+**Tests:**
+- A provider built from a fake recipe and fake session starts, observes (no raw monitor fields), replaces (distinct session, baseline compared) and stops.
+- `observe()` output has no keys beyond the schema.
+- Existing emulator-recovery tests pass through the provider.
+
+- [ ] Failing tests → implement → full suite → commit.
+
+### Task B3: harness process, control endpoint, configurator device client
+
+**Files:** new `benchmark_support/harness.py`, new `src/generative_driver/device_client.py` (package level, no truth imports), `configurator.py` (start validation, `_tool` live-tool path, `_prepare` binding source, finally block), `benchmark.py` `run`, `mcp.py` `driver_benchmark_run`, `cli.py`, tests.
+
+**Behaviour:**
+- **The harness:**
+  - is launched by `benchmark.run` for actual-agent v2 cases;
+  - receives password file paths on stdin;
+  - runs `require_calibration`;
+  - builds a `DeviceProvider` from `device_recipe()`;
+  - serves the control endpoint with a control authkey. Its methods are `status`, `observe`, `set_running`, `replace` and `release`. `stop` and `shutdown` are owner-only.
+  - creates an evaluation token, keeps the token in memory and sends only its sha256 to the daemon;
+  - calls daemon `start` with `device` (descriptor `device-descriptor/1`: binding, session_id, image_sha256, instrument units, control endpoint file), `admission` (`calibration_evidence_sha256`) and `evaluation_token_sha256`.
+- **`benchmark.run`:**
+  - returns `{trial_id, run_id}`;
+  - `--wait` follows the trial to its verdict.
+- **The daemon `start`:**
+  - refuses `evaluator_password_file`, any `password*` key and `renode` in `case_options` or `case.options`;
+  - for v2 actual-agent cases, requires a device descriptor whose `image_sha256` equals the pinned `firmware.bin` hash;
+  - compares the admission sha with the public pin's `calibration.evidence_sha256`, replacing its own `require_calibration` call;
+  - claims the descriptor binding;
+  - `progress.device = {session_id, binding, receipts: []}`.
+- **`device_client.open_device(descriptor)`** returns a client with `status`, `observe`, `window` and `replace`, and raises a typed `DeviceUnavailable`.
+- **`_tool`, for every live tool on a provided device:**
+  1. runs all refusable checks first (package path and digest, binding, grants);
+  2. marks the dispatch effectful;
+  3. calls `observe()` for the before reading;
+  4. runs the call inside `with device.window()`;
+  5. calls `observe()` for the after reading;
+  6. records `before_observation`/`observation` tagged `source: "instrument"`.
+- A provider unreachable before dispatch → a refused-before-open result: no uncertainty, an operator stop "device provider unavailable".
+- The configurator's finally block no longer seals or stops the emulator. It calls `release()`. A release failure is an event, and the run stays completed unless an effect is uncertain.
+
+**Tests:**
+- Spawn the harness with a fake provider (a fake recipe and session factory injected by environment or argument for tests only) and a scripted executor. The run completes, and runs.sqlite3 contains no password path.
+- The daemon refuses a password key in `case_options`.
+- An image sha mismatch → integrity refusal.
+- A provider killed before dispatch → operator stop with no uncertainty.
+- Live tool results carry instrument observations.
+
+- [ ] Failing tests → implement → full suite → commit.
+
+### Task B4: recovery through the device handle; the configurator holds no evaluator code
+
+**Files:** new `src/generative_driver/device_recovery.py` (`unresolved_outcomes`, `diagnostic_faults` and `reconcile`, moved from `emulated_recovery.py`), `configurator.py` (delete `_evaluator_operation`, the v2 probe-prepare wrapper, the check wrapper, the `terminal_final` branch for new runs, sealing, the `evaluator_workspace` branch; keep `_managed_probe` only if B7 keeps it for bme280), `emulated.py` (delete `_OWNERS`, `_truth`, `_session`, `cleanup`, `package_execute`, `worker_tool` and `recover_emulator` once nothing calls them), tests.
+
+**Behaviour:**
+- `reconcile` is gated on `spec.device.kind == "provided-emulator"`. It calls `device.replace(...)`.
+- In one transaction it claims the new binding, updates `progress.device`, accepts the partial handoff, routes revision+1 to interpret, deletes `pending_effects` and clears `uncertain`.
+- `DeviceUnavailable` or a failed replace → `emulator.recovery_failed`, uncertainty retained, safety stop. The failed write is never re-executed.
+- Daemon restart or resume checks `device.status()`. A session mismatch with `progress.device` is an operator stop with reason "Device session changed; attach a verified device". A new `attach_device({run_id, token, device})` RPC is accepted only while the run is stopped and not uncertain.
+- A static check test: `configurator.py` and `device_*.py` import nothing from `benchmark_support.emulator`, `truth`, `calibration`, `emulated_evidence` or `reference_calibration`.
+
+**Tests:**
+- Port the uncertain-write recovery tests verbatim in their safety assertions:
+  - the pending dispatch ids;
+  - the failed write executed exactly once;
+  - the binding re-claimed atomically.
+- A crash between replace and commit → stays uncertain on restart.
+- The import-boundary test passes.
+
+- [ ] Failing tests → implement → full suite → commit.
+
+### Task B5: post-run grading in the harness; `record_evaluation`; equivalence surface
+
+**Files:** new `benchmark_support/evaluator.py` (`reference_execute` moved from `emulated.py`; `_private`/draft and sealing moved from `emulated_evidence.py`), `harness.py` (finish sequence), `configurator.py` (`record_evaluation` RPC; A4's benchmark branch), `evidence.py` (`_validate_payload_v2`, `benchmark-run-evidence/2`), tests.
+
+**Behaviour:**
+- **After the run is terminal and the device stop is confirmed,** the harness grades once:
+  1. verifies the snapshot and pin;
+  2. copies the emitted package from the accepted handoff and re-hashes it;
+  3. takes `capabilities.json` from the probe handoff at the emit revision, or the latest probe, and re-hashes it;
+  4. unlocks truth;
+  5. runs the final phase via `reference_execute` on a fresh emulator;
+  6. runs `validate_records`.
+
+  `fresh_worker_mission` is computed from the recorded package events as a secondary check, and `equivalent` = the final verdict passed.
+- **Special outcomes:**
+  - no package → status `no-driver`, equivalent false;
+  - no capabilities → equivalent false, reason "no capability mapping";
+  - an evaluator host fault → `unscored` (an event only), retried by an explicit `harness resume`;
+  - a final already in the draft for (run_id, frozen sha) → the summary is rebuilt and never regraded.
+- **`record_evaluation({run_id, token, equivalence})` on the daemon:**
+  - accepts only a completed, not-uncertain run with `progress.equivalence == "pending"`;
+  - requires sha256(token) to equal the spec's;
+  - requires `frozen_artifact_sha256` to equal the latest accepted emit artifact, or null when there was no emit;
+  - writes a graded record once (verdicts id `f"{run_id}:final"`). An identical repeat is idempotent; a different record is refused.
+- **Public output:**
+  - `equivalence/1` holds check ids with passed flags and a diff `[{id, reason}]`;
+  - expected values, tolerances, witnesses and raw records stay sealed.
+- **Sealing:** `benchmark-run-evidence/2` under the trial dir, holding:
+  - protocol, case pin and snapshot;
+  - the accepted artifacts, including notes.json hashes;
+  - the final evaluation;
+  - the provider receipt and journal hashes;
+  - the mission check.
+
+  Stopped trials get a seal of the handoffs only.
 
 **Tests:**
 - A known-good scripted package → equivalent true.
-- A deliberately wrong package → equivalent false with failing check ids.
-- `finalize` is called exactly once even across restart.
-- No evaluator call occurs before reuse finishes (mock assertion).
-- Use the existing scripted family fixtures. Tests needing Renode, Ghidra or Java keep their skip guards.
+- A wrong package → false, with failing ids.
+- A forged token → refused.
+- A repeat → idempotent.
+- A harness crash then resume → no regrade.
+- No evaluator call before the run is terminal (mock).
 
 - [ ] Failing tests → implement → full suite → commit.
 
-### Task B3: score, reports and suites under assistive/1
+### Task B6: suites driven by the harness
 
-**Files:** `benchmark_support/evidence.py` (`regrade_v2`, `_gate_results`), `suite_reporting.py` (`_report_success`, `_recorded_success`, counts), `reporting.py`, `suites.py`/`suite_store.py` (settle and child_disposition categories), `benchmark.py` compare, tests (`test_suite_*`, `test_reporting`, `test_benchmark_score`, `test_benchmark_v2_evidence`).
+**Files:** `benchmark_support/suites.py`, `suite_store.py`, `configurator.py` (delete `_run_suite`/`_spawn_suite`; `suite_start` freezes and stores only; add `suite_reserve`/`suite_attach`/`suite_settle` with a suite token), `harness.py` (suite loop), `benchmark.py` suite commands, tests.
 
 **Behaviour:**
-- For `assistive/1` evidence, regrade checks only the single final evaluation plus integrity: the final artifact equals the emitted package, and the hashes match.
-- Success = `equivalent: true`.
-- Suite summaries report equivalent drivers out of trials, unscored and stopped trials separately, and stop categories.
-- Old-protocol reports keep their original gate logic and labels.
-- `compare` refuses to compare across protocols.
-- Suite child settlement understands `safety`/`integrity` categories and completed-but-not-equivalent runs.
+- `freeze_suite` accepts only `ghidra_home`, `java_home` and `scoped_tool_approval`. Password files and renode go on the harness's stdin. It adds `scheduler: "harness/1"` and `harness_token_sha256`.
+- The harness loops over the trials: reserve → provide device → start child → attach → wait → stop → grade → `record_evaluation` → settle.
+- The daemon reads child status and the equivalence record itself, so the harness cannot inject an outcome.
+- `child_disposition` advances only a completed child with a graded or no-driver record. It stops on unscored results and on safety, integrity, operator or host stops.
+- Old frozen suites (with password files or no scheduler) are read-only, and their resume is refused with an operator reason.
+- `comparison_identity` gains `protocol`. Summaries count equivalent out of planned.
 
 **Tests:**
-- A suite of three runs (equivalent, not equivalent, unscored) reports 1/3 equivalent, with the unscored run listed separately.
-- Old-protocol fixtures score as before.
+- A three-child suite with a fake provider and scripted executors settles 1 equivalent / 1 not / 1 unscored, with the unscored child listed.
+- The suite tables contain no password.
+- An old suite's resume is refused.
+
+- [ ] Failing tests → implement → full suite → commit.
+
+### Task B7: score, reports and compare under assistive/1
+
+**Files:** `evidence.py` (regrade `benchmark-run-evidence/2`), `suite_reporting.py`, `reporting.py`, `benchmark.py` compare, tests.
+
+**Behaviour:**
+- New reports are `benchmark-report/3` with `protocol: "assistive/1"`. Success = `equivalent: true`.
+- Regrade checks:
+  - the single final;
+  - the final artifact equals the accepted emit;
+  - the snapshot identity.
+- Old reports (`benchmark-report/2`, `benchmark-run-evidence/1`) keep their gate logic.
+- `compare` refuses to compare across protocols.
+
+**Tests:**
+- Old fixtures score as before.
+- A new fixture regrades.
 - A cross-protocol compare is refused.
 
 - [ ] Failing tests → implement → full suite → commit.
 
-### Task B4: legacy adapters, device-provider accessor, docs
+### Task B8: legacy tq9 and bme280 under the same split
 
-**Files:** `cases.py`, `legacy.py`, `physical.py`, `ground.py` (legacy parts), `emulated.py` (`_session` uses a recipe-only accessor), `docs/verification.md` (a short note, without new numbers), `docs/implementation/benchmark-handoff.md` (a short note), tests.
+**Files:** `cases.py`, `legacy.py`, `physical.py`, `ground.py` (legacy), `harness.py`/`evaluator.py` (legacy grading method `recorded-reuse`), tests.
 
 **Behaviour:**
-- Legacy `tq9` and `bme280`: stage checks become truth-free. Grading moves to the adapter `finalize`. Emit and reuse use worker-produced probe and capabilities state rather than evaluator-only state, and hand off with notes when that state is missing.
-- A recipe-only accessor `device_recipe(case_id, run_dir, options)` returns only the emulator recipe. `_session` and recovery use it. Contracts are loaded only in `finalize` and `score`.
-- Docs state:
-  - the protocol change;
-  - that the envelope split is follow-up work;
-  - that worker workspaces are not read-isolated: Goose has no sandbox and Codex restricts writes only, so "no truth handed to stages" is about what is handed over, not what is reachable;
-  - the new numbers series.
+- **Legacy tq9:**
+  - stage observation is truth-free;
+  - the device is provided by the harness (a Renode session from the legacy recipe);
+  - it is graded post-run from the recorded reuse measurements against the truth reuse goal (`method: "recorded-reuse"`).
+- **bme280:**
+  - keeps the operator's physical binding, with no descriptor;
+  - its stage checks become truth-free; the evaluator `_managed_probe` I/O during stages is removed;
+  - after the run, the harness grades the recorded reuse readings against the operator reference and the truth tolerances. The harness never touches the board.
 
-**Tests:**
-- Legacy scripted runs reach finalize with a verdict.
-- `_session` never receives contracts (mock).
-- The full suite passes.
+**Tests:** legacy scripted runs reach a recorded verdict; the import-boundary test still passes.
 
 - [ ] Failing tests → implement → full suite → commit.
+
+### Task B9: skills, docs and wording
+
+**Files:**
+- `docs/design.md`: extend A4's amendment with the harness/device split;
+- `docs/verification.md` and `docs/implementation/benchmark-handoff.md`: short notes, without new numbers;
+- `bench/README.md`;
+- the skill text in all synced copies (keep them identical; the sync test guards this);
+- `docs/goose.md` and `docs/codex.md` where they describe benchmark runs.
+
+**Behaviour:** the docs state:
+- the protocol change (`assistive/1`, a new numbers series);
+- the harness holds the password; the configurator holds none;
+- device readings are visible to workers;
+- workers are not read-isolated until a real sandbox exists;
+- a fresh native calibration is required before the end test, because the current calibration is already stale at `52eb018`;
+- historical sealed evidence needs a preserved checkout to regrade.
+
+**Tests:** the distribution and skill-sync tests pass, and the full suite passes.
+
+- [ ] Implement → full suite → commit.
 
 ## End test (after all tasks; needs explicit operator authorization)
 

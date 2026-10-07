@@ -20,7 +20,7 @@ from .agents import StageRequest, execute
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 TERMINAL = {'completed', 'failed', 'cancelled', 'blocked'}
 STAGE_TOOLS = {
-    'acquire': ['acquire_firmware_artifact','acquire_datasheet','acquire_protocol_spec','acquire_classify'],
+    'acquire': ['acquire_serial_listen','acquire_firmware_artifact','acquire_datasheet','acquire_protocol_spec','acquire_classify'],
     'interpret': ['firmware_prepare','firmware_collect','firmware_validate','model_validate','model_provenance_audit','ghidra_run','image_map_check'],
     'probe': ['model_validate','model_qualify','probe_run','probe_diff','interface_describe','interface_execute'],
     'ground': ['probe_observe','probe_diff','model_validate'],
@@ -125,6 +125,12 @@ def binding_identity(binding):
     if type(binding.get('vendor_id')) is int and type(binding.get('product_id')) is int:
         return ['usb',binding['vendor_id'],binding['product_id']]
     raise ValueError('Unsupported binding shape; use host/port, serial port, FTDI url, or USB vendor_id/product_id')
+
+
+def _model_channel(name, arguments):
+    model_dir = arguments.get('model_dir')
+    path = Path(model_dir)/'model.json' if model_dir else Path(arguments['package_dir'])/'driver/model.json'
+    return json.loads(path.read_text(encoding='utf-8')).get('channel', {})
 
 
 def operation_effects(name, arguments):
@@ -669,8 +675,8 @@ class Controller:
         if type(budget) not in (int, float) or not 0 < budget <= 7 * 86400:
             raise ValueError('budget_seconds must be positive and no more than seven days')
         effects = params.get('effects', ['read'])
-        if not isinstance(effects, list) or not set(effects) <= {'read', 'write', 'actuate'}:
-            raise ValueError('effects must contain only read, write, actuate')
+        if not isinstance(effects, list) or not set(effects) <= {'read', 'write', 'actuate', 'reset'}:
+            raise ValueError('effects must contain only read, write, actuate, reset')
         config = {}
         config_path = self.home / 'config.json'
         if 'case_pin' in params:
@@ -1189,6 +1195,22 @@ class Controller:
             return self._tool('tool',{'assignment_id':assignment['id'],'name':'probe_run',
                 'arguments':{'model_dir':str(snapshot),'n':n}},self._row(run_id),evaluator_workspace=workspace)
 
+    def _binding_state(self, run_id):
+        """Per-run serial facts: whether the device was listened to and whether opening it resets it."""
+        listened = resets = False
+        with self._db() as db:
+            rows = db.execute("SELECT kind,payload FROM events WHERE run_id=? AND kind IN ('tool.finished','operator.response') ORDER BY seq",(run_id,)).fetchall()
+        for row in rows:
+            data = json.loads(row['payload'])
+            if row['kind'] == 'tool.finished' and data.get('name') == 'acquire_serial_listen' and data.get('ok'):
+                listened = True
+                resets = resets or bool(data.get('result',{}).get('unsolicited_output'))
+            elif row['kind'] == 'operator.response':
+                observed = data.get('observation') or {}
+                if observed.get('binding_property') == 'resets_on_open' and observed.get('value') is False:
+                    resets = False
+        return {'listened': listened, 'resets_on_open': resets}
+
     def _tool(self, method, params, run, *, evaluator_workspace=None):
         from .toolkit import list_tools, call_tool
         if self._closing:
@@ -1217,7 +1239,7 @@ class Controller:
                     'properties':{'package_dir':{'type':'string'},'operation':{'type':'string'},'parameters':{'type':'object'}}}})
         for contract in contracts:
             schema = contract['inputSchema']
-            for bound in ('run_dir','binding','allow_effects','bus_url'):
+            for bound in ('run_dir','binding','allow_effects','bus_url','port','allow_reset'):
                 schema.get('properties', {}).pop(bound, None)
                 if bound in schema.get('required', []):
                     schema['required'].remove(bound)
@@ -1227,15 +1249,29 @@ class Controller:
         if name not in [c['name'] for c in contracts]:
             raise ValueError('Tool is not assigned to this worker')
         arguments = dict(params.get('arguments', {}))
-        if {'run_dir','binding','allow_effects','bus_url'} & arguments.keys():
+        if {'run_dir','binding','allow_effects','bus_url','allow_reset','port'} & arguments.keys():
             raise ValueError('Connection, output directory and effect grants are configurator-owned')
-        if name == 'acquire_classify':
-            # Hardware acquisition opens only the operator's serial binding.
-            if 'port' in arguments:
-                raise ValueError('Connection, output directory and effect grants are configurator-owned')
-            port = (assignment.get('binding') or {}).get('port')
-            if isinstance(port,str) and port.strip():
-                arguments['port'] = port
+        serial_tool = name in ('acquire_serial_listen','acquire_classify','acquire_flash')
+        model_channel = None
+        if name in ('probe_run','interface_execute','emit_test_live') and not arguments.get('replay'):
+            model_channel = _model_channel(name, arguments)
+        if serial_tool or (model_channel or {}).get('type') == 'uart':
+            binding = assignment.get('binding') or {}
+            if not binding:
+                raise ValueError('No operator-owned device binding for this stage')
+            granted = 'reset' in assignment['effects']
+            state = self._binding_state(run['id'])
+            if name != 'acquire_serial_listen' and not state['listened'] and not granted:
+                raise ValueError('Listen to the bound serial device first, or supply a reset grant')
+            if state['resets_on_open'] and not granted:
+                raise ValueError('The bound device resets when opened; this connection requires a reset grant')
+            if model_channel is not None and state['resets_on_open'] and not model_channel.get('resets_on_open'):
+                raise ValueError('The model omits resets_on_open although this run observed the device reset on open')
+            if serial_tool:
+                from interface_runtime.transports import resolve_serial_port
+                arguments['port'] = resolve_serial_port(binding)
+                if name != 'acquire_serial_listen':
+                    arguments['allow_reset'] = granted
         workspace = Path(evaluator_workspace or assignment['workspace'])
         from .toolkit import _PATH_ARGUMENTS
         for key in _PATH_ARGUMENTS & arguments.keys():
@@ -1299,6 +1335,11 @@ class Controller:
         for key in ('artifact','provenance','pages','pages_dir','manifest','package_dir','probe','model_dir','transcript'):
             raw = result.get(key)
             if isinstance(raw,str) and Path(raw).is_absolute():
+                path = Path(raw).resolve()
+                if path.is_relative_to(workspace) and path.exists():
+                    observed_artifacts[str(path)] = digest(path)
+        for raw in result.get('artifacts', []) if isinstance(result.get('artifacts'), list) else []:
+            if isinstance(raw, str) and Path(raw).is_absolute():
                 path = Path(raw).resolve()
                 if path.is_relative_to(workspace) and path.exists():
                     observed_artifacts[str(path)] = digest(path)

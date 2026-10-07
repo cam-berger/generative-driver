@@ -1,5 +1,6 @@
 """Public configurator behavior with a deliberately unavailable external runtime."""
 from pathlib import Path
+import json
 import tempfile
 import time
 import unittest
@@ -250,9 +251,139 @@ class ConfiguratorTests(unittest.TestCase):
                 request = {**run, 'assignment_id':assignment['id'], 'name':'acquire_classify'}
                 with self.assertRaisesRegex(ValueError, 'configurator-owned'):
                     controller.call('tool', {**request, 'arguments':{'port':'/dev/worker-selected'}})
-                # Without a flash backend the tool refuses before opening the bound port.
-                result = controller.call('tool', {**request, 'arguments':{}})
-                self.assertIn('A serial endpoint does not select a flash backend', str(result))
+                # Opening the bound port requires listen evidence or a reset grant first.
+                with self.assertRaisesRegex(ValueError, '(?i)listen'):
+                    controller.call('tool', {**request, 'arguments':{}})
+                controller.call('cancel', run)
+            finally:
+                controller.close()
+
+    def _serial_run(self, controller, effects=('read',), binding=None):
+        run = controller.call('start', {'goal':'Scripted serial contract', 'effects':list(effects),
+            'binding': binding or {'port': '/dev/cu.contract'},
+            'executor_config':{'command':[sys.executable,'-c','import time; time.sleep(20)']}})
+        until = time.monotonic() + 3
+        while time.monotonic() < until:
+            assignment = next((e['data'] for e in controller.call('events', run)['events'] if e['kind'] == 'stage.assigned'), None)
+            if assignment and controller.call('status', run)['status'] == 'running':
+                return run, assignment
+            time.sleep(.02)
+        self.fail('no running acquire assignment')
+
+    def test_listen_records_reset_and_later_connections_need_the_grant(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        captured = {}
+        def fake_call_tool(name, arguments):
+            captured[name] = dict(arguments)
+            if name == 'acquire_serial_listen':
+                return {'available': True, 'unsolicited_output': True, '_exit': 0, 'artifacts': []}
+            return {'device_class': None, 'reason': 'scripted', '_exit': 1}
+        with tempfile.TemporaryDirectory() as directory, patch('generative_driver.toolkit.call_tool', fake_call_tool):
+            controller = Controller(Path(directory))
+            try:
+                run, assignment = self._serial_run(controller)
+                request = {**run, 'assignment_id': assignment['id']}
+                with self.assertRaisesRegex(ValueError, '(?i)listen'):
+                    controller.call('tool', {**request, 'name': 'acquire_classify', 'arguments': {'flash_backend': 'esp32'}})
+                controller.call('tool', {**request, 'name': 'acquire_serial_listen', 'arguments': {'seconds': 1}})
+                self.assertEqual(captured['acquire_serial_listen']['port'], '/dev/cu.contract')
+                with self.assertRaisesRegex(ValueError, 'reset grant'):
+                    controller.call('tool', {**request, 'name': 'acquire_classify', 'arguments': {'flash_backend': 'esp32'}})
+                with self.assertRaisesRegex(ValueError, 'configurator-owned'):
+                    controller.call('tool', {**request, 'name': 'acquire_serial_listen', 'arguments': {'allow_reset': True}})
+                controller.call('cancel', run)
+            finally:
+                controller.close()
+
+    def test_reset_grant_lets_esp_acquisition_auto_reset(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        captured = {}
+        def fake_call_tool(name, arguments):
+            captured[name] = dict(arguments)
+            return {'available': True, 'unsolicited_output': True, '_exit': 0, 'artifacts': []}
+        with tempfile.TemporaryDirectory() as directory, patch('generative_driver.toolkit.call_tool', fake_call_tool):
+            controller = Controller(Path(directory))
+            try:
+                run, assignment = self._serial_run(controller, effects=('read', 'reset'))
+                request = {**run, 'assignment_id': assignment['id']}
+                controller.call('tool', {**request, 'name': 'acquire_serial_listen', 'arguments': {}})
+                controller.call('tool', {**request, 'name': 'acquire_classify', 'arguments': {'flash_backend': 'esp32'}})
+                self.assertIs(captured['acquire_classify']['allow_reset'], True)
+                controller.call('cancel', run)
+            finally:
+                controller.close()
+
+    def test_model_must_declare_an_observed_reset(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        def fake_call_tool(name, arguments):
+            return {'available': True, 'unsolicited_output': True, '_exit': 0, 'artifacts': []}
+        with tempfile.TemporaryDirectory() as directory, patch('generative_driver.toolkit.call_tool', fake_call_tool):
+            controller = Controller(Path(directory) / 'home')
+            try:
+                model_dir = Path(directory) / 'model'; model_dir.mkdir()
+                (model_dir / 'model.json').write_text(json.dumps({'channel': {'type': 'uart', 'baudrate': 115200},
+                    'operations': {'read': {'effect': 'read'}}}))
+                with patch.dict('generative_driver.configurator.STAGE_TOOLS', {'acquire': ['acquire_serial_listen', 'probe_run']}):
+                    run, assignment = self._serial_run(controller, effects=('read', 'reset'))
+                    request = {**run, 'assignment_id': assignment['id']}
+                    controller.call('tool', {**request, 'name': 'acquire_serial_listen', 'arguments': {}})
+                    with self.assertRaisesRegex(ValueError, 'omits resets_on_open'):
+                        controller.call('tool', {**request, 'name': 'probe_run',
+                                                 'arguments': {'model_dir': str(model_dir), 'operation': 'read'}})
+                controller.call('cancel', run)
+            finally:
+                controller.close()
+
+    def test_identity_binding_is_resolved_for_serial_tools(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        captured = {}
+        def fake_call_tool(name, arguments):
+            captured[name] = dict(arguments)
+            return {'available': True, 'unsolicited_output': False, '_exit': 0, 'artifacts': []}
+        identity = {'vendor_id': 0x10C4, 'product_id': 0xEA60, 'serial_number': 'abc'}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch('generative_driver.toolkit.call_tool', fake_call_tool), \
+             patch('interface_runtime.transports.resolve_serial_port', lambda binding, ports=None: '/dev/cu.usbserial-11140'):
+            controller = Controller(Path(directory))
+            try:
+                run, assignment = self._serial_run(controller, binding=identity)
+                controller.call('tool', {**run, 'assignment_id': assignment['id'], 'name': 'acquire_serial_listen', 'arguments': {}})
+                self.assertEqual(captured['acquire_serial_listen']['port'], '/dev/cu.usbserial-11140')
+                controller.call('cancel', run)
+            finally:
+                controller.close()
+
+    def test_operator_can_clear_a_detected_reset(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory))
+            try:
+                run = controller.call('start', {'goal': 'Scripted override', 'binding': {'port': '/dev/cu.contract'},
+                    'executor_config': {'command': ['missing-contract-runtime']}})
+                until = time.monotonic() + 5
+                while controller.call('status', run)['status'] in ('queued', 'running') and time.monotonic() < until:
+                    time.sleep(.02)
+                controller.call('respond', {**run, 'observation': {'binding_property': 'resets_on_open', 'value': False}})
+                self.assertEqual(controller._binding_state(run['run_id'])['resets_on_open'], False)
+            finally:
+                controller.close()
+    def test_worker_acquire_tools_hide_port_and_reset_grant(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory))
+            try:
+                run, assignment = self._serial_run(controller)
+                tools = controller.call('tools', {**run, 'assignment_id': assignment['id']})['tools']
+                names = {t['name'] for t in tools}
+                self.assertIn('acquire_serial_listen', names)
+                for tool in tools:
+                    properties = tool['inputSchema'].get('properties', {})
+                    self.assertNotIn('port', properties)
+                    self.assertNotIn('allow_reset', properties)
                 controller.call('cancel', run)
             finally:
                 controller.close()

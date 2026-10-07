@@ -155,6 +155,20 @@ def gateway_identity(request):
     return {'run_id': args[args.index('--run') + 1], 'assignment_id': args[args.index('--assignment') + 1]}
 
 
+def strings(value):
+    """Every string a JSON value holds, keys included, as decoded text: a Windows path inside json.dumps output is
+    escaped, so a search there would never find it."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from strings(item)
+
+
 class AssistiveHandoffTests(unittest.TestCase):
     """Every stage hands off notes; a revise commits with its partial handoff; protocol labels gate resume."""
     def test_crash_after_an_accepted_revise_resumes_at_interpret_with_the_new_revision(self):
@@ -356,10 +370,27 @@ class AssistiveHandoffTests(unittest.TestCase):
                 reopened.close()
 
 
+def thermometer_model(name='Scripted thermometer', *, steps=True):
+    """A schema-3 line-protocol thermometer on a TCP channel that the real validator accepts; with `steps=False`
+    its read has no steps, which the validator and the runtime refuse."""
+    def until(command, capture, **extra):
+        return {'op': 'exchange', 'tx': [{'text': command}], 'rx': {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 64},
+                'timeout_ms': 1000, 'capture': capture, **extra}
+    return {'schema': 'interface-model/3', 'device': {'name': name}, 'channel': {'type': 'tcp'},
+            'identity': {'operation': 'identify'},
+            'operations': {
+                'identify': {'effect': 'read', 'parameters': {}, 'outputs': {},
+                             'steps': [until('ID\n', 'id', expect={'contains_text': 'THERMO'})]},
+                'read_temperature': {'effect': 'read', 'parameters': {}, 'steps': [until('T\n', 't')] if steps else [],
+                                     'outputs': {'temperature_c': {'from': 't', 'kind': 'ascii_number', 'unit': 'degC'}}}},
+            'provenance': [{'item': 'operations.' + operation, 'source': 'scripted fixture'}
+                           for operation in ('identify', 'read_temperature')]}
+
+
 class DeviceRepairTests(unittest.TestCase):
     """Generic ground runs a worker; model-versus-device differences the configurator observed drive repair."""
     def test_device_diff_holds_only_model_faults_on_the_device_connection_with_the_assigned_model(self):
-        from generative_driver.configurator import _device_diff
+        from generative_driver.configurator import _device_diff, _probe_records
         ws = Path('/w').resolve()
         model, record = str(ws / 'inputs' / '0-model'), str(ws / 'inputs' / '1-0-interface-1.json')
         assignment = {'stage': 'ground', 'workspace': str(ws), 'inputs': {model: 'model-sha', record: 'record-sha'}}
@@ -370,6 +401,9 @@ class DeviceRepairTests(unittest.TestCase):
         def before_open(code, message):
             return {'schema': 'interface-result/1', 'ok': False, 'operation': 'read', 'transport_open_attempted': False,
                     'error': {'code': code, 'message': message}, 'transcript': []}
+        # What interface_execute and probe_run really return for a model the runtime refuses: run_samples validates
+        # before any transport opens and raises, and the tool wrapper reports the exception.
+        refused = {'_exit': 1, 'error': "ValueError: invalid model: [{'where': 'operations.read', 'what': 'requires 1–128 steps'}]"}
         refuted = 'refuted        measure reads 0xf7  frame 0xf7 returned 3 byte(s), model reads 8'
         def event(dispatch, name, ok, result, *, connected=None, model_sha='model-sha', artifacts=None, **shas):
             connected = name in ('probe_run', 'interface_execute') if connected is None else connected
@@ -377,6 +411,7 @@ class DeviceRepairTests(unittest.TestCase):
                     'argument_sha256': {'model_dir': model_sha, **shas}, 'artifacts': artifacts or {}}
         live_fault = lambda path, results: {'ok': False, 'fault': 'model', 'error_code': 'framing', 'error_message': 'short reply',
                                             'evidence_kind': 'live', 'probe': path, 'results': results, '_exit': 1}
+        identity = lambda answered: {'ok': False, 'identity': answered, 'identity_ok': False, 'probe': probe('probe.json'), '_exit': 2}
         events = [
             event('7', 'probe_diff', False, {'ok': False, 'defects': defects, 'diagnostics': [], 'source_evidence_kind': 'live', '_exit': 1},
                   probe_json='probe-10-sha'),
@@ -404,21 +439,16 @@ class DeviceRepairTests(unittest.TestCase):
                   connected=False, replay='worker-transcript-sha', artifacts={probe('interface-3.json'): 'probe-22-sha'}),
             event('23', 'interface_execute', False, {**failed, 'evidence_kind': 'replay', '_exit': 1}, connected=False,
                   replay='worker-transcript-sha'),
-            # The runtime refused the assigned model on the device connection before the transport opened: the device
-            # did nothing, so each is a model-contract entry that claims nothing about the device.
-            event('24', 'interface_execute', False, {**before_open('channel', 'uart channel requires baudrate'), 'evidence_kind': 'live', '_exit': 1}),
-            event('25', 'interface_execute', False, {**before_open('invalid', 'operations.read: no steps'), 'evidence_kind': 'live', '_exit': 1}),
-            event('26', 'interface_execute', False, {**before_open('validation_error', 'scale must be a number'), 'evidence_kind': 'live', '_exit': 1}),
+            # The runtime refuses an invalid assigned model before any transport opens, as a tool error. The device did
+            # nothing, so neither is in the diff from tool results; the configurator's own validation of the assigned
+            # model is the model-contract entry.
+            event('24', 'interface_execute', False, refused),
+            event('25', 'probe_run', False, refused),
+            # A failure before the transport opened holds nothing the device did, whatever its code.
+            event('26', 'interface_execute', False, {**before_open('invalid', 'operations.read: no steps'), 'evidence_kind': 'live', '_exit': 1}),
             event('27', 'probe_run', False, {**live_fault(probe('interface-4.json'), [before_open('channel', 'uart channel requires baudrate')]),
                                              'error_code': 'channel', 'error_message': 'uart channel requires baudrate'},
                   artifacts={probe('interface-4.json'): 'probe-27-sha'}),
-            # A refusal of a variant, a replayed refusal and an unconnected refusal are not the assigned model on the device.
-            event('37', 'interface_execute', False, {**before_open('invalid', 'operations.read: no steps'), 'evidence_kind': 'live', '_exit': 1},
-                  model_sha='variant-sha'),
-            event('38', 'interface_execute', False, {**before_open('invalid', 'operations.read: no steps'), 'evidence_kind': 'replay', '_exit': 1},
-                  connected=False, replay='worker-transcript-sha'),
-            event('39', 'interface_execute', False, {**before_open('invalid', 'operations.read: no steps'), 'evidence_kind': 'live', '_exit': 1},
-                  connected=False),
             # A model the worker wrote is not the assigned model.
             event('28', 'probe_run', False, live_fault(probe('interface-5.json'), [failed]), model_sha='variant-sha',
                   artifacts={probe('interface-5.json'): 'probe-28-sha'}),
@@ -439,49 +469,73 @@ class DeviceRepairTests(unittest.TestCase):
             # An accepted probe record handed on to this stage is device evidence too. Host paths never leave.
             event('35', 'probe_diff', False, {'ok': False, 'source_evidence_kind': 'live', '_exit': 1, 'defects': [
                 {'where': 'identity', 'what': 'device answered 0x58, model expects 0x60', 'evidence': record}]},
-                  probe_json='record-sha')]
-        diff = _device_diff(events, assignment)
-        self.assertEqual([(entry['source'], entry['dispatch_id']) for entry in diff],
-                         [('probe_diff', '7'), ('probe_run', '10'), ('probe_run', '13'), ('interface_execute', '19'),
-                          ('model_contract', '24'), ('model_contract', '25'), ('model_contract', '26'), ('model_contract', '27'),
-                          ('probe_diff', '35')])
-        self.assertEqual(diff[0], {'source': 'probe_diff', 'dispatch_id': '7', 'defects': defects,
+                  probe_json='record-sha'),
+            # A register probe always writes probe.json: the later run replaces the earlier record, which is no longer
+            # there to hand on. What the device did stays in the diff, but only the surviving record is named.
+            event('40', 'probe_run', False, identity('0x58'), artifacts={probe('probe.json'): 'register-1-sha'}),
+            event('41', 'probe_diff', False, {'ok': False, 'defects': defects, '_exit': 1}, probe='register-1-sha'),
+            event('42', 'probe_run', False, identity('0x59'), artifacts={probe('probe.json'): 'register-2-sha'})]
+        contract = [{'where': 'operations.read', 'what': 'requires 1–128 steps'},
+                    {'where': 'convert.py', 'what': 'will not import: ' + str(Path(model) / 'convert.py')}]
+        diff = _device_diff(events, assignment, {model: {'ok': False, 'defects': contract, '_exit': 1}})
+        self.assertEqual([(entry['source'], entry.get('dispatch_id')) for entry in diff],
+                         [('model_contract', None), ('probe_diff', '7'), ('probe_run', '10'), ('probe_run', '13'),
+                          ('interface_execute', '19'), ('probe_diff', '35'), ('probe_run', '40'), ('probe_diff', '41'),
+                          ('probe_run', '42')])
+        # The configurator's validation of the assigned model claims nothing about the device and names the model by content.
+        self.assertEqual(diff[0], {'source': 'model_contract', 'model': {'name': '0-model', 'sha256': 'model-sha'},
+                                   'defects': [contract[0], {'where': 'convert.py', 'what': 'will not import: ' + str(Path('0-model') / 'convert.py')}]})
+        self.assertEqual(diff[1], {'source': 'probe_diff', 'dispatch_id': '7', 'defects': defects,
                                    'probe': {'name': 'interface-1.json', 'sha256': 'probe-10-sha'}})
-        self.assertEqual({k: diff[1][k] for k in ('code', 'what', 'probe', 'failed')},
+        self.assertEqual({k: diff[2][k] for k in ('code', 'what', 'probe', 'failed')},
                          {'code': 'framing', 'what': 'short reply', 'failed': [failed],
                           'probe': {'name': 'interface-1.json', 'sha256': 'probe-10-sha'}})
-        self.assertEqual(diff[2]['what'], 'nack: no acknowledge at 0x76')
-        self.assertEqual((diff[3]['code'], diff[3]['what']), ('framing', 'short reply'))
-        self.assertEqual([{k: entry[k] for k in ('tool', 'code', 'what')} for entry in diff[4:8]],
-                         [{'tool': 'interface_execute', 'code': 'channel', 'what': 'uart channel requires baudrate'},
-                          {'tool': 'interface_execute', 'code': 'invalid', 'what': 'operations.read: no steps'},
-                          {'tool': 'interface_execute', 'code': 'validation_error', 'what': 'scale must be a number'},
-                          {'tool': 'probe_run', 'code': 'channel', 'what': 'uart channel requires baudrate'}])
-        self.assertEqual(diff[7]['failed'], [before_open('channel', 'uart channel requires baudrate')])
-        # A refused run's record holds nothing the device did, so a model-contract entry names no record.
-        self.assertFalse(any('probe' in entry for entry in diff[4:8]))
-        self.assertEqual(diff[8]['probe'], {'name': '1-0-interface-1.json', 'sha256': 'record-sha'})
-        self.assertEqual(diff[8]['defects'][0]['evidence'], '1-0-interface-1.json')
-        self.assertNotIn(str(ws), json.dumps(diff))
+        self.assertEqual(diff[3]['what'], 'nack: no acknowledge at 0x76')
+        self.assertEqual((diff[4]['code'], diff[4]['what']), ('framing', 'short reply'))
+        self.assertEqual(diff[5]['probe'], {'name': '1-0-interface-1.json', 'sha256': 'record-sha'})
+        self.assertEqual(diff[5]['defects'][0]['evidence'], '1-0-interface-1.json')
+        self.assertEqual([entry.get('probe') for entry in diff[6:]], [None, None, {'name': 'probe.json', 'sha256': 'register-2-sha'}])
+        self.assertEqual((diff[6]['what'], diff[8]['what']), ("device identity '0x58' is not one the model expects",
+                                                              "device identity '0x59' is not one the model expects"))
+        self.assertFalse(any(str(ws) in text for text in strings(diff)))
+        # The stage hands on the surviving record of every run the device answered on its connection, of any model.
+        kept, superseded = _probe_records(events)
+        self.assertEqual({Path(path).name: sha for path, (sha, _) in kept.items()},
+                         {'interface-1.json': 'probe-10-sha', 'interface-5.json': 'probe-28-sha', 'probe.json': 'register-2-sha'})
+        self.assertEqual(superseded, ['40'])
         self.assertEqual(_device_diff([], assignment), [])
+        # Only defects the validator found in an assigned model are a contract entry: a validator that did not run is not.
+        for result in ({'ok': True, 'defects': []}, {'ok': False, '_exit': 1, 'error': 'OSError: disk unavailable'}):
+            self.assertEqual(_device_diff([], assignment, {model: result}), [])
+        self.assertEqual(_device_diff([], assignment, {str(ws / 'variant'): {'ok': False, 'defects': contract}}), [])
 
     BINDING = {'host': '127.0.0.1', 'port': 45681}
-    MODEL = {'schema': 'scripted-model', 'operations': {'read_temperature': {'effect': 'read'}}}
+    MODEL = thermometer_model()
     FAILED = {'schema': 'interface-result/1', 'ok': False, 'operation': 'read_temperature', 'transport_open_attempted': True,
               'error': {'code': 'framing', 'message': 'short reply'}, 'transcript': [{'tx_hex': '01', 'rx_hex': '2a'}]}
 
-    def run_ground(self, home, work, respond):
-        """A generic run whose interpret and probe are scripted and whose ground uses the real preparation, gateway
-        and check. The ground worker calls tools through `work(call, model, workspace)`; `respond(name, arguments)`
-        stands in for each tool, and probe_run also writes its probe file as the real tool does. No device runs.
-        Returns the result, the events, the prompts and the configurator-built tool arguments."""
+    def run_device_stage(self, home, work, respond, *, stage='ground', model=None, extra=None, real=()):
+        """A generic run in which `stage` (probe or ground) uses the real preparation, gateway and check and every other
+        stage is scripted; interpret hands on `model` (the valid thermometer by default) with the `extra` files (name to
+        text) beside it. The stage worker calls tools
+        through `work(call, model, workspace)`. `respond(name, arguments)` stands in for each worker tool except those
+        named in `real`, which run in the real toolkit; a stand-in probe_run writes its probe file as the real tool does
+        unless `respond` names one. The configurator's own validation of the assigned model always runs the real
+        validator. No device runs. Returns the result, the events, the prompts and each worker tool's
+        configurator-built arguments."""
         from unittest.mock import patch
+        from generative_driver import toolkit
         from generative_driver.configurator import Controller
+        real_call_tool = toolkit.call_tool
         calls = []
         def fake_call_tool(name, arguments):
+            if name == 'model_validate':
+                return real_call_tool(name, arguments)
             calls.append((name, dict(arguments)))
+            if name in real:
+                return real_call_tool(name, arguments)
             out = dict(respond(name, arguments))
-            if name == 'probe_run':
+            if name == 'probe_run' and 'probe' not in out:
                 folder = Path(arguments['run_dir']) / 'probe'; folder.mkdir(parents=True, exist_ok=True)
                 probe = folder / ('interface-' + str(len(list(folder.iterdir())) + 1) + '.json')
                 probe.write_text(json.dumps({'schema': 'interface-probe/1', 'ok': out['ok'], 'results': out.get('results', [])}))
@@ -489,28 +543,30 @@ class DeviceRepairTests(unittest.TestCase):
             return out
         controller = Controller(home)
         real_check = controller._check
-        def check(spec, stage, run_dir, workspace, report, accepted, assignment):
-            if stage == 'interpret':
-                model = workspace / 'model'; model.mkdir()
-                (model / 'model.json').write_text(json.dumps(self.MODEL))
-                return {'ok': True, 'artifacts': [str(model)], 'checks': []}
-            if stage == 'probe':
+        def check(spec, name, run_dir, workspace, report, accepted, assignment):
+            if name == stage:
+                return real_check(spec, name, run_dir, workspace, report, accepted, assignment)
+            if name == 'interpret':
+                folder = workspace / 'model'; folder.mkdir()
+                (folder / 'model.json').write_text(json.dumps(model or self.MODEL))
+                for name, text in (extra or {}).items():
+                    (folder / name).write_text(text)
+                return {'ok': True, 'artifacts': [str(folder)], 'checks': []}
+            if name == 'probe':
                 return {'ok': True, 'artifacts': [str(workspace / 'out.json')], 'checks': []}
-            if stage == 'ground':
-                return real_check(spec, stage, run_dir, workspace, report, accepted, assignment)
             return {'ok': True, 'artifacts': [], 'checks': []}
-        def prepare(original, spec, stage, run_dir, workspace, accepted):
-            return original(spec, stage, run_dir, workspace, accepted) if stage in ('ground', 'reuse') else {'inputs': [], 'allowed_tools': []}
+        def prepare(original, spec, name, run_dir, workspace, accepted):
+            return original(spec, name, run_dir, workspace, accepted) if name in (stage, 'reuse') else {'inputs': [], 'allowed_tools': []}
         def worker(request):
-            if request.stage == 'ground':
-                model = next(p for p in task_of(request.prompt)['inputs'] if (Path(p) / 'model.json').is_file())
+            if request.stage == stage:
+                assigned = next(p for p in task_of(request.prompt)['inputs'] if (Path(p) / 'model.json').is_file())
                 call = lambda name, **arguments: controller.call('tool', {**gateway_identity(request), 'name': name, 'arguments': arguments})
-                work(call, model, Path(request.workspace))
+                work(call, assigned, Path(request.workspace))
         prompts = []
         try:
             with scripted_stages(controller, check=check, prepare=prepare, prompts=prompts, work=worker), \
                  patch('generative_driver.toolkit.call_tool', fake_call_tool):
-                run = controller.call('start', {'goal': 'Scripted ground contract; no model or device', 'binding': self.BINDING,
+                run = controller.call('start', {'goal': 'Scripted ' + stage + ' contract; no model or device', 'binding': self.BINDING,
                                                 'executor_config': {'command': ['never-launched']}})
                 result = wait_stopped(controller, run)
             return result, controller.call('events', run)['events'], prompts, calls
@@ -521,7 +577,7 @@ class DeviceRepairTests(unittest.TestCase):
         from generative_driver.configurator import digest
         ok = {'ok': True, 'evidence_kind': 'live', 'results': [{'ok': True, 'outputs': {'temperature_c': 21.5}}], '_exit': 0}
         with tempfile.TemporaryDirectory() as directory:
-            result, events, prompts, calls = self.run_ground(Path(directory) / 'home',
+            result, events, prompts, calls = self.run_device_stage(Path(directory) / 'home',
                 lambda call, model, workspace: call('probe_run', model_dir=model, operation='read_temperature'), lambda name, arguments: ok)
             self.assertEqual(result['status'], 'completed', result)
             handoffs = {h['stage']: h for h in result['accepted_handoffs']}
@@ -542,8 +598,10 @@ class DeviceRepairTests(unittest.TestCase):
             ground = handoffs['ground']
             self.assertEqual([Path(a['path']).name for a in ground['artifacts']], ['0-interface-1.json'])
             notes = ground['notes']['inline']
-            test = next(c for c in notes['configurator']['checks'] if c['name'] == 'observed_device_test')
-            self.assertTrue(test['passed'])
+            checks = {c['name']: c for c in notes['configurator']['checks']}
+            self.assertTrue(checks['observed_device_test']['passed'])
+            # The configurator validated the assigned model itself.
+            self.assertEqual(checks['executable_model_contract']['passed'], True)
             self.assertEqual((notes['outcome']['kind'], notes['configurator']['device_diff']), ('advance', None))
             self.assertFalse(any(e['kind'] == 'tool.refused' for e in events))
 
@@ -562,7 +620,7 @@ class DeviceRepairTests(unittest.TestCase):
             return work
         for name, expect in (('replay only', False), ('replay and a live execution', True)):
             with self.subTest(plan=name), tempfile.TemporaryDirectory() as directory:
-                result, events, _, calls = self.run_ground(Path(directory) / 'home', plan(expect),
+                result, events, _, calls = self.run_device_stage(Path(directory) / 'home', plan(expect),
                     lambda name, arguments: replayed if name == 'probe_run' else executed)
                 self.assertEqual(result['status'], 'completed', result)
                 ground = next(h for h in result['accepted_handoffs'] if h['stage'] == 'ground')
@@ -603,7 +661,7 @@ class DeviceRepairTests(unittest.TestCase):
         def work(call, model, workspace):
             transcript = workspace / 'transcript.json'; transcript.write_text('{"schema": "interface-replay/1", "transactions": []}')
             variant = workspace / 'variant'; variant.mkdir()
-            (variant / 'model.json').write_text(json.dumps({**self.MODEL, 'operations': {**self.MODEL['operations'], 'identify': {'effect': 'read'}}}))
+            (variant / 'model.json').write_text(json.dumps(thermometer_model('Worker variant')))
             written = workspace / 'observed.json'; written.write_text('{}')
             capture = workspace / 'capture.json'; capture.write_text('{"transactions": []}')
             call('probe_run', model_dir=model, operation='read_temperature', replay=str(transcript))
@@ -615,7 +673,7 @@ class DeviceRepairTests(unittest.TestCase):
             call('probe_diff', model_dir=model, probe_json=variant_probe)
             call('probe_observe', model_dir=model, bus=str(capture))
         with tempfile.TemporaryDirectory() as directory:
-            result, events, _, calls = self.run_ground(Path(directory) / 'home', work, respond)
+            result, events, _, calls = self.run_device_stage(Path(directory) / 'home', work, respond)
         self.assertEqual(result['status'], 'completed', result)
         self.assertEqual([name for name, _ in calls],
                          ['probe_run', 'interface_execute', 'interface_execute', 'probe_run', 'probe_run', 'probe_diff', 'probe_diff', 'probe_observe'])
@@ -635,28 +693,141 @@ class DeviceRepairTests(unittest.TestCase):
         self.assertIn('assigned model', test['reason'])
         self.assertEqual(len(variant), 1)
 
-    def test_a_model_the_runtime_refuses_on_the_device_connection_goes_back_to_interpret_as_a_contract_defect(self):
-        refused = {'schema': 'interface-result/1', 'ok': False, 'operation': 'read_temperature', 'transport_open_attempted': False,
-                   'error': {'code': 'invalid', 'message': 'operations.read_temperature: no steps'}, 'transcript': [],
-                   'evidence_kind': 'live', '_exit': 1}
+    def test_an_assigned_model_that_fails_validation_goes_back_to_interpret_as_a_contract_defect(self):
+        # The real tools refuse an invalid model before any transport opens, and report it as a tool error. The
+        # configurator validates the assigned model itself, so the contract defect goes back to interpret whether or
+        # not the worker ran the model.
+        from unittest.mock import patch
+        from generative_driver.configurator import digest
+        invalid = thermometer_model(steps=False)
+        def run(call, model, workspace):
+            for name in ('interface_execute', 'probe_run'):
+                refused = call(name, model_dir=model, operation='read_temperature')
+                self.assertEqual((refused['_exit'], refused['error']), (1, "ValueError: invalid model: "
+                                 "[{'where': 'operations.read_temperature', 'what': 'requires 1–128 steps'}]"))
+        for plan, work in (('the worker runs the model', run), ('the worker runs nothing', lambda call, model, workspace: None)):
+            opened = []
+            with self.subTest(plan=plan), tempfile.TemporaryDirectory() as directory, \
+                    patch('interface_runtime.evidence.open_transport', lambda channel, binding: opened.append(binding)):
+                result, events, _, calls = self.run_device_stage(Path(directory) / 'home', work, None, model=invalid,
+                                                                 real=('interface_execute', 'probe_run'))
+                self.assertEqual(result['status'], 'completed', result)
+                # The configurator supplied the device connection, and no transport opened on it.
+                self.assertEqual([(name, arguments['binding']) for name, arguments in calls[:2]],
+                                 [('interface_execute', self.BINDING), ('probe_run', self.BINDING)] if work is run else [])
+                self.assertEqual(opened, [])
+                assigned = next(e['data'] for e in events if e['kind'] == 'stage.assigned' and e['data']['stage'] == 'ground')
+                path, sha = next((p, s) for p, s in assigned['inputs'].items() if (Path(p) / 'model.json').is_file())
+                self.assertEqual(sha, digest(path))
+                ground = [h for h in result['accepted_handoffs'] if h['stage'] == 'ground']
+                notes = ground[0]['notes']['inline']
+                self.assertEqual((ground[0]['route'], notes['outcome']),
+                                 ('interpret', {'kind': 'revise', 'reason': 'Run evidence contradicts the model'}))
+                # Only the configurator's validation is in the diff: the tool refusals reached no device.
+                self.assertEqual(notes['configurator']['device_diff'], [{
+                    'source': 'model_contract', 'model': {'name': Path(path).name, 'sha256': sha},
+                    'defects': [{'where': 'operations.read_temperature', 'what': 'requires 1–128 steps'}]}])
+                contract = next(c for c in notes['configurator']['checks'] if c['name'] == 'executable_model_contract')
+                self.assertFalse(contract['passed'])
+                # Validation never touched the assigned input, which the configurator re-hashes after the check.
+                self.assertEqual(digest(path), sha)
+                # The scripted interpreter writes the same model each time, so the budget runs out and the run continues.
+                self.assertEqual(result['progress']['repairs'], 2)
+                self.assertEqual(ground[-1]['notes']['inline']['outcome']['reason'], 'Repair budget exhausted; continuing with best revision')
+
+    def test_the_configurator_validates_a_copy_so_a_validator_that_writes_beside_the_model_alters_no_input(self):
+        # The register validator writes defects.json beside the model it checks. Validating the assigned input in place
+        # would change it, and the configurator's re-hash of the inputs after the check would stop the run.
+        register = {'schema': 'interface-model/1', 'device': {'name': 'invented register sensor'},
+                    'channel': {'type': 'i2c', 'address_7bit': '0x20', 'speed_hz': 100000},
+                    'identity': {'from': 'id', 'expect': ['0x42']},
+                    'operations': {'identify': [{'op': 'reg_read', 'reg': '0x00', 'len': 1, 'as': 'id'}],
+                                   'measure': [{'op': 'reg_read', 'reg': '0x10', 'len': 1, 'as': 'raw'}]},
+                    'conversion': {'module': 'convert.py', 'entry': 'convert', 'outputs': {'value': {'unit': 'count'}}},
+                    'provenance': [{'item': 'operations.' + key, 'source': 'invented register contract'} for key in ('identify', 'measure')]}
+        convert = 'def convert(inputs):\n    return {"value": inputs["0x10"][0] / 2}\n'
         with tempfile.TemporaryDirectory() as directory:
-            result, events, _, calls = self.run_ground(Path(directory) / 'home',
-                lambda call, model, workspace: call('interface_execute', model_dir=model, operation='read_temperature'),
-                lambda name, arguments: refused)
-        self.assertEqual(result['status'], 'completed', result)
-        self.assertEqual(calls[0][1]['binding'], self.BINDING)
-        ground = [h for h in result['accepted_handoffs'] if h['stage'] == 'ground']
-        notes = ground[0]['notes']['inline']
-        self.assertEqual((ground[0]['route'], notes['outcome']['kind']), ('interpret', 'revise'))
-        diff = notes['configurator']['device_diff']
-        self.assertEqual([{k: entry[k] for k in ('source', 'tool', 'code', 'what')} for entry in diff],
-                         [{'source': 'model_contract', 'tool': 'interface_execute', 'code': 'invalid',
-                           'what': 'operations.read_temperature: no steps'}])
-        # Nothing here says the device behaved differently: the runtime refused the model before reaching it.
-        self.assertEqual(notes['outcome']['reason'], 'Results on the device connection contradict the model')
-        # The scripted interpreter writes the same model each time, so the budget runs out and the run continues.
-        self.assertEqual(result['progress']['repairs'], 2)
-        self.assertEqual(ground[-1]['notes']['inline']['outcome']['reason'], 'Repair budget exhausted; continuing with best revision')
+            result, events, _, _ = self.run_device_stage(Path(directory) / 'home', lambda call, model, workspace: None, None,
+                                                         model=register, extra={'convert.py': convert})
+            self.assertEqual(result['status'], 'completed', result)
+            assigned = next(e['data'] for e in events if e['kind'] == 'stage.assigned' and e['data']['stage'] == 'ground')
+            path = next(p for p in assigned['inputs'] if (Path(p) / 'model.json').is_file())
+            self.assertEqual(sorted(child.name for child in Path(path).iterdir()), ['convert.py', 'model.json'])
+            notes = next(h for h in result['accepted_handoffs'] if h['stage'] == 'ground')['notes']['inline']
+            self.assertEqual([(entry['source'], entry['defects']) for entry in notes['configurator']['device_diff']],
+                             [('model_contract', [{'where': 'safety', 'what': 'missing'}])])
+
+    def test_probe_hands_on_every_record_the_device_answered_and_counts_only_the_assigned_model_as_probed(self):
+        from generative_driver.configurator import digest
+        ok = {'ok': True, 'evidence_kind': 'live', 'results': [{'ok': True, 'outputs': {}}], '_exit': 0}
+        fault = {'ok': False, 'fault': 'model', 'error_code': 'framing', 'error_message': 'short reply',
+                 'evidence_kind': 'live', 'results': [self.FAILED], '_exit': 1}
+        rounds = []
+        def work(call, model, workspace):
+            variant = workspace / 'variant'; variant.mkdir()
+            (variant / 'model.json').write_text(json.dumps(thermometer_model('Worker variant')))
+            runs = [call('probe_run', model_dir=str(variant), operation='identify')]
+            if not rounds:
+                # The device answers the assigned model's read with bytes it did not predict, then its identity.
+                runs += [call('probe_run', model_dir=model, operation='read_temperature'),
+                         call('probe_run', model_dir=model, operation='identify')]
+            rounds.append([str(Path(run['probe']).resolve()) for run in runs])
+        with tempfile.TemporaryDirectory() as directory:
+            result, events, _, _ = self.run_device_stage(Path(directory) / 'home', work,
+                lambda name, arguments: fault if arguments['operation'] == 'read_temperature' else ok, stage='probe')
+            self.assertEqual(result['status'], 'completed', result)
+            probes = [h for h in result['accepted_handoffs'] if h['stage'] == 'probe']
+            self.assertEqual([(h['revision'], h['route']) for h in probes], [(0, 'interpret'), (1, None)])
+            finished = [e['data'] for e in events if e['kind'] == 'tool.finished']
+            (variant, failed, identified), (variant_again,) = rounds
+            # Every record of the device answering on the owned connection is handed on, whatever model ran;
+            # each record names its own model.
+            self.assertEqual(sorted(a['sha256'] for a in probes[0]['artifacts']), sorted(digest(p) for p in (variant, failed, identified)))
+            self.assertEqual([a['sha256'] for a in probes[1]['artifacts']], [digest(variant_again)])
+            notes = probes[0]['notes']['inline']['configurator']
+            # The diff names the failed run's record, which the stage handed on.
+            self.assertEqual([(entry['source'], entry['probe']) for entry in notes['device_diff']],
+                             [('probe_run', {'name': Path(failed).name, 'sha256': digest(failed)})])
+            # Only a probe of the assigned model counts as probing it; runs of other models stay visible.
+            run_of = {str(Path(e['result']['probe']).resolve()): e['dispatch_id'] for e in finished}
+            probed = next(c for c in notes['checks'] if c['name'] == 'observed_probe_execution')
+            self.assertEqual((probed['passed'], probed['evidence'], probed['other_model_runs']), (True, [identified], [run_of[variant]]))
+            again = next(c for c in probes[1]['notes']['inline']['configurator']['checks'] if c['name'] == 'observed_probe_execution')
+            self.assertEqual((again['passed'], again.get('evidence'), again['other_model_runs']), (False, None, [run_of[variant_again]]))
+            self.assertEqual(again['reason'], 'No observed successful probe of the assigned model through the owned connection')
+
+    def test_a_register_probe_that_rewrites_its_record_supersedes_it_and_only_a_changed_record_stops(self):
+        from generative_driver.configurator import digest
+        def respond(name, arguments):
+            # A register probe always writes probe.json.
+            path = Path(arguments['run_dir']) / 'probe' / 'probe.json'; path.parent.mkdir(parents=True, exist_ok=True)
+            reading = json.loads(path.read_text())['reading'] + 1 if path.exists() else 0
+            path.write_text(json.dumps({'identity_ok': True, 'reading': reading}))
+            return {'ok': True, 'identity_ok': True, 'samples': [{'reading': reading}], 'probe': str(path), '_exit': 0}
+        records = []
+        def plan(alter):
+            def work(call, model, workspace):
+                records.extend(call('probe_run', model_dir=model, operation='read_temperature') for _ in range(2))
+                if alter:
+                    Path(records[-1]['probe']).write_text('{"rewritten": "by the worker"}')
+            return work
+        for name, alter in (('two runs', False), ('record changed after the tool returned', True)):
+            records.clear()
+            with self.subTest(plan=name), tempfile.TemporaryDirectory() as directory:
+                result, events, _, _ = self.run_device_stage(Path(directory) / 'home', plan(alter), respond)
+                if alter:
+                    self.assertEqual((result['status'], result['outcome_category'], result['stage']), ('blocked', 'integrity', 'ground'), result)
+                    self.assertIn('Observed probe artifact changed after the tool returned', result['reason'])
+                    continue
+                self.assertEqual(result['status'], 'completed', result)
+                first, second = [e['data'] for e in events if e['kind'] == 'tool.finished']
+                ground = next(h for h in result['accepted_handoffs'] if h['stage'] == 'ground')
+                # The later run's record replaced the earlier one; the stage hands on what the path holds now.
+                self.assertEqual([a['sha256'] for a in ground['artifacts']], [digest(records[-1]['probe'])])
+                self.assertEqual(second['artifacts'], {str(Path(records[-1]['probe']).resolve()): digest(records[-1]['probe'])})
+                test = next(c for c in ground['notes']['inline']['configurator']['checks'] if c['name'] == 'observed_device_test')
+                self.assertEqual((test['passed'], test['evidence'], test['superseded']),
+                                 (True, [str(Path(records[-1]['probe']).resolve())], [first['dispatch_id']]))
 
     DEFECTS = [{'where': 'operations.read_temperature.steps.0', 'what': 'device answered 2a; the model predicted 15',
                 'code': 'framing', 'fault': 'model'}]
@@ -674,7 +845,7 @@ class DeviceRepairTests(unittest.TestCase):
         defects = self.DEFECTS
         real_call_tool = toolkit.call_tool
         def fake_call_tool(name, arguments):
-            if name == 'interpret_run':
+            if name in ('interpret_run', 'model_validate'):
                 return real_call_tool(name, arguments)
             if name == 'probe_run':
                 # The device answered the assigned model's read with bytes it did not predict.
@@ -697,7 +868,7 @@ class DeviceRepairTests(unittest.TestCase):
                     return {'ok': True, 'artifacts': [str(image)], 'checks': []}
                 if stage == 'interpret':
                     model = workspace / 'model'; model.mkdir()
-                    (model / 'model.json').write_text(json.dumps({**self.MODEL, 'revision': assignment['revision']}))
+                    (model / 'model.json').write_text(json.dumps(thermometer_model('Scripted thermometer, revision ' + str(assignment['revision']))))
                     return {'ok': True, 'artifacts': [str(model)], 'checks': []}
                 if stage == 'probe':
                     return real_check(spec, stage, run_dir, workspace, report, accepted, assignment)
@@ -738,11 +909,12 @@ class DeviceRepairTests(unittest.TestCase):
             self.assertEqual([(entry['source'], entry['probe']) for entry in diff], [('probe_run', record), ('probe_diff', record)])
             self.assertEqual((diff[0]['code'], diff[0]['failed'], diff[1]['defects']), ('framing', [self.FAILED], self.DEFECTS))
             # The diff names records by content: no host path or run name reaches the sealed workspace.
-            self.assertNotIn(str(home), json.dumps(diff))
-            self.assertNotIn(run['run_id'], json.dumps(diff))
+            self.assertFalse(any(str(home) in text or run['run_id'] in text for text in strings(diff)))
             self.assertEqual((result['progress']['repairs'], result['progress']['revision']), (1, 1))
             probe = result['accepted_handoffs'][2]
             self.assertEqual((probe['route'], probe['notes']['inline']['outcome']['kind']), ('interpret', 'revise'))
+            # The record the diff names is handed on with the probe, although its run failed.
+            self.assertEqual([a['sha256'] for a in probe['artifacts']], [record['sha256']])
             self.assertEqual(probe['notes']['inline']['configurator']['device_diff'], diff)
             first, second = sealed
             for name in ('defects.json', 'previous-model', 'REPAIR_CONTEXT.json'):

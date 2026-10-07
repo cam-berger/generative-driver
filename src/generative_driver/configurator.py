@@ -228,7 +228,7 @@ def _outcome(stage, result, checked, *, uncertain, repairs, max_repairs):
         return _adapter_verdict(stage, checked, repairs, max_repairs)
     diff = checked.get('device_diff') if stage in ('probe', 'ground') else None
     if diff and repairs < max_repairs:
-        return Outcome('revise', 'Results on the device connection contradict the model', diff=diff)
+        return Outcome('revise', 'Run evidence contradicts the model', diff=diff)
     return Outcome('advance', 'Repair budget exhausted; continuing with best revision' if diff else None)
 
 
@@ -255,78 +255,125 @@ def _ran_assigned_model(event, assignment):
     return sha is not None and sha in set((assignment.get('inputs') or {}).values())
 
 
-def _device_diff(events, assignment):
-    """What the assigned model got wrong on the device connection, from the configurator's own record of one
-    assignment's tool results.
+def _result_of(event):
+    return event.get('result') if isinstance(event.get('result'), dict) else {}
 
-    An entry needs the assigned model (its bytes are an input of this assignment) on a connection the configurator
-    supplied:
-    - a probe_run or interface_execute failure the runtime attributes to the model after the transport opened;
-    - probe_diff defects over a probe record that such a run on the device wrote, or that an earlier stage handed on;
-    - a `model_contract` entry: the runtime refused the assigned model on that connection before the transport opened.
-      It says the model breaks the runtime contract, never that the device did anything.
-    Replays, records and captures the worker supplied, and operator and host faults are not the model contradicted.
-    Records are named by content, never by host path. Never a worker claim, never truth."""
+
+def _listed(results):
+    return [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
+
+
+def _replaced(value, replacements):
+    """`value` with every (old, new) substring replaced, in order, in each string it holds."""
+    if isinstance(value, str):
+        for old, new in replacements:
+            value = value.replace(old, new)
+        return value
+    if isinstance(value, list):
+        return [_replaced(item, replacements) for item in value]
+    return {key: _replaced(item, replacements) for key, item in value.items()} if isinstance(value, dict) else value
+
+
+def _answered(event):
+    """Whether a probe_run's record holds what the device did on the connection the configurator supplied: a live run
+    that succeeded, a register probe that read an unexpected identity, or a failure the runtime attributes to the
+    model after the transport opened."""
+    result = _result_of(event)
+    if event.get('name') != 'probe_run' or event.get('connected') is not True or result.get('evidence_kind', 'live') != 'live':
+        return False
+    if event.get('ok') is True or ('fault' not in result and result.get('_exit') == 2):
+        return True
+    failed = [r for r in _listed(result.get('results')) if r.get('ok') is False]
+    return result.get('fault') == 'model' and bool(failed) and all(r.get('transport_open_attempted') is True for r in failed)
+
+
+def _probe_records(events):
+    """The probe records one assignment's runs leave to hand on, from the configurator's own record of its tools.
+
+    For each record path only the last probe_run that wrote it counts, against the hash the configurator recorded
+    when that run returned: a register probe always writes probe.json, so a later run replaces the earlier record.
+    That record is kept when the run answered on the owned connection, whatever model it ran; each record names its
+    model. Returns ({path: (sha256, event)}, dispatch ids of the runs whose record a later run replaced)."""
+    last, superseded = {}, []
+    for event in events:
+        probe = _result_of(event).get('probe')
+        if event.get('name') != 'probe_run' or not isinstance(probe, str):
+            continue
+        path = str(Path(probe).resolve())
+        sha = (event.get('artifacts') or {}).get(path)
+        if sha is None:
+            continue
+        if path in last:
+            superseded.append(last[path][1].get('dispatch_id'))
+        last[path] = (sha, event)
+    return {path: kept for path, kept in last.items() if _answered(kept[1])}, superseded
+
+
+def _device_diff(events, assignment, contracts=None):
+    """What the assigned model got wrong, from the configurator's own record of one assignment: its validation of the
+    assigned model and the tool results it observed on the device connection it supplied.
+
+    - a `model_contract` entry: the configurator's own validation of an assigned model (`contracts` maps the input's
+      path to its model_validate result) found defects. The runtime refuses such a model before any transport opens,
+      so the entry says the model breaks the runtime contract, never that the device did anything.
+    - a probe_run or interface_execute failure of the assigned model that the runtime attributes to the model after
+      the transport opened;
+    - probe_diff defects over a probe record that such a run of the assigned model wrote, or that an earlier stage
+      handed on.
+    Replays, records and captures the worker supplied, other models, and operator and host faults are not the model
+    contradicted. Records are named by content, and only records that are handed on: an input of this assignment, or a
+    record this stage hands on (a record a later run replaced is not named). Never a worker claim, never truth."""
     from interface_runtime.faults import classify_failure
     paths = assignment.get('inputs') or {}
-    result_of = lambda event: event.get('result') if isinstance(event.get('result'), dict) else {}
-    listed = lambda results: [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
     assigned = lambda event: _ran_assigned_model(event, assignment)
     def live(event):
-        return event.get('connected') is True and result_of(event).get('evidence_kind', 'live') == 'live' and assigned(event)
+        return event.get('connected') is True and _result_of(event).get('evidence_kind', 'live') == 'live' and assigned(event)
     def opened(results):
-        failed = [r for r in listed(results) if r.get('ok') is False]
+        failed = [r for r in _listed(results) if r.get('ok') is False]
         return bool(failed) and all(r.get('transport_open_attempted') is True for r in failed)
-    # Probe records by content: those handed on to this assignment, and those its live runs wrote after the device answered.
-    records, written = {sha: Path(path).name for path, sha in paths.items()}, {}
-    for event in events:
-        result = result_of(event)
-        probe = result.get('probe')
-        sha = (event.get('artifacts') or {}).get(str(Path(probe).resolve())) if isinstance(probe, str) else None
-        if event.get('name') == 'probe_run' and sha:
-            written[probe] = sha
-            if live(event) and (result.get('ok') is True or result.get('_exit') == 2 or opened(result.get('results'))):
-                records[sha] = Path(probe).name
-    replacements = sorted(((path, Path(path).name) for path in [*paths, *written]), key=lambda item: -len(item[0]))
+    def record_of(event):
+        probe = _result_of(event).get('probe')
+        return (event.get('artifacts') or {}).get(str(Path(probe).resolve())) if isinstance(probe, str) else None
+    kept, _ = _probe_records(events)
+    # Records the diff may name: those handed on to this assignment and those this stage hands on.
+    named = {sha: Path(path).name for path, sha in paths.items()}
+    named.update({sha: Path(path).name for path, (sha, _) in kept.items()})
+    # Records a probe_diff may compare: those handed on, and those the assigned model's runs wrote as the device answered.
+    compared = set(paths.values()) | {record_of(event) for event in events if live(event) and _answered(event)}
+    probes = [_result_of(event)['probe'] for event in events
+              if event.get('name') == 'probe_run' and isinstance(_result_of(event).get('probe'), str)]
+    replacements = sorted(((path, Path(path).name) for path in [*paths, *probes]), key=lambda item: -len(item[0]))
     if assignment.get('workspace'):
         replacements.append((str(assignment['workspace']), '<' + str(assignment.get('stage')) + ' workspace>'))
-    def portable(value):
-        if isinstance(value, str):
-            for old, new in replacements:
-                value = value.replace(old, new)
-            return value
-        if isinstance(value, list):
-            return [portable(item) for item in value]
-        return {key: portable(item) for key, item in value.items()} if isinstance(value, dict) else value
+    cite = lambda sha: {'name': named[sha], 'sha256': sha} if sha in named else None
     diff = []
+    for path, validation in (contracts or {}).items():
+        defects = validation.get('defects') if isinstance(validation, dict) and validation.get('ok') is not True else None
+        if path in paths and isinstance(defects, list) and defects:
+            diff.append(_replaced({'source': 'model_contract', 'model': {'name': Path(path).name, 'sha256': paths[path]},
+                                   'defects': defects}, replacements))
     for event in events:
-        name, result = event.get('name'), result_of(event)
-        source, entry = name, None
+        name, result, entry = event.get('name'), _result_of(event), None
         if name == 'probe_diff' and assigned(event) and isinstance(result.get('defects'), list) and result['defects']:
             shas = event.get('argument_sha256') or {}
             sha = shas.get('probe_json', shas.get('probe'))
-            if sha in records and result.get('source_evidence_kind', 'live') == 'live':
-                entry = {'probe': {'name': records[sha], 'sha256': sha}, 'defects': result['defects']}
+            if sha is not None and sha in compared and result.get('source_evidence_kind', 'live') == 'live':
+                entry = {'probe': cite(sha), 'defects': result['defects']}
         elif name in ('probe_run', 'interface_execute') and not event.get('ok') and live(event):
-            failed = [r for r in listed(result.get('results') if name == 'probe_run' else [result]) if r.get('ok') is False]
+            failed = [r for r in _listed(result.get('results') if name == 'probe_run' else [result]) if r.get('ok') is False]
             model = (result.get('fault') == 'model' if name == 'probe_run' else
                      result.get('schema') == 'interface-result/1' and classify_failure(result) == 'model')
             # Register probes predate fault labels: exit 2 is an unexpected identity, exit 3 no acknowledgement.
             legacy = name == 'probe_run' and 'fault' not in result and result.get('_exit') in (2, 3)
-            refused = model and bool(failed) and not any(r.get('transport_open_attempted') is True for r in failed)
-            if (model and opened(failed)) or legacy or refused:
+            if (model and opened(failed)) or legacy:
                 error = result.get('error') if isinstance(result.get('error'), dict) else {'message': result.get('error')}
                 what = result.get('error_message') or error.get('message') or (
                     'device identity ' + repr(result.get('identity')) + ' is not one the model expects' if result.get('identity_ok') is False else None)
-                probe = result.get('probe')
-                entry = {key: value for key, value in {
-                    'tool': name if refused else None, 'code': result.get('error_code') or error.get('code'), 'what': what,
-                    # A refused run's record holds nothing the device did.
-                    'probe': {'name': Path(probe).name, 'sha256': written[probe]} if probe in written and not refused else None,
-                    'failed': failed}.items() if value not in (None, [])}
-                source = 'model_contract' if refused else name
+                entry = {'code': result.get('error_code') or error.get('code'), 'what': what,
+                         'probe': cite(record_of(event)) if name == 'probe_run' else None, 'failed': failed}
         if entry is not None:
-            diff.append(portable({'source': source, 'dispatch_id': event.get('dispatch_id'), **entry}))
+            entry = {key: value for key, value in entry.items() if value not in (None, [])}
+            diff.append(_replaced({'source': name, 'dispatch_id': event.get('dispatch_id'), **entry}, replacements))
     return diff
 
 
@@ -1278,11 +1325,11 @@ class Controller:
                 context.parent.mkdir(parents=True, exist_ok=True)
                 context.write_text(json.dumps({'schema': 'device-repair-context/1', 'mode': 'repair',
                     **({'previous_candidate': 'previous-model/'} if previous else {}),
-                    **({'feedback': 'defects.json', 'feedback_meaning': 'What the previous candidate got wrong on the '
-                        'device connection, from tool results the configurator observed through its own connection: '
-                        'what the device did that the candidate did not predict, and, in entries with source '
-                        'model_contract, the runtime refusing the candidate before the device was reached. It is '
-                        'evidence, not a grade.'} if defects else {}),
+                    **({'feedback': 'defects.json', 'feedback_meaning': 'What the previous candidate got wrong, from '
+                        'the configurator\'s own record: what the device did that the candidate did not predict, in '
+                        'tool results it observed through its own connection, and, in entries with source '
+                        'model_contract, the defects its own validation found in the candidate, which the runtime '
+                        'refuses before the device is reached. It is evidence, not a grade.'} if defects else {}),
                     'sealed_inputs': sealed,
                     'instructions': ('Start from previous-model/ and change what the evidence contradicts. ' if previous else
                                      'Change what the evidence contradicts. ') +
@@ -1457,34 +1504,66 @@ class Controller:
             check('observed_acquisition_hashes', 'No observed acquisition with verifiable output artifacts',
                   **({} if selected else {'unobserved':[str(p) for p in paths]}))
         elif stage in ('probe', 'ground'):
-            # Successful probes on the device through the configurator's connection are handed on; a replay reached no
-            # device. Model faults the device showed on the assigned model are the diff that drives repair.
+            # The configurator validates each assigned model itself, on a copy in its own run directory because a
+            # validator may write beside the model: a model the runtime would refuse goes back to interpret whether or
+            # not the worker ran it.
+            from .toolkit import call_tool
+            contracts = {}
+            for raw, expected in (assignment.get('inputs') or {}).items():
+                if not (Path(raw) / 'model.json').is_file():
+                    continue
+                scratch = run_dir / 'checks' / assignment['id']; scratch.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(dir=scratch, ignore_cleanup_errors=True) as copied:
+                    model = Path(copied) / Path(raw).name
+                    shutil.copytree(raw, model)
+                    if digest(model) != expected:
+                        return changed('Assigned model differs from its recorded hash: ' + raw)
+                    validation = call_tool('model_validate', {'run_dir': str(scratch), 'model_dir': str(model)})
+                contracts[raw] = _replaced(validation, [(str(model), raw)])
+            if contracts:
+                checks.append({'name':'executable_model_contract','passed':all(v.get('ok') is True for v in contracts.values()),
+                               'models':[{'name':Path(raw).name,'sha256':assignment['inputs'][raw],'passed':v.get('ok') is True,
+                                          **({'defects':v['defects']} if v.get('defects') else {}),
+                                          **({'reason':'Validation did not run: ' + str(v['error'])} if v.get('error') else {})}
+                                         for raw, v in contracts.items()]})
+            # Every record of the device answering on the configurator's connection is handed on, whatever model ran; a
+            # replay reached no device. Only the last run that wrote a record path counts: a later run replaces the record.
+            kept, superseded = _probe_records(mine)
+            for path, (sha, _) in kept.items():
+                if not Path(path).is_file():
+                    dropped.append({'path':path,'reason':'Observed probe record no longer exists'})
+                    continue
+                if not unchanged(path, sha):
+                    return changed('Observed probe artifact changed after the tool returned')
+                try:
+                    json.loads(Path(path).read_text(encoding='utf-8'))
+                except ValueError:
+                    dropped.append({'path':path,'reason':'Observed probe output is not valid JSON'})
+                    continue
+                selected.append(path)
+            # What the assigned model got wrong, by its validation or on the device, is the diff that drives repair.
+            diff = _device_diff(mine, assignment, contracts)
             device = [e for e in observed if e.get('connected') is True]
-            calls = [e for e in device if e['name']=='probe_run' and e.get('result',{}).get('ok')]
-            for call in calls:
-                probe = call['result'].get('probe')
-                if probe and Path(probe).is_file():
-                    if not unchanged(probe, call.get('artifacts',{}).get(str(Path(probe).resolve()))):
-                        return changed('Observed probe artifact changed after the tool returned')
-                    try:
-                        json.loads(Path(probe).read_text(encoding='utf-8'))
-                    except ValueError:
-                        dropped.append({'path':probe,'reason':'Observed probe output is not valid JSON'})
-                        continue
-                    selected.append(probe)
-            diff = _device_diff(mine, assignment)
+            replaced = {'superseded':superseded} if superseded else {}
             if stage == 'probe':
-                check('observed_probe_execution', 'No observed successful probe through the owned connection')
+                # Only a probe of the assigned model probes it; successful runs of other models stay visible.
+                probed = [path for path in selected if kept[path][1].get('ok') is True and _ran_assigned_model(kept[path][1], assignment)]
+                others = [e['dispatch_id'] for e in device if e['name'] == 'probe_run' and not _ran_assigned_model(e, assignment)]
+                checks.append({'name':'observed_probe_execution','passed':bool(probed),
+                               **({'evidence':probed} if probed else {'reason':'No observed successful probe of the assigned '
+                                                                                'model through the owned connection'}),
+                               **({'other_model_runs':others} if others else {}), **replaced})
                 return handed(selected, checks, dropped, diff=diff)
             # A device test runs the assigned model; a live execution is one too, though it writes no record to hand on.
             # Runs of other models stay visible but test nothing that was assigned.
             tested = [e for e in device if e['name'] in ('probe_run', 'interface_execute') and _ran_assigned_model(e, assignment)]
-            evidence = [e['result']['probe'] for e in tested if e['name'] == 'probe_run' and e['result'].get('probe') in selected]
+            ran = {e['dispatch_id'] for e in tested if e['name'] == 'probe_run'}
+            evidence = [path for path in selected if kept[path][1].get('dispatch_id') in ran]
             executions = [e['dispatch_id'] for e in tested if e['name'] == 'interface_execute']
             others = [e['dispatch_id'] for e in device if e['name'] in ('probe_run', 'interface_execute') and e not in tested]
             checks.append({'name':'observed_device_test','passed':bool(evidence or executions),
                            **({'evidence':evidence} if evidence else {}), **({'executions':executions} if executions else {}),
-                           **({'other_model_runs':others} if others else {}),
+                           **({'other_model_runs':others} if others else {}), **replaced,
                            **({} if evidence or executions else {'reason':'No observed successful device test of the assigned '
                                                                          'model through the owned connection'})})
             captures = [e for e in mine if e['name'] == 'probe_observe' and type(e.get('result',{}).get('refuted')) is int]

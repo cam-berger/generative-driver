@@ -1053,6 +1053,21 @@ class FinalVerdictTests(unittest.TestCase):
                                     'error_message': 'arguments must match parameter names exactly', 'fault': 'operator',
                                     'identity_verified': False, 'outputs': {}, 'units': {}, 'transport_open_attempted': False}],
                        'live_record': 'live-1.json', '_exit': 4}
+    # One package call: its first operation passed on the device, then the package's own runtime refused the fresh
+    # agent's parameters for the second before it opened the device, so the plan stopped (operator, exit 4).
+    PARTLY_REFUSED = {'ok': False, 'passed': 1, 'failed': 1, 'not_run': [], 'verdict': 'inconclusive',
+                      'results': [{'operation': 'read_temperature', 'ok': True, 'returncode': 0, 'error_code': None,
+                                   'error_message': None, 'fault': None, 'identity_verified': True,
+                                   'outputs': {'temperature': 21.5}, 'units': {'temperature': 'C'}, 'transport_open_attempted': True},
+                                  {'operation': 'read_pressure', 'ok': False, 'returncode': 1, 'error_code': 'validation_error',
+                                   'error_message': 'arguments must match parameter names exactly', 'fault': 'operator',
+                                   'identity_verified': False, 'outputs': {}, 'units': {}, 'transport_open_attempted': False}],
+                      'live_record': 'live-1.json', '_exit': 4}
+    # The runtime ran the operation on the device and the reply matched the model.
+    EXECUTE_PASSED = {'schema': 'interface-result/1', 'operation': 'read_temperature', 'ok': True,
+                      'outputs': {'temperature': 21.5}, 'units': {'temperature': 'C'}, 'identity_verified': True,
+                      'transcript': [], 'transport_open_attempted': True, '_exit': 0}
+    NEVER_RAN = 'fresh reuse never ran the frozen package with emit_test_live'
 
     @contextlib.contextmanager
     def finishing(self, controller, *, replay='passed', live=True, calls=None, attempts=None):
@@ -1164,7 +1179,9 @@ class FinalVerdictTests(unittest.TestCase):
             finally:
                 controller.close()
 
-    def test_a_register_package_checked_only_against_its_model_is_labelled_as_a_seeded_check(self):
+    def test_a_package_checked_only_against_its_model_has_no_replay_and_is_not_equivalent(self):
+        """Ruling 7 needs emit_check replay of the recorded device exchanges. A seeded package-versus-model check
+        compares the package with its own model, not with the device, so it is labelled and never counted as replay."""
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as directory:
             controller = Controller(Path(directory) / 'home')
@@ -1172,14 +1189,33 @@ class FinalVerdictTests(unittest.TestCase):
                 with self.finishing(controller, replay='seeded'):
                     run = self.start(controller)
                     result = wait_stopped(controller, run)
-                self.assertEqual(result['reason'], 'Final verdict: equivalent', result)
-                replay = result['equivalence']['checks'][0]
-                self.assertEqual(replay['id'], 'emitted_package_replay')
-                # emit_check ran the package against its model on seeded register files; no device exchange was replayed.
+                equivalence = result['equivalence']
+                self.assertEqual((result['status'], equivalence['equivalent']), ('completed', False), result)
+                replay, operations = equivalence['checks']
+                self.assertEqual((replay['id'], replay['passed']), ('emitted_package_replay', False))
                 self.assertTrue(replay['basis'].startswith('emit_check seeded package-versus-model check'), replay)
-                self.assertNotIn('recorded device exchanges', replay['basis'])
+                # Fresh reuse is still judged and reported; only the replay condition is unmet.
+                self.assertIs(operations['passed'], True)
+                reason = ('the emitted package passed emit_check without a replay of the recorded device exchanges '
+                          '(seeded package-versus-model check)')
+                self.assertEqual(equivalence['diff'], [{'id': 'emitted_package_replay', 'reason': reason}])
+                self.assertEqual(result['reason'], 'Final verdict: not equivalent: ' + reason)
             finally:
                 controller.close()
+
+    def test_an_emit_check_that_recorded_no_replay_establishes_none(self):
+        # An emit handoff from before the check named how it verified the package cannot show a replay.
+        from generative_driver.configurator import _self_evidence, digest
+        with tempfile.TemporaryDirectory() as directory:
+            package = driver_package(Path(directory))
+            emit = {'stage': 'emit', 'revision': 0, 'artifacts': [{'path': str(package), 'sha256': digest(package)}],
+                    'checks': [{'name': 'package_integrity_and_replay', 'passed': True}]}
+            evidence = _self_evidence([emit], [])
+        replay = evidence['checks'][0]
+        self.assertEqual((evidence['equivalent'], replay['passed'], replay['basis']),
+                         (False, False, 'emit_check, run by the configurator at emit'))
+        self.assertEqual(evidence['diff'][0], {'id': 'emitted_package_replay', 'reason': 'the emitted package passed '
+                                               'emit_check without a replay of the recorded device exchanges'})
 
     def test_a_failed_live_reuse_or_an_unreplayed_package_completes_not_equivalent(self):
         from generative_driver.configurator import Controller, _has_terminal_final_failure
@@ -1230,14 +1266,18 @@ class FinalVerdictTests(unittest.TestCase):
 
     def test_a_call_refused_before_the_device_was_contacted_is_not_a_live_operation(self):
         from generative_driver.configurator import Controller
-        for name, calls, equivalent in (
+        for name, calls, equivalent, outcomes in (
                 ('toolchain refusal, then the frozen package passes',
-                 [('emit_test_live', self.TOOLKIT_REFUSAL), ('emit_test_live', self.PASSED)], True),
+                 [('emit_test_live', self.TOOLKIT_REFUSAL), ('emit_test_live', self.PASSED)], True, ['refused', 'succeeded']),
                 ('runtime preflight refusal, then the frozen package passes',
-                 [('interface_execute', self.PREFLIGHT_REFUSAL), ('emit_test_live', self.PASSED)], True),
+                 [('interface_execute', self.PREFLIGHT_REFUSAL), ('emit_test_live', self.PASSED)], True, ['refused', 'succeeded']),
                 ('package runtime refusal, then the frozen package passes',
-                 [('emit_test_live', self.PACKAGE_REFUSAL), ('emit_test_live', self.PASSED)], True),
-                ('only refused calls', [('emit_test_live', self.TOOLKIT_REFUSAL), ('interface_execute', self.PREFLIGHT_REFUSAL)], False)):
+                 [('emit_test_live', self.PACKAGE_REFUSAL), ('emit_test_live', self.PASSED)], True, ['refused', 'succeeded']),
+                # The refused operation is not a live operation; the one that ran on the device passed.
+                ('one package call that passed on the device, then refused its next operation before contact',
+                 [('emit_test_live', self.PARTLY_REFUSED)], True, ['succeeded']),
+                ('only refused calls', [('emit_test_live', self.TOOLKIT_REFUSAL), ('interface_execute', self.PREFLIGHT_REFUSAL)],
+                 False, ['refused', 'refused'])):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 controller = Controller(Path(directory) / 'home')
                 try:
@@ -1245,18 +1285,42 @@ class FinalVerdictTests(unittest.TestCase):
                         run = self.start(controller)
                         result = wait_stopped(controller, run)
                     self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', equivalent), result)
-                    self.assertEqual([outcome for _, outcome in self.operations(result)][:2], ['refused', 'succeeded' if equivalent else 'refused'])
+                    self.assertEqual([outcome for _, outcome in self.operations(result)], outcomes)
                     reasons = [d['reason'] for d in result['equivalence']['diff']]
                     self.assertFalse(any('failed on the device' in reason for reason in reasons), reasons)
                     if equivalent:
                         self.assertEqual((result['reason'], reasons), ('Final verdict: equivalent', []))
                     else:
-                        self.assertEqual(reasons, ['fresh reuse ran no live operation of the emitted driver '
-                                                   '(2 calls refused before the device was contacted)'])
+                        self.assertEqual(reasons, [self.NEVER_RAN + ' (2 calls refused before the device was contacted)'])
                     # The configurator records its own reading of a runtime refusal on the event.
                     finished = {e['data']['name']: e['data'] for e in controller.call('events', run)['events'] if e['kind'] == 'tool.finished'}
                     if 'interface_execute' in finished:
                         self.assertIs(finished['interface_execute']['refused_before_open'], True)
+                finally:
+                    controller.close()
+
+    def test_reuse_that_never_ran_the_frozen_package_with_emit_test_live_is_not_equivalent_and_says_so(self):
+        """Fresh reuse must run the frozen package itself (emit_test_live). Running its driver directory as a model
+        with interface_execute is a live operation that is judged, but it is not a run of the package, and the diff
+        names that rule rather than claiming nothing live ran."""
+        from generative_driver.configurator import Controller
+        for name, calls, outcome, reasons in (
+                ('interface_execute of the frozen driver passed', [('interface_execute', self.EXECUTE_PASSED)],
+                 'succeeded', [self.NEVER_RAN]),
+                ('interface_execute of the frozen driver failed', [('interface_execute', self.EXECUTE_MODEL_FAILURE)],
+                 'failed', ['interface_execute failed on the device', self.NEVER_RAN])):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                controller = Controller(Path(directory) / 'home')
+                try:
+                    with self.finishing(controller, calls=calls):
+                        run = self.start(controller)
+                        result = wait_stopped(controller, run)
+                    self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', False), result)
+                    self.assertEqual(self.operations(result), [('interface_execute', outcome)])
+                    diff = [d['reason'] for d in result['equivalence']['diff']]
+                    self.assertEqual([reason.split(' (dispatch ')[0] for reason in diff], reasons)
+                    self.assertFalse(any('no live operation' in reason for reason in diff), diff)
+                    self.assertEqual(result['reason'], 'Final verdict: not equivalent: ' + '; '.join(diff))
                 finally:
                     controller.close()
 
@@ -1499,7 +1563,9 @@ class FinalVerdictTests(unittest.TestCase):
                     if mode == 'uncertain':
                         with controller._db() as db:
                             db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run_id,))
-                    raise RuntimeError('scripted resource stop failure')
+                    # After the verdict the configurator owns no device resource: until B5 only generic runs have a
+                    # verdict and own nothing, and B3 moves the emulator stop to the harness behind release().
+                    raise RuntimeError('scripted release failure')
                 try:
                     with self.finishing(controller), patch.object(controller, '_release', side_effect=fail_to_release):
                         run = self.start(controller)
@@ -1509,7 +1575,7 @@ class FinalVerdictTests(unittest.TestCase):
                     kind = 'evidence.sealing_failed' if mode == 'sealing' else 'cleanup.failed'
                     failed = [e['data'] for e in controller.call('events', run)['events'] if e['kind'] == kind]
                     self.assertEqual(len(failed), 1)
-                    self.assertIn('RuntimeError' if mode == 'sealing' else 'scripted resource stop failure', failed[0]['reason'])
+                    self.assertIn('RuntimeError' if mode == 'sealing' else 'scripted release failure', failed[0]['reason'])
                     with controller._db() as db:
                         leased = db.execute('SELECT COUNT(*) FROM bindings WHERE run_id=?', (run['run_id'],)).fetchone()[0]
                     if mode == 'uncertain':

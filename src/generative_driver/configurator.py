@@ -434,6 +434,8 @@ def stage_notes(accepted):
 
 # The run's one final verdict is stored in verdicts under this id suffix; it is not an evaluator stage verdict.
 FINAL = ':final'
+# How emit_check verified a handed-off package (the emit check's `verified_by`); only REPLAYED meets Ruling 7.
+REPLAYED, SEEDED = 'replay of the recorded device exchanges', 'seeded package-versus-model check'
 UNCERTAIN_AFTER_VERDICT = 'Outstanding effect is uncertain after the final verdict; operator reconciliation is required'
 
 
@@ -475,10 +477,11 @@ def _emit_check_failure(result):
 def _live_outcome(event):
     """How one live operation the configurator dispatched ended, from its own record of the tool result:
 
-    - 'succeeded';
+    - 'succeeded': it succeeded, or some of its operations passed on the device and every one that did not was
+      refused before the device was contacted (a refused operation is not a live operation);
     - 'refused': refused before the device was contacted, so not a live operation. Either the runtime's preflight
-      refused it (no failed execution attempted to open the transport), or the toolchain refused it and left no
-      execution record (an argument, binding, snapshot or integrity refusal);
+      refused it (no execution passed and none that failed attempted to open the transport), or the toolchain
+      refused it and left no execution record (an argument, binding, snapshot or integrity refusal);
     - 'failed': the model it ran failed on the device. The runtime attributes a failure to the model after the
       transport opened, or a register package's own live suite reported failing checks. The verdict counts it as the
       driver's only when the operation ran the frozen bytes;
@@ -493,8 +496,11 @@ def _live_outcome(event):
     executions = (_listed(result['results']) if isinstance(result.get('results'), list) else
                   [result] if result.get('schema') == 'interface-result/1' else [])
     failed = [r for r in executions if r.get('ok') is not True]
-    if event.get('refused_before_open') is True or (failed and all(r.get('transport_open_attempted') is False for r in failed)):
+    refused = bool(failed) and all(r.get('transport_open_attempted') is False for r in failed)
+    if event.get('refused_before_open') is True or (refused and len(failed) == len(executions)):
         return 'refused', None
+    if refused:
+        return 'succeeded', None
     fault = lambda r: classify_failure(r) if r.get('schema') == 'interface-result/1' else r.get('fault')
     if any(fault(r) == 'model' and r.get('transport_open_attempted', True) is True for r in failed):
         return 'failed', None
@@ -525,11 +531,12 @@ def _self_evidence(accepted, events, started=(), assignments=()):
     `events` are tool.finished payloads; `started` are tool.started payloads with their dispatch ids; `assignments`
     are the run's reuse assignments as {id, inputs}, with the input hashes the configurator recorded.
 
-    - **Equivalent:** the emitted package passed emit_check, which the configurator ran at emit, and every live
-      operation of fresh reuse succeeded. At least one of them ran that package (by the bytes the configurator
-      hashed before dispatch) on the connection the configurator supplied.
-    - **Not equivalent:** no single package passed emit_check, the driver failed on the device, or fresh reuse never
-      ran the package.
+    - **Equivalent:** the emitted package passed emit_check replay of the recorded device exchanges, which the
+      configurator ran at emit, and every live operation of fresh reuse succeeded. At least one of them ran that
+      package with emit_test_live (by the bytes the configurator hashed before dispatch) on the connection the
+      configurator supplied.
+    - **Not equivalent:** no single package passed emit_check replay (a seeded package-versus-model check is not
+      one), the driver failed on the device, or fresh reuse never ran the package with emit_test_live.
     - **Unscored (None):** otherwise, when a live operation was inconclusive (an operator, host or transport fault, or
       a failure of bytes other than the emitted driver) or was dispatched without a recorded result.
 
@@ -545,9 +552,12 @@ def _self_evidence(accepted, events, started=(), assignments=()):
     driver = _driver_digest(packages[0]) if frozen else None
     check_of = lambda handoff: next((c for c in (handoff or {}).get('checks', []) if isinstance(c, dict)
                                      and c.get('name') == 'package_integrity_and_replay'), {})
-    replayed = frozen is not None and check_of(emit).get('passed') is True
+    passed = frozen is not None and check_of(emit).get('passed') is True
     verified = check_of(emit).get('verified_by')
     kind = verified[0] if isinstance(verified, list) and len(verified) == 1 and isinstance(verified[0], str) else None
+    # Ruling 7 counts only a replay of the recorded device exchanges. A seeded package-versus-model check compares the
+    # package with its own model, not with the device, and a check that recorded neither establishes no replay.
+    replayed = passed and kind == REPLAYED
     replay = {'id': 'emitted_package_replay', 'passed': replayed, **({'package': frozen} if frozen else {}),
               'basis': 'emit_check' + (' ' + kind if kind else '') + ', run by the configurator at emit'}
     reuse = next((h for h in reversed(accepted) if h['stage'] == 'reuse'), None)
@@ -581,7 +591,10 @@ def _self_evidence(accepted, events, started=(), assignments=()):
                   'basis': 'Live operations the configurator dispatched for fresh reuse on the device connection it supplied'}
     diff = []
     if not replayed:
-        if packages:
+        if passed:
+            reason = ('the emitted package passed emit_check without a replay of the recorded device exchanges'
+                      + (' (' + kind + ')' if kind else ''))
+        elif packages:
             reason = ('the emitted package has no passed emit_check' if frozen else
                       str(len(packages)) + ' emitted packages; no single driver to judge')
         else:
@@ -599,7 +612,9 @@ def _self_evidence(accepted, events, started=(), assignments=()):
         ' was inconclusive: ' + str(detail) + ', not a driver failure' if outcome == 'inconclusive' else
         ' was dispatched but its result was never recorded') + dispatch(e)} for e, outcome, detail in unsettled]
     if not attempted:
-        diff.append({'id': operations['id'], 'reason': 'fresh reuse ran no live operation of the emitted driver' + (
+        # The rule is a live test of the frozen package itself; running its driver directory as a model is judged
+        # above but is not that test.
+        diff.append({'id': operations['id'], 'reason': 'fresh reuse never ran the frozen package with emit_test_live' + (
             ' (' + str(refused) + ' call' + ('s' if refused > 1 else '') + ' refused before the device was contacted)' if refused else '')})
     equivalent = False if not replayed else operations['passed']
     return {'equivalent': equivalent, 'basis': 'self-evidence', 'checks': [replay, operations], 'diff': diff}
@@ -1513,7 +1528,9 @@ class Controller:
     def _settle_release(self, run_id, failures):
         """Before a final verdict a release failure stops the run: a sealing failure fails it for the host, and a
         failed stop retains the lease as uncertain. After the verdict each failure is an event; the verdict and the
-        completed status stand unless an effect is uncertain, which blocks for safety."""
+        completed status stand unless an effect is uncertain, which blocks for safety. This relies on the configurator
+        owning no device resource once a verdict exists: generic runs own nothing, and benchmark runs record a verdict
+        only from B5, after B3 has moved the emulator stop to the harness behind release()."""
         with self._db() as db:
             final = _final_verdict(db, run_id)
         for kind, reason, detail in failures:
@@ -1912,8 +1929,7 @@ class Controller:
                     selected.append(str(package))
                     # An interface package replays its recorded device exchanges; a register package is checked
                     # against its model on seeded register files and replays no device exchange.
-                    verified.append('replay of the recorded device exchanges' if result.get('replay_status') == 'passed'
-                                    else 'seeded package-versus-model check')
+                    verified.append(REPLAYED if result.get('replay_status') == 'passed' else SEEDED)
                 else:
                     why = _emit_check_failure(result)
                     rejected.append({'package': package.name, 'reason': why})

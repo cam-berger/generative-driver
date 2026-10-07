@@ -13,15 +13,17 @@ from .faults import Fault, classify_failure
 
 
 class ModelError(ValueError):
-    def __init__(self, where, what, fault=Fault.MODEL):
+    def __init__(self, where, what, fault=Fault.MODEL, code=None):
         super().__init__(what)
         self.where = where
+        if code is not None:
+            self.code = code
         self.fault = fault.value
 
 
-def _require(condition, where, what, fault=Fault.MODEL):
+def _require(condition, where, what, fault=Fault.MODEL, code=None):
     if not condition:
-        raise ModelError(where, what, fault)
+        raise ModelError(where, what, fault, code=code)
 
 
 def _fields(value, required, optional, where):
@@ -71,6 +73,7 @@ def _json_model(model):
 
 
 SCHEMAS = ("interface-model/3", "interface-model/4", "interface-model/5", "interface-model/6")
+GRANTS = ("read", "write", "actuate", "reset")
 
 _FORMATS = {
     "u8": ("B", 0, 255), "u16le": ("<H", 0, 65535), "u16be": (">H", 0, 65535),
@@ -729,7 +732,9 @@ def execute(model, operation, parameters=None, *, binding=None, allow_effects=()
         validation = validate_model(model)
         _require(validation["ok"], "model", "; ".join(d["where"] + ": " + d["what"] for d in validation["defects"]))
         _require(type(operation) is str and operation in model["operations"], "operation", "unknown operation", Fault.OPERATOR)
-        _require(type(allow_effects) in (tuple, list, set, frozenset) and all(v in ("read", "write", "actuate") for v in allow_effects), "allow_effects", "invalid effect grants", Fault.OPERATOR)
+        _require(type(allow_effects) in (tuple, list, set, frozenset) and all(v in GRANTS for v in allow_effects), "allow_effects", "invalid effect grants", Fault.OPERATOR)
+        _require(not model["channel"].get("resets_on_open") or "reset" in allow_effects,
+                 "effect", "channel resets the device on open; requires an explicit reset grant", Fault.OPERATOR, code="effect")
         selected = model["operations"][operation]
         _require(selected["effect"] == "read" or selected["effect"] in allow_effects, "effect", "operation requires explicit effect grant", Fault.OPERATOR)
         parameters = {} if parameters is None else parameters

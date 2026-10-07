@@ -371,6 +371,28 @@ def test_model_cannot_select_delay_implementation(model):
     assert not boundary.opened
 
 
+def test_uart_boot_and_reset_declarations_validate(model):
+    model["channel"].update(boot={"line_prefix": "@ boot", "timeout_ms": 5000}, resets_on_open=True)
+    assert validate_model(model)["ok"], validate_model(model)
+    for bad in ({"line_prefix": "", "timeout_ms": 5000}, {"line_prefix": "x", "timeout_ms": 0},
+                {"line_prefix": "x", "timeout_ms": 60001}, {"line_prefix": "x"}):
+        broken = copy.deepcopy(model); broken["channel"]["boot"] = bad
+        assert not validate_model(broken)["ok"], bad
+    broken = copy.deepcopy(model); broken["channel"]["resets_on_open"] = "yes"
+    assert not validate_model(broken)["ok"]
+
+
+def test_resetting_channel_requires_reset_grant_before_open(model):
+    model["channel"]["resets_on_open"] = True
+    boundary = Boundary([])
+    result = run(model, boundary)
+    assert not result["ok"] and result["error"]["code"] == "effect"
+    assert result["error"]["fault"] == "operator" and not boundary.opened
+    assert result["transport_open_attempted"] is False
+    boundary = Boundary([(b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:21.5\n")])
+    assert run(model, boundary, allow_effects=("reset",))["ok"]
+
+
 class EngineTests(unittest.TestCase):
     pass
 

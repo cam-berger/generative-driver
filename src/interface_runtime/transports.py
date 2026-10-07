@@ -71,7 +71,7 @@ def validate_channel(channel):
     if not isinstance(channel, dict) or not isinstance(channel.get('type'), str):
         _fail('channel requires a type')
     kind = channel['type']
-    fields = {'tcp': ([], []), 'uart': (['baudrate','bytesize','parity','stopbits'], ['baudrate']),
+    fields = {'tcp': ([], []), 'uart': (['baudrate','bytesize','parity','stopbits','boot','resets_on_open'], ['baudrate']),
               'i2c': (['address_7bit','speed_hz'], ['address_7bit','speed_hz']),
               'spi': (['cs','clock_hz','mode','bit_order'], ['cs','clock_hz','mode','bit_order']),
               'usb': (['interface','in_endpoint','out_endpoint','transfer'], [])}
@@ -87,6 +87,13 @@ def validate_channel(channel):
         stop = channel.get('stopbits', 1)
         if type(stop) not in (int, float) or stop not in (1, 1.5, 2):
             _fail('unsupported stopbits')
+        if 'resets_on_open' in channel and type(channel['resets_on_open']) is not bool:
+            _fail('resets_on_open must be boolean')
+        if 'boot' in channel:
+            boot = channel['boot']
+            _fields(boot, ['line_prefix','timeout_ms'], ['line_prefix','timeout_ms'], 'boot')
+            _string(boot['line_prefix'], 'boot.line_prefix')
+            _integer(boot['timeout_ms'], 1, 60000, 'boot.timeout_ms')
     elif kind == 'i2c':
         _integer(channel['address_7bit'], 0, 127, 'address_7bit')
         _integer(channel['speed_hz'], 1, 3400000, 'speed_hz')

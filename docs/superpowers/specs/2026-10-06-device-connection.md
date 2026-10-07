@@ -30,7 +30,7 @@ The emitted package exposes `session()` in its Python API and a `sequence` CLI c
 
 ## Acquisition
 
-`acquire_serial_listen(baudrate, seconds)` opens the bound port with control lines deasserted, transmits nothing, and records for at most 30 seconds. It writes `listen.bin` (raw bytes) and `listen.json` (byte count, first-byte delay, `unsolicited_output`, escaped text). It returns `available: true` with both artifacts hashed and sets `resets_on_open` as described above. The configurator injects the port; a worker-supplied port is refused.
+`acquire_serial_listen(baudrate, seconds)` opens the bound port with control lines deasserted, transmits nothing, and records for at most 30 seconds. It writes append-only `listen-N.raw` (raw bytes) and `listen-N.json` (byte count, first-byte delay, `unsolicited_output`, escaped text). It returns `available: true` with both artifacts hashed and sets `resets_on_open` as described above. The configurator injects the port; a worker-supplied port is refused.
 
 `acquire_flash` and `acquire_classify` with `flash_backend: "esp32"` use the bridge's auto-reset into download mode and hard-reset on completion only when `reset` is granted; otherwise they keep `no-reset` and report that the chip did not answer. A successful acquisition returns `available: true`, lists `flash.bin`, `app.bin`, `app.elf` and the eFuse summary as artifacts, and names one `interpret_input`: `app.elf` when conversion succeeded, otherwise `app.bin`. Every exit, success or failure, leaves the chip at its default baud and, when `reset` is granted, back in its application.
 

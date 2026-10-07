@@ -447,11 +447,11 @@ def equivalence_label(equivalence):
 
 
 def _verdict_reason(equivalence):
-    """The completed run's reason: its verdict and, when not equivalent, the first differences."""
+    """The completed run's reason: its verdict and, unless equivalent, the first differences."""
     label = equivalence_label(equivalence)
     reasons = [d['reason'] for d in equivalence.get('diff') or [] if isinstance(d, dict) and isinstance(d.get('reason'), str)]
     detail = '; '.join(reasons[:3]) + ('; ' + str(len(reasons) - 3) + ' more' if len(reasons) > 3 else '')
-    return 'Final verdict: ' + label + (': ' + detail if label == 'not equivalent' and reasons else '')
+    return 'Final verdict: ' + label + (': ' + detail if label != 'equivalent' and reasons else '')
 
 
 def _packages(handoff):
@@ -459,39 +459,127 @@ def _packages(handoff):
     return [a for a in handoff['artifacts'] if Path(a['path']).is_dir() and (Path(a['path']) / 'manifest.json').is_file()]
 
 
-def _self_evidence(accepted, events):
+def _emit_check_failure(result):
+    """Why emit_check did not pass a package, in the tool's own terms."""
+    if isinstance(result.get('error'), str):
+        return result['error']
+    if result.get('integrity_ok') is False:
+        return 'package integrity failed'
+    if result.get('runtime_current') is False:
+        return 'runtime is not current, so replay did not run'
+    if result.get('replay_status') not in (None, 'passed'):
+        return 'replay ' + str(result['replay_status'])
+    return 'seeded check failed' if 'seeds_run' in result else 'emit_check reported failure'
+
+
+def _live_outcome(event):
+    """How one live operation the configurator dispatched ended, from its own record of the tool result:
+
+    - 'succeeded';
+    - 'refused': refused before the device was contacted, so not a live operation. Either the runtime's preflight
+      refused it (no failed execution attempted to open the transport), or the toolchain refused it and left no
+      execution record (an argument, binding, snapshot or integrity refusal);
+    - 'failed': the driver failed on the device. The runtime attributes a failure to the model after the transport
+      opened, or a register package's own live suite reported failing checks;
+    - 'inconclusive': anything else that did not succeed, such as an operator, host or transport fault (exit 4).
+      It says nothing about the driver.
+
+    Returns (outcome, fault detail for an inconclusive one)."""
+    from interface_runtime.faults import classify_failure
+    result = _result_of(event)
+    if event.get('ok') is True:
+        return 'succeeded', None
+    executions = (_listed(result['results']) if isinstance(result.get('results'), list) else
+                  [result] if result.get('schema') == 'interface-result/1' else [])
+    failed = [r for r in executions if r.get('ok') is not True]
+    if event.get('refused_before_open') is True or (failed and all(r.get('transport_open_attempted') is False for r in failed)):
+        return 'refused', None
+    fault = lambda r: classify_failure(r) if r.get('schema') == 'interface-result/1' else r.get('fault')
+    if any(fault(r) == 'model' and r.get('transport_open_attempted', True) is True for r in failed):
+        return 'failed', None
+    if executions or 'fault' in result or result.get('_exit') == 4:
+        first = failed[0] if failed else result
+        error = first.get('error') if isinstance(first.get('error'), dict) else {}
+        code = first.get('error_code') or error.get('code')
+        return 'inconclusive', str((fault(first) if failed else result.get('fault')) or 'unclassified') + ' fault' + (
+            ' (' + str(code) + ')' if code else '')
+    if isinstance(result.get('output'), list):
+        # A register package's live suite ran on the device; failing checks are the driver's.
+        return ('failed', None) if isinstance(result.get('failed'), int) and result['failed'] > 0 else (
+            'inconclusive', 'live suite exited with an error')
+    return 'refused', None
+
+
+def _self_evidence(accepted, events, started=()):
     """A generic run's final verdict, from the configurator's own records only.
 
-    Equivalent when the emitted package passed emit_check replay of the recorded device exchanges, which the
-    configurator ran at emit, and every live operation of fresh reuse succeeded, at least one of them running that
-    package (by the bytes the configurator hashed before dispatch) on the connection it supplied. This is
-    self-evidence about the driver's outputs on the device, labelled as such; never an independent grade or truth."""
-    emit = next((h for h in reversed(accepted) if h['stage'] == 'emit' and _packages(h)), None)
+    `events` are tool.finished payloads; `started` are tool.started payloads with their dispatch ids.
+
+    - **Equivalent:** the emitted package passed emit_check, which the configurator ran at emit, and every live
+      operation of fresh reuse succeeded. At least one of them ran that package (by the bytes the configurator
+      hashed before dispatch) on the connection the configurator supplied.
+    - **Not equivalent:** no single package passed emit_check, the driver failed on the device, or fresh reuse never
+      ran the package.
+    - **Unscored (None):** otherwise, when a live operation was inconclusive (an operator, host or transport fault) or
+      was dispatched without a recorded result.
+
+    A call refused before the device was contacted is not a live operation. This is self-evidence about the driver's
+    outputs on the device, labelled as such; never an independent grade or truth."""
+    emits = [h for h in accepted if h['stage'] == 'emit']
+    emit = next((h for h in reversed(emits) if _packages(h)), None)
     packages = _packages(emit) if emit else []
     frozen = {'name': Path(packages[0]['path']).name, 'sha256': packages[0]['sha256']} if len(packages) == 1 else None
-    replayed = frozen is not None and any(isinstance(c, dict) and c.get('name') == 'package_integrity_and_replay'
-                                          and c.get('passed') is True for c in emit.get('checks', []))
+    check_of = lambda handoff: next((c for c in (handoff or {}).get('checks', []) if isinstance(c, dict)
+                                     and c.get('name') == 'package_integrity_and_replay'), {})
+    replayed = frozen is not None and check_of(emit).get('passed') is True
+    verified = check_of(emit).get('verified_by')
+    kind = verified[0] if isinstance(verified, list) and len(verified) == 1 and isinstance(verified[0], str) else None
     replay = {'id': 'emitted_package_replay', 'passed': replayed, **({'package': frozen} if frozen else {}),
-              'basis': 'emit_check replay of the recorded device exchanges, run by the configurator at emit'}
+              'basis': 'emit_check' + (' ' + kind if kind else '') + ', run by the configurator at emit'}
     reuse = next((h for h in reversed(accepted) if h['stage'] == 'reuse'), None)
-    live = [e for e in events if reuse and e.get('assignment_id') == reuse['assignment_id'] and e.get('connected') is True]
+    mine = lambda e: reuse is not None and e.get('assignment_id') == reuse['assignment_id']
+    recorded = {e.get('dispatch_id') for e in events if mine(e)}
+    # A device dispatch without a recorded result (the tool raised after it was dispatched) is unresolved.
+    rows = [(e, *_live_outcome(e)) for e in events if mine(e) and e.get('connected') is True]
+    rows += [(e, 'unresolved', None) for e in started if mine(e) and e.get('connected', True) is True
+             and e.get('dispatch_id') not in recorded]
+    rows.sort(key=lambda row: int(row[0]['dispatch_id']) if str(row[0].get('dispatch_id')).isdigit() else 0)
     emitted = lambda e: (frozen is not None and e.get('name') == 'emit_test_live'
                          and (e.get('argument_sha256') or {}).get('package_dir') == frozen['sha256'])
-    failed, used = [e for e in live if e.get('ok') is not True], [e for e in live if emitted(e)]
-    operations = {'id': 'fresh_reuse_live_operations', 'passed': bool(used) and not failed,
-                  'operations': [{'dispatch_id': e.get('dispatch_id'), 'name': e.get('name'), 'ok': e.get('ok') is True,
-                                  'emitted_package': emitted(e)} for e in live],
+    attempted = [e for e, outcome, _ in rows if emitted(e) and outcome != 'refused']
+    failed = [e for e, outcome, _ in rows if outcome == 'failed']
+    unsettled = [row for row in rows if row[1] in ('inconclusive', 'unresolved')]
+    refused = sum(1 for _, outcome, _ in rows if outcome == 'refused')
+    operations = {'id': 'fresh_reuse_live_operations',
+                  'passed': False if failed or not attempted else None if unsettled else True,
+                  'operations': [{'dispatch_id': e.get('dispatch_id'), 'name': e.get('name'), 'ok': outcome == 'succeeded',
+                                  'outcome': outcome, **({'fault': detail} if detail else {}), 'emitted_package': emitted(e)}
+                                 for e, outcome, detail in rows],
                   'basis': 'Live operations the configurator dispatched for fresh reuse on the device connection it supplied'}
     diff = []
     if not replayed:
-        diff.append({'id': replay['id'], 'reason': 'no driver emitted' if not packages else
-                     'the emitted package has no passed emit_check replay' if frozen else
-                     str(len(packages)) + ' emitted packages; no single driver to judge'})
-    diff += [{'id': operations['id'], 'reason': str(e.get('name')) + ' failed on the device (dispatch ' + str(e.get('dispatch_id')) + ')'}
-             for e in failed]
-    if not used and not failed:
-        diff.append({'id': operations['id'], 'reason': 'fresh reuse ran no live operation of the emitted driver'})
-    return {'equivalent': replayed and operations['passed'], 'basis': 'self-evidence', 'checks': [replay, operations], 'diff': diff}
+        if packages:
+            reason = ('the emitted package has no passed emit_check' if frozen else
+                      str(len(packages)) + ' emitted packages; no single driver to judge')
+        else:
+            # Generic emit hands off only packages that passed; the check counts the ones it ran emit_check on.
+            latest = check_of(emits[-1] if emits else None)
+            candidates = latest.get('candidates') if isinstance(latest.get('candidates'), int) else 0
+            why = next((r['reason'] for r in latest.get('rejected') or [] if isinstance(r, dict) and isinstance(r.get('reason'), str)), None)
+            reason = ('no driver emitted' if not candidates else
+                      'the emitted package did not pass emit_check' + (': ' + why if why else '') if candidates == 1 else
+                      'none of the ' + str(candidates) + ' emitted packages passed emit_check')
+        diff.append({'id': replay['id'], 'reason': reason})
+    dispatch = lambda e: ' (dispatch ' + str(e.get('dispatch_id')) + ')'
+    diff += [{'id': operations['id'], 'reason': str(e.get('name')) + ' failed on the device' + dispatch(e)} for e in failed]
+    diff += [{'id': operations['id'], 'reason': str(e.get('name')) + (
+        ' was inconclusive: ' + str(detail) + ', not a driver failure' if outcome == 'inconclusive' else
+        ' was dispatched but its result was never recorded') + dispatch(e)} for e, outcome, detail in unsettled]
+    if not attempted:
+        diff.append({'id': operations['id'], 'reason': 'fresh reuse ran no live operation of the emitted driver' + (
+            ' (' + str(refused) + ' call' + ('s' if refused > 1 else '') + ' refused before the device was contacted)' if refused else '')})
+    equivalent = False if not replayed else operations['passed']
+    return {'equivalent': equivalent, 'basis': 'self-evidence', 'checks': [replay, operations], 'diff': diff}
 
 
 @contextmanager
@@ -617,13 +705,27 @@ class Controller:
                    (run_id, kind, _json(payload), time.time()))
         return cursor.lastrowid
 
-    def _state(self, run_id, status, reason=None, stage=None, *, outcome_category=None):
+    def _state(self, run_id, status, reason=None, stage=None, *, outcome_category=None, from_verdict=False):
+        """Change a run's status unless it was cancelled. Cancellation never replaces the completed status of a run
+        with a final verdict.
+
+        `from_verdict` completes the run from its recorded final verdict, even when a cancellation arrived after the
+        verdict was committed: the verdict ends the run whatever happens next."""
         category = status if status in ('completed', 'cancelled') else outcome_category or 'unknown'
         if category not in ('completed','safety','integrity','operator','host','model','cancelled','unknown'):
             raise ValueError('Invalid owner outcome category')
+        if from_verdict and status != 'completed':
+            raise ValueError('Only completion follows from a final verdict')
         with self._db() as db:
-            changed = db.execute('UPDATE runs SET status=?,reason=?,stage=COALESCE(?,stage),updated=?,outcome_category=? WHERE id=? AND (cancelled=0 OR ?=\'cancelled\')',
-                       (status, reason, stage, time.time(), category, run_id,status))
+            if from_verdict:
+                changed = db.execute('UPDATE runs SET status=?,reason=?,stage=COALESCE(?,stage),updated=?,outcome_category=?,cancelled=0 '
+                                     'WHERE id=? AND EXISTS(SELECT 1 FROM verdicts WHERE id=?)',
+                                     (status, reason, stage, time.time(), category, run_id, run_id + FINAL))
+            else:
+                changed = db.execute('UPDATE runs SET status=?,reason=?,stage=COALESCE(?,stage),updated=?,outcome_category=? WHERE id=? '
+                                     "AND (cancelled=0 OR ?='cancelled') AND NOT (?='cancelled' AND status='completed' "
+                                     'AND EXISTS(SELECT 1 FROM verdicts WHERE id=?))',
+                                     (status, reason, stage, time.time(), category, run_id, status, status, run_id + FINAL))
             if changed.rowcount:
                 if status in TERMINAL:
                     db.execute("UPDATE assignments SET state=? WHERE run_id=? AND state='active'",(status,run_id))
@@ -708,7 +810,11 @@ class Controller:
         if method == 'cancel':
             with self._lock:
                 with self._db() as db:
-                    db.execute('UPDATE runs SET cancelled=1 WHERE id=?', (run_id,))
+                    # A run completed from its final verdict keeps that status; there is nothing left to cancel.
+                    requested = db.execute("UPDATE runs SET cancelled=1 WHERE id=? AND NOT (status='completed' "
+                                           'AND EXISTS(SELECT 1 FROM verdicts WHERE id=?))', (run_id, run_id + FINAL)).rowcount
+                if not requested:
+                    return self.call('status', {'run_id': run_id})
                 worker = self._workers.get(run_id)
                 if worker:
                     worker[0].set()
@@ -752,6 +858,17 @@ class Controller:
                         raise ValueError('Frozen final evaluation failure is terminal; start a new trial')
                 if row['uncertain']:
                     raise ValueError('Outstanding effect is uncertain; operator must respond with confirmed_safe after reconciliation')
+                with self._db() as db:
+                    final = _final_verdict(db, run_id)
+                if final is not None:
+                    # The recorded verdict is never graded again, and completing from it runs no stage and touches no
+                    # device: no budget, binding claim or worker. The run's own lease is released as a finished run's is.
+                    with self._db() as db:
+                        db.execute('DELETE FROM bindings WHERE run_id=?', (run_id,))
+                        db.execute("UPDATE assignments SET state='superseded' WHERE run_id=? AND state='active'", (run_id,))
+                        self._event(run_id, 'run.resumed', {'final_verdict': True}, db)
+                    self._state(run_id, 'completed', _verdict_reason(final['equivalence']), from_verdict=True)
+                    return self.call('status', {'run_id': run_id})
                 self._workflow_progress(run_id)
                 original_spec=json.loads(row['spec'])
                 spec = dict(original_spec)
@@ -1277,7 +1394,11 @@ class Controller:
             if cancel.is_set():
                 return
             final = self._finalize(run_id, spec, accepted)
-            self._state(run_id, 'completed', _verdict_reason(final['equivalence']) if final else completion)
+            if final:
+                # Once recorded, the verdict completes the run even if a cancellation landed after it.
+                self._state(run_id, 'completed', _verdict_reason(final['equivalence']), from_verdict=True)
+            else:
+                self._state(run_id, 'completed', completion)
         except Exception as exc:
             category = 'integrity' if isinstance(exc, IntegrityError) else 'safety' if isinstance(exc, SafetyError) else 'host'
             self._state(run_id, 'failed' if category == 'host' else 'blocked', type(exc).__name__ + ': ' + str(exc),
@@ -1313,8 +1434,11 @@ class Controller:
             for handoff in accepted:
                 self._verify_handoff(handoff)
             with self._db() as db:
-                rows = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='tool.finished' ORDER BY seq", (run_id,)).fetchall()
-            equivalence = _self_evidence(accepted, [json.loads(row['payload']) for row in rows])
+                rows = db.execute("SELECT seq,kind,payload FROM events WHERE run_id=? AND kind IN ('tool.started','tool.finished') "
+                                  "ORDER BY seq", (run_id,)).fetchall()
+            equivalence = _self_evidence(accepted, [json.loads(row['payload']) for row in rows if row['kind'] == 'tool.finished'],
+                                         [{**json.loads(row['payload']), 'dispatch_id': str(row['seq'])}
+                                          for row in rows if row['kind'] == 'tool.started'])
         with self._db() as db:
             if db.execute('SELECT cancelled FROM runs WHERE id=?', (run_id,)).fetchone()['cancelled']:
                 return None
@@ -1745,12 +1869,23 @@ class Controller:
                           'and their differences from it; physical meaning rests on operator observations where given')
         elif stage == 'emit':
             from .toolkit import call_tool
-            for package in [p for p in paths if p.is_dir() and (p/'manifest.json').is_file()]:
+            candidates = list(dict.fromkeys(p for p in paths if p.is_dir() and (p/'manifest.json').is_file()))
+            verified, rejected = [], []
+            for package in candidates:
                 result = call_tool('emit_check',{'package_dir':str(package),'run_dir':str(workspace/'checks')})
                 replayed=result.get('replay_status')=='passed' or result.get('seeds_run',0)>0
                 if result.get('ok') and result.get('_exit',0)==0 and result.get('runtime_current') and replayed:
                     selected.append(str(package))
-            check('package_integrity_and_replay', 'No independently checked emitted package')
+                    # An interface package replays its recorded device exchanges; a register package is checked
+                    # against its model on seeded register files and replays no device exchange.
+                    verified.append('replay of the recorded device exchanges' if result.get('replay_status') == 'passed'
+                                    else 'seeded package-versus-model check')
+                else:
+                    why = _emit_check_failure(result)
+                    rejected.append({'package': package.name, 'reason': why})
+                    dropped.append({'path': str(package), 'reason': 'emit_check did not pass: ' + why})
+            check('package_integrity_and_replay', 'No independently checked emitted package', candidates=len(candidates),
+                  **({'verified_by': verified} if verified else {}), **({'rejected': rejected} if rejected else {}))
         elif stage == 'reuse':
             executed = any(e['name']=='emit_test_live' and e.get('result',{}).get('ok') for e in observed)
             selected = [str(p) for p in paths] if executed else []
@@ -1969,8 +2104,9 @@ class Controller:
                     raise ValueError('Outstanding effect is uncertain; another effectful operation is refused until operator reconciliation')
                 if effectful:
                     db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run['id'],))
+                # The facts go on the start too: a dispatch that raises before it finishes is still known to the verdict.
                 dispatch_id = self._event(run['id'], 'tool.started', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'effectful':effectful,
-                    'actor':'evaluator' if evaluator_workspace is not None else 'worker'}, db)
+                    **facts, 'actor':'evaluator' if evaluator_workspace is not None else 'worker'}, db)
                 if effectful:
                     db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(dispatch_id,run['id'],assignment['id'],
                         'evaluator' if evaluator_workspace is not None else 'worker'))
@@ -2022,7 +2158,8 @@ class Controller:
                 db.execute('DELETE FROM pending_effects WHERE dispatch_id=?',(dispatch_id,))
                 db.execute('UPDATE runs SET uncertain=EXISTS(SELECT 1 FROM pending_effects WHERE run_id=?) WHERE id=?',(run['id'],run['id']))
             evidence_id = self._event(run['id'], 'tool.finished', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'ok':success,'result':result,'artifacts':observed_artifacts,
-                'dispatch_id':str(dispatch_id),'effectful':effectful,'effects_reconciled':effects_reconciled,**facts,
+                'dispatch_id':str(dispatch_id),'effectful':effectful,'effects_reconciled':effects_reconciled,
+                'refused_before_open':refused_before_open,**facts,
                 'actor':'evaluator' if evaluator_workspace is not None else 'worker'}, db)
         if name == 'benchmark_package_execute':
             result = {**result, 'evidence_id': str(evidence_id)}

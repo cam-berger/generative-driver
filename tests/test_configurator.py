@@ -1021,21 +1021,48 @@ class FinalVerdictTests(unittest.TestCase):
     self-evidence: the emitted package passed emit_check replay and every live operation of fresh reuse succeeded."""
     BINDING = {'host': '127.0.0.1', 'port': 9}
 
+    # Scripted live tool results in the toolchain's own shapes. None of them reaches a device.
+    PASSED = {'schema': 'interface-live-test/1', 'ok': True, 'verdict': 'pass', 'passed': 1, 'failed': 0,
+              'results': [{'ok': True, 'operation': 'read_temperature', 'fault': None}], 'live_record': 'live-1.json', '_exit': 0}
+    MODEL_FAILURE = {'schema': 'interface-live-test/1', 'ok': False, 'verdict': 'fail', 'passed': 0, 'failed': 1,
+                     'results': [{'ok': False, 'operation': 'read_temperature', 'error_code': 'expect', 'fault': 'model'}],
+                     'live_record': 'live-1.json', '_exit': 1}
+    # interface.emit_test_live raised before any call, as toolkit.call_tool returns it: no live record.
+    TOOLKIT_REFUSAL = {'ok': False, '_exit': 1, 'error': 'parameters name an operation that is not tested'}
+    # The plan stopped at a host fault (a timeout before identity): exit 4, inconclusive.
+    HOST_FAULT = {'schema': 'interface-live-test/1', 'ok': False, 'verdict': 'inconclusive', 'passed': 0, 'failed': 1,
+                  'results': [{'ok': False, 'operation': 'read_temperature', 'error_code': 'timeout', 'fault': 'host'}],
+                  'live_record': 'live-1.json', '_exit': 4}
+    # The runtime refused the operation before opening the transport.
+    PREFLIGHT_REFUSAL = {'schema': 'interface-result/1', 'operation': 'read_temperature', 'ok': False, 'outputs': {},
+                         'units': {}, 'identity_verified': False, 'transcript': [], 'transport_open_attempted': False,
+                         'error': {'code': 'validation_error', 'message': 'argument violates parameter type or bounds',
+                                   'fault': 'operator'}, '_exit': 1}
+
     @contextlib.contextmanager
-    def finishing(self, controller, *, replay='passed', live=True):
+    def finishing(self, controller, *, replay='passed', live=True, calls=None):
         """Acquire to ground are scripted. Emit and reuse use the real preparation and checks with scripted emit_check
-        and emit_test_live tools: the emit worker writes a package and the reuse worker runs it once on the device."""
+        and live tools: the emit worker writes a package and the reuse worker runs it once on the device.
+
+        `replay` is the emit_check outcome ('passed', 'failed' or 'seeded' for a register package's seeded check).
+        `calls` scripts the reuse worker instead: (tool, result) pairs called in order, where the tool is emit_test_live
+        of the frozen package or interface_execute of its model, and a result that is an exception is raised by the tool."""
         from unittest.mock import patch
         from generative_driver.configurator import digest
         real_check, tools = controller._check, []
+        scripted = list(calls) if calls is not None else [('emit_test_live', self.PASSED if live else self.MODEL_FAILURE)]
+        results = iter([result for _, result in scripted])
         def fake_call_tool(name, arguments):
             tools.append(name)
             if name == 'emit_check':
-                return {'ok': True, '_exit': 0, 'runtime_current': True, 'replay_status': replay}
-            if name == 'emit_test_live':
-                return {'schema': 'interface-live-test/1', 'ok': live, 'verdict': 'pass' if live else 'fail',
-                        'package_dir': arguments['package_dir'], 'results': [{'ok': live, 'operation': 'read_temperature'}],
-                        '_exit': 0 if live else 1}
+                return ({'ok': True, '_exit': 0, 'runtime_current': True, 'seeds_run': 3} if replay == 'seeded' else
+                        {'ok': replay == 'passed', '_exit': 0 if replay == 'passed' else 1, 'runtime_current': True,
+                         'replay_status': replay})
+            if name in ('emit_test_live', 'interface_execute'):
+                result = next(results)
+                if isinstance(result, BaseException):
+                    raise result
+                return json.loads(json.dumps(result))
             raise AssertionError('Unexpected tool ' + name)
         def prepare(original, spec, stage, run_dir, workspace, accepted):
             return original(spec, stage, run_dir, workspace, accepted) if stage in ('emit', 'reuse') else {'inputs': [], 'allowed_tools': []}
@@ -1045,8 +1072,14 @@ class FinalVerdictTests(unittest.TestCase):
             return {'ok': True, 'artifacts': [], 'checks': []}
         def work(request):
             if request.stage == 'reuse':
-                controller.call('tool', {**gateway_identity(request), 'name': 'emit_test_live',
-                                         'arguments': {'package_dir': task_of(request.prompt)['inputs'][0]}})
+                package = task_of(request.prompt)['inputs'][0]
+                for tool, _ in scripted:
+                    arguments = ({'package_dir': package} if tool == 'emit_test_live' else
+                                 {'model_dir': str(Path(package) / 'driver'), 'operation': 'read_temperature'})
+                    try:
+                        controller.call('tool', {**gateway_identity(request), 'name': tool, 'arguments': arguments})
+                    except RuntimeError:
+                        pass
         def report(request):
             if request.stage == 'emit':
                 package = driver_package(request.workspace)
@@ -1078,8 +1111,11 @@ class FinalVerdictTests(unittest.TestCase):
                 self.assertEqual(list(checks), ['emitted_package_replay', 'fresh_reuse_live_operations'])
                 self.assertTrue(all(c['passed'] for c in checks.values()))
                 self.assertEqual(checks['emitted_package_replay']['package'], {'name': Path(package['path']).name, 'sha256': package['sha256']})
-                self.assertEqual([(o['name'], o['ok'], o['emitted_package']) for o in checks['fresh_reuse_live_operations']['operations']],
-                                 [('emit_test_live', True, True)])
+                self.assertTrue(checks['emitted_package_replay']['basis'].startswith('emit_check replay of the recorded device exchanges'),
+                                checks['emitted_package_replay'])
+                self.assertEqual([(o['name'], o['ok'], o['outcome'], o['emitted_package'])
+                                  for o in checks['fresh_reuse_live_operations']['operations']],
+                                 [('emit_test_live', True, 'succeeded', True)])
                 # Recorded once under the run's final id, apart from evaluator verdicts; the run needs no further stage.
                 [(verdict_id, payload)] = final_verdicts(controller, run)
                 self.assertEqual(verdict_id, run['run_id'] + ':final')
@@ -1096,9 +1132,29 @@ class FinalVerdictTests(unittest.TestCase):
             finally:
                 controller.close()
 
+    def test_a_register_package_checked_only_against_its_model_is_labelled_as_a_seeded_check(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory) / 'home')
+            try:
+                with self.finishing(controller, replay='seeded'):
+                    run = self.start(controller)
+                    result = wait_stopped(controller, run)
+                self.assertEqual(result['reason'], 'Final verdict: equivalent', result)
+                replay = result['equivalence']['checks'][0]
+                self.assertEqual(replay['id'], 'emitted_package_replay')
+                # emit_check ran the package against its model on seeded register files; no device exchange was replayed.
+                self.assertTrue(replay['basis'].startswith('emit_check seeded package-versus-model check'), replay)
+                self.assertNotIn('recorded device exchanges', replay['basis'])
+            finally:
+                controller.close()
+
     def test_a_failed_live_reuse_or_an_unreplayed_package_completes_not_equivalent(self):
         from generative_driver.configurator import Controller, _has_terminal_final_failure
         for name, options, first in (('failed live operation', {'live': False}, 'fresh_reuse_live_operations'),
+                                     ('model fault after an inconclusive call',
+                                      {'calls': [('emit_test_live', self.HOST_FAULT), ('emit_test_live', self.MODEL_FAILURE)]},
+                                      'fresh_reuse_live_operations'),
                                      ('replay failed', {'replay': 'failed'}, 'emitted_package_replay')):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 controller = Controller(Path(directory) / 'home')
@@ -1113,19 +1169,170 @@ class FinalVerdictTests(unittest.TestCase):
                     self.assertEqual(equivalence['diff'][0]['id'], first)
                     self.assertEqual({d['id'] for d in equivalence['diff']}, {c['id'] for c in equivalence['checks'] if not c['passed']})
                     if name == 'replay failed':
-                        # No package passed replay: emit hands off nothing, reuse is skipped and no driver was emitted.
+                        # A driver was emitted and failed emit_check: emit hands off no package, drops it with the
+                        # reason in its notes, and reuse is skipped.
                         self.assertEqual(tools, ['emit_check'])
-                        self.assertTrue(result['reason'].startswith('Final verdict: not equivalent: no driver emitted'), result['reason'])
+                        self.assertTrue(result['reason'].startswith('Final verdict: not equivalent: the emitted package '
+                                                                    'did not pass emit_check: replay failed'), result['reason'])
+                        emit = next(h for h in result['accepted_handoffs'] if h['stage'] == 'emit')
+                        self.assertEqual(emit['artifacts'], [])
+                        self.assertEqual(next(c for c in emit['checks'] if c['name'] == 'package_integrity_and_replay')['candidates'], 1)
+                        [drop] = emit['notes']['inline']['configurator']['dropped_artifacts']
+                        self.assertEqual((Path(drop['path']).name, drop['reason']), ('package', 'emit_check did not pass: replay failed'))
                     else:
-                        dispatch = next(e['data']['dispatch_id'] for e in controller.call('events', run)['events']
-                                        if e['kind'] == 'tool.finished' and e['data']['name'] == 'emit_test_live')
-                        self.assertIn(dispatch, equivalence['diff'][0]['reason'])
+                        failed = [e['data']['dispatch_id'] for e in controller.call('events', run)['events']
+                                  if e['kind'] == 'tool.finished' and e['data']['name'] == 'emit_test_live'][-1]
+                        self.assertEqual(equivalence['diff'][0]['reason'], 'emit_test_live failed on the device (dispatch ' + failed + ')')
                     self.assertEqual(len(final_verdicts(controller, run)), 1)
                     # A verdict of not equivalent is a completed run, never a terminal failure to resume around.
                     with controller._db() as db:
                         self.assertFalse(_has_terminal_final_failure(db, run['run_id']))
                     with self.assertRaisesRegex(ValueError, 'Only a stopped incomplete run can resume'):
                         controller.call('resume', run)
+                finally:
+                    controller.close()
+
+    def operations(self, result):
+        check = next(c for c in result['equivalence']['checks'] if c['id'] == 'fresh_reuse_live_operations')
+        return [(o['name'], o['outcome']) for o in check['operations']]
+
+    def test_a_call_refused_before_the_device_was_contacted_is_not_a_live_operation(self):
+        from generative_driver.configurator import Controller
+        for name, calls, equivalent in (
+                ('toolchain refusal, then the frozen package passes',
+                 [('emit_test_live', self.TOOLKIT_REFUSAL), ('emit_test_live', self.PASSED)], True),
+                ('runtime preflight refusal, then the frozen package passes',
+                 [('interface_execute', self.PREFLIGHT_REFUSAL), ('emit_test_live', self.PASSED)], True),
+                ('only refused calls', [('emit_test_live', self.TOOLKIT_REFUSAL), ('interface_execute', self.PREFLIGHT_REFUSAL)], False)):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                controller = Controller(Path(directory) / 'home')
+                try:
+                    with self.finishing(controller, calls=calls):
+                        run = self.start(controller)
+                        result = wait_stopped(controller, run)
+                    self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', equivalent), result)
+                    self.assertEqual([outcome for _, outcome in self.operations(result)][:2], ['refused', 'succeeded' if equivalent else 'refused'])
+                    reasons = [d['reason'] for d in result['equivalence']['diff']]
+                    self.assertFalse(any('failed on the device' in reason for reason in reasons), reasons)
+                    if equivalent:
+                        self.assertEqual((result['reason'], reasons), ('Final verdict: equivalent', []))
+                    else:
+                        self.assertEqual(reasons, ['fresh reuse ran no live operation of the emitted driver '
+                                                   '(2 calls refused before the device was contacted)'])
+                    # The configurator records its own reading of a runtime refusal on the event.
+                    finished = {e['data']['name']: e['data'] for e in controller.call('events', run)['events'] if e['kind'] == 'tool.finished'}
+                    if 'interface_execute' in finished:
+                        self.assertIs(finished['interface_execute']['refused_before_open'], True)
+                finally:
+                    controller.close()
+
+    def test_an_operator_or_host_fault_or_an_unrecorded_dispatch_leaves_the_verdict_unscored(self):
+        from generative_driver.configurator import Controller
+        for name, calls, outcome, detail in (
+                ('host fault, then the frozen package passes', [('emit_test_live', self.HOST_FAULT), ('emit_test_live', self.PASSED)],
+                 'inconclusive', 'host fault'),
+                ('host fault only', [('emit_test_live', self.HOST_FAULT)], 'inconclusive', 'host fault'),
+                ('dispatch never recorded, then the frozen package passes',
+                 [('emit_test_live', RuntimeError('scripted gateway fault after dispatch')), ('emit_test_live', self.PASSED)],
+                 'unresolved', 'never recorded')):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                controller = Controller(Path(directory) / 'home')
+                try:
+                    with self.finishing(controller, calls=calls):
+                        run = self.start(controller)
+                        result = wait_stopped(controller, run)
+                    self.assertEqual((result['status'], result['outcome_category']), ('completed', 'completed'), result)
+                    self.assertIsNone(result['equivalence']['equivalent'], result['equivalence'])
+                    self.assertEqual(self.operations(result)[0], ('emit_test_live', outcome))
+                    started = [e['id'] for e in controller.call('events', run)['events']
+                               if e['kind'] == 'tool.started' and e['data']['name'] == 'emit_test_live']
+                    [entry] = result['equivalence']['diff']
+                    self.assertEqual(entry['id'], 'fresh_reuse_live_operations')
+                    self.assertIn(detail, entry['reason'])
+                    self.assertIn('(dispatch ' + str(started[0]) + ')', entry['reason'])
+                    self.assertNotIn('failed on the device', entry['reason'])
+                    self.assertEqual(result['reason'], 'Final verdict: unscored: ' + entry['reason'])
+                finally:
+                    controller.close()
+
+    def test_resuming_a_stopped_run_with_a_verdict_completes_from_it_without_budget_binding_or_worker(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller, SafetyError
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory) / 'home')
+            try:
+                with self.finishing(controller):
+                    with patch.object(controller, '_release', side_effect=self.uncertain_release(controller)):
+                        run = self.start(controller)
+                        stopped = wait_stopped(controller, run)
+                self.assertEqual((stopped['status'], stopped['outcome_category']), ('blocked', 'safety'), stopped)
+                controller.call('respond', {**run, 'message': 'Checked the device', 'effect_resolution': 'confirmed_safe'})
+                with controller._db() as db:
+                    # The wall-clock budget has lapsed since the verdict.
+                    db.execute('UPDATE runs SET created=created-? WHERE id=?', (10 * 86400, run['run_id']))
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM bindings WHERE run_id=?', (run['run_id'],)).fetchone()[0], 1)
+                with patch('generative_driver.configurator._self_evidence', side_effect=AssertionError('graded twice')), \
+                     patch.object(controller, '_claim_binding', side_effect=SafetyError('Device binding is already owned by another run')), \
+                     patch.object(controller, '_spawn', side_effect=AssertionError('no worker is needed')):
+                    resumed = controller.call('resume', run)
+                self.assertEqual((resumed['status'], resumed['reason']), ('completed', 'Final verdict: equivalent'), resumed)
+                result = controller.call('result', run)
+                self.assertEqual((result['status'], result['outcome_category'], result['uncertain_effect']), ('completed', 'completed', False))
+                self.assertEqual(len(final_verdicts(controller, run)), 1)
+                with controller._db() as db:
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM bindings WHERE run_id=?', (run['run_id'],)).fetchone()[0], 0)
+                kinds = [e['kind'] for e in controller.call('events', run)['events']]
+                self.assertEqual(kinds[-2:], ['run.resumed', 'run.completed'])
+                self.assertEqual(kinds.count('run.finalized'), 1)
+            finally:
+                controller.close()
+
+    @staticmethod
+    def uncertain_release(controller):
+        def release(run_id, spec, run_dir):
+            with controller._db() as db:
+                db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run_id,))
+            return []
+        return release
+
+    def test_cancellation_never_takes_the_completed_status_from_a_run_with_a_verdict(self):
+        import threading
+        from generative_driver.configurator import Controller
+        for when in ('after completion', 'between the verdict and completion'):
+            with self.subTest(when=when), tempfile.TemporaryDirectory() as directory:
+                controller = Controller(Path(directory) / 'home')
+                cancellers = []
+                real_finalize = controller._finalize
+                def finalize_then_cancel(run_id, spec, accepted):
+                    final = real_finalize(run_id, spec, accepted)
+                    canceller = threading.Thread(target=controller.call, args=('cancel', {'run_id': run_id}))
+                    canceller.start()
+                    cancellers.append(canceller)
+                    until = time.monotonic() + 5
+                    while controller._row(run_id)['status'] != 'cancelled':
+                        self.assertLess(time.monotonic(), until)
+                        time.sleep(.01)
+                    return final
+                try:
+                    from unittest.mock import patch
+                    with self.finishing(controller), contextlib.ExitStack() as stack:
+                        if when != 'after completion':
+                            stack.enter_context(patch.object(controller, '_finalize', side_effect=finalize_then_cancel))
+                        run = self.start(controller)
+                        result = wait_stopped(controller, run)
+                    for canceller in cancellers:
+                        canceller.join(10)
+                    if when == 'after completion':
+                        cancelled = controller.call('cancel', run)
+                        self.assertEqual((cancelled['status'], cancelled['reason']), ('completed', 'Final verdict: equivalent'))
+                    else:
+                        self.assertEqual(len(cancellers), 1)
+                    result = controller.call('result', run)
+                    self.assertEqual((result['status'], result['outcome_category'], result['reason']),
+                                     ('completed', 'completed', 'Final verdict: equivalent'), result)
+                    self.assertEqual(len(final_verdicts(controller, run)), 1)
+                    with controller._db() as db:
+                        self.assertEqual(db.execute('SELECT cancelled FROM runs WHERE id=?', (run['run_id'],)).fetchone()[0], 0)
                 finally:
                     controller.close()
 

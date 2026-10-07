@@ -102,8 +102,10 @@ print(json.dumps({'type':'complete','total_tokens':150,'input_tokens':100,'outpu
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             fake = root / 'goose_contract.py'
+            # Goose 1.53 --no-profile also drops recipe extensions, leaving the
+            # worker without its developer tools and stage gateway.
             fake.write_text('''import json,sys,pathlib
-assert '--no-profile' in sys.argv
+assert '--no-profile' not in sys.argv
 assert '--no-session' in sys.argv
 r=json.loads(pathlib.Path(sys.argv[sys.argv.index('--recipe')+1]).read_text())
 assert [e['name'] for e in r['extensions']]==['developer']

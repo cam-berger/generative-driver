@@ -160,7 +160,9 @@ def _launch(request, config):
                                          'available_tools': request.allowed_tools})
         recipe_path = work / '_stage_recipe.json'
         recipe_path.write_text(json.dumps(recipe), encoding='utf-8')
-        command += ['run', '--no-profile', '--no-session', '--recipe', str(recipe_path), '--output-format', 'stream-json']
+        # Goose 1.53 --no-profile also drops recipe extensions; recipe
+        # extensions already replace the profile's extension selection.
+        command += ['run', '--no-session', '--recipe', str(recipe_path), '--output-format', 'stream-json']
         env['GOOSE_DISABLE_SESSION_NAMING'] = 'true'
         env['CONTEXT_FILE_NAMES'] = '[]'
         stdin = ''

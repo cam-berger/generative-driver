@@ -1005,8 +1005,14 @@ class Controller:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(path, target) if path.is_dir() else shutil.copy2(path, target)
             inputs.append(str(target))
-        return {'objective': spec['goal'], 'inputs': inputs, 'allowed_tools': STAGE_TOOLS[stage],
-                'context': {'stage': stage, 'acceptance': 'Report evidence for this stage; missing evidence blocks acceptance.'}}
+        context = {'stage': stage, 'acceptance': 'Report evidence for this stage; missing evidence blocks acceptance.'}
+        if spec.get('binding'):
+            # Workers learn that a device exists, never its connection.
+            context['device'] = ('An operator-owned device binding is attached. The configurator supplies its '
+                                 'connection to device tools; do not pass a port or binding.')
+        if spec.get('_operator_observations'):
+            context['operator_observations'] = spec['_operator_observations']
+        return {'objective': spec['goal'], 'inputs': inputs, 'allowed_tools': STAGE_TOOLS[stage], 'context': context}
 
     def _evaluator_operation(self, run_id, stage, assignment_id, options, invoke):
         """One controller owns evaluator effects, uncertainty and actor-labelled evidence."""
@@ -1223,6 +1229,13 @@ class Controller:
         arguments = dict(params.get('arguments', {}))
         if {'run_dir','binding','allow_effects','bus_url'} & arguments.keys():
             raise ValueError('Connection, output directory and effect grants are configurator-owned')
+        if name == 'acquire_classify':
+            # Hardware acquisition opens only the operator's serial binding.
+            if 'port' in arguments:
+                raise ValueError('Connection, output directory and effect grants are configurator-owned')
+            port = (assignment.get('binding') or {}).get('port')
+            if isinstance(port,str) and port.strip():
+                arguments['port'] = port
         workspace = Path(evaluator_workspace or assignment['workspace'])
         from .toolkit import _PATH_ARGUMENTS
         for key in _PATH_ARGUMENTS & arguments.keys():

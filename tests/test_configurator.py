@@ -230,6 +230,74 @@ class ConfiguratorTests(unittest.TestCase):
             finally:
                 controller.close()
 
+    def test_acquire_receives_the_operator_serial_binding_not_a_worker_port(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory))
+            bound = str(Path(directory).resolve() / 'operator-serial')
+            try:
+                run = controller.call('start', {'goal':'Scripted acquire binding contract', 'binding':{'port':bound},
+                    'executor_config':{'command':[sys.executable,'-c','import time; time.sleep(20)']}})
+                until = time.monotonic() + 3
+                assignment = None
+                while time.monotonic() < until:
+                    assignment = next((e['data'] for e in controller.call('events', run)['events']
+                                       if e['kind'] == 'stage.assigned'), None)
+                    if assignment and controller.call('status', run)['status'] == 'running':
+                        break
+                    time.sleep(.02)
+                self.assertEqual(assignment['stage'], 'acquire')
+                request = {**run, 'assignment_id':assignment['id'], 'name':'acquire_classify'}
+                with self.assertRaisesRegex(ValueError, 'configurator-owned'):
+                    controller.call('tool', {**request, 'arguments':{'port':'/dev/worker-selected'}})
+                # Without a flash backend the tool refuses before opening the bound port.
+                result = controller.call('tool', {**request, 'arguments':{}})
+                self.assertIn('A serial endpoint does not select a flash backend', str(result))
+                controller.call('cancel', run)
+            finally:
+                controller.close()
+
+    def test_generic_worker_receives_operator_observations_without_the_connection(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            prompts = root / 'prompts.txt'
+            fake = root / 'record_prompt.py'
+            fake.write_text('import sys,pathlib\nwith pathlib.Path(sys.argv[1]).open("a") as f: f.write(sys.stdin.read()+"\\n<end>\\n")\n')
+            bound = str(root / 'operator-serial')
+            controller = Controller(root / 'home')
+            try:
+                run = controller.call('start', {'goal':'Scripted observation contract', 'binding':{'port':bound},
+                    'executor_config':{'command':[sys.executable,str(fake),str(prompts)]}})
+                def stopped():
+                    until = time.monotonic() + 5
+                    while time.monotonic() < until:
+                        state = controller.call('status', run)
+                        if state['status'] not in ('queued','running'):
+                            return state
+                        time.sleep(.02)
+                    self.fail('Scripted worker did not stop')
+                stopped()
+                controller.call('respond', {**run, 'observation':{'source':'operator','chip_family':'esp32'}})
+                until = time.monotonic() + 3
+                while True:
+                    try:
+                        controller.call('resume', run)
+                        break
+                    except ValueError as exc:
+                        self.assertIn('stopping', str(exc))
+                        self.assertLess(time.monotonic(), until)
+                        time.sleep(.02)
+                stopped()
+                first, second = prompts.read_text().split('<end>')[:2]
+                self.assertNotIn('esp32', first)
+                self.assertIn('esp32', second)
+                self.assertIn('operator_observations', second)
+                self.assertIn('device binding is attached', second)
+                self.assertNotIn(bound, second)
+            finally:
+                controller.close()
+
     def test_worker_claims_and_hashed_text_cannot_substitute_for_stage_evidence(self):
         from generative_driver.configurator import Controller, STAGES
         with tempfile.TemporaryDirectory() as directory:

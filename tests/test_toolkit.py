@@ -226,6 +226,45 @@ print(json.dumps(call_tool('usage_record',json.loads(sys.argv[1]))))
                              "00000010: accepts 51; emits 52\n")
             self.assertFalse(call_tool("firmware_collect", {"run_dir": str(run)})["ok"])
 
+    def test_serial_listen_records_capture_without_transmitting(self):
+        import sys, types
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        writes = []
+        class Port:
+            def __init__(self): self.chunks = [b"ESP-ROM:esp32s3\r\n", b"waiting for download\r\n"]
+            def open(self): pass
+            def reset_input_buffer(self): pass
+            def read(self, size=1): return self.chunks.pop(0) if self.chunks else b""
+            def write(self, data): writes.append(data)
+            def close(self): pass
+        module = types.ModuleType("serial"); module.Serial = Port
+        with tempfile.TemporaryDirectory() as temp, patch.dict(sys.modules, {"serial": module}):
+            result = call_tool("acquire_serial_listen", {"run_dir": temp, "port": "/dev/cu.fake", "seconds": 0.3})
+            self.assertTrue(result["available"], result)
+            self.assertTrue(result["unsolicited_output"])
+            self.assertEqual(writes, [])
+            capture = json.loads(Path(result["artifact"]).read_text())
+            self.assertIn("waiting for download", capture["text"])
+            self.assertEqual(Path(result["artifacts"][0]).read_bytes(), b"ESP-ROM:esp32s3\r\nwaiting for download\r\n")
+            refused = call_tool("acquire_serial_listen", {"run_dir": temp, "port": "/dev/cu.fake", "seconds": 31})
+            self.assertFalse(refused["available"])
+
+    def test_serial_listen_on_a_quiet_device_is_evidence_without_reset(self):
+        import sys, types
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        class Quiet:
+            def open(self): pass
+            def read(self, size=1): return b""
+            def close(self): pass
+        module = types.ModuleType("serial"); module.Serial = Quiet
+        with tempfile.TemporaryDirectory() as temp, patch.dict(sys.modules, {"serial": module}):
+            result = call_tool("acquire_serial_listen", {"run_dir": temp, "port": "/dev/cu.fake", "seconds": 0.2})
+        self.assertTrue(result["available"])
+        self.assertFalse(result["unsolicited_output"])
+        self.assertEqual((result["bytes"], result["first_byte_ms"]), (0, None))
+
     def test_installed_catalog_exposes_generic_tools_and_resources(self):
         from generative_driver.toolkit import list_tools, resources_root
 

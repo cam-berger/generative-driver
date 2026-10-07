@@ -522,6 +522,33 @@
       }
     },
     {
+      "name": "acquire_serial_listen",
+      "description": "Stage 1. Record what the bound serial device sends for up to 30 seconds with DTR/RTS released and nothing transmitted. Output within 500 ms of opening is recorded as unsolicited and marks the binding as resetting on open; every later connection then requires the operator's reset grant. The configurator supplies the port.",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "baudrate": {
+            "type": "integer",
+            "default": 115200,
+            "description": "Serial port baud rate (1..12000000)."
+          },
+          "seconds": {
+            "type": "number",
+            "default": 8,
+            "description": "Listen duration in seconds (0..30]."
+          }
+        },
+        "required": [
+          "run_dir"
+        ],
+        "type": "object",
+        "title": "acquire_serial_listenArguments"
+      }
+    },
+    {
       "name": "acquire_datasheet",
       "description": "Fetch a registered part_hint or an explicit URL, verify expected_sha256 when supplied, and extract datasheet pages.",
       "inputSchema": {

@@ -5,7 +5,7 @@ can be read, a documented part, a device that describes itself, and nothing at a
 walks it and stops at the first rung that yields a description. Every rung it tries is logged with the
 reason it was taken or skipped, so the class is a finding rather than a setting.
 """
-import array, hashlib, json, os, re, shutil, urllib.request, uuid
+import array, hashlib, json, os, re, shutil, time, urllib.request, uuid
 
 from . import core, runner
 
@@ -119,6 +119,47 @@ def acquire_flash(run_dir, port, chunked=False, strip_app_desc=False, backend=No
     files = {core.label(p): core.sha256(p) for p in (flash, app, elf) if os.path.exists(p)}
     return {"available": True, "rung": "flash", "chip": chip, "mac": mac, "artifact": core.label(elf),
             "_files": files}
+
+
+@core.tool("acquire_serial_listen")
+def acquire_serial_listen(run_dir, port, baudrate=115200, seconds=8, **_):
+    """Record what a serial device sends with control lines released and nothing transmitted."""
+    if not isinstance(port, str) or not port.strip():
+        return {"available": False, "reason": "No bound serial port", "_exit": 1}
+    if type(seconds) not in (int, float) or not 0 < seconds <= 30:
+        return {"available": False, "reason": "seconds must be in (0, 30]", "_exit": 1}
+    if type(baudrate) is not int or not 1 <= baudrate <= 12000000:
+        return {"available": False, "reason": "baudrate must be an integer 1..12000000", "_exit": 1}
+    import serial  # optional hardware dependency, imported only when listening
+    run = core.resolve_run(run_dir)
+    out = _mkdir(run, "acquire")
+    handle = serial.Serial()
+    handle.port, handle.baudrate, handle.timeout = port, baudrate, 0.05
+    handle.dtr = False
+    handle.rts = False
+    started = time.monotonic()
+    handle.open()
+    data, first = b"", None
+    try:
+        while time.monotonic() - started < seconds:
+            chunk = handle.read(4096)
+            if chunk:
+                first = first if first is not None else int((time.monotonic() - started) * 1000)
+                data += chunk
+    finally:
+        handle.close()
+    unsolicited = first is not None and first <= 500
+    raw = os.path.join(out, "listen.bin")
+    meta = os.path.join(out, "listen.json")
+    with open(raw, "wb") as f:
+        f.write(data)
+    with open(meta, "w", encoding="utf-8") as f:
+        json.dump({"schema": "serial-listen/1", "baudrate": baudrate, "seconds": seconds, "bytes": len(data),
+                   "first_byte_ms": first, "unsolicited_output": unsolicited,
+                   "text": data.decode("utf-8", "backslashreplace")}, f, indent=1)
+    raw, meta = os.path.abspath(raw), os.path.abspath(meta)
+    return {"available": True, "unsolicited_output": unsolicited, "bytes": len(data), "first_byte_ms": first,
+            "artifact": meta, "artifacts": [raw, meta], "_files": {raw: core.sha256(raw), meta: core.sha256(meta)}}
 
 
 # ---------------------------------------------------------------- rung 2: a documented part

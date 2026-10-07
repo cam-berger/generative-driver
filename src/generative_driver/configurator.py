@@ -991,7 +991,9 @@ class Controller:
         if stage == 'interpret':
             from .toolkit import call_tool
             acquisition = next((h for h in reversed(accepted) if h['stage']=='acquire'),None)
-            images = [Path(a['path']) for a in acquisition['artifacts'] if Path(a['path']).suffix.lower() in ('.bin','.elf')] if acquisition else []
+            artifacts = [Path(a['path']) for a in acquisition['artifacts']] if acquisition else []
+            named = [p for p in artifacts if p.name in ('interpret-input.elf', 'interpret-input.bin')]
+            images = named if len(named) == 1 else [p for p in artifacts if p.suffix.lower() in ('.bin', '.elf')]
             if len(images) != 1 or spec.get('front_end','interpret-interface') != 'interpret-interface':
                 return {'blocked':'Generic blind interpretation currently requires one acquired binary and front_end=interpret-interface'}
             tool_run = run_dir / 'preparation' / workspace.name
@@ -1025,6 +1027,10 @@ class Controller:
             # Workers learn that a device exists, never its connection.
             context['device'] = ('An operator-owned device binding is attached. The configurator supplies its '
                                  'connection to device tools; do not pass a port or binding.')
+        if spec.get('binding') and stage == 'acquire':
+            context['serial'] = ('Listen first with acquire_serial_listen. If it reports unsolicited output the device '
+                                 'resets on open, and every later connection needs the operator reset grant. '
+                                 'Granted effects: ' + ', '.join(spec.get('effects', [])) + '.')
         if spec.get('_operator_observations'):
             context['operator_observations'] = spec['_operator_observations']
         return {'objective': spec['goal'], 'inputs': inputs, 'allowed_tools': STAGE_TOOLS[stage], 'context': context}

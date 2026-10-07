@@ -551,6 +551,45 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
             self.assertEqual(len(reopened.call('events', {'run_id':run['run_id']})['events']), len(controller.call('events', {'run_id':run['run_id']})['events']))
             reopened.close()
 
+    def test_interpret_prefers_the_named_acquisition_input(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            controller = Controller(root / 'home')
+            try:
+                acquired = root / 'acquire'; acquired.mkdir()
+                for name in ('flash.bin', 'app.bin', 'interpret-input.elf'):
+                    (acquired / name).write_bytes(b'\x7fELF' if name.endswith('.elf') else b'\xe9')
+                accepted = [{'stage': 'acquire', 'artifacts': [{'path': str(acquired / n), 'sha256': '', 'kind': 'file'}
+                                                               for n in ('flash.bin', 'app.bin', 'interpret-input.elf')]}]
+                seen = {}
+                def fake_call_tool(name, arguments):
+                    seen.update(arguments['inputs'])
+                    return {'ok': False, 'reason': 'scripted stop'}
+                from unittest.mock import patch
+                with patch('generative_driver.toolkit.call_tool', fake_call_tool):
+                    prepared = controller._prepare({'goal': 'x', 'effects': ['read']}, 'interpret', root / 'run', root / 'work', accepted)
+                self.assertEqual(seen['image.bin'], str(acquired / 'interpret-input.elf'))
+                self.assertIn('blocked', prepared)
+            finally:
+                controller.close()
+
+    def test_acquire_context_explains_listen_and_reset_without_the_port(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            controller = Controller(root / 'home')
+            try:
+                (root / 'work').mkdir()
+                prepared = controller._prepare({'goal': 'x', 'effects': ['read', 'reset'], 'binding': {'port': '/dev/cu.secret'}},
+                                               'acquire', root / 'run', root / 'work', [])
+                text = json.dumps(prepared['context'])
+                self.assertIn('acquire_serial_listen', text)
+                self.assertIn('reset', text)
+                self.assertNotIn('/dev/cu.secret', text)
+            finally:
+                controller.close()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -13,7 +13,9 @@ import copy
 import ipaddress
 import tempfile
 import math
+import re
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 from .agents import StageRequest, execute
 
@@ -162,6 +164,94 @@ def operation_effects(name, arguments):
     return {operations[item].get('effect','actuate') for item in names}
 
 
+class IntegrityError(ValueError):
+    """A recorded or observed hash, sealed input or handoff no longer matches: the run stops for integrity."""
+
+
+class SafetyError(ValueError):
+    """A device binding conflict: the run stops for safety."""
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """The decision after one worker: advance, revise or stop. Stops name safety, integrity, operator or host."""
+    kind: str
+    reason: str | None = None
+    category: str | None = None
+    diff: object = None
+
+
+_REPORT_FAULTS = ('no_report', 'invalid_report', 'output_limit')
+_CHANGED = re.compile(r'(?i)stale|changed|altered|hash')
+
+
+def _runtime_stop(result):
+    """A runtime that could not run, ran out of time or crashed stops; one that ran and reported badly does not."""
+    status, cause = result.get('status', 'completed'), result.get('cause')
+    if status == 'completed' or cause in _REPORT_FAULTS:
+        return None
+    host = cause == 'exit_error' or (cause is None and status == 'failed')
+    return {'category': 'host' if host else 'operator', 'reason': result.get('reason') or 'Configured runtime ' + str(status)}
+
+
+def _adapter_verdict(stage, checked, repairs, max_repairs):
+    """Benchmark adapters still return truth-graded verdicts with their legacy categories until Part B."""
+    if checked.get('ok', True):
+        raise ValueError('Unsupported evaluator revision route')
+    if checked.get('route') == 'interpret' and checked.get('fault') == 'model' and stage in ('interpret', 'probe', 'ground'):
+        if not checked.get('revision_committed') and repairs >= max_repairs:
+            return Outcome('stop', 'Model repair budget exhausted: ' + checked.get('reason', 'checks failed'), 'model')
+        return Outcome('revise', checked.get('reason'), diff=checked.get('feedback'))
+    fault = checked.get('fault')
+    return Outcome('stop', checked.get('reason', 'Independent stage checks failed'),
+                   fault if fault in ('model', 'host', 'operator') else 'unknown')
+
+
+def _outcome(stage, result, checked, *, uncertain, repairs, max_repairs):
+    """Decide one stage. Worker report status, failed or not_run checks and missing artifacts never stop."""
+    stop = _runtime_stop(result) or checked.get('stop') or (uncertain and {'category': 'safety', 'reason':
+        checked.get('reason') or 'Outstanding effect is uncertain; operator reconciliation is required before further execution'})
+    if stop:
+        return Outcome('stop', stop['reason'], stop['category'])
+    if checked.get('ok') is False or checked.get('route'):
+        return _adapter_verdict(stage, checked, repairs, max_repairs)
+    diff = checked.get('device_diff') if stage in ('probe', 'ground') else None
+    if diff and repairs < max_repairs:
+        return Outcome('revise', 'Device behaviour differs from the model', diff=diff)
+    return Outcome('advance', 'Repair budget exhausted; continuing with best revision' if diff else None)
+
+
+def _notes(result, checked, outcome):
+    """stage-notes/1: worker claims, truth-free configurator checks, open questions and the outcome."""
+    report = result.get('report') if isinstance(result.get('report'), dict) else {}
+    listed = lambda key: report[key] if isinstance(report.get(key), list) else []
+    observed = checked.get('notes') or {}
+    unresolved = [item for item in listed('unresolved') if isinstance(item, str)]
+    questions = list(unresolved)
+    if result.get('status') != 'completed':
+        questions.append('Worker runtime produced no usable report: ' + str(result.get('reason')))
+    elif report.get('status') in ('needs_revision', 'blocked', 'failed'):
+        questions.append('Worker reported ' + report['status'] + ': ' + str(report.get('summary', '')))
+    return {'schema': 'stage-notes/1',
+            'worker': {'runtime_status': result.get('status'), 'runtime_reason': result.get('reason'),
+                       'status': report.get('status'), 'summary': report.get('summary'),
+                       'checks': listed('checks'), 'unresolved': unresolved},
+            'configurator': {'checks': observed.get('checks', []), 'dropped_artifacts': observed.get('dropped_artifacts', []),
+                             'tool_refusals': [], 'device_diff': checked.get('device_diff')},
+            'open_questions': questions, 'outcome': {'kind': outcome.kind, 'reason': outcome.reason}}
+
+
+@contextmanager
+def _integrity_checked():
+    """Adapter and toolchain ValueErrors about changed bytes or stale evidence are integrity stops."""
+    try:
+        yield
+    except ValueError as error:
+        if not isinstance(error, (IntegrityError, SafetyError)) and _CHANGED.search(str(error)):
+            raise IntegrityError(str(error)) from error
+        raise
+
+
 def _has_terminal_final_failure(db, run_id):
     saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run_id,)).fetchone()
     if saved and json.loads(saved['payload']).get('terminal_final_failure'):
@@ -263,7 +353,7 @@ class Controller:
 
     def _state(self, run_id, status, reason=None, stage=None, *, outcome_category=None):
         category = status if status in ('completed', 'cancelled') else outcome_category or 'unknown'
-        if category not in ('completed','model','host','operator','cancelled','unknown'):
+        if category not in ('completed','safety','integrity','operator','host','model','cancelled','unknown'):
             raise ValueError('Invalid owner outcome category')
         with self._db() as db:
             changed = db.execute('UPDATE runs SET status=?,reason=?,stage=COALESCE(?,stage),updated=?,outcome_category=? WHERE id=? AND (cancelled=0 OR ?=\'cancelled\')',
@@ -778,7 +868,7 @@ class Controller:
                     return
                 remaining = row['created'] + spec['budget_seconds'] - time.time()
                 if remaining <= 0:
-                    self._state(run_id, 'blocked', 'Run exhausted its wall-clock budget')
+                    self._state(run_id, 'blocked', 'Run exhausted its wall-clock budget', outcome_category='operator')
                     return
                 attempt = uuid.uuid4().hex
                 workspace = run_dir / 'work' / stage / attempt
@@ -789,7 +879,8 @@ class Controller:
                 with self._db() as db:
                     responses=db.execute("SELECT payload FROM events WHERE run_id=? AND kind='operator.response' ORDER BY seq",(run_id,)).fetchall()
                 current_spec['_operator_observations']=[value.get('observation') or {'message':value['message']} for value in (json.loads(r['payload']) for r in responses)]
-                prepared = self._prepare(current_spec, stage, run_dir, workspace, accepted)
+                with _integrity_checked():
+                    prepared = self._prepare(current_spec, stage, run_dir, workspace, accepted)
                 if prepared.get('blocked'):
                     self._state(run_id,'blocked',prepared['blocked'],stage)
                     return
@@ -800,7 +891,7 @@ class Controller:
                               'allowed_tools': prepared.get('allowed_tools', []), 'report_required': prepared.get('report_required', True),
                               'binding': prepared.get('binding', spec.get('binding')), 'effects': spec['effects'], 'revision': revision}
                 if spec.get('scoped_tool_approval')=='bound-device' and assignment['binding']!=spec['binding']:
-                    raise ValueError('Prepared stage changed the explicitly approved device binding')
+                    raise SafetyError('Prepared stage changed the explicitly approved device binding')
                 if prepared.get('collection'):
                     assignment['collection'] = prepared['collection']
                 with self._db() as db:
@@ -813,9 +904,10 @@ class Controller:
                 if prompt is None:
                     prompt = ('Execute exactly the assigned stage. Do not start another stage. Return a JSON stage report. '
                               'Write report.json and include artifact paths and actual SHA-256 hashes. '
-                              'Report checks honestly. Use needs_revision for a candidate protocol, decoder, unit or '
-                              'capability discrepancy; preserve partial artifacts and observations for independent checks. '
-                              'Use blocked for missing host tools, operator input or permission.\n' + _json({
+                              'Report status and checks honestly: pass, fail or not_run. Use needs_revision for a candidate '
+                              'protocol, decoder, unit or capability discrepancy and blocked for missing host tools, operator '
+                              'input or permission. Every report is kept as notes and the run continues; preserve partial '
+                              'artifacts and observations.\n' + _json({
                                   'stage': stage, 'objective': prepared.get('objective', spec['goal']),
                                   'inputs': list(input_hashes), 'context': prepared.get('context', {}),
                                   'allowed_tools': assignment['allowed_tools'], 'effect_grants': spec['effects'],
@@ -835,62 +927,56 @@ class Controller:
                     self._event(run_id, 'worker.finished', {'stage':stage, 'runtime':result['runtime'], 'status':result['status'], 'usage':result.get('usage')}, db)
                 if cancel.is_set():
                     return
-                if result['status'] != 'completed':
-                    self._state(run_id, result['status'], result.get('reason'), outcome_category='host')
+                report = result.get('report') if isinstance(result.get('report'), dict) else {}
+                checked = {}
+                if _runtime_stop(result) is None:
+                    self._verify_inputs(input_hashes)
+                    with _integrity_checked():
+                        if self._row(run_id)['uncertain']:
+                            from .benchmark_support.emulated_recovery import reconcile
+                            checked = reconcile(self,run_id,current_spec,assignment,run_dir,workspace,accepted,report,progress)
+                        else:
+                            checked = self._check(current_spec, stage, run_dir, workspace, report, accepted, assignment)
+                    # Benchmark adapters keep their frozen final path until Part B moves grading after reuse.
+                    terminal_final = (not checked.get('ok', True) and checked.get('final_evaluation') is True
+                                      and checked.get('fault') == 'model' and not checked.get('route'))
+                    if checked.get('evaluator') is not None or terminal_final:
+                        with self._db() as db:
+                            if checked.get('evaluator') is not None:
+                                db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)', (attempt, run_id, stage,
+                                    _json({'stage':stage, 'assignment_id':attempt, **checked['evaluator']}), time.time()))
+                            if terminal_final:
+                                progress['terminal_final_failure'] = True
+                                db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)', (run_id, _json(progress)))
+                                self._event(run_id, 'evaluation.final_failed',
+                                    {'assignment_id': attempt, 'revision': revision, 'fault': 'model'}, db)
+                    if terminal_final:
+                        self._state(run_id, 'failed', 'Frozen final evaluation failed', outcome_category='model')
+                        return
+                    if cancel.is_set():
+                        return
+                    self._verify_inputs(input_hashes)
+                outcome = _outcome(stage, result, checked, uncertain=bool(self._row(run_id)['uncertain']),
+                                   repairs=progress['repairs'], max_repairs=int(spec.get('max_revisions',2)))
+                if outcome.kind == 'stop':
+                    self._state(run_id, result['status'] if _runtime_stop(result) else 'blocked', outcome.reason, stage,
+                                outcome_category=outcome.category)
                     return
-                report = result.get('report')
-                if assignment['report_required'] and report.get('status') != 'completed' and not (spec.get('case') and report.get('status') == 'needs_revision'):
-                    self._state(run_id, 'blocked', report.get('summary', 'Worker could not complete stage'))
-                    return
-                self._verify_inputs(input_hashes)
-                if self._row(run_id)['uncertain']:
-                    from .benchmark_support.emulated_recovery import reconcile
-                    checked = reconcile(self,run_id,current_spec,assignment,run_dir,workspace,accepted,report,progress)
-                else:
-                    checked = self._check(current_spec, stage, run_dir, workspace, report, accepted, assignment)
-                terminal_final = (not checked.get('ok') and checked.get('final_evaluation') is True
-                                  and checked.get('fault') == 'model' and not checked.get('route'))
-                if checked.get('evaluator') is not None or terminal_final:
-                    with self._db() as db:
-                        if checked.get('evaluator') is not None:
-                            db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)', (attempt, run_id, stage,
-                                _json({'stage':stage, 'assignment_id':attempt, **checked['evaluator']}), time.time()))
-                        if terminal_final:
-                            progress['terminal_final_failure'] = True
-                            db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)', (run_id, _json(progress)))
-                            self._event(run_id, 'evaluation.final_failed',
-                                {'assignment_id': attempt, 'revision': revision, 'fault': 'model'}, db)
-                if terminal_final:
-                    self._state(run_id, 'failed', 'Frozen final evaluation failed', outcome_category='model')
-                    return
-                if cancel.is_set():
-                    return
-                if self._row(run_id)['uncertain']:
-                    self._state(run_id,'blocked',checked.get('reason') or 'Evaluator effect is uncertain; operator reconciliation is required before further execution', outcome_category=checked.get('fault','unknown'))
-                    return
-                self._verify_inputs(input_hashes)
-                category = checked.get('fault') if checked.get('fault') in ('model','host','operator') else 'unknown'
-                if not checked.get('ok'):
-                    if checked.get('route') == 'interpret' and checked.get('fault') == 'model' and stage in ('interpret','probe','ground'):
-                        if not checked.get('revision_committed'):
-                            if progress['repairs'] >= int(spec.get('max_revisions',2)):
-                                self._state(run_id,'blocked','Model repair budget exhausted: '+checked.get('reason','checks failed'), outcome_category='model')
-                                return
-                            progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=checked.get('feedback'))
-                            self._route(run_id,progress,checked.get('reason'))
-                        revision = progress['revision']
-                        queue = list(STAGES[1:])
-                        continue
-                    self._state(run_id, 'blocked', checked.get('reason', 'Independent stage checks failed'), outcome_category=category)
-                    return
-                if checked.get('route'):
-                    raise ValueError('Unsupported evaluator revision route')
+                if outcome.kind == 'revise':
+                    if not checked.get('revision_committed'):
+                        progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=outcome.diff)
+                        self._route(run_id,progress,outcome.reason)
+                    revision = progress['revision']
+                    queue = list(STAGES[1:])
+                    continue
                 progress['next_stage'] = queue[0] if queue else None
-                handoff = self._accept(run_id, assignment, checked, run_dir, workspace, progress)
+                handoff = self._accept(run_id, assignment, checked, run_dir, workspace, progress, _notes(result, checked, outcome))
                 accepted.append(handoff)
             self._state(run_id, 'completed', 'Fresh reuse accepted')
         except Exception as exc:
-            self._state(run_id, 'failed', type(exc).__name__ + ': ' + str(exc), outcome_category='host')
+            category = 'integrity' if isinstance(exc, IntegrityError) else 'safety' if isinstance(exc, SafetyError) else 'host'
+            self._state(run_id, 'failed' if category == 'host' else 'blocked', type(exc).__name__ + ': ' + str(exc),
+                        outcome_category=category)
         finally:
             if spec and spec.get('case'):
                 try:
@@ -954,14 +1040,18 @@ class Controller:
         if prior and prior['run_id'] != run_id:
             owner = db.execute('SELECT status,uncertain FROM runs WHERE id=?',(prior['run_id'],)).fetchone()
             if owner and (owner['status'] in ('queued','running') or owner['uncertain'] or prior['run_id'] in self._workers or prior['run_id'] in self._inflight):
-                raise ValueError('Device binding is already owned by another run')
+                raise SafetyError('Device binding is already owned by another run')
         db.execute('INSERT OR REPLACE INTO bindings VALUES(?,?)',(identity,run_id))
 
     @staticmethod
     def _verify_inputs(inputs):
         for path, expected in inputs.items():
-            if digest(path) != expected:
-                raise ValueError('Stale handoff: an assigned input was altered: ' + path)
+            try:
+                observed = digest(path)
+            except (OSError, ValueError):
+                observed = None
+            if observed != expected:
+                raise IntegrityError('Stale handoff: an assigned input was altered: ' + path)
 
     @staticmethod
     def _verify_snapshot(spec, run_dir):
@@ -970,9 +1060,9 @@ class Controller:
         from .benchmark_support.snapshots import require_snapshot, execution_provenance
         saved = require_snapshot(run_dir, spec['_case_pin'])
         if saved['snapshot_sha256'] != spec['_snapshot_sha256']:
-            raise ValueError('Execution snapshot hash differs from saved run')
+            raise IntegrityError('Execution snapshot hash differs from saved run')
         if execution_provenance(spec['executor_config']) != saved['executed']:
-            raise ValueError('Execution snapshot implementation or runtime environment changed; start a new run')
+            raise IntegrityError('Execution snapshot implementation or runtime environment changed; start a new run')
         return saved
 
     def _prepare(self, spec, stage, run_dir, workspace, accepted):
@@ -1022,7 +1112,8 @@ class Controller:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(path, target) if path.is_dir() else shutil.copy2(path, target)
             inputs.append(str(target))
-        context = {'stage': stage, 'acceptance': 'Report evidence for this stage; missing evidence blocks acceptance.'}
+        context = {'stage': stage, 'acceptance': ('Report evidence and checks for this stage honestly. Observed tool '
+                   'evidence is handed on; every report is kept as notes and the run continues.')}
         if spec.get('binding'):
             # Workers learn that a device exists, never its connection.
             context['device'] = ('An operator-owned device binding is attached. The configurator supplies its '
@@ -1078,87 +1169,105 @@ class Controller:
                     return self._evaluator_operation(run_dir.name, stage, assignment['id'], options,
                         lambda: check_stage(case['id'] if isinstance(case, dict) else case, stage, run_dir, workspace, report, accepted, options))
             return check_stage(case['id'] if isinstance(case, dict) else case, stage, run_dir, workspace, report, accepted, options)
+        # Generic checks use only run evidence. Failures become notes and the stage hands off what was
+        # observed; only a recorded or observed hash that changed stops the run.
+        def handed(selected, checks, dropped=(), scope='Observed tool outputs and executable artifact contracts; '
+                   'physical meaning requires independent ground evidence'):
+            return {'ok':True,'artifacts':list(dict.fromkeys(selected)),'checks':checks,
+                    'notes':{'checks':checks,'dropped_artifacts':list(dropped)},'validation_scope':scope}
+        def changed(reason):
+            return {'stop':{'category':'integrity','reason':reason}}
         if stage == 'interpret':
             from .toolkit import call_tool
             prepared = assignment.get('collection')
             if not prepared:
-                return {'ok':False,'reason':'No pinned interpretation preparation record'}
+                return handed([], [{'name':'sealed_model_collection','passed':False,'reason':'No pinned interpretation preparation record'}])
             result = call_tool('interpret_collect',{'run_dir':prepared['run_dir'],
                 'expected_seal_sha256':prepared['expected_seal_sha256'],'seal_kind':'instruction'})
+            reason = result.get('reason') or result.get('error')
+            if not result.get('ok') and re.search(r'(?i)seal|changed|differ', str(result.get('reason') or '')):
+                return changed('Sealed interpretation evidence changed or is unverifiable: ' + str(reason))
             model = Path(prepared['model_dir'])
             validation = call_tool('model_validate',{'run_dir':str(workspace/'checks'),'model_dir':str(model)}) if result.get('ok') else {}
             good = bool(result.get('ok') and validation.get('ok'))
-            return {'ok':good,'reason':None if good else 'Sealed model collection or executable validation failed',
-                'artifacts':[str(model)] if good else [],'checks':[{'name':'sealed_model_collection','passed':bool(result.get('ok'))},
+            return handed([str(model)] if good else [], [
+                {'name':'sealed_model_collection','passed':bool(result.get('ok')),**({} if result.get('ok') else {'reason':reason})},
                 {'name':'executable_model_contract','passed':bool(validation.get('ok'))}],
-                'validation_scope':'Sealed-input integrity and executable model contract; meaning requires probe and independent ground evidence'}
-        if not report or not report.get('checks') or not all(c.get('status') == 'pass' and c.get('evidence') for c in report['checks']):
-            return {'ok': False, 'reason': 'Stage requires passing evidence-bearing checks'}
-        if not report.get('artifacts'):
-            return {'ok': False, 'reason': 'Stage requires produced artifacts'}
-        paths = []
-        for artifact in report['artifacts']:
-            path = Path(artifact['path'])
-            if not path.is_absolute():
-                path = workspace / path
+                scope='Sealed-input integrity and executable model contract; meaning requires probe and independent ground evidence')
+        report = report if isinstance(report, dict) else {}
+        paths, dropped = [], []
+        for artifact in report.get('artifacts') if isinstance(report.get('artifacts'), list) else []:
+            # Worker artifacts are claims: the configurator hashes the bytes itself and drops mismatches.
+            raw = artifact.get('path') if isinstance(artifact, dict) else None
+            if not isinstance(raw, str):
+                continue
+            path = Path(raw) if Path(raw).is_absolute() else workspace / raw
             if not path.resolve().is_relative_to(workspace):
-                return {'ok':False,'reason':'Reported artifact is outside the assigned workspace'}
-            if digest(path) != artifact.get('sha256'):
-                return {'ok':False, 'reason':'Worker artifact hash disagrees with observed bytes'}
-            artifact['path'] = str(path.resolve())
+                dropped.append({'path':raw,'reason':'Reported artifact is outside the assigned workspace'})
+                continue
+            try:
+                observed_hash = digest(path)
+            except (OSError, ValueError) as error:
+                dropped.append({'path':raw,'reason':'Reported artifact is unreadable: '+str(error)})
+                continue
+            if observed_hash != artifact.get('sha256'):
+                dropped.append({'path':raw,'reason':'Worker artifact hash disagrees with observed bytes'})
+                continue
             paths.append(path.resolve())
         with self._db() as db:
             rows = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='tool.finished'", (run_dir.name,)).fetchall()
         observed = [json.loads(row['payload']) for row in rows]
         observed = [event for event in observed if event.get('assignment_id') == assignment['id'] and event.get('ok')]
+        def unchanged(raw, expected):
+            path = Path(raw).resolve()
+            try:
+                return path.is_relative_to(workspace) and digest(path) == expected
+            except (OSError, ValueError):
+                return False
         checks, selected = [], []
+        def check(name, reason, **evidence):
+            checks.append({'name':name,'passed':bool(selected),**({'evidence':selected} if selected else {'reason':reason}),**evidence})
         if stage == 'acquire':
             calls = [e for e in observed if e['name'].startswith('acquire_') and e.get('result',{}).get('available')]
             for call in calls:
-                files = call.get('artifacts',{})
-                for raw, expected in files.items():
-                    path = Path(raw).resolve()
-                    if not path.is_relative_to(workspace) or digest(path) != expected:
-                        return {'ok':False,'reason':'Observed acquisition artifact changed after the tool returned'}
-                    selected.append(str(path))
-            if not selected:
-                return {'ok':False,'reason':'No observed acquisition with verifiable output artifacts'}
-            checks.append({'name':'observed_acquisition_hashes','passed':True,'evidence':selected})
+                for raw, expected in call.get('artifacts',{}).items():
+                    if not unchanged(raw, expected):
+                        return changed('Observed acquisition artifact changed after the tool returned')
+                    selected.append(str(Path(raw).resolve()))
+            check('observed_acquisition_hashes', 'No observed acquisition with verifiable output artifacts',
+                  **({} if selected else {'unobserved':[str(p) for p in paths]}))
         elif stage == 'probe':
             calls = [e for e in observed if e['name']=='probe_run' and e.get('result',{}).get('ok')]
             for call in calls:
                 probe = call['result'].get('probe')
                 if probe and Path(probe).is_file():
-                    if digest(probe) != call.get('artifacts',{}).get(str(Path(probe).resolve())):
-                        return {'ok':False,'reason':'Observed probe artifact changed after the tool returned'}
-                    json.loads(Path(probe).read_text())
+                    if not unchanged(probe, call.get('artifacts',{}).get(str(Path(probe).resolve()))):
+                        return changed('Observed probe artifact changed after the tool returned')
+                    try:
+                        json.loads(Path(probe).read_text(encoding='utf-8'))
+                    except ValueError:
+                        dropped.append({'path':probe,'reason':'Observed probe output is not valid JSON'})
+                        continue
                     selected.append(probe)
-            if not selected:
-                return {'ok':False,'reason':'No observed successful probe through the owned connection'}
-            checks.append({'name':'observed_probe_execution','passed':True,'evidence':selected})
+            check('observed_probe_execution', 'No observed successful probe through the owned connection')
         elif stage == 'ground':
-            return {'ok':False,'reason':stage + ' requires an independent observation/evaluator adapter; none is configured for this device'}
+            check('independent_ground_observation', 'No independent observation adapter is configured for this device')
         elif stage == 'emit':
             from .toolkit import call_tool
-            packages = [p for p in paths if p.is_dir() and (p/'manifest.json').is_file()]
-            for package in packages:
-                checked = call_tool('emit_check',{'package_dir':str(package),'run_dir':str(workspace/'checks')})
-                replayed=checked.get('replay_status')=='passed' or checked.get('seeds_run',0)>0
-                if checked.get('ok') and checked.get('_exit',0)==0 and checked.get('runtime_current') and replayed:
+            for package in [p for p in paths if p.is_dir() and (p/'manifest.json').is_file()]:
+                result = call_tool('emit_check',{'package_dir':str(package),'run_dir':str(workspace/'checks')})
+                replayed=result.get('replay_status')=='passed' or result.get('seeds_run',0)>0
+                if result.get('ok') and result.get('_exit',0)==0 and result.get('runtime_current') and replayed:
                     selected.append(str(package))
-            if not selected:
-                return {'ok':False,'reason':'No independently checked emitted package'}
-            checks.append({'name':'package_integrity_and_replay','passed':True,'evidence':selected})
+            check('package_integrity_and_replay', 'No independently checked emitted package')
         elif stage == 'reuse':
-            calls = [e for e in observed if e['name']=='emit_test_live' and e.get('result',{}).get('ok')]
-            if not calls:
-                return {'ok':False,'reason':'No observed successful execution of the emitted package'}
-            selected = [str(p) for p in paths]
-            checks.append({'name':'fresh_package_execution','passed':True,'evidence':selected})
-        return {'ok':True,'artifacts':list(dict.fromkeys(selected)), 'checks':checks,
-                'validation_scope':'Observed tool outputs and executable artifact contracts; physical meaning requires independent ground evidence'}
+            executed = any(e['name']=='emit_test_live' and e.get('result',{}).get('ok') for e in observed)
+            selected = [str(p) for p in paths] if executed else []
+            checks.append({'name':'fresh_package_execution','passed':executed,
+                **({'evidence':selected} if executed else {'reason':'No observed successful execution of the emitted package'})})
+        return handed(selected, checks, dropped)
 
-    def _accept(self, run_id, assignment, checked, run_dir, workspace, progress):
+    def _accept(self, run_id, assignment, checked, run_dir, workspace, progress, notes=None):
         artifacts = []
         for index, raw in enumerate(checked.get('artifacts', [])):
             source = Path(raw).resolve()
@@ -1169,18 +1278,20 @@ class Controller:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(source, target) if source.is_dir() else shutil.copy2(source, target)
             if digest(target) != expected:
-                raise ValueError('Artifact changed while copying accepted evidence')
+                raise IntegrityError('Artifact changed while copying accepted evidence')
             artifacts.append({'path': str(target), 'sha256': expected, 'kind': 'directory' if target.is_dir() else 'file'})
         handoff = {'stage': assignment['stage'], 'assignment_id': assignment['id'], 'revision':assignment.get('revision',0),
                    'route':checked.get('route'), 'artifacts': artifacts,
                    'checks': checked.get('checks', []), 'validation_scope': checked.get('validation_scope', 'Case evaluator'),
                    'accepted_at': time.time()}
+        if notes is not None:
+            handoff['notes'] = {'inline': notes}
         with self._db() as db:
             active = db.execute('SELECT state FROM assignments WHERE id=? AND run_id=?', (assignment['id'],run_id)).fetchone()
             prior = db.execute('SELECT payload FROM handoffs WHERE run_id=? AND stage=?', (run_id,assignment['stage'])).fetchall()
             duplicate = any(json.loads(p['payload']).get('revision',0)==assignment.get('revision',0) for p in prior)
             if not active or active['state'] != 'active' or duplicate:
-                raise ValueError('Stale or duplicate handoff rejected')
+                raise IntegrityError('Stale or duplicate handoff rejected')
             if db.execute('SELECT cancelled FROM runs WHERE id=?',(run_id,)).fetchone()['cancelled']:
                 raise ValueError('Cancelled assignment cannot produce an accepted handoff')
             db.execute('INSERT INTO handoffs VALUES(?,?,?,?,?)', (assignment['id'],run_id,assignment['stage'],_json(handoff),time.time()))

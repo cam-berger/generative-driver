@@ -413,7 +413,8 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertEqual(result['progress']['repairs'],2 if mode=='recover-repeat' else 0)
                             self.assertEqual(len(peers),3 if mode=='recover-repeat' else 2 if mode in ('recover-reset','recover-cancel','recover-commit-cancel') else 1)
                             if mode in ('recover-cancel','recover-commit-cancel'):self.assertEqual(status['status'],'cancelled')
-                            else:self.assertEqual(status['outcome_category'],'model' if mode in ('recover-budget','recover-repeat','recover-physical') else 'unknown' if mode in ('recover-dispatch-exception','recover-mixed-unknown') else 'operator' if mode=='recover-write-then-operator' else 'host')
+                            # An effect left uncertain after the check is a safety stop; a failed cleanup stays host.
+                            else:self.assertEqual(status['outcome_category'],'host' if any(e['kind']=='cleanup.failed' for e in events) else 'safety')
                             if mode in ('recover-dispatch-exception','recover-mixed-unknown'):
                                 starts=[e for e in events if e['kind']=='tool.started' and e['data'].get('effectful') and e['data'].get('actor')=='worker']
                                 self.assertEqual(len(starts),1)

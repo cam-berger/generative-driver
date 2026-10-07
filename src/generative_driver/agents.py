@@ -194,7 +194,10 @@ def _terminate(proc):
 
 
 def execute(request, config, cancel_event=None, on_event=None):
-    """Execute exactly one fresh external session and retain its actual output."""
+    """Execute exactly one fresh external session and retain its actual output.
+
+    A result that is not completed names its `cause`: runtime_unavailable, run_budget, cancelled,
+    exit_error, output_limit, no_report or invalid_report."""
     command, env, prompt = _launch(request, config)
     work = Path(request.workspace).resolve()
     transcript = work / '_agent_events.jsonl'
@@ -213,7 +216,8 @@ def execute(request, config, cancel_event=None, on_event=None):
         proc = subprocess.Popen(command, cwd=work, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', **launch_options)
     except OSError as exc:
-        return {**result, 'status': 'blocked', 'reason': 'Cannot start configured runtime: ' + str(exc), 'elapsed_seconds': 0}
+        return {**result, 'status': 'blocked', 'cause': 'runtime_unavailable',
+                'reason': 'Cannot start configured runtime: ' + str(exc), 'elapsed_seconds': 0}
     messages = queue.Queue()
     def reader(stream, channel):
         for line in stream:
@@ -234,10 +238,10 @@ def execute(request, config, cancel_event=None, on_event=None):
     with transcript.open('w', encoding='utf-8') as transcript_file, stderr_path.open('w', encoding='utf-8') as stderr_file:
         while len(done) < 2 or proc.poll() is None:
             if cancel_event and cancel_event.is_set():
-                outcome = ('cancelled', 'Run cancelled; external worker stopped')
+                outcome = ('cancelled', 'Run cancelled; external worker stopped', 'cancelled')
                 _terminate(proc)
             elif time.monotonic() - started > request.budget_seconds:
-                outcome = ('blocked', 'Stage exhausted the remaining run time budget')
+                outcome = ('blocked', 'Stage exhausted the remaining run time budget', 'run_budget')
                 _terminate(proc)
             try:
                 channel, line = messages.get(timeout=0.1)
@@ -248,7 +252,7 @@ def execute(request, config, cancel_event=None, on_event=None):
                 continue
             size += len(line)
             if size > 32 * 1024 * 1024:
-                outcome = ('failed', 'External worker output exceeded 32 MiB')
+                outcome = ('failed', 'External worker output exceeded 32 MiB', 'output_limit')
                 _terminate(proc)
                 continue
             if channel == 'err':
@@ -295,9 +299,9 @@ def execute(request, config, cancel_event=None, on_event=None):
     proc.stdout.close()
     proc.stderr.close()
     if outcome:
-        return {**result, 'status': outcome[0], 'reason': outcome[1]}
+        return {**result, 'status': outcome[0], 'reason': outcome[1], 'cause': outcome[2]}
     if launch_error is not None:
-        return {**result, 'status': 'blocked', 'reason': 'Cannot start configured runtime: ' + launch_error}
+        return {**result, 'status': 'blocked', 'cause': 'runtime_unavailable', 'reason': 'Cannot start configured runtime: ' + launch_error}
     for text in reversed(text_parts):
         try:
             candidate = json.loads(text)
@@ -308,9 +312,9 @@ def execute(request, config, cancel_event=None, on_event=None):
             pass
     result['final_text'] = text_parts[-1] if text_parts else ''
     if result['exit_code']:
-        return {**result, 'status': 'failed', 'reason': 'Configured runtime exited with an error; inspect retained stderr'}
+        return {**result, 'status': 'failed', 'cause': 'exit_error', 'reason': 'Configured runtime exited with an error; inspect retained stderr'}
     if request.report_required and result['report'] is None:
-        return {**result, 'status': 'failed', 'reason': 'Runtime did not produce a structured stage report'}
+        return {**result, 'status': 'failed', 'cause': 'no_report', 'reason': 'Runtime did not produce a structured stage report'}
     if request.report_required and not validate_report(result['report']):
-        return {**result, 'status':'failed','reason':'Runtime report does not match the stage report schema'}
+        return {**result, 'status':'failed','cause':'invalid_report','reason':'Runtime report does not match the stage report schema'}
     return {**result, 'status': 'completed'}

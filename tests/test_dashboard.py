@@ -24,11 +24,15 @@ class DashboardTests(unittest.TestCase):
         except ImportError as exc:
             self.fail('Run dashboard is unavailable: ' + str(exc))
 
-    def scripted_worker(self, root):
+    def scripted_worker(self, root, *, alter_input=False):
         home, ready, release = root / 'owner', root / 'ready', root / 'release'
         script = root / 'scripted_worker.py'
         script.write_text(f'''import json, pathlib, sys, time
-sys.stdin.read()
+prompt = sys.stdin.read()
+marker = pathlib.Path({str(root / 'altered')!r})
+if {alter_input!r} and not marker.exists():
+    marker.touch()
+    pathlib.Path(json.loads(prompt.split('\\n', 1)[1])['inputs'][0]).write_bytes(b'altered assigned input')
 print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text':'Scripted worker is active'}}}}), flush=True)
 pathlib.Path({str(ready)!r}).touch()
 until = time.monotonic() + 30
@@ -185,11 +189,12 @@ print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text
                     deadline = time.monotonic() + 5
                     while time.monotonic() < deadline:
                         final = self.dashboard().RunReader(run['run_id'], home).snapshot()
-                        if final.get('status') == 'blocked':
+                        if final.get('status') not in ('queued', 'running'):
                             break
                         time.sleep(.02)
-                    self.assertEqual(final['status'], 'blocked')
-                    self.assertEqual(final['stages'][0]['status'], 'blocked')
+                    self.assertNotIn(final['status'], ('queued', 'running'))
+                    # An evidence-free acquire report is handed on with notes instead of blocking the run.
+                    self.assertEqual(final['stages'][0]['status'], 'accepted')
             finally:
                 release.touch()
                 if process is not None and process.poll() is None:
@@ -200,10 +205,14 @@ print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text
     def test_resumed_worker_is_running_despite_an_older_completed_report(self):
         from generative_driver.client import call
         with tempfile.TemporaryDirectory(prefix='dashboard resume ') as directory:
-            home, ready, release, script = self.scripted_worker(Path(directory).resolve())
+            root = Path(directory).resolve()
+            home, ready, release, script = self.scripted_worker(root, alter_input=True)
+            source = root / 'source.bin'; source.write_bytes(b'scripted input')
             release.touch()
             try:
+                # The first worker completes but alters its assigned input, an integrity stop at acquire.
                 run = call('start', {'goal': 'Scripted resume contract; no model or hardware',
+                    'inputs': {'image.bin': str(source)},
                     'executor_config': {'command': [sys.executable, str(script)]}}, home=home)
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
@@ -212,6 +221,7 @@ print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text
                         break
                     time.sleep(.02)
                 self.assertEqual(original['worker_reports'][0]['status'], 'completed')
+                self.assertEqual((original['stage'], original['outcome_category']), ('acquire', 'integrity'))
                 ready.unlink()
                 release.unlink()
                 call('resume', run, home=home)

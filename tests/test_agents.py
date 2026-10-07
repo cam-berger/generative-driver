@@ -21,15 +21,21 @@ sys.exit(1)
 ''', encoding='utf-8')
             blocked = execute(StageRequest(stage='acquire', workspace=root/'blocked', prompt='fixture'),
                               {'runtime':'codex', 'command':[sys.executable,str(launcher)]})
-            self.assertEqual(blocked['status'], 'blocked', blocked)
+            self.assertEqual((blocked['status'], blocked['cause']), ('blocked', 'runtime_unavailable'), blocked)
             self.assertIn('Cannot start configured runtime', blocked['reason'])
             self.assertIn('unavailable', blocked['reason'])
             self.assertIsNone(blocked['usage'])
             self.assertIsNone(blocked['report'])
             failed = execute(StageRequest(stage='acquire', workspace=root/'failed', prompt='fixture'),
                              {'runtime':'codex', 'command':[sys.executable,'-c','raise SystemExit(7)']})
-            self.assertEqual(failed['status'], 'failed', failed)
+            self.assertEqual((failed['status'], failed['cause']), ('failed', 'exit_error'), failed)
             self.assertEqual(failed['exit_code'], 7)
+            missing = execute(StageRequest(stage='acquire', workspace=root/'missing', prompt='fixture'),
+                              {'runtime':'codex', 'command':['missing-contract-runtime']})
+            self.assertEqual((missing['status'], missing['cause']), ('blocked', 'runtime_unavailable'))
+            silent = execute(StageRequest(stage='acquire', workspace=root/'silent', prompt='fixture'),
+                             {'runtime':'codex', 'command':[sys.executable,'-c','import sys; sys.stdin.read()']})
+            self.assertEqual((silent['status'], silent['cause']), ('failed', 'no_report'))
             self.assertIn('Configured runtime exited', failed['reason'])
 
     def test_codex_scoped_approval_is_explicit_and_only_for_assigned_tools(self):
@@ -133,7 +139,7 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
 ''')
             result = execute(StageRequest(stage='emit',workspace=root/'work',prompt='contract test'),
                              {'runtime':'codex','command':[sys.executable,str(fake)]})
-            self.assertEqual(result['status'],'failed')
+            self.assertEqual((result['status'],result['cause']),('failed','invalid_report'))
             self.assertIn('schema',result['reason'])
 
     def test_codex_adapter_returns_structured_report_and_reported_usage(self):

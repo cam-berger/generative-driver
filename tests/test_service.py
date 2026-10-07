@@ -128,6 +128,10 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                     time.sleep(.03)
                 self.assertEqual(result['stage'],'probe',result)
                 self.assertTrue(result['uncertain_effect'],result)
+                # The worker's blocked report is only notes; the uncertain write is the safety stop.
+                self.assertEqual((result['status'],result['outcome_category']),('blocked','safety'),result)
+                self.assertIn('reconciliation',result['reason'])
+                self.assertNotIn('ground',[r['stage'] for r in result['worker_reports']])
                 rows=[json.loads(line) for record in result['worker_reports'] for line in Path(record['transcript']).read_text().splitlines()]
                 fixture=next(row for row in rows if row.get('type')=='fixture.results')
                 self.assertFalse(fixture['first']['ok'])
@@ -144,12 +148,13 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
             source = Path(home)/'source.bin'
             source.write_bytes(b'owned scripted contract image')
             fake = Path(home)/'agent.py'
-            fake.write_text('''import json,sys,pathlib,hashlib
+            fake.write_text('''import json,sys,pathlib,hashlib,time
 sys.path.insert(0,SOURCE_ROOT)
 from generative_driver.client import call
 prompt=sys.stdin.read()
 print(json.dumps({'type':'fixture.prompt','prompt':prompt}))
 task=json.loads(prompt.split('\\n',1)[1]) if prompt.startswith('Execute exactly') else {'stage':'interpret'}
+if task['stage']=='probe': time.sleep(30)
 r={'status':'blocked','summary':'Scripted interpretation stop','artifacts':[],'checks':[],'unresolved':['no actual model inference']}
 if task['stage']=='acquire':
     encoded=next(a.split('=',1)[1] for a in sys.argv if a.startswith('mcp_servers.stage.args='))
@@ -168,16 +173,24 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                 until=time.monotonic()+10
                 while time.monotonic()<until:
                     result=call('result',run,home)
-                    if result['status'] in ('failed','blocked'):break
+                    if (result['status'],result['stage'])==('running','probe') or result['status'] in ('failed','blocked','completed'):break
                     time.sleep(.03)
                 details = [Path(r['stderr']).read_text() for r in result['worker_reports'] if Path(r['stderr']).exists()]
-                self.assertEqual(result['status'],'blocked',details or result)
-                self.assertEqual([h['stage'] for h in result['accepted_handoffs']],['acquire'])
-                last=result['worker_reports'][-1]
-                self.assertEqual(last['stage'],'interpret',result['reason'])
-                prompt=next(__import__('json').loads(line)['prompt'] for line in Path(last['transcript']).read_text().splitlines() if __import__('json').loads(line).get('type')=='fixture.prompt')
+                self.assertEqual((result['status'],result['stage']),('running','probe'),details or result)
+                # Interpretation produced no model: its notes record the failed collection and the run continues.
+                self.assertEqual([h['stage'] for h in result['accepted_handoffs']],['acquire','interpret'])
+                interpret=result['accepted_handoffs'][1]
+                self.assertEqual(interpret['artifacts'],[])
+                notes=interpret['notes']['inline']
+                self.assertFalse(next(c for c in notes['configurator']['checks'] if c['name']=='sealed_model_collection')['passed'])
+                self.assertEqual(notes['outcome']['kind'],'advance')
+                last=next(r for r in result['worker_reports'] if r['stage']=='interpret')
+                prompt=next(json.loads(line)['prompt'] for line in Path(last['transcript']).read_text().splitlines() if json.loads(line).get('type')=='fixture.prompt')
                 self.assertNotIn('PRIVATE-OPERATOR-GOAL',prompt)
                 self.assertNotIn('provenance.json',prompt)
+                call('cancel',run,home)
+                until=time.monotonic()+10
+                while call('status',run,home)['stopping'] and time.monotonic()<until:time.sleep(.03)
                 artifact=Path(result['accepted_handoffs'][0]['artifacts'][0]['path'])
                 artifact.write_bytes(b'changed after acceptance')
                 resumed=call('resume',run,home)

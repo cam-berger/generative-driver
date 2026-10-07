@@ -150,7 +150,7 @@ class ControllerSnapshotTests(unittest.TestCase):
                 try:
                     run = controller.start({'goal': 'stage integrity', 'case': 'tq9'})
                     result = self.wait_stopped(controller, run)
-                    self.assertEqual(result['status'], 'failed', result)
+                    self.assertEqual((result['status'], result['outcome_category']), ('blocked', 'integrity'), result)
                     self.assertIn('hash', result['reason'])
                     self.assertEqual(len(result['worker_reports']), 1)
                 finally:

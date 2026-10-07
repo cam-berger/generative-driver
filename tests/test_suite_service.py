@@ -37,16 +37,16 @@ def wait_child(controller, run_id):
 
 
 class CategoryTests(unittest.TestCase):
-    def test_runtime_launch_failure_is_host_and_cancellation_overrides_it(self):
+    def test_runtime_launch_failure_is_operator_and_cancellation_overrides_it(self):
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as home:
             controller = Controller(home)
             try:
                 run = controller.start({'goal':'Scripted missing runtime','executor_config':{'command':['missing-suite-worker']}})
                 result = wait_child(controller, run['run_id'])
-                self.assertEqual(result.get('outcome_category'), 'host')
+                self.assertEqual(result.get('outcome_category'), 'operator')
                 event = controller.call('events',run)['events'][-1]
-                self.assertEqual(event['data']['outcome_category'], 'host')
+                self.assertEqual(event['data']['outcome_category'], 'operator')
                 cancelled = controller.call('cancel',run)
                 self.assertEqual(cancelled['outcome_category'], 'cancelled')
             finally:
@@ -91,7 +91,7 @@ class ServiceTests(unittest.TestCase):
             finally:
                 call('shutdown',{},home)
 
-    def test_host_blockage_preserves_the_child_and_frozen_configuration(self):
+    def test_missing_runtime_blockage_preserves_the_child_and_frozen_configuration(self):
         from generative_driver.client import call
         from generative_driver.setup import configure
         from suite_fixtures import wait_suite
@@ -110,7 +110,7 @@ class ServiceTests(unittest.TestCase):
                 self.assertEqual(again['active_child_id'],child)
                 result=call('result',{'run_id':child},home)
                 self.assertEqual(result['agent']['model'],'first-model')
-                self.assertEqual(result['outcome_category'],'host')
+                self.assertEqual(result['outcome_category'],'operator')
                 rows=call('suite_result',suite,home)['trials']
                 self.assertEqual(sum(t['run_id'] is not None for t in rows),1)
             finally:call('shutdown',{},home)
@@ -600,7 +600,7 @@ class FreshReuseCategorySchedulingTests(unittest.TestCase):
                     rows=owner.call('suite_result',suite)['trials']
                     self.assertEqual(rows[0]['outcome_category'],'model');self.assertEqual(rows[0]['status'],'finished')
                     self.assertIsNotNone(rows[1]['run_id']);self.assertNotEqual(rows[1]['run_id'],child)
-                    self.assertEqual(rows[1]['outcome_category'],'host')
+                    self.assertEqual(rows[1]['outcome_category'],'operator')
                     kinds=[e['kind'] for e in owner.call('suite_events',suite)['events']]
                     self.assertLess(kinds.index('trial.finished'),max(i for i,k in enumerate(kinds) if k=='trial.started'))
             finally:

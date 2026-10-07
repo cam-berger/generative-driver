@@ -381,6 +381,31 @@ class ConfiguratorTests(unittest.TestCase):
             finally:
                 controller.close()
 
+    def test_operator_override_sticks_across_later_listens(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        def fake_call_tool(name, arguments):
+            return {'available': True, 'unsolicited_output': True, '_exit': 0, 'artifacts': []}
+        with tempfile.TemporaryDirectory() as directory, patch('generative_driver.toolkit.call_tool', fake_call_tool):
+            controller = Controller(Path(directory))
+            try:
+                run, assignment = self._serial_run(controller)
+                listen = {**run, 'assignment_id': assignment['id'], 'name': 'acquire_serial_listen', 'arguments': {}}
+                controller.call('tool', listen)
+                self.assertTrue(controller._binding_state(run['run_id'])['resets_on_open'])
+                controller.call('cancel', run)
+                until = time.monotonic() + 5
+                while controller.call('status', run)['status'] in ('queued', 'running') and time.monotonic() < until:
+                    time.sleep(.02)
+                controller.call('respond', {**run, 'observation': {'binding_property': 'resets_on_open', 'value': False}})
+                controller._event(run['run_id'], 'tool.finished', {'name': 'acquire_serial_listen', 'ok': True,
+                                  'result': {'unsolicited_output': True}})
+                state = controller._binding_state(run['run_id'])
+                self.assertTrue(state['listened'])
+                self.assertIs(state['resets_on_open'], False)
+            finally:
+                controller.close()
+
     def test_classify_without_a_serial_binding_runs_ungated_without_a_port(self):
         from unittest.mock import patch
         from generative_driver.configurator import Controller
@@ -573,6 +598,39 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                 self.assertIn('blocked', prepared)
             finally:
                 controller.close()
+
+    def _interpret_selection(self, names_and_bytes):
+        from generative_driver.configurator import Controller
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            controller = Controller(root / 'home')
+            try:
+                acquired = root / 'acquire'; acquired.mkdir()
+                for name, data in names_and_bytes:
+                    (acquired / name).write_bytes(data)
+                accepted = [{'stage': 'acquire', 'artifacts': [{'path': str(acquired / n), 'sha256': '', 'kind': 'file'}
+                                                               for n, _ in names_and_bytes]}]
+                seen = {}
+                def fake_call_tool(name, arguments):
+                    seen.update(arguments['inputs'])
+                    return {'ok': False, 'reason': 'scripted stop'}
+                with patch('generative_driver.toolkit.call_tool', fake_call_tool):
+                    prepared = controller._prepare({'goal': 'x', 'effects': ['read']}, 'interpret', root / 'run', root / 'work', accepted)
+                return seen, prepared, acquired
+            finally:
+                controller.close()
+
+    def test_listen_only_acquisition_is_not_sealed_as_an_image(self):
+        seen, prepared, _ = self._interpret_selection([('listen-1.raw', b'ESP-ROM:esp32\r\n'), ('listen-1.json', b'{}')])
+        self.assertEqual(seen, {})
+        self.assertIn('blocked', prepared)
+        self.assertIn('one acquired binary', prepared['blocked'])
+
+    def test_listen_plus_imported_image_selects_the_image(self):
+        seen, prepared, acquired = self._interpret_selection(
+            [('listen-1.raw', b'boot text'), ('listen-1.json', b'{}'), ('image.bin', b'\xe9firmware')])
+        self.assertEqual(seen['image.bin'], str(acquired / 'image.bin'))
 
     def test_acquire_context_explains_listen_and_reset_without_the_port(self):
         from generative_driver.configurator import Controller

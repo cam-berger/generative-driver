@@ -242,7 +242,7 @@ def check_probe(model, probe, model_sha256):
 COVERAGE_SCOPE = ('Coverage refers only to the samples in the bundled probe, with the listed parameters. '
                   'Untested means no bundled execution evidence, not absence of testing elsewhere. '
                   'Live means recorded device execution; replay means supplied transactions, not a new device observation. '
-                  'Each call opens and closes a separate connection. Sequence safety and physical semantics are not established.')
+                  'Connections follow the model: one per call, or one for all samples when the channel declares resets_on_open. Sequence safety and physical semantics are not established.')
 
 
 def probe_coverage(model, probe):

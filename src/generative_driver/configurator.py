@@ -1212,18 +1212,18 @@ class Controller:
 
     def _binding_state(self, run_id):
         """Per-run serial facts: whether the device was listened to and whether opening it resets it."""
-        listened = resets = False
+        listened = resets = overridden = False
         with self._db() as db:
             rows = db.execute("SELECT kind,payload FROM events WHERE run_id=? AND kind IN ('tool.finished','operator.response') ORDER BY seq",(run_id,)).fetchall()
         for row in rows:
             data = json.loads(row['payload'])
             if row['kind'] == 'tool.finished' and data.get('name') == 'acquire_serial_listen' and data.get('ok'):
                 listened = True
-                resets = resets or bool(data.get('result',{}).get('unsolicited_output'))
+                resets = resets or (not overridden and bool(data.get('result',{}).get('unsolicited_output')))
             elif row['kind'] == 'operator.response':
                 observed = data.get('observation') or {}
                 if observed.get('binding_property') == 'resets_on_open' and observed.get('value') is False:
-                    resets = False
+                    resets, overridden = False, True
         return {'listened': listened, 'resets_on_open': resets}
 
     def _tool(self, method, params, run, *, evaluator_workspace=None):

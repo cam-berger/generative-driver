@@ -167,9 +167,33 @@ print(json.dumps({'_exit': 0}))
                             self.assertEqual(sum("hard-reset" in c for c in commands), 1)
                         else:
                             self.assertIn("chip-id", commands[-1])
-                            self.assertEqual(commands[-1][commands[-1].index("--before") + 1], "no-reset")
+                            self.assertEqual(commands[-1][commands[-1].index("--before") + 1], "default-reset")
+                            self.assertIs(result["returned_to_application"], True)
                     else:
                         self.assertFalse(any("hard-reset" in c for c in commands))
+                        self.assertNotIn("returned_to_application", result)
+
+    def test_esp_flash_leave_failure_never_masks_the_original_result(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        good = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
+        for how in ("exit", "raise"):
+            with self.subTest(how):
+                commands = []
+                inner = self._esp_fake_sh(commands, good, fuses=(1, ""))
+                def fake(cmd, **kw):
+                    if "hard-reset" in cmd and "chip-id" in cmd:
+                        commands.append(cmd)
+                        if how == "raise":
+                            raise OSError("port vanished")
+                        return 1, "", "no sync"
+                    return inner(cmd, **kw)
+                with tempfile.TemporaryDirectory() as temp, patch.object(core, "sh", fake):
+                    result = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake",
+                                                         "backend": "esp32", "allow_reset": True})
+                self.assertIn("Fuse read failed", result["reason"], result)
+                self.assertIs(result["returned_to_application"], False)
 
     @staticmethod
     def _raw_table_image(entries, size=0x30000):
@@ -437,6 +461,31 @@ print(json.dumps(call_tool('usage_record',json.loads(sys.argv[1]))))
             self.assertEqual(Path(result["artifacts"][0]).read_bytes(), b"ESP-ROM:esp32s3\r\nwaiting for download\r\n")
             refused = call_tool("acquire_serial_listen", {"run_dir": temp, "port": "/dev/cu.fake", "seconds": 31})
             self.assertFalse(refused["available"])
+
+    def test_serial_listens_never_overwrite_and_never_look_like_an_image(self):
+        import sys, types
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        class Quiet:
+            def open(self): pass
+            def read(self, size=1): return b""
+            def close(self): pass
+        module = types.ModuleType("serial"); module.Serial = Quiet
+        with tempfile.TemporaryDirectory() as temp, patch.dict(sys.modules, {"serial": module}):
+            first = call_tool("acquire_serial_listen", {"run_dir": temp, "port": "/dev/cu.fake", "seconds": 0.1})
+            before = {p: core.sha256(p) for p in first["artifacts"]}
+            second = call_tool("acquire_serial_listen", {"run_dir": temp, "port": "/dev/cu.fake", "seconds": 0.1})
+            paths = first["artifacts"] + second["artifacts"]
+            self.assertEqual(len(set(paths)), 4, paths)
+            self.assertEqual(before, {p: core.sha256(p) for p in first["artifacts"]})
+            self.assertTrue(all(Path(p).is_file() for p in paths))
+            self.assertFalse(any(Path(p).suffix.lower() in (".bin", ".elf") for p in paths), paths)
+
+    def test_coverage_scope_does_not_claim_a_connection_per_call(self):
+        from interface_runtime.evidence import COVERAGE_SCOPE
+        self.assertNotIn("separate connection", COVERAGE_SCOPE)
+        self.assertIn("resets_on_open", COVERAGE_SCOPE)
 
     def test_serial_listen_on_a_quiet_device_is_evidence_without_reset(self):
         import sys, types

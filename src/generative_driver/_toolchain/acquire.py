@@ -115,9 +115,20 @@ def acquire_flash(run_dir, port, chunked=False, strip_app_desc=False, backend=No
     returned = []  # set once a command has already ended with a hard reset
 
     def leave():
-        """Best-effort return to the application on any exit, only under the reset grant."""
-        if allow_reset and not returned:
-            core.sh([*esptool, "-p", port, "--before", "no-reset", "--after", "hard-reset", "chip-id"])
+        """Best-effort return to the application on any exit, only under the reset grant.
+
+        Returns None when nothing ran, otherwise whether the chip is back in its application. A failed
+        dump can leave the stub running, which only a reset can get out of, hence default-reset.
+        """
+        if not allow_reset:
+            return None
+        if returned:
+            return True
+        try:
+            rc, _, _ = core.sh([*esptool, "-p", port, "--before", "default-reset", "--after", "hard-reset", "chip-id"])
+            return rc == 0
+        except Exception:
+            return False
 
     def attempt():
         rc, o, e = core.sh([*esptool, "-p", port, *before, *stay, "chip-id"])
@@ -172,9 +183,14 @@ def acquire_flash(run_dir, port, chunked=False, strip_app_desc=False, backend=No
                       "_files": {p: core.sha256(p) for p in paths}})
 
     try:
-        return attempt()
-    finally:
+        result = attempt()
+    except BaseException:
         leave()
+        raise
+    back = leave()
+    if back is not None:
+        result["returned_to_application"] = back
+    return result
 
 
 @core.tool("acquire_serial_listen")
@@ -205,8 +221,13 @@ def acquire_serial_listen(run_dir, port, baudrate=115200, seconds=8, **_):
     finally:
         handle.close()
     unsolicited = first is not None and first <= 500
-    raw = os.path.join(out, "listen.bin")
-    meta = os.path.join(out, "listen.json")
+    # Append-only names: earlier captures are recorded evidence and must never change. The raw capture
+    # is not named .bin so it can never be mistaken for a firmware image.
+    n = 1
+    while any(os.path.exists(os.path.join(out, f"listen-{n}{ext}")) for ext in (".raw", ".json")):
+        n += 1
+    raw = os.path.join(out, f"listen-{n}.raw")
+    meta = os.path.join(out, f"listen-{n}.json")
     with open(raw, "wb") as f:
         f.write(data)
     with open(meta, "w", encoding="utf-8") as f:

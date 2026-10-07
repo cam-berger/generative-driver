@@ -31,10 +31,15 @@ STAGE_TOOLS = {
     'acquire': ['acquire_serial_listen','acquire_firmware_artifact','acquire_datasheet','acquire_protocol_spec','acquire_classify'],
     'interpret': ['firmware_prepare','firmware_collect','firmware_validate','model_validate','model_provenance_audit','ghidra_run','image_map_check'],
     'probe': ['model_validate','model_qualify','probe_run','probe_diff','interface_describe','interface_execute'],
-    'ground': ['probe_observe','probe_diff','model_validate'],
+    'ground': ['probe_run','interface_execute','probe_diff','model_validate','probe_observe'],
     'emit': ['emit_package','emit_check'],
     'reuse': ['interface_describe','interface_execute','emit_check','emit_test_live'],
 }
+GROUND_OBJECTIVE = ('Test the meanings the interpreted model gives the device: units, scaling and the effects of its '
+                    'operations. Run the model on the device with probe_run and interface_execute through the '
+                    'configurator-owned connection, compare the outputs with the probe records and with operator '
+                    'observations where given (probe_observe checks a decoded capture), and report what the device '
+                    'did that the model did not predict. Goal: ')
 
 
 def digest(path):
@@ -223,8 +228,106 @@ def _outcome(stage, result, checked, *, uncertain, repairs, max_repairs):
         return _adapter_verdict(stage, checked, repairs, max_repairs)
     diff = checked.get('device_diff') if stage in ('probe', 'ground') else None
     if diff and repairs < max_repairs:
-        return Outcome('revise', 'Device behaviour differs from the model', diff=diff)
+        return Outcome('revise', 'Results on the device connection contradict the model', diff=diff)
     return Outcome('advance', 'Repair budget exhausted; continuing with best revision' if diff else None)
+
+
+EVIDENCE_ARGUMENTS = ('model_dir', 'probe', 'probe_json', 'bus', 'replay')
+
+
+def _argument_digests(arguments):
+    """The content of each evidence path a tool is given, hashed by the configurator before dispatch; None when
+    unreadable. Later checks use these, never the worker's word, for which model and record a tool used."""
+    digests = {}
+    for key in EVIDENCE_ARGUMENTS:
+        if isinstance(arguments.get(key), str):
+            try:
+                digests[key] = digest(arguments[key])
+            except (OSError, ValueError):
+                digests[key] = None
+    return digests
+
+
+def _ran_assigned_model(event, assignment):
+    """Whether a tool ran the assigned model: the model_dir bytes the configurator hashed before dispatch are an
+    input of this assignment. A model the worker wrote in its workspace is not."""
+    sha = (event.get('argument_sha256') or {}).get('model_dir')
+    return sha is not None and sha in set((assignment.get('inputs') or {}).values())
+
+
+def _device_diff(events, assignment):
+    """What the assigned model got wrong on the device connection, from the configurator's own record of one
+    assignment's tool results.
+
+    An entry needs the assigned model (its bytes are an input of this assignment) on a connection the configurator
+    supplied:
+    - a probe_run or interface_execute failure the runtime attributes to the model after the transport opened;
+    - probe_diff defects over a probe record that such a run on the device wrote, or that an earlier stage handed on;
+    - a `model_contract` entry: the runtime refused the assigned model on that connection before the transport opened.
+      It says the model breaks the runtime contract, never that the device did anything.
+    Replays, records and captures the worker supplied, and operator and host faults are not the model contradicted.
+    Records are named by content, never by host path. Never a worker claim, never truth."""
+    from interface_runtime.faults import classify_failure
+    paths = assignment.get('inputs') or {}
+    result_of = lambda event: event.get('result') if isinstance(event.get('result'), dict) else {}
+    listed = lambda results: [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
+    assigned = lambda event: _ran_assigned_model(event, assignment)
+    def live(event):
+        return event.get('connected') is True and result_of(event).get('evidence_kind', 'live') == 'live' and assigned(event)
+    def opened(results):
+        failed = [r for r in listed(results) if r.get('ok') is False]
+        return bool(failed) and all(r.get('transport_open_attempted') is True for r in failed)
+    # Probe records by content: those handed on to this assignment, and those its live runs wrote after the device answered.
+    records, written = {sha: Path(path).name for path, sha in paths.items()}, {}
+    for event in events:
+        result = result_of(event)
+        probe = result.get('probe')
+        sha = (event.get('artifacts') or {}).get(str(Path(probe).resolve())) if isinstance(probe, str) else None
+        if event.get('name') == 'probe_run' and sha:
+            written[probe] = sha
+            if live(event) and (result.get('ok') is True or result.get('_exit') == 2 or opened(result.get('results'))):
+                records[sha] = Path(probe).name
+    replacements = sorted(((path, Path(path).name) for path in [*paths, *written]), key=lambda item: -len(item[0]))
+    if assignment.get('workspace'):
+        replacements.append((str(assignment['workspace']), '<' + str(assignment.get('stage')) + ' workspace>'))
+    def portable(value):
+        if isinstance(value, str):
+            for old, new in replacements:
+                value = value.replace(old, new)
+            return value
+        if isinstance(value, list):
+            return [portable(item) for item in value]
+        return {key: portable(item) for key, item in value.items()} if isinstance(value, dict) else value
+    diff = []
+    for event in events:
+        name, result = event.get('name'), result_of(event)
+        source, entry = name, None
+        if name == 'probe_diff' and assigned(event) and isinstance(result.get('defects'), list) and result['defects']:
+            shas = event.get('argument_sha256') or {}
+            sha = shas.get('probe_json', shas.get('probe'))
+            if sha in records and result.get('source_evidence_kind', 'live') == 'live':
+                entry = {'probe': {'name': records[sha], 'sha256': sha}, 'defects': result['defects']}
+        elif name in ('probe_run', 'interface_execute') and not event.get('ok') and live(event):
+            failed = [r for r in listed(result.get('results') if name == 'probe_run' else [result]) if r.get('ok') is False]
+            model = (result.get('fault') == 'model' if name == 'probe_run' else
+                     result.get('schema') == 'interface-result/1' and classify_failure(result) == 'model')
+            # Register probes predate fault labels: exit 2 is an unexpected identity, exit 3 no acknowledgement.
+            legacy = name == 'probe_run' and 'fault' not in result and result.get('_exit') in (2, 3)
+            refused = model and bool(failed) and not any(r.get('transport_open_attempted') is True for r in failed)
+            if (model and opened(failed)) or legacy or refused:
+                error = result.get('error') if isinstance(result.get('error'), dict) else {'message': result.get('error')}
+                what = result.get('error_message') or error.get('message') or (
+                    'device identity ' + repr(result.get('identity')) + ' is not one the model expects' if result.get('identity_ok') is False else None)
+                probe = result.get('probe')
+                entry = {key: value for key, value in {
+                    'tool': name if refused else None, 'code': result.get('error_code') or error.get('code'), 'what': what,
+                    # A refused run's record holds nothing the device did.
+                    'probe': {'name': Path(probe).name, 'sha256': written[probe]} if probe in written and not refused else None,
+                    'failed': failed}.items() if value not in (None, [])}
+                source = 'model_contract' if refused else name
+        if entry is not None:
+            diff.append(portable({'source': source, 'dispatch_id': event.get('dispatch_id'), **entry}))
+    return diff
 
 
 def _notes(result, checked, outcome, *, refusals=(), missing=()):
@@ -1147,21 +1250,53 @@ class Controller:
                 return self._evaluator_operation(run_dir.name, stage, None, options,
                     lambda: prepare_stage(case_id, stage, run_dir, workspace, accepted, options))
             return prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
-        if stage == 'ground':
-            return {'blocked':stage + ' requires an independent observation/evaluator adapter; none is configured for this device'}
         if stage == 'interpret':
+            # Interpretation that cannot start hands off empty with the reason; it never stops the run.
             from .toolkit import call_tool
             acquisition = next((h for h in reversed(accepted) if h['stage']=='acquire'),None)
             artifacts = [Path(a['path']) for a in acquisition['artifacts']] if acquisition else []
             named = [p for p in artifacts if p.name in ('interpret-input.elf', 'interpret-input.bin')]
             images = named if len(named) == 1 else [p for p in artifacts if p.suffix.lower() in ('.bin', '.elf')]
-            if len(images) != 1 or spec.get('front_end','interpret-interface') != 'interpret-interface':
-                return {'blocked':'Generic blind interpretation currently requires one acquired binary and front_end=interpret-interface'}
+            if spec.get('front_end','interpret-interface') != 'interpret-interface':
+                return {'skip':'Interpretation skipped: generic blind interpretation supports only front_end=interpret-interface'}
+            if len(images) != 1:
+                return {'skip':'Interpretation skipped: no single acquired binary to interpret (' + str(len(images)) + ' candidates)'}
+            # A repair keeps the sealed workspace and adds the device diff and the candidate it contradicts.
+            inputs = {'image.bin':str(images[0])}
+            previous = next((a['path'] for h in reversed(accepted) if h['stage'] == 'interpret' for a in h['artifacts']
+                             if (Path(a['path']) / 'model.json').is_file()), None)
+            if previous:
+                inputs['previous-model'] = previous
+            defects = spec.get('_feedback') if spec.get('_revision') else None
             tool_run = run_dir / 'preparation' / workspace.name
-            prepared = call_tool('interpret_run',{'run_dir':str(tool_run),'front_end':'interpret-interface',
-                'inputs':{'image.bin':str(images[0])},'mode':'prepare','workspace_root':tempfile.mkdtemp(prefix='gd-candidate-')})
+            if previous or defects:
+                # Say what each repair input is, so the agent starts from the prior candidate, and that every repair
+                # input is sealed: the configurator re-hashes them after the agent, and a change stops the run.
+                sealed = ['image.bin', *(['previous-model/'] if previous else []), *(['defects.json'] if defects else []),
+                          'REPAIR_CONTEXT.json']
+                context = tool_run / 'repair' / 'REPAIR_CONTEXT.json'
+                context.parent.mkdir(parents=True, exist_ok=True)
+                context.write_text(json.dumps({'schema': 'device-repair-context/1', 'mode': 'repair',
+                    **({'previous_candidate': 'previous-model/'} if previous else {}),
+                    **({'feedback': 'defects.json', 'feedback_meaning': 'What the previous candidate got wrong on the '
+                        'device connection, from tool results the configurator observed through its own connection: '
+                        'what the device did that the candidate did not predict, and, in entries with source '
+                        'model_contract, the runtime refusing the candidate before the device was reached. It is '
+                        'evidence, not a grade.'} if defects else {}),
+                    'sealed_inputs': sealed,
+                    'instructions': ('Start from previous-model/ and change what the evidence contradicts. ' if previous else
+                                     'Change what the evidence contradicts. ') +
+                                    ', '.join(sealed[:-1]) + ' and ' + sealed[-1] + ' are sealed inputs, like every file '
+                                    'supplied in this workspace: read them and leave them unchanged; changing any sealed '
+                                    'input stops the run. Write the revised model.json, and replies.json when BRIEF.md '
+                                    'asks for it, at the workspace root, and record which evidence each correction '
+                                    'addresses in NOTES.md.'}, indent=1), encoding='utf-8')
+                inputs['REPAIR_CONTEXT.json'] = str(context)
+            prepared = call_tool('interpret_run',{'run_dir':str(tool_run),'front_end':'interpret-interface','inputs':inputs,
+                **({'defects':defects} if defects else {}),'mode':'prepare','workspace_root':tempfile.mkdtemp(prefix='gd-candidate-')})
             if not prepared.get('ok'):
-                return {'blocked':'Could not prepare a sealed interpretation workspace: '+prepared.get('reason',prepared.get('error','unknown preparation error'))}
+                return {'skip':'Could not prepare a sealed interpretation workspace: '+
+                        str(prepared.get('reason',prepared.get('error','unknown preparation error')))}
             return {'work_dir':prepared['workspace'],'prompt':prepared['prompt_for_agent'],'report_required':False,
                 'inputs':[str(Path(prepared['workspace'])/name) for name in prepared['sealed_inputs']], 'allowed_tools':[],
                 'collection':{'run_dir':str(tool_run),'expected_seal_sha256':prepared['seal_sha256'],'model_dir':prepared['model_dir']}}
@@ -1203,8 +1338,8 @@ class Controller:
         prior = _prior_notes(accepted, spec.get('_revision', 0)) if stage != 'reuse' else []
         if prior:
             context['prior_notes'] = prior
-        return {'objective': spec['goal'], 'inputs': inputs, 'allowed_tools': STAGE_TOOLS[stage], 'context': context,
-                **({'input_notes': missing} if missing else {})}
+        return {'objective': GROUND_OBJECTIVE + spec['goal'] if stage == 'ground' else spec['goal'], 'inputs': inputs,
+                'allowed_tools': STAGE_TOOLS[stage], 'context': context, **({'input_notes': missing} if missing else {})}
 
     def _evaluator_operation(self, run_id, stage, assignment_id, options, invoke):
         """One controller owns evaluator effects, uncertainty and actor-labelled evidence."""
@@ -1252,12 +1387,15 @@ class Controller:
         # Generic checks use only run evidence. Failures become notes and the stage hands off what was
         # observed; only a recorded or observed hash that changed stops the run.
         def handed(selected, checks, dropped=(), scope='Observed tool outputs and executable artifact contracts; '
-                   'physical meaning requires independent ground evidence'):
+                   'physical meaning requires independent ground evidence', diff=None):
             return {'ok':True,'artifacts':list(dict.fromkeys(selected)),'checks':checks,
-                    'notes':{'checks':checks,'dropped_artifacts':list(dropped)},'validation_scope':scope}
+                    'notes':{'checks':checks,'dropped_artifacts':list(dropped)},'validation_scope':scope,
+                    **({'device_diff':diff} if diff else {})}
         def changed(reason):
             return {'stop':{'category':'integrity','reason':reason}}
         if stage == 'interpret':
+            # A model that exists behind an intact seal is handed off whether or not it validates; its validation
+            # is a note. Only a changed or unverifiable seal stops.
             from .toolkit import call_tool
             prepared = assignment.get('collection')
             if not prepared:
@@ -1268,11 +1406,13 @@ class Controller:
             if not result.get('ok') and re.search(r'(?i)seal|changed|differ', str(result.get('reason') or '')):
                 return changed('Sealed interpretation evidence changed or is unverifiable: ' + str(reason))
             model = Path(prepared['model_dir'])
-            validation = call_tool('model_validate',{'run_dir':str(workspace/'checks'),'model_dir':str(model)}) if result.get('ok') else {}
-            good = bool(result.get('ok') and validation.get('ok'))
-            return handed([str(model)] if good else [], [
+            present = bool((result.get('ok') or result.get('sealed_inputs_unchanged') is True) and (model / 'model.json').is_file())
+            validation = call_tool('model_validate',{'run_dir':str(workspace/'checks'),'model_dir':str(model)}) if present else {}
+            return handed([str(model)] if present else [], [
                 {'name':'sealed_model_collection','passed':bool(result.get('ok')),**({} if result.get('ok') else {'reason':reason})},
-                {'name':'executable_model_contract','passed':bool(validation.get('ok'))}],
+                {'name':'executable_model_contract','passed':bool(validation.get('ok')),
+                 **({'defects':validation['defects']} if validation.get('defects') else {}),
+                 **({} if present else {'reason':'No model.json to validate'})}],
                 scope='Sealed-input integrity and executable model contract; meaning requires probe and independent ground evidence')
         report = report if isinstance(report, dict) else {}
         paths, dropped = [], []
@@ -1295,9 +1435,9 @@ class Controller:
                 continue
             paths.append(path.resolve())
         with self._db() as db:
-            rows = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='tool.finished'", (run_dir.name,)).fetchall()
-        observed = [json.loads(row['payload']) for row in rows]
-        observed = [event for event in observed if event.get('assignment_id') == assignment['id'] and event.get('ok')]
+            rows = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='tool.finished' ORDER BY seq", (run_dir.name,)).fetchall()
+        mine = [event for event in (json.loads(row['payload']) for row in rows) if event.get('assignment_id') == assignment['id']]
+        observed = [event for event in mine if event.get('ok')]
         def unchanged(raw, expected):
             path = Path(raw).resolve()
             try:
@@ -1316,8 +1456,11 @@ class Controller:
                     selected.append(str(Path(raw).resolve()))
             check('observed_acquisition_hashes', 'No observed acquisition with verifiable output artifacts',
                   **({} if selected else {'unobserved':[str(p) for p in paths]}))
-        elif stage == 'probe':
-            calls = [e for e in observed if e['name']=='probe_run' and e.get('result',{}).get('ok')]
+        elif stage in ('probe', 'ground'):
+            # Successful probes on the device through the configurator's connection are handed on; a replay reached no
+            # device. Model faults the device showed on the assigned model are the diff that drives repair.
+            device = [e for e in observed if e.get('connected') is True]
+            calls = [e for e in device if e['name']=='probe_run' and e.get('result',{}).get('ok')]
             for call in calls:
                 probe = call['result'].get('probe')
                 if probe and Path(probe).is_file():
@@ -1329,9 +1472,29 @@ class Controller:
                         dropped.append({'path':probe,'reason':'Observed probe output is not valid JSON'})
                         continue
                     selected.append(probe)
-            check('observed_probe_execution', 'No observed successful probe through the owned connection')
-        elif stage == 'ground':
-            check('independent_ground_observation', 'No independent observation adapter is configured for this device')
+            diff = _device_diff(mine, assignment)
+            if stage == 'probe':
+                check('observed_probe_execution', 'No observed successful probe through the owned connection')
+                return handed(selected, checks, dropped, diff=diff)
+            # A device test runs the assigned model; a live execution is one too, though it writes no record to hand on.
+            # Runs of other models stay visible but test nothing that was assigned.
+            tested = [e for e in device if e['name'] in ('probe_run', 'interface_execute') and _ran_assigned_model(e, assignment)]
+            evidence = [e['result']['probe'] for e in tested if e['name'] == 'probe_run' and e['result'].get('probe') in selected]
+            executions = [e['dispatch_id'] for e in tested if e['name'] == 'interface_execute']
+            others = [e['dispatch_id'] for e in device if e['name'] in ('probe_run', 'interface_execute') and e not in tested]
+            checks.append({'name':'observed_device_test','passed':bool(evidence or executions),
+                           **({'evidence':evidence} if evidence else {}), **({'executions':executions} if executions else {}),
+                           **({'other_model_runs':others} if others else {}),
+                           **({} if evidence or executions else {'reason':'No observed successful device test of the assigned '
+                                                                         'model through the owned connection'})})
+            captures = [e for e in mine if e['name'] == 'probe_observe' and type(e.get('result',{}).get('refuted')) is int]
+            if captures:
+                refuted = [line for e in captures for line in e['result'].get('lines') or [] if isinstance(line, str) and line.startswith('refuted')]
+                checks.append({'name':'supplied_capture_observations','passed':not refuted,'dispatch_ids':[e['dispatch_id'] for e in captures],
+                               'basis':'A decoded capture supplied by the worker, not a device observation by the configurator; '
+                                       'kept as a note, never a repair trigger', **({'refuted':refuted} if refuted else {})})
+            return handed(selected, checks, dropped, diff=diff, scope='Observed device tests of the model '
+                          'and their differences from it; physical meaning rests on operator observations where given')
         elif stage == 'emit':
             from .toolkit import call_tool
             for package in [p for p in paths if p.is_dir() and (p/'manifest.json').is_file()]:
@@ -1544,6 +1707,9 @@ class Controller:
         if effects-{'read'}-set(assignment['effects']):
             raise ValueError('Operation requires an effect grant the operator has not supplied')
         effectful=bool(effects & {'write','actuate'})
+        # Facts the device diff rests on, recorded by the configurator, never taken from the worker: whether it
+        # supplied the device connection (a replay gets none), and the content of every evidence path the tool reads.
+        facts = {'connected': connected, 'argument_sha256': _argument_digests(arguments)}
         # The uncertain flag is persisted before dispatch. A crash or cancellation
         # cannot turn an outstanding physical effect into an automatic retry.
         with self._lock:
@@ -1608,7 +1774,7 @@ class Controller:
                 db.execute('DELETE FROM pending_effects WHERE dispatch_id=?',(dispatch_id,))
                 db.execute('UPDATE runs SET uncertain=EXISTS(SELECT 1 FROM pending_effects WHERE run_id=?) WHERE id=?',(run['id'],run['id']))
             evidence_id = self._event(run['id'], 'tool.finished', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'ok':success,'result':result,'artifacts':observed_artifacts,
-                'dispatch_id':str(dispatch_id),'effectful':effectful,'effects_reconciled':effects_reconciled,
+                'dispatch_id':str(dispatch_id),'effectful':effectful,'effects_reconciled':effects_reconciled,**facts,
                 'actor':'evaluator' if evaluator_workspace is not None else 'worker'}, db)
         if name == 'benchmark_package_execute':
             result = {**result, 'evidence_id': str(evidence_id)}

@@ -1,5 +1,6 @@
 """Public configurator behavior with a deliberately unavailable external runtime."""
 from pathlib import Path
+import contextlib
 import json
 import tempfile
 import time
@@ -109,11 +110,12 @@ class OutcomeModelTests(unittest.TestCase):
                 self.assertEqual((outcome.kind, outcome.category, outcome.reason), ('stop', category, 'adapter'))
 
 
-def scripted_stages(controller, *, check, prepare=None, prompts=None):
+def scripted_stages(controller, *, check, prepare=None, prompts=None, work=None):
     """Patch one controller so every stage runs an in-process scripted worker; no model, tool or device runs.
 
     `check` replaces the stage checks; `prepare(original, spec, stage, run_dir, workspace, accepted)` may call
-    the real preparation. Each worker writes out.json in its workspace and reports completed.
+    the real preparation; `work(request)` may call gateway tools first. Each worker writes out.json in its
+    workspace and reports completed.
     """
     from contextlib import ExitStack
     from unittest.mock import patch
@@ -125,6 +127,8 @@ def scripted_stages(controller, *, check, prepare=None, prompts=None):
     def fake_execute(request, config, cancel):
         if prompts is not None:
             prompts.append((request.stage, request.prompt))
+        if work:
+            work(request)
         (Path(request.workspace) / 'out.json').write_text(json.dumps({'stage': request.stage}))
         return {'runtime': 'codex', 'status': 'completed', 'reason': None, 'elapsed_seconds': 0, 'usage': None,
                 'report': {'status': 'completed', 'summary': 'scripted ' + request.stage, 'artifacts': [],
@@ -136,9 +140,19 @@ def scripted_stages(controller, *, check, prepare=None, prompts=None):
     return stack
 
 
-def context_of(prompt):
+def task_of(prompt):
     """The JSON task after the default prompt's first line."""
-    return json.loads(prompt.split('\n', 1)[1])['context']
+    return json.loads(prompt.split('\n', 1)[1])
+
+
+def context_of(prompt):
+    return task_of(prompt)['context']
+
+
+def gateway_identity(request):
+    """The run and assignment a scripted worker's gateway command names."""
+    args = request.gateway['args']
+    return {'run_id': args[args.index('--run') + 1], 'assignment_id': args[args.index('--assignment') + 1]}
 
 
 class AssistiveHandoffTests(unittest.TestCase):
@@ -215,7 +229,7 @@ class AssistiveHandoffTests(unittest.TestCase):
                 return {'ok': True, 'artifacts': [str(package)], 'checks': []}
             return {'ok': True, 'artifacts': [], 'checks': []}
         def prepare(original, spec, stage, run_dir, workspace, accepted):
-            # Generic probe, emit and reuse use the real input selection; sealed interpret and ground are later slices.
+            # Generic probe, emit and reuse use the real input selection; sealed interpret and ground stay scripted here.
             if stage in ('probe', 'emit', 'reuse'):
                 return original(spec, stage, run_dir, workspace, accepted)
             return {'inputs': [], 'allowed_tools': []}
@@ -342,6 +356,476 @@ class AssistiveHandoffTests(unittest.TestCase):
                 reopened.close()
 
 
+class DeviceRepairTests(unittest.TestCase):
+    """Generic ground runs a worker; model-versus-device differences the configurator observed drive repair."""
+    def test_device_diff_holds_only_model_faults_on_the_device_connection_with_the_assigned_model(self):
+        from generative_driver.configurator import _device_diff
+        ws = Path('/w').resolve()
+        model, record = str(ws / 'inputs' / '0-model'), str(ws / 'inputs' / '1-0-interface-1.json')
+        assignment = {'stage': 'ground', 'workspace': str(ws), 'inputs': {model: 'model-sha', record: 'record-sha'}}
+        probe = lambda name: str(ws / 'tools' / 'probe' / name)
+        defects = [{'where': 'operations.read.steps.0', 'what': 'device answered 2a; model predicted 15', 'fault': 'model'}]
+        failed = {'schema': 'interface-result/1', 'ok': False, 'operation': 'read', 'transport_open_attempted': True,
+                  'error': {'code': 'framing', 'message': 'short reply'}, 'transcript': [{'tx_hex': '01', 'rx_hex': '2a'}]}
+        def before_open(code, message):
+            return {'schema': 'interface-result/1', 'ok': False, 'operation': 'read', 'transport_open_attempted': False,
+                    'error': {'code': code, 'message': message}, 'transcript': []}
+        refuted = 'refuted        measure reads 0xf7  frame 0xf7 returned 3 byte(s), model reads 8'
+        def event(dispatch, name, ok, result, *, connected=None, model_sha='model-sha', artifacts=None, **shas):
+            connected = name in ('probe_run', 'interface_execute') if connected is None else connected
+            return {'name': name, 'ok': ok, 'dispatch_id': dispatch, 'result': result, 'connected': connected,
+                    'argument_sha256': {'model_dir': model_sha, **shas}, 'artifacts': artifacts or {}}
+        live_fault = lambda path, results: {'ok': False, 'fault': 'model', 'error_code': 'framing', 'error_message': 'short reply',
+                                            'evidence_kind': 'live', 'probe': path, 'results': results, '_exit': 1}
+        events = [
+            event('7', 'probe_diff', False, {'ok': False, 'defects': defects, 'diagnostics': [], 'source_evidence_kind': 'live', '_exit': 1},
+                  probe_json='probe-10-sha'),
+            event('8', 'probe_diff', True, {'ok': True, 'defects': [], '_exit': 0}, probe_json='probe-10-sha'),
+            event('9', 'probe_diff', False, {'ok': False, 'defects': [], 'diagnostics': [{'where': 'transport', 'fault': 'host'}], '_exit': 4},
+                  probe_json='probe-10-sha'),
+            event('10', 'probe_run', False, live_fault(probe('interface-1.json'), [failed]),
+                  artifacts={probe('interface-1.json'): 'probe-10-sha'}),
+            event('11', 'probe_run', False, {'ok': False, 'fault': 'operator', 'reason': 'Explicit write effect grant required', '_exit': 4}),
+            event('12', 'probe_run', False, {'ok': False, 'fault': 'host', 'error_code': 'open', 'results': [], '_exit': 4}),
+            event('13', 'probe_run', False, {'ok': False, 'error': 'nack: no acknowledge at 0x76', '_exit': 3}),
+            event('14', 'probe_run', False, {'ok': False, 'error': 'bus: USB fault', '_exit': 4}),
+            event('15', 'probe_run', False, {'ok': False, 'error': 'schema 3 probe requires an explicit operation name', '_exit': 1}),
+            event('16', 'probe_run', True, {'ok': True, 'evidence_kind': 'live', 'probe': probe('interface-2.json'), '_exit': 0}),
+            # A capture the worker supplied is not something the configurator saw the device do; it is a note.
+            event('17', 'probe_observe', False, {'confirmed': 1, 'refuted': 1, 'not_observed': 0, '_exit': 1,
+                                                 'lines': ['confirmed      identify reads 0xd0', refuted]}, bus='capture-sha'),
+            event('18', 'probe_observe', False, {'supported': False, 'reason': 'probe_observe covers spi captures', '_exit': 1}, bus='capture-sha'),
+            event('19', 'interface_execute', False, {**failed, 'evidence_kind': 'live', '_exit': 1}),
+            event('20', 'interface_execute', False, {**before_open('validation_error', 'operation requires explicit effect grant'),
+                                                     'evidence_kind': 'live', '_exit': 1}),
+            event('21', 'model_validate', False, {'ok': False, 'defects': [{'where': 'model.json', 'what': 'missing'}], '_exit': 1}),
+            # A replay of a transcript the worker wrote reaches no device.
+            event('22', 'probe_run', False, {**live_fault(probe('interface-3.json'), [failed]), 'evidence_kind': 'replay'},
+                  connected=False, replay='worker-transcript-sha', artifacts={probe('interface-3.json'): 'probe-22-sha'}),
+            event('23', 'interface_execute', False, {**failed, 'evidence_kind': 'replay', '_exit': 1}, connected=False,
+                  replay='worker-transcript-sha'),
+            # The runtime refused the assigned model on the device connection before the transport opened: the device
+            # did nothing, so each is a model-contract entry that claims nothing about the device.
+            event('24', 'interface_execute', False, {**before_open('channel', 'uart channel requires baudrate'), 'evidence_kind': 'live', '_exit': 1}),
+            event('25', 'interface_execute', False, {**before_open('invalid', 'operations.read: no steps'), 'evidence_kind': 'live', '_exit': 1}),
+            event('26', 'interface_execute', False, {**before_open('validation_error', 'scale must be a number'), 'evidence_kind': 'live', '_exit': 1}),
+            event('27', 'probe_run', False, {**live_fault(probe('interface-4.json'), [before_open('channel', 'uart channel requires baudrate')]),
+                                             'error_code': 'channel', 'error_message': 'uart channel requires baudrate'},
+                  artifacts={probe('interface-4.json'): 'probe-27-sha'}),
+            # A refusal of a variant, a replayed refusal and an unconnected refusal are not the assigned model on the device.
+            event('37', 'interface_execute', False, {**before_open('invalid', 'operations.read: no steps'), 'evidence_kind': 'live', '_exit': 1},
+                  model_sha='variant-sha'),
+            event('38', 'interface_execute', False, {**before_open('invalid', 'operations.read: no steps'), 'evidence_kind': 'replay', '_exit': 1},
+                  connected=False, replay='worker-transcript-sha'),
+            event('39', 'interface_execute', False, {**before_open('invalid', 'operations.read: no steps'), 'evidence_kind': 'live', '_exit': 1},
+                  connected=False),
+            # A model the worker wrote is not the assigned model.
+            event('28', 'probe_run', False, live_fault(probe('interface-5.json'), [failed]), model_sha='variant-sha',
+                  artifacts={probe('interface-5.json'): 'probe-28-sha'}),
+            event('29', 'probe_diff', False, {'ok': False, 'defects': defects, 'source_evidence_kind': 'live', '_exit': 1},
+                  probe_json='worker-written-sha'),
+            event('30', 'probe_diff', False, {'ok': False, 'defects': defects, 'source_evidence_kind': 'live', '_exit': 1},
+                  probe_json='probe-28-sha'),
+            event('31', 'probe_diff', False, {'ok': False, 'defects': defects, 'source_evidence_kind': 'replay', '_exit': 1},
+                  probe_json='probe-22-sha'),
+            event('32', 'interface_execute', False, {**failed, 'evidence_kind': 'live', '_exit': 1}, model_sha='variant-sha'),
+            event('33', 'probe_diff', False, {'ok': False, 'defects': defects, 'source_evidence_kind': 'replay', '_exit': 1},
+                  probe_json='record-sha'),
+            # The record of a run that failed before the transport opened holds nothing the device did.
+            event('36', 'probe_diff', False, {'ok': False, 'defects': defects, 'source_evidence_kind': 'live', '_exit': 1},
+                  probe_json='probe-27-sha'),
+            {k: v for k, v in event('34', 'interface_execute', False, {**failed, 'evidence_kind': 'live', '_exit': 1}).items()
+             if k != 'connected'},
+            # An accepted probe record handed on to this stage is device evidence too. Host paths never leave.
+            event('35', 'probe_diff', False, {'ok': False, 'source_evidence_kind': 'live', '_exit': 1, 'defects': [
+                {'where': 'identity', 'what': 'device answered 0x58, model expects 0x60', 'evidence': record}]},
+                  probe_json='record-sha')]
+        diff = _device_diff(events, assignment)
+        self.assertEqual([(entry['source'], entry['dispatch_id']) for entry in diff],
+                         [('probe_diff', '7'), ('probe_run', '10'), ('probe_run', '13'), ('interface_execute', '19'),
+                          ('model_contract', '24'), ('model_contract', '25'), ('model_contract', '26'), ('model_contract', '27'),
+                          ('probe_diff', '35')])
+        self.assertEqual(diff[0], {'source': 'probe_diff', 'dispatch_id': '7', 'defects': defects,
+                                   'probe': {'name': 'interface-1.json', 'sha256': 'probe-10-sha'}})
+        self.assertEqual({k: diff[1][k] for k in ('code', 'what', 'probe', 'failed')},
+                         {'code': 'framing', 'what': 'short reply', 'failed': [failed],
+                          'probe': {'name': 'interface-1.json', 'sha256': 'probe-10-sha'}})
+        self.assertEqual(diff[2]['what'], 'nack: no acknowledge at 0x76')
+        self.assertEqual((diff[3]['code'], diff[3]['what']), ('framing', 'short reply'))
+        self.assertEqual([{k: entry[k] for k in ('tool', 'code', 'what')} for entry in diff[4:8]],
+                         [{'tool': 'interface_execute', 'code': 'channel', 'what': 'uart channel requires baudrate'},
+                          {'tool': 'interface_execute', 'code': 'invalid', 'what': 'operations.read: no steps'},
+                          {'tool': 'interface_execute', 'code': 'validation_error', 'what': 'scale must be a number'},
+                          {'tool': 'probe_run', 'code': 'channel', 'what': 'uart channel requires baudrate'}])
+        self.assertEqual(diff[7]['failed'], [before_open('channel', 'uart channel requires baudrate')])
+        # A refused run's record holds nothing the device did, so a model-contract entry names no record.
+        self.assertFalse(any('probe' in entry for entry in diff[4:8]))
+        self.assertEqual(diff[8]['probe'], {'name': '1-0-interface-1.json', 'sha256': 'record-sha'})
+        self.assertEqual(diff[8]['defects'][0]['evidence'], '1-0-interface-1.json')
+        self.assertNotIn(str(ws), json.dumps(diff))
+        self.assertEqual(_device_diff([], assignment), [])
+
+    BINDING = {'host': '127.0.0.1', 'port': 45681}
+    MODEL = {'schema': 'scripted-model', 'operations': {'read_temperature': {'effect': 'read'}}}
+    FAILED = {'schema': 'interface-result/1', 'ok': False, 'operation': 'read_temperature', 'transport_open_attempted': True,
+              'error': {'code': 'framing', 'message': 'short reply'}, 'transcript': [{'tx_hex': '01', 'rx_hex': '2a'}]}
+
+    def run_ground(self, home, work, respond):
+        """A generic run whose interpret and probe are scripted and whose ground uses the real preparation, gateway
+        and check. The ground worker calls tools through `work(call, model, workspace)`; `respond(name, arguments)`
+        stands in for each tool, and probe_run also writes its probe file as the real tool does. No device runs.
+        Returns the result, the events, the prompts and the configurator-built tool arguments."""
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        calls = []
+        def fake_call_tool(name, arguments):
+            calls.append((name, dict(arguments)))
+            out = dict(respond(name, arguments))
+            if name == 'probe_run':
+                folder = Path(arguments['run_dir']) / 'probe'; folder.mkdir(parents=True, exist_ok=True)
+                probe = folder / ('interface-' + str(len(list(folder.iterdir())) + 1) + '.json')
+                probe.write_text(json.dumps({'schema': 'interface-probe/1', 'ok': out['ok'], 'results': out.get('results', [])}))
+                out['probe'] = str(probe)
+            return out
+        controller = Controller(home)
+        real_check = controller._check
+        def check(spec, stage, run_dir, workspace, report, accepted, assignment):
+            if stage == 'interpret':
+                model = workspace / 'model'; model.mkdir()
+                (model / 'model.json').write_text(json.dumps(self.MODEL))
+                return {'ok': True, 'artifacts': [str(model)], 'checks': []}
+            if stage == 'probe':
+                return {'ok': True, 'artifacts': [str(workspace / 'out.json')], 'checks': []}
+            if stage == 'ground':
+                return real_check(spec, stage, run_dir, workspace, report, accepted, assignment)
+            return {'ok': True, 'artifacts': [], 'checks': []}
+        def prepare(original, spec, stage, run_dir, workspace, accepted):
+            return original(spec, stage, run_dir, workspace, accepted) if stage in ('ground', 'reuse') else {'inputs': [], 'allowed_tools': []}
+        def worker(request):
+            if request.stage == 'ground':
+                model = next(p for p in task_of(request.prompt)['inputs'] if (Path(p) / 'model.json').is_file())
+                call = lambda name, **arguments: controller.call('tool', {**gateway_identity(request), 'name': name, 'arguments': arguments})
+                work(call, model, Path(request.workspace))
+        prompts = []
+        try:
+            with scripted_stages(controller, check=check, prepare=prepare, prompts=prompts, work=worker), \
+                 patch('generative_driver.toolkit.call_tool', fake_call_tool):
+                run = controller.call('start', {'goal': 'Scripted ground contract; no model or device', 'binding': self.BINDING,
+                                                'executor_config': {'command': ['never-launched']}})
+                result = wait_stopped(controller, run)
+            return result, controller.call('events', run)['events'], prompts, calls
+        finally:
+            controller.close()
+
+    def test_generic_ground_runs_a_worker_that_tests_the_model_on_the_device(self):
+        from generative_driver.configurator import digest
+        ok = {'ok': True, 'evidence_kind': 'live', 'results': [{'ok': True, 'outputs': {'temperature_c': 21.5}}], '_exit': 0}
+        with tempfile.TemporaryDirectory() as directory:
+            result, events, prompts, calls = self.run_ground(Path(directory) / 'home',
+                lambda call, model, workspace: call('probe_run', model_dir=model, operation='read_temperature'), lambda name, arguments: ok)
+            self.assertEqual(result['status'], 'completed', result)
+            handoffs = {h['stage']: h for h in result['accepted_handoffs']}
+            assigned = {e['data']['stage']: e['data'] for e in events if e['kind'] == 'stage.assigned'}
+            self.assertEqual(assigned['ground']['allowed_tools'],
+                             ['probe_run', 'interface_execute', 'probe_diff', 'model_validate', 'probe_observe'])
+            model, records = (Path(handoffs[s]['artifacts'][0]['path']) for s in ('interpret', 'probe'))
+            self.assertEqual(sorted(assigned['ground']['inputs'].values()), sorted([digest(model), digest(records)]))
+            task = task_of(next(prompt for stage, prompt in prompts if stage == 'ground'))
+            for meaning in ('units', 'scaling', 'effects', 'operator observations'):
+                self.assertIn(meaning, task['objective'])
+            self.assertIn('device binding is attached', task['context']['device'])
+            self.assertNotIn('45681', json.dumps(task))
+            # The configurator, never the worker, supplied the connection, and it records that and which model ran.
+            self.assertEqual([(name, arguments['binding']) for name, arguments in calls], [('probe_run', self.BINDING)])
+            finished = next(e['data'] for e in events if e['kind'] == 'tool.finished')
+            self.assertEqual((finished['connected'], finished['argument_sha256']), (True, {'model_dir': digest(model)}))
+            ground = handoffs['ground']
+            self.assertEqual([Path(a['path']).name for a in ground['artifacts']], ['0-interface-1.json'])
+            notes = ground['notes']['inline']
+            test = next(c for c in notes['configurator']['checks'] if c['name'] == 'observed_device_test')
+            self.assertTrue(test['passed'])
+            self.assertEqual((notes['outcome']['kind'], notes['configurator']['device_diff']), ('advance', None))
+            self.assertFalse(any(e['kind'] == 'tool.refused' for e in events))
+
+    def test_ground_counts_live_executions_as_device_tests_and_never_a_replay(self):
+        from generative_driver.configurator import digest
+        replayed = {'ok': True, 'evidence_kind': 'replay', 'results': [{'ok': True, 'outputs': {'temperature_c': 21.5}}], '_exit': 0}
+        executed = {'schema': 'interface-result/1', 'ok': True, 'outputs': {'temperature_c': 21.5}, 'evidence_kind': 'live', '_exit': 0}
+        transcripts = []
+        def plan(execute):
+            def work(call, model, workspace):
+                transcript = workspace / 'transcript.json'; transcript.write_text('{"schema": "interface-replay/1", "transactions": []}')
+                transcripts.append(transcript)
+                call('probe_run', model_dir=model, operation='read_temperature', replay=str(transcript))
+                if execute:
+                    call('interface_execute', model_dir=model, operation='read_temperature')
+            return work
+        for name, expect in (('replay only', False), ('replay and a live execution', True)):
+            with self.subTest(plan=name), tempfile.TemporaryDirectory() as directory:
+                result, events, _, calls = self.run_ground(Path(directory) / 'home', plan(expect),
+                    lambda name, arguments: replayed if name == 'probe_run' else executed)
+                self.assertEqual(result['status'], 'completed', result)
+                ground = next(h for h in result['accepted_handoffs'] if h['stage'] == 'ground')
+                # A replay reaches no device: it gets no binding, is recorded unconnected and is never handed on.
+                self.assertEqual(ground['artifacts'], [])
+                self.assertNotIn('binding', calls[0][1])
+                finished = {e['data']['name']: e['data'] for e in events if e['kind'] == 'tool.finished'}
+                self.assertEqual((finished['probe_run']['connected'], finished['probe_run']['argument_sha256']['replay']),
+                                 (False, digest(transcripts[-1])))
+                test = next(c for c in ground['notes']['inline']['configurator']['checks'] if c['name'] == 'observed_device_test')
+                self.assertEqual(test['passed'], expect)
+                if expect:
+                    self.assertEqual(test['executions'], [finished['interface_execute']['dispatch_id']])
+                else:
+                    self.assertIn('No observed successful device test', test['reason'])
+
+    def test_differences_the_configurator_never_saw_the_device_show_on_the_assigned_model_never_revise(self):
+        failed = self.FAILED
+        # The operator, not the model, owns a missing effect grant.
+        before_open = {'schema': 'interface-result/1', 'ok': False, 'operation': 'read_temperature', 'transport_open_attempted': False,
+                       'error': {'code': 'validation_error', 'message': 'operation requires explicit effect grant'}, 'transcript': []}
+        defects = [{'where': 'operations.read_temperature.steps.0', 'what': 'device answered 2a', 'code': 'framing', 'fault': 'model'}]
+        refuted = 'refuted        read_temperature reads 0xf7  frame 0xf7 returned 3 byte(s), model reads 8'
+        def respond(name, arguments):
+            if name == 'probe_run' and arguments['operation'] == 'identify':
+                # Only the worker's variant model answers on the device.
+                return {'ok': True, 'evidence_kind': 'live', 'results': [{'ok': True, 'outputs': {'identity': '0x60'}}], '_exit': 0}
+            if name == 'probe_run':
+                kind = 'replay' if arguments.get('replay') else 'live'
+                return {'ok': False, 'fault': 'model', 'error_code': 'framing', 'error_message': 'short reply',
+                        'evidence_kind': kind, 'results': [failed], '_exit': 1}
+            if name == 'interface_execute':
+                return {**(failed if arguments.get('replay') else before_open),
+                        'evidence_kind': 'replay' if arguments.get('replay') else 'live', '_exit': 1}
+            if name == 'probe_diff':
+                return {'ok': False, 'defects': defects, 'diagnostics': [], 'source_evidence_kind': 'live', '_exit': 1}
+            return {'confirmed': 0, 'refuted': 1, 'not_observed': 0, 'lines': [refuted], '_exit': 1}
+        def work(call, model, workspace):
+            transcript = workspace / 'transcript.json'; transcript.write_text('{"schema": "interface-replay/1", "transactions": []}')
+            variant = workspace / 'variant'; variant.mkdir()
+            (variant / 'model.json').write_text(json.dumps({**self.MODEL, 'operations': {**self.MODEL['operations'], 'identify': {'effect': 'read'}}}))
+            written = workspace / 'observed.json'; written.write_text('{}')
+            capture = workspace / 'capture.json'; capture.write_text('{"transactions": []}')
+            call('probe_run', model_dir=model, operation='read_temperature', replay=str(transcript))
+            call('interface_execute', model_dir=model, operation='read_temperature', replay=str(transcript))
+            call('interface_execute', model_dir=model, operation='read_temperature')
+            variant_probe = call('probe_run', model_dir=str(variant), operation='read_temperature')['probe']
+            call('probe_run', model_dir=str(variant), operation='identify')
+            call('probe_diff', model_dir=model, probe_json=str(written))
+            call('probe_diff', model_dir=model, probe_json=variant_probe)
+            call('probe_observe', model_dir=model, bus=str(capture))
+        with tempfile.TemporaryDirectory() as directory:
+            result, events, _, calls = self.run_ground(Path(directory) / 'home', work, respond)
+        self.assertEqual(result['status'], 'completed', result)
+        self.assertEqual([name for name, _ in calls],
+                         ['probe_run', 'interface_execute', 'interface_execute', 'probe_run', 'probe_run', 'probe_diff', 'probe_diff', 'probe_observe'])
+        self.assertEqual((result['progress']['repairs'], result['progress']['revision']), (0, 0))
+        self.assertEqual([h['revision'] for h in result['accepted_handoffs']], [0] * 6)
+        self.assertFalse(any(e['kind'] == 'run.revision' for e in events))
+        notes = next(h for h in result['accepted_handoffs'] if h['stage'] == 'ground')['notes']['inline']
+        self.assertEqual((notes['outcome']['kind'], notes['configurator']['device_diff']), ('advance', None))
+        # A capture the worker supplied is kept as a note about that capture, never as a repair trigger.
+        capture = next(c for c in notes['configurator']['checks'] if c['name'] == 'supplied_capture_observations')
+        self.assertEqual((capture['passed'], capture['refuted']), (False, [refuted]))
+        self.assertIn('supplied by the worker', capture['basis'])
+        # The variant answered on the device, but the assigned model was never tested there; the variant run stays visible.
+        variant = [e['data']['dispatch_id'] for e in events if e['kind'] == 'tool.finished' and e['data']['name'] == 'probe_run' and e['data']['ok']]
+        test = next(c for c in notes['configurator']['checks'] if c['name'] == 'observed_device_test')
+        self.assertEqual((test['passed'], test.get('evidence'), test.get('executions'), test['other_model_runs']), (False, None, None, variant))
+        self.assertIn('assigned model', test['reason'])
+        self.assertEqual(len(variant), 1)
+
+    def test_a_model_the_runtime_refuses_on_the_device_connection_goes_back_to_interpret_as_a_contract_defect(self):
+        refused = {'schema': 'interface-result/1', 'ok': False, 'operation': 'read_temperature', 'transport_open_attempted': False,
+                   'error': {'code': 'invalid', 'message': 'operations.read_temperature: no steps'}, 'transcript': [],
+                   'evidence_kind': 'live', '_exit': 1}
+        with tempfile.TemporaryDirectory() as directory:
+            result, events, _, calls = self.run_ground(Path(directory) / 'home',
+                lambda call, model, workspace: call('interface_execute', model_dir=model, operation='read_temperature'),
+                lambda name, arguments: refused)
+        self.assertEqual(result['status'], 'completed', result)
+        self.assertEqual(calls[0][1]['binding'], self.BINDING)
+        ground = [h for h in result['accepted_handoffs'] if h['stage'] == 'ground']
+        notes = ground[0]['notes']['inline']
+        self.assertEqual((ground[0]['route'], notes['outcome']['kind']), ('interpret', 'revise'))
+        diff = notes['configurator']['device_diff']
+        self.assertEqual([{k: entry[k] for k in ('source', 'tool', 'code', 'what')} for entry in diff],
+                         [{'source': 'model_contract', 'tool': 'interface_execute', 'code': 'invalid',
+                           'what': 'operations.read_temperature: no steps'}])
+        # Nothing here says the device behaved differently: the runtime refused the model before reaching it.
+        self.assertEqual(notes['outcome']['reason'], 'Results on the device connection contradict the model')
+        # The scripted interpreter writes the same model each time, so the budget runs out and the run continues.
+        self.assertEqual(result['progress']['repairs'], 2)
+        self.assertEqual(ground[-1]['notes']['inline']['outcome']['reason'], 'Repair budget exhausted; continuing with best revision')
+
+    DEFECTS = [{'where': 'operations.read_temperature.steps.0', 'what': 'device answered 2a; the model predicted 15',
+                'code': 'framing', 'fault': 'model'}]
+
+    @contextlib.contextmanager
+    def repaired(self, on_repair=None):
+        """A generic run whose rev-0 probe sees the device contradict the assigned model, so interpret is prepared
+        again, for real, as a repair. `on_repair(workspace)` acts as the rev-1 interpret worker. Yields the
+        controller, the run, its stopped result, the sealed interpret workspaces and the probe records, and
+        removes the sealed workspaces afterwards. No model or device runs."""
+        import shutil
+        from unittest.mock import patch
+        from generative_driver import toolkit
+        from generative_driver.configurator import Controller
+        defects = self.DEFECTS
+        real_call_tool = toolkit.call_tool
+        def fake_call_tool(name, arguments):
+            if name == 'interpret_run':
+                return real_call_tool(name, arguments)
+            if name == 'probe_run':
+                # The device answered the assigned model's read with bytes it did not predict.
+                self.assertEqual(arguments['binding'], self.BINDING)
+                probe = Path(arguments['run_dir']) / 'probe' / 'interface-1.json'
+                probe.parent.mkdir(parents=True, exist_ok=True)
+                probe.write_text(json.dumps({'schema': 'interface-probe/1', 'ok': False, 'results': [self.FAILED]}))
+                return {'ok': False, 'probe': str(probe), 'evidence_kind': 'live', 'results': [self.FAILED], 'error_code': 'framing',
+                        'error_message': 'short reply', 'fault': 'model', '_exit': 1}
+            self.assertEqual(name, 'probe_diff')
+            return {'ok': False, 'defects': defects, 'diagnostics': [], 'source_evidence_kind': 'live', '_exit': 1}
+        sealed, probes = [], []
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / 'home'
+            controller = Controller(home)
+            real_check = controller._check
+            def check(spec, stage, run_dir, workspace, report, accepted, assignment):
+                if stage == 'acquire':
+                    image = workspace / 'image.bin'; image.write_bytes(b'\xe9 scripted image')
+                    return {'ok': True, 'artifacts': [str(image)], 'checks': []}
+                if stage == 'interpret':
+                    model = workspace / 'model'; model.mkdir()
+                    (model / 'model.json').write_text(json.dumps({**self.MODEL, 'revision': assignment['revision']}))
+                    return {'ok': True, 'artifacts': [str(model)], 'checks': []}
+                if stage == 'probe':
+                    return real_check(spec, stage, run_dir, workspace, report, accepted, assignment)
+                return {'ok': True, 'artifacts': [], 'checks': []}
+            def prepare(original, spec, stage, run_dir, workspace, accepted):
+                return original(spec, stage, run_dir, workspace, accepted) if stage in ('interpret', 'probe', 'reuse') else {'inputs': [], 'allowed_tools': []}
+            def work(request):
+                if request.stage == 'interpret':
+                    sealed.append(Path(request.workspace))
+                    if len(sealed) == 2 and on_repair:
+                        on_repair(sealed[1])
+                elif request.stage == 'probe' and len(sealed) == 1:
+                    model = next(p for p in task_of(request.prompt)['inputs'] if (Path(p) / 'model.json').is_file())
+                    call = lambda name, **arguments: controller.call('tool', {**gateway_identity(request), 'name': name, 'arguments': arguments})
+                    probes.append(Path(call('probe_run', model_dir=model, operation='read_temperature')['probe']))
+                    call('probe_diff', model_dir=model, probe_json=str(probes[0]))
+            try:
+                with scripted_stages(controller, check=check, prepare=prepare, work=work), \
+                     patch('generative_driver.toolkit.call_tool', fake_call_tool):
+                    run = controller.call('start', {'goal': 'Scripted device repair contract; no model or device', 'binding': self.BINDING,
+                                                    'executor_config': {'command': ['never-launched']}})
+                    result = wait_stopped(controller, run)
+                yield controller, run, result, sealed, probes, home
+            finally:
+                controller.close()
+                for workspace in sealed:
+                    shutil.rmtree(workspace.parent, ignore_errors=True)
+
+    def test_observed_device_difference_routes_to_interpret_with_the_diff_in_the_next_sealed_workspace(self):
+        from generative_driver.configurator import digest
+        with self.repaired() as (controller, run, result, sealed, probes, home):
+            self.assertEqual(result['status'], 'completed', result)
+            self.assertEqual([(h['stage'], h['revision']) for h in result['accepted_handoffs']],
+                             [('acquire', 0), ('interpret', 0), ('probe', 0), ('interpret', 1), ('probe', 1),
+                              ('ground', 1), ('emit', 1), ('reuse', 1)])
+            diff = result['progress']['feedback']
+            record = {'name': 'interface-1.json', 'sha256': digest(probes[0])}
+            self.assertEqual([(entry['source'], entry['probe']) for entry in diff], [('probe_run', record), ('probe_diff', record)])
+            self.assertEqual((diff[0]['code'], diff[0]['failed'], diff[1]['defects']), ('framing', [self.FAILED], self.DEFECTS))
+            # The diff names records by content: no host path or run name reaches the sealed workspace.
+            self.assertNotIn(str(home), json.dumps(diff))
+            self.assertNotIn(run['run_id'], json.dumps(diff))
+            self.assertEqual((result['progress']['repairs'], result['progress']['revision']), (1, 1))
+            probe = result['accepted_handoffs'][2]
+            self.assertEqual((probe['route'], probe['notes']['inline']['outcome']['kind']), ('interpret', 'revise'))
+            self.assertEqual(probe['notes']['inline']['configurator']['device_diff'], diff)
+            first, second = sealed
+            for name in ('defects.json', 'previous-model', 'REPAIR_CONTEXT.json'):
+                self.assertFalse((first / name).exists(), name)
+            # The repair workspace stays sealed and holds the device diff, the candidate it contradicts and
+            # what each of them is.
+            self.assertEqual(json.loads((second / 'defects.json').read_text(encoding='utf-8')), diff)
+            previous = Path(result['accepted_handoffs'][1]['artifacts'][0]['path'])
+            self.assertEqual(digest(second / 'previous-model'), digest(previous))
+            context = json.loads((second / 'REPAIR_CONTEXT.json').read_text(encoding='utf-8'))
+            self.assertEqual((context['previous_candidate'], context['feedback']), ('previous-model/', 'defects.json'))
+            self.assertIn('model_contract', context['feedback_meaning'])
+            for words in ('Start from previous-model/', 'model.json', 'replies.json', 'workspace root', 'NOTES.md'):
+                self.assertIn(words, context['instructions'])
+            assigned = [e['data'] for e in controller.call('events', run)['events']
+                        if e['kind'] == 'stage.assigned' and e['data']['stage'] == 'interpret']
+            self.assertEqual(sorted(Path(p).relative_to(second).as_posix() for p in assigned[1]['inputs']
+                                    if Path(p).relative_to(second).parts[0] != '_toolkit'),
+                             ['BRIEF.md', 'INTERFACE_MODEL.md', 'REPAIR_CONTEXT.json', 'defects.json', 'image.bin',
+                              'image_map_check.py', 'previous-model/model.json', 'qualify.py', 'validate.py'])
+            self.assertEqual(assigned[1]['collection']['expected_seal_sha256'], digest(Path(assigned[1]['collection']['run_dir']) / 'interpret/attempt1.seal.json'))
+
+    def test_repair_context_names_every_sealed_repair_input_and_editing_one_stops_for_integrity(self):
+        # The repair agent is told which inputs are sealed and what changing one does; the configurator holds it to that.
+        for name in ('defects.json', 'REPAIR_CONTEXT.json', 'previous-model/model.json'):
+            with self.subTest(edited=name):
+                contexts = []
+                def edit(workspace):
+                    contexts.append(json.loads((workspace / 'REPAIR_CONTEXT.json').read_text(encoding='utf-8')))
+                    (workspace / name).write_text('{"addressed": true}', encoding='utf-8')
+                with self.repaired(edit) as (controller, run, result, sealed, probes, home):
+                    context, = contexts
+                    self.assertEqual(context['sealed_inputs'], ['image.bin', 'previous-model/', 'defects.json', 'REPAIR_CONTEXT.json'])
+                    for words in ('read them and leave them unchanged', 'changing any sealed input stops the run'):
+                        self.assertIn(words, context['instructions'])
+                    self.assertEqual((result['status'], result['outcome_category'], result['stage']), ('blocked', 'integrity', 'interpret'), result)
+                    self.assertIn('an assigned input was altered', result['reason'])
+                    self.assertTrue(result['reason'].endswith(str(sealed[1] / name)), result['reason'])
+                    self.assertEqual([(h['stage'], h['revision']) for h in result['accepted_handoffs']],
+                                     [('acquire', 0), ('interpret', 0), ('probe', 0)])
+
+    def test_exhausted_repair_budget_advances_to_emit_with_the_best_revision_and_a_note(self):
+        from generative_driver.configurator import Controller, digest
+        diff = [{'source': 'probe_diff', 'dispatch_id': '1', 'defects': [{'where': 'operations.read', 'what': 'scaled by 10'}]}]
+        def check(spec, stage, run_dir, workspace, report, accepted, assignment):
+            if stage == 'interpret':
+                model = workspace / 'model'; model.mkdir()
+                (model / 'model.json').write_text(json.dumps({'schema': 'scripted-model', 'revision': assignment['revision']}))
+                return {'ok': True, 'artifacts': [str(model)], 'checks': []}
+            if stage == 'probe':
+                return {'ok': True, 'artifacts': [str(workspace / 'out.json')], 'checks': [], 'device_diff': diff}
+            return {'ok': True, 'artifacts': [], 'checks': []}
+        def prepare(original, spec, stage, run_dir, workspace, accepted):
+            return original(spec, stage, run_dir, workspace, accepted) if stage in ('ground', 'emit', 'reuse') else {'inputs': [], 'allowed_tools': []}
+        prompts = []
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory) / 'home')
+            try:
+                with scripted_stages(controller, check=check, prepare=prepare, prompts=prompts):
+                    run = controller.call('start', {'goal': 'Scripted repair budget contract; no model or device', 'max_revisions': 1,
+                                                    'executor_config': {'command': ['never-launched']}})
+                    result = wait_stopped(controller, run)
+                self.assertEqual(result['status'], 'completed', result)
+                self.assertEqual([(h['stage'], h['revision']) for h in result['accepted_handoffs']],
+                                 [('acquire', 0), ('interpret', 0), ('probe', 0), ('interpret', 1), ('probe', 1),
+                                  ('ground', 1), ('emit', 1), ('reuse', 1)])
+                self.assertEqual((result['progress']['repairs'], result['progress']['revision']), (1, 1))
+                last = result['accepted_handoffs'][4]
+                self.assertIsNone(last['route'])
+                self.assertEqual(last['notes']['inline']['outcome'],
+                                 {'kind': 'advance', 'reason': 'Repair budget exhausted; continuing with best revision'})
+                self.assertEqual(last['notes']['inline']['configurator']['device_diff'], diff)
+                model, records = (Path(result['accepted_handoffs'][i]['artifacts'][0]['path']) for i in (3, 4))
+                assigned = {e['data']['stage']: e['data'] for e in controller.call('events', run)['events'] if e['kind'] == 'stage.assigned'}
+                self.assertEqual(sorted(assigned['emit']['inputs'].values()), sorted([digest(model), digest(records)]))
+                emit = context_of(next(prompt for stage, prompt in prompts if stage == 'emit'))
+                note = next(n for n in emit['prior_notes'] if n['stage'] == 'probe')
+                self.assertEqual((note['revision'], note['notes']['outcome']['reason']),
+                                 (1, 'Repair budget exhausted; continuing with best revision'))
+            finally:
+                controller.close()
+
+
 class ConfiguratorTests(unittest.TestCase):
     def _scripted_generic(self, root, report, *, alter=False, imports=True, later=None, refuse=False):
         """Drive a generic run with an in-process worker that imports one image through the real gateway.
@@ -405,8 +889,16 @@ class ConfiguratorTests(unittest.TestCase):
         self.assertIn('flash layout', notes['open_questions'])
         self.assertEqual(notes['outcome']['kind'], 'advance')
         self.assertTrue(any(c['name'] == 'observed_acquisition_hashes' and c['passed'] for c in notes['configurator']['checks']))
-        self.assertEqual(result['progress']['next_stage'], 'interpret')
-        self.assertEqual(result['stage'], 'interpret')
+        self.assert_interpreted_the_acquired_image(result)
+
+    def assert_interpreted_the_acquired_image(self, result):
+        """Acquire advanced: interpretation was prepared from its image (the fixture refuses that preparation,
+        which is a note) and the run went on to completion."""
+        interpret = result['accepted_handoffs'][1]
+        self.assertEqual((interpret['stage'], interpret['artifacts']), ('interpret', []))
+        self.assertTrue(any('scripted interpretation preparation stop' in q for q in interpret['notes']['inline']['open_questions']),
+                        interpret['notes']['inline'])
+        self.assertEqual(result['status'], 'completed', result)
 
     def test_mismatched_worker_claims_are_dropped_and_noted_without_stopping(self):
         outside = []
@@ -423,7 +915,7 @@ class ConfiguratorTests(unittest.TestCase):
         dropped = {Path(d['path']).name: d['reason'] for d in acquire['notes']['inline']['configurator']['dropped_artifacts']}
         self.assertEqual(dropped, {'claimed.bin': 'Worker artifact hash disagrees with observed bytes',
                                    'outside.bin': 'Reported artifact is outside the assigned workspace'})
-        self.assertEqual(result['progress']['next_stage'], 'interpret')
+        self.assert_interpreted_the_acquired_image(result)
 
     def test_partial_handoff_records_hashed_notes_beside_its_artifacts(self):
         from generative_driver.configurator import digest
@@ -443,7 +935,9 @@ class ConfiguratorTests(unittest.TestCase):
             self.assertIn('operator must supply the image', notes['inline']['open_questions'])
             self.assertEqual(notes['inline']['configurator']['tool_refusals'],
                              [{'name': 'probe_run', 'reason': 'Tool is not assigned to this worker'}])
-            self.assertEqual(result['progress']['next_stage'], 'interpret')
+            self.assertEqual([h['stage'] for h in result['accepted_handoffs']], ['acquire', 'interpret'])
+            self.assertEqual((result['status'], result['outcome_category'], result['stage']), ('blocked', 'operator', 'probe'))
+            self.assertEqual(result['progress']['next_stage'], 'probe')
 
     def test_tampered_notes_stop_resume_for_integrity(self):
         from generative_driver.configurator import Controller, IntegrityError
@@ -482,7 +976,7 @@ class ConfiguratorTests(unittest.TestCase):
         acquire = result['accepted_handoffs'][0]
         self.assertEqual(len(acquire['artifacts']), 1)
         self.assertEqual(acquire['notes']['inline']['worker']['checks'][0]['status'], 'not_run')
-        self.assertEqual(result['progress']['next_stage'], 'interpret')
+        self.assert_interpreted_the_acquired_image(result)
 
     def test_runtime_without_a_report_advances_with_notes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -492,7 +986,67 @@ class ConfiguratorTests(unittest.TestCase):
         notes = acquire['notes']['inline']
         self.assertEqual(notes['worker']['runtime_status'], 'failed')
         self.assertTrue(any('no usable report' in q for q in notes['open_questions']), notes)
-        self.assertEqual(result['progress']['next_stage'], 'interpret')
+        self.assert_interpreted_the_acquired_image(result)
+
+    def test_blocked_acquire_without_artifacts_hands_interpret_an_empty_handoff_and_the_run_completes(self):
+        from generative_driver.configurator import STAGES
+        report = {'status': 'blocked', 'summary': 'No firmware image could be read', 'artifacts': [], 'checks': [],
+                  'unresolved': ['operator must supply the image']}
+        with tempfile.TemporaryDirectory() as directory:
+            result, stages = self._scripted_generic(Path(directory), report, imports=False)
+        self.assertEqual(result['status'], 'completed', result)
+        self.assertEqual([h['stage'] for h in result['accepted_handoffs']], list(STAGES))
+        # No binary: interpretation runs no worker and hands off empty with the reason; every later stage starts.
+        interpret = result['accepted_handoffs'][1]
+        self.assertEqual(interpret['artifacts'], [])
+        notes = interpret['notes']['inline']
+        self.assertEqual((notes['worker']['runtime_status'], notes['outcome']['kind']), ('skipped', 'advance'))
+        self.assertTrue(any('acquired binary' in q for q in notes['open_questions']), notes)
+        self.assertEqual(stages, ['acquire', 'probe', 'ground', 'emit'])
+        self.assertIn('No interpreted model available', result['accepted_handoffs'][2]['notes']['inline']['open_questions'])
+        self.assertEqual(result['outcome_category'], 'completed')
+
+    def test_interpreted_model_is_handed_off_with_validation_notes_and_only_a_broken_seal_stops(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            controller = Controller(root / 'home')
+            try:
+                for name, collected, validated, model_json, handed in (
+                        ('invalid model', {'ok': True, 'sealed_inputs_unchanged': True},
+                         {'ok': False, 'defects': [{'where': 'operations', 'what': 'missing'}]}, '{"schema": "interface-model/5"}', True),
+                        ('unsupported schema', {'ok': False, 'sealed_inputs_unchanged': True, 'reason': 'no model.json with a supported schema'},
+                         {'ok': False, 'defects': [{'where': 'schema', 'what': 'unsupported'}]}, '{"schema": "notes"}', True),
+                        ('nothing written', {'ok': False, 'sealed_inputs_unchanged': True, 'reason': 'no model.json with a supported schema'},
+                         None, None, False),
+                        ('broken seal', {'ok': False, 'sealed_inputs_unchanged': False, 'reason': 'sealed inputs changed during the run: [image.bin]'},
+                         None, '{"schema": "interface-model/5"}', None)):
+                    with self.subTest(name=name):
+                        work = root / name.replace(' ', '-'); model = work / 'record'; model.mkdir(parents=True)
+                        if model_json:
+                            (model / 'model.json').write_text(model_json)
+                        calls = []
+                        def fake_call_tool(tool, arguments):
+                            calls.append(tool)
+                            return collected if tool == 'interpret_collect' else validated
+                        assignment = {'id': 'scripted', 'collection': {'run_dir': str(work / 'prep'), 'expected_seal_sha256': '0' * 64,
+                                                                       'model_dir': str(model)}}
+                        with patch('generative_driver.toolkit.call_tool', fake_call_tool):
+                            checked = controller._check({'goal': 'x', 'effects': ['read']}, 'interpret', root / 'run', work, None, [], assignment)
+                        if handed is None:
+                            self.assertEqual(checked['stop']['category'], 'integrity')
+                            continue
+                        self.assertNotIn('stop', checked)
+                        self.assertEqual(checked['artifacts'], [str(model)] if handed else [])
+                        notes = {c['name']: c for c in checked['notes']['checks']}
+                        self.assertEqual(notes['sealed_model_collection']['passed'], collected['ok'])
+                        self.assertFalse(notes['executable_model_contract']['passed'])
+                        if validated:
+                            self.assertEqual(notes['executable_model_contract']['defects'], validated['defects'])
+                        self.assertEqual(calls, ['interpret_collect'] + (['model_validate'] if validated else []))
+            finally:
+                controller.close()
 
     def test_observed_acquisition_changed_after_the_tool_returned_stops_for_integrity(self):
         report = {'status': 'completed', 'summary': 'scripted', 'artifacts': [], 'checks': [], 'unresolved': []}
@@ -1122,7 +1676,9 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                 with patch('generative_driver.toolkit.call_tool', fake_call_tool):
                     prepared = controller._prepare({'goal': 'x', 'effects': ['read']}, 'interpret', root / 'run', root / 'work', accepted)
                 self.assertEqual(seen['image.bin'], str(acquired / 'interpret-input.elf'))
-                self.assertIn('blocked', prepared)
+                # A preparation the toolchain refuses hands interpretation off empty with the reason.
+                self.assertNotIn('blocked', prepared)
+                self.assertIn('Could not prepare a sealed interpretation workspace: scripted stop', prepared['skip'])
             finally:
                 controller.close()
 
@@ -1151,8 +1707,8 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
     def test_listen_only_acquisition_is_not_sealed_as_an_image(self):
         seen, prepared, _ = self._interpret_selection([('listen-1.raw', b'ESP-ROM:esp32\r\n'), ('listen-1.json', b'{}')])
         self.assertEqual(seen, {})
-        self.assertIn('blocked', prepared)
-        self.assertIn('one acquired binary', prepared['blocked'])
+        self.assertNotIn('blocked', prepared)
+        self.assertIn('no single acquired binary', prepared['skip'])
 
     def test_listen_plus_imported_image_selects_the_image(self):
         seen, prepared, acquired = self._interpret_selection(

@@ -167,11 +167,12 @@ def run_samples(model, operation, parameters=None, *, n=1, binding=None, allow_e
     player = ReplayFactory(replay) if replay is not None else None
     recorder = RecordingFactory(player if player is not None else open_transport)
     # A device that resets on open would be restarted by every sample; one connection keeps them comparable.
-    single = bool(model['channel'].get('resets_on_open')) and player is None
+    single = bool(model['channel'].get('resets_on_open'))
     results = []
     if single:
         from .engine import Session
-        with Session(model, binding=binding, allow_effects=allow_effects, transport_factory=recorder) as session:
+        with Session(model, binding=binding, allow_effects=allow_effects, transport_factory=recorder,
+                     delay_fn=(lambda seconds: None) if player is not None else None) as session:
             for _ in range(n):
                 result = session.execute(operation, parameters)
                 results.append(result)
@@ -215,8 +216,10 @@ def check_probe(model, probe, model_sha256):
     try:
         required = {'schema','model_sha256','evidence_kind','timing_policy','operation','parameters','allow_effects',
                     'results','transactions','ok'}
-        if type(probe) is not dict or set(probe) != required or probe['schema'] != 'interface-probe/1':
+        if type(probe) is not dict or set(probe) - {'session'} != required or probe['schema'] != 'interface-probe/1':
             raise ValueError('invalid probe envelope')
+        if 'session' in probe and probe['session'] != 'single':
+            raise ValueError('invalid probe session marker')
         if probe['model_sha256'] != model_sha256:
             raise ValueError('probe belongs to different model bytes')
         if probe['evidence_kind'] not in ('live','replay') or probe['ok'] is not True:

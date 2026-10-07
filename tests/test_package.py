@@ -35,44 +35,65 @@ def example_replay():
 
 class PackageTests(unittest.TestCase):
     def test_emitted_package_runs_a_sequence_over_one_connection(self):
+        import contextlib, importlib, io
         from generative_driver.toolkit import call_tool
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
             model = root / "model"; model.mkdir()
-            (model / "model.json").write_text(json.dumps(example_model()))
+            definition = example_model()
+            definition["channel"]["resets_on_open"] = True
+            (model / "model.json").write_text(json.dumps(definition))
             replay = root / "replay.json"; replay.write_text(json.dumps(example_replay()))
             def call(tool_name, **arguments):
                 result = call_tool(tool_name, {"run_dir": str(root / "run"), **arguments})
                 self.assertEqual(result.get("_exit", 0), 0, result)
                 return result
-            probe = call("probe_run", model_dir=str(model), operation="measure", n=1, replay=str(replay))
+            # A resetting model's probe carries the single-session marker and still checks and emits.
+            probe = call("probe_run", model_dir=str(model), operation="measure", n=1, replay=str(replay),
+                         allow_effects=["reset"])
+            self.assertEqual(json.loads(Path(probe["probe"]).read_text())["session"], "single")
             emitted = call("emit_package", model_dir=str(model), probe_json=probe["probe"])
             sys.path.insert(0, emitted["package_dir"])
             try:
-                import importlib
                 driver = importlib.import_module("driver")
+                transports = sys.modules["interface_runtime.transports"]
                 opens = []
                 class Fake:
                     def exchange(self, tx, rx, timeout_ms):
                         return self.replies.pop(0)
                     def close(self):
                         pass
-                fake = Fake()
-                # identity plus measure per step, two steps
-                fake.replies = [bytes.fromhex(t["rx_hex"]) for t in example_replay()["transactions"]] * 2
+                def fresh():
+                    fake = Fake()
+                    fake.replies = [bytes.fromhex(t["rx_hex"]) for t in example_replay()["transactions"]] * 2
+                    return fake
+                fake = fresh()
                 def factory(channel, binding):
                     opens.append(1); return fake
-                engine = sys.modules["interface_runtime.engine"]
-                with patch.object(engine, "open_transport", factory, create=True), \
-                     patch.object(engine.Session, "_open",
-                                  lambda self, model: setattr(self, "transport", factory(model["channel"], {}))):
-                    result = driver.sequence([{"operation": "measure"}, {"operation": "measure"}], binding={})
-                self.assertTrue(result["ok"], result)
-                self.assertEqual(len(result["results"]), 2)
-                self.assertEqual(len(opens), 1)
+                steps = [{"operation": "measure"}, {"operation": "measure"}]
+                with patch.object(transports, "open_transport", factory):
+                    refused = driver.sequence(steps, binding={})
+                    self.assertFalse(refused["ok"], refused)
+                    self.assertEqual(opens, [])
+                    result = driver.sequence(steps, binding={}, allow_effects=("reset",))
+                    self.assertTrue(result["ok"], result)
+                    self.assertEqual(len(result["results"]), 2)
+                    self.assertEqual(len(opens), 1)
+                    # CLI: argument parsing and the reset grant, in process.
+                    fake = fresh(); opens.clear()
+                    cli = importlib.import_module("driver.__main__")
+                    out = io.StringIO()
+                    argv = ["driver", "sequence", "--steps", json.dumps(steps), "--binding", "{}",
+                            "--allow-effect", "reset"]
+                    with patch.object(sys, "argv", argv), contextlib.redirect_stdout(out):
+                        code = cli.main()
+                    self.assertEqual(code, 0, out.getvalue())
+                    self.assertEqual(len(json.loads(out.getvalue())["results"]), 2)
+                    self.assertEqual(len(opens), 1)
             finally:
                 sys.path.remove(emitted["package_dir"])
-                sys.modules.pop("driver", None)
+                for name in [n for n in sys.modules if n == "driver" or n.startswith("driver.")]:
+                    sys.modules.pop(name, None)
 
     def test_register_validation_preserves_supplied_model_bytes_and_inventory(self):
         from generative_driver.toolkit import call_tool

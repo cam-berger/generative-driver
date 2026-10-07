@@ -473,6 +473,21 @@ def test_resetting_channel_samples_share_one_session(model):
     assert evidence["ok"] and evidence["session"] == "single" and len(opens) == 1
 
 
+def test_resetting_channel_replay_opens_once(model):
+    from interface_runtime.evidence import run_samples, ReplayFactory
+    model["channel"]["resets_on_open"] = True
+    fixture = {"schema": "interface-replay/1", "transactions": [
+        {"tx_hex": tx, "rx_hex": rx, "rx": {"mode": "until", "delimiter_hex": "0a", "max_bytes": 128}, "timeout_ms": 1000}
+        for tx, rx in [("49443f0a", b"DEMO-42\n".hex()), ("540a", b"T:21.5\n".hex())] * 3]}
+    calls = []
+    original = ReplayFactory.__call__
+    def counting(self, channel, binding):
+        calls.append(1); return original(self, channel, binding)
+    with patch.object(ReplayFactory, "__call__", counting):
+        evidence = run_samples(model, "measure", n=3, binding={}, allow_effects=("reset",), replay=fixture)
+    assert evidence["ok"] and evidence["session"] == "single" and len(calls) == 1
+
+
 class EngineTests(unittest.TestCase):
     pass
 

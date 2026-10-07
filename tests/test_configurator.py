@@ -109,9 +109,246 @@ class OutcomeModelTests(unittest.TestCase):
                 self.assertEqual((outcome.kind, outcome.category, outcome.reason), ('stop', category, 'adapter'))
 
 
+def scripted_stages(controller, *, check, prepare=None, prompts=None):
+    """Patch one controller so every stage runs an in-process scripted worker; no model, tool or device runs.
+
+    `check` replaces the stage checks; `prepare(original, spec, stage, run_dir, workspace, accepted)` may call
+    the real preparation. Each worker writes out.json in its workspace and reports completed.
+    """
+    from contextlib import ExitStack
+    from unittest.mock import patch
+    original = controller._prepare
+    def fake_prepare(spec, stage, run_dir, workspace, accepted):
+        if prepare:
+            return prepare(original, spec, stage, run_dir, workspace, accepted)
+        return {'inputs': [], 'allowed_tools': []}
+    def fake_execute(request, config, cancel):
+        if prompts is not None:
+            prompts.append((request.stage, request.prompt))
+        (Path(request.workspace) / 'out.json').write_text(json.dumps({'stage': request.stage}))
+        return {'runtime': 'codex', 'status': 'completed', 'reason': None, 'elapsed_seconds': 0, 'usage': None,
+                'report': {'status': 'completed', 'summary': 'scripted ' + request.stage, 'artifacts': [],
+                           'checks': [], 'unresolved': ['open in ' + request.stage]}}
+    stack = ExitStack()
+    stack.enter_context(patch.object(controller, '_prepare', side_effect=fake_prepare))
+    stack.enter_context(patch.object(controller, '_check', side_effect=check))
+    stack.enter_context(patch('generative_driver.configurator.execute', fake_execute))
+    return stack
+
+
+def context_of(prompt):
+    """The JSON task after the default prompt's first line."""
+    return json.loads(prompt.split('\n', 1)[1])['context']
+
+
+class AssistiveHandoffTests(unittest.TestCase):
+    """Every stage hands off notes; a revise commits with its partial handoff; protocol labels gate resume."""
+    def test_crash_after_an_accepted_revise_resumes_at_interpret_with_the_new_revision(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        diff = {'operations': [{'name': 'read_temperature', 'predicted': 21.0, 'observed': 42.0}]}
+        def check(spec, stage, run_dir, workspace, report, accepted, assignment):
+            out = {'ok': True, 'artifacts': [str(workspace / 'out.json')], 'checks': []}
+            if stage == 'probe' and assignment['revision'] == 0:
+                out['device_diff'] = diff
+            return out
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / 'home'
+            controller = Controller(home)
+            real_accept = controller._accept
+            def accept_then_crash(*args, **kwargs):
+                handoff = real_accept(*args, **kwargs)
+                if kwargs.get('revise'):
+                    raise SystemExit('scripted configurator death right after the revise transaction')
+                return handoff
+            try:
+                with scripted_stages(controller, check=check), patch.object(controller, '_accept', side_effect=accept_then_crash):
+                    run = controller.call('start', {'goal': 'Scripted revise contract; no model or device',
+                                                    'executor_config': {'command': ['never-launched']}})
+                    until = time.monotonic() + 10
+                    while run['run_id'] in controller._workers:
+                        self.assertLess(time.monotonic(), until, controller.call('result', run))
+                        time.sleep(.02)
+                self.assertEqual(controller.call('status', run)['status'], 'running')
+            finally:
+                controller.close()
+            reopened = Controller(home)
+            try:
+                crashed = reopened.call('result', run)
+                self.assertEqual(crashed['status'], 'blocked')
+                self.assertEqual({k: crashed['progress'][k] for k in ('revision', 'next_stage', 'repairs', 'feedback')},
+                                 {'revision': 1, 'next_stage': 'interpret', 'repairs': 1, 'feedback': diff})
+                probe = crashed['accepted_handoffs'][-1]
+                self.assertEqual((probe['stage'], probe['revision'], probe['route']), ('probe', 0, 'interpret'))
+                self.assertEqual(probe['notes']['inline']['outcome']['kind'], 'revise')
+                self.assertEqual(probe['notes']['inline']['configurator']['device_diff'], diff)
+                events = reopened.call('events', run)['events']
+                kinds = [e['kind'] for e in events]
+                self.assertEqual(kinds.count('run.revision'), 1)
+                self.assertEqual(kinds[kinds.index('run.revision') - 1], 'stage.accepted')
+                with scripted_stages(reopened, check=check):
+                    resume_when_idle(self, reopened, run)
+                    result = wait_stopped(reopened, run)
+                events = reopened.call('events', run)['events']
+                start = max(i for i, e in enumerate(events) if e['kind'] == 'run.resumed')
+                assigned = [(e['data']['stage'], e['data']['revision']) for e in events[start:] if e['kind'] == 'stage.assigned']
+                self.assertEqual(assigned, [(stage, 1) for stage in ('interpret', 'probe', 'ground', 'emit', 'reuse')])
+                self.assertEqual(result['status'], 'completed', result)
+                self.assertEqual([(h['stage'], h['revision']) for h in result['accepted_handoffs']],
+                                 [('acquire', 0), ('interpret', 0), ('probe', 0), ('interpret', 1), ('probe', 1),
+                                  ('ground', 1), ('emit', 1), ('reuse', 1)])
+            finally:
+                reopened.close()
+
+    def test_generic_model_reaches_probe_and_emit_and_notes_travel_except_to_reuse(self):
+        from generative_driver.configurator import Controller, digest
+        def check(spec, stage, run_dir, workspace, report, accepted, assignment):
+            if stage == 'interpret':
+                model = workspace / 'model'; model.mkdir()
+                (model / 'model.json').write_text('{"schema": "scripted-model"}')
+                return {'ok': True, 'artifacts': [str(model)], 'checks': []}
+            if stage == 'probe':
+                return {'ok': True, 'artifacts': [str(workspace / 'out.json')], 'checks': []}
+            if stage == 'emit':
+                package = workspace / 'package'; package.mkdir()
+                (package / 'manifest.json').write_text('{"fixture": "scripted package"}')
+                return {'ok': True, 'artifacts': [str(package)], 'checks': []}
+            return {'ok': True, 'artifacts': [], 'checks': []}
+        def prepare(original, spec, stage, run_dir, workspace, accepted):
+            # Generic probe, emit and reuse use the real input selection; sealed interpret and ground are later slices.
+            if stage in ('probe', 'emit', 'reuse'):
+                return original(spec, stage, run_dir, workspace, accepted)
+            return {'inputs': [], 'allowed_tools': []}
+        prompts = []
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory) / 'home')
+            try:
+                with scripted_stages(controller, check=check, prepare=prepare, prompts=prompts):
+                    run = controller.call('start', {'goal': 'Scripted input selection; no model or device',
+                                                    'executor_config': {'command': ['never-launched']}})
+                    result = wait_stopped(controller, run)
+                self.assertEqual(result['status'], 'completed', result)
+                model = next(Path(a['path']) for h in result['accepted_handoffs'] if h['stage'] == 'interpret' for a in h['artifacts'])
+                probe = next(Path(a['path']) for h in result['accepted_handoffs'] if h['stage'] == 'probe' for a in h['artifacts'])
+                assigned = {e['data']['stage']: e['data'] for e in controller.call('events', run)['events'] if e['kind'] == 'stage.assigned'}
+                hashes = lambda stage: sorted(assigned[stage]['inputs'].values())
+                self.assertEqual(hashes('probe'), [digest(model)])
+                # Ground handed off nothing; emit still receives the model and the latest probe records.
+                self.assertEqual(hashes('emit'), sorted([digest(model), digest(probe)]))
+                self.assertTrue(any((Path(p) / 'model.json').is_file() for p in assigned['emit']['inputs']))
+                contexts = {stage: context_of(prompt) for stage, prompt in prompts if prompt.startswith('Execute exactly')}
+                self.assertEqual([n['stage'] for n in contexts['probe']['prior_notes']], ['acquire', 'interpret'])
+                self.assertEqual([n['stage'] for n in contexts['emit']['prior_notes']], ['acquire', 'interpret', 'probe', 'ground'])
+                self.assertIn('open in ground', contexts['emit']['prior_notes'][-1]['notes']['open_questions'])
+                self.assertNotIn('prior_notes', contexts['reuse'])
+                reuse_prompt = next(prompt for stage, prompt in prompts if stage == 'reuse')
+                self.assertNotIn('open in', reuse_prompt)
+                self.assertNotIn('stage-notes/1', reuse_prompt)
+            finally:
+                controller.close()
+
+    def test_inputs_come_from_the_latest_handoff_that_has_them_and_absence_is_a_note(self):
+        from generative_driver.configurator import Controller, digest
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            controller = Controller(root / 'home')
+            try:
+                model = root / 'model-r0'; model.mkdir(); (model / 'model.json').write_text('{}')
+                records = root / 'probe-r0.json'; records.write_text('{"records": []}')
+                notes = lambda stage, revision: {'inline': {'schema': 'stage-notes/1', 'open_questions': [stage + str(revision)]}}
+                handoff = lambda stage, revision, paths: {'stage': stage, 'revision': revision, 'assignment_id': stage + str(revision),
+                    'artifacts': [{'path': str(p), 'sha256': digest(p)} for p in paths], 'notes': notes(stage, revision)}
+                accepted = [handoff('acquire', 0, []), handoff('interpret', 0, [model]), handoff('probe', 0, [records]),
+                            handoff('interpret', 1, []), handoff('probe', 1, [])]
+                spec = {'goal': 'x', 'effects': ['read'], '_revision': 1}
+                for stage in ('ground', 'emit'):
+                    with self.subTest(stage=stage):
+                        selected, missing = controller._stage_inputs(stage, accepted)
+                        self.assertEqual(selected, [str(model), str(records)])
+                        self.assertEqual(missing, [])
+                (root / 'emit').mkdir()
+                prepared = controller._prepare(spec, 'emit', root / 'run', root / 'emit', accepted)
+                self.assertEqual(sorted(digest(p) for p in prepared['inputs']), sorted([digest(model), digest(records)]))
+                # Notes of the current revision only: acquire is shared, revision-0 interpret and probe are not.
+                self.assertEqual([(n['stage'], n['revision']) for n in prepared['context']['prior_notes']],
+                                 [('acquire', 0), ('interpret', 1), ('probe', 1)])
+                (root / 'probe').mkdir()
+                prepared = controller._prepare(spec, 'probe', root / 'run', root / 'probe', accepted[:1])
+                self.assertEqual(prepared['inputs'], [])
+                self.assertEqual(prepared['context']['input_notes'], ['No interpreted model available'])
+                self.assertEqual(prepared['input_notes'], ['No interpreted model available'])
+                self.assertEqual(controller._stage_inputs('ground', accepted[:2]),
+                                 ([str(model)], ['No probe records available']))
+            finally:
+                controller.close()
+
+    def test_reuse_without_a_package_is_skipped_with_a_note(self):
+        from generative_driver.configurator import Controller
+        def check(spec, stage, run_dir, workspace, report, accepted, assignment):
+            return {'ok': True, 'artifacts': [], 'checks': []}
+        def prepare(original, spec, stage, run_dir, workspace, accepted):
+            return original(spec, stage, run_dir, workspace, accepted) if stage == 'reuse' else {'inputs': [], 'allowed_tools': []}
+        prompts = []
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory) / 'home')
+            try:
+                with scripted_stages(controller, check=check, prepare=prepare, prompts=prompts):
+                    run = controller.call('start', {'goal': 'Scripted empty emission; no model or device',
+                                                    'executor_config': {'command': ['never-launched']}})
+                    result = wait_stopped(controller, run)
+                self.assertEqual(result['status'], 'completed', result)
+                self.assertIn('skipped', result['reason'])
+                self.assertNotIn('reuse', [stage for stage, _ in prompts])
+                self.assertNotIn('reuse', [r['stage'] for r in result['worker_reports']])
+                reuse = result['accepted_handoffs'][-1]
+                self.assertEqual((reuse['stage'], reuse['artifacts']), ('reuse', []))
+                notes = reuse['notes']['inline']
+                self.assertTrue(any('emitted package' in q for q in notes['open_questions']), notes)
+                self.assertEqual((notes['worker']['runtime_status'], notes['outcome']['kind']), ('skipped', 'advance'))
+                kinds = [e['kind'] for e in controller.call('events', run)['events']]
+                self.assertEqual(kinds.count('stage.skipped'), 1)
+                self.assertEqual(kinds.count('stage.assigned'), 5)
+            finally:
+                controller.close()
+
+    def test_a_run_from_the_earlier_gated_protocol_cannot_resume(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            controller = Controller(root)
+            run = controller.call('start', {'goal': 'Protocol label contract',
+                                            'executor_config': {'command': ['missing-scripted-runtime']}})
+            stopped = wait_stopped(controller, run)
+            self.assertEqual(stopped['progress']['protocol'], 'assistive/1')
+            earlier = {k: v for k, v in stopped['progress'].items() if k != 'protocol'}
+            earlier['feedback'] = {'graded': 'feedback from the earlier protocol'}
+            with controller._db() as db:
+                db.execute('UPDATE progress SET payload=? WHERE run_id=?', (json.dumps(earlier), run['run_id']))
+            before = controller.call('events', run)['events']
+            with self.assertRaisesRegex(ValueError, 'Run was created under the earlier gated protocol; start a new run'):
+                controller.call('resume', run)
+            self.assertEqual(controller.call('events', run)['events'], before)
+            self.assertEqual(controller.call('status', run)['status'], 'blocked')
+            with controller._db() as db:
+                db.execute("UPDATE runs SET status='queued' WHERE id=?", (run['run_id'],))
+            controller.close()
+            reopened = Controller(root)
+            try:
+                status = reopened.call('status', run)
+                self.assertEqual(status['status'], 'blocked')
+                self.assertIn('earlier gated protocol', status['reason'])
+                self.assertFalse(any(e['kind'] == 'stage.assigned' for e in reopened.call('events', run)['events'][len(before):]))
+            finally:
+                reopened.close()
+
+
 class ConfiguratorTests(unittest.TestCase):
-    def _scripted_generic(self, root, report, *, alter=False, command=None):
-        """Drive a generic run with an in-process worker that imports one image through the real gateway."""
+    def _scripted_generic(self, root, report, *, alter=False, imports=True, later=None, refuse=False):
+        """Drive a generic run with an in-process worker that imports one image through the real gateway.
+
+        `later` replaces the runtime result of every stage after acquire; `refuse` makes acquire ask for an
+        unassigned tool first.
+        """
         from unittest.mock import patch
         from generative_driver.configurator import Controller
         controller = Controller(root / 'home')
@@ -124,13 +361,19 @@ class ConfiguratorTests(unittest.TestCase):
             return {'ok': False, 'reason': 'scripted interpretation preparation stop'}
         def fake_execute(request, config, cancel):
             stages.append(request.stage)
+            if request.stage != 'acquire' and later:
+                return {'runtime': 'codex', 'elapsed_seconds': 0, 'usage': None, 'report': None, **later}
             if request.stage == 'acquire':
                 args = request.gateway['args']
-                out = controller.call('tool', {'run_id': args[args.index('--run') + 1],
-                    'assignment_id': args[args.index('--assignment') + 1],
-                    'name': 'acquire_firmware_artifact', 'arguments': {'origin': 'provided_binary'}})
-                if alter:
-                    Path(out['artifact']).write_bytes(b'changed after the tool returned')
+                identity = {'run_id': args[args.index('--run') + 1], 'assignment_id': args[args.index('--assignment') + 1]}
+                if refuse:
+                    with self.assertRaisesRegex(ValueError, 'not assigned'):
+                        controller.call('tool', {**identity, 'name': 'probe_run', 'arguments': {}})
+                if imports:
+                    out = controller.call('tool', {**identity, 'name': 'acquire_firmware_artifact',
+                                                   'arguments': {'origin': 'provided_binary'}})
+                    if alter:
+                        Path(out['artifact']).write_bytes(b'changed after the tool returned')
             if isinstance(report, dict) and 'runtime_status' in report:
                 return {'runtime': 'codex', 'status': report['runtime_status'], 'cause': report.get('cause'),
                         'reason': report.get('reason'), 'elapsed_seconds': 0, 'usage': None, 'report': None}
@@ -181,6 +424,54 @@ class ConfiguratorTests(unittest.TestCase):
         self.assertEqual(dropped, {'claimed.bin': 'Worker artifact hash disagrees with observed bytes',
                                    'outside.bin': 'Reported artifact is outside the assigned workspace'})
         self.assertEqual(result['progress']['next_stage'], 'interpret')
+
+    def test_partial_handoff_records_hashed_notes_beside_its_artifacts(self):
+        from generative_driver.configurator import digest
+        report = {'status': 'blocked', 'summary': 'No image yet', 'artifacts': [],
+                  'checks': [{'name': 'image', 'status': 'not_run', 'evidence': []}], 'unresolved': ['operator must supply the image']}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            result, _ = self._scripted_generic(root, report, imports=False, refuse=True, later={'status': 'blocked',
+                'cause': 'runtime_unavailable', 'reason': 'Cannot start configured runtime: scripted'})
+            acquire = result['accepted_handoffs'][0]
+            self.assertEqual((acquire['stage'], acquire['artifacts']), ('acquire', []))
+            notes = acquire['notes']
+            path = Path(notes['path'])
+            self.assertEqual(path, root / 'home/runs' / result['run_id'] / 'accepted/0/acquire' / acquire['assignment_id'] / 'notes.json')
+            self.assertEqual(notes['sha256'], digest(path))
+            self.assertEqual(json.loads(path.read_text(encoding='utf-8')), notes['inline'])
+            self.assertIn('operator must supply the image', notes['inline']['open_questions'])
+            self.assertEqual(notes['inline']['configurator']['tool_refusals'],
+                             [{'name': 'probe_run', 'reason': 'Tool is not assigned to this worker'}])
+            self.assertEqual(result['progress']['next_stage'], 'interpret')
+
+    def test_tampered_notes_stop_resume_for_integrity(self):
+        from generative_driver.configurator import Controller, IntegrityError
+        report = {'status': 'completed', 'summary': 'scripted import', 'artifacts': [], 'checks': [], 'unresolved': []}
+        operator_stop = {'status': 'blocked', 'cause': 'runtime_unavailable', 'reason': 'Cannot start configured runtime: scripted'}
+        for where in ('file', 'record'):
+            with self.subTest(where=where), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                result, _ = self._scripted_generic(root, report, later=operator_stop)
+                self.assertEqual(result['status'], 'blocked')
+                self.assertNotEqual(result['stage'], 'acquire')
+                acquire = result['accepted_handoffs'][0]
+                controller = Controller(root / 'home')
+                try:
+                    if where == 'file':
+                        path = Path(acquire['notes']['path'])
+                        path.write_text(path.read_text(encoding='utf-8').replace('scripted import', 'rewritten later'), encoding='utf-8')
+                    else:
+                        acquire['notes']['inline']['worker']['summary'] = 'rewritten later'
+                        with controller._db() as db:
+                            db.execute('UPDATE handoffs SET payload=? WHERE id=?', (json.dumps(acquire), acquire['assignment_id']))
+                    with self.assertRaisesRegex(IntegrityError, 'Stale handoff'):
+                        controller.call('resume', {'run_id': result['run_id']})
+                    after = controller.call('result', {'run_id': result['run_id']})
+                    self.assertEqual((after['status'], after['outcome_category']), ('blocked', 'integrity'))
+                    self.assertFalse(any(e['kind'] == 'run.resumed' for e in controller.call('events', {'run_id': result['run_id']})['events']))
+                finally:
+                    controller.close()
 
     def test_honest_not_run_check_advances(self):
         # run-0bddf9e2448f46c7 stopped here after acquire had produced its image.

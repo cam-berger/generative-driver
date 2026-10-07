@@ -150,8 +150,11 @@ class FreshReuseControllerTests(unittest.TestCase):
             try:
                 image = root / 'discovery.bin'; image.write_bytes(b'PRIVATE DISCOVERY')
                 spec = {'goal': 'Manipulate desired functions', 'inputs': {'image': str(image)}}
+                # Without a package fresh reuse is skipped with a note; discovery inputs never stand in.
                 prepared = controller._prepare(spec, 'reuse', root, root / 'fresh', [])
-                self.assertIn('blocked', prepared)
+                self.assertIn('emitted package', prepared['skip'])
+                self.assertNotIn('inputs', prepared)
+                self.assertNotIn('PRIVATE', json.dumps(prepared))
                 package = root / 'package'; package.mkdir()
                 (package / 'manifest.json').write_text('{}')
                 evidence = root / 'private-evidence.json'; evidence.write_text('{}')

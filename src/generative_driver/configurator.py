@@ -21,6 +21,12 @@ from .agents import StageRequest, execute
 
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 TERMINAL = {'completed', 'failed', 'cancelled', 'blocked'}
+# Runs record their protocol; a run saved without this label used the earlier gated stage progression.
+PROTOCOL = 'assistive/1'
+# Generic stage inputs, each taken from the latest accepted handoff of its stage that has artifacts.
+STAGE_INPUTS = {'probe': (('interpret', 'interpreted model'),),
+                'ground': (('interpret', 'interpreted model'), ('probe', 'probe records')),
+                'emit': (('interpret', 'interpreted model'), ('probe', 'probe records'))}
 STAGE_TOOLS = {
     'acquire': ['acquire_serial_listen','acquire_firmware_artifact','acquire_datasheet','acquire_protocol_spec','acquire_classify'],
     'interpret': ['firmware_prepare','firmware_collect','firmware_validate','model_validate','model_provenance_audit','ghidra_run','image_map_check'],
@@ -221,14 +227,17 @@ def _outcome(stage, result, checked, *, uncertain, repairs, max_repairs):
     return Outcome('advance', 'Repair budget exhausted; continuing with best revision' if diff else None)
 
 
-def _notes(result, checked, outcome):
-    """stage-notes/1: worker claims, truth-free configurator checks, open questions and the outcome."""
+def _notes(result, checked, outcome, *, refusals=(), missing=()):
+    """stage-notes/1: worker claims, truth-free configurator checks, open questions and the outcome.
+
+    `missing` names stage inputs that were absent; `refusals` are the gateway's refusals of this worker's tool calls.
+    """
     report = result.get('report') if isinstance(result.get('report'), dict) else {}
     listed = lambda key: report[key] if isinstance(report.get(key), list) else []
     observed = checked.get('notes') or {}
     unresolved = [item for item in listed('unresolved') if isinstance(item, str)]
-    questions = list(unresolved)
-    if result.get('status') != 'completed':
+    questions = list(missing) + unresolved
+    if result.get('status') not in ('completed', 'skipped'):
         questions.append('Worker runtime produced no usable report: ' + str(result.get('reason')))
     elif report.get('status') in ('needs_revision', 'blocked', 'failed'):
         questions.append('Worker reported ' + report['status'] + ': ' + str(report.get('summary', '')))
@@ -237,8 +246,19 @@ def _notes(result, checked, outcome):
                        'status': report.get('status'), 'summary': report.get('summary'),
                        'checks': listed('checks'), 'unresolved': unresolved},
             'configurator': {'checks': observed.get('checks', []), 'dropped_artifacts': observed.get('dropped_artifacts', []),
-                             'tool_refusals': [], 'device_diff': checked.get('device_diff')},
+                             'tool_refusals': list(refusals), 'device_diff': checked.get('device_diff')},
             'open_questions': questions, 'outcome': {'kind': outcome.kind, 'reason': outcome.reason}}
+
+
+def _notes_bytes(notes):
+    """The exact bytes of notes.json; its sha256 is recorded with the handoff and re-derivable from the inline copy."""
+    return (json.dumps(notes, sort_keys=True, ensure_ascii=False, allow_nan=False, indent=1) + '\n').encode('utf-8')
+
+
+def _prior_notes(accepted, revision):
+    """Notes of the handoffs that make up the current revision: acquire is shared, later stages are per revision."""
+    return [{'stage': h['stage'], 'revision': h.get('revision', 0), 'notes': h['notes']['inline']} for h in accepted
+            if (h.get('notes') or {}).get('inline') and (h.get('revision', 0) == revision or h['stage'] == STAGES[0])]
 
 
 @contextmanager
@@ -482,7 +502,15 @@ class Controller:
                 self._workflow_progress(run_id)
                 original_spec=json.loads(row['spec'])
                 spec = dict(original_spec)
-                self._verify_snapshot(spec, self.home / 'runs' / run_id)
+                try:
+                    with _integrity_checked():
+                        self._verify_snapshot(spec, self.home / 'runs' / run_id)
+                        # Accepted artifacts, notes.json and the recorded inline notes are all re-hashed.
+                        for handoff in self.call('result',{'run_id':run_id})['accepted_handoffs']:
+                            self._verify_handoff(handoff)
+                except IntegrityError as error:
+                    self._state(run_id, 'blocked', str(error), outcome_category='integrity')
+                    raise
                 budget_change=None
                 if params.get('budget_seconds') is not None:
                     budget=params['budget_seconds']
@@ -503,8 +531,6 @@ class Controller:
                     validate_scoped_approval(spec)
                 if time.time() >= row['created'] + spec['budget_seconds']:
                     raise ValueError('Run budget exhausted; supply an explicitly approved larger budget or start a new run')
-                for handoff in self.call('result',{'run_id':run_id})['accepted_handoffs']:
-                    self._verify_inputs({a['path']:a['sha256'] for a in handoff['artifacts']})
                 with self._db() as db:
                     self._claim_binding(spec.get('binding'),run_id,db)
                     if spec!=original_spec:
@@ -829,7 +855,8 @@ class Controller:
                 now = time.time()
                 db.execute('INSERT INTO runs(id,request_id,spec,status,stage,created,updated) VALUES(?,?,?,?,?,?,?)',
                            (run_id, params.get('request_id'), encoded, 'queued', 'acquire', now, now))
-                db.execute('INSERT INTO progress VALUES(?,?)',(run_id,_json({'revision':0,'next_stage':'acquire','repairs':0,'feedback':None})))
+                db.execute('INSERT INTO progress VALUES(?,?)',(run_id,_json({'revision':0,'next_stage':'acquire','repairs':0,
+                                                                            'feedback':None,'protocol':PROTOCOL})))
                 self._event(run_id, 'run.started', {'goal': goal, 'executor': executor, 'budget_seconds': budget}, db)
             self._spawn(run_id)
         return {'ok': True, 'run_id': run_id, 'duplicate': False}
@@ -842,8 +869,11 @@ class Controller:
         progress = json.loads(saved['payload']) if saved else None
         if (not isinstance(progress, dict) or 'maintenance_cycles' in progress
                 or not {'revision', 'next_stage', 'repairs', 'feedback'} <= progress.keys()
-                or progress['next_stage'] not in (*STAGES, None)):
+                or progress['next_stage'] not in (*STAGES, None) or progress.get('protocol', PROTOCOL) != PROTOCOL):
             raise ValueError('Unsupported saved workflow progress; start a new six-stage run')
+        if 'protocol' not in progress:
+            # Its quality gates and evaluator feedback are never replayed under the assistive protocol.
+            raise ValueError('Run was created under the earlier gated protocol; start a new run')
         return progress
 
     def _spawn(self, run_id):
@@ -862,6 +892,7 @@ class Controller:
             progress = self._workflow_progress(run_id)
             revision = progress['revision']
             queue = list(STAGES[STAGES.index(progress['next_stage']):]) if progress['next_stage'] else []
+            completion = 'Fresh reuse accepted'
             while queue:
                 stage = queue.pop(0)
                 if cancel.is_set():
@@ -874,7 +905,7 @@ class Controller:
                 workspace = run_dir / 'work' / stage / attempt
                 workspace.mkdir(parents=True, exist_ok=True)
                 for prior in accepted:
-                    self._verify_inputs({a['path']:a['sha256'] for a in prior['artifacts']})
+                    self._verify_handoff(prior)
                 current_spec = {**spec, '_revision':revision, '_feedback':progress.get('feedback')}
                 with self._db() as db:
                     responses=db.execute("SELECT payload FROM events WHERE run_id=? AND kind='operator.response' ORDER BY seq",(run_id,)).fetchall()
@@ -884,6 +915,11 @@ class Controller:
                 if prepared.get('blocked'):
                     self._state(run_id,'blocked',prepared['blocked'],stage)
                     return
+                if prepared.get('skip'):
+                    progress['next_stage'] = queue[0] if queue else None
+                    accepted.append(self._skip(run_id, stage, attempt, revision, run_dir, workspace.resolve(), progress, prepared['skip']))
+                    completion = prepared['skip'] if stage == STAGES[-1] else completion
+                    continue
                 workspace = Path(prepared.get('work_dir', workspace)).resolve()
                 workspace.mkdir(parents=True, exist_ok=True)
                 input_hashes = {str(Path(p).resolve()): digest(p) for p in prepared.get('inputs', [])}
@@ -962,17 +998,29 @@ class Controller:
                     self._state(run_id, result['status'] if _runtime_stop(result) else 'blocked', outcome.reason, stage,
                                 outcome_category=outcome.category)
                     return
-                if outcome.kind == 'revise':
+                if outcome.kind == 'revise' and (checked.get('ok') is False or checked.get('route')):
+                    # Benchmark adapter verdicts keep their legacy route, without a handoff, until Part B.
                     if not checked.get('revision_committed'):
                         progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=outcome.diff)
                         self._route(run_id,progress,outcome.reason)
                     revision = progress['revision']
                     queue = list(STAGES[1:])
                     continue
-                progress['next_stage'] = queue[0] if queue else None
-                handoff = self._accept(run_id, assignment, checked, run_dir, workspace, progress, _notes(result, checked, outcome))
-                accepted.append(handoff)
-            self._state(run_id, 'completed', 'Fresh reuse accepted')
+                with self._db() as db:
+                    rows = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='tool.refused' ORDER BY seq", (run_id,)).fetchall()
+                refusals = [{'name': event.get('name'), 'reason': event.get('reason')} for event in (json.loads(r['payload']) for r in rows)
+                            if event.get('assignment_id') == attempt and event.get('actor') == 'worker']
+                notes = _notes(result, checked, outcome, refusals=refusals, missing=prepared.get('input_notes', ()))
+                if outcome.kind == 'revise':
+                    # The partial handoff, the new revision and the route to interpret commit together.
+                    progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=outcome.diff)
+                else:
+                    progress['next_stage'] = queue[0] if queue else None
+                accepted.append(self._accept(run_id, assignment, checked, run_dir, workspace, progress, notes,
+                                             revise=outcome.reason if outcome.kind == 'revise' else None))
+                if outcome.kind == 'revise':
+                    revision, queue = progress['revision'], list(STAGES[1:])
+            self._state(run_id, 'completed', completion)
         except Exception as exc:
             category = 'integrity' if isinstance(exc, IntegrityError) else 'safety' if isinstance(exc, SafetyError) else 'host'
             self._state(run_id, 'failed' if category == 'host' else 'blocked', type(exc).__name__ + ': ' + str(exc),
@@ -1053,6 +1101,29 @@ class Controller:
             if observed != expected:
                 raise IntegrityError('Stale handoff: an assigned input was altered: ' + path)
 
+    @classmethod
+    def _verify_handoff(cls, handoff):
+        """Re-hash an accepted handoff: its artifacts, its notes.json and the inline notes recorded with it."""
+        hashes = {a['path']: a['sha256'] for a in handoff['artifacts']}
+        notes = handoff.get('notes') or {}
+        if 'path' in notes:
+            if hashlib.sha256(_notes_bytes(notes.get('inline'))).hexdigest() != notes.get('sha256'):
+                raise IntegrityError('Stale handoff: recorded notes differ from their accepted hash: ' + notes['path'])
+            hashes[notes['path']] = notes['sha256']
+        cls._verify_inputs(hashes)
+
+    @staticmethod
+    def _stage_inputs(stage, accepted):
+        """Each input comes from the latest accepted handoff of its stage that has artifacts; absence is a note."""
+        selected, missing = [], []
+        for source, label in STAGE_INPUTS.get(stage, ()):
+            found = next(([a['path'] for a in h['artifacts']] for h in reversed(accepted) if h['stage'] == source and h['artifacts']), None)
+            if found:
+                selected += found
+            else:
+                missing.append('No ' + label + ' available')
+        return selected, missing
+
     @staticmethod
     def _verify_snapshot(spec, run_dir):
         if '_snapshot_sha256' not in spec:
@@ -1094,16 +1165,19 @@ class Controller:
             return {'work_dir':prepared['workspace'],'prompt':prepared['prompt_for_agent'],'report_required':False,
                 'inputs':[str(Path(prepared['workspace'])/name) for name in prepared['sealed_inputs']], 'allowed_tools':[],
                 'collection':{'run_dir':str(tool_run),'expected_seal_sha256':prepared['seal_sha256'],'model_dir':prepared['model_dir']}}
-        # Reuse receives only the emitted package; other stages get the immediately
-        # preceding accepted artifacts. Neither receives the prior conversation.
-        previous = next((h for h in reversed(accepted) if h['stage'] == 'emit'), None) if stage == 'reuse' else (accepted[-1] if accepted else None)
+        # Reuse receives only the emitted package and never earlier notes. Acquire receives the operator inputs;
+        # later stages receive what they need from the latest handoff that has it, and earlier notes.
+        # Neither receives the prior conversation.
+        missing = []
         if stage == 'reuse':
-            source = [a['path'] for a in previous['artifacts']
-                      if Path(a['path']).is_dir() and (Path(a['path']) / 'manifest.json').is_file()] if previous else []
+            packages = lambda h: [a['path'] for a in h['artifacts'] if Path(a['path']).is_dir() and (Path(a['path']) / 'manifest.json').is_file()]
+            source = next((packages(h) for h in reversed(accepted) if h['stage'] == 'emit' and packages(h)), [])
             if len(source) != 1:
-                return {'blocked': 'Fresh reuse requires one accepted emitted package'}
+                return {'skip': 'Fresh reuse skipped: no single accepted emitted package to reuse'}
+        elif stage == STAGES[0]:
+            source = list(spec.get('inputs', {}).values())
         else:
-            source = [a['path'] for a in previous['artifacts']] if previous else list(spec.get('inputs', {}).values())
+            source, missing = self._stage_inputs(stage, accepted)
         inputs = []
         for index, raw in enumerate(source):
             path = Path(raw).expanduser().resolve()
@@ -1124,7 +1198,13 @@ class Controller:
                                  'Granted effects: ' + ', '.join(spec.get('effects', [])) + '.')
         if spec.get('_operator_observations'):
             context['operator_observations'] = spec['_operator_observations']
-        return {'objective': spec['goal'], 'inputs': inputs, 'allowed_tools': STAGE_TOOLS[stage], 'context': context}
+        if missing:
+            context['input_notes'] = missing
+        prior = _prior_notes(accepted, spec.get('_revision', 0)) if stage != 'reuse' else []
+        if prior:
+            context['prior_notes'] = prior
+        return {'objective': spec['goal'], 'inputs': inputs, 'allowed_tools': STAGE_TOOLS[stage], 'context': context,
+                **({'input_notes': missing} if missing else {})}
 
     def _evaluator_operation(self, run_id, stage, assignment_id, options, invoke):
         """One controller owns evaluator effects, uncertainty and actor-labelled evidence."""
@@ -1267,25 +1347,36 @@ class Controller:
                 **({'evidence':selected} if executed else {'reason':'No observed successful execution of the emitted package'})})
         return handed(selected, checks, dropped)
 
-    def _accept(self, run_id, assignment, checked, run_dir, workspace, progress, notes=None):
+    def _accept(self, run_id, assignment, checked, run_dir, workspace, progress, notes=None, *, revise=None):
+        """Accept what the stage observed, even nothing, with hashed notes. A revise (its reason) commits the
+        new revision, the route to interpret and the run.revision event in the same transaction."""
+        accepted_dir = run_dir / 'accepted' / str(assignment.get('revision',0)) / assignment['stage'] / assignment['id']
         artifacts = []
         for index, raw in enumerate(checked.get('artifacts', [])):
             source = Path(raw).resolve()
             if not source.is_relative_to(workspace) and not source.is_relative_to(run_dir):
                 raise ValueError('Artifact is outside the assigned workspace and run directory')
             expected = digest(source)
-            target = run_dir / 'accepted' / str(assignment.get('revision',0)) / assignment['stage'] / assignment['id'] / (str(index) + '-' + source.name)
+            target = accepted_dir / (str(index) + '-' + source.name)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(source, target) if source.is_dir() else shutil.copy2(source, target)
             if digest(target) != expected:
                 raise IntegrityError('Artifact changed while copying accepted evidence')
             artifacts.append({'path': str(target), 'sha256': expected, 'kind': 'directory' if target.is_dir() else 'file'})
         handoff = {'stage': assignment['stage'], 'assignment_id': assignment['id'], 'revision':assignment.get('revision',0),
-                   'route':checked.get('route'), 'artifacts': artifacts,
+                   'route':'interpret' if revise else checked.get('route'), 'artifacts': artifacts,
                    'checks': checked.get('checks', []), 'validation_scope': checked.get('validation_scope', 'Case evaluator'),
                    'accepted_at': time.time()}
         if notes is not None:
-            handoff['notes'] = {'inline': notes}
+            notes = json.loads(_json(notes))
+            encoded = _notes_bytes(notes)
+            path = accepted_dir / 'notes.json'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(encoded)
+            recorded = hashlib.sha256(encoded).hexdigest()
+            if digest(path) != recorded:
+                raise IntegrityError('Notes changed while recording accepted evidence')
+            handoff['notes'] = {'path': str(path), 'sha256': recorded, 'inline': notes}
         with self._db() as db:
             active = db.execute('SELECT state FROM assignments WHERE id=? AND run_id=?', (assignment['id'],run_id)).fetchone()
             prior = db.execute('SELECT payload FROM handoffs WHERE run_id=? AND stage=?', (run_id,assignment['stage'])).fetchall()
@@ -1296,9 +1387,26 @@ class Controller:
                 raise ValueError('Cancelled assignment cannot produce an accepted handoff')
             db.execute('INSERT INTO handoffs VALUES(?,?,?,?,?)', (assignment['id'],run_id,assignment['stage'],_json(handoff),time.time()))
             db.execute('UPDATE assignments SET state=? WHERE id=?', ('accepted', assignment['id']))
+            if revise:
+                db.execute("UPDATE assignments SET state='superseded' WHERE run_id=? AND state='active'",(run_id,))
+                db.execute('UPDATE runs SET stage=? WHERE id=?',(progress['next_stage'],run_id))
             db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)',(run_id,_json(progress)))
             self._event(run_id, 'stage.accepted', handoff, db)
+            if revise:
+                self._event(run_id,'run.revision', {**progress,'reason':revise},db)
         return handoff
+
+    def _skip(self, run_id, stage, attempt, revision, run_dir, workspace, progress, reason):
+        """A stage with nothing to work on runs no worker; it hands off empty with the reason as a note."""
+        assignment = {'id': attempt, 'stage': stage, 'workspace': str(workspace), 'inputs': {}, 'allowed_tools': [],
+                      'report_required': False, 'binding': None, 'effects': [], 'revision': revision, 'skipped': reason}
+        with self._db() as db:
+            db.execute('INSERT INTO assignments VALUES(?,?,?,?,?,?)', (attempt, run_id, stage, 'active', _json(assignment), time.time()))
+            self._event(run_id, 'stage.skipped', {'stage': stage, 'assignment_id': attempt, 'revision': revision, 'reason': reason}, db)
+        self._state(run_id, 'running', stage=stage)
+        notes = _notes({'status': 'skipped', 'reason': reason}, {}, Outcome('advance', reason), missing=[reason])
+        return self._accept(run_id, assignment, {'artifacts': [], 'checks': [], 'validation_scope': 'No worker ran: ' + reason},
+                            run_dir, workspace, progress, notes)
 
     def _managed_probe(self,run_id,assignment,model_dir,n):
         """Host-only evaluator callback; never exposed by the worker MCP server."""
@@ -1338,6 +1446,18 @@ class Controller:
         return {'listened': listened, 'resets_on_open': resets}
 
     def _tool(self, method, params, run, *, evaluator_workspace=None):
+        """The worker gateway. A refusal before dispatch is recorded so that stage's notes can name it."""
+        marker = {}
+        try:
+            return self._dispatch(method, params, run, marker, evaluator_workspace=evaluator_workspace)
+        except Exception as error:
+            if method == 'tool' and 'assignment' in marker and 'dispatched' not in marker:
+                self._event(run['id'], 'tool.refused', {'stage': marker['assignment']['stage'],
+                    'assignment_id': marker['assignment']['id'], 'name': params.get('name'), 'reason': str(error),
+                    'actor': 'evaluator' if evaluator_workspace is not None else 'worker'})
+            raise
+
+    def _dispatch(self, method, params, run, marker, *, evaluator_workspace=None):
         from .toolkit import list_tools, call_tool
         if self._closing:
             raise ValueError('Configurator is stopping; no new tools may be dispatched')
@@ -1352,6 +1472,7 @@ class Controller:
         progress=json.loads(saved['payload']) if saved else {}
         if assignment['stage'] != run['stage'] or assignment.get('revision',0) != progress.get('revision',0):
             raise ValueError('Worker assignment is inactive after stage or revision change')
+        marker['assignment'] = assignment
         allowed=assignment['allowed_tools']
         if evaluator_workspace is not None:
             spec=json.loads(run['spec']);case=spec.get('case')
@@ -1439,6 +1560,7 @@ class Controller:
                 if effectful:
                     db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(dispatch_id,run['id'],assignment['id'],
                         'evaluator' if evaluator_workspace is not None else 'worker'))
+        marker['dispatched'] = dispatch_id
         if name == 'benchmark_package_execute':
             from .benchmark import package_execute
             spec = json.loads(run['spec'])

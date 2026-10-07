@@ -467,7 +467,7 @@ class CleanupFailureTests(unittest.TestCase):
         # Resume a durable exhausted stage queue so the real _run completion and
         # finally paths execute, without pretending this is scored success.
         with owner._db() as db:
-            progress={'revision':0,'next_stage':None,'repairs':0,'feedback':None}
+            progress={'revision':0,'next_stage':None,'repairs':0,'feedback':None,'protocol':'assistive/1'}
             db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)',(child,json.dumps(progress)))
             owner._claim_binding({'host':'127.0.0.1','port':19381},child,db)
         return owner,suite,child
@@ -563,7 +563,7 @@ class FreshReuseCategorySchedulingTests(unittest.TestCase):
             owner,suite,child=self._stopped_suite_at_completion(home)
             entered,release,cleaned=threading.Event(),threading.Event(),threading.Event()
             with owner._db() as db:
-                progress={'revision':0,'next_stage':'reuse','repairs':0,'feedback':None}
+                progress={'revision':0,'next_stage':'reuse','repairs':0,'feedback':None,'protocol':'assistive/1'}
                 db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)',(child,json.dumps(progress)))
             prepare,check,execute,cleanup=owner._prepare,owner._check,configurator.execute,benchmark.cleanup
             def fixture_prepare(spec,stage,*args):

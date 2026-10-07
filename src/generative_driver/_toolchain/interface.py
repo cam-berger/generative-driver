@@ -167,13 +167,16 @@ def binding_reference(model):
         effects.setdefault(operation['effect'], []).append(name)
     grants = ' '.join(f'Operations that need `--allow-effect {effect}`: {", ".join(effects[effect])}.'
                       for effect in ('write', 'actuate') if effect in effects) or 'Every operation is a read.'
+    reset = (' This channel resets the device when it opens, so every connection needs `--allow-effect reset`; '
+             'use `python -m driver sequence` to run several operations over one connection.'
+             if model['channel'].get('resets_on_open') else '')
     return (f'The channel is {kind}. Supply its trusted physical binding as JSON:\n\n'
             f"```sh\npython -m driver execute {model['identity']['operation']} --binding '{form}'\n```\n\n"
             f'{note} The binding is the operator\'s choice; models cannot select host paths, devices or network '
             'destinations.\n\n'
             'Read effects are allowed by default; write and actuate each require an explicit grant, '
             '`--allow-effect write` or `--allow-effect actuate`, repeated once per effect. '
-            f'{grants} These are grants to declarations, not proof arbitrary bytes are safe.\n\n')
+            f'{grants}{reset} These are grants to declarations, not proof arbitrary bytes are safe.\n\n')
 
 
 def coverage_reference(model, evidence):
@@ -362,8 +365,8 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
     if type(binding) is not dict:
         raise ValueError('an interface package live test requires a binding object')
     grants = [] if allow_effects is None else allow_effects
-    if type(grants) is not list or any(g not in ('read','write','actuate') for g in grants):
-        raise ValueError('allow_effects must be a list of read, write or actuate')
+    if type(grants) is not list or any(g not in ('read','write','actuate','reset') for g in grants):
+        raise ValueError('allow_effects must be a list of read, write, actuate or reset')
     arguments = {} if parameters is None else parameters
     if type(arguments) is not dict or any(type(v) is not dict for v in arguments.values()):
         raise ValueError('parameters must map operation names to argument objects')

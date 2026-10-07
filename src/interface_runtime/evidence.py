@@ -166,18 +166,30 @@ def run_samples(model, operation, parameters=None, *, n=1, binding=None, allow_e
         raise ValueError('requested probe exceeds evidence bound; reduce samples, steps or output expansion')
     player = ReplayFactory(replay) if replay is not None else None
     recorder = RecordingFactory(player if player is not None else open_transport)
+    # A device that resets on open would be restarted by every sample; one connection keeps them comparable.
+    single = bool(model['channel'].get('resets_on_open')) and player is None
     results = []
-    for _ in range(n):
-        result = execute(model, operation, parameters, binding=binding,
-                         allow_effects=allow_effects, transport_factory=recorder,
-                         delay_fn=(lambda seconds: None) if player is not None else None)
-        results.append(result)
-        if not result['ok']:
-            break
+    if single:
+        from .engine import Session
+        with Session(model, binding=binding, allow_effects=allow_effects, transport_factory=recorder) as session:
+            for _ in range(n):
+                result = session.execute(operation, parameters)
+                results.append(result)
+                if not result['ok']:
+                    break
+    else:
+        for _ in range(n):
+            result = execute(model, operation, parameters, binding=binding,
+                             allow_effects=allow_effects, transport_factory=recorder,
+                             delay_fn=(lambda seconds: None) if player is not None else None)
+            results.append(result)
+            if not result['ok']:
+                break
     if player is not None and all(r['ok'] for r in results) and not player.exhausted():
         _error(results[-1], 'replay_mismatch','unused extra replay transactions')
     return {'ok':all(r['ok'] for r in results), 'evidence_kind':'replay' if player else 'live',
             'timing_policy':'skip_delays' if player else 'real',
+            **({'session':'single'} if single else {}),
             'results':results,'transactions':recorder.transactions}
 
 

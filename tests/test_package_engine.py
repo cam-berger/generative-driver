@@ -461,6 +461,18 @@ def test_session_validation_refusal_leaves_open_transport_open(model):
     assert len(opens) == 1 and boundary.closed
 
 
+def test_resetting_channel_samples_share_one_session(model):
+    from interface_runtime.evidence import run_samples
+    model["channel"]["resets_on_open"] = True
+    opens = []
+    boundary = Boundary([(b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:21.5\n")] * 3)
+    def factory(channel, binding):
+        opens.append(1); return boundary.factory(channel, binding)
+    with patch("interface_runtime.evidence.open_transport", factory):
+        evidence = run_samples(model, "measure", n=3, binding={}, allow_effects=("reset",))
+    assert evidence["ok"] and evidence["session"] == "single" and len(opens) == 1
+
+
 class EngineTests(unittest.TestCase):
     pass
 

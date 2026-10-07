@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 def example_model():
@@ -33,6 +34,46 @@ def example_replay():
 
 
 class PackageTests(unittest.TestCase):
+    def test_emitted_package_runs_a_sequence_over_one_connection(self):
+        from generative_driver.toolkit import call_tool
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            model = root / "model"; model.mkdir()
+            (model / "model.json").write_text(json.dumps(example_model()))
+            replay = root / "replay.json"; replay.write_text(json.dumps(example_replay()))
+            def call(tool_name, **arguments):
+                result = call_tool(tool_name, {"run_dir": str(root / "run"), **arguments})
+                self.assertEqual(result.get("_exit", 0), 0, result)
+                return result
+            probe = call("probe_run", model_dir=str(model), operation="measure", n=1, replay=str(replay))
+            emitted = call("emit_package", model_dir=str(model), probe_json=probe["probe"])
+            sys.path.insert(0, emitted["package_dir"])
+            try:
+                import importlib
+                driver = importlib.import_module("driver")
+                opens = []
+                class Fake:
+                    def exchange(self, tx, rx, timeout_ms):
+                        return self.replies.pop(0)
+                    def close(self):
+                        pass
+                fake = Fake()
+                # identity plus measure per step, two steps
+                fake.replies = [bytes.fromhex(t["rx_hex"]) for t in example_replay()["transactions"]] * 2
+                def factory(channel, binding):
+                    opens.append(1); return fake
+                engine = sys.modules["interface_runtime.engine"]
+                with patch.object(engine, "open_transport", factory, create=True), \
+                     patch.object(engine.Session, "_open",
+                                  lambda self, model: setattr(self, "transport", factory(model["channel"], {}))):
+                    result = driver.sequence([{"operation": "measure"}, {"operation": "measure"}], binding={})
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(len(result["results"]), 2)
+                self.assertEqual(len(opens), 1)
+            finally:
+                sys.path.remove(emitted["package_dir"])
+                sys.modules.pop("driver", None)
+
     def test_register_validation_preserves_supplied_model_bytes_and_inventory(self):
         from generative_driver.toolkit import call_tool
         with tempfile.TemporaryDirectory() as temp:

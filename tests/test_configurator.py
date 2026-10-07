@@ -110,12 +110,13 @@ class OutcomeModelTests(unittest.TestCase):
                 self.assertEqual((outcome.kind, outcome.category, outcome.reason), ('stop', category, 'adapter'))
 
 
-def scripted_stages(controller, *, check, prepare=None, prompts=None, work=None, report=None):
+def scripted_stages(controller, *, check, prepare=None, prompts=None, work=None, report=None, runtime=None):
     """Patch one controller so every stage runs an in-process scripted worker; no model, tool or device runs.
 
     `check` replaces the stage checks; `prepare(original, spec, stage, run_dir, workspace, accepted)` may call
     the real preparation; `work(request)` may call gateway tools first; `report(request)` may return the worker's
-    report instead of the default. Each worker writes out.json in its workspace and reports completed.
+    report instead of the default; `runtime(request)` may return the runtime's whole result after the work, such
+    as an exit with an error. Each worker writes out.json in its workspace and reports completed.
     """
     from contextlib import ExitStack
     from unittest.mock import patch
@@ -130,6 +131,9 @@ def scripted_stages(controller, *, check, prepare=None, prompts=None, work=None,
         if work:
             work(request)
         (Path(request.workspace) / 'out.json').write_text(json.dumps({'stage': request.stage}))
+        stopped = runtime and runtime(request)
+        if stopped:
+            return stopped
         return {'runtime': 'codex', 'status': 'completed', 'reason': None, 'elapsed_seconds': 0, 'usage': None,
                 'report': (report and report(request)) or {'status': 'completed', 'summary': 'scripted ' + request.stage,
                            'artifacts': [], 'checks': [], 'unresolved': ['open in ' + request.stage]}}
@@ -1038,20 +1042,36 @@ class FinalVerdictTests(unittest.TestCase):
                          'units': {}, 'identity_verified': False, 'transcript': [], 'transport_open_attempted': False,
                          'error': {'code': 'validation_error', 'message': 'argument violates parameter type or bounds',
                                    'fault': 'operator'}, '_exit': 1}
+    # The runtime opened the device and the reply contradicted the model.
+    EXECUTE_MODEL_FAILURE = {'schema': 'interface-result/1', 'operation': 'read_temperature', 'ok': False, 'outputs': {},
+                             'units': {}, 'identity_verified': True, 'transcript': [], 'transport_open_attempted': True,
+                             'error': {'code': 'expect', 'message': 'reply differs from the model', 'fault': 'model'}, '_exit': 1}
+    # The package's own runtime refused the fresh agent's parameters before it opened the device (operator, exit 4),
+    # in the shape of the toolchain's per-call summary.
+    PACKAGE_REFUSAL = {'ok': False, 'passed': 0, 'failed': 1, 'not_run': [], 'verdict': 'inconclusive',
+                       'results': [{'operation': 'read_temperature', 'ok': False, 'returncode': 1, 'error_code': 'validation_error',
+                                    'error_message': 'arguments must match parameter names exactly', 'fault': 'operator',
+                                    'identity_verified': False, 'outputs': {}, 'units': {}, 'transport_open_attempted': False}],
+                       'live_record': 'live-1.json', '_exit': 4}
 
     @contextlib.contextmanager
-    def finishing(self, controller, *, replay='passed', live=True, calls=None):
+    def finishing(self, controller, *, replay='passed', live=True, calls=None, attempts=None):
         """Acquire to ground are scripted. Emit and reuse use the real preparation and checks with scripted emit_check
         and live tools: the emit worker writes a package and the reuse worker runs it once on the device.
 
         `replay` is the emit_check outcome ('passed', 'failed' or 'seeded' for a register package's seeded check).
         `calls` scripts the reuse worker instead: (tool, result) pairs called in order, where the tool is emit_test_live
-        of the frozen package or interface_execute of its model, and a result that is an exception is raised by the tool."""
+        of the frozen package or interface_execute of its model, and a result that is an exception is raised by the tool.
+        A third element 'elsewhere' runs the tool on a changed copy the worker made in its workspace instead.
+        `attempts` scripts several fresh-reuse attempts, one list of calls each: the runtime of every attempt but the
+        last exits with an error after its calls, so the run stops for the host until it is resumed."""
+        import shutil
         from unittest.mock import patch
         from generative_driver.configurator import digest
         real_check, tools = controller._check, []
-        scripted = list(calls) if calls is not None else [('emit_test_live', self.PASSED if live else self.MODEL_FAILURE)]
-        results = iter([result for _, result in scripted])
+        attempts = attempts or [list(calls) if calls is not None else [('emit_test_live', self.PASSED if live else self.MODEL_FAILURE)]]
+        results = iter([call[1] for attempt in attempts for call in attempt])
+        reused = []
         def fake_call_tool(name, arguments):
             tools.append(name)
             if name == 'emit_check':
@@ -1072,26 +1092,38 @@ class FinalVerdictTests(unittest.TestCase):
             return {'ok': True, 'artifacts': [], 'checks': []}
         def work(request):
             if request.stage == 'reuse':
-                package = task_of(request.prompt)['inputs'][0]
-                for tool, _ in scripted:
-                    arguments = ({'package_dir': package} if tool == 'emit_test_live' else
-                                 {'model_dir': str(Path(package) / 'driver'), 'operation': 'read_temperature'})
+                package = Path(task_of(request.prompt)['inputs'][0])
+                for call in attempts[len(reused)]:
+                    tool, target = call[0], package
+                    if call[2:] == ('elsewhere',):
+                        target = Path(request.workspace) / 'own-package'
+                        if not target.exists():
+                            shutil.copytree(package, target)
+                            model = json.loads((target / 'driver' / 'model.json').read_text())
+                            (target / 'driver' / 'model.json').write_text(json.dumps({**model, 'changed': True}))
+                    arguments = ({'package_dir': str(target)} if tool == 'emit_test_live' else
+                                 {'model_dir': str(target / 'driver'), 'operation': 'read_temperature'})
                     try:
                         controller.call('tool', {**gateway_identity(request), 'name': tool, 'arguments': arguments})
                     except RuntimeError:
                         pass
+                reused.append(request.stage)
+        def runtime(request):
+            if request.stage == 'reuse' and len(reused) < len(attempts):
+                return {'runtime': 'codex', 'status': 'failed', 'cause': 'exit_error', 'elapsed_seconds': 0, 'usage': None,
+                        'reason': 'Configured runtime exited with an error'}
         def report(request):
             if request.stage == 'emit':
                 package = driver_package(request.workspace)
                 return {'status': 'completed', 'summary': 'scripted emission', 'checks': [], 'unresolved': [],
                         'artifacts': [{'path': str(package), 'sha256': digest(package), 'kind': 'package'}]}
-        with scripted_stages(controller, check=check, prepare=prepare, work=work, report=report), \
+        with scripted_stages(controller, check=check, prepare=prepare, work=work, report=report, runtime=runtime), \
              patch('generative_driver.toolkit.call_tool', fake_call_tool):
             yield tools
 
-    def start(self, controller):
+    def start(self, controller, **params):
         return controller.call('start', {'goal': 'Scripted final verdict; no model or device', 'binding': self.BINDING,
-                                         'executor_config': {'command': ['never-launched']}})
+                                         'executor_config': {'command': ['never-launched']}, **params})
 
     def test_a_replayed_package_that_fresh_reuse_runs_on_the_device_is_equivalent_by_self_evidence(self):
         from generative_driver.configurator import Controller
@@ -1203,6 +1235,8 @@ class FinalVerdictTests(unittest.TestCase):
                  [('emit_test_live', self.TOOLKIT_REFUSAL), ('emit_test_live', self.PASSED)], True),
                 ('runtime preflight refusal, then the frozen package passes',
                  [('interface_execute', self.PREFLIGHT_REFUSAL), ('emit_test_live', self.PASSED)], True),
+                ('package runtime refusal, then the frozen package passes',
+                 [('emit_test_live', self.PACKAGE_REFUSAL), ('emit_test_live', self.PASSED)], True),
                 ('only refused calls', [('emit_test_live', self.TOOLKIT_REFUSAL), ('interface_execute', self.PREFLIGHT_REFUSAL)], False)):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 controller = Controller(Path(directory) / 'home')
@@ -1252,6 +1286,71 @@ class FinalVerdictTests(unittest.TestCase):
                     self.assertIn('(dispatch ' + str(started[0]) + ')', entry['reason'])
                     self.assertNotIn('failed on the device', entry['reason'])
                     self.assertEqual(result['reason'], 'Final verdict: unscored: ' + entry['reason'])
+                finally:
+                    controller.close()
+
+    def test_every_reuse_attempt_that_received_the_frozen_package_is_judged(self):
+        """A fresh-reuse attempt that stopped before its handoff (its runtime exited with an error) and was resumed
+        had already run the frozen package on the device. Its live operations count as the accepted attempt's do."""
+        from generative_driver.configurator import Controller
+        for name, first, equivalent, outcome, says in (
+                ('driver failure', [('emit_test_live', self.MODEL_FAILURE)], False, 'failed', 'emit_test_live failed on the device'),
+                ('host fault', [('emit_test_live', self.HOST_FAULT)], None, 'inconclusive', 'host fault'),
+                ('dispatch never recorded', [('emit_test_live', RuntimeError('scripted gateway fault after dispatch'))],
+                 None, 'unresolved', 'never recorded'),
+                ('refusal before the device was contacted', [('emit_test_live', self.TOOLKIT_REFUSAL)], True, 'refused', None)):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                controller = Controller(Path(directory) / 'home')
+                try:
+                    with self.finishing(controller, attempts=[first, [('emit_test_live', self.PASSED)]]):
+                        run = self.start(controller)
+                        stopped = wait_stopped(controller, run)
+                        self.assertEqual((stopped['status'], stopped['outcome_category'], stopped['stage']),
+                                         ('failed', 'host', 'reuse'), stopped)
+                        resume_when_idle(self, controller, run)
+                        result = wait_stopped(controller, run)
+                    self.assertEqual((result['status'], result['outcome_category']), ('completed', 'completed'), result)
+                    self.assertEqual(result['equivalence']['equivalent'], equivalent, result['equivalence'])
+                    started = [e for e in controller.call('events', run)['events']
+                               if e['kind'] == 'tool.started' and e['data']['name'] == 'emit_test_live']
+                    self.assertEqual(len({e['data']['assignment_id'] for e in started}), 2)
+                    self.assertEqual(self.operations(result), [('emit_test_live', outcome), ('emit_test_live', 'succeeded')])
+                    reasons = [d['reason'] for d in result['equivalence']['diff']]
+                    if says:
+                        [reason] = reasons
+                        self.assertIn(says, reason)
+                        self.assertIn('(dispatch ' + str(started[0]['id']) + ')', reason)
+                        self.assertTrue(result['reason'].endswith(reason), result['reason'])
+                    else:
+                        self.assertEqual((result['reason'], reasons), ('Final verdict: equivalent', []))
+                    self.assertEqual(len(final_verdicts(controller, run)), 1)
+                finally:
+                    controller.close()
+
+    def test_a_failure_outside_the_emitted_driver_is_never_counted_as_the_drivers(self):
+        """Only bytes the configurator hashed before dispatch tie a failure to the driver: the frozen package for
+        emit_test_live, or its driver directory for interface_execute. Another failure leaves the verdict unscored."""
+        from generative_driver.configurator import Controller
+        for name, first, equivalent, outcome, says in (
+                ('interface_execute of the frozen driver', ('interface_execute', self.EXECUTE_MODEL_FAILURE),
+                 False, 'failed', 'interface_execute failed on the device'),
+                ('interface_execute of a model the worker changed', ('interface_execute', self.EXECUTE_MODEL_FAILURE, 'elsewhere'),
+                 None, 'inconclusive', 'interface_execute was inconclusive: model fault outside the emitted driver'),
+                ('emit_test_live of a package the worker changed', ('emit_test_live', self.MODEL_FAILURE, 'elsewhere'),
+                 None, 'inconclusive', 'emit_test_live was inconclusive: model fault outside the emitted driver')):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                controller = Controller(Path(directory) / 'home')
+                try:
+                    with self.finishing(controller, calls=[first, ('emit_test_live', self.PASSED)]):
+                        run = self.start(controller)
+                        result = wait_stopped(controller, run)
+                    self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', equivalent), result)
+                    self.assertEqual(self.operations(result), [(first[0], outcome), ('emit_test_live', 'succeeded')])
+                    dispatch = next(e['id'] for e in controller.call('events', run)['events']
+                                    if e['kind'] == 'tool.started' and e['data']['stage'] == 'reuse')
+                    [entry] = result['equivalence']['diff']
+                    self.assertTrue(entry['reason'].startswith(says), entry['reason'])
+                    self.assertTrue(entry['reason'].endswith('(dispatch ' + str(dispatch) + ')'), entry['reason'])
                 finally:
                     controller.close()
 
@@ -1450,6 +1549,51 @@ class FinalVerdictTests(unittest.TestCase):
                 self.assertEqual(len(final_verdicts(controller, run)), 1)
             finally:
                 controller.close()
+
+    def test_a_run_stopped_at_finalize_resumes_to_its_verdict_without_budget_binding_or_assumed_effects(self):
+        """Finalize only reads the configurator's records and contacts no device. A generic run that stopped there
+        before its verdict (a host fault, or a configurator restart) resumes to it with the budget lapsed and the
+        device leased to another run. Restart recovery assumes no outstanding effect from its write grant: reuse
+        was accepted, so nothing is dispatched."""
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller, SafetyError
+        for stop in ('host fault', 'restart'):
+            with self.subTest(stop=stop), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory) / 'home'
+                controller = Controller(home)
+                fault = RuntimeError('scripted host fault') if stop == 'host fault' else SystemExit('scripted configurator death')
+                try:
+                    with self.finishing(controller), \
+                         patch('generative_driver.configurator._self_evidence', side_effect=fault):
+                        run = self.start(controller, effects=['read', 'write'])
+                        until = time.monotonic() + 10
+                        while run['run_id'] in controller._workers or controller._row(run['run_id'])['stage'] != 'finalize':
+                            self.assertLess(time.monotonic(), until, controller.call('result', run))
+                            time.sleep(.02)
+                    stopped = controller.call('result', run)
+                    self.assertEqual(stopped['status'], 'failed' if stop == 'host fault' else 'running', stopped)
+                    if stop == 'restart':
+                        controller.close()
+                        controller = Controller(home)
+                        stopped = controller.call('result', run)
+                        self.assertEqual((stopped['status'], stopped['reason']), ('blocked', 'Configurator restarted; explicit resume required'))
+                    self.assertEqual((stopped['stage'], stopped['progress']['next_stage'], stopped['uncertain_effect']),
+                                     ('finalize', 'finalize', False), stopped)
+                    self.assertEqual(final_verdicts(controller, run), [])
+                    with controller._db() as db:
+                        # The wall-clock budget has lapsed, and another run now leases the device.
+                        db.execute('UPDATE runs SET created=created-? WHERE id=?', (10 * 86400, run['run_id']))
+                    with patch.object(controller, '_claim_binding', side_effect=SafetyError('Device binding is already owned by another run')):
+                        resume_when_idle(self, controller, run)
+                        result = wait_stopped(controller, run)
+                    self.assertEqual((result['status'], result['reason']), ('completed', 'Final verdict: equivalent'), result)
+                    events = controller.call('events', run)['events']
+                    resumed = max(i for i, e in enumerate(events) if e['kind'] == 'run.resumed')
+                    self.assertFalse(any(e['kind'] == 'stage.assigned' for e in events[resumed:]))
+                    self.assertEqual([e['kind'] for e in events].count('run.finalized'), 1)
+                    self.assertEqual(len(final_verdicts(controller, run)), 1)
+                finally:
+                    controller.close()
 
 
 class ConfiguratorTests(unittest.TestCase):

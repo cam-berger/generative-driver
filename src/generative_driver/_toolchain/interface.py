@@ -418,10 +418,14 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
     target = folder/f'live-{index}.json'
     with target.open('x', encoding="utf-8") as stream:
         stream.write(json.dumps(record, indent=2, allow_nan=False))
+    # The runtime says whether it tried to open the transport, so a refusal of the caller's parameters before any
+    # device contact stays distinguishable from a call that reached the device.
     summary = [{'operation':r['operation'],'ok':r['ok'],'returncode':r['returncode'],'error_code':r['error_code'],
                 'error_message':r['error_message'],'fault':r['fault'],
                 **{k:r['stdout_json'].get(k) for k in ('identity_verified','outputs','units')
-                   if type(r['stdout_json']) is dict}} for r in results]
+                   if type(r['stdout_json']) is dict},
+                **{k:r['stdout_json'][k] for k in ('transport_open_attempted',)
+                   if type(r['stdout_json']) is dict and type(r['stdout_json'].get(k)) is bool}} for r in results]
     return {'ok':ok,'passed':passed,'failed':len(results)-passed,'not_run':not_run,'verdict':verdict,
             'results':summary,'live_record':str(target),'manifest_sha256':manifest_sha,
             '_exit':0 if ok else 4 if transport else 1,'_files':{str(target):digest(target)}}

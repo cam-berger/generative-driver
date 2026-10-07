@@ -210,6 +210,28 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["results"][0]["outputs"], {"temperature": 21.5})
 
+    def test_live_test_summary_says_whether_the_package_tried_to_open_the_device(self):
+        from generative_driver.toolkit import call_tool
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            model = root / "model"; model.mkdir()
+            (model / "model.json").write_text(json.dumps(example_model()))
+            replay = root / "replay.json"; replay.write_text(json.dumps(example_replay()))
+            def call(tool_name, **arguments):
+                result = call_tool(tool_name, {"run_dir": str(root / "run"), **arguments})
+                self.assertEqual(result.get("_exit", 0), 0, result)
+                return result
+            probe = call("probe_run", model_dir=str(model), operation="measure", n=1, replay=str(replay))
+            emitted = call("emit_package", model_dir=str(model), probe_json=probe["probe"])
+            # A parameter the operation does not take: the package's own runtime refuses it before it opens the
+            # transport. The port names no device, so nothing is reachable either way.
+            live = call_tool("emit_test_live", {"run_dir": str(root / "run"), "package_dir": emitted["package_dir"],
+                                                "binding": {"port": str(root / "no-such-serial-port")},
+                                                "operations": ["measure"], "parameters": {"measure": {"unexpected": 1}}})
+            self.assertEqual((live["_exit"], live["verdict"]), (4, "inconclusive"), live)
+            [entry] = live["results"]
+            self.assertEqual((entry["fault"], entry["transport_open_attempted"]), ("operator", False), entry)
+
 
 if __name__ == "__main__":
     unittest.main()

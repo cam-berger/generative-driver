@@ -479,8 +479,9 @@ def _live_outcome(event):
     - 'refused': refused before the device was contacted, so not a live operation. Either the runtime's preflight
       refused it (no failed execution attempted to open the transport), or the toolchain refused it and left no
       execution record (an argument, binding, snapshot or integrity refusal);
-    - 'failed': the driver failed on the device. The runtime attributes a failure to the model after the transport
-      opened, or a register package's own live suite reported failing checks;
+    - 'failed': the model it ran failed on the device. The runtime attributes a failure to the model after the
+      transport opened, or a register package's own live suite reported failing checks. The verdict counts it as the
+      driver's only when the operation ran the frozen bytes;
     - 'inconclusive': anything else that did not succeed, such as an operator, host or transport fault (exit 4).
       It says nothing about the driver.
 
@@ -510,25 +511,38 @@ def _live_outcome(event):
     return 'refused', None
 
 
-def _self_evidence(accepted, events, started=()):
+def _driver_digest(package):
+    """The content of a package's driver directory, which interface_execute runs as a model; None when absent."""
+    try:
+        return digest(Path(package['path']) / 'driver')
+    except (OSError, ValueError):
+        return None
+
+
+def _self_evidence(accepted, events, started=(), assignments=()):
     """A generic run's final verdict, from the configurator's own records only.
 
-    `events` are tool.finished payloads; `started` are tool.started payloads with their dispatch ids.
+    `events` are tool.finished payloads; `started` are tool.started payloads with their dispatch ids; `assignments`
+    are the run's reuse assignments as {id, inputs}, with the input hashes the configurator recorded.
 
     - **Equivalent:** the emitted package passed emit_check, which the configurator ran at emit, and every live
       operation of fresh reuse succeeded. At least one of them ran that package (by the bytes the configurator
       hashed before dispatch) on the connection the configurator supplied.
     - **Not equivalent:** no single package passed emit_check, the driver failed on the device, or fresh reuse never
       ran the package.
-    - **Unscored (None):** otherwise, when a live operation was inconclusive (an operator, host or transport fault) or
-      was dispatched without a recorded result.
+    - **Unscored (None):** otherwise, when a live operation was inconclusive (an operator, host or transport fault, or
+      a failure of bytes other than the emitted driver) or was dispatched without a recorded result.
 
-    A call refused before the device was contacted is not a live operation. This is self-evidence about the driver's
-    outputs on the device, labelled as such; never an independent grade or truth."""
+    Fresh reuse is every reuse assignment that received the frozen package, so an attempt that stopped before its
+    handoff and was resumed is judged with the accepted one. A failure is the driver's only when the operation ran
+    the frozen bytes: the package for emit_test_live, or its driver directory for interface_execute. A call refused
+    before the device was contacted is not a live operation. This is self-evidence about the driver's outputs on the
+    device, labelled as such; never an independent grade or truth."""
     emits = [h for h in accepted if h['stage'] == 'emit']
     emit = next((h for h in reversed(emits) if _packages(h)), None)
     packages = _packages(emit) if emit else []
     frozen = {'name': Path(packages[0]['path']).name, 'sha256': packages[0]['sha256']} if len(packages) == 1 else None
+    driver = _driver_digest(packages[0]) if frozen else None
     check_of = lambda handoff: next((c for c in (handoff or {}).get('checks', []) if isinstance(c, dict)
                                      and c.get('name') == 'package_integrity_and_replay'), {})
     replayed = frozen is not None and check_of(emit).get('passed') is True
@@ -537,15 +551,24 @@ def _self_evidence(accepted, events, started=()):
     replay = {'id': 'emitted_package_replay', 'passed': replayed, **({'package': frozen} if frozen else {}),
               'basis': 'emit_check' + (' ' + kind if kind else '') + ', run by the configurator at emit'}
     reuse = next((h for h in reversed(accepted) if h['stage'] == 'reuse'), None)
-    mine = lambda e: reuse is not None and e.get('assignment_id') == reuse['assignment_id']
+    judged = {a['id'] for a in assignments if frozen is not None and frozen['sha256'] in set((a.get('inputs') or {}).values())}
+    judged |= {reuse['assignment_id']} if reuse is not None else set()
+    mine = lambda e: e.get('assignment_id') in judged
+    shas = lambda e: e.get('argument_sha256') or {}
+    emitted = lambda e: frozen is not None and e.get('name') == 'emit_test_live' and shas(e).get('package_dir') == frozen['sha256']
+    ran_driver = lambda e: emitted(e) or (driver is not None and e.get('name') == 'interface_execute'
+                                          and shas(e).get('model_dir') == driver)
+    def outcome_of(event):
+        outcome, detail = _live_outcome(event)
+        if outcome == 'failed' and not ran_driver(event):
+            return 'inconclusive', 'model fault outside the emitted driver'
+        return outcome, detail
     recorded = {e.get('dispatch_id') for e in events if mine(e)}
     # A device dispatch without a recorded result (the tool raised after it was dispatched) is unresolved.
-    rows = [(e, *_live_outcome(e)) for e in events if mine(e) and e.get('connected') is True]
+    rows = [(e, *outcome_of(e)) for e in events if mine(e) and e.get('connected') is True]
     rows += [(e, 'unresolved', None) for e in started if mine(e) and e.get('connected', True) is True
              and e.get('dispatch_id') not in recorded]
     rows.sort(key=lambda row: int(row[0]['dispatch_id']) if str(row[0].get('dispatch_id')).isdigit() else 0)
-    emitted = lambda e: (frozen is not None and e.get('name') == 'emit_test_live'
-                         and (e.get('argument_sha256') or {}).get('package_dir') == frozen['sha256'])
     attempted = [e for e, outcome, _ in rows if emitted(e) and outcome != 'refused']
     failed = [e for e, outcome, _ in rows if outcome == 'failed']
     unsettled = [row for row in rows if row[1] in ('inconclusive', 'unresolved')]
@@ -673,9 +696,13 @@ class Controller:
                 uncertain = row['uncertain'] or bool(set(spec.get('effects',[])) & {'write','actuate'})
                 reason = 'Configurator restarted; explicit resume required'
                 try:
-                    self._workflow_progress(row['id'], db)
+                    progress = self._workflow_progress(row['id'], db)
                 except ValueError as error:
                     reason = str(error)
+                else:
+                    if not spec.get('case') and progress['next_stage'] == 'finalize':
+                        # Reuse was accepted and finalize dispatches nothing: only a recorded pending effect is outstanding.
+                        uncertain = row['uncertain']
                 db.execute("UPDATE runs SET status='blocked',reason=?,uncertain=?,updated=? WHERE id=?",
                            (reason, int(uncertain),time.time(),row['id']))
                 db.execute("UPDATE assignments SET state='interrupted' WHERE run_id=? AND state='active'", (row['id'],))
@@ -869,9 +896,12 @@ class Controller:
                         self._event(run_id, 'run.resumed', {'final_verdict': True}, db)
                     self._state(run_id, 'completed', _verdict_reason(final['equivalence']), from_verdict=True)
                     return self.call('status', {'run_id': run_id})
-                self._workflow_progress(run_id)
+                progress = self._workflow_progress(run_id)
                 original_spec=json.loads(row['spec'])
                 spec = dict(original_spec)
+                # A generic run stopped before its verdict only computes it: finalize reads the configurator's records,
+                # runs no stage and contacts no device, so neither the budget nor the device lease applies.
+                finalizing = not spec.get('case') and progress.get('next_stage') == 'finalize'
                 try:
                     with _integrity_checked():
                         self._verify_snapshot(spec, self.home / 'runs' / run_id)
@@ -899,10 +929,11 @@ class Controller:
                 if params.get('scoped_tool_approval') is not None:
                     spec['scoped_tool_approval']=params['scoped_tool_approval']
                     validate_scoped_approval(spec)
-                if time.time() >= row['created'] + spec['budget_seconds']:
+                if not finalizing and time.time() >= row['created'] + spec['budget_seconds']:
                     raise ValueError('Run budget exhausted; supply an explicitly approved larger budget or start a new run')
                 with self._db() as db:
-                    self._claim_binding(spec.get('binding'),run_id,db)
+                    if not finalizing:
+                        self._claim_binding(spec.get('binding'),run_id,db)
                     if spec!=original_spec:
                         db.execute('UPDATE runs SET spec=? WHERE id=?',(_json(spec),run_id))
                     if budget_change:
@@ -1436,9 +1467,12 @@ class Controller:
             with self._db() as db:
                 rows = db.execute("SELECT seq,kind,payload FROM events WHERE run_id=? AND kind IN ('tool.started','tool.finished') "
                                   "ORDER BY seq", (run_id,)).fetchall()
+                # Every reuse attempt, including one that stopped before its handoff and was resumed.
+                reuses = db.execute("SELECT id,payload FROM assignments WHERE run_id=? AND stage='reuse'", (run_id,)).fetchall()
             equivalence = _self_evidence(accepted, [json.loads(row['payload']) for row in rows if row['kind'] == 'tool.finished'],
                                          [{**json.loads(row['payload']), 'dispatch_id': str(row['seq'])}
-                                          for row in rows if row['kind'] == 'tool.started'])
+                                          for row in rows if row['kind'] == 'tool.started'],
+                                         [{'id': row['id'], 'inputs': json.loads(row['payload']).get('inputs')} for row in reuses])
         with self._db() as db:
             if db.execute('SELECT cancelled FROM runs WHERE id=?', (run_id,)).fetchone()['cancelled']:
                 return None

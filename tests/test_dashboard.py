@@ -139,6 +139,39 @@ print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text
             self.assertLess(activity['age_seconds'], 5)
             self.assertEqual(dashboard.read_activity(root / 'missing')['entries'], [])
 
+    def test_projection_shows_the_equivalence_verdict_and_the_latest_notes_of_each_stage(self):
+        def notes(kind, questions, checks=(), summary='scripted', diff=None):
+            return {'inline': {'schema': 'stage-notes/1', 'worker': {'status': 'completed', 'summary': summary},
+                               'configurator': {'checks': list(checks), 'device_diff': diff},
+                               'open_questions': questions, 'outcome': {'kind': kind, 'reason': 'scripted ' + kind}}}
+        diff = [{'id': 'fresh_reuse_live_operations', 'reason': 'emit_test_live failed on the device (dispatch 9)'}]
+        result = {'run_id': 'run-final', 'status': 'completed', 'stage': 'finalize', 'reason': 'Final verdict: not equivalent',
+                  'created': 10, 'updated': 20, 'progress': {'revision': 1, 'repairs': 1, 'next_stage': None},
+                  'accepted_handoffs': [
+                      {'stage': 'acquire', 'revision': 0, 'notes': notes('advance', [])},
+                      {'stage': 'probe', 'revision': 0, 'notes': notes('revise', ['superseded question'],
+                                                                         diff=[{'source': 'probe_diff'}])},
+                      {'stage': 'probe', 'revision': 1, 'notes': notes('advance', ['latest question'],
+                          [{'name': 'observed_probe_execution', 'passed': False}, {'name': 'executable_model_contract', 'passed': True}],
+                          summary='x' * 5000)},
+                      {'stage': 'reuse', 'revision': 1}],
+                  'worker_reports': [],
+                  'equivalence': {'equivalent': False, 'basis': 'self-evidence', 'diff': diff,
+                                  'checks': [{'id': 'fresh_reuse_live_operations', 'passed': False}]}}
+        snapshot = self.dashboard().project_run(result, now=30)
+        self.assertEqual(snapshot['equivalence'], {'equivalent': False, 'basis': 'self-evidence', 'label': 'not equivalent', 'diff': diff})
+        stages = {s['name']: s for s in snapshot['stages']}
+        self.assertEqual([s['status'] for s in snapshot['stages']], ['accepted', 'pending', 'accepted', 'pending', 'pending', 'accepted'])
+        probe = stages['probe']['notes']
+        self.assertEqual((probe['revision'], probe['outcome'], probe['open_questions'], probe['failed_checks']),
+                         (1, 'advance', ['latest question'], ['observed_probe_execution']))
+        self.assertLessEqual(len(probe['summary']), 300)
+        self.assertEqual(stages['acquire']['notes']['outcome'], 'advance')
+        self.assertIsNone(stages['reuse']['notes'])
+        self.assertIsNone(stages['ground']['notes'])
+        running = self.dashboard().project_run({**result, 'status': 'running', 'equivalence': None}, now=30)
+        self.assertIsNone(running['equivalence'])
+
     def test_finished_worker_stays_in_checking_until_its_handoff_is_accepted(self):
         result = {'run_id': 'run-checking', 'status': 'running', 'stage': 'probe',
                   'created': 10, 'updated': 20, 'progress': {'revision': 1},

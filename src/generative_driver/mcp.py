@@ -38,7 +38,7 @@ def driver_start(goal: str, executor: str = "codex", inputs: dict | None = None,
 
 @server.tool()
 def driver_status(run_id: str) -> str:
-    """Reconnect to the current stage, status, blockers and uncertain effects of a durable run."""
+    """Reconnect to the current stage, status, blockers, uncertain effects, latest stage notes and final verdict of a durable run."""
     return _call("status", run_id=run_id)
 
 
@@ -56,7 +56,7 @@ def driver_cancel(run_id: str) -> str:
 
 @server.tool()
 def driver_result(run_id: str) -> str:
-    """Read worker reports, accepted evidence and independent evaluator verdicts separately."""
+    """Read worker reports, accepted evidence with its notes, evaluator verdicts and the final equivalence verdict separately."""
     return _call("result", run_id=run_id)
 
 

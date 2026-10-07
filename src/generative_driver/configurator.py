@@ -232,7 +232,7 @@ def _outcome(stage, result, checked, *, uncertain, repairs, max_repairs):
     return Outcome('advance', 'Repair budget exhausted; continuing with best revision' if diff else None)
 
 
-EVIDENCE_ARGUMENTS = ('model_dir', 'probe', 'probe_json', 'bus', 'replay')
+EVIDENCE_ARGUMENTS = ('model_dir', 'probe', 'probe_json', 'bus', 'replay', 'package_dir')
 
 
 def _argument_digests(arguments):
@@ -411,6 +411,89 @@ def _prior_notes(accepted, revision):
             if (h.get('notes') or {}).get('inline') and (h.get('revision', 0) == revision or h['stage'] == STAGES[0])]
 
 
+def _notes_summary(handoff):
+    """One handoff's notes in a few fields for status and the dashboard; free text is shortened."""
+    notes = (handoff.get('notes') or {}).get('inline')
+    if not isinstance(notes, dict):
+        return None
+    clip = lambda text: text[:300] if isinstance(text, str) else None
+    worker, configurator, outcome = (notes.get(key) if isinstance(notes.get(key), dict) else {}
+                                     for key in ('worker', 'configurator', 'outcome'))
+    return {'stage': handoff.get('stage'), 'revision': handoff.get('revision', 0), 'outcome': outcome.get('kind'),
+            'reason': clip(outcome.get('reason')), 'worker_status': worker.get('status'), 'summary': clip(worker.get('summary')),
+            'open_questions': [clip(q) for q in notes.get('open_questions') or [] if isinstance(q, str)][:5],
+            'failed_checks': [c.get('name') for c in configurator.get('checks') or [] if isinstance(c, dict) and c.get('passed') is False],
+            'device_diff_entries': len(configurator.get('device_diff') or [])}
+
+
+def stage_notes(accepted):
+    """The notes summary of each stage's latest handoff, in stage order; a stage without notes is left out."""
+    latest = {h['stage']: h for h in accepted}
+    return [summary for summary in (_notes_summary(latest[stage]) for stage in STAGES if stage in latest) if summary]
+
+
+# The run's one final verdict is stored in verdicts under this id suffix; it is not an evaluator stage verdict.
+FINAL = ':final'
+UNCERTAIN_AFTER_VERDICT = 'Outstanding effect is uncertain after the final verdict; operator reconciliation is required'
+
+
+def _final_verdict(db, run_id):
+    row = db.execute('SELECT payload FROM verdicts WHERE id=?', (run_id + FINAL,)).fetchone()
+    return json.loads(row['payload']) if row else None
+
+
+def equivalence_label(equivalence):
+    return {True: 'equivalent', False: 'not equivalent'}.get((equivalence or {}).get('equivalent'), 'unscored')
+
+
+def _verdict_reason(equivalence):
+    """The completed run's reason: its verdict and, when not equivalent, the first differences."""
+    label = equivalence_label(equivalence)
+    reasons = [d['reason'] for d in equivalence.get('diff') or [] if isinstance(d, dict) and isinstance(d.get('reason'), str)]
+    detail = '; '.join(reasons[:3]) + ('; ' + str(len(reasons) - 3) + ' more' if len(reasons) > 3 else '')
+    return 'Final verdict: ' + label + (': ' + detail if label == 'not equivalent' and reasons else '')
+
+
+def _packages(handoff):
+    """The emitted packages among a handoff's artifacts: directories that hold a manifest."""
+    return [a for a in handoff['artifacts'] if Path(a['path']).is_dir() and (Path(a['path']) / 'manifest.json').is_file()]
+
+
+def _self_evidence(accepted, events):
+    """A generic run's final verdict, from the configurator's own records only.
+
+    Equivalent when the emitted package passed emit_check replay of the recorded device exchanges, which the
+    configurator ran at emit, and every live operation of fresh reuse succeeded, at least one of them running that
+    package (by the bytes the configurator hashed before dispatch) on the connection it supplied. This is
+    self-evidence about the driver's outputs on the device, labelled as such; never an independent grade or truth."""
+    emit = next((h for h in reversed(accepted) if h['stage'] == 'emit' and _packages(h)), None)
+    packages = _packages(emit) if emit else []
+    frozen = {'name': Path(packages[0]['path']).name, 'sha256': packages[0]['sha256']} if len(packages) == 1 else None
+    replayed = frozen is not None and any(isinstance(c, dict) and c.get('name') == 'package_integrity_and_replay'
+                                          and c.get('passed') is True for c in emit.get('checks', []))
+    replay = {'id': 'emitted_package_replay', 'passed': replayed, **({'package': frozen} if frozen else {}),
+              'basis': 'emit_check replay of the recorded device exchanges, run by the configurator at emit'}
+    reuse = next((h for h in reversed(accepted) if h['stage'] == 'reuse'), None)
+    live = [e for e in events if reuse and e.get('assignment_id') == reuse['assignment_id'] and e.get('connected') is True]
+    emitted = lambda e: (frozen is not None and e.get('name') == 'emit_test_live'
+                         and (e.get('argument_sha256') or {}).get('package_dir') == frozen['sha256'])
+    failed, used = [e for e in live if e.get('ok') is not True], [e for e in live if emitted(e)]
+    operations = {'id': 'fresh_reuse_live_operations', 'passed': bool(used) and not failed,
+                  'operations': [{'dispatch_id': e.get('dispatch_id'), 'name': e.get('name'), 'ok': e.get('ok') is True,
+                                  'emitted_package': emitted(e)} for e in live],
+                  'basis': 'Live operations the configurator dispatched for fresh reuse on the device connection it supplied'}
+    diff = []
+    if not replayed:
+        diff.append({'id': replay['id'], 'reason': 'no driver emitted' if not packages else
+                     'the emitted package has no passed emit_check replay' if frozen else
+                     str(len(packages)) + ' emitted packages; no single driver to judge'})
+    diff += [{'id': operations['id'], 'reason': str(e.get('name')) + ' failed on the device (dispatch ' + str(e.get('dispatch_id')) + ')'}
+             for e in failed]
+    if not used and not failed:
+        diff.append({'id': operations['id'], 'reason': 'fresh reuse ran no live operation of the emitted driver'})
+    return {'equivalent': replayed and operations['passed'], 'basis': 'self-evidence', 'checks': [replay, operations], 'diff': diff}
+
+
 @contextmanager
 def _integrity_checked():
     """Adapter and toolchain ValueErrors about changed bytes or stale evidence are integrity stops."""
@@ -423,12 +506,15 @@ def _integrity_checked():
 
 
 def _has_terminal_final_failure(db, run_id):
+    """Only the gated protocol's terminal shapes: the progress flag, or a frozen final evaluation that failed for the
+    model, which benchmark adapters still produce inside reuse until Part B. The final verdict (`<run_id>:final`)
+    ends a completed run whatever it says, so it is never one of them."""
     saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run_id,)).fetchone()
     if saved and json.loads(saved['payload']).get('terminal_final_failure'):
         return True
     # Also recognize verdicts saved by versions that could lose the progress
     # marker to cancellation, or by a process that stopped after saving a verdict.
-    verdicts = db.execute('SELECT payload FROM verdicts WHERE run_id=?', (run_id,)).fetchall()
+    verdicts = db.execute("SELECT payload FROM verdicts WHERE run_id=? AND stage!='finalize'", (run_id,)).fetchall()
     return any(value.get('final_evaluation') is True and value.get('fault') == 'model'
                and value.get('verdict') == 'failed' and not value.get('route')
                for value in (json.loads(row['payload']) for row in verdicts))
@@ -479,6 +565,16 @@ class Controller:
             if 'outcome_category' not in columns:
                 db.execute("ALTER TABLE runs ADD COLUMN outcome_category TEXT NOT NULL DEFAULT 'unknown'")
             for row in db.execute("SELECT * FROM runs WHERE status IN ('queued','running')").fetchall():
+                final = _final_verdict(db, row['id'])
+                if final:
+                    # A recorded verdict is never graded again: the run completes from it unless an effect is uncertain.
+                    held = bool(row['uncertain'])
+                    db.execute('UPDATE runs SET status=?,outcome_category=?,reason=?,updated=? WHERE id=?',
+                               ('blocked' if held else 'completed', 'safety' if held else 'completed',
+                                UNCERTAIN_AFTER_VERDICT if held else _verdict_reason(final['equivalence']), time.time(), row['id']))
+                    db.execute("UPDATE assignments SET state='interrupted' WHERE run_id=? AND state='active'", (row['id'],))
+                    self._event(row['id'], 'run.recovered', {'final_verdict': True, 'uncertain_effect': held}, db)
+                    continue
                 if _has_terminal_final_failure(db, row['id']):
                     db.execute("UPDATE runs SET status='failed',outcome_category='model',reason=?,updated=? WHERE id=?",
                                ('Frozen final evaluation failed', time.time(), row['id']))
@@ -562,8 +658,13 @@ class Controller:
                 # this lock. Read both together before a suite may settle a child.
                 row = self._row(run_id)
                 stopping = row['status'] in TERMINAL and (run_id in self._workers or run_id in self._inflight)
-                return {'ok': True, **{k: row[k] for k in ('status', 'stage', 'reason', 'created', 'updated', 'outcome_category')},
-                        'run_id': run_id, 'uncertain_effect': bool(row['uncertain']), 'stopping': stopping}
+                out = {'ok': True, **{k: row[k] for k in ('status', 'stage', 'reason', 'created', 'updated', 'outcome_category')},
+                       'run_id': run_id, 'uncertain_effect': bool(row['uncertain']), 'stopping': stopping}
+            with self._db() as db:
+                final = _final_verdict(db, run_id)
+                accepted = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM handoffs WHERE run_id=? ORDER BY created', (run_id,))]
+            # The final verdict and the latest notes of each stage; neither is an evaluator stage verdict.
+            return {**out, 'equivalence': final['equivalence'] if final else None, 'stage_notes': stage_notes(accepted)}
         if method == 'events':
             with self._db() as db:
                 events = db.execute('SELECT * FROM events WHERE run_id=? AND seq>? ORDER BY seq LIMIT 500',
@@ -587,7 +688,9 @@ class Controller:
                 out['case_pin'] = spec['_case_pin']
             with self._db() as db:
                 for table, key in (('reports', 'worker_reports'), ('handoffs', 'accepted_handoffs'), ('verdicts', 'evaluator_verdicts')):
-                    out[key] = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM ' + table + ' WHERE run_id=? ORDER BY created', (run_id,))]
+                    # The final verdict is `equivalence`, apart from evaluator stage verdicts.
+                    out[key] = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM ' + table + ' WHERE run_id=?' +
+                                (" AND stage!='finalize'" if table == 'verdicts' else '') + ' ORDER BY created', (run_id,))]
                 recoveries = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='emulator.recovered' ORDER BY seq",(run_id,)).fetchall()
                 out['emulator_recoveries'] = [json.loads(r['payload']) for r in recoveries]
                 out['emulator_recovery_count'] = len(recoveries)
@@ -1019,7 +1122,7 @@ class Controller:
         progress = json.loads(saved['payload']) if saved else None
         if (not isinstance(progress, dict) or 'maintenance_cycles' in progress
                 or not {'revision', 'next_stage', 'repairs', 'feedback'} <= progress.keys()
-                or progress['next_stage'] not in (*STAGES, None) or progress.get('protocol', PROTOCOL) != PROTOCOL):
+                or progress['next_stage'] not in (*STAGES, 'finalize', None) or progress.get('protocol', PROTOCOL) != PROTOCOL):
             raise ValueError('Unsupported saved workflow progress; start a new six-stage run')
         if 'protocol' not in progress:
             # Its quality gates and evaluator feedback are never replayed under the assistive protocol.
@@ -1041,7 +1144,8 @@ class Controller:
             accepted = self.call('result', {'run_id': run_id})['accepted_handoffs']
             progress = self._workflow_progress(run_id)
             revision = progress['revision']
-            queue = list(STAGES[STAGES.index(progress['next_stage']):]) if progress['next_stage'] else []
+            # After reuse the queue is empty and next_stage is 'finalize' until the final verdict is recorded.
+            queue = list(STAGES[STAGES.index(progress['next_stage']):]) if progress['next_stage'] in STAGES else []
             completion = 'Fresh reuse accepted'
             while queue:
                 stage = queue.pop(0)
@@ -1066,7 +1170,7 @@ class Controller:
                     self._state(run_id,'blocked',prepared['blocked'],stage)
                     return
                 if prepared.get('skip'):
-                    progress['next_stage'] = queue[0] if queue else None
+                    progress['next_stage'] = queue[0] if queue else 'finalize'
                     accepted.append(self._skip(run_id, stage, attempt, revision, run_dir, workspace.resolve(), progress, prepared['skip']))
                     completion = prepared['skip'] if stage == STAGES[-1] else completion
                     continue
@@ -1165,47 +1269,113 @@ class Controller:
                     # The partial handoff, the new revision and the route to interpret commit together.
                     progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=outcome.diff)
                 else:
-                    progress['next_stage'] = queue[0] if queue else None
+                    progress['next_stage'] = queue[0] if queue else 'finalize'
                 accepted.append(self._accept(run_id, assignment, checked, run_dir, workspace, progress, notes,
                                              revise=outcome.reason if outcome.kind == 'revise' else None))
                 if outcome.kind == 'revise':
                     revision, queue = progress['revision'], list(STAGES[1:])
-            self._state(run_id, 'completed', completion)
+            if cancel.is_set():
+                return
+            final = self._finalize(run_id, spec, accepted)
+            self._state(run_id, 'completed', _verdict_reason(final['equivalence']) if final else completion)
         except Exception as exc:
             category = 'integrity' if isinstance(exc, IntegrityError) else 'safety' if isinstance(exc, SafetyError) else 'host'
             self._state(run_id, 'failed' if category == 'host' else 'blocked', type(exc).__name__ + ': ' + str(exc),
                         outcome_category=category)
         finally:
-            if spec and spec.get('case'):
+            if spec:
                 try:
-                    from .benchmark import cleanup
-                    case=spec['case']
-                    options=spec.get('case_options',{})
-                    if isinstance(case,dict): options={**case.get('options',{}),**options}
-                    if spec.get('_case_pin', {}).get('manifest', {}).get('schema') == 'benchmark-case/2':
-                        from .benchmark_support.emulated_evidence import finalize
-                        try:
-                            finalize(case['id'] if isinstance(case,dict) else case, run_dir,
-                                     self.call('result', {'run_id':run_id})['accepted_handoffs'], options)
-                        except Exception as error:
-                            self._state(run_id, 'failed', 'Evaluator evidence sealing failed: '+str(error), outcome_category='host')
-                            self._event(run_id, 'evidence.sealing_failed', {'reason':type(error).__name__})
-                    cleanup(case['id'] if isinstance(case,dict) else case,run_dir,options)
+                    failures = self._release(run_id, spec, run_dir)
                 except Exception as exc:
-                    # A failed stop may leave an external resource live. Retain its
-                    # lease until explicit reconciliation, even after this worker exits.
-                    with self._lock:
-                        with self._db() as db:
-                            db.execute('UPDATE runs SET uncertain=1 WHERE id=?',(run_id,))
-                            self._event(run_id,'cleanup.failed',{'reason':type(exc).__name__+': '+str(exc)},db)
-                        self._state(run_id,'blocked','Benchmark cleanup failed; operator reconciliation required',
-                                    outcome_category='host')
+                    failures = [('cleanup.failed', type(exc).__name__ + ': ' + str(exc), None)]
+                self._settle_release(run_id, failures)
             with self._lock:
                 with self._db() as db:
                     row = db.execute('SELECT uncertain FROM runs WHERE id=?',(run_id,)).fetchone()
                     if row and not row['uncertain'] and run_id not in self._inflight:
                         db.execute('DELETE FROM bindings WHERE run_id=?',(run_id,))
                 self._workers.pop(run_id, None)
+
+    def _finalize(self, run_id, spec, accepted):
+        """Record the run's one final verdict after reuse, as `<run_id>:final`, and end the queue in the same
+        transaction. A recorded verdict is returned as it is and never graded again.
+
+        A generic run's verdict is self-evidence. Benchmark runs (`spec.case`) keep the frozen final path their
+        adapters run inside reuse until Part B, so no evaluator is called here and nothing is recorded; Part B
+        records a pending verdict at this point for the bench harness to complete."""
+        with self._db() as db:
+            final = _final_verdict(db, run_id)
+        if final is not None:
+            return final
+        equivalence = None
+        if not spec.get('case'):
+            self._state(run_id, 'running', stage='finalize')
+            for handoff in accepted:
+                self._verify_handoff(handoff)
+            with self._db() as db:
+                rows = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='tool.finished' ORDER BY seq", (run_id,)).fetchall()
+            equivalence = _self_evidence(accepted, [json.loads(row['payload']) for row in rows])
+        with self._db() as db:
+            if db.execute('SELECT cancelled FROM runs WHERE id=?', (run_id,)).fetchone()['cancelled']:
+                return None
+            progress = {**self._workflow_progress(run_id, db), 'next_stage': None}
+            db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)', (run_id, _json(progress)))
+            if equivalence is None:
+                return None
+            frozen = next((c.get('package') for c in equivalence['checks'] if c['id'] == 'emitted_package_replay'), None)
+            final = {'stage': 'finalize', 'equivalence': equivalence, 'protocol': PROTOCOL,
+                     'frozen_artifact_sha256': (frozen or {}).get('sha256')}
+            db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)', (run_id + FINAL, run_id, 'finalize', _json(final), time.time()))
+            self._event(run_id, 'run.finalized', {key: equivalence[key] for key in ('equivalent', 'basis', 'diff')}, db)
+        return final
+
+    def _release(self, run_id, spec, run_dir):
+        """Seal a benchmark run's evidence and stop what its adapter owns. Returns the failures in the order they
+        happened as (event kind, reason, event detail); a generic run owns nothing to release."""
+        failures = []
+        if not spec.get('case'):
+            return failures
+        try:
+            from .benchmark import cleanup
+            case=spec['case']
+            options=spec.get('case_options',{})
+            if isinstance(case,dict): options={**case.get('options',{}),**options}
+            if spec.get('_case_pin', {}).get('manifest', {}).get('schema') == 'benchmark-case/2':
+                from .benchmark_support.emulated_evidence import finalize
+                try:
+                    finalize(case['id'] if isinstance(case,dict) else case, run_dir,
+                             self.call('result', {'run_id':run_id})['accepted_handoffs'], options)
+                except Exception as error:
+                    failures.append(('evidence.sealing_failed', 'Evaluator evidence sealing failed: '+str(error), type(error).__name__))
+            cleanup(case['id'] if isinstance(case,dict) else case,run_dir,options)
+        except Exception as exc:
+            failures.append(('cleanup.failed', type(exc).__name__+': '+str(exc), None))
+        return failures
+
+    def _settle_release(self, run_id, failures):
+        """Before a final verdict a release failure stops the run: a sealing failure fails it for the host, and a
+        failed stop retains the lease as uncertain. After the verdict each failure is an event; the verdict and the
+        completed status stand unless an effect is uncertain, which blocks for safety."""
+        with self._db() as db:
+            final = _final_verdict(db, run_id)
+        for kind, reason, detail in failures:
+            if kind == 'evidence.sealing_failed':
+                if final is None:
+                    self._state(run_id, 'failed', reason, outcome_category='host')
+                self._event(run_id, kind, {'reason': detail})
+                continue
+            # Before the verdict, a failed stop may leave an external resource live: retain
+            # its lease until explicit reconciliation, even after this worker exits.
+            with self._lock:
+                with self._db() as db:
+                    if final is None:
+                        db.execute('UPDATE runs SET uncertain=1 WHERE id=?',(run_id,))
+                    self._event(run_id, kind, {'reason': reason}, db)
+                if final is None:
+                    self._state(run_id,'blocked','Benchmark cleanup failed; operator reconciliation required',
+                                outcome_category='host')
+        if final is not None and self._row(run_id)['uncertain']:
+            self._state(run_id, 'blocked', UNCERTAIN_AFTER_VERDICT, outcome_category='safety')
 
     @contextmanager
     def _active_operation(self,run_id):
@@ -1352,8 +1522,7 @@ class Controller:
         # Neither receives the prior conversation.
         missing = []
         if stage == 'reuse':
-            packages = lambda h: [a['path'] for a in h['artifacts'] if Path(a['path']).is_dir() and (Path(a['path']) / 'manifest.json').is_file()]
-            source = next((packages(h) for h in reversed(accepted) if h['stage'] == 'emit' and packages(h)), [])
+            source = next(([a['path'] for a in _packages(h)] for h in reversed(accepted) if h['stage'] == 'emit' and _packages(h)), [])
             if len(source) != 1:
                 return {'skip': 'Fresh reuse skipped: no single accepted emitted package to reuse'}
         elif stage == STAGES[0]:

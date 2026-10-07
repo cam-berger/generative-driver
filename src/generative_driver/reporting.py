@@ -123,6 +123,8 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
             "execution": execution,
             "model_benchmark": execution in ("actual-agent-emulation", "actual-agent-physical"),
             "workflow_status": status, "verdict": verdict,
+            # The run's final equivalence verdict and its basis; self-evidence is not the independent verdict above.
+            "protocol": (result.get("progress") or {}).get("protocol"), "equivalence": result.get("equivalence"),
             "reason": reason, "stages": stages, "workflow_stages": list(STAGES),
             "case_state": evidence,
             "elapsed_seconds": max(0, result["updated"] - result["created"]),
@@ -180,9 +182,15 @@ def markdown(report):
         return "unknown" if value is None else f"{value:.2f}" if isinstance(value, float) else str(value)
     lines = ["# Generative Driver benchmark", "",
              f"Run: `{report['run_id']}`. Execution: `{report['execution']}`.", "",
-             f"Workflow: **{report['workflow_status']}**. Independent verdict: **{report['verdict']}**.", "",
-             "| Stage | Workflow | Evaluator | Attempts | Worker seconds | Tool seconds | Tokens |",
-             "|---|---|---|---:|---:|---:|---:|"]
+             f"Workflow: **{report['workflow_status']}**. Independent verdict: **{report['verdict']}**.", ""]
+    final = report.get("equivalence")
+    if isinstance(final, dict):
+        from .configurator import equivalence_label
+        diff = "; ".join(str(d.get("reason")) for d in final.get("diff") or [] if isinstance(d, dict))
+        lines += [f"Equivalence ({final.get('basis', 'unknown basis')}): **{equivalence_label(final)}**. "
+                  f"Protocol: `{report.get('protocol')}`." + (f" Differences: {diff}." if diff else ""), ""]
+    lines += ["| Stage | Workflow | Evaluator | Attempts | Worker seconds | Tool seconds | Tokens |",
+              "|---|---|---|---:|---:|---:|---:|"]
     for name, row in report["stages"].items():
         lines.append(f"| {name} | {row['workflow_status']} | {row['evaluator_status']} | {row['attempt_count']} | "
                      f"{show(row['worker_seconds'])} | {show(row['tool_seconds'])} | {show(row['usage']['total_tokens'])} |")

@@ -85,7 +85,12 @@ class FreshReuseControllerTests(unittest.TestCase):
                                if e['kind'] == 'stage.assigned']
                 self.assertEqual(tuple(a['stage'] for a in assignments), SIX_STAGES)
                 self.assertEqual(result['status'], 'completed', result)
-                self.assertEqual(result['reason'], 'Fresh reuse accepted')
+                # The scripted checks claim no emit_check replay and reuse ran nothing live: the self-evidence
+                # verdict records the package as not equivalent, and the run is still complete.
+                self.assertTrue(result['reason'].startswith('Final verdict: not equivalent: '), result['reason'])
+                self.assertEqual((result['equivalence']['equivalent'], result['equivalence']['basis']), (False, 'self-evidence'))
+                self.assertEqual([d['id'] for d in result['equivalence']['diff']],
+                                 ['emitted_package_replay', 'fresh_reuse_live_operations'])
                 self.assertEqual(tuple(h['stage'] for h in result['accepted_handoffs']), SIX_STAGES)
                 self.assertIsNone(result['progress']['next_stage'])
                 self.assertNotIn('maintenance_cycles', result['progress'])

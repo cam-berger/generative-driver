@@ -68,6 +68,24 @@ class ReportTests(unittest.TestCase):
         manifest = {"required_stages": stages, "execution": "actual-agent-emulation"}
         self.assertEqual(summarize(result, [], case_manifest=manifest, case_state=state)["verdict"], "unscored")
 
+    def test_generic_report_counts_self_evidence_equivalence_apart_from_the_independent_verdict(self):
+        from generative_driver.reporting import summarize, markdown
+        equivalence = {"equivalent": True, "basis": "self-evidence", "diff": [],
+                       "checks": [{"id": "emitted_package_replay", "passed": True},
+                                  {"id": "fresh_reuse_live_operations", "passed": True}]}
+        result = {"run_id": "example", "status": "completed", "reason": "Final verdict: equivalent", "created": 0,
+                  "updated": 1, "worker_reports": [], "accepted_handoffs": [], "evaluator_verdicts": [],
+                  "progress": {"protocol": "assistive/1", "next_stage": None}, "equivalence": equivalence}
+        report = summarize(result, [])
+        self.assertEqual((report["protocol"], report["equivalence"]), ("assistive/1", equivalence))
+        # Self-evidence is not an independent grade.
+        self.assertEqual(report["verdict"], "unscored")
+        self.assertIn("Equivalence (self-evidence): **equivalent**", markdown(report))
+        earlier = summarize({**result, "progress": {}, "equivalence": None}, [])
+        self.assertIsNone(earlier["equivalence"])
+        self.assertIsNone(earlier["protocol"])
+        self.assertNotIn("Equivalence", markdown(earlier))
+
     def test_report_keeps_missing_usage_and_unrun_stages_visible(self):
         from generative_driver.reporting import summarize
         result = {"run_id": "example", "status": "blocked", "stage": "interpret",

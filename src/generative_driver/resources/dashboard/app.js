@@ -19,6 +19,15 @@ function renderStages(stages) {
     const card = element('li', '', `stage ${stage.status}`);
     card.append(element('span', String(i + 1).padStart(2, '0'), 'number'),
                 element('span', stage.name, 'name'), element('span', stage.status, 'state'));
+    const notes = stage.notes;
+    if (notes) {
+      const open = notes.open_questions.length, failed = notes.failed_checks.length;
+      const line = element('span', [`r${notes.revision} ${notes.outcome || ''}`.trim(), open ? `${open} open` : '',
+        failed ? `${failed} check${failed === 1 ? '' : 's'} not passed` : ''].filter(Boolean).join(' · '), 'notes');
+      line.title = [notes.summary, ...notes.open_questions, ...notes.failed_checks.map(name => `Not passed: ${name}`)]
+        .filter(Boolean).join('\n');
+      card.append(line);
+    }
     return card;
   }));
 }
@@ -37,6 +46,9 @@ function render(data) {
   byId('elapsed').textContent = duration(data.elapsed_seconds);
   byId('accepted').textContent = `${data.accepted_count} / 6`;
   byId('repairs').textContent = String(data.repairs);
+  const verdict = data.equivalence;
+  byId('equivalence').textContent = verdict ? `${verdict.label} (${verdict.basis})` : '—';
+  byId('equivalence').title = verdict ? verdict.diff.map(entry => entry.reason).join('\n') : '';
   byId('updated').textContent = 'Updated ' + new Date(data.observed_at * 1000).toLocaleTimeString();
   const warning = [data.reason, data.uncertain_effect ? 'Device effect is unresolved.' : ''].filter(Boolean).join(' ');
   byId('notice').textContent = warning;

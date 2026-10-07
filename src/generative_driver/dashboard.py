@@ -12,16 +12,19 @@ import webbrowser
 from urllib.parse import urlsplit
 
 from .client import call, default_home
-from .configurator import STAGES
+from .configurator import STAGES, equivalence_label, stage_notes
 
 
 def project_run(result, *, now=None, assignment_id=None):
-    """Expose display fields and accepted gates for the current revision only."""
+    """Expose display fields and accepted handoffs for the current revision only, the latest notes of each stage
+    and the final equivalence verdict."""
     now = time.time() if now is None else now
     progress = result.get('progress') or {}
     revision = progress.get('revision', 0)
     accepted = {h['stage'] for h in result.get('accepted_handoffs', [])
                 if h.get('revision', 0) == (0 if h['stage'] == 'acquire' else revision)}
+    notes = {summary['stage']: summary for summary in stage_notes(result.get('accepted_handoffs', []))}
+    final = result.get('equivalence')
     states = []
     for stage in STAGES:
         state = 'accepted' if stage in accepted else 'pending'
@@ -31,7 +34,7 @@ def project_run(result, *, now=None, assignment_id=None):
                                           and (assignment_id is None or r.get('assignment_id') == assignment_id)
                                           and r['status'] == 'completed' for r in result.get('worker_reports', [])):
                 state = 'checking'
-        states.append({'name': stage, 'status': state})
+        states.append({'name': stage, 'status': state, 'notes': notes.get(stage)})
     end = result['updated'] if result['status'] in ('completed', 'blocked', 'failed', 'cancelled') else now
     return {'ok': True, 'run_id': result['run_id'], 'status': result['status'],
             'stage': result.get('stage'), 'reason': result.get('reason'),
@@ -39,6 +42,8 @@ def project_run(result, *, now=None, assignment_id=None):
             'stopping': result.get('stopping', False), 'stages': states,
             'accepted_count': len(accepted), 'revision': revision,
             'repairs': progress.get('repairs', 0),
+            'equivalence': {'equivalent': final.get('equivalent'), 'basis': final.get('basis'), 'label': equivalence_label(final),
+                            'diff': final.get('diff', [])} if isinstance(final, dict) else None,
             'elapsed_seconds': max(0, end - result['created']), 'observed_at': now,
             'case': result.get('case'),
             'agent': {key: result.get('agent', {}).get(key) for key in ('runtime', 'model')},
@@ -53,6 +58,8 @@ def _event_line(event):
         message = f"{stage}: {data.get('name', 'tool')} {outcome}"
     elif kind == 'run.revision':
         message = f"Repair {data.get('repairs', data.get('revision', 0))}: {data.get('reason', 'revision requested')}"
+    elif kind == 'run.finalized':
+        message = f"Final verdict: {equivalence_label(data)} ({data.get('basis', 'unknown basis')})"
     elif kind.startswith('stage.') or kind == 'worker.finished':
         message = f"{stage}: {kind.replace('.', ' ')}"
     else:

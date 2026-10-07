@@ -76,6 +76,114 @@ print(json.dumps({'_exit': 0}))
                 ["-p", "fixture-port", "--before", "no-reset", "--after", "no-reset", "chip-id"])
             self.assertFalse(json.loads(result.stdout)["available"])
 
+    @staticmethod
+    def _esp_flash_image(entries):
+        import struct
+        image = bytearray(b"\xff" * 0x30000)
+        for i, (kind, sub, offset, size, label) in enumerate(entries):
+            image[0x8000 + 32 * i:0x8000 + 32 * (i + 1)] = (
+                b"\xaa\x50" + struct.pack("<BBII", kind, sub, offset, size) + label.ljust(16, b"\0") + b"\0" * 4)
+            image[offset] = 0xE9
+            image[offset + 1:offset + size] = bytes([i + 1]) * (size - 1)
+        return bytes(image)
+
+    def _esp_fake_sh(self, commands, image, app_seen=None, fuses=(0, "SPI_BOOT_CRYPT_CNT = Disable\nSECURE_BOOT_EN = False\n")):
+        def fake_sh(cmd, cwd=None, env=None, timeout=900):
+            commands.append(cmd)
+            if "chip-id" in cmd:
+                return 0, "Chip is ESP32-S3 (QFN56)\nMAC: 80:45:6b:2d:2f:6c\n", ""
+            if "summary" in cmd:
+                return fuses[0], fuses[1], "fuse stderr"
+            if "read-flash" in cmd:
+                Path(cmd[-1]).write_bytes(image)
+                return 0, "", ""
+            if any(str(c).endswith("esp_image_to_elf.py") for c in cmd):
+                if app_seen is not None:
+                    app_seen.append(Path(cmd[-2]).read_bytes())
+                Path(cmd[-1]).write_bytes(b"\x7fELF")
+                return 0, "", ""
+            return 0, "", ""
+        return fake_sh
+
+    def test_esp_flash_uses_auto_reset_only_with_grant_and_names_interpret_input(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        commands = []
+        image = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
+        with tempfile.TemporaryDirectory() as temp, patch.object(core, "sh", self._esp_fake_sh(commands, image)):
+            granted = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake", "backend": "esp32", "allow_reset": True})
+            self.assertTrue(granted["available"], granted)
+            self.assertTrue(granted["interpret_input"].endswith("interpret-input.elf"))
+            self.assertTrue(Path(granted["interpret_input"]).is_file())
+            self.assertIn("SECURE_BOOT_EN", (Path(temp) / "acquire" / "efuse.txt").read_text(encoding="utf-8"))
+            self.assertTrue(any(p.endswith("efuse.txt") for p in granted["artifacts"]), granted["artifacts"])
+            esp = [c for c in commands if "-p" in c]
+            self.assertTrue(all("default-reset" in c for c in esp))
+            self.assertIn("hard-reset", esp[-1])
+            commands.clear()
+            call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake", "backend": "esp32"})
+            esp = [c for c in commands if "-p" in c]
+            self.assertTrue(all("no-reset" in c and "default-reset" not in c for c in esp))
+            self.assertFalse(any("hard-reset" in c for c in commands))
+            dump = next(c for c in esp if "read-flash" in c)
+            self.assertEqual(dump[dump.index("-b") + 1], "115200")
+
+    def test_esp_flash_carves_the_factory_app_partition_from_the_table(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        image = self._esp_flash_image([(1, 0x02, 0x9000, 0x100, b"nvs"), (0, 0x10, 0x20000, 0x80, b"ota_0"),
+                                       (0, 0x00, 0x10000, 0x100, b"factory")])
+        seen = []
+        with tempfile.TemporaryDirectory() as temp, patch.object(core, "sh", self._esp_fake_sh([], image, seen)):
+            result = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake", "backend": "esp32"})
+            self.assertTrue(result["available"], result)
+            self.assertEqual(seen, [image[0x10000:0x10100]])
+            self.assertEqual((Path(temp) / "acquire" / "app.bin").read_bytes(), image[0x10000:0x10100])
+
+    def test_esp_flash_returns_the_chip_to_the_application_on_every_failed_exit_with_a_grant(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        good = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
+        cases = {"fuse failure": (good, (1, "")), "locked": (good, (0, "SECURE_BOOT_EN = True\n")),
+                 "no partition table": (b"\xff" * 0x20000, (0, "SECURE_BOOT_EN = False\n"))}
+        for name, (image, fuses) in cases.items():
+            for grant in (True, False):
+                with self.subTest(name, grant=grant):
+                    commands = []
+                    with tempfile.TemporaryDirectory() as temp, \
+                            patch.object(core, "sh", self._esp_fake_sh(commands, image, fuses=fuses)):
+                        result = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake",
+                                                             "backend": "esp32", "allow_reset": grant})
+                        self.assertFalse(result["available"], result)
+                    if grant:
+                        self.assertIn("hard-reset", commands[-1])
+                        if name == "no partition table":  # the dump itself already ended with the hard reset
+                            self.assertIn("read-flash", commands[-1])
+                            self.assertEqual(sum("hard-reset" in c for c in commands), 1)
+                        else:
+                            self.assertIn("chip-id", commands[-1])
+                            self.assertEqual(commands[-1][commands[-1].index("--before") + 1], "no-reset")
+                    else:
+                        self.assertFalse(any("hard-reset" in c for c in commands))
+
+    def test_classify_forwards_the_grant_and_reports_the_interpret_input(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        commands = []
+        image = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
+        with tempfile.TemporaryDirectory() as temp, patch.object(core, "sh", self._esp_fake_sh(commands, image)):
+            result = call_tool("acquire_classify", {"run_dir": temp, "port": "/dev/cu.fake",
+                                                    "flash_backend": "esp32", "allow_reset": True})
+            self.assertEqual(result["device_class"], 1, result)
+            self.assertTrue(result["available"])
+            self.assertTrue(result["interpret_input"].endswith("interpret-input.elf"))
+            self.assertTrue(result["artifacts"])
+            self.assertTrue(any("default-reset" in c for c in commands))
+
     def test_bus_discovery_never_selects_a_default_adapter(self):
         from generative_driver.toolkit import call_tool
         with tempfile.TemporaryDirectory() as temp:

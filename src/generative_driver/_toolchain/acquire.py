@@ -68,9 +68,37 @@ def acquire_firmware_artifact(run_dir, source_path, origin, expected_sha256,
 
 # ---------------------------------------------------------------- rung 1: a controller we can read
 
+def _carve_app(flash, app):
+    """Write the app partition named by the ESP partition table at 0x8000 of the dump to `app`.
+
+    The factory partition (type 0, subtype 0) is preferred, else the first type-0 (ota) entry. Returns
+    whether an app image was written."""
+    with open(flash, "rb") as fh:
+        data = fh.read()
+    chosen = None
+    for i in range(0x8000, min(len(data), 0x8000 + 0x1000) - 31, 32):
+        entry = data[i:i + 32]
+        if entry[:2] != b"\xaa\x50":
+            break
+        kind, sub = entry[2], entry[3]
+        offset, size = int.from_bytes(entry[4:8], "little"), int.from_bytes(entry[8:12], "little")
+        if kind == 0 and (chosen is None or (sub == 0 and chosen[0] != 0)):
+            chosen = (sub, offset, size)
+    if chosen is None or chosen[2] == 0 or chosen[1] + chosen[2] > len(data):
+        return False
+    with open(app, "wb") as fh:
+        fh.write(data[chosen[1]:chosen[1] + chosen[2]])
+    return True
+
+
 @core.tool("acquire_flash")
-def acquire_flash(run_dir, port, chunked=False, strip_app_desc=False, backend=None, **_):
-    """Read an explicitly selected ESP32 controller; a serial port alone is not an ESP identity."""
+def acquire_flash(run_dir, port, chunked=False, strip_app_desc=False, backend=None, allow_reset=False, **_):
+    """Read an explicitly selected ESP32 controller; a serial port alone is not an ESP identity.
+
+    Without `allow_reset` the chip is never reset: every call uses no-reset and the dump runs at the
+    default baud. With it, calls use default-reset and the chip is returned to its application on every
+    exit after first contact.
+    """
     if backend != "esp32":
         return {"available": False, "reason": "Flash acquisition requires explicit backend='esp32'; "
                 "other serial devices are unsupported. Use acquire_firmware_artifact for a local binary.",
@@ -81,44 +109,67 @@ def acquire_flash(run_dir, port, chunked=False, strip_app_desc=False, backend=No
     out = _mkdir(run, "acquire")
     esptool = [core.VENV_PY, "-m", "esptool"]
     espefuse = [core.VENV_PY, "-m", "espefuse"]
-    rc, o, e = core.sh([*esptool, "-p", port, "--before", "no-reset", "--after", "no-reset", "chip-id"])
+    before = ["--before", "default-reset" if allow_reset else "no-reset"]
+    stay = ["--after", "no-reset"]
+    dump_baud = "921600" if allow_reset else "115200"  # no-reset leaves the stub at the dump baud
+    returned = []  # set once a command has already ended with a hard reset
+
+    def leave(result):
+        """Best-effort return to the application on any exit, only under the reset grant."""
+        if allow_reset and not returned:
+            core.sh([*esptool, "-p", port, "--before", "no-reset", "--after", "hard-reset", "chip-id"])
+        return result
+
+    rc, o, e = core.sh([*esptool, "-p", port, *before, *stay, "chip-id"])
     if rc != 0:
-        return {"available": False, "reason": f"no controller answered on {port}", "_exit": 1}
+        return leave({"available": False, "reason": f"no controller answered on {port}", "_exit": 1})
     chip = next((l.split("Detecting chip type...")[-1].strip() for l in o.splitlines() if "Chip is" in l), None) \
         or next((l.strip() for l in o.splitlines() if "Chip is" in l), "unknown")
     mac = next((l.split()[-1] for l in o.splitlines() if l.startswith("MAC:")), None)
-    rc2, fo, fe = core.sh([*espefuse, "-p", port, "--before", "no-reset", "summary"])
+    rc2, fo, fe = core.sh([*espefuse, "-p", port, *before, "summary"])
     if rc2 != 0:
-        return {"available": False, "reason": "Fuse read failed; flash protection state is unknown, so no dump was attempted",
-                "chip": chip, "mac": mac, "stderr": fe[-300:], "_exit": 1}
+        return leave({"available": False, "reason": "Fuse read failed; flash protection state is unknown, so no dump was attempted",
+                      "chip": chip, "mac": mac, "stderr": fe[-300:], "_exit": 1})
+    efuse = os.path.join(out, "efuse.txt")
+    with open(efuse, "w", encoding="utf-8") as fh:
+        fh.write(fo)
     locked = any(("SPI_BOOT_CRYPT_CNT" in l and "Disable" not in l and "disabled" not in l) or
                  ("SECURE_BOOT_EN" in l and "True" in l) for l in fo.splitlines())
     if locked:
-        return {"available": False, "reason": "flash encryption or secure boot is set; class 1 unavailable",
-                "chip": chip, "mac": mac, "_exit": 0}
+        return leave({"available": False, "reason": "flash encryption or secure boot is set; class 1 unavailable",
+                      "chip": chip, "mac": mac, "_exit": 0})
     flash = os.path.join(out, "flash.bin")
     if chunked:
         rc3, do, de = core.sh([core.VENV_PY, os.path.join(core.BENCH, "tools", "read_flash_chunked.py"),
                                port, "8", flash], timeout=1800)
     else:
-        rc3, do, de = core.sh([*esptool, "-p", port, "-b", "921600", "--before", "no-reset", "--after",
-                               "no-reset", "read-flash", "0", "ALL", flash], timeout=1800)
+        after = "hard-reset" if allow_reset else "no-reset"
+        rc3, do, de = core.sh([*esptool, "-p", port, "-b", dump_baud, *before, "--after", after,
+                               "read-flash", "0", "ALL", flash], timeout=1800)
+        if rc3 == 0 and allow_reset:
+            returned.append(True)
     if rc3 != 0 or not os.path.exists(flash):
-        return {"available": False, "reason": "dump failed", "stderr": de[-300:], "_exit": 1}
+        return leave({"available": False, "reason": "dump failed", "stderr": de[-300:], "_exit": 1})
     app = os.path.join(out, "app.bin")
     elf = os.path.join(out, "app.elf")
+    retained = {"raw_flash": os.path.abspath(flash), "_files": {os.path.abspath(flash): core.sha256(flash)}}
+    if not _carve_app(flash, app):
+        return leave({"available": False, "reason": "Flash dump was retained, but its partition table names no app "
+                      "partition to carve", "_exit": 1, **retained})
     args = [core.VENV_PY, os.path.join(core.BENCH, "tools", "esp_image_to_elf.py"), app, elf]
     if strip_app_desc:
         args.append("--strip-app-desc")
     rc4, _, ce = core.sh(args)
-    if rc4 != 0 or not os.path.isfile(elf):
-        return {"available": False, "reason": "Flash dump was retained, but app extraction/conversion did not produce an ELF; "
-                "automatic app carving is not implemented", "raw_flash": os.path.abspath(flash),
-                "stderr": ce[-300:], "_exit": 1,
-                "_files": {os.path.abspath(flash): core.sha256(flash)}}
-    files = {core.label(p): core.sha256(p) for p in (flash, app, elf) if os.path.exists(p)}
-    return {"available": True, "rung": "flash", "chip": chip, "mac": mac, "artifact": core.label(elf),
-            "_files": files}
+    chosen = elf if rc4 == 0 and os.path.isfile(elf) else (app if os.path.isfile(app) else None)
+    if chosen is None:
+        return leave({"available": False, "reason": "Flash dump was retained, but app extraction/conversion did not produce an ELF",
+                      "stderr": ce[-300:], "_exit": 1, **retained})
+    handoff = os.path.join(out, "interpret-input" + os.path.splitext(chosen)[1])
+    shutil.copyfile(chosen, handoff)
+    paths = [os.path.abspath(p) for p in (flash, app, elf, efuse, handoff) if os.path.exists(p)]
+    return leave({"available": True, "rung": "flash", "chip": chip, "mac": mac, "artifact": os.path.abspath(handoff),
+                  "artifacts": paths, "interpret_input": os.path.abspath(handoff),
+                  "_files": {p: core.sha256(p) for p in paths}})
 
 
 @core.tool("acquire_serial_listen")
@@ -706,7 +757,7 @@ def acquire_register_sweep(run_dir, address, bus_url=None, speed_hz=100000,
 @core.tool("acquire_classify")
 def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
                      transports=None, allow_register_sweep=False, flash_backend=None, address=None,
-                     serial_number=None, **_):
+                     serial_number=None, allow_reset=False, **_):
     """Walk the ladder and stop at the first rung that yields a description of the device.
 
     Returns the class (1 readable controller, 2 documented part, 3 self-describing, 4 black box), the
@@ -731,12 +782,13 @@ def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
         return {"device_class": None, "unsupported": True, "reason": reason,
                 "rungs": [{"rung": 1, "name": "flash", "tried": False, "result": reason}], "_exit": 1}
     if port is not None:
-        r = acquire_flash(run_dir=run_dir, port=port, backend=flash_backend)
+        r = acquire_flash(run_dir=run_dir, port=port, backend=flash_backend, allow_reset=allow_reset)
         rungs.append({"rung": 1, "name": "flash", "tried": True, "result": r.get("reason") or "dumped",
                       "event": r.get("_event")})
         if r.get("available"):
             return {"device_class": 1, "front_end": "interpret-firmware", "artifact": r["artifact"],
-                    "rungs": rungs, "inputs_for_interpret": {"elf": r["artifact"]}}
+                    "rungs": rungs, "inputs_for_interpret": {"elf": r["artifact"]},
+                    "available": True, "artifacts": r["artifacts"], "interpret_input": r["interpret_input"]}
         if not part_hint and transports is None:
             return {"device_class": None, "rungs": rungs,
                     "reason": "Firmware acquisition on the selected serial endpoint failed; no other bus was scanned. "

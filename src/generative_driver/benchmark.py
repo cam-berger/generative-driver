@@ -112,7 +112,7 @@ def main(argv=None):
                                    'finished: grade it if it is unscored (never a final already graded) and post the verdict')
     resuming.add_argument('trial_dir')
     resuming.add_argument('--password-file', required=True)
-    resuming.add_argument('--renode')
+    resuming.add_argument('--renode', help='Emulator executable; required when the trial\'s frozen driver still needs grading')
     comparing = commands.add_parser('compare')
     comparing.add_argument('before')
     comparing.add_argument('after')

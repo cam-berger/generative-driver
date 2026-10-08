@@ -219,8 +219,10 @@ def conclude(trial_dir, case_id, run_dir, result, *, password_file, renode=None,
     """What the harness does with a terminal run whose handoffs it read. A completed run whose verdict is pending is
     graded once (`graded` False when its device stop was not confirmed: then nothing is graded), the run evidence is
     sealed in the trial directory, and the verdict, or an unscored grade, is posted with record_evaluation; any other
-    run's handoffs are sealed alone. No grade is posted that was not sealed first; an unscored one carries none."""
-    from ..configurator import IntegrityError
+    run's handoffs are sealed alone. No grade is posted that was not sealed first; an unscored one carries none. A record
+    the configurator's equivalence/1 schema would refuse, or accepted records that no longer match their hashes at the
+    seal, are posted unscored: no retry would change them. The plaintext evaluation never outlives this call."""
+    from ..configurator import IntegrityError, _evaluation_errors
     from . import evaluator
     if result.get('equivalence') is not None:
         # The configurator already holds this run's verdict: nothing is graded, sealed or posted again.
@@ -229,23 +231,39 @@ def conclude(trial_dir, case_id, run_dir, result, *, password_file, renode=None,
     accepted = result.get('accepted_handoffs') or []
     frozen = (evaluator.emitted(accepted) or (None, None))[1]
     done, content, equivalence = {}, {}, None
-    if pending and graded:
-        try:
-            equivalence, content['final'] = evaluator.grade(case_id, trial_dir, run_dir, result, password_file=password_file,
-                                                            renode=renode)
-            content['mission'] = equivalence.get('mission')
-        except IntegrityError as error:
-            equivalence, content['error'] = evaluator.unscored('integrity: ' + str(error), frozen), str(error)
-        except Exception as error:
-            # The message stays sealed: it may name what only the evaluator holds.
-            equivalence = evaluator.unscored('evaluator host fault: ' + type(error).__name__, frozen)
-            content['error'] = type(error).__name__ + ': ' + str(error)
-        content['equivalence'] = equivalence
     try:
-        done.update(sealed=True, evidence=evaluator.seal(trial_dir, run_dir, result, password_file=password_file, **content))
-    except Exception as error:
-        done.update(sealed=False, sealing_failed=type(error).__name__ + ': ' + str(error))
+        if pending and graded:
+            try:
+                equivalence, content['final'] = evaluator.grade(case_id, trial_dir, run_dir, result,
+                                                                password_file=password_file, renode=renode)
+                content['mission'] = equivalence.get('mission')
+            except IntegrityError as error:
+                equivalence, content['error'] = evaluator.unscored('integrity: ' + str(error), frozen), str(error)
+            except Exception as error:
+                # The message stays sealed: it may name what only the evaluator holds.
+                equivalence = evaluator.unscored('evaluator host fault: ' + type(error).__name__, frozen)
+                content['error'] = type(error).__name__ + ': ' + str(error)
+            errors = _evaluation_errors({**equivalence, 'evidence_sha256': None if equivalence['status'] == 'unscored'
+                                         else '0' * 64})
+            if errors:
+                # Every resume would rebuild the same record and have it refused: it is unscored, and why stays sealed.
+                equivalence = evaluator.unscored('evaluator host fault: invalid evaluation record', frozen)
+                content = {'error': 'Invalid evaluation record: ' + '; '.join(errors)}
+            content['equivalence'] = equivalence
+        try:
+            done.update(sealed=True, evidence=evaluator.seal(trial_dir, run_dir, result, password_file=password_file,
+                                                             **content))
+        except IntegrityError as error:
+            done.update(sealed=False, sealing_failed='integrity: ' + str(error))
+            if equivalence is not None and not (equivalence['status'] == 'unscored'
+                                                and equivalence['diff'][0]['reason'].startswith('integrity: ')):
+                # An accepted record changed after acceptance, or the snapshot no longer verifies: no retry seals it, so
+                # the grade is unscored for integrity. An unscored record needs no seal.
+                equivalence = evaluator.unscored('integrity: ' + str(error), frozen)
+        except Exception as error:
+            done.update(sealed=False, sealing_failed=type(error).__name__ + ': ' + str(error))
     finally:
+        # Whatever ends grading or sealing, an interrupt included, the plaintext copies and evaluation output go.
         shutil.rmtree(Path(trial_dir) / 'private', ignore_errors=True)
     if equivalence is None:
         return done
@@ -380,7 +398,7 @@ def run_trial(trial_dir, request):
         if unread:
             # The device is stopped all the same; nothing is sealed that the harness did not read from a finished run.
             done.update(sealed=False, sealing_failed=unread)
-        record.update(done)
+        _settle(record, done)
     except Exception as error:
         record.update(status='failed', reason=type(error).__name__ + ': ' + str(error))
     finally:
@@ -401,56 +419,131 @@ def run_trial(trial_dir, request):
 def resume(trial_dir, *, password_file, renode=None):
     """Complete the evaluation of a trial whose harness has exited after its device stop was confirmed: one that died
     after the stop, could not grade (unscored, an evaluator host fault) or could not post its verdict. A final the draft
-    already holds is rebuilt, never graded again; a verdict the configurator holds is never posted again."""
+    already holds is rebuilt, never graded again; a verdict the configurator holds is never posted again. Grading needs
+    the emulator executable (`renode`); without it a resume that would grade refuses before it unlocks anything."""
     from ..client import call
+    from . import evaluator
     trial_dir = Path(trial_dir)
-    record = read_trial(trial_dir)
-    if not isinstance(record, dict) or not record.get('run_id') or not record.get('home'):
+    if read_trial(trial_dir) is None:
         raise ValueError('No trial with a run to evaluate: ' + str(trial_dir))
-    if not _harness_exited(None, record):
-        raise ValueError('The trial\'s bench harness is still running')
-    if (record.get('device_stop') or {}).get('confirmed') is not True:
-        raise ValueError('The trial\'s device stop was not confirmed; reconcile its device before evaluating')
-    if record.get('status') not in RESUMABLE:
-        raise ValueError('The trial awaits no evaluation: ' + str(record.get('status')))
-    home = Path(record['home'])
-    configurator = lambda method, params: call(method, params, home=home, autostart=False)
     with _exclusive(trial_dir):
+        # Read under the lock: an evaluation that held it may have just completed the trial.
+        record = read_trial(trial_dir)
+        if not isinstance(record, dict) or not record.get('run_id') or not record.get('home'):
+            raise ValueError('No trial with a run to evaluate: ' + str(trial_dir))
+        if not _harness_exited(None, record):
+            raise ValueError('The trial\'s bench harness is still running')
+        if (record.get('device_stop') or {}).get('confirmed') is not True:
+            raise ValueError('The trial\'s device stop was not confirmed; reconcile its device before evaluating')
+        if record.get('status') not in RESUMABLE:
+            raise ValueError('The trial awaits no evaluation: ' + str(record.get('status')))
+        home = Path(record['home'])
+        configurator = lambda method, params: call(method, params, home=home, autostart=False)
         result = _post(configurator, 'result', {'run_id': record['run_id']})
         unread = _unread({}, result)
         if unread:
             raise ValueError('Cannot evaluate the trial\'s run: ' + unread)
+        if renode is None and evaluator.needs_grading(trial_dir, result, password_file=password_file):
+            raise ValueError('The trial\'s frozen driver is not graded yet: grading starts a fresh emulator, so pass its '
+                             'executable (--renode)')
         done = conclude(trial_dir, record['case'], home / 'runs' / record['run_id'], result, password_file=password_file,
                         renode=renode, token=evaluation_token(password_file, record['trial_id']), call=configurator)
-        record.update(done, status=done.get('status') or 'run-stopped', resumed=time.time())
+        _settle(record, {**done, 'status': done.get('status') or 'run-stopped', 'resumed': time.time()})
         _private(trial_dir / 'trial.json', record)
     return record
 
 
+def _settle(record, done):
+    """Record what an evaluation attempt established: it replaces what an earlier attempt left. A failure is reported
+    only by the attempt that met it, and the seal by the attempt that sealed (one that found the verdict already
+    recorded keeps the seal that verdict names)."""
+    for key in ('sealing_failed', 'evaluation_failed', *(('sealed', 'evidence') if 'sealed' in done else ())):
+        record.pop(key, None)
+    record.update(done)
+
+
+LOCK = 'evaluation.lock'
+
+
+def _lock_text(path):
+    """A lock file's content: None when there is none, '' when it cannot be read."""
+    try:
+        return Path(path).read_text(encoding='utf-8')
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return ''
+
+
+def _lock_holder(text):
+    """The process id a lock names, or None when it names none (a lock that cannot be read or is still being written)."""
+    parts = (text or '').split()
+    return int(parts[0]) if parts and parts[0].isdigit() and int(parts[0]) > 0 else None
+
+
+def _put(source, target):
+    """Move `source` to `target`, which must not exist (FileExistsError): a lock so placed names its holder from the
+    moment it exists."""
+    if os.name == 'nt':
+        os.rename(source, target)  # Windows refuses to rename onto an existing file.
+        return
+    try:
+        os.link(source, target)  # Unlike a rename, a link never replaces an existing file.
+    except FileExistsError:
+        raise
+    except OSError:
+        # A filesystem without hard links: create the lock exclusively, then write it. Until it is written, the lock
+        # reads as held, never as stale.
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(Path(source).read_bytes())
+    os.unlink(source)
+
+
 @contextlib.contextmanager
 def _exclusive(trial_dir):
-    """One evaluation of a trial at a time: a lock file naming its process, taken over only from a process that ended."""
-    path = Path(trial_dir) / 'evaluation.lock'
-    for _ in range(2):
-        try:
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
+    """One evaluation of a trial at a time: a lock file that names its process and a nonce from the moment it exists. A
+    lock that cannot be read is held. A lock whose process ended is moved aside and removed only if it is still the one
+    found ended; an evaluation lets go only of its own lock."""
+    path = Path(trial_dir) / LOCK
+    mine = str(os.getpid()) + ' ' + uuid.uuid4().hex
+    temporary = path.with_name('.' + LOCK + '.' + uuid.uuid4().hex)
+    temporary.write_text(mine, encoding='utf-8')
+    try:
+        for _ in range(3):
             try:
-                holder = int(path.read_text(encoding='utf-8') or 0)
-            except (OSError, ValueError):
-                holder = 0
-            if _harness_exited(None, {'pid': holder}) or holder <= 0:
-                path.unlink(missing_ok=True)
+                _put(temporary, path)
+                break
+            except FileExistsError:
+                pass
+            found = _lock_text(path)
+            if found is None:
+                continue  # Let go of meanwhile: try again.
+            holder = _lock_holder(found)
+            if holder is None or not _harness_exited(None, {'pid': holder}):
+                raise ValueError('Another evaluation of this trial is running ('
+                                 + ('process ' + str(holder) if holder else 'its lock is unreadable or being written: '
+                                    + str(path)) + ')')
+            aside = path.with_name('.' + LOCK + '.ended.' + uuid.uuid4().hex)
+            try:
+                os.rename(path, aside)
+            except FileNotFoundError:
                 continue
-            raise ValueError('Another evaluation of this trial is running (process ' + str(holder) + ')')
-        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
-            stream.write(str(os.getpid()))
-        try:
-            yield
-        finally:
+            if _lock_text(aside) != found:
+                # Another evaluation took the lock meanwhile: it stays that evaluation's.
+                with contextlib.suppress(OSError):
+                    _put(aside, path)
+                raise ValueError('Another evaluation of this trial is running')
+            aside.unlink(missing_ok=True)
+        else:
+            raise ValueError('Cannot take the evaluation lock of ' + str(trial_dir))
+    finally:
+        temporary.unlink(missing_ok=True)
+    try:
+        yield
+    finally:
+        if _lock_text(path) == mine:
             path.unlink(missing_ok=True)
-        return
-    raise ValueError('Cannot take the evaluation lock of ' + str(trial_dir))
 
 
 def launch(case, output_dir=None, executor=None, options=None, approval=None, *, effects=(), autostart=True, wait=False,

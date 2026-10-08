@@ -2,9 +2,15 @@
 the run evidence in its trial directory and posts the verdict to the configurator with record_evaluation. Scripted
 stages on a provided device of synthetic TCP peers, a toy contract and a scripted reference execution; never Renode,
 real truth or a real password."""
+import contextlib
 import hashlib
+import io
 import json
+import os
+import subprocess
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -26,23 +32,41 @@ def contract(sha, revision=0):
          'absolute_tolerance': .002, 'channel': 'independent-monitor', 'unit': 'permille'}]}
 
 
-def reference(values, calls=None, before=None):
-    """A scripted final phase in reference_execute's shape: the toy contract, records with `values` and raw evidence."""
+def reference(values, calls=None, before=None, after=None):
+    """A scripted final phase in reference_execute's shape: the toy contract, records with `values`, raw evidence and
+    the plaintext evaluation output the real one leaves in its output directory. `after` runs once that output exists."""
     def execute(pin, truth, model, capabilities, *, renode, image, output_dir, phase='final', package=None,
                 expected_package_sha256=None, package_final=True):
         if before:
             before()
         if calls is not None:
             calls.append({'pin': pin, 'model': model, 'capabilities': capabilities, 'image': Path(image), 'phase': phase,
-                          'package': Path(package), 'sha': expected_package_sha256, 'output': Path(output_dir)})
+                          'package': Path(package), 'sha': expected_package_sha256, 'output': Path(output_dir),
+                          'renode': renode})
         sha, revision = expected_package_sha256, pin['revision']
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         (Path(output_dir) / 'raw.json').write_text(json.dumps({'events': [], 'monitor': EXPECTED}))
         checks = contract(sha, revision)['checks']
-        return {'contract': contract(sha, revision),
-                'records': [{'id': c['id'], 'task_id': c['id'].rsplit('/', 1)[-1], 'revision': revision, 'artifact_sha256': sha,
-                             'channel': c['channel'], 'unit': c['unit'], 'value': value} for c, value in zip(checks, values)]}
+        result = {'contract': contract(sha, revision),
+                  'records': [{'id': c['id'], 'task_id': c['id'].rsplit('/', 1)[-1], 'revision': revision, 'artifact_sha256': sha,
+                               'channel': c['channel'], 'unit': c['unit'], 'value': value} for c, value in zip(checks, values)]}
+        (Path(output_dir) / 'evaluation.json').write_text(json.dumps(result))
+        if after:
+            after()
+        return result
     return execute
+
+
+@contextlib.contextmanager
+def windows_newlines():
+    """Path.write_text as on Windows: text written without an explicit newline turns each '\\n' into '\\r\\n'."""
+    real = Path.write_text
+    def write_text(path, data, encoding=None, errors=None, newline=None):
+        if newline is None:
+            data, newline = data.replace('\n', '\r\n'), '\n'
+        return real(path, data, encoding=encoding, errors=errors, newline=newline)
+    with patch.object(Path, 'write_text', write_text):
+        yield
 
 
 def evaluation(frozen, equivalent=True, **changes):
@@ -90,7 +114,7 @@ class PendingRunFixture(unittest.TestCase):
         self.controller = Controller(self.home)
         self.addCleanup(lambda: self.controller.close())
 
-    def check(self, *, emit=True, mapping=True, tamper=False):
+    def check(self, *, emit=True, mapping=True, tamper=False, tamper_notes=False):
         """Scripted stage observations: probe hands on the model and its mapping, emit a package of that model."""
         def check(spec, stage, run_dir, workspace, report, accepted, assignment):
             if stage == 'probe':
@@ -109,6 +133,10 @@ class PendingRunFixture(unittest.TestCase):
                 # The accepted package changes after its handoff was recorded.
                 emitted = next(h for h in reversed(accepted) if h['stage'] == 'emit')
                 (Path(emitted['artifacts'][0]['path']) / 'driver/model.json').write_text('{}')
+            if stage == 'reuse' and tamper_notes:
+                # An accepted handoff's notes change after they were recorded; the package and mapping do not.
+                notes = Path(accepted[0]['notes']['path'])
+                notes.write_bytes(notes.read_bytes() + b' ')
             return {'artifacts': [], 'checks': []}
         return check
 
@@ -250,9 +278,15 @@ class RecordEvaluationTests(PendingRunFixture):
 class HarnessGradingTests(PendingRunFixture):
     """The harness's finish: grade once after the run is terminal and the device stopped, seal, post."""
 
+    calls, unreachable = (), ()
+
     def configurator(self, method, params=None, home=None, **kwargs):
         if method == 'ping':
             return {'ok': True}
+        if isinstance(self.calls, list):
+            self.calls.append(method)
+        if method in self.unreachable:
+            return {'ok': False, 'reason': 'ConnectionRefusedError: the configurator is not reachable'}
         try:
             return self.controller.call(method, params or {})
         except Exception as error:
@@ -272,10 +306,10 @@ class HarnessGradingTests(PendingRunFixture):
                                                'budget_seconds': 120, 'password_file': str(self.password)})
         return trial, record
 
-    def resume(self, trial):
+    def resume(self, trial, renode=None):
         from generative_driver.benchmark_support import harness
         with patch('generative_driver.client.call', side_effect=self.configurator):
-            return harness.resume(trial, password_file=self.password)
+            return harness.resume(trial, password_file=self.password, renode=renode)
 
     def truth(self, unlocked):
         return lambda case_id, run_dir, options: unlocked.append((case_id, Path(run_dir), options)) or {'recipe': {}}
@@ -377,8 +411,9 @@ class HarnessGradingTests(PendingRunFixture):
             self.assertEqual(harness.read_trial(trial), resumed)
 
     def test_a_grade_is_posted_only_once_it_is_sealed(self):
-        # Catches a verdict recorded whose evidence was never sealed, which no one could regrade.
-        from generative_driver.benchmark_support import evaluator
+        # Catches a verdict recorded whose evidence was never sealed, which no one could regrade, and a seal failure
+        # still reported after a resume sealed and recorded the grade.
+        from generative_driver.benchmark_support import evaluator, harness
         real_seal = evaluator.seal
         with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
@@ -397,6 +432,29 @@ class HarnessGradingTests(PendingRunFixture):
         self.assertEqual((resumed['status'], resumed['sealed']), ('evaluated', True))
         self.assertEqual(self.controller.call('status', run)['equivalence'], resumed['equivalence'])
         self.assertEqual(resumed['equivalence']['evidence_sha256'], resumed['evidence']['sha256'])
+        # The earlier attempt's failure does not outlive the attempt that completed the evaluation.
+        self.assertNotIn('sealing_failed', resumed)
+        self.assertEqual(harness.read_trial(trial), resumed)
+
+    def test_a_verdict_the_configurator_did_not_take_is_posted_again_by_resume(self):
+        # Catches a trial that reports the earlier failed post after a resume recorded the verdict.
+        from generative_driver.benchmark_support import evaluator, harness
+        self.unreachable = ('record_evaluation',)
+        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
+            trial, record = self.trial()
+        run = {'run_id': record['run_id']}
+        self.assertEqual((record['status'], record['sealed']), ('awaiting-evaluation', True))
+        self.assertIn('not reachable', record['evaluation_failed'])
+        self.assertIsNone(self.controller.call('status', run)['equivalence'])
+        self.unreachable = ()
+        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+                patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
+            resumed = self.resume(trial)
+        self.assertEqual(resumed['status'], 'evaluated')
+        self.assertNotIn('evaluation_failed', resumed)
+        self.assertEqual(self.controller.call('status', run)['equivalence'], resumed['equivalence'])
+        self.assertEqual(harness.read_trial(trial), resumed)
 
     def test_a_final_the_draft_holds_is_rebuilt_never_graded_again(self):
         # Catches a saved final submission replayed on the device (ported from the in-loop final's replay guard): the
@@ -416,8 +474,8 @@ class HarnessGradingTests(PendingRunFixture):
 
     def test_an_evaluator_host_fault_is_unscored_until_an_explicit_resume_grades(self):
         # Catches a host fault recorded as a failed driver, its message (which may name a hidden stimulus) published,
-        # and an unscored grade that can never be completed.
-        from generative_driver.benchmark_support import evaluator
+        # an unscored grade that can never be completed, and a resume with no emulator posting another host fault.
+        from generative_driver.benchmark_support import evaluator, harness
         from generative_driver.benchmark_support.truth import unlock
         from generative_driver.configurator import PENDING
         unlocked = []
@@ -437,9 +495,21 @@ class HarnessGradingTests(PendingRunFixture):
         # The handoffs are sealed all the same; the fault's message stays sealed with them.
         payload = unlock(trial / 'run-evidence.enc', self.password.read_text(), record['evidence']['sha256'])
         self.assertIsNone(payload['final']); self.assertIn(str(EXPECTED), payload['evaluation_error'])
+        # Grading needs the emulator: a resume without its path refuses before anything is graded or posted, rather
+        # than posting another host fault.
+        self.calls = []
+        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')), \
+                patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded without an emulator')), \
+                self.assertRaisesRegex(ValueError, 'emulator'):
+            self.resume(trial)
+        self.assertNotIn('record_evaluation', self.calls)
+        self.assertEqual(len(self.events(run, 'evaluation.unscored')), 1)
+        self.assertEqual(harness.read_trial(trial), record)
+        calls = []
         with patch.object(evaluator, 'case_truth', side_effect=self.truth(unlocked)), \
-                patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
-            resumed = self.resume(trial)
+                patch.object(evaluator, 'reference_execute', side_effect=reference(PASS, calls)):
+            resumed = self.resume(trial, renode='scripted-emulator')
+        self.assertEqual([call['renode'] for call in calls], ['scripted-emulator'])
         self.assertEqual((resumed['status'], resumed['equivalence']['equivalent']), ('evaluated', True))
         self.assertEqual(self.controller.call('status', run)['reason'], 'Final verdict: equivalent')
 
@@ -469,6 +539,200 @@ class HarnessGradingTests(PendingRunFixture):
                     self.assertEqual((record['status'], result['equivalence']), ('evaluated', equivalence))
                     self.assertEqual(result['reason'], 'Final verdict: not equivalent: ' + reason)
                 self.assertEqual(equivalence['frozen_artifact_sha256'], None if name == 'no-package' else self.emitted(result))
+
+    def test_grading_ended_by_any_exit_leaves_no_plaintext_evaluation(self):
+        # Catches the private copy and the plaintext evaluation output (the contract with its expected values and the
+        # raw records) left in the trial directory when grading ends by an exit no handler catches.
+        from generative_driver.benchmark_support import evaluator, harness
+        for name, stop in (('interrupt', KeyboardInterrupt), ('exit', SystemExit)):
+            with self.subTest(exit=name):
+                def interrupted(stop=stop):
+                    raise stop('operator interrupt during grading')
+                with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                        patch.object(evaluator, 'reference_execute', side_effect=reference(PASS, after=interrupted)), \
+                        self.assertRaises(stop):
+                    self.trial(name)
+                trial = self.root / 'bench' / name
+                self.assertFalse((trial / 'private').exists())
+                for path in files(trial):
+                    self.assertNotIn(str(EXPECTED).encode(), path.read_bytes(), path)
+                record = harness.read_trial(trial)
+                self.assertEqual((record['status'], record['device_stop']['confirmed']), ('evaluating', True))
+
+    def test_accepted_bytes_changed_before_sealing_are_unscored_for_integrity(self):
+        # Catches a grade whose accepted record (here a handoff's notes) changed after acceptance left awaiting an
+        # evaluation no resume can seal, with nothing told to the configurator.
+        from generative_driver.benchmark_support import evaluator, harness
+        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
+            trial, record = self.trial(tamper_notes=True)
+        run = {'run_id': record['run_id']}
+        equivalence = record['equivalence']
+        self.assertEqual((record['status'], record['sealed'], equivalence['status'], equivalence['equivalent']),
+                         ('unscored', False, 'unscored', None))
+        self.assertEqual(len(equivalence['diff']), 1)
+        self.assertTrue(equivalence['diff'][0]['reason'].startswith('integrity: Accepted artifact bytes changed'),
+                        equivalence['diff'])
+        self.assertIn('notes.json', equivalence['diff'][0]['reason'])
+        self.assertIsNone(equivalence['evidence_sha256'])
+        self.assertEqual([e['diff'] for e in self.events(run, 'evaluation.unscored')], [equivalence['diff']])
+        self.assertIsNone(self.controller.call('status', run)['equivalence'])
+        self.assertFalse((trial / 'run-evidence.enc').exists())
+        # A resume meets the same changed bytes: nothing is graded again, and the trial is unscored again, never left
+        # awaiting an evaluation.
+        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+                patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
+            resumed = self.resume(trial)
+        self.assertEqual((resumed['status'], resumed['equivalence']['diff']), ('unscored', equivalence['diff']))
+        self.assertEqual(len(self.events(run, 'evaluation.unscored')), 2)
+        self.assertEqual(harness.read_trial(trial), resumed)
+
+    def test_an_evaluation_record_holds_to_the_configurators_schema_before_it_is_sealed_or_posted(self):
+        # Catches a record the configurator's equivalence/1 schema refuses (a mission reason over its length limit, a
+        # grade inconsistent with its checks), which every resume would rebuild and post again, so that the driver's
+        # grade is never recorded.
+        from generative_driver.benchmark_support import emulated, evaluator
+        from generative_driver.benchmark_support.truth import unlock
+        reason = 'The capability mapping cannot judge the mission: KeyError: ' + 'k' * 300
+        long = {'name': 'fresh_worker_mission', 'passed': None, 'reason': reason, 'fault': 'f' * 400}
+        with patch.object(emulated, '_mission', return_value=long):
+            mission = evaluator.reuse_mission('tq9-v2', self.root, [{'stage': 'reuse', 'assignment_id': 'reuse-1',
+                                                                     'artifacts': [{'path': 'x', 'sha256': 'a' * 64}]}],
+                                              'a' * 64, {})
+        self.assertEqual(mission, {'name': 'fresh_worker_mission', 'passed': None, 'reason': reason[:300], 'fault': 'f' * 300})
+        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
+                patch.object(evaluator, 'reuse_mission', return_value=long):
+            trial, record = self.trial('long-mission')
+        self.assertEqual((record['status'], record['equivalence']['equivalent']), ('evaluated', True))
+        self.assertEqual(record['equivalence']['mission'], {**long, 'reason': reason[:300], 'fault': 'f' * 300})
+        self.assertEqual(self.controller.call('status', {'run_id': record['run_id']})['equivalence'], record['equivalence'])
+        # A record no clamp makes valid is posted as unscored; why it was invalid stays sealed.
+        def inconsistent(case_id, trial_dir, run_dir, result, **options):
+            return evaluator.record('graded', True, [{'id': 'final/effect-1/duty', 'passed': False}], [],
+                                    self.emitted(result)), None
+        with patch.object(evaluator, 'grade', side_effect=inconsistent):
+            trial, record = self.trial('inconsistent')
+        run = {'run_id': record['run_id']}
+        self.assertEqual((record['status'], record['equivalence']['status']), ('unscored', 'unscored'))
+        self.assertEqual(record['equivalence']['diff'], [{'id': 'evaluation', 'reason': 'evaluator host fault: '
+                                                                                    'invalid evaluation record'}])
+        self.assertEqual([e['diff'] for e in self.events(run, 'evaluation.unscored')], [record['equivalence']['diff']])
+        payload = unlock(trial / 'run-evidence.enc', self.password.read_text(), record['evidence']['sha256'])
+        self.assertIsNone(payload['final']); self.assertIn('Invalid evaluation record', payload['evaluation_error'])
+
+    def test_resume_refuses_a_trial_it_may_not_evaluate_and_evaluates_under_its_own_lock(self):
+        # Catches a resume that grades, seals, posts or unlocks the truth for a trial whose harness still runs, whose
+        # device stop was not confirmed or that awaits no evaluation, two resumes evaluating at once (a lock that is
+        # held, or still being written), and a lock left by an evaluation that ended blocking every later one.
+        from generative_driver.benchmark_support import evaluator, harness
+        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
+                patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
+            trial, record = self.trial()
+        self.assertEqual(record['status'], 'awaiting-evaluation')
+        lock = trial / 'evaluation.lock'
+        for case, change, held, message in (
+                ('harness running', {'finished': None, 'pid': os.getpid()}, None, 'still running'),
+                ('stop unconfirmed', {'device_stop': {'stopped': False, 'confirmed': False}}, None, 'not confirmed'),
+                ('not resumable', {'status': 'run-stopped'}, None, 'awaits no evaluation'),
+                ('lock held', {}, str(os.getpid()) + ' ' + 'a' * 32, 'Another evaluation'),
+                ('lock being written', {}, '', 'Another evaluation')):
+            with self.subTest(case=case):
+                changed = {**record, **change}
+                harness._private(trial / 'trial.json', changed)
+                if held is not None:
+                    lock.write_text(held)
+                self.calls = []
+                with patch.object(evaluator, 'grade', side_effect=AssertionError('graded')) as grading, \
+                        patch.object(evaluator, 'seal', side_effect=AssertionError('sealed')) as sealing, \
+                        patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')) as unlocking, \
+                        self.assertRaisesRegex(ValueError, message):
+                    self.resume(trial, renode='scripted-emulator')
+                grading.assert_not_called(); sealing.assert_not_called(); unlocking.assert_not_called()
+                self.assertEqual(self.calls, [])
+                self.assertEqual(harness.read_trial(trial), changed)
+                if held is not None:
+                    self.assertEqual(lock.read_text(), held)
+                    lock.unlink()
+        self.assertFalse(self.verdicts({'run_id': record['run_id']}))
+        # A lock whose process ended is taken over, and the evaluation completes and lets go of it.
+        ended = subprocess.Popen([sys.executable, '-c', 'pass'])
+        ended.wait()
+        lock.write_text(str(ended.pid) + ' ' + 'b' * 32)
+        harness._private(trial / 'trial.json', record)
+        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+                patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
+            resumed = self.resume(trial)
+        self.assertEqual((resumed['status'], resumed['sealed']), ('evaluated', True))
+        self.assertFalse(lock.exists())
+        self.assertEqual(sorted(p.name for p in trial.iterdir() if 'lock' in p.name), [])
+        self.assertEqual(len(self.verdicts({'run_id': record['run_id']})), 1)
+
+    def test_a_resume_reads_the_trial_under_the_lock_and_lets_go_only_of_its_own_lock(self):
+        # Catches a resume that waited for the lock and then wrote back the trial record it read before, over the one
+        # the evaluation that held the lock left, and a resume that removes a lock another evaluation now holds.
+        from generative_driver.benchmark_support import evaluator, harness
+        trials = {}
+        for name in ('waited', 'replaced'):
+            with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                    patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
+                    patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
+                trials[name] = self.trial(name)[0]
+        real, held = harness._exclusive, []
+        @contextlib.contextmanager
+        def contended(trial_dir):
+            if not held:
+                # Another evaluation holds the lock while this one waits, and completes the trial.
+                held.append(None)
+                held[0] = harness.resume(trial_dir, password_file=self.password)
+            with real(trial_dir):
+                yield
+        with patch.object(harness, '_exclusive', contended), \
+                patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+                patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
+            waited = self.resume(trials['waited'])
+        self.assertEqual((held[0]['status'], held[0]['sealed']), ('evaluated', True))
+        self.assertEqual((waited['status'], waited['sealed'], waited['evidence']), ('evaluated', True, held[0]['evidence']))
+        self.assertEqual(harness.read_trial(trials['waited']), waited)
+        # While this evaluation runs, another takes over its lock: this one leaves that lock in place.
+        lock, other = trials['replaced'] / 'evaluation.lock', str(os.getpid()) + ' ' + 'c' * 32
+        real_conclude = harness.conclude
+        def displaced(*args, **kwargs):
+            lock.write_text(other)
+            return real_conclude(*args, **kwargs)
+        with patch.object(harness, 'conclude', side_effect=displaced):
+            self.assertEqual(self.resume(trials['replaced'])['status'], 'evaluated')
+        self.assertEqual(lock.read_text(), other)
+
+    def test_trial_resume_completes_an_evaluation_from_the_command_line_and_the_harness_entry(self):
+        # Catches either entry point failing to reach resume, or printing the password file path.
+        from generative_driver import benchmark
+        from generative_driver.benchmark_support import evaluator, harness
+        for entry in ('trial-resume', 'harness-resume'):
+            with self.subTest(entry=entry):
+                with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                        patch.object(evaluator, 'reference_execute', side_effect=reference(FAIL)), \
+                        patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
+                    trial, record = self.trial(entry)
+                self.assertEqual(record['status'], 'awaiting-evaluation')
+                printed = io.StringIO()
+                with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+                        patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')), \
+                        patch('generative_driver.client.call', side_effect=self.configurator), \
+                        contextlib.redirect_stdout(printed):
+                    if entry == 'trial-resume':
+                        self.assertEqual(benchmark.main(['trial-resume', str(trial), '--password-file', str(self.password)]), 0)
+                    else:
+                        secrets = types.SimpleNamespace(buffer=io.BytesIO(json.dumps({'password_file': str(self.password)}).encode()))
+                        with patch('sys.stdin', secrets):
+                            harness.main(['--trial-dir', str(trial), '--resume'])
+                output = json.loads(printed.getvalue())
+                self.assertEqual((output['status'], output['equivalence']['equivalent']), ('evaluated', False))
+                self.assertEqual(self.controller.call('status', {'run_id': record['run_id']})['equivalence'],
+                                 output['equivalence'])
+                self.assertNotIn(str(self.password), printed.getvalue())
+                self.assertEqual(harness.read_trial(trial)['status'], 'evaluated')
 
 
 class SealedEvidenceTests(PendingRunFixture):
@@ -502,6 +766,57 @@ class SealedEvidenceTests(PendingRunFixture):
         with self.assertRaisesRegex(ValueError, 'changed'):
             evaluator.seal(self.root / 'changed', run_dir, result, password_file=self.password, final=final)
         self.assertFalse([p for p in files(self.root) if p.name == 'run-evidence.enc' and p.parent.name != 'trial'])
+
+
+class DurableRecordTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.password = self.root / 'password-handle'
+        self.password.write_text('synthetic fixture credential')
+
+    def test_an_interrupted_draft_or_evidence_write_leaves_the_previous_one_whole(self):
+        # Catches the evaluator's draft (or the run evidence) overwritten in place, so that a write cut short by a
+        # killed process or a full disk leaves a truncated file every later grade fails to unlock.
+        from generative_driver.benchmark_support import evaluator
+        from generative_driver.benchmark_support.truth import seal, unlock
+        trial = self.root / 'trial'
+        trial.mkdir()
+        first = {'evaluations': [{'run_id': 'run-1', 'phase': 'final', 'frozen_artifact_sha256': 'a' * 64}]}
+        evaluator._draft(trial, self.password, first)
+        evidence = seal({'schema': 'benchmark-run-evidence/2'}, trial / 'run-evidence.enc', self.password.read_text())
+        real = Path.write_bytes
+        def interrupted(path, data):
+            real(path, data[:len(data) // 2])
+            raise OSError(28, 'No space left on device')
+        with patch.object(Path, 'write_bytes', interrupted):
+            with self.assertRaises(OSError):
+                evaluator._draft(trial, self.password, {'evaluations': first['evaluations'] * 2})
+            with self.assertRaises(OSError):
+                seal({'schema': 'changed'}, trial / 'run-evidence.enc', self.password.read_text())
+        self.assertEqual(evaluator._draft(trial, self.password), first)
+        self.assertEqual(unlock(trial / 'run-evidence.enc', self.password.read_text(), evidence),
+                         {'schema': 'benchmark-run-evidence/2'})
+        self.assertEqual(sorted(p.name for p in trial.iterdir()), ['evaluator-draft.enc', 'run-evidence.enc'])
+
+
+class PortableModelTests(unittest.TestCase):
+    def test_the_adapted_model_is_utf8_lf_bytes_on_a_host_that_translates_newlines(self):
+        # Catches the probe's adapted model written through the host's newline translation: on Windows each '\n'
+        # became '\r\n', and the package that carries those bytes no longer matched the portable reference bytes.
+        from generative_driver.benchmark_support.calibration import reference_model_bytes
+        from generative_driver.benchmark_support.evaluate import adapt_model
+        from tq9_workflow_fixture import model
+        original = model()
+        with tempfile.TemporaryDirectory() as temporary, windows_newlines():
+            root = Path(temporary)
+            (root / 'original.json').write_bytes(json.dumps(original, indent=1).encode('utf-8'))
+            adaptation = adapt_model(root / 'original.json', root / 'model')
+            adapted = (root / 'model/model.json').read_bytes()
+            self.assertEqual(adapted, reference_model_bytes(original))
+            self.assertEqual(adaptation['adapted_model_sha256'], hashlib.sha256(adapted).hexdigest())
+            self.assertNotIn(b'\r', (root / 'model/adaptation.json').read_bytes())
 
 
 if __name__ == '__main__':

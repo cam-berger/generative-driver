@@ -267,6 +267,24 @@ class ReferenceExecutionTests(unittest.TestCase):
                 self.assertNotIn(b'\r\n',(Path(temp)/'modeled/model/model.json').read_bytes())
                 self.assertIsNone(modeled['package_sha256'])
                 self.assertEqual(modeled['contract']['artifact_sha256'],modeled['model_sha256'])
+                # A frozen package whose model bytes a Windows host wrote with CRLF line endings is graded by its own
+                # bytes: its integrity holds against its own manifest, never against reference-normalised model bytes.
+                from generative_driver.toolkit import call_tool
+                from generative_driver.benchmark_support.calibration import reference_model_bytes
+                crlf=Path(temp)/'crlf';(crlf/'model').mkdir(parents=True)
+                (crlf/'model/model.json').write_bytes(reference_model_bytes(toy_sample_model()).replace(b'\n',b'\r\n'))
+                probed=call_tool('probe_run',{'run_dir':str(crlf/'tools'),'model_dir':str(crlf/'model'),
+                    'operation':toy_sample_model()['identity']['operation'],'parameters':{},'binding':Session.binding,'n':1})
+                self.assertTrue(probed.get('ok'),probed)
+                emitted=call_tool('emit_package',{'run_dir':str(crlf/'tools'),'model_dir':str(crlf/'model'),'probe':probed['probe']})
+                self.assertTrue(emitted.get('ok'),emitted)
+                windows=Path(emitted['package_dir'])
+                self.assertIn(b'\r\n',(windows/'driver/model.json').read_bytes())
+                with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()):
+                    graded=reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
+                        output_dir=crlf/'final',package=windows,expected_package_sha256=digest(windows))
+                self.assertEqual(graded['grade']['verdict'],'passed')
+                self.assertEqual((graded['package_sha256'],graded['artifact_execution']),(digest(windows),'emitted-package'))
                 package=Path(result['package_dir']);frozen=result['package_sha256']
                 self.assertEqual(digest(package),frozen)
                 self.assertEqual(result['contract']['artifact_sha256'],frozen)

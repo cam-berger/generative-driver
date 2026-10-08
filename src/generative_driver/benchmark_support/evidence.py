@@ -156,17 +156,21 @@ def _validate_payload_v2(payload):
 
 
 def seal_run_evidence_v2(payload: dict, path: Path, password_file: Path) -> dict:
-    """Seal benchmark-run-evidence/2 after re-hashing every accepted artifact it names."""
+    """Seal benchmark-run-evidence/2 after re-hashing every accepted artifact it names. An identity that does not hold or
+    an accepted record whose bytes changed raises IntegrityError: no retry seals it."""
     from .truth import seal
-    from ..configurator import digest as artifact_digest
-    _validate_payload_v2(payload)
+    from ..configurator import IntegrityError, digest as artifact_digest
+    try:
+        _validate_payload_v2(payload)
+    except ValueError as error:
+        raise IntegrityError(str(error)) from None
     for row in payload['accepted_artifacts']:
         try:
             observed = artifact_digest(Path(row['path']))
         except (OSError, ValueError):
             observed = None
         if observed != row['sha256']:
-            raise ValueError('Accepted artifact bytes changed before sealing: ' + Path(row['path']).name)
+            raise IntegrityError('Accepted artifact bytes changed before sealing: ' + Path(row['path']).name)
     digest = seal(payload, path, Path(password_file).read_text(encoding='utf-8').strip())
     return {'path': Path(path).name, 'sha256': digest}
 

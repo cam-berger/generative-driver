@@ -12,6 +12,7 @@ from .instruments import family_for
 
 DRAFT, EVIDENCE = 'evaluator-draft.enc', 'run-evidence.enc'
 SCHEMA = 'equivalence/1'
+TEXT = 300  # The configurator's limit on an equivalence/1 text field.
 
 
 def case_truth(case_id, run_dir, options):
@@ -53,7 +54,10 @@ def reference_execute(pin, truth, model, capabilities, *, renode, image, output_
     model_dir = output/'model'
     from .calibration import reference_model_bytes
     model_dir.mkdir(parents=True, exist_ok=True)
-    (model_dir/'model.json').write_bytes(reference_model_bytes(candidate))
+    # A frozen package is checked against its own model bytes, whatever newline convention the host that wrote them
+    # used; emit_check holds them to the package's manifest. A model with no package is written in the portable form.
+    (model_dir/'model.json').write_bytes((Path(package)/'driver/model.json').read_bytes() if package is not None
+                                         else reference_model_bytes(candidate))
     model_hash = hashlib.sha256((model_dir/'model.json').read_bytes()).hexdigest()
     probes = []
     session = NativeSession.start(renode=renode, image=image, recipe=truth['recipe'])
@@ -153,14 +157,29 @@ def _copy(found, target, what):
     return Path(target)
 
 
+def _text(value, empty='unnamed'):
+    """A public text field within the configurator's equivalence/1 limit of 300 characters."""
+    return str(value)[:TEXT] or empty
+
+
+def _mission_fields(found):
+    """The public mission fields, their text within the record's limit."""
+    if not isinstance(found, dict):
+        return None
+    return {key: found[key] if key == 'passed' else _text(found[key], '')
+            for key in ('name', 'passed', 'reason', 'fault') if key in found}
+
+
 def record(status, equivalent, checks, diff, frozen, capabilities_sha256=None, mission=None):
     """A public equivalence/1 record: check ids with passed flags and the failing ids with their reasons. Expected values,
-    tolerances, witnesses and raw records stay sealed."""
+    tolerances, witnesses and raw records stay sealed. Text is held to the configurator's length limit."""
     from ..configurator import PROTOCOL
+    checks = [{'id': _text(c['id']), 'passed': c['passed']} for c in checks]
+    diff = [{'id': _text(d['id']), 'reason': _text(d['reason'], 'failed')} for d in diff]
     return {'schema': SCHEMA, 'status': status, 'equivalent': equivalent, 'basis': 'evaluator', 'method': 'fresh-final',
             'checks': checks, 'diff': diff, 'passed': sum(c['passed'] is True for c in checks), 'total': len(checks),
-            'mission': mission, 'frozen_artifact_sha256': frozen, 'capabilities_sha256': capabilities_sha256,
-            'protocol': PROTOCOL}
+            'mission': _mission_fields(mission), 'frozen_artifact_sha256': frozen,
+            'capabilities_sha256': capabilities_sha256, 'protocol': PROTOCOL}
 
 
 def unscored(reason, frozen):
@@ -180,8 +199,26 @@ def reuse_mission(case_id, run_dir, accepted, frozen, capabilities):
     rows = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()] if path.is_file() else []
     events = [row for row in rows if row.get('actor') == 'worker' and row.get('stage') == 'reuse'
               and row.get('assignment_id') == reuse.get('assignment_id') and row.get('package_sha256') == frozen]
-    found = _mission(case_id, events, capabilities)
-    return {key: found[key] for key in ('name', 'passed', 'reason', 'fault') if key in found}
+    return _mission_fields(_mission(case_id, events, capabilities))
+
+
+def _held(draft, run_id, sha):
+    """The final the draft holds for this run's frozen driver, or None."""
+    return next((e for e in draft['evaluations'] if (e.get('run_id'), e.get('phase'), e.get('frozen_artifact_sha256'))
+                 == (run_id, 'final', sha)), None)
+
+
+def needs_grading(trial_dir, result, *, password_file):
+    """Whether concluding this run would grade its frozen driver on a fresh emulator: a completed run whose verdict is
+    pending, which emitted a package and handed on the mapping of its model, and whose final the draft does not hold."""
+    if (result.get('equivalence') is not None or result.get('status') != 'completed'
+            or (result.get('progress') or {}).get('equivalence') != 'pending'):
+        return False
+    accepted = result.get('accepted_handoffs') or []
+    frozen = emitted(accepted)
+    if frozen is None or mapping(accepted, frozen[3]) is None:
+        return False
+    return _held(_draft(trial_dir, password_file), result['run_id'], frozen[1]) is None
 
 
 def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
@@ -226,8 +263,7 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
         return record('graded', False, [], [{'id': 'capability_mapping', 'reason': 'no capability mapping'}], sha,
                       capabilities_sha, checked), None
     draft = _draft(trial_dir, password_file)
-    final = next((e for e in draft['evaluations'] if (e.get('run_id'), e.get('phase'), e.get('frozen_artifact_sha256'))
-                  == (result['run_id'], 'final', sha)), None)
+    final = _held(draft, result['run_id'], sha)
     if final is None:
         from interface_runtime.engine import validate_model
         try:
@@ -259,10 +295,14 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
 def evidence(trial_dir, run_dir, result, *, final=None, equivalence=None, mission=None, error=None):
     """The benchmark-run-evidence/2 payload of a terminal run: its pinned case and snapshot, every accepted artifact and
     notes.json hash, the single final evaluation (None for a stopped or ungraded run), the public verdict, the mission
-    check, the provider's recovery receipts and the hash of its device journal."""
-    from ..configurator import PROTOCOL
+    check, the provider's recovery receipts and the hash of its device journal. A snapshot that no longer verifies raises
+    IntegrityError."""
+    from ..configurator import IntegrityError, PROTOCOL
     from .snapshots import read_snapshot
-    snapshot = read_snapshot(run_dir)
+    try:
+        snapshot = read_snapshot(run_dir)
+    except (OSError, ValueError) as error:
+        raise IntegrityError('Execution snapshot unverifiable: ' + str(error)) from None
     rows = []
     for handoff in result.get('accepted_handoffs') or []:
         identity = {key: handoff.get(key) for key in ('stage', 'revision', 'assignment_id')}

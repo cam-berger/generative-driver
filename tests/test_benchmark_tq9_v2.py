@@ -287,6 +287,11 @@ class TQ9V2Tests(unittest.TestCase):
         self._scripted_controller_modes(('normal','rejected-write','repair-mapping','repair-decoder','repair-ground',
             'final-bounds','hidden-wrong','missing-mission','monitor-missing','snapshot-next'))
 
+    def test_a_frozen_package_written_with_windows_line_endings_is_graded_by_its_own_bytes(self):
+        # Catches grading that holds the frozen package to reference-normalised model bytes: a package whose model a
+        # Windows host wrote with CRLF line endings failed its integrity check and stayed unscored on every resume.
+        self._scripted_controller_modes(('crlf-package',))
+
     def test_a_provider_lost_before_dispatch_stops_for_the_operator_with_nothing_uncertain(self):
         # Catches a device the configurator can no longer reach turning a refused call into an uncertain write, a
         # host failure, or a call that reaches the device without its instrument readings and window.
@@ -633,6 +638,17 @@ class TQ9V2Tests(unittest.TestCase):
                     if not (admitting or grading) or names&{'replace','recover_emulator','reconcile','_run','_prepare','_check','_dispatch'}:
                         raise AssertionError('Truth unlocked outside the harness')
                     return real_truth(*args,**kwargs)
+                from generative_driver.benchmark_support import evaluate as evaluate_module
+                real_adapt=evaluate_module.adapt_model
+                def adapt(original,destination):
+                    # The probe's adapted model as a host that translated newlines wrote it: CRLF bytes, which emit
+                    # packages byte for byte.
+                    adaptation=real_adapt(original,destination)
+                    if mode=='crlf-package':
+                        adapted=Path(destination)/'model.json'
+                        adapted.write_bytes(adapted.read_bytes().replace(b'\n',b'\r\n'))
+                        adaptation['adapted_model_sha256']=hashlib.sha256(adapted.read_bytes()).hexdigest()
+                    return adaptation
                 real_reference=evaluator.reference_execute;graded=[]
                 def reference(*args,**kwargs):
                     # The evaluator runs once the run is terminal with nothing stopping and the run's device stopped.
@@ -646,6 +662,7 @@ class TQ9V2Tests(unittest.TestCase):
                          patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True,'evidence_sha256':evidence}),\
                          patch.object(emulator_module,'truth_for_case',side_effect=truth_for_case),\
                          patch.object(evaluator,'reference_execute',side_effect=reference),\
+                         patch.object(evaluate_module,'adapt_model',side_effect=adapt),\
                          patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=native_start):
                         if mode in ('recover-initial-stop-raise','recover-initial-stop-live'):
                             # The emulator's startup reading fails and so does its stop. The harness keeps the live
@@ -842,6 +859,10 @@ class TQ9V2Tests(unittest.TestCase):
                             driver=next((h['artifacts'][0]['sha256'] for h in reversed(result['accepted_handoffs'])
                                          if h['stage']=='emit' and h['artifacts']),None)
                             self.assertEqual((finished['status'],finished['sealed'],finished['equivalence']),('evaluated',True,equivalence))
+                            if mode=='crlf-package':
+                                package=next(Path(h['artifacts'][0]['path']) for h in reversed(result['accepted_handoffs'])
+                                             if h['stage']=='emit' and h['artifacts'])
+                                self.assertIn(b'\r\n',(package/'driver/model.json').read_bytes())
                             self.assertEqual((equivalence['basis'],equivalence['method'],equivalence['frozen_artifact_sha256']),
                                              ('evaluator','fresh-final',driver))
                             self.assertEqual(graded_result['progress']['equivalence'],equivalence['status'])

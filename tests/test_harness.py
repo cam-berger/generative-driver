@@ -224,12 +224,12 @@ class TrialFinishTests(unittest.TestCase):
                     raise AssertionError(method)
                 with patch.object(harness, 'admit', return_value=(provider, {'calibration_evidence_sha256': EVIDENCE})), \
                         patch.object(evaluator, 'seal', side_effect=AssertionError('sealed what the harness did not read')) as sealing, \
-                        patch.object(evaluator, 'grade', side_effect=AssertionError('graded what the harness did not read')), \
+                        patch.object(evaluator, 'grade', side_effect=AssertionError('graded what the harness did not read')) as grading, \
                         patch('generative_driver.client.call', side_effect=configurator):
                     record = harness.run_trial(trial, {'trial_id': trial.name, 'home': str(self.root / 'home'),
                                                        'case': 'tq9-v2', 'case_options': {'scenario_id': 'original'},
                                                        'password_file': str(self.root / 'password-handle')})
-                sealing.assert_not_called()
+                sealing.assert_not_called(); grading.assert_not_called()
                 self.assertIs(record['sealed'], False)
                 self.assertEqual(record['sealing_failed'], reason)
                 self.assertEqual(record['device_stop'], {'stopped': True, 'confirmed': True})

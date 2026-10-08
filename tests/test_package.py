@@ -537,11 +537,12 @@ class ToolFaultTests(unittest.TestCase):
     def test_a_snapshot_copy_the_host_cannot_read_back_is_a_host_fault_never_a_package_defect(self):
         """Both tools copy a package that passed its integrity check into a temporary snapshot and verify the copy. A
         read of that copy the host refuses (an antivirus or indexer lock, an I/O error) is the host's failure around
-        the check: emit_check reports a host fault, and emit_test_live raises it undeclared, so it reads as
-        inconclusive, never as a refusal of the package."""
+        the check: emit_check reports a host fault, and emit_test_live declares a host fault before any call, so the
+        gateway reconciles an effect it marked and the verdict reads it as inconclusive, never as a refusal of the
+        package."""
         import interface_runtime.package as runtime_package
         from generative_driver.toolkit import call_tool
-        from generative_driver.configurator import _host_fault, _live_outcome, digest
+        from generative_driver.configurator import _declared_refusal, _host_fault, _live_outcome, digest
         seen = []
         with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE), seen) as binding:
             root = Path(temp).resolve()
@@ -561,8 +562,11 @@ class ToolFaultTests(unittest.TestCase):
                              (4, False, "host", "not_run"), checked)
             self.assertTrue(checked["error"].startswith("PermissionError: "), checked)
             self.assertTrue(_host_fault(checked))
-            self.assertNotIn("transport_open_attempted", live)
+            self.assertEqual((live["_exit"], live["ok"], live["fault"], live["transport_open_attempted"]),
+                             (4, False, "host", False), live)
+            self.assertNotIn("results", live)
             self.assertTrue(live["error"].startswith("PermissionError: "), live)
+            self.assertFalse(_declared_refusal(live))
             event = {"name": "emit_test_live", "connected": True, "ok": False, "result": live, "dispatch_id": "7",
                      "argument_sha256": {"package_dir": digest(package)}}
             self.assertEqual(_live_outcome(event), ("inconclusive", "host fault (PermissionError)"))
@@ -577,8 +581,9 @@ class ToolFaultTests(unittest.TestCase):
     def test_a_replay_process_the_host_ended_is_a_host_fault_never_a_differing_replay(self):
         """emit_check replays the verified snapshot in a separate process of the trusted runtime, after the same replay
         passed in the check's own process. A replay process that printed no result (killed by the host, out of memory,
-        crashed at start) or exited with an error after printing the same result failed around the check: a host
-        fault. Only a replay process that printed a different result says the package's replay differs."""
+        crashed at start), exited with an error after printing the same result, or could not read the snapshot (the
+        trusted package's package_error) failed around the check: a host fault. Only a replay process that printed a
+        different result says the package's replay differs."""
         import subprocess as subprocess_module
         from generative_driver._toolchain import interface
         from generative_driver.toolkit import call_tool
@@ -596,6 +601,8 @@ class ToolFaultTests(unittest.TestCase):
                     ("a process that exited cleanly without a result", 0, "", True),
                     ("a process that printed half a result", 0, same[: len(same) // 2], True),
                     ("a process that printed the same result and then failed", 1, same, True),
+                    ("a process that could not read the snapshot", 1, json.dumps(
+                        {"ok": False, "error": {"code": "package_error", "message": "[Errno 13] Permission denied: 'probe.json'"}}), True),
                     ("a process that printed a different result", 1, json.dumps({"ok": False, "defects": ["differs"]}), False)):
                 with self.subTest(replay=name):
                     def replay(command, **kwargs):
@@ -613,6 +620,43 @@ class ToolFaultTests(unittest.TestCase):
                         self.assertNotIn("fault", checked)
                         self.assertFalse(_host_fault(checked))
                         self.assertEqual(checked["defects"], [{"where": "package replay", "what": "standalone replay differs"}])
+
+    def test_a_replay_process_the_host_keeps_from_the_snapshot_is_a_host_fault_never_a_differing_replay(self):
+        """The replay process reads the verified snapshot whose replay just passed in the check's own process. When the
+        host keeps it from a file of that snapshot (a lock taken after the check read the copy back), the trusted package
+        prints its package_error and exits 1: a failure around the check, which says nothing about the package."""
+        import subprocess as subprocess_module
+        from generative_driver.toolkit import call_tool
+        from generative_driver.configurator import _host_fault
+        real_run = subprocess_module.run
+        with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE)) as binding:
+            root = Path(temp).resolve()
+            _, emitted = self.emitted(root, binding)
+            locked = []
+            def replay(command, **kwargs):
+                if "replay" not in command:
+                    return real_run(command, **kwargs)
+                probe = Path(command[-2]) / "probe.json"
+                mode = probe.stat().st_mode
+                probe.chmod(0)
+                try:
+                    try:
+                        probe.read_bytes()
+                    except PermissionError:
+                        locked.append(probe)
+                    return real_run(command, **kwargs)
+                finally:
+                    probe.chmod(mode)
+            with patch.object(subprocess_module, "run", replay):
+                checked = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": emitted["package_dir"]})
+            if not locked:
+                self.skipTest("this host reads a file whose permissions forbid reading it")
+            self.assertEqual((checked["_exit"], checked["ok"], checked["fault"], checked["replay_status"]),
+                             (4, False, "host", "not_run"), checked)
+            self.assertIn("Permission denied", checked["error"])
+            self.assertTrue(_host_fault(checked))
+            passed = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": emitted["package_dir"]})
+            self.assertEqual((passed["_exit"], passed["replay_status"]), (0, "passed"), passed)
 
     def test_a_register_converter_that_fails_to_load_fails_the_check_and_is_no_host_fault(self):
         """A register package's seeded check imports the candidate's converter and runs it on register files. An error

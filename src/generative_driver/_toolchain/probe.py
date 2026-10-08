@@ -15,8 +15,10 @@ def probe_run(run_dir, model_dir, n=3, bus_url=None, period_override_ms=None,
 
     Exit 0 ok, 2 identity unexpected, 3 the device did not acknowledge, 4 a bus or USB fault, which is a
     hardware problem and makes the stage inconclusive rather than failed. Every refusal before the device is
-    contacted says so with transport_open_attempted false: model bytes the strict reader refuses (exit 1), and
-    for a register model the operator's binding or grants (fault operator, exit 4)."""
+    contacted says so with transport_open_attempted false: model bytes the strict reader refuses (exit 1), for a
+    register model the operator's binding or grants (fault operator, exit 4), and a register model the register
+    runtime cannot load (its plain UTF-8 JSON reader, its converter's import) or drive (a channel other than I2C)
+    before the bus opens (exit 1)."""
     run = core.resolve_run(run_dir)
     md = model_dir if os.path.isabs(model_dir) else os.path.join(core.BENCH, model_dir)
     from . import interface
@@ -46,7 +48,13 @@ def probe_run(run_dir, model_dir, n=3, bus_url=None, period_override_ms=None,
     steps = sum((operations.get(key, []) for key in ("init", "identify", "measure")), []) + loaded.get("state", [])
     if any(step.get("op") in ("reg_write", "raw_write") for step in steps) and "write" not in (allow_effects or []):
         return {**refused, "reason": "Explicit write effect grant required"}
-    model, convert = runner.load_model(md)
+    try:
+        # The register runtime reads model.json as plain UTF-8 JSON, which a byte-order mark the strict reader accepted
+        # fails, and executes the model's converter: whatever either raises comes before the bus opens.
+        model, convert = runner.load_model(md)
+        runner.check_channel(model)
+    except Exception as exc:
+        return interface.before_contact(f"{type(exc).__name__}: {exc}")
     try:
         be = runner.open_bus(model, bus_url)
     except (ImportError, OSError) as exc:

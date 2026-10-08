@@ -27,10 +27,16 @@ class FtdiI2c(me.FtdiI2cBackend):
         return self.i2c.poll(addr, write=True)   # write-direction: leaves no transaction open
 
 
-def open_bus(model_or_speed, url=None):
-    if isinstance(model_or_speed, dict) and model_or_speed.get("channel", {}).get("type") != "i2c":
+def check_channel(model):
+    """Refuse, before any bus opens, a schema-1 model whose channel the live runner cannot drive."""
+    if not isinstance(model.get("channel"), dict) or model["channel"].get("type") != "i2c":
         raise ValueError("schema-1 live runner supports I2C only; schema-1 SPI requires capture observation "
                          "or an explicit schema-3 model with an SPI binding")
+
+
+def open_bus(model_or_speed, url=None):
+    if isinstance(model_or_speed, dict):
+        check_channel(model_or_speed)
     speed = model_or_speed if isinstance(model_or_speed, int) else \
         model_or_speed["channel"].get("speed_hz", 100000)
     return FtdiI2c(url, speed)

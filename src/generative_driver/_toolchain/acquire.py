@@ -195,9 +195,10 @@ def acquire_flash(run_dir, port, chunked=False, strip_app_desc=False, backend=No
 
 @core.tool("acquire_serial_listen")
 def acquire_serial_listen(run_dir, port, baudrate=115200, seconds=8, **_):
-    """Record what a serial device sends with control lines released and nothing transmitted."""
+    """Record what a serial device sends with control lines released and nothing transmitted. A missing port is the
+    operator's (fault operator); the caller's own seconds or baudrate are refused without a fault."""
     if not isinstance(port, str) or not port.strip():
-        return {"available": False, "reason": "No bound serial port", "_exit": 1}
+        return {"available": False, "reason": "No bound serial port", "fault": "operator", "_exit": 1}
     if type(seconds) not in (int, float) or not 0 < seconds <= 30:
         return {"available": False, "reason": "seconds must be in (0, 30]", "_exit": 1}
     if type(baudrate) is not int or not 1 <= baudrate <= 12000000:

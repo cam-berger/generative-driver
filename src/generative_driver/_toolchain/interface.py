@@ -68,6 +68,12 @@ def before_contact(error, **extra):
     return {'ok':False,'error':error,**extra,'transport_open_attempted':False,'_exit':1}
 
 
+def host_before_contact(exc):
+    """A host failure before a tool contacted the device (its temporary folder, a snapshot copy it cannot read back):
+    nothing reached the device, and it says nothing about the tool's input. Fault host, exit 4."""
+    return {'ok':False,'fault':'host','error':f'{type(exc).__name__}: {exc}','transport_open_attempted':False,'_exit':4}
+
+
 def _preflight(model, operation, parameters, allow_effects, replay, n=1):
     """The checks run_samples makes before it opens a transport, made here so that each refusal can be declared:
     the evidence bound of a validated model for `n` samples (which also names an unknown operation) and the replay
@@ -384,12 +390,18 @@ def _check_snapshot(pkg, model, sha, manifest, expected_manifest_sha256):
         actual = json.loads(result.stdout)
     except ValueError:
         actual = None
-    if type(actual) is not dict or (actual == compared and result.returncode != 0):
+    # The trusted package reports what it could not read in the snapshot (an OSError, ValueError, TypeError or KeyError)
+    # as its package_error.
+    unread = type(actual) is dict and type(actual.get('error')) is dict and actual['error'].get('code') == 'package_error'
+    if type(actual) is not dict or (actual == compared and result.returncode != 0) or unread:
         # The process runs the trusted runtime on bytes whose replay just passed in this process. One that printed no
-        # result (the host killed it, it ran out of memory, it crashed at start) or failed after printing that same
-        # result failed around the check: the host's fault, which says nothing about the package.
+        # result (the host killed it, it ran out of memory, it crashed at start), failed after printing that same
+        # result, or could not read the verified snapshot those same bytes are in (a lock or I/O error the host took
+        # after this process read the copy back) failed around the check: the host's fault, which says nothing about
+        # the package.
         return {'ok':False,'fault':'host','replay_status':'not_run','_exit':4,
-                'error':f'replay process exited {result.returncode} without a replay result',
+                'error':('replay process could not read the verified snapshot: ' + str(actual['error'].get('message'))
+                         if unread else f'replay process exited {result.returncode} without a replay result'),
                 'stderr':result.stderr[-2000:],'source_evidence_kind':evidence['evidence_kind']}
     ok = result.returncode == 0 and actual == compared
     return {'ok':ok,'defects':[] if ok else [{'where':'package replay','what':'standalone replay differs'}],
@@ -450,8 +462,10 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
     passed through unchanged; it is checked against the model's channel, and every named operation's effect against
     the grants, before any call. Every refusal before the first call (arguments, binding, grants, a package that fails
     its snapshot check) is returned with transport_open_attempted false and exit 1, with no live record, instead of
-    being recorded as a package failure; a host failure reading back the snapshot copy raises instead, since it is no
-    refusal of the package. The plan stops at the first operator or host fault (exit 4, inconclusive).
+    being recorded as a package failure. A host failure before the first call (its temporary folder, a snapshot copy
+    it cannot read back) is no refusal of the package: it is returned as fault host with exit 4, also with
+    transport_open_attempted false, since nothing reached the device. The plan stops at the first operator or host
+    fault (exit 4, inconclusive).
     Every call is recorded append-only in emit/live-N.json; when the host cannot write that record, the results are
     still returned, as a host fault with exit 4, since the device was contacted."""
     try:
@@ -471,7 +485,11 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
         return before_contact(f'{type(exc).__name__}: {exc}')
     pkg = path(package_dir)
     started = core.now()
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+    try:
+        folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    except OSError as exc:
+        return host_before_contact(exc)
+    with folder as temporary:
         try:
             snapshot, manifest, refusal = _snapshot(pkg, sha, expected_manifest_sha256, temporary)
             if refusal is not None:
@@ -492,6 +510,10 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
             if ungranted:
                 raise ValueError('operations need an effect grant that allow_effects does not give: '
                                  + ', '.join(f"{n} ({model['operations'][n]['effect']})" for n in ungranted))
+        except OSError as exc:
+            # The snapshot holds bytes that passed inspection; a host that cannot copy or read them back failed before
+            # any call.
+            return host_before_contact(exc)
         except (ValueError, TypeError, LookupError, RecursionError) as exc:
             return before_contact(f'{type(exc).__name__}: {exc}')
         flags = [flag for g in grants if g != 'read' for flag in ('--allow-effect', g)]

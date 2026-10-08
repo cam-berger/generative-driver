@@ -14,7 +14,6 @@ from generative_driver.benchmark import prepare_stage
 class GroundEvidenceTests(unittest.TestCase):
     def test_current_grounding_keeps_the_model_mapping_worker_probes_and_journal_without_grades(self):
         # Catches grounding an unmapped raw model, discarding observed captures, or projecting any grade.
-        from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             source = root/'accepted'; source.mkdir()
@@ -39,10 +38,10 @@ class GroundEvidenceTests(unittest.TestCase):
                                 'units': {'duty': 'permille', 'temperature_reference': 'degC'}}})+'\n')
             artifacts = [{'path': str(p), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()}
                          for p in (mapping, model, adaptation, live, probe, stale)]
-            with patch('generative_driver.benchmark_support.emulated._session',
-                       return_value=SimpleNamespace(binding={'host': '127.0.0.1', 'port': 1})):
-                prepared = prepare_stage('tq9-v2', 'ground', root/'run', root/'worker',
-                    accepted=[{'stage': 'probe', 'artifacts': artifacts}])
+            # Ground runs on the device the bench harness provides, as the configurator's record holds it.
+            prepared = prepare_stage('tq9-v2', 'ground', root/'run', root/'worker',
+                accepted=[{'stage': 'probe', 'artifacts': artifacts}],
+                options={'device': {'session_id': 'provided', 'binding': {'host': '127.0.0.1', 'port': 1}}})
             ws = root/'worker'
             evidence = json.loads((ws/'ground-evidence/device-observations.json').read_text())
             self.assertEqual(sorted(prepared['allowed_tools']), ['interface_execute', 'model_validate', 'probe_diff', 'probe_run'])
@@ -71,7 +70,7 @@ class GroundEvidenceTests(unittest.TestCase):
             root = Path(temporary)
             for accepted in ([], [{'stage': 'probe', 'artifacts': []}]):
                 with self.subTest(accepted=accepted), patch(
-                        'generative_driver.benchmark_support.emulated._session', side_effect=AssertionError('emulator started')):
+                        'generative_driver.benchmark_support.device_provider.DeviceProvider.start', side_effect=AssertionError('emulator started')):
                     prepared = prepare_stage('tq9-v2', 'ground', root/'run', root/'worker', accepted=accepted)
                     self.assertIn('no interpreted model available', prepared['skip'])
 

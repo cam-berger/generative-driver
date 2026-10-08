@@ -470,11 +470,12 @@ class StageDispatchTests(unittest.TestCase):
                 def set_running(self,value):pass
                 def observe(self):return {'values':{'latched_q4':65456,'acquisition_counter':3}}
             def invoke(*args):return {'ok':True,'outputs':{'temperature':-5,'sequence':3},'units':{'temperature':'degC','sequence':'count'}}
-            with patch('generative_driver.benchmark_support.emulated._session',return_value=Session()),patch(
-                'generative_driver.benchmark_support.emulated._truth',return_value=truth),patch(
+            # The evaluator's own session and truth: neither comes from the stage adapter.
+            with patch('generative_driver.benchmark_support.emulated_evidence.case_truth',return_value=truth),patch(
                 'generative_driver.benchmark_support.emulated_evidence.read_snapshot',return_value={'case_pin':pin}),patch(
                 'generative_driver.benchmark_support.emulated_actions.model_invoker',return_value=invoke):
-                grade,records,_,_=_diagnose('sampled-sensor-v1',root,root/'model',{}, {'evaluator_password_file':str(password)})
+                grade,records,_,_=_diagnose('sampled-sensor-v1',root,root/'model',{}, {'evaluator_password_file':str(password)},
+                                            session=Session())
             self.assertEqual(grade['verdict'],'passed')
             self.assertEqual({r['unit'] for r in records},{'degC','count','boolean'})
 
@@ -490,15 +491,17 @@ class StageDispatchTests(unittest.TestCase):
             package=root/'package';package.mkdir();(package/'model').write_text('changed')
             _write(root/'benchmark/state.json',{'package_sha256':'a'*64})
             _private(root,opts,{'evaluations':[]})
-            with patch('generative_driver.benchmark_support.emulated._session',side_effect=AssertionError('Native access')):
-                with self.assertRaisesRegex(ValueError,'Frozen package'):_final('sampled-sensor-v1',root,package,{},opts)
+            class Untouched:
+                def __getattr__(self,name):raise AssertionError('Native access')
+            with patch('generative_driver.benchmark_support.emulated_evidence.case_truth',side_effect=AssertionError('truth unlocked')):
+                with self.assertRaisesRegex(ValueError,'Frozen package'):_final('sampled-sensor-v1',root,package,{},opts,session=Untouched())
 
 class TruthBoundaryTests(unittest.TestCase):
     def test_authenticated_but_nonexecutable_family_inventory_is_refused(self):
         import tempfile
         from pathlib import Path
         from generative_driver.benchmark_support.truth import seal
-        from generative_driver.benchmark_support.emulated import _truth
+        from generative_driver.benchmark_support.emulated_evidence import case_truth
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);password=root/'password';password.write_text('toy')
@@ -507,20 +510,21 @@ class TruthBoundaryTests(unittest.TestCase):
             with patch('generative_driver.benchmark_support.emulated._inputs',return_value=(root,manifest)),patch(
                     'generative_driver.benchmark.case_root',return_value=root):
                 with self.assertRaises((ValueError,KeyError)):
-                    _truth('sampled-sensor-v1',root,{'evaluator_password_file':str(password)})
+                    case_truth('sampled-sensor-v1',root,{'evaluator_password_file':str(password)})
 
 class PublicObservationTests(unittest.TestCase):
     def test_public_package_feedback_uses_selected_family_monitor(self):
         import tempfile,json
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated import package_execute
+        from generative_driver.benchmark_support.emulated import package_call
         from generative_driver.benchmark_support.device_provider import DeviceProvider
         from generative_driver.benchmark_support.cases import _write
-        from generative_driver.configurator import digest
+        from generative_driver.configurator import Controller, digest
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp).resolve();package=root/'package';package.mkdir();(package/'toy').write_text('toy')
-            _write(root/'benchmark/state.json',{'package_copies':{'reuse':str(package)},'package_sha256':digest(package),
+            run_dir=root/'home/runs/run-fixture'
+            _write(run_dir/'benchmark/state.json',{'package_copies':{'reuse':str(package)},'package_sha256':digest(package),
                 'package_attempts':{'reuse':'toy'}})
             values={'latched_q4':65456,'acquisition_counter':3}
             class Session:
@@ -532,12 +536,17 @@ class PublicObservationTests(unittest.TestCase):
             (root/'firmware.bin').write_bytes(b'toy')
             device=DeviceProvider('sampled-sensor-v1',root/'firmware.bin',Session.recipe,None,root/'device',start=lambda **kwargs:Session())
             device.start()
-            with patch('generative_driver.benchmark_support.emulated._session',return_value=device),patch(
-                'generative_driver.benchmark_support.emulated_actions.package_invoker',return_value=lambda *args:{'ok':True,'outputs':{}}):
-                result=package_execute('sampled-sensor-v1',root,'reuse',package,'toy',binding={'host':'toy'})
+            # The configurator's live package call on the provided device: the stage-assigned copy, inside the window,
+            # between instrument readings of the selected family.
+            controller=Controller(root/'home');self.addCleanup(controller.close)
+            arguments={'package_dir':str(package),'operation':'toy','parameters':{},'binding':{'host':'toy'},'allow_effects':[]}
+            with patch('generative_driver.benchmark_support.emulated_actions.package_invoker',return_value=lambda *args:{'ok':True,'outputs':{}}):
+                invoke=package_call('sampled-sensor-v1',run_dir,'reuse',arguments)
+                result=controller._device_call({'id':'run-fixture','spec':json.dumps({'_case_pin':{'case_id':'sampled-sensor-v1'}})},
+                                               {'id':'reuse-attempt','stage':'reuse'},'benchmark_package_execute',arguments,device,invoke)
             self.assertEqual(result['observation']['reference_temperature'],-5)
             self.assertEqual(result['observation']['monitor_sequence'],3)
-            row=json.loads((root/'benchmark/package-events.jsonl').read_text())
+            row=json.loads((run_dir/'benchmark/package-events.jsonl').read_text())
             self.assertEqual(row['before_observation']['monitor_sequence'],3)
 
 class WrapperTests(unittest.TestCase):

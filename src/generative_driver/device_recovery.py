@@ -1,5 +1,14 @@
-"""Trusted attribution of uncertain device writes and the recovery that replaces the emulator through its provider."""
+"""Trusted attribution of uncertain device writes, and their recovery through the device handle: the bench harness's
+provider replaces a provided emulator, and the configurator commits the replacement with the stage's handoff.
+
+It holds no password, recipe or truth and imports nothing that decrypts one or grades: the provider keeps the
+replacement proof in its private journal, and the configurator receives and records only the receipt."""
 import json
+import threading
+import time
+
+RECEIPT = 'emulator-recovery/2'
+LIVE_TOOLS = ('interface_execute', 'probe_run', 'benchmark_package_execute', 'emit_test_live')
 
 
 def diagnostic_faults(finishes, assignment):
@@ -7,8 +16,7 @@ def diagnostic_faults(finishes, assignment):
     faults = []
     for _, event in finishes:
         if (event.get('actor') != 'worker' or event.get('assignment_id') != assignment['id']
-                or event.get('ok') is not False
-                or event.get('name') not in ('interface_execute','probe_run','benchmark_package_execute','emit_test_live')):
+                or event.get('ok') is not False or event.get('name') not in LIVE_TOOLS):
             continue
         result = event.get('result')
         if not isinstance(result,dict):
@@ -94,27 +102,35 @@ def unresolved_outcomes(db, run_id, assignment):
     return category, failed, dispatches
 
 
-def reconcile(controller, run_id, spec, assignment, run_dir, progress):
-    """Consume trusted runtime evidence once the worker has exited, under its lease, and replace the owned emulator.
+def _verified(receipt, held):
+    """A receipt the configurator may commit: the provider stopped the session the run holds, confirmed, and verified a
+    distinct replacement at its initial state on a new binding."""
+    return (isinstance(receipt, dict) and receipt.get('schema') == RECEIPT and receipt.get('old_owner_stopped') is True
+            and receipt.get('initial_state_verified') is True and bool(held.get('session_id'))
+            and receipt.get('old_session_id') == held['session_id'] and isinstance(receipt.get('new_session_id'), str)
+            and receipt['new_session_id'] not in ('', held['session_id']) and isinstance(receipt.get('binding'), dict)
+            and bool(receipt['binding']) and receipt['binding'] != held.get('binding'))
 
-    A verified replacement is returned as `recovery` for the stage's handoff to commit, in one transaction with the
-    new binding, the cleared uncertainty and any route its device diff takes. This never routes the run or clears
-    uncertainty itself: until that commit the failed write stays uncertain, and it is never re-executed. The repair
-    budget plays no part: replacing the emulator is as safe with no repair left as with one, and the stage's outcome
-    alone decides whether its device diff revises or, with the budget spent, the run advances."""
-    import threading
-    import time
-    from ..configurator import case_options
-    from ..benchmark import recover_emulator
+
+def reconcile(controller, run_id, spec, assignment, run_dir, progress):
+    """Consume trusted runtime evidence once the worker has exited, under its lease, and have the provider replace the
+    run's provided emulator.
+
+    Only a write the runtime attributed to the model, after it verified the device's identity and opened it, on a
+    provided emulator the public pin approves for emulator tools, is replaced. A verified replacement is returned as
+    `recovery` for the stage's handoff to commit, in one transaction with the new binding and session, the cleared
+    uncertainty and any route its device diff takes. This never routes the run or clears uncertainty itself: until
+    that commit the failed write stays uncertain, and it is never re-executed. A provider that cannot be reached, a
+    failed or cancelled replacement and an unverified receipt are recorded as a failed recovery and stop for safety.
+    The repair budget plays no part: replacing the emulator is as safe with no repair left as with one."""
     with controller._lock:
         lock = controller._operations.setdefault(run_id, threading.RLock())
     with lock, controller._active_operation(run_id):
         with controller._db() as db:
             category, failed, dispatches = unresolved_outcomes(db,run_id,assignment)
             allowed = (failed and category == 'model' and assignment['stage'] in ('interpret','probe','ground')
-                       and spec.get('_case_pin',{}).get('manifest',{}).get('schema') == 'benchmark-case/2'
-                       and spec.get('_case_pin',{}).get('manifest',{}).get('approval_scope') == 'emulator'
-                       and not progress.get('terminal_final_failure'))
+                       and (spec.get('device') or {}).get('kind') == 'provided-emulator'
+                       and spec.get('_case_pin',{}).get('manifest',{}).get('approval_scope') == 'emulator')
             if not allowed:
                 return {'stop':{'category':'safety','reason':'Outstanding effect requires operator reconciliation'}}
             evidence = sorted({str(i) for i,_ in failed})
@@ -124,16 +140,13 @@ def reconcile(controller, run_id, spec, assignment, run_dir, progress):
             return bool(controller._closing or controller._row(run_id)['cancelled']
                         or time.time() >= controller._row(run_id)['created']+spec['budget_seconds'])
         try:
-            case = spec['case']
-            if spec.get('device'):
-                # The bench harness's provider replaces its device; the proof stays in its private journal.
-                from ..device_client import open_device
-                remaining = controller._row(run_id)['created'] + spec['budget_seconds'] - time.time()
-                receipt = open_device(spec['device']).replace((progress.get('device') or {}).get('session_id'), evidence,
-                                                              dispatches, deadline_seconds=max(0.0, remaining))
-            else:
-                receipt = recover_emulator(case['id'] if isinstance(case,dict) else case, run_dir,
-                    {**case_options(spec), 'recovery_evidence_ids':evidence, 'recovery_dispatch_ids':dispatches}, cancelled)
+            from .device_client import open_device
+            held = progress.get('device') or {}
+            remaining = controller._row(run_id)['created'] + spec['budget_seconds'] - time.time()
+            receipt = open_device(spec['device']).replace(held.get('session_id'), evidence, dispatches,
+                                                          deadline_seconds=max(0.0, remaining))
+            if not _verified(receipt, held):
+                raise RuntimeError('The provider\'s receipt is not a verified replacement of the run\'s device session')
             if cancelled():
                 raise RuntimeError('Recovery cancelled before durable reconciliation')
             return {'recovery':{'assignment_id':assignment['id'],'receipt':receipt,

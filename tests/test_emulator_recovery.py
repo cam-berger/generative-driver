@@ -1,9 +1,7 @@
 """Trusted native-owner boundary through the device provider, using external process substitutes only."""
-import hashlib
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
 
 
 class Owner:
@@ -51,17 +49,17 @@ class EmulatorRecoveryTests(unittest.TestCase):
             self.assertTrue(new.process.stopped)
 
     def test_cleanup_retains_owned_handle_when_stop_is_unconfirmed(self):
-        from generative_driver.benchmark_support import emulated
-        from generative_driver.benchmark_support.cases import _state,_write
+        # The bench harness owns and stops the device: an unconfirmed stop keeps the handle and names the live session.
+        from generative_driver.benchmark_support.harness import finish
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);owner=Owner(1);device=provider(root,[owner]);device.start();owner.stop=lambda:None
-            path,state=_state(root);state['session']=device.descriptor();_write(path,state)
-            key=str(root.resolve());emulated._OWNERS[key]=device
-            try:
-                with self.assertRaisesRegex(RuntimeError,'stop'):
-                    emulated.cleanup('tq9-v2',root)
-                self.assertIs(emulated._OWNERS[key],device);self.assertIs(device.session,owner)
-            finally:emulated._OWNERS.pop(key,None)
+            with self.assertRaisesRegex(RuntimeError,'stop'):
+                device.stop()
+            self.assertIs(device.session,owner)
+            done=finish(device,'tq9-v2',None,[],None,{'status':'completed'})
+            self.assertEqual((done['status'],done['device_stop']['confirmed']),('stop-unconfirmed',False))
+            self.assertIn('stop',done['device_stop']['reason'])
+            self.assertIs(device.session,owner);self.assertEqual(done['device']['session_id'],owner.info['session_id'])
 
     def test_failed_replacement_retains_handle_if_its_stop_raises(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -73,8 +71,9 @@ class EmulatorRecoveryTests(unittest.TestCase):
             self.assertIs(device.session,new)
 
     def test_initial_observation_failure_retains_live_owner_when_stop_fails(self):
-        from generative_driver.benchmark_support import emulated
-        from generative_driver.benchmark_support.cases import _state
+        # The harness's provider starts the device; one whose startup reading fails and whose stop is unconfirmed stays
+        # owned, and the harness's record names its live session.
+        from generative_driver.benchmark_support.harness import finish
         for raises in (True,False):
             with self.subTest(stop_raises=raises),tempfile.TemporaryDirectory() as temporary:
                 root=Path(temporary);owner=Owner(1)
@@ -82,19 +81,16 @@ class EmulatorRecoveryTests(unittest.TestCase):
                 def stop():
                     if raises:raise RuntimeError('stop unavailable')
                 owner.stop=stop
-                key=str(root.resolve())
-                (root/'firmware.bin').write_bytes(b'synthetic')
-                manifest={'images':{'firmware.bin':hashlib.sha256(b'synthetic').hexdigest()}}
-                try:
-                    with patch.object(emulated,'_inputs',return_value=(root,manifest)),patch.object(emulated,'_truth',return_value={'recipe':owner.recipe}),patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=owner),patch.object(emulated,'_device_dir',return_value=root/'device'):
-                        with self.assertRaises(RuntimeError):emulated._session('tq9-v2',root,{})
-                    self.assertIs(emulated._OWNERS.get(key).session,owner)
-                    self.assertEqual(_state(root)[1]['session']['session_id'],owner.info['session_id'])
-                    self.assertIsNone(owner.process.poll())
-                    with self.assertRaisesRegex(RuntimeError,'stop'):emulated.cleanup('tq9-v2',root)
-                    self.assertIs(emulated._OWNERS.get(key).session,owner)
-                finally:emulated._OWNERS.pop(key,None)
-
+                device=provider(root,[owner])
+                with self.assertRaises(RuntimeError):device.start()
+                self.assertIs(device.session,owner)
+                self.assertEqual(device.status()['session_id'],owner.info['session_id'])
+                self.assertIsNone(owner.process.poll())
+                with self.assertRaisesRegex(RuntimeError,'stop'):device.stop()
+                self.assertIs(device.session,owner)
+                done=finish(device,'tq9-v2',None,[],None)
+                self.assertEqual((done['status'],done['device']['session_id']),('stop-unconfirmed',owner.info['session_id']))
+                self.assertIs(device.session,owner)
 
 if __name__ == '__main__':
     unittest.main()

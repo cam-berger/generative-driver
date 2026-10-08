@@ -322,8 +322,13 @@ def score_observations(truth, observations):
 
 
 def cleanup(case_id, run_dir, options=None):
+    """A legacy adapter stops what it owns. An emulated case's device belongs to the bench harness, which alone stops
+    it: nothing here may stop or forget it, whatever a run state records."""
     from .benchmark_support.registry import adapter_for
-    return adapter_for(case_id).cleanup(case_id, run_dir, options)
+    adapter = adapter_for(case_id)
+    if not hasattr(adapter, 'cleanup'):
+        raise RuntimeError('The bench harness owns this case\'s device; the configurator holds no ownership to clean up')
+    return adapter.cleanup(case_id, run_dir, options)
 
 
 def score(report, password_file=None, *, evidence_path=None):
@@ -357,12 +362,3 @@ def evaluation_fault(evaluation):
         faults.append(fault or 'host')
     return 'operator' if 'operator' in faults else 'host' if 'host' in faults else 'model'
 
-
-def recover_emulator(case_id, run_dir, options, cancelled):
-    """Internal adapter seam: replace the owned emulator; it writes nothing into repair inputs."""
-    from .benchmark_support.registry import adapter_for
-    adapter = adapter_for(case_id)
-    hook = getattr(adapter, 'recover_emulator', None)
-    if hook is None:
-        raise ValueError('Binding has no trusted owned-emulator recovery adapter')
-    return hook(case_id, run_dir, options, cancelled)

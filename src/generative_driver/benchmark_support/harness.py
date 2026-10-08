@@ -168,12 +168,18 @@ class DeviceServer:
             shutil.rmtree(self._sockets, ignore_errors=True)
 
 
+def device_recipe(case_id, trial_dir, options):
+    """The device definition and nothing else: the harness unlocks the case truth for it with the password file in
+    `options`, and everything but the recipe is dropped before a provider sees it."""
+    from .emulated_evidence import case_truth
+    return case_truth(case_id, trial_dir, options)['recipe']
+
+
 def admit(case_id, options, trial_dir, *, password_file, renode=None):
     """Admit the case and build its device provider from the recipe alone: (provider, admission). Only this step unlocks
     the case truth, to take the device recipe; everything else in it is dropped before the provider sees it. The caller
     starts the provider, so that it holds the device even when the start fails."""
     from .device_provider import DeviceProvider
-    from .emulated import device_recipe
     from .registry import pin_case, require_calibration, resolve_case
     secret = {'evaluator_password_file': str(password_file)} if password_file else {}
     pin = pin_case(case_id, options.get('scenario_id'), options.get('case_seed', 0))

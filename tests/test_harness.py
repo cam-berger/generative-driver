@@ -420,7 +420,7 @@ def configurator(method, params=None, home=None, **kwargs):
     raise AssertionError(method)
 patch('generative_driver.benchmark.case_root', return_value=Path(RESOURCES_DIR)).start()
 patch('generative_driver.benchmark_support.registry.require_calibration', side_effect=admitted).start()
-patch('generative_driver.benchmark_support.emulated.device_recipe', return_value=RECIPE).start()
+patch('generative_driver.benchmark_support.emulated_evidence.case_truth', return_value={'recipe': RECIPE}).start()
 patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=start).start()
 patch('generative_driver.client.call', side_effect=configurator).start()
 """

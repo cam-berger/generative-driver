@@ -2,7 +2,7 @@
 
 It holds no password and no truth object and imports nothing that decrypts one. What leaves it is a public descriptor,
 instrument readings projected to named quantities with units, and recovery receipts; startup readings and recovery
-proofs stay in its private journal. It runs in-process until the bench harness owns it."""
+proofs stay in its private journal. The bench harness holds it and serves it to the configurator."""
 import contextlib
 import copy
 import hashlib

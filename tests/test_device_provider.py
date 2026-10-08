@@ -4,7 +4,6 @@ import ast
 import hashlib
 import inspect
 import json
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -84,8 +83,8 @@ class ProviderFixture(unittest.TestCase):
         return DeviceProvider(case_id, self.image, recipe, None, self.root/'device', image_sha256=self.sha,
                               start=start or self.start, **options)
 
-    def journal(self):
-        path = self.root/'device/journal.jsonl'
+    def journal(self, root=None):
+        path = (root or self.root)/'device/journal.jsonl'
         return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()] if path.is_file() else []
 
 
@@ -374,141 +373,132 @@ class DeviceProviderTests(ProviderFixture):
         self.assertFalse(modules & forbidden, modules)
 
 
-class EmulatedDelegationTests(ProviderFixture):
-    """The in-process v2 adapter holds its emulator through a provider built from the device recipe alone."""
+class HarnessDelegationTests(ProviderFixture):
+    """The bench harness holds the emulator through a provider built from the device recipe alone, and the configurator
+    reaches it only through its control endpoint: the stage adapter holds, starts and stops no device."""
     def setUp(self):
         super().setUp()
-        from generative_driver.benchmark_support import emulated
-        self.emulated, self.run_dir = emulated, self.root/'run'
+        from generative_driver.benchmark_support.harness import DeviceServer
+        from generative_driver.configurator import Controller
+        self.trial, self.home = self.root/'trial', self.root/'home'
         self.truth = {'recipe': RECIPE, 'contracts': {'sentinel': 'EVALUATOR SENTINEL'}, 'private_sentinel': 'EVALUATOR SENTINEL'}
-        for target, value in (('_inputs', (self.root, {'images': {'firmware.bin': self.sha}})), ('_truth', self.truth)):
-            stub = patch.object(emulated, target, return_value=value)
-            stub.start(); self.addCleanup(stub.stop)
-        native = patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=self.start)
-        native.start(); self.addCleanup(native.stop)
-        real = emulated._device_dir
-        def device_dir(run_dir):
-            path = real(run_dir); self.addCleanup(shutil.rmtree, path, True)
-            return path
-        private = patch.object(emulated, '_device_dir', side_effect=device_dir)
-        private.start(); self.addCleanup(private.stop)
-        self.addCleanup(emulated._OWNERS.pop, str(self.run_dir.resolve()), None)
-
-    def state(self):
-        return json.loads((self.run_dir/'benchmark/state.json').read_text(encoding='utf-8'))
-
-    def test_the_adapter_starts_recovers_and_stops_through_its_provider(self):
         from generative_driver.benchmark_support.device_provider import DeviceProvider
-        from generative_driver.benchmark_support.cases import _write
-        emulated = self.emulated
-        self.assertEqual(emulated.device_recipe('tq9-v2', self.run_dir, {}), RECIPE)
-        device = emulated._session('tq9-v2', self.run_dir, {'renode': None})
-        self.assertIsInstance(device, DeviceProvider)
-        self.assertIs(emulated._session('tq9-v2', self.run_dir, {}), device)
+        self.device = DeviceProvider('tq9-v2', self.image, RECIPE, None, self.trial/'device', image_sha256=self.sha,
+                                     start=self.start)
+        self.server_type = DeviceServer
+        self.controller = Controller(self.home); self.addCleanup(self.controller.close)
+        self.run = {'id': 'run-fixture', 'spec': json.dumps({'_case_pin': {'case_id': 'tq9-v2'}})}
+        self.run_dir = self.home/'runs/run-fixture'
+
+    def serve(self):
+        server = self.server_type(self.device, self.trial/'endpoint'); self.addCleanup(server.close)
+        return server
+
+    def test_the_harness_provides_recovers_and_stops_the_device_from_the_recipe_alone(self):
+        from generative_driver.benchmark_support import emulated, harness
+        from generative_driver.device_client import DeviceUnavailable, open_device
+        from generative_driver.toolkit import call_tool
+        with patch('generative_driver.benchmark_support.emulated_evidence.case_truth', return_value=self.truth) as unlocked:
+            self.assertEqual(harness.device_recipe('tq9-v2', self.trial, {}), RECIPE)
+        unlocked.assert_called_once()
+        self.assertFalse(hasattr(emulated, '_session'))
+        self.device.start()
+        server = self.serve()
         self.assertEqual(len(self.peers), 1)
-        self.assertEqual(device.recipe, RECIPE)
-        # The run records the public descriptor only: no startup reading, monitor command or private path.
-        state = self.state()
-        self.assertEqual(state['session'], device.descriptor())
-        self.assertNotIn('startup_observation', state)
-        self.assertFalse(keys(state) & MONITOR)
-        self.assertNotIn('EVALUATOR SENTINEL', json.dumps(state))
-        private = Path(device.private_dir)
-        self.assertFalse(private.is_relative_to(self.run_dir.resolve()))
-        # Live tools run inside the paused-between-calls window and carry instrument readings.
+        self.assertEqual(self.device.recipe, RECIPE)
+        # The configurator receives the public descriptor only: no startup reading, monitor command or private path.
+        descriptor = server.descriptor
+        self.assertFalse(keys(descriptor) & MONITOR)
+        self.assertNotIn('EVALUATOR SENTINEL', json.dumps(descriptor))
+        self.assertTrue(Path(self.device.private_dir).is_relative_to(self.trial))
+        # Live tools run inside the paused-between-calls window, between instrument readings.
         model = self.root/'model'; model.mkdir()
         from tq9_workflow_fixture import model as fixture_model
         candidate = fixture_model(); candidate['channel'] = {'type': 'tcp'}
         (model/'model.json').write_text(json.dumps(candidate))
-        result = emulated.worker_tool('tq9-v2', self.run_dir, 'interface_execute', {
-            'model_dir': str(model), 'run_dir': str(self.root/'tools'), 'operation': 'measure',
-            'binding': device.binding}, {})
+        client = open_device(descriptor)
+        arguments = {'model_dir': str(model), 'run_dir': str(self.root/'tools'), 'operation': 'measure',
+                     'binding': descriptor['binding']}
+        result = self.controller._device_call(self.run, {'id': 'probe-attempt', 'stage': 'probe'}, 'interface_execute',
+                                              arguments, client, lambda: call_tool('interface_execute', arguments))
         self.assertTrue(result['ok'], result)
         for reading in (result['observation'], result['before_observation']):
             self.assertEqual(reading, {'duty': 0.0, 'temperature_reference': 20.0, 'source': 'instrument',
                                        'units': {'duty': 'permille', 'temperature_reference': 'degC'}})
         self.assertFalse(self.peers[0].running); self.assertFalse(self.peers[0].paused_requests)
         self.assertEqual(self.peers[0].commands.count('start'), 1)
-        with self.assertRaisesRegex(ValueError, 'binding'):
-            emulated.worker_tool('tq9-v2', self.run_dir, 'interface_execute', {'binding': {'host': 'x', 'port': 1}}, {})
-        # Recovery replaces the emulator through the provider; the proof stays outside the run directory.
-        old = state['session']['session_id']
-        receipt = emulated.recover_emulator('tq9-v2', self.run_dir, {'recovery_evidence_ids': ['9'],
-                                                                     'recovery_dispatch_ids': ['8']}, lambda: False)
+        # Recovery replaces the emulator through the handle; the proof stays in the harness's journal.
+        old = descriptor['session_id']
+        receipt = client.replace(old, ['9'], ['8'])
         self.assertEqual((receipt['schema'], receipt['old_session_id']), ('emulator-recovery/2', old))
-        state = self.state()
-        self.assertEqual(state['session']['session_id'], receipt['new_session_id'])
-        self.assertEqual(state['session']['binding'], receipt['binding'])
-        self.assertEqual(state['previous_session']['session_id'], old)
-        self.assertEqual(state['emulator_recoveries'], [receipt])
-        proofs = [json.loads(line)['proof'] for line in (private/'journal.jsonl').read_text().splitlines()
-                  if json.loads(line)['kind'] == 'replaced']
+        self.assertEqual(self.device.status()['session_id'], receipt['new_session_id'])
+        self.assertEqual(server.descriptor['binding'], receipt['binding'])
+        proofs = [entry['proof'] for entry in self.journal(self.trial) if entry['kind'] == 'replaced']
         self.assertEqual([hashlib.sha256(json.dumps(p, sort_keys=True).encode()).hexdigest() for p in proofs],
                          [receipt['proof_sha256']])
         self.assertEqual((proofs[0]['unresolved_evidence_ids'], proofs[0]['unresolved_dispatch_ids']), (['9'], ['8']))
-        self.assertFalse(list(self.run_dir.rglob('journal.jsonl')))
-        self.assertFalse(keys(state) & {'proof', 'startup_observation', 'old_startup_observation', 'new_startup_observation'})
-        # A stale run record cannot steer the replacement.
-        state['session']['session_id'] = 'stale'; _write(self.run_dir/'benchmark/state.json', state)
-        with self.assertRaisesRegex(RuntimeError, 'inactive'):
-            emulated.recover_emulator('tq9-v2', self.run_dir, {}, lambda: False)
+        self.assertFalse(list(self.home.rglob('journal.jsonl')))
+        self.assertFalse(keys(receipt) & {'proof', 'startup_observation', 'old_startup_observation', 'new_startup_observation'})
+        # A stale session cannot steer the replacement.
+        with self.assertRaisesRegex(DeviceUnavailable, 'inactive'):
+            client.replace(old, [], [])
         self.assertEqual(len(self.peers), 2)
-        self.assertEqual(self.state()['session']['session_id'], receipt['new_session_id'])
-        self.assertEqual(emulated.cleanup('tq9-v2', self.run_dir), {'ok': True})
+        self.assertEqual(self.device.status()['session_id'], receipt['new_session_id'])
+        # The harness stops the device, confirmed; the configurator only releases it.
+        done = harness.finish(self.device, 'tq9-v2', None, [], None, {'status': 'completed'})
+        self.assertEqual(done['device_stop'], {'stopped': True, 'confirmed': True})
         self.assertTrue(self.peers[1].closed)
-        self.assertNotIn(str(self.run_dir.resolve()), emulated._OWNERS)
-        self.assertEqual(self.state()['previous_session']['session_id'], receipt['new_session_id'])
-        self.assertNotIn('session', self.state())
+        self.assertEqual(self.journal(self.trial)[-1]['kind'], 'stopped')
 
     def test_package_calls_run_in_the_window_and_carry_instrument_readings(self):
         from generative_driver.benchmark_support.cases import _write
+        from generative_driver.benchmark_support.emulated import package_call
         from generative_driver.configurator import digest
-        emulated = self.emulated
+        from generative_driver.device_client import open_device
         package = self.root/'package'; package.mkdir(); (package/'toy').write_text('toy')
         _write(self.run_dir/'benchmark/state.json', {'package_copies': {'reuse': str(package.resolve())},
             'package_sha256': digest(package), 'package_attempts': {'reuse': 'attempt'}})
-        device = emulated._session('tq9-v2', self.run_dir, {})
+        self.device.start()
+        client = open_device(self.serve().descriptor)
         running = []
         def invoker(*args):
             return lambda operation, parameters: running.append(self.peers[0].running) or {'ok': True, 'outputs': {}}
+        arguments = {'package_dir': str(package), 'operation': 'measure', 'parameters': {}, 'binding': client.status()['binding'],
+                     'allow_effects': []}
         with patch('generative_driver.benchmark_support.emulated_actions.package_invoker', side_effect=invoker):
-            result = emulated.package_execute('tq9-v2', self.run_dir, 'reuse', package, 'measure',
-                                              binding=device.binding)
-            with self.assertRaisesRegex(ValueError, 'binding'):
-                emulated.package_execute('tq9-v2', self.run_dir, 'reuse', package, 'measure', binding={'host': 'x'})
+            invoke = package_call('tq9-v2', self.run_dir, 'reuse', arguments)
+            result = self.controller._device_call(self.run, {'id': 'reuse-attempt', 'stage': 'reuse'},
+                                                  'benchmark_package_execute', arguments, client, invoke)
+            # Only the unchanged stage-assigned copy may run; anything else is refused before dispatch.
+            with self.assertRaisesRegex(ValueError, 'stage-assigned package'):
+                package_call('tq9-v2', self.run_dir, 'reuse', {**arguments, 'package_dir': str(self.root)})
         self.assertEqual(running, [True]); self.assertFalse(self.peers[0].running)
         self.assertEqual(result['observation']['source'], 'instrument')
         row = json.loads((self.run_dir/'benchmark/package-events.jsonl').read_text())
         self.assertEqual(row['observation'], result['observation'])
         self.assertFalse(keys(row) & MONITOR)
 
-    def test_a_failed_start_keeps_a_live_owner_and_the_run_record(self):
-        # The run records an owner before any process starts, so a crash mid-start leaves ownership to reconcile.
-        emulated = self.emulated
-        recorded = []
+    def test_a_failed_start_keeps_a_live_owner_and_the_harness_record(self):
+        # The harness holds the provider before anything starts, so a start that fails mid-way leaves a live owner.
+        from generative_driver.benchmark_support import harness
         def tweak(peer, session):
-            recorded.append(self.state().get('session'))
             session.observe = lambda: {'values': {}, 'reads': []}
             def stop():raise RuntimeError('stop unavailable')
             session.stop = stop
         self.tweak = tweak
         with self.assertRaisesRegex(RuntimeError, 'emulator cleanup unverified'):
-            emulated._session('tq9-v2', self.run_dir, {})
-        device = emulated._OWNERS[str(self.run_dir.resolve())]
-        self.assertEqual(recorded, [{'provider_id': device.provider_id, 'session_id': None}])
-        self.assertIsNone(device.session.process.poll())
-        self.assertEqual(self.state()['session']['session_id'], device.status()['session_id'])
+            self.device.start()
+        self.assertIsNone(self.device.session.process.poll())
+        held = self.device.status()['session_id']
+        self.assertTrue(held)
         with self.assertRaisesRegex(RuntimeError, 'stop'):
-            emulated.cleanup('tq9-v2', self.run_dir)
-        self.assertIs(emulated._OWNERS[str(self.run_dir.resolve())], device)
-        # Without the owner (a restarted configurator) the record refuses a second start.
-        emulated._OWNERS.pop(str(self.run_dir.resolve()))
-        for call in (lambda: emulated._session('tq9-v2', self.run_dir, {}), lambda: emulated.cleanup('tq9-v2', self.run_dir)):
-            with self.assertRaisesRegex(RuntimeError, 'ownership was lost'):
-                call()
+            self.device.stop()
+        done = harness.finish(self.device, 'tq9-v2', None, [], None)
+        self.assertEqual((done['status'], done['device']['session_id']), ('stop-unconfirmed', held))
+        # The owner keeps its session: no second start launches another emulator, and the configurator starts none.
+        self.assertEqual(self.device.start()['session_id'], held)
         self.assertEqual(len(self.peers), 1)
         self.peers[0].close()
-
 
 if __name__ == '__main__':
     unittest.main()

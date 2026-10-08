@@ -1,4 +1,5 @@
-"""Private encrypted evaluations and controller-accepted evidence assembly."""
+"""Private encrypted evaluations and controller-accepted evidence assembly: evaluator code, used by the bench harness
+and the evaluator, never by the configurator."""
 import hashlib
 import json
 from pathlib import Path
@@ -17,15 +18,28 @@ def _private(run_dir, options, value=None):
     return unlock(path, password, hashlib.sha256(path.read_bytes()).hexdigest())
 
 
-def _diagnose(case_id, run_dir, model_dir, capabilities, options):
-    from .emulated import _session, _truth
+def case_truth(case_id, run_dir, options):
+    """The case truth, unlocked with the evaluator password file in `options`: the bench harness takes the device recipe
+    from it, and the evaluator grades with it. The manifest is the run's pinned snapshot when `run_dir` holds one."""
+    from ..benchmark import case_root
+    from .emulated import _inputs
+    from .emulator import truth_for_case
+    _, manifest = _inputs(case_id, run_dir)
+    truth = truth_for_case(case_root(), manifest, options)
+    if case_id in ('sampled-sensor-v1', 'parameter-store-v1'):
+        from .calibration import hydrate_truth
+        return hydrate_truth(truth)
+    return truth
+
+
+def _diagnose(case_id, run_dir, model_dir, capabilities, options, *, session):
+    """A diagnostic phase on the evaluator's own emulator `session`; no stage of a run calls it."""
     from .instruments import family_for
     family = family_for(case_id)
     from .behavior import validate_records
     from .emulated_actions import execute_plan, model_invoker
-    session = _session(case_id, run_dir, options)
     path, state = _state(run_dir)
-    truth = _truth(case_id, run_dir, options)
+    truth = case_truth(case_id, run_dir, options)
     saved = read_snapshot(run_dir)
     pin = {**saved['case_pin'], 'revision': state.get('revision', 0)}
     artifact = hashlib.sha256((Path(model_dir)/'model.json').read_bytes()).hexdigest()
@@ -52,8 +66,8 @@ def _diagnose(case_id, run_dir, model_dir, capabilities, options):
     return grade, records, probes, observed
 
 
-def _final(case_id, run_dir, package, capabilities, options):
-    from .emulated import _session, _truth
+def _final(case_id, run_dir, package, capabilities, options, *, session):
+    """The frozen final phase on the evaluator's own emulator `session`, once per revision; no stage of a run calls it."""
     from .emulated_actions import execute_plan, canonical_package_invoker
     from .instruments import family_for
     family = family_for(case_id)
@@ -66,8 +80,7 @@ def _final(case_id, run_dir, package, capabilities, options):
     frozen = digest(package)
     if frozen != state['package_sha256']:
         raise ValueError('Frozen package changed before final grading')
-    session = _session(case_id, run_dir, options)
-    truth = _truth(case_id, run_dir, options)
+    truth = case_truth(case_id, run_dir, options)
     pin = {**read_snapshot(run_dir)['case_pin'], 'revision': state.get('revision', 0)}
     local = {**truth, 'artifact_sha256': frozen}
     contract = family.contract(pin, local, 'final')

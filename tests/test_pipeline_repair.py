@@ -72,7 +72,6 @@ class InterpretationBindingTests(unittest.TestCase):
         # Catches starting binary discovery over after losing the failed candidate, or repairing from a grade.
         from tq9_workflow_fixture import model, replies
         from generative_driver.configurator import digest
-        from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve(); source = root/'run/accepted'; source.mkdir(parents=True)
             (source/'model.json').write_text(json.dumps(model()))
@@ -80,9 +79,8 @@ class InterpretationBindingTests(unittest.TestCase):
             (source/'NOTES.md').write_text('Candidate inference; unresolved units need live evidence.')
             accepted = [{'stage': 'interpret', 'artifacts': [
                 {'path': str(p), 'sha256': digest(p)} for p in source.iterdir()]}]
-            with patch('generative_driver.benchmark_support.emulated._session',
-                       return_value=SimpleNamespace(binding={'host': '127.0.0.1', 'port': 1})):
-                prepare_stage('tq9-v2', 'probe', root/'run', root/'probe', accepted)
+            prepare_stage('tq9-v2', 'probe', root/'run', root/'probe', accepted,
+                          {'device': {'session_id': 'provided', 'binding': {'host': '127.0.0.1', 'port': 1}}})
             (root/'probe/capabilities.json').write_text('{"schema":"benchmark-capabilities/2","tasks":{}}')
             observe_stage('tq9-v2', 'probe', root/'run', root/'probe',
                 {'status': 'needs_revision', 'summary': 'Canonical tasks are missing', 'unresolved': ['temperature']}, accepted)
@@ -121,15 +119,13 @@ class InterpretationBindingTests(unittest.TestCase):
     def test_probe_supplies_executable_capability_validation_before_submission(self):
         from tq9_workflow_fixture import model, capabilities
         from generative_driver.configurator import digest
-        from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); source = root/'original'; source.mkdir()
             (source/'model.json').write_text(json.dumps(model()))
             handoff = [{'stage': 'interpret', 'artifacts': [
                 {'path': str(source/'model.json'), 'sha256': digest(source/'model.json')}]}]
-            with patch('generative_driver.benchmark_support.emulated._session',
-                       return_value=SimpleNamespace(binding={'host': '127.0.0.1', 'port': 1})):
-                prepared = prepare_stage('tq9-v2', 'probe', root/'run', root/'worker', handoff)
+            prepared = prepare_stage('tq9-v2', 'probe', root/'run', root/'worker', handoff,
+                                     {'device': {'session_id': 'provided', 'binding': {'host': '127.0.0.1', 'port': 1}}})
             ws = root/'worker'
             helper = ws/'validate_capabilities.py'
             self.assertTrue(helper.is_file(), 'Probe has no pure capability validator')
@@ -201,7 +197,10 @@ class IndependentProbeObservationTests(unittest.TestCase):
         # Catches probing bytes without exposing the independent observation channel.
         from tq9_workflow_fixture import Silicon, model
         from generative_driver.benchmark_support.device_provider import DeviceProvider
-        from generative_driver.benchmark_support.emulated import worker_tool
+        from generative_driver.benchmark_support.harness import DeviceServer
+        from generative_driver.configurator import Controller
+        from generative_driver.device_client import open_device
+        from generative_driver.toolkit import call_tool
         recipe = {'observations': {
             'compare': {'command': 'compare', 'width': 32, 'count': 1},
             'reload': {'command': 'reload', 'width': 32, 'count': 1},
@@ -219,10 +218,15 @@ class IndependentProbeObservationTests(unittest.TestCase):
             candidate['operations']['measure']['outputs']['temperature']['scale'] = 10
             model_dir = root/'model'; model_dir.mkdir()
             (model_dir/'model.json').write_text(json.dumps(candidate))
-            with patch('generative_driver.benchmark_support.emulated._session', return_value=device):
-                result = worker_tool('tq9-v2', root/'run', 'interface_execute', {
-                    'model_dir': str(model_dir), 'run_dir': str(root/'tools'), 'operation': 'measure',
-                    'binding': session.binding}, {})
+            # The configurator's live call on the device the harness serves: a reading before the call, the call inside
+            # the device's window, a reading after it.
+            server = DeviceServer(device, root/'endpoint'); self.addCleanup(server.close)
+            controller = Controller(root/'home'); self.addCleanup(controller.close)
+            arguments = {'model_dir': str(model_dir), 'run_dir': str(root/'tools'), 'operation': 'measure',
+                         'binding': session.binding}
+            result = controller._device_call({'id': 'run-fixture', 'spec': json.dumps({'_case_pin': {'case_id': 'tq9-v2'}})},
+                                             {'id': 'probe-attempt', 'stage': 'probe'}, 'interface_execute', arguments,
+                                             open_device(server.descriptor), lambda: call_tool('interface_execute', arguments))
             self.assertTrue(result['ok'], result)
             self.assertEqual(result['outputs']['temperature'], 200)
             self.assertIn('observation', result, 'Probe hides independently measured reference')
@@ -236,7 +240,7 @@ class IndependentProbeObservationTests(unittest.TestCase):
             self.assertFalse(peer.paused_requests)
             self.assertNotIn('command', json.dumps(result['observation']))
             self.assertNotIn('expected', json.dumps(result['observation']))
-            journal = root/'run/benchmark/live-observations-0.jsonl'
+            journal = root/'home/runs/run-fixture/benchmark/live-observations-0.jsonl'
             self.assertTrue(journal.is_file(), 'Live comparison is lost before the next repair')
             saved = json.loads(journal.read_text().splitlines()[0])
             self.assertEqual(saved['result']['outputs']['temperature'], 200)

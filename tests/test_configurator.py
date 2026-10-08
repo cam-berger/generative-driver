@@ -2180,17 +2180,18 @@ class FinalVerdictTests(unittest.TestCase):
     def test_a_sealing_or_cleanup_failure_after_the_verdict_keeps_the_verdict_and_the_completed_status(self):
         from unittest.mock import patch
         from generative_driver.configurator import Controller
-        for mode in ('cleanup', 'sealing', 'uncertain'):
+        for mode in ('cleanup', 'release', 'uncertain'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 controller = Controller(Path(directory) / 'home')
                 def fail_to_release(run_id, spec, run_dir):
-                    if mode == 'sealing':
-                        return [('evidence.sealing_failed', 'Evaluator evidence sealing failed: scripted', 'RuntimeError')]
+                    if mode == 'release':
+                        # The configurator seals nothing: the harness does. Releasing a provided device can still fail.
+                        return [('device.release_failed', 'DeviceUnavailable: scripted', None)]
                     if mode == 'uncertain':
                         with controller._db() as db:
                             db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run_id,))
-                    # After the verdict the configurator owns no device resource: until B5 only generic runs have a
-                    # verdict and own nothing, and B3 moves the emulator stop to the harness behind release().
+                    # After the verdict the configurator owns no device resource: generic runs own nothing, and the
+                    # bench harness, not the configurator, stops and seals a provided device.
                     raise RuntimeError('scripted release failure')
                 try:
                     with self.finishing(controller), patch.object(controller, '_release', side_effect=fail_to_release):
@@ -2198,10 +2199,10 @@ class FinalVerdictTests(unittest.TestCase):
                         result = wait_stopped(controller, run)
                     self.assertTrue(result['equivalence']['equivalent'], result)
                     self.assertEqual(len(final_verdicts(controller, run)), 1)
-                    kind = 'evidence.sealing_failed' if mode == 'sealing' else 'cleanup.failed'
+                    kind = 'device.release_failed' if mode == 'release' else 'cleanup.failed'
                     failed = [e['data'] for e in controller.call('events', run)['events'] if e['kind'] == kind]
                     self.assertEqual(len(failed), 1)
-                    self.assertIn('RuntimeError' if mode == 'sealing' else 'scripted release failure', failed[0]['reason'])
+                    self.assertIn('DeviceUnavailable' if mode == 'release' else 'scripted release failure', failed[0]['reason'])
                     with controller._db() as db:
                         leased = db.execute('SELECT COUNT(*) FROM bindings WHERE run_id=?', (run['run_id'],)).fetchone()[0]
                     if mode == 'uncertain':

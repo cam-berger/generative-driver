@@ -174,7 +174,9 @@ class TQ9V2Tests(unittest.TestCase):
                      ([{'stage': 'interpret', 'artifacts': []}], 'no interpreted model available'),
                      (handoff('unfinished', '{unfinished'), 'cannot be wired to the emulator'),
                      (handoff('unwired', json.dumps(unwired)), 'cannot be wired to the emulator')]
-            with patch('generative_driver.benchmark_support.emulated._session', side_effect=AssertionError('emulator started')):
+            # The stage adapter starts no device at all; neither a provider nor a native session may start here.
+            with patch('generative_driver.benchmark_support.device_provider.DeviceProvider.start', side_effect=AssertionError('emulator started')), \
+                    patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=AssertionError('emulator started')):
                 for accepted, reason in cases:
                     with self.subTest(reason=reason, accepted=accepted):
                         prepared = prepare_stage('tq9-v2', 'probe', root/'run', root/'worker', accepted)
@@ -199,6 +201,8 @@ class TQ9V2Tests(unittest.TestCase):
     def test_cleanup_refuses_lost_native_ownership(self):
         # Catches PID-only termination or silently treating an attached process as owned.
         from generative_driver.benchmark import cleanup
+        from generative_driver.benchmark_support.harness import finish
+        from test_emulator_recovery import Owner, provider
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root/'benchmark').mkdir()
@@ -206,6 +210,17 @@ class TQ9V2Tests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'ownership'):
                 cleanup('tq9-v2', root)
             self.assertIn('session', json.loads((root/'benchmark/state.json').read_text()))
+            # The harness owns the device: an attached session it holds no process handle for is never reported
+            # stopped as owned, and the trial names it for manual reconciliation.
+            def attached(port):
+                owner = Owner(port); owner.process = None; owner.stop = lambda: None
+                return owner
+            device = provider(root, [attached(1)]); device.start()
+            self.assertEqual(device.stop(), {'stopped': True, 'confirmed': False})
+            (root/'second').mkdir()
+            device = provider(root/'second', [attached(2)]); device.start()
+            done = finish(device, 'tq9-v2', None, [], None, {'status': 'completed'})
+            self.assertEqual((done['status'], done['device_stop']['confirmed']), ('stop-unconfirmed', False))
 
     def test_final_plan_requires_permission_refusal_without_effect(self):
         # Catches omitting denied-effect checks or accepting a refusal after I/O.
@@ -311,7 +326,7 @@ class TQ9V2Tests(unittest.TestCase):
         self._scripted_controller_modes(('recover-budget','recover-repeat'))
 
     def test_emulator_recovery_safety_boundaries(self):
-        self._scripted_controller_modes(('recover-lost','recover-stop','recover-reset','recover-cancel','recover-commit-cancel','recover-restart','recover-physical','recover-commit-crash','recover-observe-stop','recover-observe-raise'))
+        self._scripted_controller_modes(('recover-lost','recover-stop','recover-reset','recover-cancel','recover-commit-cancel','recover-restart','recover-physical','recover-commit-crash','recover-observe-stop','recover-observe-raise','recover-receipt-forged'))
 
     def test_recovery_requires_outcomes_for_every_uncertain_dispatch(self):
         self._scripted_controller_modes(('recover-dispatch-exception','recover-mixed-unknown'))
@@ -575,6 +590,8 @@ class TQ9V2Tests(unittest.TestCase):
                     # The configurator's recovery goes through its device handle; the harness's provider replaces.
                     receipt=original_replace(client,*args,**kwargs)
                     if mode=='recover-commit-cancel':controller.call('cancel',run)
+                    # A receipt that does not name the run's session is never committed, whatever the provider did.
+                    if mode=='recover-receipt-forged':receipt={**receipt,'old_session_id':'another-session'}
                     return receipt
                 original_event=controller._event
                 def event(run_id,kind,payload,db=None):
@@ -700,7 +717,7 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertTrue(result['uncertain_effect'])
                             self.assertEqual(result['emulator_recovery_count'],0)
                             self.assertEqual(result['progress']['repairs'],0)
-                            self.assertEqual(len(peers),2 if mode in ('recover-reset','recover-cancel','recover-commit-cancel','recover-commit-crash','recover-observe-stop','recover-observe-raise') else 1)
+                            self.assertEqual(len(peers),2 if mode in ('recover-reset','recover-cancel','recover-commit-cancel','recover-commit-crash','recover-observe-stop','recover-observe-raise','recover-receipt-forged') else 1)
                             if mode in ('recover-cancel','recover-commit-cancel'):self.assertEqual(status['status'],'cancelled')
                             # An effect left uncertain after the check is a safety stop, and an observed record that
                             # changed stays an integrity stop. The configurator stops no emulator, so no cleanup fails.
@@ -744,6 +761,19 @@ class TQ9V2Tests(unittest.TestCase):
                                 reads=[e for e in events if e['kind']=='tool.finished' and e['data'].get('result',{}).get('operation')=='measure' and e['data'].get('result',{}).get('error',{}).get('fault')=='model']
                                 self.assertTrue(reads)
                             if mode=='recover-reset':self.assertTrue(peers[1].closed)
+                            if mode in ('recover-restart','recover-receipt-forged'):
+                                # The provider could not be reached, or its receipt names another session: the
+                                # recovery is recorded as failed, the write stays pending, and it ran exactly once.
+                                failed=[e['data'] for e in events if e['kind']=='emulator.recovery_failed']
+                                self.assertEqual(len(failed),1)
+                                self.assertIn('not a verified replacement' if mode=='recover-receipt-forged' else 'Device provider unavailable',
+                                              failed[0]['reason'])
+                                self.assertIn('Emulator recovery unverified',status['reason'])
+                                self.assertFalse([e for e in events if e['kind'] in ('emulator.recovered','run.revision')])
+                                self.assertEqual(peers[0].device_commands.count('D'),1)
+                                with controller._db() as db:
+                                    pending=db.execute('SELECT COUNT(*) FROM pending_effects WHERE run_id=?',(run['run_id'],)).fetchone()[0]
+                                self.assertEqual(pending,1)
                             continue
                         if mode in ('monitor-missing','snapshot-next','probe-input-changed','device-lost'):
                             self.assertNotEqual(status['status'],'completed')
@@ -1279,9 +1309,10 @@ class TQ9V2Tests(unittest.TestCase):
             root=Path(temp);password=root/'password';password.write_text('fixture')
             options={'evaluator_password_file':str(password)}
             _private(root,options,{'evaluations':[{'phase':'final','revision':0}]})
-            with patch('generative_driver.benchmark_support.emulated._session',side_effect=AssertionError('device accessed')):
-                with self.assertRaisesRegex(ValueError,'cannot be replayed'):
-                    _final('tq9-v2',root,root/'absent',{},options)
+            class Untouched:
+                def __getattr__(self, name):raise AssertionError('device accessed')
+            with self.assertRaisesRegex(ValueError,'cannot be replayed'):
+                _final('tq9-v2',root,root/'absent',{},options,session=Untouched())
 
     def test_fresh_reuse_acknowledgements_do_not_substitute_for_a_reading(self):
         # Public adapter seam: actuator ACK outputs alone do not finish the mission, which is a note, never a stop.
@@ -1542,8 +1573,6 @@ class ObservationTests(unittest.TestCase):
         self.assertIs(tq9_v2.observations(raw,operator,{})['refused_without_io'],True)
 
     def test_worker_facing_wording_names_device_evidence_and_promises_no_evaluator(self):
-        from unittest.mock import patch
-        from types import SimpleNamespace
         from generative_driver.agents import STAGE_BOUNDARY
         from generative_driver.configurator import BENCHMARK_PACKAGE_EXECUTE
         from generative_driver._toolchain.interpret import _prompt
@@ -1558,9 +1587,9 @@ class ObservationTests(unittest.TestCase):
                       {'stage':'emit','artifacts':[{'path':str(package),'sha256':digest(package)}]}]
             from generative_driver.benchmark_support.cases import _write
             _write(root/'run/benchmark/state.json',{'package_sha256':digest(package)})
-            with patch('generative_driver.benchmark_support.emulated._session',return_value=SimpleNamespace(binding={'host':'127.0.0.1','port':1})):
-                probe=prepare_stage('tq9-v2','probe',root/'run',root/'probe',accepted)
-                reuse=prepare_stage('tq9-v2','reuse',root/'run',root/'reuse',accepted)
+            device={'device':{'session_id':'provided','binding':{'host':'127.0.0.1','port':1}}}
+            probe=prepare_stage('tq9-v2','probe',root/'run',root/'probe',accepted,device)
+            reuse=prepare_stage('tq9-v2','reuse',root/'run',root/'reuse',accepted,device)
             context=root/'repair';context.mkdir()
             repair_sources(root/'run',context,[{'source':'probe_run','code':'output'}])
             policy=json.loads((context/'REPAIR_CONTEXT.json').read_text())['evidence_policy']
@@ -1580,8 +1609,6 @@ class ObservationTests(unittest.TestCase):
         from generative_driver.benchmark_support import emulated
         from generative_driver.benchmark_support.cases import _write
         from generative_driver.configurator import digest
-        from types import SimpleNamespace
-        from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary).resolve()
             def handoff(stage,revision,files):
@@ -1605,6 +1632,6 @@ class ObservationTests(unittest.TestCase):
             package=root/'emitted/package';package.mkdir(parents=True);(package/'manifest.json').write_text('{}')
             emit={'stage':'emit','revision':1,'artifacts':[{'path':str(package),'sha256':digest(package)}]}
             _write(root/'run/benchmark/state.json',{'package_sha256':digest(package)})
-            with patch.object(emulated,'_session',return_value=SimpleNamespace(binding={'host':'127.0.0.1','port':1})):
-                emulated.prepare_stage('tq9-v2','reuse',root/'run',root/'reuse',[first,second,probed,reprobed,emit])
+            emulated.prepare_stage('tq9-v2','reuse',root/'run',root/'reuse',[first,second,probed,reprobed,emit],
+                                   {'device':{'session_id':'provided','binding':{'host':'127.0.0.1','port':1}}})
             self.assertIsNone(json.loads((root/'run/benchmark/state.json').read_text())['capabilities_path'])

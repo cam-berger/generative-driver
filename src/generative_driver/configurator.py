@@ -1,5 +1,6 @@
 """Durable configurator. Worker statements, accepted evidence and verdicts stay distinct."""
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -213,6 +214,11 @@ def binding_identity(binding):
     if type(binding.get('vendor_id')) is int and type(binding.get('product_id')) is int:
         return ['usb',binding['vendor_id'],binding['product_id']]
     raise ValueError('Unsupported binding shape; use host/port, serial port, FTDI url, or USB vendor_id/product_id')
+
+
+def _lease(binding):
+    """The key of the lease a run holds on a device binding."""
+    return hashlib.sha256(_json(binding_identity(binding)).encode()).hexdigest()
 
 
 def _is_serial_binding(binding):
@@ -1233,7 +1239,10 @@ class Controller:
                     db.execute('DELETE FROM pending_effects WHERE run_id=?',(run_id,))
                 self._event(run_id,'operator.response',{'message':message,'observation':observation,'effect_resolution':resolution},db)
             return self.call('status', {'run_id': run_id})
+        if method == 'attach_device':
+            return self._attach_device(run_id, params)
         if method == 'resume':
+            self._resume_device(run_id)
             with self._lock:
                 row=self._row(run_id)
                 if self._closing:
@@ -1296,6 +1305,9 @@ class Controller:
                 with self._db() as db:
                     if not finalizing:
                         self._claim_binding(spec.get('binding'),run_id,db)
+                        # A provided device is leased again under the binding the run's durable record holds now.
+                        self._claim_binding((progress.get('device') or {}).get('binding') if spec.get('device') else None,
+                                            run_id, db)
                     if spec!=original_spec:
                         db.execute('UPDATE runs SET spec=? WHERE id=?',(_json(spec),run_id))
                     if budget_change:
@@ -1765,7 +1777,7 @@ class Controller:
                         self._verify_inputs(input_hashes)
                         with _integrity_checked():
                             if self._row(run_id)['uncertain']:
-                                from .benchmark_support.emulated_recovery import reconcile
+                                from .device_recovery import reconcile
                                 checked = reconcile(self, run_id, current_spec, assignment, run_dir, progress)
                                 recovery = checked.get('recovery')
                                 if recovery:
@@ -1775,12 +1787,14 @@ class Controller:
                                                'recovery': recovery}
                             else:
                                 checked = self._check(current_spec, stage, run_dir, workspace, report, accepted, assignment)
-                        # Legacy benchmark adapters keep their frozen final path; emulated cases are graded after the run.
-                        terminal_final = (not checked.get('ok', True) and checked.get('final_evaluation') is True
+                        # Legacy benchmark adapters keep their frozen final path until they are graded after the run.
+                        # Emulated cases are observed without truth: nothing they return is a grade or a final.
+                        graded = not _observed_case(spec)
+                        terminal_final = (graded and not checked.get('ok', True) and checked.get('final_evaluation') is True
                                           and checked.get('fault') == 'model' and not checked.get('route'))
-                        if checked.get('evaluator') is not None or terminal_final:
+                        if graded and checked.get('evaluator') is not None or terminal_final:
                             with self._db() as db:
-                                if checked.get('evaluator') is not None:
+                                if graded and checked.get('evaluator') is not None:
                                     db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)', (attempt, run_id, stage,
                                         _json({'stage':stage, 'assignment_id':attempt, **checked['evaluator']}), time.time()))
                                 if terminal_final:
@@ -1927,8 +1941,9 @@ class Controller:
 
     def _release(self, run_id, spec, run_dir):
         """Give up what the run holds. A provided device is released, never stopped or sealed here: the bench harness
-        owns the device and the evidence. A legacy benchmark run's adapter seals and stops what it owns. Returns the
-        failures in the order they happened as (event kind, reason, event detail); a generic run owns nothing."""
+        owns the device and the evidence. A legacy benchmark run's adapter stops what it owns. Returns the failures in
+        the order they happened as (event kind, reason, event detail). A generic run owns nothing, and neither does an
+        emulated run without a provided device: the configurator never holds an emulator itself."""
         failures = []
         if not spec.get('case'):
             return failures
@@ -1947,40 +1962,29 @@ class Controller:
             except Exception as error:
                 failures.append(('device.release_failed', type(error).__name__ + ': ' + str(error), None))
             return failures
+        if _observed_case(spec):
+            return failures
         try:
             from .benchmark import cleanup
             case=spec['case']
             options=spec.get('case_options',{})
             if isinstance(case,dict): options={**case.get('options',{}),**options}
-            if spec.get('_case_pin', {}).get('manifest', {}).get('schema') == 'benchmark-case/2':
-                from .benchmark_support.emulated_evidence import finalize
-                try:
-                    finalize(case['id'] if isinstance(case,dict) else case, run_dir,
-                             self.call('result', {'run_id':run_id})['accepted_handoffs'], options)
-                except Exception as error:
-                    failures.append(('evidence.sealing_failed', 'Evaluator evidence sealing failed: '+str(error), type(error).__name__))
             cleanup(case['id'] if isinstance(case,dict) else case,run_dir,options)
         except Exception as exc:
             failures.append(('cleanup.failed', type(exc).__name__+': '+str(exc), None))
         return failures
 
     def _settle_release(self, run_id, failures):
-        """Before a final verdict a release failure stops the run: a sealing failure fails it for the host, and a
-        failed stop retains the lease as uncertain. After the verdict each failure is an event; the verdict and the
-        completed status stand unless an effect is uncertain, which blocks for safety. This relies on the configurator
-        owning no device resource once a verdict exists: generic runs own nothing, and benchmark runs record a verdict
-        only from B5, after B3 has moved the emulator stop to the harness behind release()."""
+        """Before a final verdict a failed stop of a legacy adapter's device retains the lease as uncertain. After the
+        verdict each failure is an event; the verdict and the completed status stand unless an effect is uncertain,
+        which blocks for safety. This relies on the configurator owning no device resource once a verdict exists:
+        generic runs own nothing, and the bench harness, not the configurator, stops and seals a provided device."""
         with self._db() as db:
             final = _final_verdict(db, run_id)
         for kind, reason, detail in failures:
             if kind == 'device.release_failed':
                 # The harness still owns the device and stops it after the run; the run's status stands.
                 self._event(run_id, kind, {'reason': reason})
-                continue
-            if kind == 'evidence.sealing_failed':
-                if final is None:
-                    self._state(run_id, 'failed', reason, outcome_category='host')
-                self._event(run_id, kind, {'reason': detail})
                 continue
             # Before the verdict, a failed stop may leave an external resource live: retain
             # its lease until explicit reconciliation, even after this worker exits.
@@ -2021,7 +2025,7 @@ class Controller:
     def _claim_binding(self, binding, run_id, db):
         if not binding:
             return
-        identity = hashlib.sha256(_json(binding_identity(binding)).encode()).hexdigest()
+        identity = _lease(binding)
         prior = db.execute('SELECT run_id FROM bindings WHERE identity=?',(identity,)).fetchone()
         if prior and prior['run_id'] != run_id:
             owner = db.execute('SELECT status,uncertain FROM runs WHERE id=?',(prior['run_id'],)).fetchone()
@@ -2083,10 +2087,6 @@ class Controller:
             options = case_options(spec)
             if not _observed_case(spec):
                 return prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
-            if stage == 'probe' and not spec.get('device'):
-                # A run started before the bench harness held devices starts its in-process emulator here, as an
-                # evaluator operation that holds the run uncertain until it returns.
-                options['start_device'] = lambda start: self._evaluator_operation(run_dir.name, stage, None, options, start)
             prepared = prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
             if spec.get('device') and prepared.get('binding') and not prepared.get('skip'):
                 # The stage runs on the provided device as the durable record holds it, and only while it answers.
@@ -2204,6 +2204,76 @@ class Controller:
         if status.get('healthy') is not True:
             raise DeviceUnavailable('Device provider unavailable: the provided device is not healthy')
 
+    def _resume_device(self, run_id):
+        """A stopped emulated run resumes a stage only on its provided device as the run recorded it: the device must
+        answer, healthy, with the recorded session and binding. A device the harness stopped, replaced or withdrew
+        stops the run for the operator, who has the harness attach a verified one (`attach_device`); a run started
+        before the harness provided devices has none. Only the device's status is asked, outside the controller lock;
+        everything else about the resume is checked under it afterwards."""
+        from .device_client import DeviceUnavailable
+        row = self._row(run_id)
+        spec = json.loads(row['spec'])
+        if (not _observed_case(spec) or row['status'] not in ('blocked', 'failed', 'cancelled') or row['uncertain']
+                or run_id in self._workers or run_id in self._inflight):
+            return
+        try:
+            progress = self._workflow_progress(run_id)
+        except ValueError:
+            return
+        if progress['next_stage'] not in STAGES:
+            return
+        if not spec.get('device'):
+            raise ValueError('This emulated run started before the bench harness provided devices; start a new trial')
+        try:
+            self._device_ready({**spec, '_device': progress.get('device')})
+        except DeviceUnavailable as error:
+            reason = str(error) if str(error).endswith('attach a verified device') else str(error) + '; attach a verified device'
+            self._state(run_id, 'blocked', reason, outcome_category='operator')
+            raise ValueError(reason) from None
+
+    def _attach_device(self, run_id, params):
+        """The bench harness attaches a device it provides anew to a stopped run of its trial, after the device the run
+        recorded was stopped or replaced outside the run. Only the run's harness may (the sha256 of its evaluation
+        token), only while the run is stopped with nothing uncertain, and only a device from the pinned image that
+        answers, healthy, with the session and binding its descriptor names. The run keeps its recovery receipts; its
+        resume leases the new binding. Nothing reaches the device but its status."""
+        from .device_client import descriptor_errors, open_device
+        spec = json.loads(self._row(run_id)['spec'])
+        if not spec.get('device') or not spec.get('evaluation_token_sha256'):
+            raise ValueError('Only a run started on a device the bench harness provides can attach one')
+        token, device = params.get('token'), params.get('device')
+        if not isinstance(token, str) or not hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(),
+                                                                 spec['evaluation_token_sha256']):
+            raise ValueError('attach_device requires the run\'s evaluation token')
+        errors = descriptor_errors(device)
+        if errors:
+            raise ValueError('Invalid provided device descriptor: ' + '; '.join(errors))
+        binding_identity(device['binding'])
+        if device['image_sha256'] != spec['_case_pin'].get('image_hashes', {}).get('firmware.bin'):
+            raise IntegrityError('Provided device image differs from the pinned firmware image')
+        status = open_device(device).status()
+        if (not isinstance(status, dict) or status.get('healthy') is not True or status.get('session_id') != device['session_id']
+                or status.get('binding') != device['binding']):
+            raise ValueError('The provided device does not answer, healthy, with the session and binding its descriptor names')
+        with self._lock:
+            row = self._row(run_id)
+            if row['status'] not in ('blocked', 'failed', 'cancelled') or run_id in self._workers or run_id in self._inflight:
+                raise ValueError('attach_device only while the run is stopped')
+            if row['uncertain']:
+                raise ValueError('Outstanding effect is uncertain; operator must respond with confirmed_safe after reconciliation')
+            with self._db() as db:
+                progress = self._workflow_progress(run_id, db)
+                held = progress.get('device') or {}
+                progress['device'] = {'session_id': device['session_id'], 'binding': dict(device['binding']),
+                                      'receipts': list(held.get('receipts', []))}
+                saved = {**json.loads(row['spec']), 'device': device}
+                db.execute('UPDATE runs SET spec=? WHERE id=?', (_json(saved), run_id))
+                db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)', (run_id, _json(progress)))
+                self._event(run_id, 'device.attached', {'session_id': device['session_id'], 'binding': device['binding'],
+                    'provider_id': device.get('provider_id'),
+                    'previous': {'session_id': held.get('session_id'), 'binding': held.get('binding')}}, db)
+        return self.call('status', {'run_id': run_id})
+
     def _device_lost(self, run_id, assignment):
         """A stop for the operator when the provided device failed this assignment's live calls: before a call (it was
         refused, nothing was dispatched) or after one (its result stands)."""
@@ -2247,34 +2317,6 @@ class Controller:
         record_call(spec['_case_pin']['case_id'], self.home / 'runs' / run['id'], assignment['stage'], name, arguments,
                     result, before, after, {'assignment_id': assignment['id']})
         return {**result, 'before_observation': before, **({'observation': after} if after else {})}
-
-    def _evaluator_operation(self, run_id, stage, assignment_id, options, invoke):
-        """One controller owns evaluator effects, uncertainty and actor-labelled evidence. `invoke` returns a result
-        dict, or the device it started (the emulator start at v2 probe preparation, the only caller until B4)."""
-        with self._lock:
-            operation_lock = self._operations.setdefault(run_id, threading.RLock())
-        with operation_lock, self._active_operation(run_id):
-            with self._db() as db:
-                row = db.execute('SELECT cancelled,uncertain FROM runs WHERE id=?',(run_id,)).fetchone()
-                if self._closing or row['cancelled'] or row['uncertain']:
-                    raise ValueError('Evaluator operation requires active ownership and reconciled effects')
-                db.execute('UPDATE runs SET uncertain=1 WHERE id=?',(run_id,))
-                evidence_id = self._event(run_id, 'tool.started', {'actor':'evaluator','stage':stage,
-                    'assignment_id':assignment_id,'name':'benchmark_evaluate','effectful':True}, db)
-                db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(evidence_id,run_id,assignment_id,'evaluator'))
-            options['evaluator_evidence_ids'] = [str(evidence_id)]
-            result = invoke()
-            outcome = result if isinstance(result, dict) else {}
-            with self._db() as db:
-                cancelled = db.execute('SELECT cancelled FROM runs WHERE id=?',(run_id,)).fetchone()['cancelled']
-                acknowledged = outcome.get('fault') != 'host'
-                if not cancelled and acknowledged:
-                    db.execute('DELETE FROM pending_effects WHERE dispatch_id=?',(evidence_id,))
-                    db.execute('UPDATE runs SET uncertain=EXISTS(SELECT 1 FROM pending_effects WHERE run_id=?) WHERE id=?',(run_id,run_id))
-                self._event(run_id, 'tool.finished', {'actor':'evaluator','stage':stage,'assignment_id':assignment_id,
-                    'name':'benchmark_evaluate','ok':bool(outcome.get('ok', True)), 'dispatch_id':str(evidence_id),
-                    'effectful':True,'effects_reconciled':bool(not cancelled and acknowledged), 'evaluation_event_id':str(evidence_id)}, db)
-            return result
 
     def _check(self, spec, stage, run_dir, workspace, report, accepted, assignment):
         if spec.get('case'):
@@ -2534,7 +2576,9 @@ class Controller:
     def _accept(self, run_id, assignment, checked, run_dir, workspace, progress, notes=None, *, revise=None, recovery=None):
         """Accept what the stage observed, even nothing, with hashed notes. A revise (its reason) commits the
         new revision, the route to interpret and the run.revision event in the same transaction. A verified emulator
-        `recovery` commits there too: the new binding is claimed and the outstanding effect it replaced is cleared."""
+        `recovery` of the provided device commits there too: the run's device becomes the replacement (its session,
+        binding and receipt), the lease moves from the stopped emulator's binding to the replacement's, and the
+        outstanding effect it replaced is cleared."""
         accepted_dir = run_dir / 'accepted' / str(assignment.get('revision',0)) / assignment['stage'] / assignment['id']
         artifacts = []
         for index, raw in enumerate(checked.get('artifacts', [])):
@@ -2563,7 +2607,9 @@ class Controller:
                 raise IntegrityError('Notes changed while recording accepted evidence')
             handoff['notes'] = {'path': str(path), 'sha256': recorded, 'inline': notes}
         saved = progress
-        if recovery and progress.get('device'):
+        if recovery:
+            if not progress.get('device'):
+                raise SafetyError('An emulator recovery commits only on a device the bench harness provides')
             # The replacement is the run's device from this commit on: its session, its binding and the receipt.
             receipt = recovery['receipt']
             saved = {**progress, 'device': {'session_id': receipt['new_session_id'], 'binding': receipt['binding'],
@@ -2579,6 +2625,8 @@ class Controller:
             if recovery:
                 if self._closing:
                     raise RuntimeError('Recovery cancelled before durable reconciliation')
+                if progress['device'].get('binding'):
+                    db.execute('DELETE FROM bindings WHERE identity=? AND run_id=?', (_lease(progress['device']['binding']), run_id))
                 self._claim_binding(recovery['receipt']['binding'], run_id, db)
                 db.execute('DELETE FROM pending_effects WHERE run_id=?', (run_id,))
                 db.execute('UPDATE runs SET uncertain=0 WHERE id=?', (run_id,))
@@ -2798,6 +2846,9 @@ class Controller:
             _refuse_invalid_model(arguments['model_dir'])
         spec = json.loads(run['spec'])
         device = invoke = None
+        if connected and _observed_case(spec) and not spec.get('device'):
+            # The configurator holds no emulator: an emulated case runs only on the device the bench harness provides.
+            raise ValueError('An emulated case runs only on the device the bench harness provides')
         if connected and spec.get('device'):
             # A device the bench harness provides. Everything refusable is checked before the dispatch is marked: the
             # binding is the one the run recorded, and a package call runs only the unchanged stage-assigned copy.
@@ -2844,13 +2895,7 @@ class Controller:
             result = package_execute(case['id'] if isinstance(case,dict) else case,
                                      stage=assignment['stage'],options=options,**arguments)
         else:
-            if (connected and name in ('interface_execute','probe_run')
-                    and spec.get('_case_pin', {}).get('manifest', {}).get('schema') == 'benchmark-case/2'):
-                from .benchmark_support.emulated import worker_tool
-                result = worker_tool(spec['_case_pin']['case_id'], self.home/'runs'/run['id'],
-                                     name, arguments, case_options(spec))
-            else:
-                result = call_tool(name, arguments)
+            result = call_tool(name, arguments)
         observed_artifacts = {}
         for key in ('artifact','provenance','pages','pages_dir','manifest','package_dir','probe','model_dir','transcript'):
             raw = result.get(key)

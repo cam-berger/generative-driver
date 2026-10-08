@@ -30,8 +30,10 @@ STAGE_INPUTS = {'probe': (('interpret', 'interpreted model'),),
 STAGE_TOOLS = {
     'acquire': ['acquire_serial_listen','acquire_firmware_artifact','acquire_datasheet','acquire_protocol_spec','acquire_classify'],
     'interpret': ['firmware_prepare','firmware_collect','firmware_validate','model_validate','model_provenance_audit','ghidra_run','image_map_check'],
-    'probe': ['model_validate','model_qualify','probe_run','probe_diff','interface_describe','interface_execute'],
-    'ground': ['probe_run','interface_execute','probe_diff','model_validate','probe_observe'],
+    # Probe and ground workers get no model_validate: the register validator writes beside the model it checks, which
+    # would alter an assigned input. The configurator validates each assigned model on its own copy and notes it.
+    'probe': ['model_qualify','probe_run','probe_diff','interface_describe','interface_execute'],
+    'ground': ['probe_run','interface_execute','probe_diff','probe_observe'],
     'emit': ['emit_package','emit_check'],
     'reuse': ['interface_describe','interface_execute','emit_check','emit_test_live'],
 }
@@ -175,6 +177,19 @@ def operation_effects(name, arguments):
     return {operations[item].get('effect','actuate') for item in names}
 
 
+def _refuse_invalid_model(model_dir):
+    """Refuse an interface model that fails validation, which the runtime refuses before it opens the device. The
+    gateway calls this before it marks an effectful dispatch uncertain, so such a refusal leaves no effect to
+    reconcile. A register model has no such runtime check: its probe runs it on the bus."""
+    from interface_runtime.engine import SCHEMAS, validate_model
+    model = json.loads((Path(model_dir) / 'model.json').read_text(encoding='utf-8'))
+    if isinstance(model, dict) and model.get('schema') in SCHEMAS:
+        checked = validate_model(model)
+        if not checked['ok']:
+            raise ValueError('The model fails validation, so the runtime would refuse it before opening the device; '
+                             'nothing was dispatched: ' + str(checked['defects']))
+
+
 class IntegrityError(ValueError):
     """A recorded or observed hash, sealed input or handoff no longer matches: the run stops for integrity."""
 
@@ -292,8 +307,9 @@ def _probe_records(events):
 
     For each record path only the last probe_run that wrote it counts, against the hash the configurator recorded
     when that run returned: a register probe always writes probe.json, so a later run replaces the earlier record.
-    That record is kept when the run answered on the owned connection, whatever model it ran; each record names its
-    model. Returns ({path: (sha256, event)}, dispatch ids of the runs whose record a later run replaced)."""
+    That record is kept when the run answered on the owned connection, whatever model it ran; the handoff's notes
+    bind each record to the digest of the model that wrote it (`_record_writers`). Returns ({path: (sha256, event)},
+    dispatch ids of the runs whose record a later run replaced)."""
     last, superseded = {}, []
     for event in events:
         probe = _result_of(event).get('probe')
@@ -309,22 +325,40 @@ def _probe_records(events):
     return {path: kept for path, kept in last.items() if _answered(kept[1])}, superseded
 
 
-def _device_diff(events, assignment, contracts=None):
+def _record_writers(accepted):
+    """{record sha256: digests of the models whose runs wrote it}, from the `records` the configurator bound in the
+    notes of accepted handoffs. A handoff without them binds nothing."""
+    writers = {}
+    for handoff in accepted:
+        notes = (handoff.get('notes') or {}).get('inline')
+        configurator = notes.get('configurator') if isinstance(notes, dict) else None
+        for record in (configurator.get('records') if isinstance(configurator, dict) else None) or []:
+            if isinstance(record, dict) and isinstance(record.get('sha256'), str):
+                writers.setdefault(record['sha256'], set()).add(record.get('model_sha256'))
+    return writers
+
+
+def _device_diff(events, assignment, contracts=None, writers=None):
     """What the assigned model got wrong, from the configurator's own record of one assignment: its validation of the
     assigned model and the tool results it observed on the device connection it supplied.
 
     - a `model_contract` entry: the configurator's own validation of an assigned model (`contracts` maps the input's
-      path to its model_validate result) found defects. The runtime refuses such a model before any transport opens,
-      so the entry says the model breaks the runtime contract, never that the device did anything.
+      path to its model_validate result) found defects. For an interface model the runtime refuses such a model before
+      any transport opens; a register model's validation also covers what its probe does not check (a safety entry,
+      provenance, the conversion). Either way the entry is the configurator's finding about the model, never that the
+      device did anything.
     - a probe_run or interface_execute failure of the assigned model that the runtime attributes to the model after
       the transport opened;
     - probe_diff defects over a probe record that such a run of the assigned model wrote, or that an earlier stage
-      handed on.
-    Replays, records and captures the worker supplied, other models, and operator and host faults are not the model
-    contradicted. Records are named by content, and only records that are handed on: an input of this assignment, or a
-    record this stage hands on (a record a later run replaced is not named). Never a worker claim, never truth."""
+      handed on when the assigned model wrote it (`writers` maps a record's digest to the digests of the models that
+      wrote it, as the earlier stage's notes bound them).
+    Replays, records and captures the worker supplied, other models and their records, and operator and host faults
+    are not the model contradicted. Records are named by content, and only records that are handed on: an input of
+    this assignment, or a record this stage hands on (a record a later run replaced is not named). Never a worker
+    claim, never truth."""
     from interface_runtime.faults import classify_failure
     paths = assignment.get('inputs') or {}
+    inputs = set(paths.values())
     assigned = lambda event: _ran_assigned_model(event, assignment)
     def live(event):
         return event.get('connected') is True and _result_of(event).get('evidence_kind', 'live') == 'live' and assigned(event)
@@ -338,8 +372,10 @@ def _device_diff(events, assignment, contracts=None):
     # Records the diff may name: those handed on to this assignment and those this stage hands on.
     named = {sha: Path(path).name for path, sha in paths.items()}
     named.update({sha: Path(path).name for path, (sha, _) in kept.items()})
-    # Records a probe_diff may compare: those handed on, and those the assigned model's runs wrote as the device answered.
-    compared = set(paths.values()) | {record_of(event) for event in events if live(event) and _answered(event)}
+    # Records a probe_diff may compare: those handed on that the assigned model wrote, and those the assigned model's
+    # runs wrote here as the device answered. A record of another model says what the device did for that model.
+    handed = {sha for sha in inputs if inputs & (writers or {}).get(sha, set())}
+    compared = handed | {record_of(event) for event in events if live(event) and _answered(event)}
     probes = [_result_of(event)['probe'] for event in events
               if event.get('name') == 'probe_run' and isinstance(_result_of(event).get('probe'), str)]
     replacements = sorted(((path, Path(path).name) for path in [*paths, *probes]), key=lambda item: -len(item[0]))
@@ -381,6 +417,7 @@ def _notes(result, checked, outcome, *, refusals=(), missing=()):
     """stage-notes/1: worker claims, truth-free configurator checks, open questions and the outcome.
 
     `missing` names stage inputs that were absent; `refusals` are the gateway's refusals of this worker's tool calls.
+    The configurator's `records` bind each probe record a stage hands on to the digest of the model that wrote it.
     """
     report = result.get('report') if isinstance(result.get('report'), dict) else {}
     listed = lambda key: report[key] if isinstance(report.get(key), list) else []
@@ -396,6 +433,7 @@ def _notes(result, checked, outcome, *, refusals=(), missing=()):
                        'status': report.get('status'), 'summary': report.get('summary'),
                        'checks': listed('checks'), 'unresolved': unresolved},
             'configurator': {'checks': observed.get('checks', []), 'dropped_artifacts': observed.get('dropped_artifacts', []),
+                             'records': observed.get('records', []),
                              'tool_refusals': list(refusals), 'device_diff': checked.get('device_diff')},
             'open_questions': questions, 'outcome': {'kind': outcome.kind, 'reason': outcome.reason}}
 
@@ -1673,8 +1711,9 @@ class Controller:
                     **({'feedback': 'defects.json', 'feedback_meaning': 'What the previous candidate got wrong, from '
                         'the configurator\'s own record: what the device did that the candidate did not predict, in '
                         'tool results it observed through its own connection, and, in entries with source '
-                        'model_contract, the defects its own validation found in the candidate, which the runtime '
-                        'refuses before the device is reached. It is evidence, not a grade.'} if defects else {}),
+                        'model_contract, defects the configurator\'s own validation found in the candidate (for an '
+                        'interface model, the runtime refuses such a model before it opens the device). It is '
+                        'evidence, not a grade.'} if defects else {}),
                     'sealed_inputs': sealed,
                     'instructions': ('Start from previous-model/ and change what the evidence contradicts. ' if previous else
                                      'Change what the evidence contradicts. ') +
@@ -1778,10 +1817,10 @@ class Controller:
         # Generic checks use only run evidence. Failures become notes and the stage hands off what was
         # observed; only a recorded or observed hash that changed stops the run.
         def handed(selected, checks, dropped=(), scope='Observed tool outputs and executable artifact contracts; '
-                   'physical meaning requires independent ground evidence', diff=None):
+                   'physical meaning requires independent ground evidence', diff=None, records=()):
             return {'ok':True,'artifacts':list(dict.fromkeys(selected)),'checks':checks,
-                    'notes':{'checks':checks,'dropped_artifacts':list(dropped)},'validation_scope':scope,
-                    **({'device_diff':diff} if diff else {})}
+                    'notes':{'checks':checks,'dropped_artifacts':list(dropped),'records':list(records)},
+                    'validation_scope':scope, **({'device_diff':diff} if diff else {})}
         def changed(reason):
             return {'stop':{'category':'integrity','reason':reason}}
         if stage == 'interpret':
@@ -1849,8 +1888,8 @@ class Controller:
                   **({} if selected else {'unobserved':[str(p) for p in paths]}))
         elif stage in ('probe', 'ground'):
             # The configurator validates each assigned model itself, on a copy in its own run directory because a
-            # validator may write beside the model: a model the runtime would refuse goes back to interpret whether or
-            # not the worker ran it.
+            # validator may write beside the model: a model that fails validation goes back to interpret whether or not
+            # the worker ran it. (For an interface model the runtime refuses such a model before opening the device.)
             from .toolkit import call_tool
             contracts = {}
             for raw, expected in (assignment.get('inputs') or {}).items():
@@ -1872,8 +1911,11 @@ class Controller:
                                          for raw, v in contracts.items()]})
             # Every record of the device answering on the configurator's connection is handed on, whatever model ran; a
             # replay reached no device. Only the last run that wrote a record path counts: a later run replaces the record.
+            # The notes bind each record to the digest of the model that wrote it, so a later stage compares a record
+            # with its assigned model only when that model wrote it.
             kept, superseded = _probe_records(mine)
-            for path, (sha, _) in kept.items():
+            records = []
+            for path, (sha, event) in kept.items():
                 if not Path(path).is_file():
                     dropped.append({'path':path,'reason':'Observed probe record no longer exists'})
                     continue
@@ -1885,8 +1927,10 @@ class Controller:
                     dropped.append({'path':path,'reason':'Observed probe output is not valid JSON'})
                     continue
                 selected.append(path)
+                records.append({'name':Path(path).name,'sha256':sha,'dispatch_id':event.get('dispatch_id'),
+                                'model_sha256':(event.get('argument_sha256') or {}).get('model_dir')})
             # What the assigned model got wrong, by its validation or on the device, is the diff that drives repair.
-            diff = _device_diff(mine, assignment, contracts)
+            diff = _device_diff(mine, assignment, contracts, _record_writers(accepted))
             device = [e for e in observed if e.get('connected') is True]
             replaced = {'superseded':superseded} if superseded else {}
             if stage == 'probe':
@@ -1897,7 +1941,7 @@ class Controller:
                                **({'evidence':probed} if probed else {'reason':'No observed successful probe of the assigned '
                                                                                 'model through the owned connection'}),
                                **({'other_model_runs':others} if others else {}), **replaced})
-                return handed(selected, checks, dropped, diff=diff)
+                return handed(selected, checks, dropped, diff=diff, records=records)
             # A device test runs the assigned model; a live execution is one too, though it writes no record to hand on.
             # Runs of other models stay visible but test nothing that was assigned.
             tested = [e for e in device if e['name'] in ('probe_run', 'interface_execute') and _ran_assigned_model(e, assignment)]
@@ -1916,8 +1960,8 @@ class Controller:
                 checks.append({'name':'supplied_capture_observations','passed':not refuted,'dispatch_ids':[e['dispatch_id'] for e in captures],
                                'basis':'A decoded capture supplied by the worker, not a device observation by the configurator; '
                                        'kept as a note, never a repair trigger', **({'refuted':refuted} if refuted else {})})
-            return handed(selected, checks, dropped, diff=diff, scope='Observed device tests of the model '
-                          'and their differences from it; physical meaning rests on operator observations where given')
+            return handed(selected, checks, dropped, diff=diff, records=records, scope='Observed device tests of the '
+                          'model and their differences from it; physical meaning rests on operator observations where given')
         elif stage == 'emit':
             from .toolkit import call_tool
             candidates = list(dict.fromkeys(p for p in paths if p.is_dir() and (p/'manifest.json').is_file()))
@@ -2140,6 +2184,9 @@ class Controller:
         if effects-{'read'}-set(assignment['effects']):
             raise ValueError('Operation requires an effect grant the operator has not supplied')
         effectful=bool(effects & {'write','actuate'})
+        if effectful and name in ('probe_run','interface_execute'):
+            # Refused here, never marked uncertain: the runtime would refuse it before opening the device.
+            _refuse_invalid_model(arguments['model_dir'])
         # Facts the device diff rests on, recorded by the configurator, never taken from the worker: whether it
         # supplied the device connection (a replay gets none), and the content of every evidence path the tool reads.
         facts = {'connected': connected, 'argument_sha256': _argument_digests(arguments)}

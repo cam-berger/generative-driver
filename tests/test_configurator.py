@@ -483,7 +483,13 @@ class DeviceRepairTests(unittest.TestCase):
             event('42', 'probe_run', False, identity('0x59'), artifacts={probe('probe.json'): 'register-2-sha'})]
         contract = [{'where': 'operations.read', 'what': 'requires 1–128 steps'},
                     {'where': 'convert.py', 'what': 'will not import: ' + str(Path(model) / 'convert.py')}]
-        diff = _device_diff(events, assignment, {model: {'ok': False, 'defects': contract, '_exit': 1}})
+        contracts = {model: {'ok': False, 'defects': contract, '_exit': 1}}
+        # The earlier stage's notes bound the handed-on record to the assigned model, which wrote it.
+        diff = _device_diff(events, assignment, contracts, {'record-sha': {'model-sha'}})
+        # A handed-on record that another model wrote, or that no notes bind, says nothing about the assigned model.
+        for writers in ({'record-sha': {'variant-sha'}}, {}, None):
+            self.assertEqual([entry for entry in _device_diff(events, assignment, contracts, writers)],
+                             [entry for entry in diff if entry.get('dispatch_id') != '35'])
         self.assertEqual([(entry['source'], entry.get('dispatch_id')) for entry in diff],
                          [('model_contract', None), ('probe_diff', '7'), ('probe_run', '10'), ('probe_run', '13'),
                           ('interface_execute', '19'), ('probe_diff', '35'), ('probe_run', '40'), ('probe_diff', '41'),
@@ -520,15 +526,18 @@ class DeviceRepairTests(unittest.TestCase):
     FAILED = {'schema': 'interface-result/1', 'ok': False, 'operation': 'read_temperature', 'transport_open_attempted': True,
               'error': {'code': 'framing', 'message': 'short reply'}, 'transcript': [{'tx_hex': '01', 'rx_hex': '2a'}]}
 
-    def run_device_stage(self, home, work, respond, *, stage='ground', model=None, extra=None, real=()):
-        """A generic run in which `stage` (probe or ground) uses the real preparation, gateway and check and every other
-        stage is scripted; interpret hands on `model` (the valid thermometer by default) with the `extra` files (name to
-        text) beside it. The stage worker calls tools
-        through `work(call, model, workspace)`. `respond(name, arguments)` stands in for each worker tool except those
+    def run_device_stage(self, home, work, respond, *, stage='ground', model=None, extra=None, real=(), effects=None,
+                         max_revisions=None):
+        """A generic run in which `stage` (probe or ground, or a tuple of both) uses the real preparation, gateway and
+        check and every other stage is scripted; interpret hands on `model` (the valid thermometer by default) with the
+        `extra` files (name to text) beside it. The stage worker calls tools
+        through `work(call, model, workspace)`, or `work[stage](...)` when `work` maps stages to workers.
+        `respond(name, arguments)` stands in for each worker tool except those
         named in `real`, which run in the real toolkit; a stand-in probe_run writes its probe file as the real tool does
         unless `respond` names one. The configurator's own validation of the assigned model always runs the real
-        validator. No device runs. Returns the result, the events, the prompts and each worker tool's
-        configurator-built arguments."""
+        validator. `effects` and `max_revisions` are the run's grants and repair budget. No device runs. Returns the
+        result, the events, the prompts and each worker tool's configurator-built arguments."""
+        stages = (stage,) if isinstance(stage, str) else tuple(stage)
         from unittest.mock import patch
         from generative_driver import toolkit
         from generative_driver.configurator import Controller
@@ -550,7 +559,7 @@ class DeviceRepairTests(unittest.TestCase):
         controller = Controller(home)
         real_check = controller._check
         def check(spec, name, run_dir, workspace, report, accepted, assignment):
-            if name == stage:
+            if name in stages:
                 return real_check(spec, name, run_dir, workspace, report, accepted, assignment)
             if name == 'interpret':
                 folder = workspace / 'model'; folder.mkdir()
@@ -562,18 +571,21 @@ class DeviceRepairTests(unittest.TestCase):
                 return {'ok': True, 'artifacts': [str(workspace / 'out.json')], 'checks': []}
             return {'ok': True, 'artifacts': [], 'checks': []}
         def prepare(original, spec, name, run_dir, workspace, accepted):
-            return original(spec, name, run_dir, workspace, accepted) if name in (stage, 'reuse') else {'inputs': [], 'allowed_tools': []}
+            return original(spec, name, run_dir, workspace, accepted) if name in (*stages, 'reuse') else {'inputs': [], 'allowed_tools': []}
         def worker(request):
-            if request.stage == stage:
+            act = (work.get(request.stage) if isinstance(work, dict) else work) if request.stage in stages else None
+            if act is not None:
                 assigned = next(p for p in task_of(request.prompt)['inputs'] if (Path(p) / 'model.json').is_file())
                 call = lambda name, **arguments: controller.call('tool', {**gateway_identity(request), 'name': name, 'arguments': arguments})
-                work(call, assigned, Path(request.workspace))
+                act(call, assigned, Path(request.workspace))
         prompts = []
         try:
             with scripted_stages(controller, check=check, prepare=prepare, prompts=prompts, work=worker), \
                  patch('generative_driver.toolkit.call_tool', fake_call_tool):
-                run = controller.call('start', {'goal': 'Scripted ' + stage + ' contract; no model or device', 'binding': self.BINDING,
-                                                'executor_config': {'command': ['never-launched']}})
+                run = controller.call('start', {'goal': 'Scripted ' + '/'.join(stages) + ' contract; no model or device',
+                                                'binding': self.BINDING, 'executor_config': {'command': ['never-launched']},
+                                                **({'effects': effects} if effects else {}),
+                                                **({'max_revisions': max_revisions} if max_revisions is not None else {})})
                 result = wait_stopped(controller, run)
             return result, controller.call('events', run)['events'], prompts, calls
         finally:
@@ -588,8 +600,7 @@ class DeviceRepairTests(unittest.TestCase):
             self.assertEqual(result['status'], 'completed', result)
             handoffs = {h['stage']: h for h in result['accepted_handoffs']}
             assigned = {e['data']['stage']: e['data'] for e in events if e['kind'] == 'stage.assigned'}
-            self.assertEqual(assigned['ground']['allowed_tools'],
-                             ['probe_run', 'interface_execute', 'probe_diff', 'model_validate', 'probe_observe'])
+            self.assertEqual(assigned['ground']['allowed_tools'], ['probe_run', 'interface_execute', 'probe_diff', 'probe_observe'])
             model, records = (Path(handoffs[s]['artifacts'][0]['path']) for s in ('interpret', 'probe'))
             self.assertEqual(sorted(assigned['ground']['inputs'].values()), sorted([digest(model), digest(records)]))
             task = task_of(next(prompt for stage, prompt in prompts if stage == 'ground'))
@@ -741,6 +752,63 @@ class DeviceRepairTests(unittest.TestCase):
                 self.assertEqual(result['progress']['repairs'], 2)
                 self.assertEqual(ground[-1]['notes']['inline']['outcome']['reason'], 'Repair budget exhausted; continuing with best revision')
 
+    def test_an_effectful_dispatch_of_an_invalid_model_is_refused_before_it_could_leave_an_uncertain_effect(self):
+        # With a write grant, the gateway refuses a write of a model that fails validation before it marks the dispatch
+        # uncertain, as the runtime would refuse it before opening the device. Nothing is left to reconcile, so the
+        # configurator's own validation sends the model back to interpret instead of a safety stop.
+        from unittest.mock import patch
+        invalid = thermometer_model(steps=False)
+        invalid['operations']['set_rate'] = {'effect': 'write', 'parameters': {}, 'outputs': {}, 'steps': [
+            {'op': 'exchange', 'tx': [{'text': 'R\n'}], 'rx': {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 64},
+             'timeout_ms': 1000}]}
+        refusals = []
+        def work(call, model, workspace):
+            for name in ('interface_execute', 'probe_run'):
+                with self.assertRaisesRegex(ValueError, 'fails validation') as refused:
+                    call(name, model_dir=model, operation='set_rate')
+                refusals.append(str(refused.exception))
+        opened = []
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('interface_runtime.evidence.open_transport', lambda channel, binding: opened.append(binding)):
+            result, events, _, calls = self.run_device_stage(Path(directory) / 'home', work, None, model=invalid,
+                real=('interface_execute', 'probe_run'), effects=['read', 'write'], max_revisions=1)
+        self.assertEqual((result['status'], result['uncertain_effect']), ('completed', False), result)
+        # Nothing was dispatched: no tool ran, no transport opened, and each refusal is recorded for the stage's notes.
+        self.assertEqual((calls, opened), ([], []))
+        self.assertFalse(any(e['kind'] in ('tool.started', 'tool.finished') for e in events))
+        refused = [e['data'] for e in events if e['kind'] == 'tool.refused' and e['data']['stage'] == 'ground']
+        self.assertEqual([(e['name'], e['reason']) for e in refused[:2]], list(zip(('interface_execute', 'probe_run'), refusals[:2])))
+        self.assertIn('requires 1–128 steps', refusals[0])
+        ground = next(h for h in result['accepted_handoffs'] if h['stage'] == 'ground')
+        notes = ground['notes']['inline']
+        self.assertEqual((ground['route'], notes['outcome']['kind']), ('interpret', 'revise'))
+        self.assertEqual([entry['source'] for entry in notes['configurator']['device_diff']], ['model_contract'])
+        self.assertEqual([r['name'] for r in notes['configurator']['tool_refusals']], ['interface_execute', 'probe_run'])
+        assigned = next(e['data'] for e in events if e['kind'] == 'stage.assigned' and e['data']['stage'] == 'ground')
+        model = notes['configurator']['device_diff'][0]['model']
+        self.assertEqual(assigned['inputs'][next(p for p in assigned['inputs'] if Path(p).name == model['name'])], model['sha256'])
+
+    def test_probe_and_ground_workers_cannot_validate_an_assigned_model_in_place(self):
+        # The register validator writes defects.json beside the model it checks, which would alter an assigned input
+        # and stop the run for integrity. The configurator validates each assigned model on its own copy and hands the
+        # result on, so probe and ground workers are not given the validator.
+        for stage in ('probe', 'ground'):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as directory:
+                refused = []
+                def work(call, model, workspace):
+                    with self.assertRaisesRegex(ValueError, 'not assigned') as raised:
+                        call('model_validate', model_dir=model)
+                    refused.append(str(raised.exception))
+                result, events, _, calls = self.run_device_stage(Path(directory) / 'home', work, None, stage=stage,
+                                                                 model=self.REGISTER, extra={'convert.py': self.CONVERT})
+                self.assertEqual(result['status'], 'completed', result)
+                assigned = next(e['data'] for e in events if e['kind'] == 'stage.assigned' and e['data']['stage'] == stage)
+                self.assertNotIn('model_validate', assigned['allowed_tools'])
+                self.assertEqual((refused, calls), (['Tool is not assigned to this worker'], []))
+                contract = next(c for c in next(h for h in result['accepted_handoffs'] if h['stage'] == stage)
+                                ['notes']['inline']['configurator']['checks'] if c['name'] == 'executable_model_contract')
+                self.assertTrue(contract['passed'], contract)
+
     def test_the_configurator_validates_a_copy_so_a_validator_that_writes_beside_the_model_alters_no_input(self):
         # The register validator writes defects.json beside the model it checks. Validating the assigned input in place
         # would change it, and the configurator's re-hash of the inputs after the check would stop the run.
@@ -834,6 +902,77 @@ class DeviceRepairTests(unittest.TestCase):
                 test = next(c for c in ground['notes']['inline']['configurator']['checks'] if c['name'] == 'observed_device_test')
                 self.assertEqual((test['passed'], test['evidence'], test['superseded']),
                                  (True, [str(Path(records[-1]['probe']).resolve())], [first['dispatch_id']]))
+
+    REGISTER = {'schema': 'interface-model/1', 'device': {'name': 'invented register sensor'},
+                'channel': {'type': 'i2c', 'address_7bit': '0x76', 'speed_hz': 100000},
+                'identity': {'from': 'id', 'expect': ['0x60']}, 'safety': {'notes': 'read only'},
+                'operations': {'identify': [{'op': 'reg_read', 'reg': '0xd0', 'len': 1, 'as': 'id'}],
+                               'measure': [{'op': 'reg_read', 'reg': '0x10', 'len': 1, 'as': 'raw'}]},
+                'conversion': {'module': 'convert.py', 'entry': 'convert', 'outputs': {'value': {'unit': 'count'}}},
+                'provenance': [{'item': 'operations.' + key, 'source': 'invented register contract'}
+                               for key in ('init', 'identify', 'measure')]}
+    CONVERT = 'def convert(inputs):\n    return {"value": inputs["0x10"][0] / 2}\n'
+
+    def test_ground_compares_a_handed_on_record_only_when_the_assigned_model_wrote_it(self):
+        """Probe hands on every record the device answered, each bound in its notes to the model that wrote it. Ground
+        compares a handed-on record with the assigned model only when the assigned model wrote it: a record of the
+        probe worker's own variant says what the device did for that variant, so it never drives a revise. The
+        register probe_diff is real; probe_run stands in for a register bus (the device answers identity 0x60)."""
+        from generative_driver.configurator import digest
+        def respond(name, arguments):
+            # A register probe of whatever model it is given; the variant reads twice and gets fresh bytes.
+            expected = json.loads((Path(arguments['model_dir']) / 'model.json').read_text())['identity']['expect']
+            ok = '0x60' in expected
+            raws = ['10', '10'] if ok else ['10', '12']
+            path = Path(arguments['run_dir']) / 'probe' / 'probe.json'; path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({'address': '0x76', 'identity': '0x60', 'identity_ok': ok, 'evidence_kind': 'live',
+                                        'samples': [{'raw': raw, 'values': {'value': 8.0}} for raw in raws]}))
+            return {'ok': ok, 'address': '0x76', 'identity': '0x60', 'identity_ok': ok, 'samples': [{'value': 8.0}] * 2,
+                    'probe': str(path), '_exit': 0 if ok else 2}
+        variants = []
+        def probe(own):
+            def work(call, model, workspace):
+                if own:
+                    variant = workspace / 'variant'; variant.mkdir()
+                    (variant / 'model.json').write_text(json.dumps({**self.REGISTER, 'identity': {'from': 'id', 'expect': ['0x58']}}))
+                    (variant / 'convert.py').write_text(self.CONVERT)
+                    variants.append(digest(variant))
+                    model = str(variant)
+                call('probe_run', model_dir=model)
+            return work
+        diffs = []
+        def ground(call, model, workspace):
+            for record in sorted(str(p) for p in (workspace / 'inputs').iterdir() if p.suffix == '.json'):
+                diffs.append(call('probe_diff', model_dir=model, probe=record))
+        for name, own in (("the probe worker's own variant wrote the record", True), ('the assigned model wrote it', False)):
+            variants.clear(); diffs.clear()
+            with self.subTest(plan=name), tempfile.TemporaryDirectory() as directory:
+                result, events, _, _ = self.run_device_stage(Path(directory) / 'home', {'probe': probe(own), 'ground': ground},
+                    respond, stage=('probe', 'ground'), model=self.REGISTER, extra={'convert.py': self.CONVERT},
+                    real=('probe_diff',), max_revisions=1)
+                self.assertEqual(result['status'], 'completed', result)
+                probe_handoff, ground_handoff = (next(h for h in result['accepted_handoffs'] if h['stage'] == stage and h['revision'] == 0)
+                                                 for stage in ('probe', 'ground'))
+                assigned = next(e['data'] for e in events if e['kind'] == 'stage.assigned' and e['data']['stage'] == 'probe')
+                model_sha = next(sha for path, sha in assigned['inputs'].items() if (Path(path) / 'model.json').is_file())
+                # The probe notes bind each handed-on record to the digest of the model whose run wrote it.
+                [artifact] = probe_handoff['artifacts']
+                [record] = probe_handoff['notes']['inline']['configurator']['records']
+                self.assertEqual((record['sha256'], record['model_sha256']),
+                                 (artifact['sha256'], variants[0] if own else model_sha))
+                # The real register probe_diff finds a difference either way.
+                found = diffs[0]
+                self.assertTrue(found['defects'], found)
+                notes = ground_handoff['notes']['inline']
+                if own:
+                    self.assertEqual((ground_handoff['route'], notes['outcome']['kind'], notes['configurator']['device_diff']),
+                                     (None, 'advance', None))
+                    self.assertEqual(result['progress']['repairs'], 0)
+                else:
+                    self.assertEqual((ground_handoff['route'], notes['outcome']['kind']), ('interpret', 'revise'))
+                    [entry] = notes['configurator']['device_diff']
+                    self.assertEqual((entry['source'], entry['probe']['sha256'], entry['defects']),
+                                     ('probe_diff', artifact['sha256'], found['defects']))
 
     DEFECTS = [{'where': 'operations.read_temperature.steps.0', 'what': 'device answered 2a; the model predicted 15',
                 'code': 'framing', 'fault': 'model'}]
@@ -933,6 +1072,11 @@ class DeviceRepairTests(unittest.TestCase):
             context = json.loads((second / 'REPAIR_CONTEXT.json').read_text(encoding='utf-8'))
             self.assertEqual((context['previous_candidate'], context['feedback']), ('previous-model/', 'defects.json'))
             self.assertIn('model_contract', context['feedback_meaning'])
+            # Only an interface model is refused by the runtime before the device; a register model's validation
+            # defects (a missing safety entry, say) are the configurator's findings, not a runtime refusal.
+            self.assertIn("the configurator's own validation", context['feedback_meaning'])
+            self.assertIn('for an interface model, the runtime refuses such a model before it opens the device',
+                          context['feedback_meaning'])
             for words in ('Start from previous-model/', 'model.json', 'replies.json', 'workspace root', 'NOTES.md'):
                 self.assertIn(words, context['instructions'])
             assigned = [e['data'] for e in controller.call('events', run)['events']

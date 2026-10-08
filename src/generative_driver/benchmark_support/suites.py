@@ -1,5 +1,6 @@
 """Suite selection, frozen inputs and the clients that launch the bench harness which drives a suite."""
 import copy
+import json
 import math
 
 
@@ -108,16 +109,27 @@ def start_suite(manifest: dict, executor: str = 'codex', options: dict | None = 
 
 
 def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autostart=True,
-                 suite_budget_seconds=None, budget_reason=None) -> dict:
+                 suite_budget_seconds=None, budget_reason=None, child_budget_seconds=None,
+                 child_budget_reason=None) -> dict:
     """Resume a stopped suite through a newly launched bench harness, which takes over its scheduling. Only the password
     files and the emulator executable are read from `options`, and they reach that harness alone: the suite keeps the
-    options it was frozen with."""
+    options it was frozen with. An approved suite budget extension raises the suite's total; an approved child budget
+    extension raises the total of the stopped child the resume continues (an emulated child once its device is
+    attached anew), and no other child's."""
     from .harness import launch_suite
     if not isinstance(suite_id, str) or not suite_id.strip():
         raise ValueError('suite_id must be a nonblank string')
+    if child_budget_seconds is not None and (
+            type(child_budget_seconds) not in (int, float) or not math.isfinite(child_budget_seconds)
+            or not 0 < child_budget_seconds <= 604800 or not isinstance(child_budget_reason, str)
+            or not child_budget_reason.strip()):
+        raise ValueError('A child budget extension requires a finite positive total of at most seven days and a '
+                         'nonblank child_budget_reason')
     directory, _, passwords, renode = _launch_options(options, home)
-    request = {'suite_id': suite_id, **{key: value for key, value in (('suite_budget_seconds', suite_budget_seconds),
-                                                                      ('budget_reason', budget_reason)) if value is not None}}
+    request = {'suite_id': suite_id, **{key: value for key, value in (
+        ('suite_budget_seconds', suite_budget_seconds), ('budget_reason', budget_reason),
+        ('child_budget_seconds', child_budget_seconds),
+        ('child_budget_reason', child_budget_reason if child_budget_seconds is not None else None)) if value is not None}}
     return launch_suite(request, home=directory, password_files=passwords, renode=renode, autostart=autostart)
 
 
@@ -208,6 +220,41 @@ def child_request(frozen: dict, trial: dict) -> dict:
             'request_id': trial['child_request_id'],
             'effects': list(frozen['entry_effects'][trial['entry_index']]),
             'scoped_tool_approval': approval, 'budget_seconds': frozen['manifest']['child_budget_seconds']}
+
+
+def graded_after_run(frozen: dict, trial: dict) -> bool:
+    """Whether the frozen slot's child is graded after its run (an emulated case the bench harness grades), from the
+    case pin the suite froze, never from what the child's run says of itself."""
+    pin = frozen['entry_pins'][trial['entry_index']]
+    return (pin.get('manifest') or {}).get('schema') == 'benchmark-case/2'
+
+
+# What the bench harness adds to a frozen child request: an emulated child's device, admission and evaluation token
+# hash, or a legacy child's evaluator options in its case options.
+HARNESS_KEYS = ('device', 'admission', 'evaluation_token_sha256')
+LEGACY_HARNESS_OPTIONS = ('evaluator_password_file', 'renode')
+
+
+def child_identity_differs(frozen: dict, trial: dict, submitted) -> str | None:
+    """Why a child request (as submitted, or as a run recorded it) is not the frozen slot's own, or None when it is:
+    the slot's `child_request` plus only what the bench harness adds for that slot's kind of case."""
+    if not isinstance(submitted, dict):
+        return 'Frozen suite child identity mismatch: trial ' + str(trial.get('trial_key')) + ' has no submitted request'
+    request = copy.deepcopy(submitted)
+    if graded_after_run(frozen, trial):
+        for key in HARNESS_KEYS:
+            request.pop(key, None)
+    elif isinstance(request.get('case_options'), dict):
+        for key in LEGACY_HARNESS_OPTIONS:
+            request['case_options'].pop(key, None)
+    canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
+    expected = child_request(frozen, trial)
+    if canonical(request) == canonical(expected):
+        return None
+    differing = sorted(key for key in set(request) | set(expected)
+                       if canonical(request.get(key)) != canonical(expected.get(key)))
+    return ('Frozen suite child identity mismatch: trial ' + trial['trial_key'] + "'s child request differs from the "
+            'frozen slot in ' + ', '.join(differing))
 
 
 def child_disposition(result: dict) -> str:

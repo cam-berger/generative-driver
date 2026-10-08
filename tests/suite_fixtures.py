@@ -125,23 +125,27 @@ def settled_suite(call, suite_id, home=None, seconds=10):
         time.sleep(.02)
 
 
-def drive_suite(owner, bench, request, *, wait=True, calls=None, stop=None):
+def drive_suite(owner, bench, request, *, wait=True, calls=None, stop=None, intercept=None):
     """Play the bench harness for an in-process owner: the harness's suite loop runs in a thread and makes its
     configurator requests to `owner`. With `wait`, returns the harness's record once it has finished; otherwise the
-    record once the configurator took the suite on or refused it. A refusal raises ValueError with its reason."""
+    record once the configurator took the suite on or refused it. A refusal raises ValueError with its reason.
+    `intercept(method, params, forward)` may stand between the harness and the owner: it returns the reply, and
+    `forward(method, params)` makes the request."""
     import threading
     import uuid
     from pathlib import Path
     from generative_driver.benchmark_support import harness
+    def forward(method, params=None):
+        try:
+            return owner.call(method, params or {})
+        except Exception as error:
+            return {'ok': False, 'error': type(error).__name__, 'reason': str(error)}
     def configurator(method, params=None):
         if calls is not None:
             calls.append((method, params))
         if method == 'ping':
             return {'ok': True}
-        try:
-            return owner.call(method, params or {})
-        except Exception as error:
-            return {'ok': False, 'error': type(error).__name__, 'reason': str(error)}
+        return intercept(method, params, forward) if intercept else forward(method, params)
     directory = Path(bench) / ('suite-' + uuid.uuid4().hex[:8])
     done = {}
     thread = threading.Thread(target=lambda: done.update(record=harness.run_suite(

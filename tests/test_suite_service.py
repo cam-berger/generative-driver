@@ -120,6 +120,30 @@ class ServiceTests(unittest.TestCase):
             finally:
                 call('shutdown',{},home)
 
+    def test_a_request_id_whose_suite_was_refused_starts_afresh_once_the_cause_is_fixed(self):
+        # Catches a request_id claimed by a suite start the configurator refused: every later start under it would
+        # repeat that refusal after its cause was fixed, although no suite was ever frozen under it.
+        from generative_driver.client import call
+        from generative_driver.setup import configure
+        from generative_driver.benchmark_support.suites import start_suite
+        from suite_fixtures import write_scripted_case_worker, wait_suite
+        with tempfile.TemporaryDirectory(prefix='suite retry ') as temporary:
+            home=owner_home(temporary)
+            request={'manifest':legacy_manifest(1),'executor':'codex','options':{},'request_id':'retry-after-refusal'}
+            try:
+                refused=start_suite(**request,home=home)
+                self.assertFalse(refused['ok'],refused)
+                self.assertIn('worker runtime command',refused['reason'])
+                configure('codex',write_scripted_case_worker(home),home=home)
+                started=start_suite(**request,home=home)
+                self.assertTrue(started['ok'],started)
+                self.assertFalse(started['duplicate'])
+                again=start_suite(**request,home=home)
+                self.assertEqual((again['ok'],again['suite_id'],again['duplicate']),(True,started['suite_id'],True))
+                state=wait_suite(call,started['suite_id'],home,lambda s:s['status']=='completed' and not s['stopping'])
+                self.assertEqual(state['completed'],1)
+            finally:call('shutdown',{},home)
+
     def test_missing_runtime_blockage_preserves_the_child_and_frozen_configuration(self):
         from generative_driver.client import call
         from generative_driver.setup import configure

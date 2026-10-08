@@ -1,5 +1,5 @@
 """Durable suite slots in the existing controller database; no execution owner. The bench harness that drives a suite is
-recorded by the sha256 of its token, its process id and whether it is attached."""
+recorded by the sha256 of its token, its process id, the lock file it holds while it runs and whether it is attached."""
 import json
 import time
 import uuid
@@ -25,7 +25,8 @@ class SuiteStore:
                     frozen_json TEXT NOT NULL, status TEXT NOT NULL, reason TEXT,
                     created REAL NOT NULL, updated REAL NOT NULL,
                     budget_seconds REAL NOT NULL, cancelled INTEGER NOT NULL DEFAULT 0,
-                    harness_token_sha256 TEXT, harness_pid INTEGER, harness_attached INTEGER NOT NULL DEFAULT 0);
+                    harness_token_sha256 TEXT, harness_pid INTEGER, harness_attached INTEGER NOT NULL DEFAULT 0,
+                    harness_lock TEXT);
                 CREATE TABLE IF NOT EXISTS suite_trials (
                     suite_id TEXT NOT NULL, ordinal INTEGER NOT NULL, trial_json TEXT NOT NULL,
                     child_request_id TEXT NOT NULL UNIQUE, run_id TEXT UNIQUE,
@@ -36,7 +37,8 @@ class SuiteStore:
                     kind TEXT NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL);
             ''')
             columns={row['name'] for row in db.execute('PRAGMA table_info(suites)')}
-            for column,kind in (('harness_token_sha256','TEXT'),('harness_pid','INTEGER'),('harness_attached','INTEGER NOT NULL DEFAULT 0')):
+            for column,kind in (('harness_token_sha256','TEXT'),('harness_pid','INTEGER'),('harness_attached','INTEGER NOT NULL DEFAULT 0'),
+                                ('harness_lock','TEXT')):
                 if column not in columns:
                     db.execute('ALTER TABLE suites ADD COLUMN '+column+' '+kind)
 
@@ -49,7 +51,8 @@ class SuiteStore:
         if row is None:raise ValueError('Unknown suite_id')
         return {'suite_id':row['id'],**{key:row[key] for key in ('status','reason','created','updated','budget_seconds')},
             'cancelled':bool(row['cancelled']),'frozen':json.loads(row['frozen_json']),
-            'harness':{'token_sha256':row['harness_token_sha256'],'pid':row['harness_pid'],'attached':bool(row['harness_attached'])},
+            'harness':{'token_sha256':row['harness_token_sha256'],'pid':row['harness_pid'],'lock':row['harness_lock'],
+                       'attached':bool(row['harness_attached'])},
             'trials':[_slot(trial) for trial in db.execute('SELECT * FROM suite_trials WHERE suite_id=? ORDER BY ordinal',(suite_id,))]}
 
     def get(self,suite_id):
@@ -66,7 +69,7 @@ class SuiteStore:
     def find_request(self,request_id,canonical_request):
         with self.open_db() as db:return self._find_request(db,request_id,canonical_request)
 
-    def create(self,frozen,request_id=None,*,harness_pid=None):
+    def create(self,frozen,request_id=None,*,harness_pid=None,harness_lock=None):
         """A new suite, attached to the harness whose token hash it was frozen with; a saved request is returned as it is."""
         suite_id='suite-'+uuid.uuid4().hex[:16]
         with self.open_db() as db:
@@ -76,22 +79,22 @@ class SuiteStore:
             now=time.time()
             token=frozen.get('harness_token_sha256')
             db.execute('INSERT INTO suites(id,request_id,request_json,frozen_json,status,created,updated,budget_seconds,'
-                       'harness_token_sha256,harness_pid,harness_attached) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                       'harness_token_sha256,harness_pid,harness_attached,harness_lock) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
                 (suite_id,request_id,_json(frozen['request']),_json(frozen),'queued',now,now,frozen['manifest']['suite_budget_seconds'],
-                 token,harness_pid,int(token is not None)))
+                 token,harness_pid,int(token is not None),harness_lock))
             for trial in frozen['trials']:
                 db.execute('INSERT INTO suite_trials(suite_id,ordinal,trial_json,child_request_id,status) VALUES(?,?,?,?,?)',
                     (suite_id,trial['ordinal'],_json(trial),f"suite:{suite_id}:trial:{trial['ordinal']}",'pending'))
             self._event(db,suite_id,'suite.started',{'planned_trials':len(frozen['trials'])})
             return {**self._get(db,suite_id),'duplicate':False}
 
-    def attach_harness(self,suite_id,token_sha256,pid):
+    def attach_harness(self,suite_id,token_sha256,pid,lock=None):
         """A bench harness takes over the suite's scheduling: the token hash it holds replaces the previous one."""
         with self.open_db() as db:
             db.execute('BEGIN IMMEDIATE')
             self._get(db,suite_id)
-            db.execute('UPDATE suites SET harness_token_sha256=?,harness_pid=?,harness_attached=1,updated=? WHERE id=?',
-                       (token_sha256,pid,time.time(),suite_id))
+            db.execute('UPDATE suites SET harness_token_sha256=?,harness_pid=?,harness_lock=?,harness_attached=1,updated=? WHERE id=?',
+                       (token_sha256,pid,lock,time.time(),suite_id))
             self._event(db,suite_id,'suite.harness_attached',{})
 
     def detach_harness(self,suite_id):

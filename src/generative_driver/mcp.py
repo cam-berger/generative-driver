@@ -166,18 +166,23 @@ def driver_benchmark_suite_cancel(suite_id: str) -> str:
 
 @server.tool()
 def driver_benchmark_suite_resume(suite_id: str, suite_budget_seconds: float | None = None,
-                                  budget_reason: str | None = None, options: dict | None = None) -> str:
+                                  budget_reason: str | None = None, options: dict | None = None,
+                                  child_budget_seconds: float | None = None,
+                                  child_budget_reason: str | None = None) -> str:
     """Resume a stopped incomplete suite after correcting its blocker; a newly launched bench harness takes it over.
 
     options holds only evaluator_password_files and renode (FILE paths) for that harness; emulated suites need them.
-    A user-approved extension increases the total suite wall-clock budget from
-    original start and requires a reason; it does not extend a child's budget.
+    A user-approved extension increases the total suite wall-clock budget from original start and requires a reason.
+    A separate user-approved child extension (child_budget_seconds, child_budget_reason) increases the total budget of
+    the stopped child the resume continues, and of no other child.
     """
     from .benchmark_support.suites import resume_suite
     try:
         return json.dumps(resume_suite(suite_id, options, autostart=platform.system() != 'Windows',
                                        suite_budget_seconds=suite_budget_seconds,
-                                       budget_reason=budget_reason if suite_budget_seconds is not None else None),
+                                       budget_reason=budget_reason if suite_budget_seconds is not None else None,
+                                       child_budget_seconds=child_budget_seconds,
+                                       child_budget_reason=child_budget_reason),
                           allow_nan=False, default=str)
     except (OSError, ValueError, RuntimeError) as error:
         return json.dumps({'ok': False, 'reason': str(error)})

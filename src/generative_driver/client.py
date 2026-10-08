@@ -52,6 +52,57 @@ def _wait_for_exit(pid, timeout=10):
         time.sleep(min(.01, remaining))
 
 
+def hold_process_lock(path):
+    """Lock the file at `path` for as long as this process keeps the returned stream open; the operating system lets
+    go of it when the process ends, however it ends. None when the file system offers no such lock."""
+    stream = open(path, 'a+b')
+    try:
+        if os.name == 'nt':
+            import msvcrt
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        stream.close()
+        return None
+    return stream
+
+
+def process_lock_held(path):
+    """Whether a running process holds the lock `hold_process_lock` takes on `path`: unlike a process id, which another
+    process may take over once its holder ended, a lock ends with its holder. True or False; None when it cannot be
+    told (the caller then decides by other means)."""
+    import errno
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_BINARY', 0))
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    try:
+        if os.name == 'nt':
+            import msvcrt
+            try:
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            except OSError as error:
+                return True if error.errno in (errno.EACCES, errno.EDEADLOCK) else None
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            return False
+        import fcntl
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        except OSError:
+            return None
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(descriptor)
+
+
 def _confirmed_shutdown(pid, timeout=10):
     if type(pid) is not int or pid <= 0:
         return {'ok': False, 'stopped': False, 'reason': 'Daemon exit cannot be confirmed without its process identity'}

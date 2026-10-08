@@ -84,6 +84,9 @@ def main(argv=None):
         elif action == 'resume':
             lifecycle.add_argument('--suite-budget-seconds', type=float)
             lifecycle.add_argument('--budget-reason')
+            lifecycle.add_argument('--child-budget-seconds', type=float,
+                                   help='Approved new total budget of the stopped child the resume continues')
+            lifecycle.add_argument('--child-budget-reason')
             lifecycle.add_argument('--options', help='JSON file with the evaluator password files and emulator executable '
                                    'for the bench harness that resumes the suite')
     exporting = suites.add_parser('report')
@@ -153,7 +156,9 @@ def main(argv=None):
                 # A newly launched bench harness takes the suite over; it alone receives password files and the emulator.
                 from .benchmark_support.suites import resume_suite
                 result = resume_suite(args.suite_id, json.loads(Path(args.options).read_text(encoding='utf-8')) if args.options else None,
-                                      suite_budget_seconds=args.suite_budget_seconds, budget_reason=args.budget_reason)
+                                      suite_budget_seconds=args.suite_budget_seconds, budget_reason=args.budget_reason,
+                                      child_budget_seconds=args.child_budget_seconds,
+                                      child_budget_reason=args.child_budget_reason)
             else:
                 from .client import call
                 params = {'suite_id': args.suite_id}

@@ -1,4 +1,5 @@
 """Durable suite storage contracts; no inference, native tools or truth access."""
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -215,10 +216,10 @@ class ControllerStorageTests(unittest.TestCase):
                 self.assertEqual((status['status'],status['planned'],status['completed']),('blocked',2,0))
                 self.assertIsNotNone(status['active_child_id']);self.assertFalse(status['stopping'])
                 config.write_text('INVALID CONFIG',encoding='utf-8')
-                duplicate=controller.call('suite_start',{**request,'harness_token_sha256':'b2'*32})
+                duplicate=controller.call('suite_start',{**request,'harness_token_sha256':'b2'*32,'harness_pid':os.getpid()})
                 self.assertTrue(duplicate['duplicate']);self.assertEqual(duplicate['suite_id'],sid)
                 with self.assertRaises(ValueError):
-                    controller.call('suite_start',dict(request,manifest=legacy_manifest(3),harness_token_sha256='b2'*32))
+                    controller.call('suite_start',dict(request,manifest=legacy_manifest(3),harness_token_sha256='b2'*32,harness_pid=os.getpid()))
                 frozen=controller._suites.get(sid)['frozen']
                 controller._suites.set_state(sid,'running');slot=controller._suites.reserve(sid)
                 self.assertEqual(child_request(frozen,slot)['executor_config']['model'],'frozen-model')
@@ -282,6 +283,34 @@ class ControllerStorageTests(unittest.TestCase):
                 self.assertEqual(after['execution_snapshots'][0]['snapshot_sha256'],child['snapshot_sha256'])
                 self.assertIsNone(after['execution_snapshots'][1]['snapshot_sha256'])
                 self.assertNotIn('PRIVATE',json.dumps(after))
+            finally:controller.close()
+
+    def test_a_suite_resume_extends_the_budget_of_its_stopped_legacy_child_with_an_approved_reason(self):
+        # Catches a suite resume that cannot continue a legacy child stopped by its own budget: an approved child
+        # extension reaches that child's resume, recorded with its reason, and no other child's budget.
+        import json
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);home=root/'home';home.mkdir()
+            (home/'config.json').write_text(json.dumps({'executors':{'codex':{'command':['missing-scripted-runtime']}}}),encoding='utf-8')
+            controller=Controller(home)
+            try:
+                sid=drive_suite(controller,root/'bench',{'manifest':legacy_manifest(2)})['suite_id']
+                self.assertEqual(controller.call('suite_status',{'suite_id':sid})['status'],'blocked')
+                slot=controller._suites.get(sid)['trials'][0];rid=slot['run_id']
+                with controller._db() as db:
+                    # The child's own budget is spent; the suite's is not.
+                    db.execute('UPDATE runs SET created=created-1000 WHERE id=?',(rid,))
+                with self.assertRaisesRegex(ValueError,'budget exhausted'):
+                    drive_suite(controller,root/'bench',{'suite_id':sid})
+                drive_suite(controller,root/'bench',{'suite_id':sid,'child_budget_seconds':1200,
+                                                     'child_budget_reason':'Operator approved a longer child'})
+                extended=[e['data'] for e in controller.call('events',{'run_id':rid})['events'] if e['kind']=='run.budget_extended']
+                self.assertEqual([(e['old_budget_seconds'],e['new_budget_seconds'],e['reason']) for e in extended],
+                                 [(120,1200,'Operator approved a longer child')])
+                status=controller.call('suite_status',{'suite_id':sid})
+                self.assertEqual((status['status'],status['active_child_id'],status['completed']),('blocked',rid,0))
+                overrides=controller.call('suite_result',{'suite_id':sid})['experiment']['comparison_identity']['budgets']['effective']
+                self.assertEqual(overrides['child_budget_overrides'],[{'trial_key':slot['trial_key'],'budget_seconds':1200}])
             finally:controller.close()
 
     def test_owner_child_budget_extension_changes_comparison_policy_only(self):

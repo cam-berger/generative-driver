@@ -291,6 +291,13 @@ def _trusted_python():
     return trusted
 
 
+def _read_back(snapshot):
+    """Read every file of a snapshot copy, raising the host's OSError."""
+    package_files(snapshot)
+    for name in ('manifest.json','manifest.sha256'):
+        digest(snapshot/name)
+
+
 def _snapshot(pkg, sha, expected_manifest_sha256, temporary):
     """Copy a verified package's allowlisted files into `temporary` and verify the copy, whose Python must equal
     the trusted runtime and template. Returns (snapshot, manifest, None) or (None, None, refusal)."""
@@ -310,8 +317,14 @@ def _snapshot(pkg, sha, expected_manifest_sha256, temporary):
     for name in sorted(allowlist | {'manifest.json','manifest.sha256'}):
         target = snapshot/name; target.parent.mkdir(parents=True,exist_ok=True)
         shutil.copyfile(pkg/name, target, follow_symlinks=False)
+    # The copy holds bytes that just passed inspection at the source, so a copy the host cannot read back (a lock an
+    # antivirus or indexer holds, an I/O error) is the host's failure around the check, never the package's defect.
+    # The runtime's verification reports any read error as a defect, so the copy is read here first, and again after a
+    # failed verification, letting the host's OSError propagate.
+    _read_back(snapshot)
     verified = verify_package(snapshot, sha, expected_manifest_sha256)
     if not verified['ok']:
+        _read_back(snapshot)
         return None, None, {**verified,'_exit':1}
     if trusted != {k:v for k,v in verified['manifest']['files'].items() if k.endswith('.py')}:
         return None, None, {'ok':False,'defects':[{'where':'runtime','what':'bundled Python differs from trusted runtime/templates'}],'_exit':1}
@@ -321,10 +334,12 @@ def _snapshot(pkg, sha, expected_manifest_sha256, temporary):
 def emit_check(package_dir, model_dir=None, expected_manifest_sha256=None):
     pkg = path(package_dir)
     source = pkg/'driver' if model_dir is None else path(model_dir)
-    if not (source/'model.json').is_file():
+    # os.path.isfile is false on any OSError, such as a folder the worker left unsearchable, where Path.is_file raises.
+    if not os.path.isfile(source/'model.json'):
         # A package without its driver model, or a model directory without one, is refused; it is no host fault.
         return {'ok':False,'integrity_ok':False,'replay_status':'not_run','_exit':1,
-                'defects':[{'where':'driver/model.json' if model_dir is None else 'model_dir','what':'model.json is missing'}]}
+                'defects':[{'where':'driver/model.json' if model_dir is None else 'model_dir',
+                            'what':'model.json is missing or its folder cannot be searched'}]}
     try:
         model, sha = load(source)
     except (OSError, RecursionError) as exc:
@@ -347,8 +362,8 @@ def emit_check(package_dir, model_dir=None, expected_manifest_sha256=None):
         if refused is not None:
             return refused
         result = _check_snapshot(snapshot, model, sha, manifest, expected_manifest_sha256)
-        return {**result,'integrity_ok':True,'runtime_current':True,
-                'replay_status':'passed' if result['ok'] else 'failed'}
+        return {'integrity_ok':True,'runtime_current':True,
+                'replay_status':'passed' if result['ok'] else 'failed',**result}
 
 
 def _check_snapshot(pkg, model, sha, manifest, expected_manifest_sha256):
@@ -369,6 +384,13 @@ def _check_snapshot(pkg, model, sha, manifest, expected_manifest_sha256):
         actual = json.loads(result.stdout)
     except ValueError:
         actual = None
+    if type(actual) is not dict or (actual == compared and result.returncode != 0):
+        # The process runs the trusted runtime on bytes whose replay just passed in this process. One that printed no
+        # result (the host killed it, it ran out of memory, it crashed at start) or failed after printing that same
+        # result failed around the check: the host's fault, which says nothing about the package.
+        return {'ok':False,'fault':'host','replay_status':'not_run','_exit':4,
+                'error':f'replay process exited {result.returncode} without a replay result',
+                'stderr':result.stderr[-2000:],'source_evidence_kind':evidence['evidence_kind']}
     ok = result.returncode == 0 and actual == compared
     return {'ok':ok,'defects':[] if ok else [{'where':'package replay','what':'standalone replay differs'}],
             'evidence_kind':'replay','source_evidence_kind':evidence['evidence_kind'],
@@ -428,7 +450,8 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
     passed through unchanged; it is checked against the model's channel, and every named operation's effect against
     the grants, before any call. Every refusal before the first call (arguments, binding, grants, a package that fails
     its snapshot check) is returned with transport_open_attempted false and exit 1, with no live record, instead of
-    being recorded as a package failure. The plan stops at the first operator or host fault (exit 4, inconclusive).
+    being recorded as a package failure; a host failure reading back the snapshot copy raises instead, since it is no
+    refusal of the package. The plan stops at the first operator or host fault (exit 4, inconclusive).
     Every call is recorded append-only in emit/live-N.json; when the host cannot write that record, the results are
     still returned, as a host fault with exit 4, since the device was contacted."""
     try:

@@ -151,10 +151,18 @@ def _is_serial_binding(binding):
     return type(binding.get('vendor_id')) is int and type(binding.get('product_id')) is int
 
 
+def _model_json(path):
+    """A model.json read as the runtime reads it, with its strict bounded reader: the configurator judges the bytes the
+    runtime executes. It accepts a byte-order mark or UTF-16 as the runtime does, and raises ValueError for a duplicate
+    key, a non-finite constant or the size bound, RecursionError for nesting and OSError when it cannot read."""
+    from interface_runtime.evidence import read_json_hashed
+    return read_json_hashed(path, 1048576)[0]
+
+
 def _model_channel(name, arguments):
     model_dir = arguments.get('model_dir')
     path = Path(model_dir)/'model.json' if model_dir else Path(arguments['package_dir'])/'driver/model.json'
-    return json.loads(path.read_text(encoding='utf-8')).get('channel', {})
+    return _model_json(path).get('channel', {})
 
 
 def operation_effects(name, arguments):
@@ -164,7 +172,7 @@ def operation_effects(name, arguments):
         model_path=Path(model_dir)/'model.json'
     else:
         model_path=Path(arguments['package_dir'])/'driver/model.json'
-    model=json.loads(model_path.read_text(encoding='utf-8'))
+    model=_model_json(model_path)
     operations=model.get('operations',{})
     if model.get('schema')=='interface-model/1':
         steps=[step for group in operations.values() for step in group]+model.get('state',[])
@@ -184,9 +192,8 @@ def _refuse_invalid_model(model_dir):
     marks an effectful dispatch uncertain, so such a refusal leaves no effect to reconcile. A register model has no
     validation in the runtime: its probe runs it on the bus."""
     from interface_runtime.engine import SCHEMAS, validate_model
-    from interface_runtime.evidence import read_json_hashed
     try:
-        model, _ = read_json_hashed(Path(model_dir) / 'model.json', 1048576)
+        model = _model_json(Path(model_dir) / 'model.json')
     except (OSError, ValueError, RecursionError) as error:
         raise ValueError('The runtime cannot load model.json, so it would refuse it before opening the device; nothing '
                          'was dispatched: ' + type(error).__name__ + ': ' + str(error)) from None
@@ -601,10 +608,14 @@ def _live_outcome(event):
 def _frozen_package(package, strict=False):
     """What judging a run of a frozen package needs, read from its bytes: its content digest, its manifest's digest
     (which the snapshot emit_test_live executes carries), its driver directory's digest (which interface_execute runs
-    as a model), its identity operation, each operation's declared effect (absent is actuate, as the gateway reads it)
-    and its functions: the operations beyond identity with a step that reaches the device (an exchange or a USB
-    control transfer). An operation of delays alone sends nothing, so running it is no evidence of function. A register
-    (schema 1) model has no named operations: its effects and functions are None.
+    as a model), its identity operation, each operation's declared effect (absent is actuate, as the gateway reads it),
+    whether its channel declares that opening it resets the device (its runtime then needs the reset grant for every
+    operation) and its functions: the operations beyond identity with a step that reaches the device (an exchange or
+    a USB control transfer) other than the identity operation's own. An operation of delays alone sends nothing, and
+    one that repeats identity's exchanges (under another capture name or timeout) does nothing identity does not, so
+    running either is no evidence of function. A step is compared by what it sends and accepts: its op, tx, rx, USB
+    setup, expect and match. The model is read as the runtime reads it. A register (schema 1) model has no named
+    operations: its effects and functions are None.
 
     A part that is absent or does not parse is None. So is one the host cannot read, unless `strict`: the final verdict
     reads a package whose digest it has just verified, so a host failure there says nothing about the driver and
@@ -619,44 +630,67 @@ def _frozen_package(package, strict=False):
             if strict:
                 raise
             return None
-    model = read(lambda: json.loads((root / 'driver' / 'model.json').read_text(encoding='utf-8')))
+    model = read(lambda: _model_json(root / 'driver' / 'model.json'))
     identity = model.get('identity') if isinstance(model, dict) else None
     identity = identity.get('operation') if isinstance(identity, dict) else None
     operations = model.get('operations') if isinstance(model, dict) else None
     named = isinstance(operations, dict) and model.get('schema') != 'interface-model/1'
     effects = ({name: op.get('effect', 'actuate') if isinstance(op, dict) else None for name, op in operations.items()}
                if named else None)
-    reaches = lambda op: isinstance(op, dict) and isinstance(op.get('steps'), list) and any(
-        isinstance(step, dict) and step.get('op') != 'delay' for step in op['steps'])
-    functions = (sorted(name for name, op in operations.items() if name != identity and reaches(op))
+    def exchanges(op):
+        """What each step that reaches the device sends and accepts."""
+        steps = op.get('steps') if isinstance(op, dict) else None
+        return {json.dumps({key: step.get(key) for key in ('op', 'tx', 'rx', 'setup', 'expect', 'match')}, sort_keys=True)
+                for step in steps if isinstance(step, dict) and step.get('op') != 'delay'} if isinstance(steps, list) else set()
+    own = exchanges(operations.get(identity)) if named and identity is not None else set()
+    functions = (sorted(name for name, op in operations.items() if name != identity and exchanges(op) - own)
                  if named and identity is not None else None)
+    channel = model.get('channel') if isinstance(model, dict) else None
     return {'sha256': package['sha256'], 'manifest_sha256': read(lambda: digest(root / 'manifest.json')),
             'driver_sha256': read(lambda: digest(root / 'driver')), 'identity': identity, 'effects': effects,
+            'resets_on_open': isinstance(channel, dict) and channel.get('resets_on_open') is True,
             'functions': functions}
 
 
 NEVER_RAN = 'fresh reuse never ran the frozen package with emit_test_live'
 IDENTITY_ONLY = ('fresh reuse ran no function of the frozen package beyond its identity operation with emit_test_live; '
-                 'identity alone is not evidence of function, nor is an operation that only waits')
-UNGRANTED = ("the operator's effect grants permit no function of the frozen package beyond its identity operation, so "
-             'fresh reuse could not test one; that limit says nothing about the driver')
+                 'identity alone is not evidence of function, nor is an operation that only waits or repeats identity')
+UNGRANTED = ("the operator's grants permit no function of the frozen package beyond its identity operation (each needs an "
+             'effect, or the reset its channel declares on open, that was not granted), so fresh reuse could not test '
+             'one; that limit says nothing about the driver')
+UNREACHABLE = ('the operator granted no reset and the bound serial device resets when opened or was never listened to, so '
+               'the configurator refused every connection to it: no live probe or fresh reuse could reach the device; '
+               'that limit says nothing about the driver')
 
 
 def _ungranted(package, grants):
-    """Whether the operator's effect grants (`grants`, or None when not known) permit none of the frozen package's
-    functions (`_frozen_package`), although it has one: then the gateway refuses every function of it."""
+    """Whether the operator's grants (`grants`, or None when not known) permit none of the frozen package's functions
+    (`_frozen_package`), although it has one: the gateway refuses every function whose effect is not granted, and the
+    package's own runtime refuses every operation, before it opens the device, when its channel resets the device on
+    open and the reset is not granted."""
     if (package is None or grants is None or not isinstance(package.get('functions'), list)
             or not isinstance(package.get('effects'), dict)):
         return False
     functions = [package['effects'].get(name) for name in package['functions']]
+    if functions and package.get('resets_on_open') and 'reset' not in grants:
+        return True
     return bool(functions) and not any(effect in ('read', *grants) for effect in functions)
 
 
-def _fresh_reuse(package, events, started=(), grants=None):
+def _unreachable(binding, state, grants):
+    """Whether the gateway refuses every connection to the run's device (`_dispatch`): a serial `binding` that, by the
+    run's binding `state` (`Controller._binding_state`), was never listened to or was observed resetting on open, while
+    the operator's `grants` (None when not known) hold no reset. Then no live probe or fresh reuse could reach it."""
+    return (grants is not None and 'reset' not in grants and _is_serial_binding(binding) and isinstance(state, dict)
+            and (not state.get('listened') or bool(state.get('resets_on_open'))))
+
+
+def _fresh_reuse(package, events, started=(), grants=None, unreachable=False):
     """Judge fresh reuse's live operations of a frozen package (`_frozen_package`, or None when there is none), from
     the configurator's own records: `events` are tool.finished payloads and `started` tool.started payloads with
-    their dispatch ids; `grants` are the run's operator effect grants. The final verdict and each reuse attempt's
-    notes use this one rule.
+    their dispatch ids; `grants` are the run's operator grants; `unreachable` says the gateway refused every
+    connection to the run's device (`_unreachable`). The final verdict and each reuse attempt's notes use this one
+    rule.
 
     - It passes when every live operation succeeded (a call refused before the device was contacted is not one) and
       at least one emit_test_live ran the frozen package and a function of it beyond its identity operation (an
@@ -668,7 +702,8 @@ def _fresh_reuse(package, events, started=(), grants=None):
       operation ran.
     - It is unsettled (None) when a live operation was inconclusive (an operator, host or transport fault, or a
       failure of other bytes) or was dispatched without a recorded result, or when no function ran because the
-      operator's grants permit none: the gateway refuses those calls, which says nothing of the driver.
+      operator's grants permit none (an effect or the reset its channel needs) or let the configurator open no
+      connection to the device: those calls are refused before the device, which says nothing of the driver.
 
     Returns (the fresh_reuse_live_operations check, its diff entries)."""
     shas = lambda e: e.get('argument_sha256') or {}
@@ -713,9 +748,11 @@ def _fresh_reuse(package, events, started=(), grants=None):
     refused = sum(1 for _, outcome, _ in rows if outcome == 'refused')
     ran = [e for e, outcome, _ in rows if emitted(e) and outcome != 'refused']
     exercised = [e for e, outcome, _ in rows if functional(e, outcome)]
+    blocked = not exercised and bool(unreachable)
     ungranted = not exercised and _ungranted(package, grants)
     check = {'id': 'fresh_reuse_live_operations',
-             'passed': False if failed else None if ungranted else False if not exercised else None if unsettled else True,
+             'passed': (False if failed else None if blocked or ungranted else False if not exercised else None if unsettled
+                        else True),
              'operations': [{'dispatch_id': e.get('dispatch_id'), 'name': e.get('name'), 'ok': outcome == 'succeeded',
                              'outcome': outcome, **({'fault': detail} if detail else {}), 'emitted_package': emitted(e)}
                             for e, outcome, detail in rows],
@@ -728,17 +765,18 @@ def _fresh_reuse(package, events, started=(), grants=None):
     if not exercised:
         # The rule is a live test of a function of the frozen package itself; running its driver directory as a
         # model is judged above but is not that test.
-        diff.append({'id': check['id'], 'reason': UNGRANTED if ungranted else IDENTITY_ONLY if ran else NEVER_RAN + (
+        diff.append({'id': check['id'], 'reason': UNREACHABLE if blocked else UNGRANTED if ungranted else IDENTITY_ONLY if ran else NEVER_RAN + (
             ' (' + str(refused) + ' call' + ('s' if refused > 1 else '') + ' refused before the device was contacted)' if refused else '')})
     return check, diff
 
 
-def _self_evidence(accepted, events, started=(), assignments=(), grants=None):
+def _self_evidence(accepted, events, started=(), assignments=(), grants=None, unreachable=False):
     """A generic run's final verdict, from the configurator's own records only.
 
     `events` are tool.finished payloads; `started` are tool.started payloads with their dispatch ids; `assignments`
     are the run's reuse assignments as {id, inputs}, with the input hashes the configurator recorded; `grants` are the
-    run's operator effect grants.
+    run's operator grants; `unreachable` says the gateway refused every connection to the run's device
+    (`_unreachable`).
 
     - **Equivalent:** the emitted package passed emit_check replay of the recorded device exchanges, which the
       configurator ran at emit, and fresh reuse passed `_fresh_reuse`: every live operation succeeded, and at least
@@ -750,7 +788,9 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None):
       never ran a function of the package beyond its identity with emit_test_live.
     - **Unscored (None):** otherwise, when a live operation was inconclusive (an operator, host or transport fault, or
       a failure of bytes other than the emitted driver) or was dispatched without a recorded result, or when the
-      operator's grants permit no function of the package beyond its identity, so none could run.
+      operator's grants permit no function of the package beyond its identity (an effect or the reset its channel
+      needs), so none could run. So it is, whatever the replay, when the grants let the configurator open no
+      connection to the device: then no live probe could be recorded for a replay either.
 
     The frozen package is read strictly: a host failure to read it raises (a host stop that resume grades again),
     never a verdict about the driver.
@@ -778,7 +818,7 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None):
     judged |= {reuse['assignment_id']} if reuse is not None else set()
     mine = lambda e: e.get('assignment_id') in judged
     operations, live = _fresh_reuse(_frozen_package(packages[0], strict=True) if frozen else None,
-                                    [e for e in events if mine(e)], [e for e in started if mine(e)], grants)
+                                    [e for e in events if mine(e)], [e for e in started if mine(e)], grants, unreachable)
     diff = []
     if not replayed:
         if passed:
@@ -796,7 +836,10 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None):
                       'the emitted package did not pass emit_check' + (': ' + why if why else '') if candidates == 1 else
                       'none of the ' + str(candidates) + ' emitted packages passed emit_check')
         diff.append({'id': replay['id'], 'reason': reason})
-    equivalent = False if not replayed else operations['passed']
+    # A device the configurator could never open yields no live probe to replay: the missing replay is the operator's
+    # limit, not the driver's, and leaves the verdict unscored unless the driver failed. It is never equivalent.
+    equivalent = (operations['passed'] if replayed else
+                  None if unreachable and operations['passed'] is not False else False)
     return {'equivalent': equivalent, 'basis': 'self-evidence', 'checks': [replay, operations], 'diff': diff + live}
 
 
@@ -1668,7 +1711,8 @@ class Controller:
                                          [{**json.loads(row['payload']), 'dispatch_id': str(row['seq'])}
                                           for row in rows if row['kind'] == 'tool.started'],
                                          [{'id': row['id'], 'inputs': json.loads(row['payload']).get('inputs')} for row in reuses],
-                                         spec.get('effects'))
+                                         spec.get('effects'),
+                                         _unreachable(spec.get('binding'), self._binding_state(run_id), spec.get('effects')))
         with self._db() as db:
             if db.execute('SELECT cancelled FROM runs WHERE id=?', (run_id,)).fetchone()['cancelled']:
                 return None
@@ -2141,7 +2185,9 @@ class Controller:
                     "SELECT seq,payload FROM events WHERE run_id=? AND kind='tool.started' ORDER BY seq", (run_dir.name,))]
             operations, live = _fresh_reuse(_frozen_package(package) if package else None, mine,
                                             [e for e in started if e.get('assignment_id') == assignment['id']],
-                                            spec.get('effects'))
+                                            spec.get('effects'),
+                                            _unreachable(assignment.get('binding'), self._binding_state(run_dir.name),
+                                                         spec.get('effects')))
             executed = operations['passed'] is True
             selected = [str(p) for p in paths] if executed else []
             checks.append({'name':'fresh_package_execution','passed':operations['passed'],

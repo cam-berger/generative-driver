@@ -360,7 +360,9 @@ def _register_snapshot(pkg, temporary, checked):
 
 
 # What only the host can make fail. The checks read the package's and the model's bytes inside their own handlers
-# and refuse what they cannot read, so an OSError that reaches emit_check came from the host's side of the check.
+# and refuse what they cannot read, and a register check runs the candidate's converter inside its own handler and
+# fails the package on whatever it raises, so an OSError or ImportError that reaches emit_check came from the host's
+# side of the check.
 HOST_FAULTS = (OSError, ImportError, subprocess.TimeoutExpired, MemoryError)
 
 
@@ -374,9 +376,10 @@ def emit_check(package_dir, model_dir=None, seeds=20, seed=0, tol_rel=1e-9, expe
     this check works for any register device. An interface package replays its recorded exchanges instead.
 
     A package or argument the check refuses is a failed check (exit 1), whatever the package bytes made fail,
-    including bytes it cannot read or parse. Only a failure outside the package bytes is the host's: a file or
-    process failure around the check (its temporary folder, starting the replay), an import, a timeout or memory
-    exhaustion. That result is fault host with exit 4: it says nothing about the package.
+    including bytes it cannot read or parse and a register converter that will not load. Only a failure outside the
+    package bytes is the host's: a file or process failure around the check (its temporary folder, reading back its
+    own snapshot copy, starting the replay or a replay process that ends without a result), an import, a timeout or
+    memory exhaustion. That result is fault host with exit 4: it says nothing about the package.
     """
     try:
         return _emit_check(package_dir, model_dir, seeds, seed, tol_rel, expected_manifest_sha256)
@@ -395,7 +398,7 @@ def _emit_check(package_dir, model_dir, seeds, seed, tol_rel, expected_manifest_
                 'what': 'a register package requires an explicit model_dir'}], '_exit': 1}
     md = model_dir if os.path.isabs(model_dir) else os.path.join(core.BENCH, model_dir)
     if not os.path.isfile(os.path.join(md, "model.json")):
-        return {'ok': False, 'defects': [{'where': 'model_dir', 'what': 'model.json is missing'}], '_exit': 1}
+        return {'ok': False, 'defects': [{'where': 'model_dir', 'what': 'model.json is missing or its folder cannot be searched'}], '_exit': 1}
     try:
         loaded, _sha = interface.load(md)
     except (OSError, RecursionError) as exc:
@@ -418,7 +421,14 @@ def _emit_check(package_dir, model_dir, seeds, seed, tol_rel, expected_manifest_
 
 
 def _check_register_snapshot(pkg, md, seeds, seed, tol_rel):
-    model, convert = runner.load_model(md)
+    try:
+        # Loading imports the candidate's converter (driver/convert.py, pinned to the model's, whose model.json the check
+        # has already read): whatever it raises, an ImportError or OSError included, is the package's defect, never
+        # the host's. Its conversions run on register files below, where an error marks bytes out of its domain.
+        model, convert = runner.load_model(md)
+    except Exception as exc:
+        return {"ok": False, "seeds_run": 0, "_exit": 1,
+                "defects": [{"where": "driver/convert.py", "what": f"will not load: {type(exc).__name__}: {exc}"}]}
     want_reads = runner.read_ranges(model)
     want_writes = runner.write_set(model, convert)
     rng = random.Random(seed)

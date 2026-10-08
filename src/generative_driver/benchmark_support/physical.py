@@ -68,7 +68,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         shutil.copy2(model,ws/'model/model.json');shutil.copy2(converter,ws/'model/convert.py')
         state['physical_model_dir']=str(ws/'model');_write(state_path,state)
         return {'objective':'Run probe_run on the supplied model with n=3. Write capabilities.json mapping temperature, humidity, pressure to the actual output names; units must be Celsius, percent RH and pascals. Report identity and observed finite values; no absolute calibration is established yet.',
-                'inputs':[str(ws/'model')],'allowed_tools':['probe_run','probe_diff','model_validate'],
+                'inputs':[str(ws/'model')],'allowed_tools':['probe_run','probe_diff'],
                 'context':{'model_dir':str(ws/'model')},'binding':binding,'effects':['write']}
     if stage == 'ground':
         observations=[o for o in options.get('operator_observations',[]) if isinstance(o,dict) and o.get('stage')==stage]

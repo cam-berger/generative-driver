@@ -23,6 +23,21 @@ class PhysicalPrerequisitesTests(unittest.TestCase):
             self.assertFalse(checked['ok'])
             self.assertIn('Operator reference missing',checked['reason'])
 
+    def test_physical_probe_worker_cannot_validate_its_sealed_register_model_in_place(self):
+        """The register validator writes defects.json beside the model it checks, which would alter the probe stage's
+        sealed input and stop the run for integrity; the evaluator validates the model itself at interpret."""
+        import json
+        from generative_driver.benchmark_support.physical import prepare_stage as physical_prepare
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'benchmark').mkdir();model=root/'interpreted';model.mkdir()
+            (model/'model.json').write_text(json.dumps({'schema':'interface-model/1'}));(model/'convert.py').write_text('')
+            (root/'benchmark/state.json').write_text(json.dumps({'model_dir':str(model)}))
+            prepared=physical_prepare('bme280','probe',root,root/'worker',
+                options={'binding':{'url':'ftdi://scripted/1'},'configured_effects':['write']})
+            self.assertEqual(prepared['inputs'],[str((root/'worker'/'model').resolve())])
+            self.assertIn('probe_run',prepared['allowed_tools'])
+            self.assertNotIn('model_validate',prepared['allowed_tools'])
+
     def test_physical_probe_does_not_bypass_operator_grants_or_managed_dispatch(self):
         from generative_driver.benchmark import check_stage
         with tempfile.TemporaryDirectory() as directory:

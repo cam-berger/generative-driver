@@ -509,26 +509,156 @@ class ToolFaultTests(unittest.TestCase):
                      '{"x": ' + "[" * 100000 + "]" * 100000 + "}", "defects"),
                     ("a manifest nested deeper than the parser allows", "manifest.json",
                      '{"x": ' + "[" * 100000 + "]" * 100000 + "}", "error"),
-                    ("a driver model the host may not read", "driver/model.json", None, "defects")):
+                    ("a driver model the host may not read", "driver/model.json", None, "defects"),
+                    # Searching a folder needs its execute permission, which Python 3.12 and earlier report as an error.
+                    ("a driver folder the host may not search", "driver", None, "defects")):
                 with self.subTest(package=name):
                     package = root / name.replace(" ", "-"); shutil.copytree(emitted["package_dir"], package)
+                    folder = (package / path).is_dir()
+                    mode = 0o755 if folder else 0o644
                     if content is not None:
                         (package / path).write_text(content)
                         if path != "manifest.json":
                             self.reseal(package)
                     else:
                         (package / path).chmod(0)
-                        if os.access(package / path, os.R_OK):
-                            (package / path).chmod(0o644)
+                        if os.access(package / path, os.X_OK if folder else os.R_OK):
+                            (package / path).chmod(mode)
                             self.skipTest("this host reads files without read permission")
                     try:
                         checked = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": str(package)})
                     finally:
-                        (package / path).chmod(0o644)
+                        (package / path).chmod(mode)
                     self.assertEqual((checked["_exit"], checked.get("ok", False)), (1, False), checked)
                     self.assertTrue(checked.get(refusal), checked)
                     self.assertNotIn("fault", checked)
                     self.assertNotEqual(checked.get("replay_status"), "passed", checked)
+
+    def test_a_snapshot_copy_the_host_cannot_read_back_is_a_host_fault_never_a_package_defect(self):
+        """Both tools copy a package that passed its integrity check into a temporary snapshot and verify the copy. A
+        read of that copy the host refuses (an antivirus or indexer lock, an I/O error) is the host's failure around
+        the check: emit_check reports a host fault, and emit_test_live raises it undeclared, so it reads as
+        inconclusive, never as a refusal of the package."""
+        import interface_runtime.package as runtime_package
+        from generative_driver.toolkit import call_tool
+        from generative_driver.configurator import _host_fault, _live_outcome, digest
+        seen = []
+        with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE), seen) as binding:
+            root = Path(temp).resolve()
+            _, emitted = self.emitted(root, binding)
+            package = Path(emitted["package_dir"])
+            real_digest = runtime_package.digest
+            def locked(path):
+                if Path(path).name == "engine.py" and "package" in Path(path).parts and not Path(path).is_relative_to(package):
+                    raise PermissionError(13, "The process cannot access the file because it is being used by another process", str(path))
+                return real_digest(path)
+            del seen[:]
+            with patch.object(runtime_package, "digest", locked):
+                checked = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": str(package)})
+                live = call_tool("emit_test_live", {"run_dir": str(root / "reuse"), "package_dir": str(package),
+                                                    "binding": binding, "operations": ["measure"]})
+            self.assertEqual((checked["_exit"], checked["ok"], checked["fault"], checked["replay_status"]),
+                             (4, False, "host", "not_run"), checked)
+            self.assertTrue(checked["error"].startswith("PermissionError: "), checked)
+            self.assertTrue(_host_fault(checked))
+            self.assertNotIn("transport_open_attempted", live)
+            self.assertTrue(live["error"].startswith("PermissionError: "), live)
+            event = {"name": "emit_test_live", "connected": True, "ok": False, "result": live, "dispatch_id": "7",
+                     "argument_sha256": {"package_dir": digest(package)}}
+            self.assertEqual(_live_outcome(event), ("inconclusive", "host fault (PermissionError)"))
+            self.assertEqual(seen, [])
+            # The same package on a host that reads its copy back.
+            passed = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": str(package)})
+            self.assertEqual((passed["_exit"], passed["replay_status"]), (0, "passed"), passed)
+            ran = call_tool("emit_test_live", {"run_dir": str(root / "reuse"), "package_dir": str(package),
+                                               "binding": binding, "operations": ["measure"]})
+            self.assertEqual((ran["_exit"], ran["ok"]), (0, True), ran)
+
+    def test_a_replay_process_the_host_ended_is_a_host_fault_never_a_differing_replay(self):
+        """emit_check replays the verified snapshot in a separate process of the trusted runtime, after the same replay
+        passed in the check's own process. A replay process that printed no result (killed by the host, out of memory,
+        crashed at start) or exited with an error after printing the same result failed around the check: a host
+        fault. Only a replay process that printed a different result says the package's replay differs."""
+        import subprocess as subprocess_module
+        from generative_driver._toolchain import interface
+        from generative_driver.toolkit import call_tool
+        from generative_driver.configurator import _host_fault
+        real_run = subprocess_module.run
+        with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE)) as binding:
+            root = Path(temp).resolve()
+            _, emitted = self.emitted(root, binding)
+            package = emitted["package_dir"]
+            same = real_run([sys.executable, "-I", "-B", "-c", interface.BOOT, package, "replay"], capture_output=True,
+                            text=True, timeout=120).stdout
+            self.assertEqual(json.loads(same)["ok"], True, same)
+            for name, returncode, stdout, host in (
+                    ("a process the host killed", -9, "", True),
+                    ("a process that exited cleanly without a result", 0, "", True),
+                    ("a process that printed half a result", 0, same[: len(same) // 2], True),
+                    ("a process that printed the same result and then failed", 1, same, True),
+                    ("a process that printed a different result", 1, json.dumps({"ok": False, "defects": ["differs"]}), False)):
+                with self.subTest(replay=name):
+                    def replay(command, **kwargs):
+                        if "replay" in command:
+                            return subprocess_module.CompletedProcess(command, returncode, stdout, "")
+                        return real_run(command, **kwargs)
+                    with patch.object(subprocess_module, "run", replay):
+                        checked = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": package})
+                    self.assertFalse(checked["ok"], checked)
+                    if host:
+                        self.assertEqual((checked["_exit"], checked["fault"], checked["replay_status"]), (4, "host", "not_run"), checked)
+                        self.assertTrue(_host_fault(checked))
+                    else:
+                        self.assertEqual((checked["_exit"], checked["replay_status"]), (1, "failed"), checked)
+                        self.assertNotIn("fault", checked)
+                        self.assertFalse(_host_fault(checked))
+                        self.assertEqual(checked["defects"], [{"where": "package replay", "what": "standalone replay differs"}])
+
+    def test_a_register_converter_that_fails_to_load_fails_the_check_and_is_no_host_fault(self):
+        """A register package's seeded check imports the candidate's converter and runs it on register files. An error
+        that converter raises, an ImportError or OSError included, is the package's: the check fails (exit 1), naming
+        driver/convert.py when it will not load. It is never reported as a host fault."""
+        from generative_driver.toolkit import call_tool
+        model = {"schema": "interface-model/1", "device": {"name": "invented register sensor"},
+                 "channel": {"type": "i2c", "address_7bit": "0x20", "speed_hz": 100000},
+                 "identity": {"from": "id", "expect": ["0x42"]},
+                 "operations": {"identify": [{"op": "reg_read", "reg": "0x00", "len": 1, "as": "id"}],
+                                "measure": [{"op": "reg_read", "reg": "0x10", "len": 1, "as": "raw"}]},
+                 "conversion": {"module": "convert.py", "entry": "convert", "outputs": {"value": {"unit": "count"}}},
+                 "safety": {"safe_reads": ["0x00", "0x10"], "known_safe_writes": [], "never": []},
+                 "provenance": [{"item": "operations." + key, "source": "invented register contract"} for key in ("identify", "measure")]}
+        probe = {"address": "0x20", "identity": "0x42", "identity_ok": True,
+                 "samples": [{"t_wall": 0, "values": {"value": 1}, "raw": "23"}], "evidence_kind": "replay"}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            (root / "probe.json").write_text(json.dumps(probe))
+            for name, converter, defects in (
+                    ("a converter that imports a missing module",
+                     "import module_the_worker_forgot\ndef convert(inputs):\n    return {'value': 1}\n", ["driver/convert.py"]),
+                    ("a converter that opens a file that is not there",
+                     "open('no-such-calibration.bin', 'rb')\ndef convert(inputs):\n    return {'value': 1}\n", ["driver/convert.py"]),
+                    # Bytes a conversion cannot cope with are outside the model's domain: no seed runs, and the check fails.
+                    ("a converter that raises an OSError on the bytes",
+                     "def convert(inputs):\n    raise OSError('calibration table unreadable')\n", None),
+                    ("a converter that works", "def convert(inputs):\n    return {'value': inputs['0x10'][0] / 2}\n", [])):
+                with self.subTest(converter=name):
+                    workspace = root / name.replace(" ", "-"); workspace.mkdir()
+                    (workspace / "model.json").write_text(json.dumps(model))
+                    (workspace / "convert.py").write_text(converter)
+                    emitted = call_tool("emit_package", {"run_dir": str(root / "run"), "model_dir": str(workspace),
+                                                         "probe": str(root / "probe.json")})
+                    self.assertEqual(emitted["_exit"], 0, emitted)
+                    checked = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": emitted["package_dir"],
+                                                       "model_dir": str(workspace), "seeds": 2})
+                    self.assertNotIn("fault", checked)
+                    if defects == []:
+                        self.assertEqual((checked["_exit"], checked["ok"]), (0, True), checked)
+                    else:
+                        self.assertEqual((checked["_exit"], checked["ok"]), (1, False), checked)
+                    if defects:
+                        self.assertEqual([d["where"] for d in checked["defects"]], defects, checked)
+                    elif defects is None:
+                        self.assertEqual(checked["seeds_run"], 0, checked)
 
     def test_emit_check_keeps_a_passed_replay_when_its_temporary_folder_cannot_be_removed(self):
         """On Windows an antivirus or indexer can hold a file open briefly, so removing a temporary folder fails after

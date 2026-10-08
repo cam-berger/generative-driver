@@ -8,12 +8,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from generative_driver.benchmark import prepare_stage, check_stage
+from generative_driver.benchmark import prepare_stage, observe_stage
 
 
 class InterpretationBindingTests(unittest.TestCase):
-    def test_malformed_interpretation_is_retained_for_bounded_repair(self):
-        # Catches intact frozen output being terminal just because collection rejected its schema.
+    def test_malformed_interpretation_is_handed_on_with_notes_and_never_routes_by_itself(self):
+        # Catches intact frozen output being dropped, or a schema failure routing or stopping the run by itself.
         for raw in ('{unfinished', '{"schema":"unsupported-model/99"}'):
             with self.subTest(raw=raw), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary).resolve()
@@ -21,19 +21,14 @@ class InterpretationBindingTests(unittest.TestCase):
                 first_ws = Path(first['work_dir']); self.addCleanup(shutil.rmtree, first_ws.parent, True)
                 (first_ws/'model.json').write_text(raw)
                 (first_ws/'NOTES.md').write_text('Partial analysis to preserve.')
-                failed = check_stage('tq9-v2', 'interpret', root/'run', first_ws, None)
-                self.assertEqual(failed['fault'], 'model')
-                self.assertEqual(failed['route'], 'interpret')
-                self.assertTrue(failed['feedback']['structural_defects'])
-                following = prepare_stage('tq9-v2', 'interpret', root/'run', root/'repair',
-                    options={'revision': 1, 'feedback': failed['feedback']})
-                ws = Path(following['work_dir']); self.addCleanup(shutil.rmtree, ws.parent, True)
-                context = json.loads((ws/'REPAIR_CONTEXT.json').read_text())
-                prior = context['history'][-1]['files']
-                self.assertEqual((ws/prior['model.json']).read_text(), raw)
+                checked = observe_stage('tq9-v2', 'interpret', root/'run', first_ws, None)
+                for key in ('ok', 'fault', 'route', 'stop', 'feedback'):
+                    self.assertNotIn(key, checked)
+                self.assertEqual({Path(p).name for p in checked['artifacts']}, {'model.json', 'NOTES.md'})
+                self.assertFalse(next(c for c in checked['checks'] if c['name'] == 'executable_model')['passed'])
 
     def test_repair_does_not_follow_candidate_links_outside_the_workspace(self):
-        # Catches turning a candidate symlink into host-copied repair evidence.
+        # Catches turning a candidate symlink into host-copied repair evidence; a link is noted, never followed.
         from tq9_workflow_fixture import model
         from generative_driver.benchmark_support.cases import _write
         from generative_driver.configurator import digest
@@ -48,14 +43,16 @@ class InterpretationBindingTests(unittest.TestCase):
                 (ws/'capabilities.json').symlink_to(private)
             except OSError:
                 self.skipTest('Symbolic links unavailable for this test user')
-            with self.assertRaisesRegex(ValueError, 'assigned evidence roots'):
-                check_stage('tq9-v2', 'probe', root/'run', ws, {'status': 'needs_revision'})
+            checked = observe_stage('tq9-v2', 'probe', root/'run', ws, {'status': 'needs_revision'})
+            self.assertNotIn('stop', checked)
+            self.assertNotIn(str(ws/'capabilities.json'), checked['artifacts'])
+            self.assertIn(str(ws/'capabilities.json'), [d['path'] for d in checked['notes']['dropped_artifacts']])
             for saved in (root/'run/benchmark').rglob('*'):
                 if saved.is_file():
                     self.assertNotIn(b'PRIVATE OUTSIDE SENTINEL', saved.read_bytes())
 
-    def test_structural_revision_preserves_the_failed_interpretation(self):
-        # Catches losing partial analysis when qualification requests another attempt.
+    def test_structural_notes_keep_the_unqualified_interpretation(self):
+        # Catches losing partial analysis when predicted replies are missing.
         from tq9_workflow_fixture import model
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -64,20 +61,15 @@ class InterpretationBindingTests(unittest.TestCase):
             candidate = model(); candidate['channel'] = {'type': 'tcp'}
             (first_ws/'model.json').write_text(json.dumps(candidate))
             (first_ws/'NOTES.md').write_text('Partial handler analysis; predicted replies still missing.')
-            failed = check_stage('tq9-v2', 'interpret', root/'run', first_ws, None)
-            self.assertEqual(failed['route'], 'interpret')
-            following = prepare_stage('tq9-v2', 'interpret', root/'run', root/'repair',
-                options={'revision': 1, 'feedback': failed['feedback']})
-            ws = Path(following['work_dir']); self.addCleanup(shutil.rmtree, ws.parent, True)
-            context = json.loads((ws/'REPAIR_CONTEXT.json').read_text())
-            self.assertTrue(context['history'], 'Structural repair lost the preceding model and notes')
-            prior = context['history'][-1]
-            self.assertEqual(prior['stage'], 'interpret')
-            self.assertEqual(json.loads((ws/prior['files']['model.json']).read_text()), candidate)
-            self.assertIn('replies still missing', (ws/prior['files']['NOTES.md']).read_text())
+            checked = observe_stage('tq9-v2', 'interpret', root/'run', first_ws, None)
+            self.assertNotIn('route', checked)
+            self.assertFalse(next(c for c in checked['checks'] if c['name'] == 'predicted_reply_qualification')['passed'])
+            kept = {Path(p).name: Path(p) for p in checked['artifacts']}
+            self.assertEqual(json.loads(kept['model.json'].read_text()), candidate)
+            self.assertIn('replies still missing', kept['NOTES.md'].read_text())
 
     def test_repair_receives_immutable_prior_candidate_and_public_task_context(self):
-        # Catches starting binary discovery over after losing the failed candidate.
+        # Catches starting binary discovery over after losing the failed candidate, or repairing from a grade.
         from tq9_workflow_fixture import model, replies
         from generative_driver.configurator import digest
         from types import SimpleNamespace
@@ -92,16 +84,19 @@ class InterpretationBindingTests(unittest.TestCase):
                        return_value=SimpleNamespace(binding={'host': '127.0.0.1', 'port': 1})):
                 prepare_stage('tq9-v2', 'probe', root/'run', root/'probe', accepted)
             (root/'probe/capabilities.json').write_text('{"schema":"benchmark-capabilities/2","tasks":{}}')
-            failed = check_stage('tq9-v2', 'probe', root/'run', root/'probe',
+            observe_stage('tq9-v2', 'probe', root/'run', root/'probe',
                 {'status': 'needs_revision', 'summary': 'Canonical tasks are missing', 'unresolved': ['temperature']}, accepted)
+            diff = [{'source': 'probe_run', 'dispatch_id': '7', 'code': 'output', 'what': 'key not present in reply'}]
             prepared = prepare_stage('tq9-v2', 'interpret', root/'run', root/'repair', accepted,
-                options={'revision': 1, 'feedback': failed['feedback'], 'configured_effects': ['write', 'actuate']})
+                options={'revision': 1, 'feedback': diff, 'configured_effects': ['write', 'actuate']})
             ws = Path(prepared['work_dir']); self.addCleanup(shutil.rmtree, ws.parent, True)
             self.assertTrue((ws/'REPAIR_CONTEXT.json').is_file(), 'Repair has no usable context contract')
             context = json.loads((ws/'REPAIR_CONTEXT.json').read_text())
             self.assertEqual(context['mode'], 'repair')
             self.assertEqual(context['feedback'], 'DEFECTS.json')
+            self.assertEqual(json.loads((ws/'DEFECTS.json').read_text()), diff)
             prior = context['history'][-1]['files']
+            self.assertNotIn('feedback.json', prior)
             expected_model = model(); expected_model['channel'] = {'type': 'tcp'}
             self.assertEqual(json.loads((ws/prior['model.json']).read_text()), expected_model)
             self.assertEqual(json.loads((ws/prior['replies.json']).read_text()), replies())
@@ -121,7 +116,7 @@ class InterpretationBindingTests(unittest.TestCase):
             next((root/'run/benchmark/candidate-history').rglob('model.json')).write_text('{}')
             with self.assertRaisesRegex(ValueError, 'repair evidence hash changed'):
                 prepare_stage('tq9-v2', 'interpret', root/'run', root/'changed', accepted,
-                    options={'revision': 1, 'feedback': failed['feedback']})
+                    options={'revision': 1, 'feedback': diff})
 
     def test_probe_supplies_executable_capability_validation_before_submission(self):
         from tq9_workflow_fixture import model, capabilities
@@ -178,8 +173,10 @@ class InterpretationBindingTests(unittest.TestCase):
                             [sys.executable, 'qualify.py', '.', 'replies.json']):
                 result = subprocess.run(command, cwd=ws, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            checked = check_stage('sampled-sensor-v1', 'interpret', root/'run', ws, None)
-            self.assertTrue(checked['ok'], checked)
+            checked = observe_stage('sampled-sensor-v1', 'interpret', root/'run', ws, None)
+            self.assertNotIn('stop', checked)
+            self.assertTrue(all(c['passed'] for c in checked['checks']), checked)
+            self.assertIn('model.json', {Path(p).name for p in checked['artifacts']})
             self.assertIn('BINDING_CONTEXT.json', json.loads((ws/'INPUT_HASHES.json').read_text()))
 
 
@@ -302,21 +299,17 @@ class DiagnosticRepairTests(unittest.TestCase):
             self.assertFalse(result['transport_open_attempted'])
             self.assertEqual(result['transcript'], [])
 
-    def test_ground_discrepancy_routes_to_interpretation_with_its_claim(self):
-        # Catches dropping a requested ground repair while budget is available.
+    def test_ground_discrepancy_claim_is_a_note_and_never_routes_by_itself(self):
+        # Catches a worker's own claim, or an evaluator diagnostic, routing the run: only a device diff repairs.
         from generative_driver.benchmark_support.cases import _write
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             _write(root/'run/benchmark/state.json', {'diagnostic': {'passed': True}})
-            checked = check_stage('tq9-v2', 'ground', root/'run', root/'worker',
-                {'status': 'needs_revision', 'summary': 'Decoded temperature contradicts the paired monitor reading',
+            checked = observe_stage('tq9-v2', 'ground', root/'run', root/'worker',
+                {'status': 'needs_revision', 'summary': 'Decoded temperature contradicts the paired instrument reading',
                  'unresolved': ['The decoder needs a measured scale correction']})
-            self.assertFalse(checked['ok'])
-            self.assertEqual(checked.get('route'), 'interpret')
-            self.assertEqual(checked['fault'], 'model')
-            self.assertEqual(checked['feedback']['worker_claim']['unresolved'],
-                             ['The decoder needs a measured scale correction'])
-            self.assertEqual(checked['reason'], 'Ground evidence requires model revision')
+            for key in ('ok', 'fault', 'route', 'feedback', 'stop', 'device_diff'):
+                self.assertNotIn(key, checked)
 
     def test_binding_bounds_errors_reach_repair_without_disclosing_evaluator_inputs(self):
         from tq9_workflow_fixture import model, capabilities
@@ -389,12 +382,13 @@ class DiagnosticRepairTests(unittest.TestCase):
             (ws/'capabilities.json').write_text(json.dumps(capabilities))
             _write(root/'run/benchmark/state.json', {'adapted_model_dir': str(model_dir),
                 'adaptation': {'adapted_model_sha256': sha256(raw).hexdigest()}})
-            with patch('generative_driver.benchmark_support.emulated._diagnose') as dispatch:
-                result = check_stage('tq9-v2', 'probe', root/'run', ws, {'status': 'completed'})
-            dispatch.assert_not_called()
-            self.assertEqual(result['fault'], 'model')
-            self.assertEqual(result['route'], 'interpret')
-            errors = result['feedback']['capability_errors']
+            with patch('generative_driver.benchmark_support.emulated_evidence._diagnose') as dispatch, \
+                 patch('generative_driver.toolkit.call_tool') as tools:
+                result = observe_stage('tq9-v2', 'probe', root/'run', ws, {'status': 'completed'})
+            dispatch.assert_not_called(); tools.assert_not_called()
+            for key in ('ok', 'fault', 'route', 'stop'):
+                self.assertNotIn(key, result)
+            errors = next(c for c in result['checks'] if c['name'] == 'capability_mapping')['errors']
             self.assertTrue(all(error['code'] == 'capability_mapping' for error in errors))
             self.assertIn('kind', json.dumps(errors))
             self.assertIn('unit', json.dumps(errors))
@@ -406,8 +400,8 @@ class DiagnosticRepairTests(unittest.TestCase):
         self.assertEqual(bind_task(capabilities, 'set_duty', {'duty': 500}, candidate),
             {'operation': 'set_duty', 'parameters': {'duty': 500}})
 
-    def test_malformed_candidate_capabilities_route_to_model_repair(self):
-        # Catches candidate JSON syntax escaping as a host/evaluator failure.
+    def test_malformed_or_unreadable_candidate_capabilities_are_notes(self):
+        # Catches candidate JSON escaping as a host stop, or an unreadable worker file stopping the run.
         from generative_driver.benchmark_support.cases import _write
         from hashlib import sha256
         with tempfile.TemporaryDirectory() as temporary:
@@ -417,22 +411,22 @@ class DiagnosticRepairTests(unittest.TestCase):
             _write(root/'run/benchmark/state.json', {'adapted_model_dir': str(model_dir),
                 'adaptation': {'adapted_model_sha256': sha256(b'{}').hexdigest()}})
             (ws/'capabilities.json').write_text('{unfinished')
-            try:
-                checked = check_stage('tq9-v2', 'probe', root/'run', ws,
-                    {'status': 'needs_revision', 'unresolved': []})
-            except ValueError as error:
-                self.fail('Candidate JSON escaped the model-fault boundary: ' + str(error))
-            self.assertFalse(checked['ok'])
-            self.assertEqual(checked['fault'], 'model')
-            self.assertEqual(checked['route'], 'interpret')
-            self.assertEqual(checked['feedback']['missing'], ['valid capabilities.json'])
-            original_read = Path.read_text
+            checked = observe_stage('tq9-v2', 'probe', root/'run', ws, {'status': 'needs_revision', 'unresolved': []})
+            for key in ('ok', 'fault', 'route', 'stop'):
+                self.assertNotIn(key, checked)
+            mapping = next(c for c in checked['checks'] if c['name'] == 'capability_mapping')
+            self.assertFalse(mapping['passed'])
+            self.assertIn('valid UTF-8 JSON', mapping['reason'])
+            original_read = Path.read_bytes
             def unreadable(path, *args, **kwargs):
                 if path == ws/'capabilities.json':
                     raise PermissionError('host fixture cannot read file')
                 return original_read(path, *args, **kwargs)
-            with patch.object(Path, 'read_text', unreadable), self.assertRaises(PermissionError):
-                check_stage('tq9-v2', 'probe', root/'run', ws, {'status': 'needs_revision'})
+            with patch.object(Path, 'read_bytes', unreadable):
+                checked = observe_stage('tq9-v2', 'probe', root/'run', ws, {'status': 'needs_revision'})
+            self.assertNotIn(str(ws/'capabilities.json'), checked['artifacts'])
+            self.assertIn('unreadable', next(c for c in checked['checks'] if c['name'] == 'capability_mapping')['reason'])
+            self.assertIn(str(ws/'capabilities.json'), [d['path'] for d in checked['notes']['dropped_artifacts']])
 
     def test_feedback_pairs_observed_discrepancy_with_check_and_channel(self):
         # Catches stripping the information a repair agent needs to locate a defect.
@@ -476,19 +470,19 @@ class DiagnosticRepairTests(unittest.TestCase):
             self.assertEqual(result['transcript'], [])
             self.assertFalse((root/'tools').exists())
 
-    def test_incomplete_capability_mapping_requests_bounded_interpretation_repair(self):
-        # Catches consuming an evidence gap as a terminal failure before repair.
+    def test_incomplete_capability_mapping_is_a_note_never_a_repair_route(self):
+        # Catches turning a missing mapping, or the worker's own claim, into a route or a stop.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             root.joinpath('worker').mkdir()
-            checked = check_stage('tq9-v2', 'probe', root/'run', root/'worker',
+            checked = observe_stage('tq9-v2', 'probe', root/'run', root/'worker',
                 {'status': 'needs_revision', 'summary': 'Decoder contradicts observations',
                  'unresolved': ['temperature scaling remains unresolved']})
-            self.assertFalse(checked['ok'])
-            self.assertEqual(checked.get('route'), 'interpret')
-            self.assertEqual(checked['fault'], 'model')
-            self.assertEqual(checked['feedback']['unresolved'], ['temperature scaling remains unresolved'])
-            self.assertEqual(checked['feedback']['missing'], ['capabilities.json'])
+            for key in ('ok', 'fault', 'route', 'stop', 'feedback'):
+                self.assertNotIn(key, checked)
+            mapping = next(c for c in checked['checks'] if c['name'] == 'capability_mapping')
+            self.assertFalse(mapping['passed'])
+            self.assertEqual(mapping['reason'], 'Missing capability mapping')
 
 
 if __name__ == '__main__':

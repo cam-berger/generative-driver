@@ -4,7 +4,16 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from generative_driver.benchmark import prepare_stage, check_stage
+from generative_driver.benchmark import prepare_stage, observe_stage
+
+GRADES = {'passed', 'expected', 'checks', 'verdict', 'grade', 'absolute_tolerance', 'evaluator'}
+
+
+def grade_keys(value):
+    """Keys anywhere in a JSON value that would carry a grade or an answer."""
+    if isinstance(value, dict):
+        return {key for key in value if key in GRADES} | {k for item in value.values() for k in grade_keys(item)}
+    return {k for item in value for k in grade_keys(item)} if isinstance(value, list) else set()
 
 
 class TQ9V2Tests(unittest.TestCase):
@@ -24,35 +33,44 @@ class TQ9V2Tests(unittest.TestCase):
             self.assertNotIn('scenario_id', projected)
             self.assertEqual(prepared['context']['origin'], 'provided_binary')
 
-    def test_acquisition_requires_imported_matching_bytes(self):
-        # Catches accepting a success claim or stale hash without imported bytes.
+    def test_acquisition_hands_on_only_imported_matching_bytes_and_notes_the_rest(self):
+        # Catches accepting a success claim or stale hash without imported bytes, or stopping on worker output.
         from generative_driver.toolkit import call_tool
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             ws = root/'worker'
             prepared = prepare_stage('tq9-v2', 'acquire', root/'run', ws)
-            self.assertFalse(check_stage('tq9-v2', 'acquire', root/'run', ws, {'status': 'completed'})['ok'])
+            def observed():
+                checked = observe_stage('tq9-v2', 'acquire', root/'run', ws, {'status': 'completed'})
+                self.assertNotIn('stop', checked); self.assertNotIn('ok', checked)
+                check = next(c for c in checked['checks'] if c['name'] == 'imported_firmware_hash')
+                self.assertEqual(checked['notes']['checks'], checked['checks'])
+                return checked['artifacts'], check
+            self.assertEqual(observed(), ([], {'name': 'imported_firmware_hash', 'passed': False,
+                                               'reason': 'No matching imported firmware'}))
             imported = call_tool('acquire_firmware_artifact', {'run_dir': str(ws/'tools'), **prepared['context']})
             self.assertTrue(imported.get('available'), imported)
-            checked = check_stage('tq9-v2', 'acquire', root/'run', ws, {'status': 'completed'})
-            self.assertTrue(checked['ok'], checked)
+            artifacts, check = observed()
+            self.assertTrue(check['passed'])
+            self.assertEqual({Path(p).resolve() for p in artifacts},
+                             {Path(imported['artifact']).resolve(), Path(imported['provenance']).resolve()})
             Path(imported['artifact']).write_bytes(b'wrong firmware')
-            self.assertFalse(check_stage('tq9-v2', 'acquire', root/'run', ws, {'status': 'completed'})['ok'])
+            self.assertEqual(observed()[0], [])
 
-    def test_interpretation_seals_inputs_and_rejects_candidate_tampering(self):
+    def test_interpretation_seals_inputs_and_stops_for_integrity_when_they_change(self):
         # Catches unsealed interpretation or accepting edited original evidence.
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             prepared = prepare_stage('tq9-v2', 'interpret', root/'run', root/'worker')
             ws = Path(prepared['work_dir'])
+            self.addCleanup(__import__('shutil').rmtree, ws.parent, True)
             self.assertFalse(prepared['report_required'])
             self.assertEqual(prepared['allowed_tools'], [])
             self.assertTrue((ws/'image.bin').is_file())
             (ws/'image.bin').write_bytes(b'tampered')
-            checked = check_stage('tq9-v2', 'interpret', root/'run', ws, {})
-            self.assertFalse(checked['ok'])
-            self.assertFalse(next(c for c in checked['checks'] if c['name'] == 'sealed_inputs')['passed'])
-            self.assertEqual(checked.get('fault'),'model')
+            checked = observe_stage('tq9-v2', 'interpret', root/'run', ws, {})
+            self.assertEqual(checked['stop']['category'], 'integrity')
+            self.assertNotIn('artifacts', checked)
 
     def test_action_records_keep_measured_units_and_pause_on_error(self):
         # Catches filling observed units from expected units and running during observation.
@@ -141,13 +159,30 @@ class TQ9V2Tests(unittest.TestCase):
         self.assertEqual(measured['duty'], 400)
         self.assertEqual(observations.monitor_units['duty'], 'permille')
 
-    def test_probe_requires_accepted_model_before_starting_native_process(self):
-        # Catches using a proposed/unaccepted model as the probe input.
+    def test_probe_without_an_accepted_model_skips_before_starting_native_process(self):
+        # Catches probing an unaccepted model, starting an emulator for nothing, or accepting changed bytes.
+        from unittest.mock import patch
+        from generative_driver.configurator import IntegrityError
+        from tq9_workflow_fixture import model
+        unwired = model(); unwired['channel'] = {'type': 'usb'}
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            with self.assertRaisesRegex(ValueError, 'accepted interpret'):
-                prepare_stage('tq9-v2', 'probe', root/'run', root/'worker')
-
+            def handoff(name, raw):
+                path = root/name/'0-model.json'; path.parent.mkdir(); path.write_text(raw)
+                return [{'stage': 'interpret', 'artifacts': [{'path': str(path), 'sha256': hashlib.sha256(raw.encode()).hexdigest()}]}]
+            cases = [([], 'no interpreted model available'),
+                     ([{'stage': 'interpret', 'artifacts': []}], 'no interpreted model available'),
+                     (handoff('unfinished', '{unfinished'), 'cannot be wired to the emulator'),
+                     (handoff('unwired', json.dumps(unwired)), 'cannot be wired to the emulator')]
+            with patch('generative_driver.benchmark_support.emulated._session', side_effect=AssertionError('emulator started')):
+                for accepted, reason in cases:
+                    with self.subTest(reason=reason, accepted=accepted):
+                        prepared = prepare_stage('tq9-v2', 'probe', root/'run', root/'worker', accepted)
+                        self.assertIn(reason, prepared['skip'])
+                changed = handoff('changed', json.dumps(model()))
+                changed[0]['artifacts'][0]['sha256'] = 'f'*64
+                with self.assertRaisesRegex(IntegrityError, 'changed'):
+                    prepare_stage('tq9-v2', 'probe', root/'run', root/'worker', changed)
 
     def test_cleanup_refuses_lost_native_ownership(self):
         # Catches PID-only termination or silently treating an attached process as owned.
@@ -221,7 +256,7 @@ class TQ9V2Tests(unittest.TestCase):
         self.assertEqual(sorted(i for x in a if x['kind']=='observe' for i in x['checks']),sorted(i for x in b if x['kind']=='observe' for i in x['checks']))
         self.assertEqual([x['task'] for x in a if x['kind']=='call' and x['task']!='temperature'],[x['task'] for x in b if x['kind']=='call' and x['task']!='temperature'])
 
-    def test_scripted_controller_seals_six_acceptances_and_independent_final(self):
+    def test_scripted_controller_observes_stages_without_the_evaluator_and_awaits_independent_grading(self):
         self._scripted_controller_modes(('normal','rejected-write','repair-mapping','repair-decoder','repair-ground',
             'final-bounds','hidden-wrong','missing-mission','monitor-missing','snapshot-next'))
 
@@ -229,7 +264,7 @@ class TQ9V2Tests(unittest.TestCase):
         self._scripted_controller_modes(('recover-write',))
 
     def test_emulator_recovery_safety_boundaries(self):
-        self._scripted_controller_modes(('recover-budget','recover-lost','recover-stop','recover-reset','recover-cancel','recover-commit-cancel','recover-repeat','recover-restart','recover-physical'))
+        self._scripted_controller_modes(('recover-budget','recover-lost','recover-stop','recover-reset','recover-cancel','recover-commit-cancel','recover-repeat','recover-restart','recover-physical','recover-commit-crash'))
 
     def test_recovery_requires_outcomes_for_every_uncertain_dispatch(self):
         self._scripted_controller_modes(('recover-dispatch-exception','recover-mixed-unknown'))
@@ -301,19 +336,38 @@ class TQ9V2Tests(unittest.TestCase):
                         "    if not marker.exists():\n        marker.write_text('first diagnostic')\n"
                         "        mapping['tasks'].pop('temperature');status='needs_revision'\n"
                         "    pathlib.Path('capabilities.json').write_text(json.dumps(mapping))")
-                if mode in ('repair-decoder','repair-ground'):
+                if mode == 'repair-decoder':
+                    # The first decoder reads a key the device's reply lacks: a model fault on the device connection.
+                    # Repair sees only that device diff, the previous candidate and the device readings of its runs.
                     source = source.replace("pathlib.Path('model.json').write_text(json.dumps(model()))",
                         "candidate=model()\n    context_path=pathlib.Path('REPAIR_CONTEXT.json')\n"
                         "    if context_path.exists():\n"
                         "        context=json.loads(context_path.read_text());assert context['mode']=='repair'\n"
+                        "        defects=json.loads(pathlib.Path(context['feedback']).read_text())\n"
+                        "        assert defects and {d['source'] for d in defects}<={'interface_execute','probe_run'},defects\n"
                         "        prior=context['history'][-1]['files']\n"
                         "        candidate=json.loads(pathlib.Path(prior['model.json']).read_text())\n"
                         "        tasks=json.loads(pathlib.Path(context['task_contract']).read_text())\n"
                         "        assert tasks['tasks']['temperature']['outputs']['temperature']['unit']=='degC'\n"
                         "        rows=[json.loads(line) for line in pathlib.Path(prior['live-observations.jsonl']).read_text().splitlines()]\n"
-                        "        measured=next(row for row in rows if row['operation']=='measure' and row['result'].get('outputs',{}).get('temperature'))\n"
-                        "        candidate['operations']['measure']['outputs']['temperature']['scale'] *= measured['observation']['temperature_reference']/measured['result']['outputs']['temperature']\n"
-                        "    else:\n        candidate['operations']['measure']['outputs']['temperature']['scale']="+('10' if mode=='repair-decoder' else '1')+"\n"
+                        "        assert any(row['operation']=='measure' and row['observation']['temperature_reference']==20 for row in rows)\n"
+                        "        candidate['operations']['measure']['outputs']['temperature']['key']='T:'\n"
+                        "    else:\n        candidate['operations']['measure']['outputs']['temperature']['key']='X:'\n"
+                        "    pathlib.Path('model.json').write_text(json.dumps(candidate))")
+                    source = source.replace("    assert measured['ok'], 'live interface_execute failed'\n", '')
+                    source = source.replace("    assert probed['ok'], 'live probe_run failed'\n",
+                        "    status='completed' if measured['ok'] and probed['ok'] else 'needs_revision'\n")
+                if mode == 'repair-ground':
+                    # Probe never runs `status`; ground does, and the device rejects it: ground's device diff repairs.
+                    source = source.replace("pathlib.Path('model.json').write_text(json.dumps(model()))",
+                        "candidate=model()\n    if pathlib.Path('REPAIR_CONTEXT.json').exists():\n"
+                        "        context=json.loads(pathlib.Path('REPAIR_CONTEXT.json').read_text())\n"
+                        "        defects=json.loads(pathlib.Path(context['feedback']).read_text())\n"
+                        "        assert [d['source'] for d in defects]==['interface_execute'] and 'status' in json.dumps(defects),defects\n"
+                        "    else:\n"
+                        "        arm=candidate['operations']['arm']\n"
+                        "        candidate['operations']['status']=dict(arm,effect='read',steps=[dict(arm['steps'][0],tx=[{'text':'S\\n'}])])\n"
+                        "        candidate['provenance'].append({'item':'operations.status','source':'synthetic scripted fixture'})\n"
                         "    pathlib.Path('model.json').write_text(json.dumps(candidate))")
                 if mode.startswith('recover-'):
                     source = source.replace("pathlib.Path('model.json').write_text(json.dumps(model()))",
@@ -336,7 +390,10 @@ class TQ9V2Tests(unittest.TestCase):
                     source = source.replace("elif stage=='emit':",
                         "elif stage=='ground':\n"
                         "    marker=pathlib.Path("+repr(str(root/'first-ground'))+")\n"
-                        "    if not marker.exists():\n        marker.write_text('first ground');status='needs_revision'\n"
+                        "    if not marker.exists():\n        marker.write_text('first ground')\n"
+                        "        failed=call('interface_execute',{'model_dir':task['context']['model_dir'],'operation':'status','parameters':{}})\n"
+                        "        assert not failed['ok'] and failed['error']['fault']=='model',failed\n"
+                        "        status='needs_revision'\n"
                         "elif stage=='emit':")
                 if mode == 'final-bounds':
                     source = source.replace("pathlib.Path('model.json').write_text(json.dumps(model()))",
@@ -382,15 +439,34 @@ class TQ9V2Tests(unittest.TestCase):
                     receipt=original_recover(*args,**kwargs)
                     if mode=='recover-commit-cancel':controller.call('cancel',run)
                     return receipt
+                original_event=controller._event
+                def event(run_id,kind,payload,db=None):
+                    # A failure inside the recovery commit: the replacement, the cleared effect and the handoff roll back together.
+                    if mode=='recover-commit-crash' and kind=='emulator.recovered':raise RuntimeError('Controlled failure inside the recovery commit')
+                    return original_event(run_id,kind,payload,db)
+                controller._event=event
                 original_accept=controller._accept
                 def accept(*args,**kwargs):
                     handoff=original_accept(*args,**kwargs)
                     if mode=='snapshot-next' and handoff['stage']=='acquire':
                         (root/'home/runs'/args[0]/'benchmark/inputs/firmware.bin').write_bytes(b'tampered after acceptance')
                     return handoff
+                # Truth is unlocked only to start the emulator (B3 moves that out); no stage runs the evaluator.
+                import inspect
+                from generative_driver.benchmark_support import emulator as emulator_module
+                real_truth=emulator_module.truth_for_case;truth_callers=[]
+                def truth_for_case(*args,**kwargs):
+                    names={frame.function for frame in inspect.stack(0)}
+                    truth_callers.append(names)
+                    if not names&{'_session','replace_owned'}:raise AssertionError('Truth unlocked outside emulator start')
+                    return real_truth(*args,**kwargs)
+                def evaluator(*args,**kwargs):raise AssertionError('Evaluator called in the stage loop')
                 try:
                     with patch.object(toolkit,'call_tool',side_effect=runtime_boundary),patch.object(emulated,'recover_emulator',side_effect=recover),patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
                          patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True}),\
+                         patch.object(emulator_module,'truth_for_case',side_effect=truth_for_case),\
+                         patch('generative_driver.benchmark_support.emulated_evidence._diagnose',side_effect=evaluator),\
+                         patch('generative_driver.benchmark_support.emulated_evidence._final',side_effect=evaluator),\
                          patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=native_start):
                         run=controller.start({'goal':'scripted-contract-fixture','case':'tq9-v2','budget_seconds':60,
                             'effects':['write','actuate'],'max_revisions':0 if mode=='recover-budget' else 2,'case_options':{'scenario_id':'original','evaluator_password_file':str(password)},
@@ -411,10 +487,18 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertTrue(result['uncertain_effect'])
                             self.assertEqual(result['emulator_recovery_count'],2 if mode=='recover-repeat' else 0)
                             self.assertEqual(result['progress']['repairs'],2 if mode=='recover-repeat' else 0)
-                            self.assertEqual(len(peers),3 if mode=='recover-repeat' else 2 if mode in ('recover-reset','recover-cancel','recover-commit-cancel') else 1)
+                            self.assertEqual(len(peers),3 if mode=='recover-repeat' else 2 if mode in ('recover-reset','recover-cancel','recover-commit-cancel','recover-commit-crash') else 1)
                             if mode in ('recover-cancel','recover-commit-cancel'):self.assertEqual(status['status'],'cancelled')
                             # An effect left uncertain after the check is a safety stop; a failed cleanup stays host.
-                            else:self.assertEqual(status['outcome_category'],'host' if any(e['kind']=='cleanup.failed' for e in events) else 'safety')
+                            elif mode!='recover-commit-crash':self.assertEqual(status['outcome_category'],'host' if any(e['kind']=='cleanup.failed' for e in events) else 'safety')
+                            if mode=='recover-commit-crash':
+                                # Nothing of the recovery committed: no handoff, the write's pending effect and the old lease remain.
+                                self.assertEqual((status['status'],status['outcome_category']),('failed','host'))
+                                self.assertNotIn('probe',[h['stage'] for h in result['accepted_handoffs']])
+                                with controller._db() as db:
+                                    pending=db.execute('SELECT COUNT(*) FROM pending_effects WHERE run_id=?',(run['run_id'],)).fetchone()[0]
+                                self.assertEqual(pending,1)
+                                self.assertEqual(peers[0].device_commands.count('D'),1)
                             if mode in ('recover-dispatch-exception','recover-mixed-unknown'):
                                 starts=[e for e in events if e['kind']=='tool.started' and e['data'].get('effectful') and e['data'].get('actor')=='worker']
                                 self.assertEqual(len(starts),1)
@@ -436,32 +520,79 @@ class TQ9V2Tests(unittest.TestCase):
                                 self.assertTrue(any(e['kind']=='cleanup.failed' for e in events))
                             if mode=='recover-reset':self.assertTrue(peers[1].closed)
                             continue
-                        if mode not in ('normal','rejected-write','repair-mapping','repair-decoder','repair-ground','recover-write'):
+                        if mode in ('monitor-missing','snapshot-next'):
                             self.assertNotEqual(status['status'],'completed')
-                            if mode in ('hidden-wrong','final-bounds'):
-                                self.assertTrue(result['progress']['terminal_final_failure'])
-                                self.assertEqual(status['outcome_category'], 'model')
-                                self.assertEqual(result['progress']['repairs'], 0)
-                                self.assertTrue((root/'home/runs'/run['run_id']/'benchmark/run-evidence.enc').is_file())
-                                with self.assertRaisesRegex(ValueError,'final'):controller.call('resume',run)
                             if mode=='monitor-missing':self.assertEqual(status['outcome_category'],'host')
                             if mode=='snapshot-next':
                                 self.assertIn('hash',status['reason']);self.assertEqual(len(assignments),1);self.assertFalse(peers)
                             continue
+                        # Every stage hands off, worker reports and the reuse mission are notes, and the frozen driver
+                        # awaits independent grading after the run: no stage graded it against the truth.
                         self.assertEqual(status['status'],'completed',result)
+                        self.assertEqual(status['reason'],'Frozen driver awaits independent evaluation')
+                        self.assertEqual(result['progress']['equivalence'],'pending')
+                        self.assertIsNone(result['equivalence']);self.assertEqual(result['evaluator_verdicts'],[])
+                        self.assertNotIn('terminal_final_failure',result['progress'])
+                        self.assertTrue(truth_callers)
+                        self.assertTrue(all(names&{'_session','replace_owned'} for names in truth_callers))
+                        evaluated=[e['data'] for e in events if e['kind'] in ('tool.started','tool.finished') and e['data'].get('actor')=='evaluator']
+                        # Only the emulator start at probe preparation still carries the evaluator label (B4 removes it).
+                        self.assertTrue(all(e['name']=='benchmark_evaluate' and e['assignment_id'] is None and e['stage']=='probe' for e in evaluated))
+                        handoffs=result['accepted_handoffs']
+                        self.assertNotIn('EVALUATOR SENTINEL',json.dumps(handoffs))
                         expected=['acquire','interpret','probe','ground','emit','reuse']
-                        if mode=='repair-mapping':
-                            expected[3:3]=['interpret','probe']
-                            self.assertEqual(result['progress']['repairs'],1)
-                            feedback=next(a for a in assignments if a['stage']=='interpret' and a['revision']==1)
-                            defects=json.loads((Path(feedback['workspace'])/'DEFECTS.json').read_text())
-                            self.assertTrue(any(error['path'] == 'tasks.temperature'
-                                                for error in defects['capability_errors']))
-                        if mode in ('repair-decoder', 'repair-ground','recover-write'):
-                            start = 4 if mode == 'repair-ground' else 3
-                            expected[start:start] = ['interpret','probe'] + (['ground'] if mode == 'repair-ground' else [])
-                            self.assertEqual(result['progress']['repairs'], 1)
+                        if mode in ('repair-decoder','recover-write'):expected[3:3]=['interpret','probe']
+                        if mode=='repair-ground':expected[4:4]=['interpret','probe','ground']
                         self.assertEqual([a['stage'] for a in assignments],expected)
+                        self.assertEqual([h['stage'] for h in handoffs],expected)
+                        repaired=mode in ('repair-decoder','repair-ground','recover-write')
+                        self.assertEqual(result['progress']['repairs'],1 if repaired else 0)
+                        routed=[h for h in handoffs if h.get('route')=='interpret']
+                        self.assertEqual([(h['stage'],h['revision']) for h in routed],
+                                         [('ground' if mode=='repair-ground' else 'probe',0)] if repaired else [])
+                        if repaired:
+                            # Repair receives the device diff the routed handoff's notes carry, and nothing graded.
+                            repair=next(a for a in assignments if a['stage']=='interpret' and a['revision']==1)
+                            defects=json.loads((Path(repair['workspace'])/'DEFECTS.json').read_text())
+                            self.assertEqual(defects,routed[0]['notes']['inline']['configurator']['device_diff'])
+                            self.assertTrue(defects)
+                            self.assertLessEqual({d['source'] for d in defects},{'interface_execute','probe_run','probe_diff','model_contract'})
+                            for marker in ('EVALUATOR SENTINEL','diagnostic/','final/'):self.assertNotIn(marker,json.dumps(defects))
+                            self.assertFalse(grade_keys(defects))
+                            context=json.loads((Path(repair['workspace'])/'REPAIR_CONTEXT.json').read_text())
+                            self.assertTrue(context['history'])
+                            self.assertTrue(all('feedback.json' not in entry['files'] for entry in context['history']))
+                            self.assertIn('device evidence',context['evidence_policy'])
+                        if mode=='repair-mapping':
+                            probe=next(h for h in handoffs if h['stage']=='probe')
+                            mapping=next(c for c in probe['checks'] if c['name']=='capability_mapping')
+                            self.assertFalse(mapping['passed'])
+                            self.assertIn('tasks.temperature',[error['path'] for error in mapping['errors']])
+                            self.assertIn('Worker reported needs_revision',' '.join(probe['notes']['inline']['open_questions']))
+                        mission=next(c for c in handoffs[-1]['checks'] if c['name']=='fresh_worker_mission')
+                        self.assertIs(mission['passed'],False if mode=='missing-mission' else None if mode=='repair-mapping' else True)
+                        if mode=='normal':
+                            # The probe hands on the worker's own observed probe record; emit packages it; ground gets
+                            # the model, that record and the instrument journal with no grade field anywhere.
+                            probe=next(h for h in handoffs if h['stage']=='probe')
+                            assigned=next(a for a in assignments if a['stage']=='probe')
+                            run_event=next(e['data'] for e in events if e['kind']=='tool.finished' and e['data']['name']=='probe_run'
+                                           and e['data']['assignment_id']==assigned['id'])
+                            probe_sha=run_event['artifacts'][str(Path(run_event['result']['probe']).resolve())]
+                            records=[a for a in probe['artifacts'] if a['path'].endswith('.json')
+                                     and json.loads(Path(a['path']).read_text()).get('schema')=='interface-probe/1']
+                            self.assertEqual([a['sha256'] for a in records],[probe_sha])
+                            self.assertLessEqual({'capabilities.json','model.json','adaptation.json','live-observations-0.jsonl'},
+                                                 {Path(a['path']).name.split('-',1)[1] for a in probe['artifacts']})
+                            emit=next(a for a in assignments if a['stage']=='emit')
+                            self.assertEqual(hashlib.sha256((Path(emit['workspace'])/'probe.json').read_bytes()).hexdigest(),probe_sha)
+                            ground=next(a for a in assignments if a['stage']=='ground')
+                            self.assertEqual(sorted(ground['allowed_tools']),['interface_execute','model_validate','probe_diff','probe_run'])
+                            evidence=json.loads((Path(ground['workspace'])/'ground-evidence/device-observations.json').read_text())
+                            self.assertFalse(grade_keys(evidence))
+                            self.assertEqual([p['sha256'] for p in evidence['probes']],[probe_sha])
+                            for path in ground['inputs']:
+                                if Path(path).is_file():self.assertNotIn(b'EVALUATOR SENTINEL',Path(path).read_bytes())
                         self.assertEqual(len(peers),2 if mode=='recover-write' else 1)
                         if mode=='recover-write':
                             self.assertTrue(peers[0].closed)
@@ -481,14 +612,19 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertEqual(len(failed),1)
                             self.assertEqual(failed[0]['result']['error']['fault'],'model')
                             self.assertTrue(failed[0]['result']['transcript'])
-                        self.assertEqual([entry[1] for entry in worker_live],[False,True,True,False,False,True,True,True] if mode=='recover-write' else [False,True,True]*(2 if mode in ('repair-mapping','repair-decoder','repair-ground','recover-write') else 1))
+                        live={'recover-write':[False,True,True,False,False,True,True,True],'repair-decoder':[False,False,False,False,True,True],
+                              'repair-ground':[False,True,True,False,False,True,True]}.get(mode,[False,True,True])
+                        self.assertEqual([entry[1] for entry in worker_live],live)
                         self.assertTrue(all(not entry[2] for entry in worker_live));self.assertFalse(peers[0].paused_requests)
                         reuse=assignments[-1];self.assertEqual(len(reuse['inputs']),1)
                         self.assertEqual(Path(next(iter(reuse['inputs']))).name,'package')
                         run_dir=root/'home/runs'/run['run_id'];state=json.loads((run_dir/'benchmark/state.json').read_text())
+                        self.assertNotIn('stage_verdicts',state);self.assertNotIn('diagnostic',state)
                         sidecar=run_dir/'benchmark/run-evidence.enc'
                         sealed=unlock(sidecar,password.read_text(),state['final_evaluation']['evidence_sha256'])
-                        self.assertEqual(len(sealed['accepted_gates']),8 if mode=='repair-ground' else 7 if mode in ('repair-mapping','repair-decoder','recover-write') else 6)
+                        self.assertEqual(state['final_evaluation']['verdict'],'unscored')
+                        self.assertEqual(sealed['evaluations'],[])
+                        self.assertEqual(len(sealed['accepted_gates']),len([h for h in handoffs if h['artifacts']]))
                         self.assertEqual(sealed['accepted_gates'][-1]['stage'],'reuse')
                         if mode=='recover-write':
                             proof=sealed['emulator_recoveries'][0]
@@ -509,17 +645,18 @@ class TQ9V2Tests(unittest.TestCase):
                         from generative_driver.benchmark import score
                         with patch('generative_driver.client.call',side_effect=lambda method,params,**kw:controller.call(method,params)):
                             report=report_run(run['run_id'],home=root/'home')
-                        self.assertTrue(_recorded_success(result,events,report))
-                        self.assertEqual(score(report,password,evidence_path=sidecar)['verdict'],'passed')
+                        # A driver awaiting its independent grade is never counted as a success.
+                        self.assertEqual(report['verdict'],'unscored')
+                        self.assertFalse(_recorded_success(result,events,report))
+                        self.assertNotEqual(score(report,password,evidence_path=sidecar)['verdict'],'passed')
                         self.assertNotIn('maintenance',report)
-                        self.assertTrue(any(e['kind']=='tool.finished' and e['data'].get('actor')=='evaluator' for e in events))
                         with self.assertRaisesRegex(ValueError,'inactive'):controller.call('tools',{**run,'assignment_id':assignments[0]['id']})
                         from generative_driver.benchmark_support.emulated_evidence import finalize
-                        for handoffs in (result['accepted_handoffs'][:1],result['accepted_handoffs']):
-                            finalize('tq9-v2',run_dir,handoffs,{'evaluator_password_file':str(password)})
+                        for kept in (handoffs[:1],handoffs):
+                            finalize('tq9-v2',run_dir,kept,{'evaluator_password_file':str(password)})
                             latest=json.loads((run_dir/'benchmark/state.json').read_text())
                             updated=unlock(sidecar,password.read_text(),latest['final_evaluation']['evidence_sha256'])
-                            self.assertEqual(len(updated['accepted_gates']),len(handoffs))
+                            self.assertEqual(len(updated['accepted_gates']),len([h for h in kept if h['artifacts']]))
                 finally:
                     controller.close();server.shutdown();server.server_close()
                     for peer in peers:
@@ -721,7 +858,7 @@ class TQ9V2Tests(unittest.TestCase):
                     _final('tq9-v2',root,root/'absent',{},options)
 
     def test_fresh_reuse_acknowledgements_do_not_substitute_for_a_reading(self):
-        # Public adapter seam: actuator ACK outputs alone do not finish the mission.
+        # Public adapter seam: actuator ACK outputs alone do not finish the mission, which is a note, never a stop.
         from generative_driver.benchmark_support.cases import _write
         from tq9_workflow_fixture import capabilities
         with tempfile.TemporaryDirectory() as temp:
@@ -731,21 +868,23 @@ class TQ9V2Tests(unittest.TestCase):
             rows=[{'actor':'worker','stage':'reuse','attempt_id':'new','revision':0,
                    'operation':'set_duty' if duty else 'disarm','result':{'ok':True,'outputs':{'ack':1}},
                    'observation':{'duty':duty}} for duty in (370,0)]
-            (root/'benchmark/package-events.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
-            result=check_stage('tq9-v2','reuse',root,root,{'status':'completed'})
-            self.assertFalse(result['ok'])
-            self.assertIn('reading',result['reason'])
-            self.assertEqual(result.get('fault'),'model')
+            def mission():
+                (root/'benchmark/package-events.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+                result=observe_stage('tq9-v2','reuse',root,root,{'status':'completed'})
+                for key in ('ok','fault','route','stop','final_evaluation','evaluator'):self.assertNotIn(key,result)
+                return next(c for c in result['checks'] if c['name']=='fresh_worker_mission')
+            noted=mission()
+            self.assertIs(noted['passed'],False)
+            self.assertIn('reading',noted['reason'])
+            self.assertEqual(noted.get('fault'),'model')
             for fault in ('host','operator'):
                 rows[0]['result']={'ok':False,'error':{'fault':fault}}
-                (root/'benchmark/package-events.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
-                blocked=check_stage('tq9-v2','reuse',root,root,{'status':'completed'})
-                self.assertEqual(blocked.get('fault'),fault)
+                self.assertEqual(mission().get('fault'),fault)
 
     def test_reuse_failed_calls_need_trusted_attribution_before_model_blame(self):
+        # The mission note attributes failed package calls; untyped or mixed evidence blames nobody.
         from unittest.mock import patch
         from generative_driver.benchmark_support import emulated
-        from generative_driver.benchmark_support.suites import child_disposition
         from tq9_workflow_fixture import capabilities
         untyped={'ok':False,'error':{'code':'package_error','message':'Toy package filesystem read failed'}}
         modeled={'ok':False,'error':{'fault':'model'}}
@@ -768,11 +907,10 @@ class TQ9V2Tests(unittest.TestCase):
                     rows=[event(untyped,'old'),event(untyped,revision=1)]+[event(r) for r in results]
                     (root/'benchmark/package-events.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
                     with patch.object(emulated,'_inputs',return_value=(root,{})):
-                        checked=emulated.check_stage('tq9-v2','reuse',root,root,{'status':'completed'})
-                    self.assertFalse(checked['ok']);self.assertEqual(checked.get('fault'),want)
-                    disposition=child_disposition({'status':'blocked','stopping':False,'uncertain_effect':False,
-                        'outcome_category':checked.get('fault') or 'unknown'})
-                    self.assertEqual(disposition,'advance' if want=='model' else 'block')
+                        checked=emulated.observe_stage('tq9-v2','reuse',root,root,{'status':'completed'})
+                    self.assertNotIn('stop',checked);self.assertNotIn('fault',checked)
+                    noted=next(c for c in checked['checks'] if c['name']=='fresh_worker_mission')
+                    self.assertIs(noted['passed'],False);self.assertEqual(noted.get('fault'),want)
 
     def test_unavailable_native_tools_leave_a_pending_calibration_release(self):
         # Synthetic encrypted authoring input, not a native qualification claim.
@@ -842,50 +980,132 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertFalse(controller._workers)
                 finally:controller.close()
 
-class GateCategoryTests(unittest.TestCase):
-    def test_missing_candidate_artifacts_are_model_failures(self):
+class ObservationTests(unittest.TestCase):
+    """Truth-free stage observation: worker output is a note, only changed recorded bytes or the host stop."""
+    def test_missing_candidate_artifacts_are_notes_and_an_empty_handoff(self):
         from generative_driver.benchmark_support import emulated
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)
             with patch.object(emulated,'_inputs',return_value=(root,{'images':{'firmware.bin':'a'*64}})):
-                for stage in ('acquire','probe','emit'):
+                for stage,name in (('acquire','imported_firmware_hash'),('probe','capability_mapping'),('emit','package_integrity_and_replay')):
                     with self.subTest(stage=stage):
-                        result=emulated.check_stage('tq9-v2',stage,root,root,{'status':'completed'})
-                        self.assertFalse(result['ok']);self.assertEqual(result.get('fault'),'model')
+                        result=emulated.observe_stage('tq9-v2',stage,root,root,{'status':'completed'})
+                        for key in ('ok','fault','route','stop'):self.assertNotIn(key,result)
+                        self.assertEqual(result['artifacts'],[])
+                        check=next(c for c in result['checks'] if c['name']==name)
+                        self.assertFalse(check['passed']);self.assertTrue(check['reason'])
 
-    def test_ground_failure_uses_observed_diagnostic_not_missing_state(self):
+    def test_ground_observation_never_reads_an_evaluator_diagnostic(self):
         from generative_driver.benchmark_support import emulated
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temporary:
-            root=Path(temporary)
-            for diagnostic,want in (({'passed':False},'model'),({},None)):
+            root=Path(temporary);observed=[]
+            for diagnostic in ({'passed':False},{'passed':True},{}):
                 with self.subTest(diagnostic=diagnostic),patch.object(emulated,'_inputs',return_value=(root,{})), \
                      patch.object(emulated,'_state',return_value=(root/'state',{'diagnostic':diagnostic})):
-                    result=emulated.check_stage('tq9-v2','ground',root,root,{'status':'completed'})
-                    self.assertFalse(result['ok']);self.assertEqual(result.get('fault'),want)
+                    result=emulated.observe_stage('tq9-v2','ground',root,root,{'status':'needs_revision',
+                        'summary':'Decoded temperature contradicts the paired instrument reading'})
+                    for key in ('ok','fault','route','stop','feedback'):self.assertNotIn(key,result)
+                    observed.append(result)
+            self.assertEqual(observed[0],observed[1]);self.assertEqual(observed[1],observed[2])
 
-    def test_emit_categories_follow_typed_validation_and_host_evidence(self):
+    def test_emit_failures_are_notes_and_only_a_host_fault_stops(self):
         from generative_driver.benchmark_support import emulated
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);(root/'manifest.json').write_text('{}')
-            outcomes=[({'ok':False,'integrity_ok':False},'model'),
-                ({'ok':False,'integrity_ok':True,'runtime_current':True,'replay_status':'failed'},'model'),
-                ({'ok':False,'error':{'fault':'host'}},'host'),
-                ({'ok':False,'fault':'operator'},'operator'),({'ok':False},None)]
-            for result,want in outcomes:
+            outcomes=[{'ok':False,'integrity_ok':False},
+                {'ok':False,'integrity_ok':True,'runtime_current':True,'replay_status':'failed'},
+                {'ok':False,'fault':'operator'},{'ok':False}]
+            for result in outcomes:
                 with self.subTest(result=result),patch.object(emulated,'_inputs',return_value=(root,{})), \
                      patch('generative_driver.toolkit.call_tool',return_value=result):
-                    checked=emulated.check_stage('tq9-v2','emit',root,root,{'status':'completed'})
-                    self.assertFalse(checked['ok']);self.assertEqual(checked.get('fault'),want)
+                    checked=emulated.observe_stage('tq9-v2','emit',root,root,{'status':'completed'})
+                    for key in ('ok','fault','stop'):self.assertNotIn(key,checked)
+                    self.assertEqual(checked['artifacts'],[])
+                    check=next(c for c in checked['checks'] if c['name']=='package_integrity_and_replay')
+                    self.assertFalse(check['passed']);self.assertEqual(len(check['rejected']),1)
+            for result in ({'ok':False,'error':{'fault':'host'}},{'ok':False,'fault':'host','_exit':4},
+                           {'ok':False,'error':'OSError: toy disk unavailable','_exit':1}):
+                with self.subTest(result=result),patch.object(emulated,'_inputs',return_value=(root,{})), \
+                     patch('generative_driver.toolkit.call_tool',return_value=result):
+                    with self.assertRaisesRegex(RuntimeError,'could not run on this host'):
+                        emulated.observe_stage('tq9-v2','emit',root,root,{'status':'completed'})
 
-    def test_unreadable_acquisition_is_host_failure_not_candidate_failure(self):
+    def test_unreadable_acquisition_is_a_note_never_a_candidate_failure(self):
         from generative_driver.benchmark_support import emulated
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);(root/'provenance.json').write_text('{}');(root/'firmware.bin').write_bytes(b'toy')
             with patch.object(emulated,'_inputs',return_value=(root,{'images':{'firmware.bin':'a'*64}})), \
                  patch.object(Path,'read_bytes',side_effect=OSError('toy filesystem unavailable')):
-                result=emulated.check_stage('tq9-v2','acquire',root,root,{'status':'completed'})
-                self.assertFalse(result['ok']);self.assertEqual(result.get('fault'),'host')
+                result=emulated.observe_stage('tq9-v2','acquire',root,root,{'status':'completed'})
+            for key in ('ok','fault','stop'):self.assertNotIn(key,result)
+            self.assertEqual(result['artifacts'],[])
+            check=next(c for c in result['checks'] if c['name']=='imported_firmware_hash')
+            self.assertFalse(check['passed']);self.assertIn('nreadable',check['reason'])
+
+    def test_probe_hands_on_mapping_model_and_journal_and_notes_mapping_errors(self):
+        # Structural notes only: the mapping, the adapted model's integrity and the live journal; no diagnostic.
+        from generative_driver.benchmark_support import emulated
+        from generative_driver.benchmark_support.cases import _write
+        from generative_driver.benchmark_support.evaluate import adapt_model
+        from generative_driver.configurator import IntegrityError
+        from unittest.mock import patch
+        from tq9_workflow_fixture import model, capabilities
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve();ws=root/'worker';ws.mkdir();run=root/'run'
+            (root/'original.json').write_text(json.dumps(model()))
+            adaptation=adapt_model(root/'original.json',ws/'model')
+            _write(run/'benchmark/state.json',{'adapted_model_dir':str(ws/'model'),'adaptation':adaptation,'revision':0})
+            journal=run/'benchmark/live-observations-0.jsonl';journal.write_text('{"operation":"measure"}\n')
+            def observed():
+                with patch('generative_driver.benchmark_support.emulated_evidence._diagnose',side_effect=AssertionError('diagnostic')):
+                    return emulated.observe_stage('tq9-v2','probe',run,ws,{'status':'completed'},[],{'observed_records':[]})
+            mapping=capabilities();mapping['tasks'].pop('temperature')
+            (ws/'capabilities.json').write_text(json.dumps(mapping))
+            result=observed()
+            for key in ('ok','fault','route','stop','feedback','evaluator'):self.assertNotIn(key,result)
+            self.assertEqual({Path(p).name for p in result['artifacts']},
+                             {'capabilities.json','model.json','adaptation.json','live-observations-0.jsonl'})
+            check=next(c for c in result['checks'] if c['name']=='capability_mapping')
+            self.assertFalse(check['passed']);self.assertIn('tasks.temperature',[e['path'] for e in check['errors']])
+            for raw in ('null','[]'):
+                (ws/'capabilities.json').write_text(raw)
+                self.assertFalse(next(c for c in observed()['checks'] if c['name']=='capability_mapping')['passed'])
+            (ws/'capabilities.json').write_text(json.dumps(capabilities()))
+            self.assertTrue(next(c for c in observed()['checks'] if c['name']=='capability_mapping')['passed'])
+            (ws/'model/model.json').write_text('{}')
+            with self.assertRaisesRegex(IntegrityError,'changed'):observed()
+
+    def test_worker_facing_wording_names_device_evidence_and_promises_no_evaluator(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        from generative_driver.agents import STAGE_BOUNDARY
+        from generative_driver.configurator import BENCHMARK_PACKAGE_EXECUTE
+        from generative_driver._toolchain.interpret import _prompt
+        from generative_driver.benchmark_support.candidate_context import repair_sources
+        from generative_driver.configurator import digest
+        from tq9_workflow_fixture import model
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve();source=root/'accepted';source.mkdir()
+            (source/'0-model.json').write_text(json.dumps(model()))
+            package=root/'emitted/package';package.mkdir(parents=True);(package/'manifest.json').write_text('{}')
+            accepted=[{'stage':'interpret','artifacts':[{'path':str(source/'0-model.json'),'sha256':digest(source/'0-model.json')}]},
+                      {'stage':'emit','artifacts':[{'path':str(package),'sha256':digest(package)}]}]
+            from generative_driver.benchmark_support.cases import _write
+            _write(root/'run/benchmark/state.json',{'package_sha256':digest(package)})
+            with patch('generative_driver.benchmark_support.emulated._session',return_value=SimpleNamespace(binding={'host':'127.0.0.1','port':1})):
+                probe=prepare_stage('tq9-v2','probe',root/'run',root/'probe',accepted)
+                reuse=prepare_stage('tq9-v2','reuse',root/'run',root/'reuse',accepted)
+            context=root/'repair';context.mkdir()
+            repair_sources(root/'run',context,[{'source':'probe_run','code':'output'}])
+            policy=json.loads((context/'REPAIR_CONTEXT.json').read_text())['evidence_policy']
+            texts={'boundary':STAGE_BOUNDARY,'interpret':_prompt(str(root),'agent'),'policy':policy,
+                   'probe':probe['objective'],'reuse':reuse['objective'],'package':BENCHMARK_PACKAGE_EXECUTE['description']}
+            for name,text in texts.items():
+                with self.subTest(text=name):
+                    self.assertNotRegex(text,r'(?i)diagnostic|evaluator observation|independent monitor|checks diagnostics')
+                    if name!='reuse':self.assertIn('device evidence',text)
+            self.assertIn('Do not read personal skills',STAGE_BOUNDARY)

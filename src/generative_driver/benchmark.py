@@ -21,9 +21,20 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
     return adapter_for(case_id).prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
 
 
-def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, options=None):
+def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, options=None):
+    """Truth-free stage observation: the checked contract of the configurator's stage loop (artifacts, checks as
+    notes, optional stop). It runs no evaluator, grades nothing and records no stage verdict."""
     from .benchmark_support.registry import adapter_for
-    result = adapter_for(case_id).check_stage(case_id, stage, run_dir, workspace, report, accepted, options)
+    return adapter_for(case_id).observe_stage(case_id, stage, run_dir, workspace, report, accepted, options)
+
+
+def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, options=None):
+    """Legacy adapters' graded stage check (tq9, bme280) until they observe their stages too."""
+    from .benchmark_support.registry import adapter_for
+    adapter = adapter_for(case_id)
+    if hasattr(adapter, 'observe_stage'):
+        raise ValueError('This case observes its stages; it has no graded stage check')
+    result = adapter.check_stage(case_id, stage, run_dir, workspace, report, accepted, options)
     from .benchmark_support.cases import _state, _write
     state_path, state = _state(run_dir)
     state.setdefault('stage_verdicts', {})[stage] = {'status': 'passed' if result.get('ok') else 'failed',
@@ -329,11 +340,11 @@ def evaluation_fault(evaluation):
     return 'operator' if 'operator' in faults else 'host' if 'host' in faults else 'model'
 
 
-def recover_emulator(case_id, run_dir, workspace, accepted, report, feedback, options, cancelled):
-    """Internal adapter seam: owned pre-final emulation only."""
+def recover_emulator(case_id, run_dir, options, cancelled):
+    """Internal adapter seam: replace the owned emulator; it writes nothing into repair inputs."""
     from .benchmark_support.registry import adapter_for
     adapter = adapter_for(case_id)
     hook = getattr(adapter, 'recover_emulator', None)
     if hook is None:
         raise ValueError('Binding has no trusted owned-emulator recovery adapter')
-    return hook(case_id, run_dir, workspace, accepted, report, feedback, options, cancelled)
+    return hook(case_id, run_dir, options, cancelled)

@@ -90,27 +90,6 @@ def replace_owned(case_id, run_dir, options, cancelled):
         raise
 
 
-def preserve_failure(run_dir, workspace, accepted, report, feedback):
-    from .candidate_context import remember
-    from .cases import _state
-    _, state = _state(run_dir)
-    files = {'capabilities.json':Path(workspace)/'capabilities.json',
-             'live-observations.jsonl':Path(run_dir)/'benchmark'/f'live-observations-{state.get("revision",0)}.jsonl'}
-    if state.get('adapted_model_dir'):
-        files['model.json'] = Path(state['adapted_model_dir'])/'model.json'
-    for handoff in reversed(accepted):
-        if handoff['stage'] == 'interpret':
-            for artifact in handoff['artifacts']:
-                path = Path(artifact['path'])
-                for name in ('replies.json','NOTES.md'):
-                    if path.name.endswith(name):
-                        if hashlib.sha256(path.read_bytes()).hexdigest() != artifact['sha256']:
-                            raise ValueError('Accepted candidate evidence changed')
-                        files[name] = path
-            break
-    remember(run_dir, 'probe', files, feedback, report, workspace=workspace)
-
-
 def diagnostic_faults(finishes, assignment):
     """Other observed host/operator/unknown runtime failures still block repair."""
     faults = []
@@ -203,8 +182,12 @@ def unresolved_outcomes(db, run_id, assignment):
     return category, failed, dispatches
 
 
-def reconcile(controller, run_id, spec, assignment, run_dir, workspace, accepted, report, progress):
-    """Consume trusted runtime evidence once the worker has exited, under its lease."""
+def reconcile(controller, run_id, spec, assignment, run_dir, progress):
+    """Consume trusted runtime evidence once the worker has exited, under its lease, and replace the owned emulator.
+
+    A verified replacement is returned as `recovery` for the stage's handoff to commit, in one transaction with the
+    new binding, the cleared uncertainty and any route its device diff takes. This never routes the run or clears
+    uncertainty itself: until that commit the failed write stays uncertain, and it is never re-executed."""
     import threading
     import time
     from ..configurator import case_options
@@ -219,37 +202,24 @@ def reconcile(controller, run_id, spec, assignment, run_dir, workspace, accepted
                        and spec.get('_case_pin',{}).get('manifest',{}).get('approval_scope') == 'emulator'
                        and not progress.get('terminal_final_failure'))
             if not allowed:
-                return {'ok':False,'fault':category,'reason':'Outstanding effect requires operator reconciliation'}
+                return {'stop':{'category':'safety','reason':'Outstanding effect requires operator reconciliation'}}
             if progress['repairs'] >= int(spec.get('max_revisions',2)):
-                return {'ok':False,'fault':'model','reason':'Model repair budget exhausted with unresolved effect'}
-            feedback = {'runtime_failures':[{'evidence_id':str(identifier),'result':item} for identifier,item in failed],
-                        'unresolved_dispatch_ids':dispatches, 'effects_uncertain':True, 'reason':'Runtime contradicts candidate model; previous write was not retried'}
-            db.execute("UPDATE assignments SET state='superseded' WHERE id=?",(assignment['id'],))
+                return {'stop':{'category':'safety','reason':'Model repair budget exhausted with unresolved effect'}}
+            evidence = sorted({str(i) for i,_ in failed})
             controller._event(run_id,'emulator.recovery_started',{'assignment_id':assignment['id'],
-                'unresolved_evidence_ids':sorted({str(i) for i,_ in failed}),'unresolved_dispatch_ids':dispatches,'revision':progress['revision']},db)
+                'unresolved_evidence_ids':evidence,'unresolved_dispatch_ids':dispatches,'revision':progress['revision']},db)
         def cancelled():
             return bool(controller._closing or controller._row(run_id)['cancelled']
                         or time.time() >= controller._row(run_id)['created']+spec['budget_seconds'])
         try:
             case = spec['case']
             receipt = recover_emulator(case['id'] if isinstance(case,dict) else case, run_dir,
-                workspace, accepted, report, feedback, {**case_options(spec),
-                    'recovery_evidence_ids':sorted({str(i) for i,_ in failed}), 'recovery_dispatch_ids':dispatches}, cancelled)
-            with controller._lock, controller._db() as db:
-                if cancelled():
-                    raise RuntimeError('Recovery cancelled before durable reconciliation')
-                controller._claim_binding(receipt['binding'],run_id,db)
-                progress.update(revision=progress['revision']+1,next_stage='interpret',
-                    repairs=progress['repairs']+1,feedback=feedback)
-                controller._route(run_id,progress,'Runtime model discrepancy after emulator recovery',db)
-                db.execute('DELETE FROM pending_effects WHERE run_id=?',(run_id,))
-                db.execute('UPDATE runs SET uncertain=0 WHERE id=?',(run_id,))
-                controller._event(run_id,'emulator.recovered',{'assignment_id':assignment['id'],
-                    'unresolved_evidence_ids':sorted({str(i) for i,_ in failed}),'unresolved_dispatch_ids':dispatches, 'receipt':receipt,
-                    'revision':progress['revision'],'repairs':progress['repairs']},db)
-            return {'ok':False,'fault':'model','route':'interpret','reason':'Runtime model discrepancy after emulator recovery',
-                    'feedback':feedback,'revision_committed':True}
+                {**case_options(spec), 'recovery_evidence_ids':evidence, 'recovery_dispatch_ids':dispatches}, cancelled)
+            if cancelled():
+                raise RuntimeError('Recovery cancelled before durable reconciliation')
+            return {'recovery':{'assignment_id':assignment['id'],'receipt':receipt,
+                                'unresolved_evidence_ids':evidence,'unresolved_dispatch_ids':dispatches}}
         except Exception as error:
             controller._event(run_id,'emulator.recovery_failed',{'assignment_id':assignment['id'],
                 'reason':type(error).__name__+': '+str(error)})
-            return {'ok':False,'fault':'host','reason':'Emulator recovery unverified: '+str(error)}
+            return {'stop':{'category':'safety','reason':'Emulator recovery unverified: '+str(error)}}

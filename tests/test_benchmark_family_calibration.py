@@ -353,11 +353,11 @@ class FamilyAdmissionBoundaryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'Calibration'):require_calibration(pin,{})
 
 class ReuseBoundaryTests(unittest.TestCase):
-    def test_sample_reuse_requires_two_new_measured_acquisitions(self):
+    def test_sample_reuse_mission_note_requires_two_new_measured_acquisitions(self):
         import tempfile,json
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated import check_stage
+        from generative_driver.benchmark_support.emulated import observe_stage
         from generative_driver.benchmark_support.cases import _write
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);caps=root/'caps.json'
@@ -369,10 +369,12 @@ class ReuseBoundaryTests(unittest.TestCase):
                 return [{'actor':'worker','stage':'reuse','attempt_id':'new','revision':0,'operation':'sample',
                     'result':{'ok':True,'outputs':{'t':-5,'n':n}},'observation':{
                         'reference_temperature':-5,'monitor_sequence':n}} for n in sequence]
-            with patch('generative_driver.benchmark_support.emulated._final',return_value={'ok':True}):
+            with patch('generative_driver.benchmark_support.emulated_evidence._final',side_effect=AssertionError('final in the stage loop')):
                 for sequence,passed in (([3],False),([3,3],False),([3,4],True)):
                     (root/'benchmark/package-events.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events(sequence)))
-                    self.assertEqual(check_stage('sampled-sensor-v1','reuse',root,root,{'status':'completed'})['ok'],passed)
+                    checked=observe_stage('sampled-sensor-v1','reuse',root,root,{'status':'completed'})
+                    self.assertNotIn('stop',checked);self.assertNotIn('ok',checked)
+                    self.assertIs(next(c for c in checked['checks'] if c['name']=='fresh_worker_mission')['passed'],passed)
 
 class StoreReuseTests(unittest.TestCase):
     def test_commit_read_and_abort_require_observed_state_and_bank_isolation(self):
@@ -423,7 +425,7 @@ class InterpretationHelperTests(unittest.TestCase):
     def test_family_preparation_supplies_and_seals_reachable_generic_prescript(self):
         import json,subprocess,sys,tempfile
         from pathlib import Path
-        from generative_driver.benchmark import prepare_stage,check_stage
+        from generative_driver.benchmark import prepare_stage,observe_stage
         from generative_driver.toolkit import resources_root
         packaged=resources_root()/'toolchain/skills/interpret-firmware-binary/SeedCortexM.java'
         for case in ('sampled-sensor-v1','parameter-store-v1'):
@@ -443,8 +445,8 @@ class InterpretationHelperTests(unittest.TestCase):
                 self.assertEqual(helper.returncode,0)
                 self.assertIn('--prescript',helper.stdout)
                 seed.write_bytes(seed.read_bytes()+b'\n// modified')
-                checked=check_stage(case,'interpret',root/'run',workspace,{})
-                self.assertFalse(next(c for c in checked['checks'] if c['name']=='sealed_inputs')['passed'])
+                checked=observe_stage(case,'interpret',root/'run',workspace,{})
+                self.assertEqual(checked['stop']['category'],'integrity')
 
 class StageDispatchTests(unittest.TestCase):
     def test_diagnostic_stage_uses_family_contract_and_monitor_units(self):

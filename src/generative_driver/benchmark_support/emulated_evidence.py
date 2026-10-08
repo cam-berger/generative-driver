@@ -117,6 +117,7 @@ def finalize(case_id, run_dir, accepted, options):
                           'passed':sum(c['passed'] for c in checks),'total':len(checks)})
     sealed=seal_run_evidence(payload,Path(run_dir)/'benchmark/run-evidence.enc',options['evaluator_password_file'])
     state['accepted_gates']=summaries
-    state.setdefault('final_evaluation',{'verdict':'failed','passed':0,'total':0})['evidence_sha256']=sealed['sha256']
+    # Without a final evaluation nothing was graded: the summary is unscored, never failed.
+    state.setdefault('final_evaluation',{'verdict':'unscored','passed':0,'total':0})['evidence_sha256']=sealed['sha256']
     state['evidence_sealed']=True
     _write(path,state)

@@ -223,29 +223,32 @@ class SealedEvidenceTests(SealedEvidenceFixture, unittest.TestCase):
 
 
 class EvidenceBoundaryTests(unittest.TestCase):
-    def test_ground_projects_only_accepted_diagnostics(self):
+    def test_ground_receives_device_evidence_and_never_diagnostic_records(self):
         import hashlib
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.ground import prepare
+        from generative_driver.benchmark_support.ground import device_evidence
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             model = root / 'model.json'
             model.write_text('{}')
             digest = hashlib.sha256(model.read_bytes()).hexdigest()
+            probe = root / 'probe-1.json'
+            probe.write_text(json.dumps({'schema': 'interface-probe/1', 'model_sha256': digest, 'operation': 'visible',
+                'ok': True, 'results': [{'ok': True, 'outputs': {'value': 7}, 'units': {'value': 'V'}}]}))
             observed = root / 'observations.json'
             observed.write_text(json.dumps({'schema': 'benchmark-observations/2', 'model_sha256': digest,
-                'diagnostics': [{'phase': 'diagnostic', 'records': [{'task_id': 'visible', 'value': 7,
+                'diagnostics': [{'phase': 'diagnostic', 'records': [{'task_id': 'graded', 'value': 7,
                     'unit': 'V', 'expected': 'FINAL SECRET'}]},
                     {'phase': 'final', 'records': [{'task_id': 'hidden', 'value': 'FINAL SECRET'}]}],
                 'records': [{'value': 'FINAL SECRET'}]}))
             accepted = [{'stage': 'probe', 'artifacts': [{'path': str(path),
-                'sha256': hashlib.sha256(path.read_bytes()).hexdigest()} for path in (model, observed)]}]
-            result = prepare(accepted, root / 'worker')
-            text = json.dumps(result) + ''.join(Path(path).read_text() for path in result['inputs'])
+                'sha256': hashlib.sha256(path.read_bytes()).hexdigest()} for path in (model, probe, observed)]}]
+            result = device_evidence(accepted, root / 'worker')
+            text = json.dumps(result) + ''.join(Path(path).read_text() for path in result['inputs'] if Path(path).is_file())
             self.assertIn('visible', text)
-            self.assertNotIn('FINAL SECRET', text)
-            self.assertNotIn('hidden', text)
+            for forbidden in ('FINAL SECRET', 'hidden', 'graded', 'expected'):
+                self.assertNotIn(forbidden, text)
 
     def test_cli_accepts_evidence_and_requires_it_for_v2(self):
         import contextlib

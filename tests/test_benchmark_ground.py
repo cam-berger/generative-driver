@@ -12,50 +12,67 @@ from generative_driver.benchmark import prepare_stage
 
 
 class GroundEvidenceTests(unittest.TestCase):
-    def test_current_grounding_keeps_canonical_mapping_transactions_and_check_results(self):
-        # Catches grounding an unmapped raw model after discarding checked captures.
+    def test_current_grounding_keeps_the_model_mapping_worker_probes_and_journal_without_grades(self):
+        # Catches grounding an unmapped raw model, discarding observed captures, or projecting any grade.
+        from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             source = root/'accepted'; source.mkdir()
-            model = source/'model.json'; model.write_text('{"operations":{}}')
+            model = source/'1-model.json'; model.write_text('{"operations":{}}')
             model_hash = hashlib.sha256(model.read_bytes()).hexdigest()
-            mapping = source/'capabilities.json'
+            adaptation = source/'2-adaptation.json'; adaptation.write_text('{"kind":"emulator UART-to-TCP wiring"}')
+            mapping = source/'0-capabilities.json'
             mapping.write_text(json.dumps({'schema': 'benchmark-capabilities/2', 'tasks': {
                 'temperature': {'operation': 'sample', 'constants': {}, 'inputs': {},
                                 'outputs': {'temperature': {'output': 'raw', 'unit': 'degC'}}}}}))
-            probe = source/'interface-1.json'
+            probe = source/'4-interface-1.json'
             probe.write_text(json.dumps({'schema': 'interface-probe/1', 'model_sha256': model_hash,
                 'operation': 'sample', 'parameters': {}, 'allow_effects': [], 'ok': True,
                 'results': [{'ok': True, 'outputs': {'raw': 21}, 'units': {'raw': 'degC'},
                              'transcript': [{'tx_hex': '01', 'rx_hex': '15'}]}]}))
-            observed = source/'observations.json'
-            observed.write_text(json.dumps({'schema': 'benchmark-observations/2', 'model_sha256': model_hash,
-                'score': {'expected': 'PRIVATE ORACLE'}, 'diagnostics': [{'phase': 'diagnostic',
-                    'records': [{'id': 'read/temperature', 'task_id': 'temperature', 'value': 21,
-                                 'unit': 'degC', 'channel': 'runtime-transcript'}],
-                    'checks': [{'id': 'read/temperature', 'passed': True, 'expected': 'PRIVATE ORACLE'}]}]}))
-            live = source/'live-observations.jsonl'
+            stale = source/'5-observations.json'
+            stale.write_text(json.dumps({'schema': 'benchmark-observations/2', 'model_sha256': model_hash,
+                'diagnostics': [{'checks': [{'id': 'read/temperature', 'passed': True, 'expected': 'PRIVATE ORACLE'}]}]}))
+            live = source/'3-live-observations-0.jsonl'
             live.write_text(json.dumps({'operation': 'sample', 'result': {'outputs': {'raw': 21}},
                 'observation': {'temperature_reference': 21, 'temperature_unit': 'degC'}})+'\n')
             artifacts = [{'path': str(p), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()}
-                         for p in (model, mapping, probe, observed, live)]
-            prepared = prepare_stage('tq9-v2', 'ground', root/'run', root/'worker',
-                accepted=[{'stage': 'probe', 'artifacts': artifacts}])
-            bundle = root/'worker/ground-evidence'
-            evidence = json.loads((bundle/'independent-observations.json').read_text())
-            self.assertIn('capabilities', evidence, 'Ground cannot relate raw outputs to canonical tasks')
-            self.assertEqual((bundle/evidence['capabilities']['artifact']).read_bytes(), mapping.read_bytes())
-            self.assertEqual((bundle/evidence['calls'][0]['artifact']).read_bytes(), probe.read_bytes())
-            self.assertIn(str((bundle/evidence['calls'][0]['artifact']).resolve()), prepared['inputs'])
-            self.assertTrue(evidence['records'][0]['passed'])
-            self.assertIn('live_observations', evidence, 'Paired live reference measurements were lost')
-            self.assertEqual((bundle/evidence['live_observations']['artifact']).read_bytes(), live.read_bytes())
-            self.assertNotIn('PRIVATE', json.dumps(evidence))
-            self.assertNotIn('expected', json.dumps(evidence))
+                         for p in (mapping, model, adaptation, live, probe, stale)]
+            with patch('generative_driver.benchmark_support.emulated._session',
+                       return_value=SimpleNamespace(binding={'host': '127.0.0.1', 'port': 1})):
+                prepared = prepare_stage('tq9-v2', 'ground', root/'run', root/'worker',
+                    accepted=[{'stage': 'probe', 'artifacts': artifacts}])
+            ws = root/'worker'
+            evidence = json.loads((ws/'ground-evidence/device-observations.json').read_text())
+            self.assertEqual(sorted(prepared['allowed_tools']), ['interface_execute', 'model_validate', 'probe_diff', 'probe_run'])
+            self.assertEqual(prepared['binding'], {'host': '127.0.0.1', 'port': 1})
+            self.assertEqual((ws/'model/model.json').read_bytes(), model.read_bytes())
+            self.assertEqual((ws/'model/adaptation.json').read_bytes(), adaptation.read_bytes())
+            self.assertEqual(prepared['context']['model_dir'], str(ws/'model'))
+            self.assertIn(str(ws/'model'), prepared['inputs'])
+            self.assertEqual(evidence['model']['sha256'], model_hash)
+            self.assertEqual((ws/evidence['capabilities']['artifact']).read_bytes(), mapping.read_bytes())
+            self.assertEqual((ws/evidence['probes'][0]['artifact']).read_bytes(), probe.read_bytes())
+            self.assertEqual(evidence['probes'][0]['sha256'], hashlib.sha256(probe.read_bytes()).hexdigest())
+            self.assertIn(str(ws/evidence['probes'][0]['artifact']), prepared['inputs'])
+            self.assertEqual((ws/evidence['live_observations']['artifact']).read_bytes(), live.read_bytes())
+            text = json.dumps(evidence) + ''.join(Path(path).read_text() for path in prepared['inputs'] if Path(path).is_file())
+            for forbidden in ('PRIVATE', 'expected', '"passed"', '"checks"', 'diagnostic'):
+                self.assertNotIn(forbidden, text)
+            self.assertIn('device evidence', prepared['objective'])
             probe.write_text('{}')
             with self.assertRaisesRegex(ValueError, 'hash changed'):
                 prepare_stage('tq9-v2', 'ground', root/'run', root/'changed',
                     accepted=[{'stage': 'probe', 'artifacts': artifacts}])
+
+    def test_ground_without_an_adapted_model_skips_with_a_note(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for accepted in ([], [{'stage': 'probe', 'artifacts': []}]):
+                with self.subTest(accepted=accepted), patch(
+                        'generative_driver.benchmark_support.emulated._session', side_effect=AssertionError('emulator started')):
+                    prepared = prepare_stage('tq9-v2', 'ground', root/'run', root/'worker', accepted=accepted)
+                    self.assertIn('no interpreted model available', prepared['skip'])
 
     def test_evaluation_retains_existing_monitor_reads_and_live_probe_hashes(self):
         from generative_driver.benchmark import case_root

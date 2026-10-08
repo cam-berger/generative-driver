@@ -58,8 +58,9 @@ def require_evidence_path(source, roots):
         raise ValueError('Repair input outside assigned evidence roots')
 
 
-def remember(run_dir, stage, files, feedback, report=None, workspace=None):
-    """Capture bounded candidate files; callers select files, never report paths."""
+def remember(run_dir, stage, files, report=None, workspace=None):
+    """Capture bounded candidate files and the device evidence of their runs; callers select files, never report
+    paths. Nothing graded is kept: repair feedback is the device diff, supplied separately as DEFECTS.json."""
     path, state = _state(run_dir)
     parent = Path(run_dir)/'benchmark/candidate-history'
     parent.mkdir(parents=True, exist_ok=True)
@@ -71,7 +72,6 @@ def remember(run_dir, stage, files, feedback, report=None, workspace=None):
             require_evidence_path(source, roots)
             content[name] = source.read_bytes()
     root = Path(tempfile.mkdtemp(prefix=f'{state.get("revision", 0)}-{stage}-', dir=parent))
-    content['feedback.json'] = (json.dumps(feedback, allow_nan=False)+'\n').encode()
     content['worker-report.json'] = (json.dumps(worker_claim(report), allow_nan=False)+'\n').encode()
     hashes = {}
     for name, raw in content.items():
@@ -85,7 +85,7 @@ def remember(run_dir, stage, files, feedback, report=None, workspace=None):
 
 
 def repair_sources(run_dir, workspace, feedback):
-    """Reverify this run's saved evidence before interpretation seals its copy."""
+    """Reverify this run's saved evidence before interpretation seals its copy; `feedback` is the device diff."""
     _, state = _state(run_dir)
     sources, history = {}, []
     for index, entry in enumerate(state.get('candidate_history', [])):
@@ -107,11 +107,14 @@ def repair_sources(run_dir, workspace, feedback):
     context = Path(workspace)/'REPAIR_CONTEXT.json'
     _write(context, {'schema': 'candidate-repair-context/1', 'mode': 'repair',
         'task_contract': 'TASKS.json', 'feedback': 'DEFECTS.json', 'history': history,
-        'evidence_policy': 'Supplied diagnostic measurements, captures and this run\'s previous candidates '
-            'are authorized evidence. Use them to correct the latest candidate. Worker reports are claims; '
-            'compare them with the observed records. Do not access other runs, evaluator passwords, '
-            'plaintext oracle files or hidden final answers. Preserve sealed inputs; write corrected outputs '
-            'at the workspace root and explain each correction in NOTES.md.'})
+        'evidence_policy': 'DEFECTS.json is what the device did that the previous candidate did not predict, '
+            'from the configurator\'s own record of the device connection it supplied, and defects its own '
+            'validation of the candidate found: device evidence, not a grade. The history holds this run\'s '
+            'previous candidates with their probe records and live journals; instrument readings in those journals '
+            'are readings of the emulated device, device evidence like any other. Use them to correct the latest '
+            'candidate. Worker reports are claims; compare them with the observed records. Do not access other '
+            'runs, evaluator passwords, plaintext oracle files or hidden final answers. Preserve sealed inputs; '
+            'write corrected outputs at the workspace root and explain each correction in NOTES.md.'})
     sources['REPAIR_CONTEXT.json'] = str(context)
     defects = Path(workspace)/'DEFECTS.json'; _write(defects, feedback)
     sources['DEFECTS.json'] = str(defects)

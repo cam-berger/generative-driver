@@ -155,6 +155,25 @@ class LifecycleValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             NativeSession.start(renode=Path('/missing/tool'), image=Path('/missing/image'), recipe=recipe())
 
+    def test_a_given_private_directory_holds_the_session_files_and_no_temporary_one_is_made(self):
+        # Catches the session's own files (its log, and after a monitor rejection the rendered evaluator commands)
+        # written to a temporary directory that no cleanup of the caller's reaches, when the caller named one.
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            renode, image = root / 'renode', root / 'image.bin'
+            renode.write_bytes(b''); image.write_bytes(b'\0')
+            private = root / 'trial/private/native'
+            sources = {**recipe(), 'source_files': {'setup.resc': 'mach create'}, 'setup': 'setup.resc'}
+            with patch('generative_driver.benchmark_support.native.tempfile.mkdtemp',
+                       side_effect=AssertionError('temporary directory made')), \
+                    patch('generative_driver.benchmark_support.native.subprocess.Popen',
+                          side_effect=OSError('scripted launch failure')), \
+                    self.assertRaisesRegex(OSError, 'scripted launch failure'):
+                NativeSession.start(renode=renode, image=image, recipe=sources, private_dir=private)
+            self.assertEqual(sorted(p.name for p in private.iterdir()), ['renode.log'])
+
     def test_attached_session_stop_does_not_terminate_unowned_process(self):
         with MonitorFixture() as peer:
             session = MonitorTests().session(peer)

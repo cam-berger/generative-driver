@@ -545,7 +545,9 @@ class TQ9V2Tests(unittest.TestCase):
                 def native_start(**kwargs):
                     self.assertEqual(Path(kwargs['image']).name,'firmware.bin')
                     peer=Silicon(kwargs['image']);peers.append(peer);peer.wrong_hidden=mode=='hidden-wrong'
-                    session=peer.session(kwargs['recipe'],root/('native-'+str(len(peers))))
+                    # A grading session keeps its files in the private directory the evaluator names, as a native one does.
+                    peer.private_dir=kwargs.get('private_dir')
+                    session=peer.session(kwargs['recipe'],peer.private_dir or root/('native-'+str(len(peers))))
                     class Process:
                         def poll(self):return 0 if getattr(peer,'closed',False) else None
                     session.process=Process()
@@ -886,6 +888,8 @@ class TQ9V2Tests(unittest.TestCase):
                                 # One grading run on one fresh emulator, after the run's own device stopped, and the
                                 # truth unlocked twice in all: the device recipe before the run, the grade after it.
                                 self.assertEqual((graded,len(graders)),([run_peers],1))
+                                self.assertTrue(graders[0].private_dir and Path(graders[0].private_dir).is_relative_to(trial/'private'))
+                                self.assertFalse((trial/'private').exists())
                                 self.assertEqual([('admit' in names,'grade' in names) for names in truth_callers],[(True,False),(False,True)])
                                 note=next(c for c in result['accepted_handoffs'][-1]['checks'] if c['name']=='fresh_worker_mission')
                                 self.assertEqual(equivalence['mission'],note)

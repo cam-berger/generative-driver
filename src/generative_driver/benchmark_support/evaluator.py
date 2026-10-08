@@ -30,8 +30,9 @@ def case_truth(case_id, run_dir, options):
 
 
 def reference_execute(pin, truth, model, capabilities, *, renode, image, output_dir,
-                      phase='final', package=None, expected_package_sha256=None, package_final=True):
-    """Measured evaluator-only seam using normal models and frozen packages, on a fresh emulator it starts and stops."""
+                      phase='final', package=None, expected_package_sha256=None, package_final=True, private_dir=None):
+    """Measured evaluator-only seam using normal models and frozen packages, on a fresh emulator it starts and stops.
+    The emulator session keeps its files (its log, the monitor commands it rendered) in `private_dir` when given."""
     if pin.get('scenario_id') != 'original':
         raise ValueError('Unknown case scenario')
     if phase not in ('diagnostic', 'final'):
@@ -60,7 +61,7 @@ def reference_execute(pin, truth, model, capabilities, *, renode, image, output_
                                          else reference_model_bytes(candidate))
     model_hash = hashlib.sha256((model_dir/'model.json').read_bytes()).hexdigest()
     probes = []
-    session = NativeSession.start(renode=renode, image=image, recipe=truth['recipe'])
+    session = NativeSession.start(renode=renode, image=image, recipe=truth['recipe'], private_dir=private_dir)
     try:
         frozen = None
         if phase == 'final' and package_final:
@@ -277,9 +278,11 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
         truth = case_truth(case_id, run_dir, {'evaluator_password_file': str(password_file)})
         inputs, _ = _inputs(case_id, run_dir)
         output = private/'final'
+        # The session's own files, the monitor commands that carry hidden stimuli among them, stay under `private`,
+        # which the harness removes however grading ends.
         evaluation = reference_execute({**pin, 'revision': revision}, truth, model, capabilities, renode=renode,
                                        image=inputs/'firmware.bin', output_dir=output, phase='final', package=package,
-                                       expected_package_sha256=sha)
+                                       expected_package_sha256=sha, private_dir=private/'native')
         raw = output/'raw.json'
         final = {'run_id': result['run_id'], 'phase': 'final', 'revision': revision, 'frozen_artifact_sha256': sha,
                  'capabilities_sha256': capabilities_sha, 'contract': evaluation['contract'], 'records': evaluation['records'],

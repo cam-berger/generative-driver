@@ -77,7 +77,10 @@ class NativeSession:
         self.process = None
 
     @classmethod
-    def start(cls, *, renode, image, recipe, timeout_seconds=60.0):
+    def start(cls, *, renode, image, recipe, timeout_seconds=60.0, private_dir=None):
+        """Start a native session. Its files (setup sources while it starts, its log, rejected monitor commands) live in
+        `private_dir` when the caller names one, so that the caller's cleanup removes them; otherwise in a new temporary
+        directory."""
         from .emulator import _free_port, _path
         _validate_recipe(recipe)
         renode, image = Path(renode).resolve(), Path(image).resolve()
@@ -92,7 +95,11 @@ class NativeSession:
             raise ValueError('Invalid native setup sources')
         # Validate paths before creating any ephemeral plaintext or process.
         _path(image)
-        private = Path(tempfile.mkdtemp(prefix='gd-native-evaluator-'))
+        if private_dir is None:
+            private = Path(tempfile.mkdtemp(prefix='gd-native-evaluator-'))
+        else:
+            private = Path(private_dir)
+            private.mkdir(parents=True, exist_ok=True, mode=0o700)
         private.chmod(0o700)
         session = None
         try:

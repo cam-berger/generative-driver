@@ -4,10 +4,10 @@ It holds what the configurator never does. The evaluator password file path arri
 to disk; the case truth is unlocked to project the device recipe before the run and to grade after it; and it owns the
 device. In order, it: admits the case (`require_calibration`), starts the emulator through a recipe-only provider and
 serves the configurator a narrow control endpoint (status, observe, set_running, replace, release; stop and shutdown are
-owner-only), starts the configurator run with the device descriptor, the admission evidence hash and the sha256 of an
-evaluation token it derives from the password, waits as a reconnecting client, stops the device once the run is terminal,
-grades a completed run's frozen driver once on a fresh emulator, seals the run evidence and posts the verdict with
-`record_evaluation`. Its state lives under a bench home beside the configurator home, never inside it."""
+owner-only), starts the configurator run with the device descriptor, the admission evidence hash and the sha256 of a
+random evaluation token it keeps sealed under the password, waits as a reconnecting client, stops the device once the run
+is terminal, grades a completed run's frozen driver once on a fresh emulator, seals the run evidence and posts the verdict
+with `record_evaluation`. Its state lives under a bench home beside the configurator home, never inside it."""
 import argparse
 import contextlib
 import hashlib
@@ -196,14 +196,37 @@ def admit(case_id, options, trial_dir, *, password_file, renode=None):
     return provider, {'calibration_evidence_sha256': admitted.get('evidence_sha256')}
 
 
-def evaluation_token(password_file, trial_id):
-    """The trial's evaluation token, derived from the evaluator password and the trial id: a harness that resumes the
-    trial with the password derives it again, nothing writes it to disk, and the configurator holds only its sha256."""
-    import hmac
-    key = Path(password_file).read_text(encoding='utf-8').strip().encode('utf-8')
-    if not key:
+TOKEN = 'evaluation-token.enc'
+
+
+def evaluation_token(trial_dir, password_file, trial_id, *, create=False):
+    """The trial's evaluation token: 32 random bytes the harness creates before the run starts (`create`) and seals under
+    the evaluator password in the trial directory, with the truth envelope's key derivation, so that a harness resuming
+    the trial with the password unlocks it again. The configurator holds only its sha256, which tells nothing about the
+    password, and no plaintext copy is written. A password that does not unlock it is refused."""
+    from .truth import seal, unlock
+    path = Path(trial_dir) / TOKEN
+    password = Path(password_file).read_text(encoding='utf-8').strip()
+    if not password:
         raise ValueError('A nonempty evaluator password is required')
-    return hmac.new(key, b'generative-driver evaluation token/1\0' + str(trial_id).encode('utf-8'), hashlib.sha256).hexdigest()
+    if create:
+        if path.exists():
+            raise ValueError('The trial already holds an evaluation token: ' + str(path))
+        token = secrets.token_hex(32)
+        seal({'schema': 'bench-evaluation-token/1', 'trial_id': trial_id, 'token': token}, path, password)
+        return token
+    try:
+        sealed = unlock(path, password, hashlib.sha256(path.read_bytes()).hexdigest())
+    except FileNotFoundError:
+        raise ValueError('The trial holds no evaluation token: ' + str(path)) from None
+    except ValueError:
+        raise ValueError('The evaluator password does not unlock the trial\'s evaluation token') from None
+    sealed = sealed if isinstance(sealed, dict) else {}
+    token = sealed.get('token')
+    if (sealed.get('schema'), sealed.get('trial_id')) != ('bench-evaluation-token/1', trial_id) or not (
+            isinstance(token, str) and len(token) == 64 and all(c in '0123456789abcdef' for c in token)):
+        raise ValueError('The evaluation token in ' + str(path) + ' is not this trial\'s')
+    return token
 
 
 def _post(call, method, params):
@@ -225,8 +248,18 @@ def conclude(trial_dir, case_id, run_dir, result, *, password_file, renode=None,
     from ..configurator import IntegrityError, _evaluation_errors
     from . import evaluator
     if result.get('equivalence') is not None:
-        # The configurator already holds this run's verdict: nothing is graded, sealed or posted again.
-        return {'status': 'evaluated', 'equivalence': result['equivalence']}
+        # The configurator already holds this run's verdict: nothing is graded, sealed or posted again. Its seal is the
+        # evidence the verdict names, when the trial directory holds exactly that (a harness may have died after the
+        # post, before it wrote the seal down).
+        done = {'status': 'evaluated', 'equivalence': result['equivalence']}
+        named = result['equivalence'].get('evidence_sha256') if isinstance(result['equivalence'], dict) else None
+        try:
+            held = hashlib.sha256((Path(trial_dir) / evaluator.EVIDENCE).read_bytes()).hexdigest()
+        except OSError:
+            held = None
+        if named and held == named:
+            done.update(sealed=True, evidence={'path': evaluator.EVIDENCE, 'sha256': named})
+        return done
     pending = result.get('status') == 'completed' and (result.get('progress') or {}).get('equivalence') == 'pending'
     accepted = result.get('accepted_handoffs') or []
     frozen = (evaluator.emitted(accepted) or (None, None))[1]
@@ -366,8 +399,9 @@ def run_trial(trial_dir, request):
                                     password_file=password_file, renode=renode)
         provider.start()
         server = DeviceServer(provider, trial_dir / 'endpoint')
-        # The configurator holds the token's hash, for the evaluation after the run; the token itself stays here.
-        token = evaluation_token(password_file, request['trial_id'])
+        # The configurator holds the token's hash, for the evaluation after the run; the token stays in this process and,
+        # for a resume, sealed under the password in the trial directory.
+        token = evaluation_token(trial_dir, password_file, request['trial_id'], create=True)
         params = {key: request[key] for key in ('goal', 'case', 'executor', 'budget_seconds', 'effects', 'case_options',
                                                 'output_dir', 'scoped_tool_approval')
                   if request.get(key) is not None}
@@ -420,7 +454,8 @@ def resume(trial_dir, *, password_file, renode=None):
     """Complete the evaluation of a trial whose harness has exited after its device stop was confirmed: one that died
     after the stop, could not grade (unscored, an evaluator host fault) or could not post its verdict. A final the draft
     already holds is rebuilt, never graded again; a verdict the configurator holds is never posted again. Grading needs
-    the emulator executable (`renode`); without it a resume that would grade refuses before it unlocks anything."""
+    the emulator executable (`renode`); without it a resume that would grade refuses before it unlocks anything. A
+    password that does not unlock the trial's evaluation token is refused before anything is graded, sealed or posted."""
     from ..client import call
     from . import evaluator
     trial_dir = Path(trial_dir)
@@ -437,6 +472,8 @@ def resume(trial_dir, *, password_file, renode=None):
             raise ValueError('The trial\'s device stop was not confirmed; reconcile its device before evaluating')
         if record.get('status') not in RESUMABLE:
             raise ValueError('The trial awaits no evaluation: ' + str(record.get('status')))
+        # Only the password the trial ran with unlocks its token: under any other, nothing is graded, sealed or posted.
+        token = evaluation_token(trial_dir, password_file, record['trial_id'])
         home = Path(record['home'])
         configurator = lambda method, params: call(method, params, home=home, autostart=False)
         result = _post(configurator, 'result', {'run_id': record['run_id']})
@@ -447,7 +484,7 @@ def resume(trial_dir, *, password_file, renode=None):
             raise ValueError('The trial\'s frozen driver is not graded yet: grading starts a fresh emulator, so pass its '
                              'executable (--renode)')
         done = conclude(trial_dir, record['case'], home / 'runs' / record['run_id'], result, password_file=password_file,
-                        renode=renode, token=evaluation_token(password_file, record['trial_id']), call=configurator)
+                        renode=renode, token=token, call=configurator)
         _settle(record, {**done, 'status': done.get('status') or 'run-stopped', 'resumed': time.time()})
         _private(trial_dir / 'trial.json', record)
     return record

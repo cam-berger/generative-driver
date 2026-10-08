@@ -280,10 +280,12 @@ class ReferenceExecutionTests(unittest.TestCase):
                 self.assertTrue(emitted.get('ok'),emitted)
                 windows=Path(emitted['package_dir'])
                 self.assertIn(b'\r\n',(windows/'driver/model.json').read_bytes())
-                with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()):
+                with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()) as native:
                     graded=reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
-                        output_dir=crlf/'final',package=windows,expected_package_sha256=digest(windows))
+                        output_dir=crlf/'final',package=windows,expected_package_sha256=digest(windows),private_dir=crlf/'native')
                 self.assertEqual(graded['grade']['verdict'],'passed')
+                # The grading session keeps its own files where the caller's cleanup reaches them.
+                self.assertEqual(native.call_args.kwargs['private_dir'],crlf/'native')
                 self.assertEqual((graded['package_sha256'],graded['artifact_execution']),(digest(windows),'emitted-package'))
                 package=Path(result['package_dir']);frozen=result['package_sha256']
                 self.assertEqual(digest(package),frozen)

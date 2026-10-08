@@ -36,13 +36,18 @@ def reference(values, calls=None, before=None, after=None):
     """A scripted final phase in reference_execute's shape: the toy contract, records with `values`, raw evidence and
     the plaintext evaluation output the real one leaves in its output directory. `after` runs once that output exists."""
     def execute(pin, truth, model, capabilities, *, renode, image, output_dir, phase='final', package=None,
-                expected_package_sha256=None, package_final=True):
+                expected_package_sha256=None, package_final=True, private_dir=None):
         if before:
             before()
         if calls is not None:
             calls.append({'pin': pin, 'model': model, 'capabilities': capabilities, 'image': Path(image), 'phase': phase,
                           'package': Path(package), 'sha': expected_package_sha256, 'output': Path(output_dir),
-                          'renode': renode})
+                          'renode': renode, 'private': Path(private_dir) if private_dir else None})
+        if private_dir:
+            # What a native session leaves in its private directory after a monitor rejection: the rendered evaluator
+            # command, with the hidden stimulus in it.
+            Path(private_dir).mkdir(parents=True, exist_ok=True)
+            (Path(private_dir) / 'monitor-errors.jsonl').write_text(json.dumps({'command': 'stimulate ' + str(EXPECTED)}))
         sha, revision = expected_package_sha256, pin['revision']
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         (Path(output_dir) / 'raw.json').write_text(json.dumps({'events': [], 'monitor': EXPECTED}))
@@ -343,6 +348,9 @@ class HarnessGradingTests(PendingRunFixture):
                                  ('final', frozen, self.mapping, self.model))
                 self.assertEqual((call['pin']['case_id'], call['pin']['revision']), ('tq9-v2', 0))
                 self.assertTrue(call['package'].is_relative_to(trial)); self.assertTrue(call['output'].is_relative_to(trial))
+                # The grading session's own files (its log, the monitor commands it rendered) live where grading's
+                # cleanup reaches them, never in a temporary directory that outlives the trial's evaluation.
+                self.assertIsNotNone(call['private']); self.assertTrue(call['private'].is_relative_to(trial / 'private'))
                 self.assertEqual(call['image'], self.home / 'runs' / record['run_id'] / 'benchmark/inputs/firmware.bin')
                 self.assertEqual(unlocked[0][1], self.home / 'runs' / record['run_id'])
                 # The verdict the harness posted is the one the configurator holds.
@@ -548,12 +556,15 @@ class HarnessGradingTests(PendingRunFixture):
             with self.subTest(exit=name):
                 def interrupted(stop=stop):
                     raise stop('operator interrupt during grading')
+                calls = []
                 with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
-                        patch.object(evaluator, 'reference_execute', side_effect=reference(PASS, after=interrupted)), \
+                        patch.object(evaluator, 'reference_execute', side_effect=reference(PASS, calls, after=interrupted)), \
                         self.assertRaises(stop):
                     self.trial(name)
                 trial = self.root / 'bench' / name
                 self.assertFalse((trial / 'private').exists())
+                # The grading session's private directory went with it.
+                self.assertIsNotNone(calls[0]['private']); self.assertTrue(calls[0]['private'].is_relative_to(trial / 'private'))
                 for path in files(trial):
                     self.assertNotIn(str(EXPECTED).encode(), path.read_bytes(), path)
                 record = harness.read_trial(trial)
@@ -733,6 +744,118 @@ class HarnessGradingTests(PendingRunFixture):
                                  output['equivalence'])
                 self.assertNotIn(str(self.password), printed.getvalue())
                 self.assertEqual(harness.read_trial(trial)['status'], 'evaluated')
+
+    def test_the_configurator_holds_the_hash_of_a_random_token_only_the_password_unlocks(self):
+        # Catches an evaluation token derived cheaply from the evaluator password and the trial id (an HMAC or a plain
+        # hash of them), whose sha256 in the configurator's store would let anyone who reads that store test password
+        # guesses far faster than the truth envelope's key derivation allows, and a token kept anywhere in plaintext.
+        import hmac
+        from generative_driver.benchmark_support import evaluator
+        from generative_driver.benchmark_support.truth import unlock
+        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
+            trial, record = self.trial('token')
+        self.assertEqual(record['status'], 'evaluated')
+        with self.controller._db() as db:
+            spec = json.loads(db.execute('SELECT spec FROM runs WHERE id=?', (record['run_id'],)).fetchone()['spec'])
+        stored = spec['evaluation_token_sha256']
+        password = self.password.read_text().strip()
+        key = password.encode()
+        for label in (b'generative-driver evaluation token/1\0token', b'token', b''):
+            for cheap in (hmac.new(key, label, hashlib.sha256).hexdigest(), hashlib.sha256(key + label).hexdigest(),
+                          hashlib.sha256(label + key).hexdigest()):
+                self.assertNotIn(stored, (cheap, hashlib.sha256(cheap.encode()).hexdigest()))
+        # The token is random; only the evaluator password unlocks it, through the truth envelope's key derivation.
+        sealed = trial / 'evaluation-token.enc'
+        envelope = json.loads(sealed.read_text())
+        self.assertEqual((envelope['kdf'], envelope['iterations']), ('PBKDF2-HMAC-SHA256', 600000))
+        token = unlock(sealed, password, hashlib.sha256(sealed.read_bytes()).hexdigest())
+        self.assertEqual(token['trial_id'], 'token')
+        self.assertEqual(len(bytes.fromhex(token['token'])), 32)
+        self.assertEqual(hashlib.sha256(token['token'].encode()).hexdigest(), stored)
+        for path in files(trial) + files(self.home):
+            self.assertNotIn(token['token'].encode(), path.read_bytes(), path)
+
+    def test_a_resume_with_another_password_refuses_before_it_grades_seals_or_posts(self):
+        # Catches a resume under a password the trial was not run with grading as a host fault, sealing evidence under
+        # that password over the good evidence, and recording the trial unscored, all before anything checked the
+        # password; and a resume of a trial whose evaluation token is gone.
+        from generative_driver.benchmark_support import evaluator, harness
+        self.unreachable = ('record_evaluation',)
+        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
+            trial, record = self.trial()
+        run = {'run_id': record['run_id']}
+        self.assertEqual((record['status'], record['sealed']), ('awaiting-evaluation', True))
+        self.unreachable = ()
+        evidence = (trial / 'run-evidence.enc').read_bytes()
+        other = self.root / 'other-password-handle'
+        other.write_text('another synthetic credential')
+        token, aside = trial / 'evaluation-token.enc', self.root / 'evaluation-token.aside'
+        for case, password, message in (('another password', other, 'password does not unlock'),
+                                         ('no token', self.password, 'no evaluation token')):
+            with self.subTest(case=case):
+                if case == 'no token':
+                    token.rename(aside)
+                self.calls = []
+                with patch.object(evaluator, 'grade', side_effect=AssertionError('graded')) as grading, \
+                        patch.object(evaluator, 'seal', side_effect=AssertionError('sealed')) as sealing, \
+                        patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')) as unlocking, \
+                        patch('generative_driver.client.call', side_effect=self.configurator), \
+                        self.assertRaisesRegex(ValueError, message):
+                    harness.resume(trial, password_file=password, renode='scripted-emulator')
+                grading.assert_not_called(); sealing.assert_not_called(); unlocking.assert_not_called()
+                self.assertEqual(self.calls, [])
+                self.assertEqual((trial / 'run-evidence.enc').read_bytes(), evidence)
+                self.assertEqual(harness.read_trial(trial), record)
+                self.assertFalse((trial / 'evaluation.lock').exists())
+                if case == 'no token':
+                    aside.rename(token)
+        self.assertIsNone(self.controller.call('status', run)['equivalence'])
+        self.assertFalse(self.events(run, 'evaluation.unscored'))
+        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+                patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
+            resumed = self.resume(trial, renode='scripted-emulator')
+        self.assertEqual((resumed['status'], resumed['sealed']), ('evaluated', True))
+        self.assertEqual(resumed['equivalence']['evidence_sha256'], resumed['evidence']['sha256'])
+        self.assertEqual(self.controller.call('status', run)['equivalence'], resumed['equivalence'])
+
+    def test_a_harness_that_died_after_its_verdict_was_recorded_resumes_to_the_seal_that_verdict_names(self):
+        # Catches a trial left evaluated with no evidence after its harness died between the configurator recording
+        # the verdict and the trial record being written, although the evidence the verdict names is in the trial
+        # directory; and evidence that no longer matches the verdict reported as its seal.
+        from generative_driver.benchmark_support import evaluator, harness
+        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
+                patch.object(harness, '_settle', side_effect=SystemExit('harness killed after the post')), \
+                self.assertRaises(SystemExit):
+            self.trial()
+        trial = self.root / 'bench/trial'
+        record = harness.read_trial(trial)
+        run = {'run_id': record['run_id']}
+        self.assertEqual(record['status'], 'evaluating')
+        self.assertFalse({'sealed', 'evidence'} & set(record))
+        verdict = self.controller.call('status', run)['equivalence']
+        self.assertIs(verdict['equivalent'], True)
+        evidence = trial / 'run-evidence.enc'
+        sealed = evidence.read_bytes()
+        self.assertEqual(hashlib.sha256(sealed).hexdigest(), verdict['evidence_sha256'])
+        refused = (patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')),
+                   patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')),
+                   patch.object(evaluator, 'seal', side_effect=AssertionError('sealed again')))
+        # Evidence that is not the one the verdict names is not reported as its seal.
+        evidence.write_bytes(sealed + b'\n')
+        with refused[0], refused[1], refused[2]:
+            resumed = self.resume(trial)
+        self.assertEqual((resumed['status'], resumed['equivalence']), ('evaluated', verdict))
+        self.assertFalse({'sealed', 'evidence'} & set(resumed))
+        evidence.write_bytes(sealed)
+        with refused[0], refused[1], refused[2]:
+            resumed = self.resume(trial)
+        self.assertEqual((resumed['status'], resumed['equivalence'], resumed['sealed']), ('evaluated', verdict, True))
+        self.assertEqual(resumed['evidence'], {'path': 'run-evidence.enc', 'sha256': verdict['evidence_sha256']})
+        self.assertEqual(harness.read_trial(trial), resumed)
+        self.assertEqual(len(self.verdicts(run)), 1)
 
 
 class SealedEvidenceTests(PendingRunFixture):

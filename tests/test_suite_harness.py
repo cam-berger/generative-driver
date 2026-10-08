@@ -85,6 +85,17 @@ class HarnessSuiteFixture(PendingRunFixture):
                         'cause': 'runtime_unavailable', 'reason': 'Cannot start configured runtime: scripted'}
         return runtime
 
+    def slow_admission(self):
+        """The next admissions wait until released; set before the harness patches admission."""
+        entered, release = threading.Event(), threading.Event()
+        admit = self.admit
+        def slow(*args, **kwargs):
+            entered.set()
+            release.wait(20)
+            return admit(*args, **kwargs)
+        self.admit = slow
+        return entered, release
+
     def settled(self, suite_id, seconds=30):
         from suite_fixtures import settled_suite
         return settled_suite(lambda method, params, home: self.controller.call(method, params), suite_id, seconds=seconds)
@@ -299,6 +310,43 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 2, 2))
         self.assertEqual(len(self.admitted), 2)
 
+    def test_a_suite_read_as_no_longer_stopping_carries_the_count_its_harness_settled(self):
+        # Catches a status read whose slots are read before, and whose harness liveness is read after, the harness
+        # settled its slot and let go: a client that waits for the suite to stop stopping would then read the count
+        # from before that settlement.
+        from generative_driver.client import process_lock_held
+        from generative_driver.configurator import Controller
+        release, settling, polling = threading.Event(), threading.Event(), threading.Event()
+        def runtime(request):
+            if request.stage == 'acquire':
+                release.wait(20)
+        def intercept(method, params, forward):
+            if method == 'suite_settle':
+                # The harness settles only once a client's status read is under way.
+                settling.set()
+                polling.wait(10)
+            return forward(method, params)
+        poller, alive = threading.get_ident(), Controller._harness_alive
+        def widened(suite):
+            if threading.get_ident() == poller and settling.is_set() and not polling.is_set():
+                polling.set()
+                # The harness settles, lets go and ends meanwhile, unless the suite's lock holds it off.
+                lock, until = suite['harness'].get('lock'), time.monotonic() + 3
+                while lock and time.monotonic() < until and process_lock_held(lock) is True:
+                    time.sleep(.02)
+            return alive(suite)
+        with self.harness(PASS, PASS, runtime=runtime), patch.object(Controller, '_harness_alive', staticmethod(widened)):
+            sid = self.drive(intercept=intercept, wait=False, manifest=manifest(2), executor='codex', options={})['suite_id']
+            until = time.monotonic() + 10
+            while not self.controller.call('suite_status', {'suite_id': sid})['active_child_id']:
+                self.assertLess(time.monotonic(), until); time.sleep(.02)
+            self.controller._suites.set_state(sid, 'blocked', 'Configurator restarted; explicit resume required')
+            release.set()
+            status = self.settled(sid)
+        self.assertTrue(polling.is_set())
+        self.assertEqual((status['status'], status['stopping'], status['completed'], status['equivalent']),
+                         ('blocked', False, 1, 1))
+
     def test_a_suite_whose_harness_ended_without_letting_go_is_blocked_for_a_resume(self):
         # Catches a suite reported running, or stopping, forever after its harness process died.
         import subprocess
@@ -363,6 +411,139 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         self.assertEqual((resumed['status'], len(lost)), ('finished', 1), resumed)
         status = self.controller.call('suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 1, 1))
+
+    def test_a_harness_whose_child_resume_reply_was_lost_follows_the_child_on_the_device_it_attached(self):
+        # Catches a harness that stops the device it attached anew under the child the configurator resumed on it,
+        # because the reply to that resume was lost; and a resume sent again after a lost reply that is refused, or
+        # that resumes the child twice.
+        runtime = self.stopping_probe()
+        with self.harness(runtime=runtime):
+            sid = self.drive(manifest=manifest(1), executor='codex', options={})['suite_id']
+        child = {'run_id': self.child(sid)['run_id']}
+        repeated = []
+        def intercept(method, params, forward):
+            if method == 'suite_resume_child' and not repeated:
+                # The configurator resumed the child and its reply never arrived; the client sends the resume again.
+                repeated.extend([forward(method, params), forward(method, params)])
+                return {'ok': False, 'reason': 'ConnectionResetError: the reply was lost'}
+            return forward(method, params)
+        with self.harness(PASS, runtime=runtime):
+            resumed = self.drive(suite_id=sid, intercept=intercept)
+        self.assertEqual(resumed['status'], 'finished', resumed)
+        self.assertEqual([reply.get('ok') for reply in repeated], [True, True], repeated)
+        self.assertEqual(len(self.events(child, 'run.resumed')), 1)
+        status = self.controller.call('suite_status', {'suite_id': sid})
+        self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 1, 1))
+        self.assertEqual((self.controller.call('result', child)['status'], len(self.graded)), ('completed', 1))
+        self.assertTrue(all(peer.closed for peer in self.peers))
+
+    def test_a_resume_sent_again_never_resumes_a_child_its_operator_cancelled_after_the_first_resume(self):
+        # Catches a resume sent again after a lost reply that finds the child the first resume started cancelled
+        # meanwhile and resumes it a second time, undoing the operator's cancellation, or is refused, which has the
+        # harness record a resume that took place as one that never did.
+        runtime = self.stopping_probe()
+        with self.harness(runtime=runtime):
+            sid = self.drive(manifest=manifest(1), executor='codex', options={})['suite_id']
+        child = {'run_id': self.child(sid)['run_id']}
+        repeated = []
+        def intercept(method, params, forward):
+            if method == 'suite_resume_child' and not repeated:
+                # The configurator resumed the child and its reply never arrived; the operator cancels the child before
+                # the client sends the resume again, and that reply arrives.
+                repeated.append(forward(method, params))
+                self.controller.call('cancel', child)
+                repeated.append(forward(method, params))
+                return repeated[-1]
+            return forward(method, params)
+        with self.harness(runtime=runtime):
+            resumed = self.drive(suite_id=sid, intercept=intercept)
+        self.assertEqual(resumed['status'], 'finished', resumed)
+        self.assertEqual([reply.get('ok') for reply in repeated], [True, True], repeated)
+        self.assertEqual(len(self.events(child, 'run.resumed')), 1)
+        self.assertEqual(self.controller.call('result', child)['status'], 'cancelled')
+        self.assertEqual(self.controller.call('suite_status', {'suite_id': sid})['status'], 'blocked')
+        self.assertTrue(all(peer.closed for peer in self.peers))
+
+    def test_a_child_resumed_and_cancelled_while_its_resume_reply_was_lost_keeps_its_device_until_it_stopped(self):
+        # Catches a harness that, its child's resume reply lost and the resume sent again refused because the suite was
+        # cancelled meanwhile, stops the device it attached anew under the child the configurator resumed on it, while
+        # that child's worker is still stopping.
+        stopped, entered, release, observed = [], threading.Event(), threading.Event(), []
+        def runtime(request):
+            if request.stage == 'probe' and not stopped:
+                stopped.append(request.stage)
+                return {'runtime': 'codex', 'elapsed_seconds': 0, 'usage': None, 'report': None, 'status': 'blocked',
+                        'cause': 'runtime_unavailable', 'reason': 'Cannot start configured runtime: scripted'}
+            if request.stage == 'probe':
+                entered.set()
+                release.wait(20)
+                # Whether the device this resume runs on was stopped under the stage.
+                observed.append([getattr(peer, 'closed', False) for peer in self.peers[provided:]])
+        with self.harness(runtime=runtime):
+            sid = self.drive(manifest=manifest(1), executor='codex', options={})['suite_id']
+        child = {'run_id': self.child(sid)['run_id']}
+        provided, cancelling = len(self.peers), []
+        def intercept(method, params, forward):
+            if method == 'suite_resume_child' and not cancelling:
+                forward(method, params)
+                self.assertTrue(entered.wait(10))
+                # The operator cancels the suite before the resume is sent again; its child is still stopping.
+                cancelling.append(threading.Thread(target=self.controller.call, args=('suite_cancel', {'suite_id': sid}),
+                                                   daemon=True))
+                cancelling[0].start()
+                until = time.monotonic() + 10
+                while self.controller.call('status', child)['status'] != 'cancelled':
+                    self.assertLess(time.monotonic(), until); time.sleep(.02)
+                again = forward(method, params)
+                self.assertFalse(again.get('ok'), again)
+                threading.Timer(1, release.set).start()
+                return {'ok': False, 'reason': 'ConnectionResetError: the reply was lost'}
+            return forward(method, params)
+        with self.harness(runtime=runtime):
+            self.drive(suite_id=sid, intercept=intercept)
+        cancelling[0].join(20)
+        self.assertEqual(observed, [[False] * (len(self.peers) - provided)])
+        self.assertGreater(len(self.peers), provided)
+        self.assertEqual(len(self.events(child, 'run.resumed')), 1)
+        self.assertEqual(self.controller.call('result', child)['status'], 'cancelled')
+        self.assertEqual(self.controller.call('suite_status', {'suite_id': sid})['status'], 'cancelled')
+        self.assertTrue(all(peer.closed for peer in self.peers))
+
+    def test_a_suite_resume_requests_the_resume_of_a_child_again_after_a_dropped_connection(self):
+        # Catches a resume of a suite's child that the client does not send again after a dropped connection, which
+        # leaves the harness stopping the device under a child the configurator may have resumed.
+        from generative_driver import client
+        from generative_driver.benchmark_support.harness import _configurator
+        sent = []
+        def request(directory, method, params, **options):
+            sent.append(method)
+            if len(sent) == 1:
+                raise ConnectionResetError('the reply was lost')
+            return {'ok': True}
+        with patch.object(client, '_request', side_effect=request), patch.object(client, '_start') as started:
+            reply = _configurator(self.home)('suite_resume_child', {'suite_id': 'suite-x', 'token': 't', 'ordinal': 0})
+        self.assertEqual((reply, sent), ({'ok': True}, ['suite_resume_child', 'suite_resume_child']))
+        self.assertEqual(started.call_count, 1)
+
+    def test_a_resumed_suite_settles_a_child_graded_before_its_harness_ended_without_the_password_file(self):
+        # Catches a resume that requires the evaluator password file to settle a child whose verdict is already
+        # recorded (its harness lost the settlement's reply), and so leaves the suite blocked for want of it.
+        def intercept(method, params, forward):
+            if method == 'suite_settle':
+                return {'ok': False, 'reason': 'ConnectionResetError: the request never arrived'}
+            return forward(method, params)
+        with self.harness(PASS):
+            record = self.drive(intercept=intercept, manifest=manifest(1), executor='codex', options={})
+        self.assertEqual(record['status'], 'failed', record)
+        sid = record['suite_id']
+        self.assertEqual(self.controller.call('suite_status', {'suite_id': sid})['status'], 'blocked')
+        self.assertEqual(self.controller.call('result', {'run_id': self.child(sid)['run_id']})['equivalence']['equivalent'], True)
+        with self.harness():
+            resumed = self.drive(suite_id=sid, password_files={}, renode=None)
+        self.assertEqual(resumed['status'], 'finished', resumed)
+        status = self.controller.call('suite_status', {'suite_id': sid})
+        self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 1, 1))
+        self.assertEqual((len(self.admitted), len(self.graded)), (1, 1))
 
 
 class FrozenChildTests(HarnessSuiteFixture):
@@ -444,17 +625,6 @@ class FrozenChildTests(HarnessSuiteFixture):
 
 
 class CancellationTests(HarnessSuiteFixture):
-    def slow_admission(self):
-        """The next admissions wait until released; set before the harness patches admission."""
-        entered, release = threading.Event(), threading.Event()
-        admit = self.admit
-        def slow(*args, **kwargs):
-            entered.set()
-            release.wait(20)
-            return admit(*args, **kwargs)
-        self.admit = slow
-        return entered, release
-
     def cancelled_during_admission(self, admission, **request):
         """Cancel the suite while its harness is admitting a device, then let the admission finish."""
         entered, release = admission
@@ -519,6 +689,80 @@ class CancellationTests(HarnessSuiteFixture):
         attached = self.controller.call('suite_attach', {'suite_id': sid, 'token': token, 'ordinal': 0, 'run_id': child['run_id']})
         self.assertEqual((attached['run_id'], attached.get('cancelled')), (child['run_id'], True))
         self.assertEqual(self.controller.call('result', {'run_id': child['run_id']})['status'], 'cancelled')
+
+
+class SuiteBudgetTests(HarnessSuiteFixture):
+    def spent_during_admission(self, admission, **request):
+        """Spend the suite's wall-clock budget while its harness is admitting a device, then let the admission finish."""
+        entered, release = admission
+        sid = self.drive(wait=False, **request)['suite_id']
+        self.assertTrue(entered.wait(10))
+        with self.controller._db() as db:
+            # As if the suite had started long enough ago for its whole budget to have passed.
+            db.execute('UPDATE suites SET created=? WHERE id=?', (time.time() - 86400, sid))
+        release.set()
+        until = time.monotonic() + 30
+        while True:
+            status = self.controller.call('suite_status', {'suite_id': sid})
+            if status['status'] != 'running' and not status['stopping']:
+                return sid, status
+            self.assertLess(time.monotonic(), until, status); time.sleep(.02)
+
+    def test_a_suite_whose_budget_ran_out_while_its_harness_provided_the_device_starts_no_child(self):
+        # Catches a child started, and its worker dispatched, after the suite's wall-clock budget ran out while the
+        # harness admitted and started the device, only for the next reservation to cancel it.
+        admission = self.slow_admission()
+        with self.harness(PASS):
+            sid, status = self.spent_during_admission(admission, manifest=manifest(1), executor='codex', options={})
+        self.assertEqual((status['status'], status['stopping'], status['completed']), ('blocked', False, 0))
+        self.assertEqual(self.controller._suites.get(sid)['reason'], 'Suite wall-clock budget exhausted')
+        self.assertIsNone(self.child(sid))
+        self.assertEqual(self.graded, [])
+        self.assertTrue(self.peers and all(peer.closed for peer in self.peers))
+
+    def test_a_suite_whose_budget_ran_out_while_its_harness_provided_a_device_anew_never_resumes_the_child(self):
+        # Catches a stopped child resumed, and its worker dispatched, after the suite's wall-clock budget ran out while
+        # a resumed suite's harness provided the device anew.
+        with self.harness(runtime=self.stopping_probe()):
+            sid = self.drive(manifest=manifest(1), executor='codex', options={})['suite_id']
+        child = {'run_id': self.child(sid)['run_id']}
+        admission = self.slow_admission()
+        with self.harness(PASS):
+            _, status = self.spent_during_admission(admission, suite_id=sid)
+        self.assertEqual((status['status'], status['stopping'], status['completed']), ('blocked', False, 0))
+        self.assertEqual(self.controller._suites.get(sid)['reason'], 'Suite wall-clock budget exhausted')
+        self.assertEqual(self.events(child, 'run.resumed'), [])
+        # The suite's budget ends its active child, as on every reservation.
+        self.assertEqual(self.controller.call('result', child)['status'], 'cancelled')
+        self.assertEqual(self.graded, [])
+        self.assertTrue(all(peer.closed for peer in self.peers))
+
+
+class ReservationTests(HarnessSuiteFixture):
+    def test_a_run_under_a_slot_the_suite_has_not_reserved_is_never_attached(self):
+        # Catches an attach that takes the run found under a pending slot's request: that slot would run beside the
+        # active one, out of order and past the suite's one active child.
+        from generative_driver.benchmark_support.suites import child_request
+        from test_harness import EVIDENCE, Device
+        calls = []
+        with self.harness(runtime=self.stopping_probe()):
+            sid = self.drive(calls, manifest=manifest(2), executor='codex', options={})['suite_id']
+            suite = self.controller._suites.get(sid)
+            self.assertEqual([t['status'] for t in suite['trials']], ['running', 'pending'])
+            (self.root / 'outside').mkdir()
+            device = Device(self, self.image, self.root / 'outside')
+            # The pending slot's own request, on a device of its own: nothing about it but its slot is out of place.
+            outside = self.controller.call('start', {**child_request(suite['frozen'], suite['trials'][1]),
+                                                     'device': device.server.descriptor,
+                                                     'admission': {'calibration_evidence_sha256': EVIDENCE},
+                                                     'evaluation_token_sha256': hashlib.sha256(b'outside').hexdigest()})
+            token = next(params['token'] for method, params in calls if method == 'suite_reserve')
+            with self.assertRaisesRegex(ValueError, 'not reserved'):
+                self.controller.call('suite_attach', {'suite_id': sid, 'token': token, 'ordinal': 1,
+                                                      'run_id': outside['run_id']})
+            self.controller.call('cancel', {'run_id': outside['run_id']})
+        self.assertEqual([(t['status'], t['run_id']) for t in self.controller._suites.get(sid)['trials']][1],
+                         ('pending', None))
 
 
 class ChildBudgetTests(HarnessSuiteFixture):
@@ -601,8 +845,9 @@ class SuiteStartTests(HarnessSuiteFixture):
                     with self.assertRaisesRegex(ValueError, 'read-only'):
                         self.controller.call(method, {'suite_id': sid, 'token': token, 'ordinal': 0, 'run_id': 'run-x'})
                 status = self.controller.call('suite_status', {'suite_id': sid})
-                self.assertEqual((status['status'], status['completed']), ('blocked', 0))
-                self.assertNotIn('protocol', self.controller.call('suite_result', {'suite_id': sid})['experiment']['comparison_identity'])
+                # No equivalent count applies to a suite whose children no harness grades after their runs.
+                self.assertEqual((status['status'], status['completed'], status['equivalent']), ('blocked', 0, None))
+                self.assertNotIn('protocol',self.controller.call('suite_result', {'suite_id': sid})['experiment']['comparison_identity'])
         self.assertEqual(self.admitted, [])
 
 

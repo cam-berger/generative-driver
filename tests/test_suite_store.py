@@ -258,7 +258,10 @@ class ControllerStorageTests(unittest.TestCase):
                 self.assertEqual(experiment['schema'],'benchmark-suite-experiment/1')
                 self.assertEqual(set(experiment),{'schema','comparison_identity','dimensions','execution_snapshots'})
                 identity=experiment['comparison_identity']
-                self.assertEqual(identity['protocol'],'assistive/1')
+                # Legacy children are still graded inside their runs: the suite names no assistive protocol and counts
+                # no equivalent drivers, though its harness drives it.
+                self.assertNotIn('protocol',identity)
+                self.assertIsNone(state['equivalent'])
                 self.assertEqual(identity['manifest'],legacy_manifest(3))
                 self.assertEqual(identity['manifest_sha256'],frozen['manifest_sha256'])
                 self.assertEqual(identity['entry_pins'],[public_pin(pin) for pin in frozen['entry_pins']])

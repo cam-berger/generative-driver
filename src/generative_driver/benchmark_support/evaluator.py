@@ -228,7 +228,6 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
     it packages and re-hashes both, unlocks the truth and runs the final phase on a fresh emulator. A final the draft
     already holds for this run and package is rebuilt and never graded again. A changed record raises IntegrityError."""
     from ..configurator import IntegrityError
-    from .behavior import validate_records
     from .emulated import _inputs
     from .registry import pin_case
     from .snapshots import require_snapshot
@@ -289,10 +288,18 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
                  'raw': json.loads(raw.read_text(encoding='utf-8')) if raw.is_file() else None}
         draft['evaluations'].append(final)
         _draft(trial_dir, password_file, draft)
+    return final_record(final, capabilities_sha, checked), final
+
+
+def final_record(final, capabilities_sha256=None, mission=None):
+    """The public equivalence/1 record of a final evaluation, graded from its contract and records: equivalent when every
+    check passed. Grading after the run and an offline regrade of the sealed evidence both build it here."""
+    from .behavior import validate_records
     graded = validate_records(final['contract'], final['records'])
     checks = [{'id': str(row['id']), 'passed': row['passed'] is True} for row in graded['checks']]
     diff = [{'id': str(row['id']), 'reason': str(row.get('reason') or 'failed')} for row in graded['checks'] if row['passed'] is not True]
-    return record('graded', graded['verdict'] == 'passed', checks, diff, sha, capabilities_sha, checked), final
+    return record('graded', graded['verdict'] == 'passed', checks, diff, final['frozen_artifact_sha256'], capabilities_sha256,
+                  mission)
 
 
 def evidence(trial_dir, run_dir, result, *, final=None, equivalence=None, mission=None, error=None):

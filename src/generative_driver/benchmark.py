@@ -192,7 +192,7 @@ def main(argv=None):
         else:
             result = score(args.report, args.password_file, evidence_path=args.evidence)
         print(json.dumps(result, indent=2, allow_nan=False))
-        return 0 if not isinstance(result, dict) or result.get('verdict') != 'failed' else 1
+        return 0 if not isinstance(result, dict) or result.get('verdict') not in ('failed', 'not equivalent') else 1
     except (OSError, ValueError, RuntimeError) as error:
         print(json.dumps({'ok': False, 'error': str(error)}))
         return 1
@@ -290,9 +290,21 @@ def _read(value):
     return json.loads(Path(value).read_text()) if isinstance(value, (str, Path)) else value
 
 
+def _protocol(report):
+    """The protocol a run report was produced under; None for an earlier one."""
+    progress = report.get('progress')
+    return report.get('protocol') or (progress.get('protocol') if isinstance(progress, dict) else None)
+
+
 def compare(before, after):
     before, after = _read(before), _read(after)
+    if _protocol(before) != _protocol(after):
+        # Results of different protocols are separate series: nothing of one is set beside the other.
+        return {'schema': 'benchmark-comparison/1', 'compatible': False, 'incompatible_fields': ['protocol'],
+                'reason': 'Reports of different protocols are separate series and are never compared'}
     required = ('case', 'case_version', 'evaluator_version', 'seed', 'execution')
+    if 'benchmark-report/3' in (before.get('schema'), after.get('schema')):
+        required = ('schema', 'case', 'case_version', 'evaluator_version', 'scenario_id', 'case_seed', 'execution')
     incompatible = [k for k in required if k not in before or k not in after or before[k] != after[k]]
     changed = [k for k in ('agent', 'toolchain_revision', 'skills_revision', 'budget_seconds', 'environment', 'time_policy')
                if before.get(k) != after.get(k)]
@@ -354,6 +366,9 @@ def cleanup(case_id, run_dir, options=None):
 def score(report, password_file=None, *, evidence_path=None):
     from .benchmark_support.registry import adapter_for
     data = _read(report)
+    if data.get('schema') == 'benchmark-report/3':
+        from .benchmark_support.evidence import regrade_v3
+        return regrade_v3(data, evidence_path, password_file)
     if data.get('schema') == 'benchmark-report/2':
         from .benchmark_support.evidence import regrade_v2
         return regrade_v2(data, evidence_path, password_file)

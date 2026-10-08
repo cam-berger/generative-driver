@@ -189,10 +189,13 @@ def markdown(report):
         diff = "; ".join(str(d.get("reason")) for d in final.get("diff") or [] if isinstance(d, dict))
         lines += [f"Equivalence ({final.get('basis', 'unknown basis')}): **{equivalence_label(final)}**. "
                   f"Protocol: `{report.get('protocol')}`." + (f" Differences: {diff}." if diff else ""), ""]
-    lines += ["| Stage | Workflow | Evaluator | Attempts | Worker seconds | Tool seconds | Tokens |",
-              "|---|---|---|---:|---:|---:|---:|"]
+    # An assistive run's stages are graded by nothing: its report has no stage evaluator column.
+    graded = all("evaluator_status" in row for row in report["stages"].values())
+    lines += ["| Stage | Workflow |" + (" Evaluator |" if graded else "") + " Attempts | Worker seconds | Tool seconds | Tokens |",
+              "|---|---|" + ("---|" if graded else "") + "---:|---:|---:|---:|"]
     for name, row in report["stages"].items():
-        lines.append(f"| {name} | {row['workflow_status']} | {row['evaluator_status']} | {row['attempt_count']} | "
+        lines.append(f"| {name} | {row['workflow_status']} |" + (f" {row['evaluator_status']} |" if graded else "") +
+                     f" {row['attempt_count']} | "
                      f"{show(row['worker_seconds'])} | {show(row['tool_seconds'])} | {show(row['usage']['total_tokens'])} |")
     lines += ["", f"Overall wall time: {show(report['elapsed_seconds'])} seconds. "
               f"Reported tokens: {show(report['usage']['total_tokens'])}; "
@@ -222,6 +225,15 @@ def markdown(report):
     if report.get("limitations"):
         lines += ["", "## Limits", "", *["- " + item for item in report["limitations"]]]
     return "\n".join(lines) + "\n"
+
+
+def _awaiting(result, events):
+    """A completed run that awaits its independent grade: 'unscored' once the harness posted an unscored evaluation,
+    'pending' before; None for a run with a recorded verdict or one that stopped before any grade."""
+    if (result.get("equivalence") is not None or result.get("status") != "completed"
+            or (result.get("progress") or {}).get("equivalence") != "pending"):
+        return None
+    return "unscored" if any(event["kind"] == "evaluation.unscored" for event in events) else "pending"
 
 
 def report_run(run_id, home=None, output=None, *, autostart=True):
@@ -296,7 +308,14 @@ def report_run(run_id, home=None, output=None, *, autostart=True):
             'agent': 'Effective runtime configuration captured before execution; individual worker records retain reported identity.',
             'case_metadata': 'Case manifest and input hashes captured before execution.'}
     report["evaluator_verdicts"] = result.get("evaluator_verdicts", [])
-    if snapshot and manifest.get('schema') == 'benchmark-case/2':
+    from .configurator import PROTOCOL
+    if snapshot and manifest.get('schema') == 'benchmark-case/2' and (result.get('progress') or {}).get('protocol') == PROTOCOL:
+        # An assistive run is graded once, after it: its report is its recorded verdict, and no stage evaluation exists.
+        from .benchmark_support.evidence import public_v3_report
+        report.update(progress=result['progress'], outcome_category=result.get('outcome_category'),
+                      equivalence_status=_awaiting(result, events))
+        report = public_v3_report(report)
+    elif snapshot and manifest.get('schema') == 'benchmark-case/2':
         from .benchmark_support.evidence import public_v2_report
         report.update({key: state[key] for key in ('evaluations', 'accepted_gates', 'final_evaluation') if key in state})
         report['progress'] = result.get('progress', {})

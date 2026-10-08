@@ -5,6 +5,7 @@ It holds no password, recipe or truth and imports nothing that decrypts one. A r
 device's reading would be, never a grade. Stop and shutdown belong to the harness (the owner endpoint), never here."""
 import contextlib
 import json
+import threading
 from multiprocessing import AuthenticationError
 from multiprocessing.connection import Client
 from pathlib import Path
@@ -43,16 +44,33 @@ class DeviceClient:
     def __init__(self, endpoint_file, timeout=60):
         self.endpoint_file, self.timeout = Path(endpoint_file), timeout
 
+    def _exchange(self, method, params, limit):
+        endpoint = json.loads(self.endpoint_file.read_text(encoding='utf-8'))
+        with Client(endpoint['address'], family=endpoint['family'], authkey=bytes.fromhex(endpoint['authkey'])) as conn:
+            conn.send_bytes(json.dumps({'method': method, 'params': params}, allow_nan=False).encode('utf-8'))
+            if not conn.poll(limit):
+                raise TimeoutError('no answer before the deadline')
+            return json.loads(conn.recv_bytes(4 * 1024 * 1024))
+
     def _call(self, method, timeout=None, **params):
-        try:
-            endpoint = json.loads(self.endpoint_file.read_text(encoding='utf-8'))
-            with Client(endpoint['address'], family=endpoint['family'], authkey=bytes.fromhex(endpoint['authkey'])) as conn:
-                conn.send_bytes(json.dumps({'method': method, 'params': params}, allow_nan=False).encode('utf-8'))
-                if not conn.poll(timeout or self.timeout):
-                    raise TimeoutError('no answer before the deadline')
-                reply = json.loads(conn.recv_bytes(4 * 1024 * 1024))
-        except (OSError, EOFError, ValueError, KeyError, TypeError, AuthenticationError) as error:
+        """One request under one deadline: connecting, the authkey handshake, the request and the reply. A provider
+        stuck on another request accepts no connection meanwhile, and its caller still gets DeviceUnavailable in time;
+        the abandoned attempt ends on a daemon thread when the provider answers or goes away."""
+        limit, outcome = timeout or self.timeout, {}
+        def exchange():
+            try:
+                outcome['reply'] = self._exchange(method, params, limit)
+            except BaseException as error:
+                outcome['error'] = error
+        attempt = threading.Thread(target=exchange, name='device-' + method, daemon=True)
+        attempt.start()
+        attempt.join(limit)
+        error = TimeoutError('no answer before the deadline') if attempt.is_alive() else outcome.get('error')
+        if isinstance(error, (OSError, EOFError, ValueError, KeyError, TypeError, AuthenticationError)):
             raise DeviceUnavailable('Device provider unavailable: ' + type(error).__name__ + ': ' + str(error)) from None
+        if error is not None:
+            raise error
+        reply = outcome['reply']
         if not isinstance(reply, dict) or reply.get('ok') is not True:
             reason = reply.get('reason') if isinstance(reply, dict) else None
             raise DeviceUnavailable('Device provider refused ' + method + ': ' + str(reason))

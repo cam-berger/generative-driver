@@ -91,7 +91,8 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = No
     setup-smoke uses no inference. tq9 and bme280 require explicit runtime and documented options.
     Supply evaluator password FILE paths through options, never the password itself.
     Emulated cases (tq9-v2 and the v2 families) start a bench harness that holds the password file path, admits the
-    case and provides the emulator; the configurator never receives the path. They return trial_id and run_id.
+    case and provides the emulator; the configurator never receives the path. They return trial_id and run_id; the
+    same options.request_id with the same inputs returns that trial again and starts no second emulator.
     For real-agent profiles, options.home must resolve to this MCP connection's configured home.
     """
     from .benchmark import run

@@ -136,14 +136,25 @@ LEGACY_CASES = ('tq9', 'bme280')
 
 def _refuse_secrets(spec):
     """The configurator never holds a password, a password file or the emulator executable: the bench harness does.
-    Only legacy cases keep their in-loop evaluator options until they are graded after the run."""
+    Only legacy cases keep their in-loop evaluator options until they are graded after the run. The request itself is
+    checked too, since the run keeps all of it as its spec."""
     case = spec.get('case')
     if (case.get('id') if isinstance(case, dict) else case) in LEGACY_CASES:
         return
-    for options in (spec.get('case_options'), case.get('options') if isinstance(case, dict) else None):
-        if isinstance(options, dict) and any('password' in str(key).lower() or key == 'renode' for key in options):
+    for options in (spec, spec.get('case_options'), case.get('options') if isinstance(case, dict) else None):
+        if isinstance(options, dict) and any('password' in str(key).lower() or str(key).lower() == 'renode'
+                                             for key in options):
             raise ValueError('The configurator takes no password, password file or emulator executable; the bench '
                              'harness holds them')
+
+
+def _refuse_emulated_suite(manifest):
+    """Until the bench harness drives suites, an emulated suite's children would need evaluator password files and the
+    emulator executable from the configurator, which holds neither: such a suite is refused before anything is
+    frozen or stored."""
+    if any(entry['case'] not in LEGACY_CASES for entry in manifest['entries']):
+        raise ValueError('Emulated benchmark trials run one at a time through `benchmark run` until the bench harness '
+                         'drives suites; the configurator takes no password file or emulator executable for them')
 
 
 def _provided_device(params, pin):
@@ -1303,6 +1314,7 @@ class Controller:
         from .benchmark_support.suites import normalize_manifest,freeze_suite
         from .benchmark_support.snapshots import execution_provenance
         manifest=normalize_manifest(params.get('manifest'))
+        _refuse_emulated_suite(manifest)
         executor=params.get('executor','codex')
         options=params.get('options',{})
         request={'manifest':manifest,'executor':executor,'options':options}
@@ -1922,11 +1934,16 @@ class Controller:
             return failures
         if spec.get('device'):
             from .device_client import open_device
+            with self._lock:
+                operation_lock = self._operations.setdefault(run_id, threading.RLock())
             try:
-                with self._db() as db:
-                    saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run_id,)).fetchone()
-                held = (json.loads(saved['payload']) if saved else {}).get('device') or {}
-                open_device(spec['device']).release(held.get('session_id'))
+                # Live calls hold this lock across the device's window. A cancelled worker's call may still be inside
+                # it: the run lets go of the device only after that call's window has closed and its reading is taken.
+                with operation_lock:
+                    with self._db() as db:
+                        saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run_id,)).fetchone()
+                    held = (json.loads(saved['payload']) if saved else {}).get('device') or {}
+                    open_device(spec['device']).release(held.get('session_id'))
             except Exception as error:
                 failures.append(('device.release_failed', type(error).__name__ + ': ' + str(error), None))
             return failures
@@ -2203,7 +2220,8 @@ class Controller:
         """One live call on the provided device: the instrument reading before it, the call inside the device's window,
         the reading after it. A provider that fails before the call refuses it (nothing reached the device, so nothing
         is uncertain); one that fails after the call leaves the call's own result to reconcile. Either is recorded and
-        stops the stage for the operator."""
+        stops the stage for the operator. The caller holds the run's operation lock (every tool call does), so one live
+        call at a time is inside the window and its readings are its own."""
         from .device_client import DeviceUnavailable, reading
         started, result, before, after, lost = False, None, None, None, None
         try:

@@ -21,20 +21,25 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def unstarted_provider(test, image, root, peers, recipe=RECIPE):
+    """A recipe-only provider of Silicon peers that has not started its device yet."""
+    from tq9_workflow_fixture import Silicon
+    from generative_driver.benchmark_support.device_provider import DeviceProvider
+    def start(**kwargs):
+        peer = Silicon(kwargs['image']); peers.append(peer); test.addCleanup(peer.close)
+        session = peer.session(kwargs['recipe'], Path(root) / ('native-' + str(len(peers))))
+        session.process = Process(peer)
+        return session
+    return DeviceProvider('tq9-v2', image, recipe, None, Path(root) / 'device', image_sha256=sha(image), start=start)
+
+
 class Device:
     """A provided device for a test: Silicon peers behind a recipe-only provider, served on private endpoints."""
 
     def __init__(self, test, image, root, recipe=RECIPE):
-        from tq9_workflow_fixture import Silicon
-        from generative_driver.benchmark_support.device_provider import DeviceProvider
         from generative_driver.benchmark_support.harness import DeviceServer
         self.peers = []
-        def start(**kwargs):
-            peer = Silicon(kwargs['image']); self.peers.append(peer); test.addCleanup(peer.close)
-            session = peer.session(kwargs['recipe'], Path(root) / ('native-' + str(len(self.peers))))
-            session.process = Process(peer)
-            return session
-        self.provider = DeviceProvider('tq9-v2', image, recipe, None, Path(root) / 'device', image_sha256=sha(image), start=start)
+        self.provider = unstarted_provider(test, image, root, self.peers, recipe)
         self.provider.start()
         self.server = DeviceServer(self.provider, Path(root) / 'endpoint')
         test.addCleanup(self.server.close)
@@ -133,11 +138,121 @@ class DeviceEndpointTests(unittest.TestCase):
         self.assertFalse(getattr(device.peers[0], 'closed', False))
         self.assertEqual(device.provider.stop(), {'stopped': True, 'confirmed': True})
 
+    def test_a_provider_that_never_answers_is_device_unavailable_by_the_deadline(self):
+        # Catches a client that waits forever to connect or authenticate while the provider is stuck on another
+        # request: the harness serves one connection at a time and accepts nothing meanwhile.
+        import secrets
+        import shutil
+        import threading
+        from multiprocessing.connection import Listener
+        from generative_driver.device_client import DeviceClient, DeviceUnavailable
+        if os.name == 'nt':
+            endpoint = {'family': 'AF_PIPE', 'address': r'\\.\pipe\gd-test-stuck-' + secrets.token_hex(8)}
+        else:
+            sockets = Path(tempfile.mkdtemp(prefix='gd-s-'))
+            self.addCleanup(shutil.rmtree, sockets, True)
+            endpoint = {'family': 'AF_UNIX', 'address': str(sockets / 'stuck.sock')}
+        endpoint['authkey'] = secrets.token_hex(32)
+        listener = Listener(endpoint['address'], family=endpoint['family'], authkey=bytes.fromhex(endpoint['authkey']))
+        self.addCleanup(listener.close)
+        (self.root / 'stuck.json').write_text(json.dumps(endpoint))
+        client = DeviceClient(self.root / 'stuck.json', timeout=1)
+        for name, request in (('status', client.status), ('observe', client.observe),
+                              ('release', lambda: client.release('session'))):
+            outcome = {}
+            def attempt():
+                try:
+                    request()
+                except Exception as error:
+                    outcome['error'] = error
+            caller = threading.Thread(target=attempt, daemon=True)
+            began = time.monotonic()
+            caller.start()
+            caller.join(8)
+            self.assertFalse(caller.is_alive(), name + ' waited past its deadline')
+            self.assertIsInstance(outcome.get('error'), DeviceUnavailable, name)
+            self.assertLess(time.monotonic() - began, 5, name)
+
     def test_the_device_client_imports_nothing_from_the_benchmark(self):
         tree = ast.parse((SOURCE / 'device_client.py').read_text(encoding='utf-8'))
         imported = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
         imported |= {('.' * node.level) + (node.module or '') for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
-        self.assertLessEqual(imported, {'contextlib', 'json', 'multiprocessing', 'multiprocessing.connection', 'pathlib'})
+        self.assertLessEqual(imported, {'contextlib', 'json', 'multiprocessing', 'multiprocessing.connection', 'pathlib',
+                                        'threading'})
+
+
+class TrialFinishTests(unittest.TestCase):
+    """What the harness does once the run is over: stop the device, confirmed, and seal only what it read."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        (self.root / 'firmware.bin').write_bytes(b'synthetic image')
+
+    def test_the_harness_seals_only_a_run_it_saw_finish_and_whose_handoffs_it_read(self):
+        # Catches sealing an empty or partial set of handoffs, and reporting that seal as good, when the run's result
+        # could not be read (a transport failure, a reply over the read limit) or the run had not finished.
+        from generative_driver.benchmark_support import harness
+        from generative_driver.device_client import DeviceClient
+        handoffs = [{'stage': 'acquire', 'artifacts': []}]
+        completed = {'ok': True, 'status': 'completed', 'stopping': False}
+        running = {'ok': True, 'status': 'running', 'stopping': False}
+        for case, observed, read, reason in (
+                ('result unavailable', completed, {'ok': False, 'reason': 'Reply exceeds the read limit'},
+                 'run result unavailable: Reply exceeds the read limit'),
+                ('run resumed', completed, {**running, 'accepted_handoffs': handoffs}, 'run not terminal: running'),
+                ('owner shutdown', running, {**running, 'accepted_handoffs': handoffs},
+                 'run not terminal: the harness stopped waiting (owner shutdown)')):
+            with self.subTest(case=case):
+                trial = self.root / case.replace(' ', '-')
+                peers, starts = [], []
+                provider = unstarted_provider(self, self.root / 'firmware.bin', trial, peers)
+                def configurator(method, params=None, home=None, **kwargs):
+                    if method == 'ping':
+                        return {'ok': True}
+                    if method == 'start':
+                        starts.append(params)
+                        return {'ok': True, 'run_id': 'run-fixture'}
+                    if method == 'status':
+                        if case == 'owner shutdown':
+                            DeviceClient(trial / 'endpoint/owner.json')._call('shutdown')
+                        return observed
+                    if method == 'result':
+                        return read
+                    raise AssertionError(method)
+                with patch.object(harness, 'admit', return_value=(provider, {'calibration_evidence_sha256': EVIDENCE})), \
+                        patch.object(harness, 'seal', side_effect=AssertionError('sealed what the harness did not read')) as sealing, \
+                        patch('generative_driver.client.call', side_effect=configurator):
+                    record = harness.run_trial(trial, {'trial_id': trial.name, 'home': str(self.root / 'home'),
+                                                       'case': 'tq9-v2', 'case_options': {'scenario_id': 'original'},
+                                                       'password_file': str(self.root / 'password-handle')})
+                sealing.assert_not_called()
+                self.assertIs(record['sealed'], False)
+                self.assertEqual(record['sealing_failed'], reason)
+                self.assertEqual(record['device_stop'], {'stopped': True, 'confirmed': True})
+                self.assertTrue(peers[0].closed)
+                self.assertEqual(harness.read_trial(trial), record)
+                # With no request_id of its own, the run starts under the trial's, so a retried start reconnects.
+                self.assertEqual((starts[0]['request_id'], record['request_id']), (trial.name, trial.name))
+
+    def test_an_unconfirmed_device_stop_names_the_session_left_running(self):
+        # Catches a trial record that names only the session the run started with, which a committed recovery
+        # replaced, when the device the harness could not stop is the replacement.
+        from generative_driver.benchmark_support.harness import finish
+        peers = []
+        provider = unstarted_provider(self, self.root / 'firmware.bin', self.root, peers)
+        started = provider.start()['session_id']
+        receipt = provider.replace(started, ['7'], ['6'])
+        provider.session.stop = lambda: None  # The replacement never confirms its stop.
+        done = finish(provider, 'tq9-v2', None, [], None, {'status': 'completed'})
+        self.assertEqual(done['status'], 'stop-unconfirmed')
+        self.assertIs(done['device_stop']['confirmed'], False)
+        self.assertEqual((done['device']['session_id'], done['device']['binding']),
+                         (receipt['new_session_id'], receipt['binding']))
+        self.assertNotEqual(done['device']['session_id'], started)
+        self.assertIs(done['device']['healthy'], True)
+        self.assertFalse(getattr(peers[1], 'closed', False))
 
 
 class StartAdmissionTests(unittest.TestCase):
@@ -171,10 +286,36 @@ class StartAdmissionTests(unittest.TestCase):
                      {'goal': 'g', 'case': {'id': 'tq9-v2', 'options': {'password': 'plaintext'}}, 'effects': ['write']},
                      {'goal': 'g', 'case': 'tq9-v2', 'effects': ['write'], 'case_options': {'Evaluator_Password_Files': {}}},
                      {'goal': 'g', 'case': 'tq9-v2', 'effects': ['write'], 'case_options': {'renode': '/opt/renode'}},
-                     {'goal': 'g', 'case_options': {'evaluator_password_file': str(secret)}}):
+                     {'goal': 'g', 'case_options': {'evaluator_password_file': str(secret)}},
+                     # Top-level request keys too: the whole request is kept as the run's spec.
+                     {'goal': 'g', 'case': 'tq9-v2', 'effects': ['write'], 'evaluator_password_file': str(secret)},
+                     {'goal': 'g', 'Renode': '/opt/renode'},
+                     {'goal': 'g', 'password': 'plaintext'}):
             with self.subTest(spec=spec), self.assertRaisesRegex(ValueError, 'password|emulator executable'):
                 self.controller.start(spec)
         self.assertEqual(self.runs(), 0)
+
+    def test_an_emulated_suite_is_refused_before_anything_is_stored(self):
+        # Catches the configurator freezing and keeping evaluator password file and emulator paths for a suite whose
+        # emulated children cannot start without them.
+        from suite_fixtures import legacy_manifest
+        secret = self.root / 'private-password-handle'
+        (self.root / 'home/config.json').write_text(json.dumps({'executors': {'codex': {'command': ['scripted-runtime']}}}))
+        manifest = legacy_manifest()
+        manifest['entries'] = [{'case': 'tq9-v2', 'scenario': 'original', 'case_seed': 0}]
+        for options in ({'evaluator_password_files': {'tq9-v2': str(secret)}, 'renode': '/opt/renode-handle'}, {}):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, 'benchmark run'):
+                self.controller.call('suite_start', {'manifest': manifest, 'executor': 'codex', 'options': options,
+                                                     'request_id': 'emulated-suite'})
+        with self.controller._db() as db:
+            tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'suite%'")]
+            self.assertTrue(tables)
+            for table in tables:
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0], 0, table)
+        for path in (self.root / 'home').rglob('*'):
+            if path.is_file():
+                self.assertNotIn(str(secret).encode(), path.read_bytes(), path)
+                self.assertNotIn(b'renode-handle', path.read_bytes(), path)
 
     def test_an_emulated_case_starts_only_with_the_harness_admission_token_and_device(self):
         from generative_driver.configurator import IntegrityError
@@ -241,6 +382,122 @@ patch('generative_driver.benchmark_support.registry.require_calibration',
       return_value={'ok': True, 'evidence_sha256': EVIDENCE}).start()
 patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=start).start()
 """
+
+
+LAUNCH_FIXTURE = """
+# Tests only: a harness whose configurator refuses the run, or whose device cannot be verified nor stopped. The fake
+# admission and session factory accept only absolute paths to existing files, as the real ones do from the trial dir.
+import sys
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0, TESTS_DIR)
+from tq9_workflow_fixture import Silicon
+from test_device_provider import RECIPE
+peers = []
+def start(**kwargs):
+    if not Path(kwargs['renode']).is_absolute() or not Path(kwargs['renode']).is_file():
+        raise ValueError('emulator executable not found: ' + str(kwargs['renode']))
+    peer = Silicon(kwargs['image']); peers.append(peer)
+    session = peer.session(kwargs['recipe'], Path(PRIVATE_DIR) / ('native-' + str(len(peers))))
+    class Process:
+        def poll(self):
+            return 0 if getattr(peer, 'closed', False) else None
+    session.process = Process()
+    if FIXTURE_MODE == 'stop-unconfirmed':
+        session.observe = lambda: {'values': {}, 'reads': []}
+        session.stop = lambda: None
+    return session
+def admitted(pin, secret):
+    path = Path(secret['evaluator_password_file'])
+    if not path.is_absolute() or not path.is_file():
+        raise ValueError('password file not found: ' + str(path))
+    return {'ok': True, 'evidence_sha256': EVIDENCE_SHA}
+def configurator(method, params=None, home=None, **kwargs):
+    if method == 'ping':
+        return {'ok': True}
+    if method == 'start':
+        return {'ok': False, 'reason': 'configurator refused the fixture run'}
+    raise AssertionError(method)
+patch('generative_driver.benchmark.case_root', return_value=Path(RESOURCES_DIR)).start()
+patch('generative_driver.benchmark_support.registry.require_calibration', side_effect=admitted).start()
+patch('generative_driver.benchmark_support.emulated.device_recipe', return_value=RECIPE).start()
+patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=start).start()
+patch('generative_driver.client.call', side_effect=configurator).start()
+"""
+
+
+class LaunchTests(unittest.TestCase):
+    """`benchmark run` for an emulated case, up to the configurator start; a spawned harness with a fixture device."""
+
+    def setUp(self):
+        from suite_fixtures import public_case_fixture
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        public_case_fixture(self.root / 'resources', calibration={'status': 'passed', 'evidence_sha256': EVIDENCE})
+        (self.root / 'password-handle').write_text('synthetic fixture credential')
+        (self.root / 'renode-handle').write_text('')
+
+    def launch(self, mode, **options):
+        from generative_driver.benchmark_support.harness import launch
+        fixture = self.root / 'launch_fixture.py'
+        fixture.write_text(LAUNCH_FIXTURE.replace('TESTS_DIR', repr(str(Path(__file__).resolve().parent)))
+                           .replace('PRIVATE_DIR', repr(str(self.root / 'native')))
+                           .replace('RESOURCES_DIR', repr(str(self.root / 'resources')))
+                           .replace('EVIDENCE_SHA', repr(EVIDENCE)).replace('FIXTURE_MODE', repr(mode)))
+        with patch.dict(os.environ, {'GD_TEST_HARNESS_FIXTURE': str(fixture)}):
+            return launch('tq9-v2', executor='codex', autostart=False, timeout=60,
+                          options={'home': str(self.root / 'home'), 'effects': ['write', 'actuate'],
+                                   'scenario_id': 'original', **options})
+
+    def trial(self):
+        from generative_driver.benchmark_support.harness import read_trial
+        trials = list((self.root / 'home-bench/trials').iterdir())
+        self.assertEqual(len(trials), 1)
+        return trials[0], read_trial(trials[0])
+
+    def test_relative_password_and_emulator_paths_resolve_against_the_caller(self):
+        # Catches paths forwarded as given and then resolved in the trial directory, where the harness runs: the
+        # case would be refused admission, or the emulator would not start.
+        directory = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, directory)
+        with self.assertRaisesRegex(ValueError, 'configurator refused the fixture run'):
+            self.launch('refused', evaluator_password_file='password-handle', renode='renode-handle')
+        trial, record = self.trial()
+        self.assertEqual(record['status'], 'failed')
+        self.assertEqual(record['device_stop'], {'stopped': True, 'confirmed': True})
+        journal = [json.loads(line)['kind'] for line in (trial / 'device/journal.jsonl').read_text().splitlines()]
+        self.assertEqual(journal, ['started', 'stopped'])
+        self.assertNotIn('password-handle', json.dumps(record))
+
+    def test_a_claimed_request_whose_harness_never_started_reports_that_failure(self):
+        # Catches a request_id claimed by a launch whose harness process could not start: a retry would otherwise wait
+        # for a trial that never runs.
+        from generative_driver.benchmark_support.harness import launch
+        options = {'home': str(self.root / 'home'), 'effects': ['write', 'actuate'], 'scenario_id': 'original',
+                   'request_id': 'unstarted-harness', 'evaluator_password_file': str(self.root / 'password-handle')}
+        with patch('subprocess.Popen', side_effect=OSError('no interpreter')):
+            with self.assertRaisesRegex(OSError, 'no interpreter'):
+                launch('tq9-v2', executor='codex', autostart=False, timeout=5, options=dict(options))
+        with self.assertRaisesRegex(ValueError, 'The bench harness did not start: no interpreter'):
+            launch('tq9-v2', executor='codex', autostart=False, timeout=5, options=dict(options))
+        trial, record = self.trial()
+        self.assertEqual((record['status'], record['request_id']), ('failed', 'unstarted-harness'))
+
+    def test_a_device_stop_left_unconfirmed_is_named_where_the_launch_fails(self):
+        # Catches a launch that reports only the original failure while an emulator it could not stop may still run.
+        with self.assertRaises(ValueError) as raised:
+            self.launch('stop-unconfirmed', evaluator_password_file=str(self.root / 'password-handle'),
+                        renode=str(self.root / 'renode-handle'))
+        trial, record = self.trial()
+        self.assertEqual(record['status'], 'stop-unconfirmed')
+        message = str(raised.exception)
+        self.assertIn('device stop was not confirmed', message)
+        self.assertIn(str(trial), message)
+        self.assertIn(record['device']['session_id'], message)
+        self.assertIn(str(record['device']['binding']['port']), message)
+        self.assertIn('emulator cleanup unverified', message)
 
 
 class HarnessTrialTests(unittest.TestCase):
@@ -312,11 +569,22 @@ class HarnessTrialTests(unittest.TestCase):
                                   .replace('SERVICE_URL', repr('http://127.0.0.1:' + str(gateway.server_port))))
                 (home / 'config.json').write_text(json.dumps({'executors': {'codex': {'command': [sys.executable, str(script)]}}}))
                 renode = root / 'renode-executable-handle'
+                request = {'home': str(home), 'evaluator_password_file': str(password), 'renode': str(renode),
+                           'effects': ['write', 'actuate'], 'budget_seconds': 120, 'scenario_id': 'original',
+                           'request_id': 'trial-request-fixture'}
                 with patch.dict(os.environ, {'GD_TEST_HARNESS_FIXTURE': str(fixture)}):
-                    launched = run('tq9-v2', executor='codex', wait=True, options={
-                        'home': str(home), 'evaluator_password_file': str(password), 'renode': str(renode),
-                        'effects': ['write', 'actuate'], 'budget_seconds': 120, 'scenario_id': 'original'})
+                    launched = run('tq9-v2', executor='codex', wait=True, options=dict(request))
+                    # The same request reconnects to its trial: no second harness, device or run. Different inputs
+                    # under that request_id are refused before anything starts.
+                    again = run('tq9-v2', executor='codex', wait=True, options=dict(request))
+                    with self.assertRaisesRegex(ValueError, 'request_id was already used with different inputs'):
+                        run('tq9-v2', executor='codex', options={**request, 'budget_seconds': 121})
+                self.assertEqual((again['trial_id'], again['run_id'], again['duplicate'], launched['duplicate']),
+                                 (launched['trial_id'], launched['run_id'], True, False))
+                self.assertEqual(again['status'], launched['status'])
+                self.assertEqual([path.name for path in (root / 'home-bench/trials').iterdir()], [launched['trial_id']])
                 trial = Path(launched['trial_dir'])
+                self.assertEqual(read_trial(trial)['request_id'], 'trial-request-fixture')
                 log = (trial / 'harness.log').read_text(errors='replace') if (trial / 'harness.log').is_file() else ''
                 self.assertEqual(launched['status'], 'awaiting-evaluation', (read_trial(trial), log))
                 self.assertTrue(trial.is_relative_to(root / 'home-bench'))

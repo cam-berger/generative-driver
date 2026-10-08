@@ -277,6 +277,12 @@ class TQ9V2Tests(unittest.TestCase):
         # host failure, or a call that reaches the device without its instrument readings and window.
         self._scripted_controller_modes(('device-lost',))
 
+    def test_live_calls_on_a_provided_device_take_turns_inside_its_window(self):
+        # Catches a live call opening or closing the device's window while another call is inside it (the device
+        # paused under a call, readings that mix two calls), and a run that lets go of the device while a cancelled
+        # worker's call is still inside its window.
+        self._scripted_controller_modes(('concurrent-calls','cancel-in-call'))
+
     def test_an_interpreted_model_the_emulator_cannot_carry_drives_bounded_repair(self):
         # Catches a model the configurator's validation would reject skipping probe silently, with no repair.
         self._scripted_controller_modes(('unwired-model','unwired-budget'))
@@ -366,7 +372,9 @@ class TQ9V2Tests(unittest.TestCase):
                                 # The configurator loses its control of the device: the harness withdraws the endpoint.
                                 endpoint.close()
                         except Exception as error:response={'fixture_error':str(error)}
-                        body=json.dumps(response).encode();self.send_response(200);self.end_headers();self.wfile.write(body)
+                        body=json.dumps(response).encode()
+                        try:self.send_response(200);self.end_headers();self.wfile.write(body)
+                        except OSError:pass  # A cancelled worker no longer reads its reply.
                     def log_message(self,*args):pass
                 server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
                 threading.Thread(target=server.serve_forever,daemon=True).start()
@@ -445,6 +453,14 @@ class TQ9V2Tests(unittest.TestCase):
                     source = source.replace("    assert measured['ok'], 'live interface_execute failed'\n", '')
                     source = source.replace("    assert probed['ok'], 'live probe_run failed'\n",
                         "    status='completed' if measured['ok'] and probed['ok'] else 'needs_revision'\n")
+                if mode == 'concurrent-calls':
+                    # One worker makes two live reads at once; the gateway serves them on separate threads.
+                    source = source.replace("    probed=call('probe_run',",
+                        "    import threading\n    pair=[]\n"
+                        "    threads=[threading.Thread(target=lambda:pair.append(call('interface_execute',{'model_dir':model_dir,'operation':'measure','parameters':{}}))) for _ in range(2)]\n"
+                        "    [thread.start() for thread in threads];[thread.join() for thread in threads]\n"
+                        "    assert len(pair)==2 and all(result['ok'] for result in pair),pair\n"
+                        "    probed=call('probe_run',")
                 if mode == 'device-lost':
                     # Every probe call, the effectful disarm too, is refused before it reaches the device.
                     source = source.replace("    assert measured['ok'], 'live interface_execute failed'\n", '')
@@ -527,7 +543,23 @@ class TQ9V2Tests(unittest.TestCase):
                 from generative_driver.benchmark_support import emulated
                 from generative_driver import toolkit
                 original_call_tool=toolkit.call_tool
+                turns={'measures':0,'first_done':False};counter=threading.Lock();device_log=[]
+                inside,closed_under,release_entered,released=(threading.Event() for _ in range(4))
                 def runtime_boundary(name,arguments):
+                    if name=='interface_execute' and arguments.get('operation')=='measure' and arguments.get('parameters')=={}:
+                        with counter:
+                            turns['measures']+=1;count=turns['measures']
+                        if mode=='concurrent-calls' and count==2:
+                            # The first of the two concurrent reads stays inside its window long enough for the other
+                            # to open and close its own there, if anything let it.
+                            inside.set();closed_under.wait(1)
+                            try:return original_call_tool(name,arguments)
+                            finally:turns['first_done']=True
+                        if mode=='cancel-in-call' and count==1:
+                            # The run is cancelled while this live call is inside the device's window; the run lets go
+                            # of the device on its way out, which must wait for this call.
+                            controller.call('cancel',run)
+                            release_entered.wait(5);released.wait(1)
                     outcome=original_call_tool(name,arguments)
                     if mode in ('recover-dispatch-exception','recover-mixed-unknown','recover-write-then-host','recover-write-then-operator') and name=='interface_execute' and arguments.get('operation')=='disarm':
                         # Real device I/O happened; the boundary then loses or cannot classify its outcome.
@@ -608,6 +640,22 @@ class TQ9V2Tests(unittest.TestCase):
                             continue
                         provider,admission=harness.admit('tq9-v2',{'scenario_id':'original'},trial,password_file=password)
                         provider.start()
+                        if mode in ('concurrent-calls','cancel-in-call'):
+                            # Every edge of the device's window and the run's release, as the provider receives them.
+                            original_set_running,original_release=provider.set_running,provider.release
+                            def set_running(running):
+                                device_log.append(('window',running))
+                                if not running and inside.is_set() and not turns['first_done']:closed_under.set()
+                                return original_set_running(running)
+                            def release(session_id):
+                                device_log.append(('release',));released.set()
+                                return original_release(session_id)
+                            provider.set_running,provider.release=set_running,release
+                            original_run_release=controller._release
+                            def run_release(*args,**kwargs):
+                                release_entered.set()
+                                return original_run_release(*args,**kwargs)
+                            controller._release=run_release
                         endpoint=harness.DeviceServer(provider,root/'endpoint');descriptor=endpoint.descriptor
                         run=controller.start({'goal':'scripted-contract-fixture','case':'tq9-v2','budget_seconds':60,
                             'effects':['write','actuate'],'max_revisions':0 if mode in ('recover-budget','unwired-budget') else 2,'case_options':{'scenario_id':'original'},
@@ -629,6 +677,24 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertNotIn('EVALUATOR SENTINEL',json.dumps(assignments))
                         self.assertNotIn('maintain',[a['stage'] for a in assignments])
                         self.assertNotIn('maintenance_cycles',result['progress'])
+                        if mode=='cancel-in-call':
+                            # The run was cancelled while a live read was inside the device's window. Its release
+                            # waited for that call, which ended on a running device with both readings; only then did
+                            # the run let go of the device.
+                            self.assertEqual(status['status'],'cancelled')
+                            self.assertTrue(release_entered.is_set())
+                            self.assertFalse([e for e in events if e['kind'] in ('device.unavailable','device.release_failed')])
+                            reads=[e['data'] for e in events if e['kind']=='tool.finished' and e['data']['name']=='interface_execute'
+                                   and e['data'].get('connected') and not e['data'].get('refused_before_open')]
+                            self.assertEqual(len(reads),1)
+                            self.assertTrue(reads[0]['ok'],reads[0])
+                            self.assertEqual(reads[0]['result']['observation']['source'],'instrument')
+                            self.assertEqual(device_log[-1],('release',))
+                            self.assertGreaterEqual(len(device_log),3)
+                            self.assertEqual(device_log[:-1],[('window',True),('window',False)]*((len(device_log)-1)//2))
+                            self.assertFalse(peers[0].paused_requests)
+                            self.assertFalse(result['uncertain_effect'])
+                            continue
                         if mode.startswith('recover-') and mode not in ('recover-write','recover-variant','recover-budget','recover-repeat'):
                             self.assertNotEqual(status['status'],'completed')
                             self.assertTrue(result['uncertain_effect'])
@@ -835,6 +901,13 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertIn('The mapping cannot be checked against this model: KeyError',mapping['reason'])
                             self.assertIn('capabilities.json',{Path(a['path']).name.split('-',1)[1] for a in routed[0]['artifacts']})
                             self.assertEqual(routed[0]['notes']['inline']['outcome']['kind'],'revise')
+                        if mode=='concurrent-calls':
+                            # The two concurrent reads took turns: no window opened or closed inside another call's.
+                            self.assertGreaterEqual(turns['measures'],3)
+                            self.assertTrue(inside.is_set());self.assertFalse(closed_under.is_set())
+                            windows=[edge for edge in device_log if edge[0]=='window']
+                            self.assertEqual(windows,[('window',True),('window',False)]*(len(windows)//2))
+                            self.assertEqual(device_log[-1],('release',))
                         if mode=='repair-mapping':
                             probe=next(h for h in handoffs if h['stage']=='probe')
                             mapping=next(c for c in probe['checks'] if c['name']=='capability_mapping')
@@ -951,7 +1024,8 @@ class TQ9V2Tests(unittest.TestCase):
                         live={'recover-write':[False,True,True,False,False,True,True,True],'recover-variant':[False,True,True,False],
                               'recover-budget':[False,True,True,False],'recover-repeat':[False,True,True,False]*3,
                               'repair-decoder':[False,False,False,False,True,True],'invalid-model':[False,False,False,False,True,True],
-                              'repair-ground':[False,True,True,False,False,True,True]}.get(mode,[False,True,True])
+                              'repair-ground':[False,True,True,False,False,True,True],
+                              'concurrent-calls':[False,True,True,True,True]}.get(mode,[False,True,True])
                         self.assertEqual([entry[1] for entry in worker_live],live)
                         self.assertTrue(all(not entry[2] for entry in worker_live));self.assertFalse(peers[0].paused_requests)
                         reuse=assignments[-1];self.assertEqual(len(reuse['inputs']),1)

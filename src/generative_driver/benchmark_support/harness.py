@@ -1,17 +1,21 @@
 """The bench harness: the benchmark's operator, one detached process per emulated trial or per suite.
 
-It holds what the configurator never does. The evaluator password file path arrives on its stdin and is never written
-to disk; the case truth is unlocked to project the device recipe before the run and to grade after it; and it owns the
-device. In order, it: admits the case (`require_calibration`), starts the emulator through a recipe-only provider and
-serves the configurator a narrow control endpoint (status, observe, set_running, replace, release; stop and shutdown are
-owner-only), starts the configurator run with the device descriptor, the admission evidence hash and the sha256 of a
-random evaluation token it keeps sealed under the password, waits as a reconnecting client, stops the device once the run
-is terminal, grades a completed run's frozen driver once on a fresh emulator, seals the run evidence and posts the verdict
-with `record_evaluation`. Its state lives under a bench home beside the configurator home, never inside it.
+For an emulated case it holds what the configurator never does. The evaluator password file path arrives on its stdin
+and is never a field of a record it writes; the case truth is unlocked to project the device recipe before the run and
+to grade after it; and it owns the device. In order, it: admits the case (`require_calibration`), starts the emulator
+through a recipe-only provider and serves the configurator a narrow control endpoint (status, observe, set_running,
+replace, release; stop and shutdown are owner-only), starts the configurator run with the device descriptor, the
+admission evidence hash and the sha256 of a random evaluation token it keeps sealed under the password, waits as a
+reconnecting client, stops the device once the run is terminal, grades a completed run's frozen driver once on a fresh
+emulator, seals the run evidence and posts the verdict with `record_evaluation`. Its state lives under a bench home
+beside the configurator home, never inside it.
 
 A suite's harness (`run_suite`) drives the suite the configurator stores: it reserves each slot, runs that slot's trial as
 above, and has the configurator settle the slot from what the configurator reads itself. A resumed suite gets a new
-harness, which continues a stopped trial on a device it provides anew (`reattach`) or grades an unscored one once."""
+harness, which continues a stopped trial on a device it provides anew (`reattach`) or grades an unscored one once. Until
+legacy (tq9) children are graded after their runs, a suite's harness puts a legacy child's evaluator password file and
+emulator path into that child's run options, as `benchmark run` does for a legacy case, so the configurator's record of
+that run holds them."""
 import argparse
 import contextlib
 import hashlib
@@ -413,7 +417,9 @@ def run_trial(trial_dir, request, *, call=None, launch=None, heartbeat=None, sto
     neither as a field, nor the evaluation token, though the reason a failure records there quotes the error met, which
     may name either path. A suite's harness passes its child's start request (`start` in `request`), its configurator
     requests (`call`), `launch(params)`, which starts and attaches the child through its suite, a `heartbeat()` while
-    the run runs and a `stop` event that ends the wait."""
+    the run runs and a `stop` event that ends the wait. A suite child's start that got no answer is sent again (see
+    `_start_child`), so a lost reply never has the device stopped under the child it started; trial.json records that the
+    start was sent (`start_sent`) before it is."""
     trial_dir = Path(trial_dir)
     trial_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     request = dict(request)
@@ -445,7 +451,10 @@ def run_trial(trial_dir, request, *, call=None, launch=None, heartbeat=None, sto
                                            if request.get(key) is not None}
         params.update(request_id=request_id, device=server.descriptor, admission=admission,
                       evaluation_token_sha256=hashlib.sha256(token.encode()).hexdigest())
-        started = launch(params) if launch else configurator('start', params)
+        # From here a run may exist that this trial started, whether or not its reply arrives.
+        record['start_sent'] = time.time()
+        _private(trial_dir / 'trial.json', record)
+        started = _start_child(launch, params, server.shutdown, stop) if launch else configurator('start', params)
         if not started.get('ok'):
             raise ValueError(started.get('reason') or 'The configurator refused the run')
         record.update(status='running', run_id=started['run_id'],
@@ -458,6 +467,24 @@ def run_trial(trial_dir, request, *, call=None, launch=None, heartbeat=None, sto
     finally:
         _release_trial(trial_dir, record, held, server)
     return record
+
+
+def _start_child(launch, params, shutdown, stop=None):
+    """Start a suite's child through its suite (`launch(params)`), sending the start again for as long as the configurator
+    gives no answer: a dropped connection or a reply that never came (a client that sends nothing again itself, or one
+    whose own resend failed). The configurator answers a start it already did with the child that start started,
+    whatever the suite did since, so sending it again starts nothing twice and tells the harness of a child that runs on
+    its device. Its answer is a run or its refusal, a ValueError, which ends it; so do a removed configurator home, the
+    owner's shutdown of the device, a `stop`, and a configurator unreachable for longer than UNREACHABLE."""
+    lost = None
+    while True:
+        started = _post(lambda _method, request: launch(request), 'suite_start_child', params)
+        if started.get('ok') is True or started.get('error') == 'ValueError' or started.get('gone'):
+            return started
+        lost = lost or time.monotonic()
+        if time.monotonic() - lost > UNREACHABLE or shutdown.is_set() or (stop is not None and stop.is_set()):
+            return started
+        time.sleep(.25)
 
 
 def _follow_run(trial_dir, record, held, server, configurator, *, budget, password_file, renode, token, heartbeat=None,
@@ -873,19 +900,50 @@ def _expect(reply, refusal):
     return reply
 
 
-def _trial_of(suites, run_id):
-    """The trial directory, under any suite of this bench home, whose trial ran `run_id`, or None."""
+def _trial_of(suites, run_id, request_id=None):
+    """The trial directory, under any suite of this bench home, whose trial ran `run_id`, or None. A trial whose start the
+    configurator never answered names no run: failing a trial that names it, the latest trial that sent a start under
+    the slot's child request (`request_id`, unique to the slot) and learnt of no run is the one that started it, since
+    the configurator starts a slot's child once and no trial is made for a slot whose child exists."""
+    latest = None
     for path in sorted(Path(suites).glob('*/trials/*/trial.json')):
         record = read_trial(path.parent)
-        if isinstance(record, dict) and record.get('run_id') == run_id:
+        if not isinstance(record, dict):
+            continue
+        if record.get('run_id') == run_id:
             return path.parent
-    return None
+        if (request_id is not None and record.get('request_id') == request_id and record.get('run_id') is None
+                and record.get('start_sent') and (latest is None or record['start_sent'] > latest[0])):
+            latest = (record['start_sent'], path.parent)
+    return latest[1] if latest else None
+
+
+def _adopt(trial_dir, run_id, completed):
+    """Name `run_id` in the trial that started it but never heard so (`_trial_of`), once its harness has ended, so a
+    resume can continue the run on a device provided anew, or grade it once if it `completed`. The trial keeps why its
+    start failed (`start_failed`). Its device was stopped without the harness seeing the run finish; a run that met the
+    stopped device holds an uncertain effect, which the configurator blocks on until the operator reconciles it."""
+    record = read_trial(trial_dir)
+    if isinstance(record, dict) and record.get('run_id') == run_id:
+        return
+    with _exclusive(trial_dir):
+        record = read_trial(trial_dir)
+        if not isinstance(record, dict) or record.get('run_id') == run_id:
+            return
+        if record.get('run_id') is not None or not record.get('start_sent'):
+            raise ValueError('The trial in ' + str(trial_dir) + ' did not start child ' + run_id)
+        if not _harness_exited(None, record):
+            raise ValueError('The trial\'s bench harness is still running')
+        record.update(run_id=run_id, start_failed=record.pop('reason', None), adopted=time.time())
+        if completed and (record.get('device_stop') or {}).get('confirmed') is True:
+            record['status'] = 'awaiting-evaluation'
+        _private(Path(trial_dir) / 'trial.json', record)
 
 
 def _release_claim(bench, request_id, held):
-    """Let go of a suite request_id claim held by `held`, a suite directory whose harness the configurator refused
-    (nothing was frozen under it), so a launch with the same inputs starts afresh. The claim is moved aside first, and
-    removed only if it is still the refused one: a claim another launch took meanwhile is put back."""
+    """Let go of a suite request_id claim held by `held`, a suite directory whose harness ended without the
+    configurator's reply on record (see `_refused`), so a launch with the same inputs starts afresh. The claim is moved
+    aside first, and removed only if it is still the one let go of: a claim another launch took meanwhile is put back."""
     path = _claim_path(bench, request_id, 'suite')
     aside = path.with_name('.' + path.name + '.refused.' + uuid.uuid4().hex)
     try:
@@ -903,9 +961,12 @@ def _release_claim(bench, request_id, held):
 
 
 def _refused(suite_dir):
-    """Whether the suite harness in `suite_dir` ended without the configurator taking its suite on."""
+    """Whether the suite harness in `suite_dir` ended without recording that the configurator took its suite on: it was
+    refused, or it ended (killed, say) before it wrote the reply down, though the configurator may have frozen the suite.
+    Either way a launch with the same inputs may start afresh: the configurator finds a suite frozen under the
+    request_id and reports it, attached to no new harness, so the operator learns its suite_id and can resume it."""
     record = read_suite(suite_dir)
-    return isinstance(record, dict) and record.get('accepted') is False and record.get('finished') is not None
+    return isinstance(record, dict) and record.get('accepted') is False and _harness_exited(None, record)
 
 
 def run_suite(suite_dir, request, *, call=None, stop=None):
@@ -915,9 +976,10 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
     graded once after its run; a legacy child graded inside its run), and have the configurator settle the slot from the
     child's status and recorded evaluation, which it reads itself. It stops once the configurator reports the suite
     complete, stopped or blocked, and lets go of it; a harness that stops while the suite runs leaves it blocked for a
-    resume. Password file and emulator paths stay in this process's memory and are never fields of suite.json; the
-    reason a failure records there (suite.json is written for this user only, in the bench home) quotes the error met,
-    which may name either path. The configurator learns of a failure only which trial failed and where this record is. An
+    resume. Password file and emulator paths are never fields of suite.json or the suite tables, and no emulated child's
+    run receives them; a legacy child's run gets its evaluator options from this harness (see the module docstring). The
+    reason a failure records in suite.json (written for this user only, in the bench home) quotes the error met, which
+    may name either path. The configurator learns of a failure only which trial failed and where this record is. An
     approved child budget extension in `request` goes to the stopped child this run continues, and to no other. The
     harness holds a lock file in `suite_dir` for as long as it runs, by which the configurator tells that it still
     runs (its process id alone may come to name another process)."""
@@ -1038,11 +1100,12 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
         if not passwords.get(case):
             raise ValueError('The evaluator password file of ' + case + ' is required to provide and grade its device')
         return passwords[case]
-    def trial_of():
-        found = _trial_of(suite_dir.parent, run_id)
+    def trial_of(completed):
+        found = _trial_of(suite_dir.parent, run_id, slot['child_request_id'])
         if found is None:
             raise ValueError('The trial of child ' + run_id + ' is not under this bench home; its device and evaluation '
                              'cannot be continued')
+        _adopt(found, run_id, completed)
         return found
     if run_id is None:
         trial_dir = suite_dir / 'trials' / (slot['trial_key'] + '-' + uuid.uuid4().hex[:8])
@@ -1056,12 +1119,14 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
         if status.get('status') == 'completed':
             if status.get('equivalence') is not None:
                 return
-            record = resume(trial_of(), password_file=password(), renode=renode, call=configurator)
+            password_file = password()
+            record = resume(trial_of(True), password_file=password_file, renode=renode, call=configurator)
         elif status.get('uncertain_effect'):
             return  # The configurator blocks the suite; only the operator reconciles an uncertain effect.
         else:
-            record = reattach(trial_of(), password_file=password(), renode=renode, call=configurator, heartbeat=heartbeat,
-                              stop=stop, budget_seconds=extension.get('child_budget_seconds'),
+            password_file = password()
+            record = reattach(trial_of(False), password_file=password_file, renode=renode, call=configurator,
+                              heartbeat=heartbeat, stop=stop, budget_seconds=extension.get('child_budget_seconds'),
                               budget_reason=extension.get('child_budget_reason'), resume_run=resume_run)
     if record.get('status') in ('failed', 'stop-unconfirmed'):
         raise ValueError('Trial ' + slot['trial_key'] + ' ' + record['status'] + ': ' + str(record.get('reason') or ''))
@@ -1070,8 +1135,9 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
 def launch_suite(request, *, home, password_files=None, renode=None, autostart=True, timeout=900):
     """Start a detached bench harness for a suite and return once the configurator took the suite on, or refused it.
     `request` holds the manifest, executor, options and request_id of a new suite, or the suite_id (with an approved
-    budget extension) of a stopped one to resume. Password file and emulator paths reach the harness on its stdin only.
-    A repeated request_id with the same inputs follows the suite it started, with no second harness."""
+    budget extension) of a stopped one to resume. Password file and emulator paths reach the harness on its stdin, never
+    its command line or the suite tables. A repeated request_id with the same inputs follows the suite it started, with
+    no second harness."""
     home = Path(home).expanduser().resolve()
     bench = bench_home(home)
     if bench == home or bench.is_relative_to(home):
@@ -1095,8 +1161,9 @@ def launch_suite(request, *, home, password_files=None, renode=None, autostart=T
         identity = {name: request.get(name) for name in SUITE_IDENTITY}
         held = _claim(bench, request_id, key, identity, kind='suite')
         if held is not None and _refused(bench / 'suites' / held):
-            # The configurator refused the suite that claimed this request_id, so none was frozen under it: once the
-            # cause is fixed, the same request starts afresh.
+            # The harness that claimed this request_id ended without the configurator's reply on record: refused (none
+            # was frozen, so once the cause is fixed the same request starts afresh), or ended before it wrote the reply
+            # down (the new harness's start finds the frozen suite and reports it, driving nothing).
             _release_claim(bench, request_id, held)
             held = _claim(bench, request_id, key, identity, kind='suite')
         if held is not None:

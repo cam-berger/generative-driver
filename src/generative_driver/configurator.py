@@ -1594,18 +1594,25 @@ class Controller:
         runs, so a suite cancelled or stopped as its harness provided the device starts no child; only within the suite's
         wall-clock budget, so a budget spent meanwhile blocks the suite, as on every reservation, before anything starts;
         and only from the frozen slot's own request plus what the harness adds (see `child_identity_differs`). A request
-        that differs blocks the suite before anything starts."""
+        that differs blocks the suite before anything starts. The same start sent again after a lost reply is answered
+        with the child it started, whatever the suite did since (cancelled, blocked, out of budget), and starts nothing:
+        that child runs on the device of the harness that sent it, which must not stop that device under it."""
         from .benchmark_support.suites import child_identity_differs
         with self._suite_lock(suite_id):
             suite = self._suite_driver(suite_id, params)
             slot = self._slot(suite, params.get('ordinal'))
+            mismatch = child_identity_differs(suite['frozen'], slot, params.get('request'))
+            started = None if mismatch else self._started_from(slot, params.get('request'))
+            if started:
+                if slot['run_id'] is None and slot['status'] in ('launching','running'):
+                    self._suites.attach(suite_id,slot['ordinal'],slot['child_request_id'],started)
+                return {'ok':True,'run_id':started,'duplicate':True,'suite_id':suite_id}
             if suite['cancelled'] or suite['status'] != 'running':
                 raise ValueError('The suite is ' + suite['status'] + '; no child starts for it')
             if slot['status'] not in ('launching','running'):
                 raise ValueError('The suite slot is not reserved')
             expired = self._suite_expired(suite)
             if expired is None:
-                mismatch = child_identity_differs(suite['frozen'], slot, params.get('request'))
                 if mismatch:
                     self._suites.set_state(suite_id,'blocked',mismatch)
                     raise ValueError(mismatch)
@@ -1613,6 +1620,19 @@ class Controller:
                 self._suites.attach(suite_id,slot['ordinal'],slot['child_request_id'],started['run_id'])
                 return {**started,'suite_id':suite_id}
         self._suite_spent(expired)
+
+    def _started_from(self, slot, request):
+        """The run id of the slot's child when that child was started from exactly `request`, as its submitted intent
+        records it (a harness's start sent again: the same device, admission and evaluation token hash), else None. The
+        caller has checked `request` against the frozen slot."""
+        if not isinstance(request, dict):
+            return None
+        with self._db() as db:
+            found = db.execute('SELECT id,spec FROM runs WHERE request_id=?', (slot['child_request_id'],)).fetchone()
+        if found is None or (slot['run_id'] is not None and slot['run_id'] != found['id']):
+            return None
+        intent = json.loads(found['spec']).get('_submitted_intent')
+        return found['id'] if intent is not None and _json(intent) == _json(request) else None
 
     def _suite_spent(self, expired):
         """Refuse a child's start or resume once the suite's budget is spent; the active child `_suite_expired` names,

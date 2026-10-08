@@ -127,8 +127,9 @@ def driver_benchmark_suite_start(manifest: dict, executor: str = 'codex',
     """Start a durable emulated suite; save suite_id to reconnect from either client.
 
     A detached bench harness drives the suite: it receives options.evaluator_password_files and options.renode (FILE
-    paths, never a password) on its stdin, provides each child's device and grades each frozen driver after its run;
-    the configurator never receives them. Use the configured MCP home.
+    paths, never a password) on its stdin, provides each child's device and grades each frozen driver after its run.
+    The suite tables never hold those paths and no emulated child's run receives them; a legacy tq9 child's run gets
+    its evaluator options from the harness, as driver_benchmark_run gives a legacy case. Use the configured MCP home.
     Emulator tool approval and inference budgets require explicit user authorization.
     Windows requires an independently started configurator.
     """

@@ -153,7 +153,7 @@ def main(argv=None):
                     'request_id': args.request_id}
                 result = start_suite(**params)
             elif args.action == 'resume':
-                # A newly launched bench harness takes the suite over; it alone receives password files and the emulator.
+                # A newly launched bench harness takes the suite over; password files and the emulator go to it on stdin.
                 from .benchmark_support.suites import resume_suite
                 result = resume_suite(args.suite_id, json.loads(Path(args.options).read_text(encoding='utf-8')) if args.options else None,
                                       suite_budget_seconds=args.suite_budget_seconds, budget_reason=args.budget_reason,

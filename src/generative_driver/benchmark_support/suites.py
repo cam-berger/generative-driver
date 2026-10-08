@@ -75,8 +75,8 @@ def preflight_selection(manifest: dict) -> tuple[dict, list, list[dict]]:
 
 
 def _launch_options(options, home):
-    """Split suite options: evaluator password files and the emulator executable reach only the bench harness, on its
-    stdin; the rest is frozen with the suite."""
+    """Split suite options: evaluator password files and the emulator executable go to the bench harness on its stdin,
+    never into the frozen suite; the rest is frozen with the suite."""
     from pathlib import Path
     from ..client import default_home
     if options is not None and not isinstance(options, dict):
@@ -95,8 +95,10 @@ def _launch_options(options, home):
 def start_suite(manifest: dict, executor: str = 'codex', options: dict | None = None,
                 request_id: str | None = None, *, home=None, autostart=True) -> dict:
     """Start a suite through a detached bench harness, which drives it; the configurator only freezes and stores it.
-    Password files and the emulator executable in `options` reach the harness alone. A selection is checked before any
-    configurator starts; a repeated request_id with the same inputs follows the suite it started."""
+    Password files and the emulator executable in `options` go to the harness on its stdin, never into the suite tables
+    or an emulated child's run; until legacy children are graded after their runs, the harness gives a legacy child's
+    run its evaluator options. A selection is checked before any configurator starts; a repeated request_id with the
+    same inputs follows the suite it started."""
     from ..client import call
     from .harness import launch_suite
     normalized = normalize_manifest(manifest)
@@ -112,8 +114,8 @@ def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autos
                  suite_budget_seconds=None, budget_reason=None, child_budget_seconds=None,
                  child_budget_reason=None) -> dict:
     """Resume a stopped suite through a newly launched bench harness, which takes over its scheduling. Only the password
-    files and the emulator executable are read from `options`, and they reach that harness alone: the suite keeps the
-    options it was frozen with. An approved suite budget extension raises the suite's total; an approved child budget
+    files and the emulator executable are read from `options`, and they go to that harness as at the start: the suite
+    keeps the options it was frozen with. An approved suite budget extension raises the suite's total; an approved child budget
     extension raises the total of the stopped child the resume continues (an emulated child once its device is
     attached anew), and no other child's."""
     from .harness import launch_suite
@@ -144,7 +146,7 @@ def refuse_secrets(options) -> None:
         raise ValueError('Unknown suite options')
     if any(any(word in str(key).lower() for word in SECRET) for key in options):
         raise ValueError('Evaluator password files and the emulator executable belong to the bench harness, which takes '
-                         'them on its stdin; the configurator never holds them')
+                         'them on its stdin; a suite never holds them')
 
 
 def harness_driven(frozen: dict) -> bool:

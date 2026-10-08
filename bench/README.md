@@ -90,7 +90,7 @@ python -m generative_driver --home "suite state" service start
 python -c "from pathlib import Path; from generative_driver.benchmark import case_root; Path('pilot.json').write_text((case_root() / 'suites/development-pilot.json').read_text(encoding='utf-8'), encoding='utf-8')"
 ```
 
-Create an operator-owned `suite-options.json`. The command starts a detached bench harness that drives the suite: it alone receives the password files and the emulator executable, on its stdin; the configurator stores the rest.
+Create an operator-owned `suite-options.json`. The command starts a detached bench harness that drives the suite and receives the password files and the emulator executable on its stdin; the configurator stores the rest. Neither path reaches the suite tables, and no emulated child's run receives them. Until legacy `tq9` children are graded after their runs, the harness puts a legacy child's evaluator password file and emulator path into that child's run options, as `benchmark run` does for legacy cases.
 
 ```json
 {

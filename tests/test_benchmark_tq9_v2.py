@@ -618,26 +618,34 @@ class TQ9V2Tests(unittest.TestCase):
                         changed=next(Path(a['path']) for a in interpreted.pop()['artifacts'] if a['path'].endswith('model.json'))
                         changed.write_text(changed.read_text()+' ')
                     return original_snapshot(*args,**kwargs)
-                # Only the harness unlocks the truth, to take the device recipe before the run; the configurator never
-                # does, and no stage runs the evaluator.
+                # Only the harness unlocks the truth: to take the device recipe before the run, and to grade the frozen
+                # driver once after it. The configurator never does, and no stage runs the evaluator.
                 import inspect
-                from generative_driver.benchmark_support import emulator as emulator_module
+                from generative_driver.benchmark_support import emulator as emulator_module, evaluator
                 real_truth=emulator_module.truth_for_case;truth_callers=[]
+                def ended():
+                    observed=controller.call('status',run)
+                    return observed['status'] in ('completed','failed','blocked','cancelled') and not observed['stopping'] and provider.session is None
                 def truth_for_case(*args,**kwargs):
                     names={frame.function for frame in inspect.stack(0)}
                     truth_callers.append(names)
-                    if not {'device_recipe','admit'}<=names or names&{'replace','recover_emulator','reconcile','_run','_prepare','_check','_dispatch'}:
+                    admitting={'device_recipe','admit'}<=names;grading={'grade','conclude'}<=names and ended()
+                    if not (admitting or grading) or names&{'replace','recover_emulator','reconcile','_run','_prepare','_check','_dispatch'}:
                         raise AssertionError('Truth unlocked outside the harness')
                     return real_truth(*args,**kwargs)
-                def evaluator(*args,**kwargs):raise AssertionError('Evaluator called in the stage loop')
-                endpoint=provider=None
+                real_reference=evaluator.reference_execute;graded=[]
+                def reference(*args,**kwargs):
+                    # The evaluator runs once the run is terminal with nothing stopping and the run's device stopped.
+                    if not ended():raise AssertionError('Evaluator called before the run ended')
+                    graded.append(len(peers))
+                    return real_reference(*args,**kwargs)
+                endpoint=provider=None;graders=[]
                 try:
                     with patch.object(toolkit,'call_tool',side_effect=runtime_boundary),patch.object(device_client.DeviceClient,'replace',replace),patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
                          patch.object(controller,'_check',side_effect=check),patch.object(controller,'_verify_snapshot',side_effect=verify_snapshot),\
                          patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True,'evidence_sha256':evidence}),\
                          patch.object(emulator_module,'truth_for_case',side_effect=truth_for_case),\
-                         patch('generative_driver.benchmark_support.emulated_evidence._diagnose',side_effect=evaluator),\
-                         patch('generative_driver.benchmark_support.emulated_evidence._final',side_effect=evaluator),\
+                         patch.object(evaluator,'reference_execute',side_effect=reference),\
                          patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=native_start):
                         if mode in ('recover-initial-stop-raise','recover-initial-stop-live'):
                             # The emulator's startup reading fails and so does its stop. The harness keeps the live
@@ -685,9 +693,19 @@ class TQ9V2Tests(unittest.TestCase):
                             if time.monotonic()>deadline:self.fail('Scripted controller deadline: '+str(status))
                             time.sleep(.01)
                         result=controller.call('result',run);events=controller.call('events',run)['events']
-                        held=provider.status()
-                        # As the harness does once the run is terminal: stop the device, confirmed, and seal the handoffs.
-                        finished=harness.finish(provider,'tq9-v2',root/'home/runs'/run['run_id'],result['accepted_handoffs'],password,status)
+                        held=provider.status();run_peers=len(peers)
+                        self.assertFalse(graded)
+                        # As the harness does once the run is terminal: stop the device, confirmed; grade a completed
+                        # run's frozen driver once on a fresh emulator, seal the evidence and post the verdict.
+                        finished=harness.finish(provider,'tq9-v2',root/'home/runs'/run['run_id'],result,password,status,
+                            trial_dir=trial,token='scripted harness token',call=lambda method,params:controller.call(method,params))
+                        graders=peers[run_peers:];del peers[run_peers:]
+                        self.assertTrue(all(peer.closed for peer in graders))
+                        graded_result=controller.call('result',run);equivalence=graded_result['equivalence']
+                        if status['status']!='completed':
+                            # A stopped run is not graded: its handoffs alone are sealed, and it holds no verdict.
+                            self.assertFalse(graded);self.assertFalse(graders);self.assertIsNone(equivalence)
+                            self.assertNotIn('equivalence',finished);self.assertFalse((trial/'evaluator-draft.enc').exists())
                         self.assertNotIn(str(password),json.dumps(json.loads(controller._row(run['run_id'])['spec'])))
                         self.assertFalse(truth_callers and any(names&{'_run','_dispatch'} for names in truth_callers))
                         assignments=[e['data'] for e in events if e['kind']=='stage.assigned']
@@ -817,6 +835,55 @@ class TQ9V2Tests(unittest.TestCase):
                                 self.assertEqual([a['stage'] for a in assignments],['acquire','interpret'])
                                 self.assertEqual(peers[0].device_commands,[])
                             continue
+                        if status['status']=='completed':
+                            # After the run the harness graded the frozen driver the run accepted, once, on a fresh
+                            # emulator, and the configurator recorded that verdict. Equivalence is the final grade; the
+                            # fresh worker's mission is a secondary check beside it, never the verdict.
+                            driver=next((h['artifacts'][0]['sha256'] for h in reversed(result['accepted_handoffs'])
+                                         if h['stage']=='emit' and h['artifacts']),None)
+                            self.assertEqual((finished['status'],finished['sealed'],finished['equivalence']),('evaluated',True,equivalence))
+                            self.assertEqual((equivalence['basis'],equivalence['method'],equivalence['frozen_artifact_sha256']),
+                                             ('evaluator','fresh-final',driver))
+                            self.assertEqual(graded_result['progress']['equivalence'],equivalence['status'])
+                            self.assertNotIn('EVALUATOR SENTINEL',json.dumps(graded_result))
+                            # The public verdict is a grade after the run, with no answer in it.
+                            self.assertFalse(grade_keys(equivalence)&{'expected','absolute_tolerance'})
+                            failing={'final-bounds':['final/denied/refused_without_io','final/effect-1/duty'],
+                                     'hidden-wrong':['final/temperature-0/temperature'],
+                                     'repair-mapping':['final/temperature-0/temperature','final/temperature-1/temperature']}
+                            if driver is None:
+                                # No driver was emitted: not equivalent, judged without truth or an emulator.
+                                self.assertEqual((equivalence['status'],equivalence['equivalent'],equivalence['diff']),
+                                                 ('no-driver',False,[{'id':'frozen_package','reason':'no driver emitted'}]))
+                                self.assertFalse(graded);self.assertFalse(graders);self.assertEqual(len(truth_callers),1)
+                            else:
+                                self.assertEqual((equivalence['status'],equivalence['equivalent']),('graded',mode not in failing))
+                                self.assertEqual([d['id'] for d in equivalence['diff']],failing.get(mode,[]))
+                                self.assertEqual(graded_result['reason'],'Final verdict: equivalent' if mode not in failing else
+                                                 'Final verdict: not equivalent: '+'; '.join(d['reason'] for d in equivalence['diff']))
+                                self.assertEqual(equivalence['passed']+len(equivalence['diff']),equivalence['total'])
+                                # One grading run on one fresh emulator, after the run's own device stopped, and the
+                                # truth unlocked twice in all: the device recipe before the run, the grade after it.
+                                self.assertEqual((graded,len(graders)),([run_peers],1))
+                                self.assertEqual([('admit' in names,'grade' in names) for names in truth_callers],[(True,False),(False,True)])
+                                note=next(c for c in result['accepted_handoffs'][-1]['checks'] if c['name']=='fresh_worker_mission')
+                                self.assertEqual(equivalence['mission'],note)
+                            # The harness's verdict is recorded once: a repeat changes nothing; a forged token or another
+                            # verdict is refused.
+                            post=lambda record,token='scripted harness token':controller.call('record_evaluation',{**run,'token':token,'equivalence':record})
+                            self.assertEqual(post(equivalence)['equivalence'],equivalence)
+                            with self.assertRaisesRegex(ValueError,'evaluation token'):post(equivalence,'forged token')
+                            with self.assertRaisesRegex(ValueError,'different evaluation'):
+                                post({**equivalence,'mission':{'name':'fresh_worker_mission','passed':None,'reason':'other'}})
+                            self.assertEqual(len([e for e in controller.call('events',run)['events'] if e['kind']=='run.finalized']),1)
+                            # The run evidence is sealed in the trial directory and names the graded driver.
+                            sealed=unlock(trial/'run-evidence.enc',password.read_text(),equivalence['evidence_sha256'])
+                            self.assertEqual((sealed['schema'],sealed['run_id']),('benchmark-run-evidence/2',run['run_id']))
+                            self.assertEqual((sealed['final'] or {}).get('frozen_artifact_sha256'),driver)
+                            self.assertEqual(sealed['device']['receipts'],result['progress']['device']['receipts'])
+                            self.assertNotIn('proof',json.dumps(sealed['device']['receipts']).replace('proof_sha256',''))
+                            self.assertFalse((trial/'private').exists())
+                            self.assertFalse([path for path in (root/'home').rglob('*.enc')])
                         if mode in ('unwired-model','unwired-budget'):
                             # Probe preparation finds an interpreted model the emulator cannot carry: no emulator starts
                             # for it, the configurator's own validation of that model is the diff, and it revises
@@ -852,6 +919,7 @@ class TQ9V2Tests(unittest.TestCase):
                                 self.assertEqual((Path(repair['workspace'])/context['history'][-1]['files']['model.json']).read_text(),'{unfinished')
                                 self.assertEqual(len(peers),1)
                                 self.assertIs(next(c for c in handoffs[-1]['checks'] if c['name']=='fresh_worker_mission')['passed'],True)
+                                self.assertIs(equivalence['equivalent'],True)
                             else:
                                 self.assertEqual(status['reason'],'Fresh reuse skipped: no accepted emitted package to reuse; '
                                                                   'the run awaits independent evaluation')
@@ -870,10 +938,8 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertEqual(result['progress']['equivalence'],'pending')
                         self.assertIsNone(result['equivalence']);self.assertEqual(result['evaluator_verdicts'],[])
                         self.assertNotIn('terminal_final_failure',result['progress'])
-                        # Only the harness unlocked the truth, once, for the device recipe; nothing in the run carries an
-                        # evaluator label, the emulator start included, which the harness made before the run.
-                        self.assertEqual(len(truth_callers),1)
-                        self.assertTrue(all({'device_recipe','admit'}<=names for names in truth_callers))
+                        # Only the harness unlocked the truth, for the device recipe before the run and the grade after
+                        # it; nothing in the run carries an evaluator label, the emulator start included.
                         evaluated=[e['data'] for e in events if e['kind'] in ('tool.started','tool.finished') and e['data'].get('actor')=='evaluator']
                         self.assertFalse(evaluated)
                         # Every live call that reached the device carries the instrument readings around it, and runs
@@ -890,7 +956,6 @@ class TQ9V2Tests(unittest.TestCase):
                         # The configurator released its control of the device; the harness stopped it, confirmed.
                         self.assertTrue(provider.released)
                         self.assertEqual(finished['device_stop'],{'stopped':True,'confirmed':True})
-                        self.assertEqual(finished['status'],'awaiting-evaluation');self.assertIs(finished['sealed'],True)
                         self.assertEqual(result['progress']['device'],{'session_id':held['session_id'],'binding':held['binding'],
                             'receipts':[r['receipt'] for r in result['emulator_recoveries']]})
                         handoffs=result['accepted_handoffs']
@@ -1065,15 +1130,19 @@ class TQ9V2Tests(unittest.TestCase):
                         # The harness holds the device: the run state records no session, and no startup reading.
                         self.assertNotIn('startup_observation',state)
                         self.assertNotIn('session',state);self.assertNotIn('previous_session',state)
-                        sidecar=run_dir/'benchmark/run-evidence.enc'
-                        sealed=unlock(sidecar,password.read_text(),state['final_evaluation']['evidence_sha256'])
-                        self.assertEqual(state['final_evaluation']['verdict'],'unscored')
-                        self.assertEqual(sealed['evaluations'],[])
-                        self.assertEqual(len(sealed['accepted_gates']),len([h for h in handoffs if h['artifacts']]))
-                        self.assertEqual(sealed['accepted_gates'][-1]['stage'],'reuse')
-                        # Recovery proofs stay in the provider's private journal, never in the run directory.
-                        self.assertNotIn('emulator_recoveries',sealed);self.assertFalse(list(run_dir.rglob('journal.jsonl')))
+                        # The harness sealed benchmark-run-evidence/2 in its trial directory, never in the run's: every
+                        # accepted artifact and notes hash, the single final and the mission check beside it.
+                        self.assertFalse((run_dir/'benchmark/run-evidence.enc').exists());self.assertNotIn('final_evaluation',state)
+                        sealed=unlock(trial/'run-evidence.enc',password.read_text(),equivalence['evidence_sha256'])
+                        self.assertEqual(len([r for r in sealed['accepted_artifacts'] if r['kind']=='artifact']),sum(len(h['artifacts']) for h in handoffs))
+                        self.assertEqual({r['sha256'] for r in sealed['accepted_artifacts'] if r['kind']=='notes'},{h['notes']['sha256'] for h in handoffs})
+                        self.assertEqual((sealed['final']['frozen_artifact_sha256'],sealed['mission']),
+                                         (equivalence['frozen_artifact_sha256'],equivalence['mission']))
+                        # Recovery proofs stay in the provider's private journal, never in the run directory; the
+                        # evidence holds the receipts and the journal's hash.
+                        self.assertFalse(list(run_dir.rglob('journal.jsonl')))
                         self.assertFalse(list((root/'home').rglob('journal.jsonl')))
+                        self.assertEqual(sealed['device']['journal_sha256'],hashlib.sha256((trial/'device/journal.jsonl').read_bytes()).hexdigest())
                         journal=[json.loads(line) for line in (trial/'device/journal.jsonl').read_text().splitlines()]
                         self.assertEqual(journal[-1]['kind'],'stopped')
                         proofs=[entry['proof'] for entry in journal if entry['kind']=='replaced']
@@ -1095,28 +1164,25 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertNotIn('maintenance',sealed)
                         from generative_driver.reporting import report_run
                         from generative_driver.benchmark_support.suite_reporting import _recorded_success
-                        from generative_driver.benchmark import score
                         with patch('generative_driver.client.call',side_effect=lambda method,params,**kw:controller.call(method,params)):
                             report=report_run(run['run_id'],home=root/'home')
                         # A driver awaiting its independent grade is never counted as a success.
-                        self.assertEqual(report['verdict'],'unscored')
                         self.assertFalse(_recorded_success(result,events,report))
-                        # Nothing graded it: offline scoring of a pending assistive run reads unscored, never failed.
-                        self.assertEqual(report['progress'].get('protocol'),'assistive/1')
-                        scored=score(report,password,evidence_path=sidecar)
-                        self.assertEqual((scored['verdict'],scored['final_evaluation']['verdict']),('unscored','unscored'))
+                        # The report carries the protocol and that the run's verdict is recorded.
+                        self.assertEqual((report['progress'].get('protocol'),report['progress'].get('equivalence')),('assistive/1','graded'))
                         self.assertNotIn('maintenance',report)
                         with self.assertRaisesRegex(ValueError,'inactive'):controller.call('tools',{**run,'assignment_id':assignments[0]['id']})
-                        from generative_driver.benchmark_support.emulated_evidence import finalize
-                        for kept in (handoffs[:1],handoffs):
-                            finalize('tq9-v2',run_dir,kept,{'evaluator_password_file':str(password)})
-                            latest=json.loads((run_dir/'benchmark/state.json').read_text())
-                            updated=unlock(sidecar,password.read_text(),latest['final_evaluation']['evidence_sha256'])
-                            self.assertEqual(len(updated['accepted_gates']),len([h for h in kept if h['artifacts']]))
+                        # A stopped trial's seal holds its handoffs alone, and no final.
+                        for index,kept in enumerate((handoffs[:1],handoffs)):
+                            folder=trial/('kept-'+str(index))
+                            kept_seal=evaluator.seal(folder,run_dir,{**result,'accepted_handoffs':kept},password_file=password)
+                            updated=unlock(folder/'run-evidence.enc',password.read_text(),kept_seal['sha256'])
+                            self.assertIsNone(updated['final'])
+                            self.assertEqual(len([r for r in updated['accepted_artifacts'] if r['kind']=='artifact']),sum(len(h['artifacts']) for h in kept))
                 finally:
                     controller.close();server.shutdown();server.server_close()
                     if endpoint is not None:endpoint.close()
-                    for peer in peers:
+                    for peer in peers+graders:
                         if not getattr(peer,'closed',False):peer.close()
 
     def test_measured_calibration_checks_code_and_complete_reference_mutant_coverage(self):
@@ -1278,7 +1344,7 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_reference_gate_refuses_structurally_invalid_mutant_before_native_start(self):
         # Catches recording a malformed model as a measured behavioral rejection.
-        from generative_driver.benchmark_support.emulated import reference_execute
+        from generative_driver.benchmark_support.evaluator import reference_execute
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaisesRegex(ValueError,'structurally valid'):
                 reference_execute({'scenario_id':'original'}, {}, {'schema':'invalid'}, {}, renode='/absent',image='/absent',output_dir=Path(temp))
@@ -1300,19 +1366,6 @@ class TQ9V2Tests(unittest.TestCase):
             raw = json.loads(path.read_text())
             self.assertTrue(raw['incomplete'])
             self.assertEqual(raw['events'][0]['result']['error']['fault'], 'host')
-
-    def test_frozen_final_replay_is_refused_before_device_access(self):
-        # A saved final submission may not be replayed after a restart.
-        from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated_evidence import _private, _final
-        with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp);password=root/'password';password.write_text('fixture')
-            options={'evaluator_password_file':str(password)}
-            _private(root,options,{'evaluations':[{'phase':'final','revision':0}]})
-            class Untouched:
-                def __getattr__(self, name):raise AssertionError('device accessed')
-            with self.assertRaisesRegex(ValueError,'cannot be replayed'):
-                _final('tq9-v2',root,root/'absent',{},options,session=Untouched())
 
     def test_fresh_reuse_acknowledgements_do_not_substitute_for_a_reading(self):
         # Public adapter seam: actuator ACK outputs alone do not finish the mission, which is a note, never a stop.
@@ -1518,7 +1571,7 @@ class ObservationTests(unittest.TestCase):
             _write(run/'benchmark/state.json',{'adapted_model_dir':str(ws/'model'),'adaptation':adaptation,'revision':0})
             journal=run/'benchmark/live-observations-0.jsonl';journal.write_text('{"operation":"measure"}\n')
             def observed():
-                with patch('generative_driver.benchmark_support.emulated_evidence._diagnose',side_effect=AssertionError('diagnostic')):
+                with patch('generative_driver.benchmark_support.evaluator.reference_execute',side_effect=AssertionError('diagnostic')):
                     return emulated.observe_stage('tq9-v2','probe',run,ws,{'status':'completed'},[],{'observed_records':[]})
             mapping=capabilities();mapping['tasks'].pop('temperature')
             (ws/'capabilities.json').write_text(json.dumps(mapping))

@@ -35,7 +35,7 @@ class ScenarioTests(unittest.TestCase):
                     controller.close()
 
     def test_reference_execution_rejects_unknown_scenario_before_native_start(self):
-        from generative_driver.benchmark_support.emulated import reference_execute
+        from generative_driver.benchmark_support.evaluator import reference_execute
         from tq9_workflow_fixture import model, capabilities
         with tempfile.TemporaryDirectory() as temp, patch(
                 'generative_driver.benchmark_support.native.NativeSession.start',

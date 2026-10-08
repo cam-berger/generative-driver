@@ -191,10 +191,11 @@ class TrialFinishTests(unittest.TestCase):
         (self.root / 'firmware.bin').write_bytes(b'synthetic image')
 
     def test_the_harness_seals_only_a_run_it_saw_finish_and_whose_handoffs_it_read(self):
-        # Catches sealing an empty or partial set of handoffs, and reporting that seal as good, when the run's result
-        # could not be read (a transport failure, a reply over the read limit) or the run had not finished.
-        from generative_driver.benchmark_support import harness
+        # Catches sealing an empty or partial set of handoffs, and reporting that seal as good, or grading the run, when
+        # the run's result could not be read (a transport failure, a reply over the read limit) or the run had not finished.
+        from generative_driver.benchmark_support import evaluator, harness
         from generative_driver.device_client import DeviceClient
+        (self.root / 'password-handle').write_text('synthetic fixture credential')
         handoffs = [{'stage': 'acquire', 'artifacts': []}]
         completed = {'ok': True, 'status': 'completed', 'stopping': False}
         running = {'ok': True, 'status': 'running', 'stopping': False}
@@ -222,7 +223,8 @@ class TrialFinishTests(unittest.TestCase):
                         return read
                     raise AssertionError(method)
                 with patch.object(harness, 'admit', return_value=(provider, {'calibration_evidence_sha256': EVIDENCE})), \
-                        patch.object(harness, 'seal', side_effect=AssertionError('sealed what the harness did not read')) as sealing, \
+                        patch.object(evaluator, 'seal', side_effect=AssertionError('sealed what the harness did not read')) as sealing, \
+                        patch.object(evaluator, 'grade', side_effect=AssertionError('graded what the harness did not read')), \
                         patch('generative_driver.client.call', side_effect=configurator):
                     record = harness.run_trial(trial, {'trial_id': trial.name, 'home': str(self.root / 'home'),
                                                        'case': 'tq9-v2', 'case_options': {'scenario_id': 'original'},
@@ -420,7 +422,7 @@ def configurator(method, params=None, home=None, **kwargs):
     raise AssertionError(method)
 patch('generative_driver.benchmark.case_root', return_value=Path(RESOURCES_DIR)).start()
 patch('generative_driver.benchmark_support.registry.require_calibration', side_effect=admitted).start()
-patch('generative_driver.benchmark_support.emulated_evidence.case_truth', return_value={'recipe': RECIPE}).start()
+patch('generative_driver.benchmark_support.evaluator.case_truth', return_value={'recipe': RECIPE}).start()
 patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=start).start()
 patch('generative_driver.client.call', side_effect=configurator).start()
 """
@@ -512,8 +514,7 @@ class HarnessTrialTests(unittest.TestCase):
         from generative_driver import client, daemon
         from generative_driver.benchmark import run
         from generative_driver.benchmark_support.harness import read_trial
-        from generative_driver.benchmark_support.truth import seal
-        from generative_driver.configurator import PENDING
+        from generative_driver.benchmark_support.truth import seal, unlock
         from suite_fixtures import public_case_fixture
         from tq9_workflow_fixture import WORKER
         if os.name == 'nt':
@@ -526,8 +527,14 @@ class HarnessTrialTests(unittest.TestCase):
             password.write_text('synthetic fixture credential')
             recipe = {'stimuli': {'temperature': {'minimum': -100, 'maximum': 100, 'command': 'temp {value}'}},
                       **RECIPE, 'reset_commands': ['reset']}
+            # The final phase the harness grades the frozen driver with after the run, on a fresh emulator of its own.
+            final = {'temperature_vectors': [{'stimulus': v, 'expected': v, 'absolute_tolerance': .01} for v in (-7, 29)],
+                     'effect_vectors': [{'task': 'arm', 'inputs': {}}, {'task': 'set_duty', 'inputs': {'duty': 400}},
+                                        {'task': 'disarm', 'inputs': {}}]}
             truth = {'private_sentinel': 'EVALUATOR SENTINEL', 'images': manifest['images'], 'recipe': recipe,
-                     'contracts': {'units': {'temperature': 'degC', 'duty': 'permille'}}}
+                     'contracts': {'units': {'temperature': 'degC', 'duty': 'permille'},
+                                   'scenarios': {'original': {'phases': {'final': final}}},
+                                   'time_policy': {'sample_settle_seconds': 0}}}
             manifest['truth']['sha256'] = seal(truth, resources / manifest['truth']['path'], password.read_text())
             (resources / 'cases/tq9-v2/case.json').write_text(json.dumps(manifest))
             fixture = root / 'harness_fixture.py'
@@ -586,17 +593,26 @@ class HarnessTrialTests(unittest.TestCase):
                 trial = Path(launched['trial_dir'])
                 self.assertEqual(read_trial(trial)['request_id'], 'trial-request-fixture')
                 log = (trial / 'harness.log').read_text(errors='replace') if (trial / 'harness.log').is_file() else ''
-                self.assertEqual(launched['status'], 'awaiting-evaluation', (read_trial(trial), log))
+                self.assertEqual(launched['status'], 'evaluated', (read_trial(trial), log))
                 self.assertTrue(trial.is_relative_to(root / 'home-bench'))
                 self.assertTrue(launched['run_id'] and launched['trial_id'] == trial.name)
+                # After the run, the harness graded the frozen driver once and the configurator recorded its verdict.
                 result = client.call('result', {'run_id': launched['run_id']}, home=home, autostart=False)
-                self.assertEqual((result['status'], result['reason']), ('completed', PENDING), result)
-                self.assertEqual(result['progress']['equivalence'], 'pending')
+                self.assertEqual((result['status'], result['reason']), ('completed', 'Final verdict: equivalent'), result)
+                self.assertEqual(result['progress']['equivalence'], 'graded')
                 record = read_trial(trial)
+                self.assertEqual((launched['equivalence'], record['equivalence']), (result['equivalence'], result['equivalence']))
+                self.assertEqual((result['equivalence']['equivalent'], result['equivalence']['basis']), (True, 'evaluator'))
+                self.assertEqual(result['equivalence']['passed'], result['equivalence']['total'])
+                self.assertNotIn('EVALUATOR SENTINEL', json.dumps(result))
                 self.assertEqual(result['progress']['device']['session_id'], record['device']['session_id'])
                 self.assertEqual(record['device_stop'], {'stopped': True, 'confirmed': True})
                 self.assertIs(record['sealed'], True)
-                self.assertTrue((home / 'runs' / launched['run_id'] / 'benchmark/run-evidence.enc').is_file())
+                # The sealed evidence and the evaluator's draft live in the trial directory, never in the run's.
+                sealed = unlock(trial / 'run-evidence.enc', password.read_text(), result['equivalence']['evidence_sha256'])
+                self.assertEqual(sealed['final']['frozen_artifact_sha256'], result['equivalence']['frozen_artifact_sha256'])
+                self.assertTrue((trial / 'evaluator-draft.enc').is_file())
+                self.assertFalse([p for p in home.rglob('*.enc')])
                 # The device ran in the harness: its journal there records the start and the confirmed stop.
                 journal = [json.loads(line) for line in (trial / 'device/journal.jsonl').read_text().splitlines()]
                 self.assertEqual([entry['kind'] for entry in journal], ['started', 'stopped'])

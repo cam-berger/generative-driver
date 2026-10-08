@@ -214,7 +214,7 @@ class ReferenceExecutionTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from benchmark_family_fixtures import toy_sample_model,toy_sensor_phase,sample_reply
-        from generative_driver.benchmark_support.emulated import reference_execute
+        from generative_driver.benchmark_support.evaluator import reference_execute
         from generative_driver.configurator import digest
         class Device(socketserver.StreamRequestHandler):
             def handle(self):
@@ -369,7 +369,7 @@ class ReuseBoundaryTests(unittest.TestCase):
                 return [{'actor':'worker','stage':'reuse','attempt_id':'new','revision':0,'operation':'sample',
                     'result':{'ok':True,'outputs':{'t':-5,'n':n}},'observation':{
                         'reference_temperature':-5,'monitor_sequence':n}} for n in sequence]
-            with patch('generative_driver.benchmark_support.emulated_evidence._final',side_effect=AssertionError('final in the stage loop')):
+            with patch('generative_driver.benchmark_support.evaluator.grade',side_effect=AssertionError('final in the stage loop')):
                 for sequence,passed in (([3],False),([3,3],False),([3,4],True)):
                     (root/'benchmark/package-events.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events(sequence)))
                     checked=observe_stage('sampled-sensor-v1','reuse',root,root,{'status':'completed'})
@@ -449,59 +449,55 @@ class InterpretationHelperTests(unittest.TestCase):
                 self.assertEqual(checked['stop']['category'],'integrity')
 
 class StageDispatchTests(unittest.TestCase):
-    def test_diagnostic_stage_uses_family_contract_and_monitor_units(self):
+    def test_diagnostic_phase_uses_family_contract_and_monitor_units(self):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from benchmark_family_fixtures import toy_sensor_phase
-        from generative_driver.benchmark_support.emulated_evidence import _diagnose
-        from generative_driver.benchmark_support.cases import _write
+        from benchmark_family_fixtures import toy_sensor_phase,toy_sample_model
+        from generative_driver.benchmark_support.evaluator import reference_execute
         pin,truth=toy_sensor_phase();pin.update(case_id='sampled-sensor-v1',revision=0)
         phase=truth['phases']['diagnostic'];phase['actions']=[{'kind':'reset','values':{}},
             {'kind':'call','task':'measure','inputs':{},'grants':['write']},
             {'kind':'observe','checks':[c['id'] for c in phase['contract']['checks']]}]
-        truth['contracts']={'time_policy':{'sample_settle_seconds':0}}
+        truth['contracts']={'time_policy':{'sample_settle_seconds':0}};truth['recipe']={}
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp);password=root/'password';password.write_text('unrelated-toy-test')
-            _write(root/'model/model.json',{'toy':True})
+            root=Path(temp)
             class Session:
-                info={'private_dir':str(root/'private')};binding={}
+                process=None;info={'fixture':True};binding={}
                 def reset(self,values):return {}
                 def set_running(self,value):pass
                 def observe(self):return {'values':{'latched_q4':65456,'acquisition_counter':3}}
+                def stop(self):pass
             def invoke(*args):return {'ok':True,'outputs':{'temperature':-5,'sequence':3},'units':{'temperature':'degC','sequence':'count'}}
-            # The evaluator's own session and truth: neither comes from the stage adapter.
-            with patch('generative_driver.benchmark_support.emulated_evidence.case_truth',return_value=truth),patch(
-                'generative_driver.benchmark_support.emulated_evidence.read_snapshot',return_value={'case_pin':pin}),patch(
+            # The evaluator's own fresh emulator and truth: neither comes from the stage adapter.
+            with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()),patch(
                 'generative_driver.benchmark_support.emulated_actions.model_invoker',return_value=invoke):
-                grade,records,_,_=_diagnose('sampled-sensor-v1',root,root/'model',{}, {'evaluator_password_file':str(password)},
-                                            session=Session())
-            self.assertEqual(grade['verdict'],'passed')
-            self.assertEqual({r['unit'] for r in records},{'degC','count','boolean'})
+                result=reference_execute(pin,truth,toy_sample_model(),{},renode=Path('/toy'),image=Path('/toy'),
+                                         output_dir=root/'diagnostic',phase='diagnostic',package_final=False)
+            self.assertEqual(result['grade']['verdict'],'passed')
+            self.assertEqual({r['unit'] for r in result['records']},{'degC','count','boolean'})
 
     def test_changed_frozen_final_package_is_refused_before_session_access(self):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated_evidence import _final,_private
-        from generative_driver.benchmark_support.cases import _write
+        from benchmark_family_fixtures import toy_sample_model
+        from generative_driver.benchmark_support.evaluator import reference_execute
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp);password=root/'password';password.write_text('toy-secret')
-            opts={'evaluator_password_file':str(password)}
+            root=Path(temp)
             package=root/'package';package.mkdir();(package/'model').write_text('changed')
-            _write(root/'benchmark/state.json',{'package_sha256':'a'*64})
-            _private(root,opts,{'evaluations':[]})
-            class Untouched:
-                def __getattr__(self,name):raise AssertionError('Native access')
-            with patch('generative_driver.benchmark_support.emulated_evidence.case_truth',side_effect=AssertionError('truth unlocked')):
-                with self.assertRaisesRegex(ValueError,'Frozen package'):_final('sampled-sensor-v1',root,package,{},opts,session=Untouched())
+            with patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=AssertionError('Native access')):
+                with self.assertRaisesRegex(ValueError,'Frozen package'):
+                    reference_execute({'case_id':'sampled-sensor-v1','scenario_id':'original','revision':0},{'recipe':{}},
+                                      toy_sample_model(),{},renode=Path('/toy'),image=Path('/toy'),output_dir=root/'final',
+                                      package=package,expected_package_sha256='a'*64)
 
 class TruthBoundaryTests(unittest.TestCase):
     def test_authenticated_but_nonexecutable_family_inventory_is_refused(self):
         import tempfile
         from pathlib import Path
         from generative_driver.benchmark_support.truth import seal
-        from generative_driver.benchmark_support.emulated_evidence import case_truth
+        from generative_driver.benchmark_support.evaluator import case_truth
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);password=root/'password';password.write_text('toy')

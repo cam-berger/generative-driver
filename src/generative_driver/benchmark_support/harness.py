@@ -1,13 +1,15 @@
 """The bench harness: the benchmark's operator, one detached process per emulated trial.
 
 It holds what the configurator never does. The evaluator password file path arrives on its stdin and is never written
-to disk; the case truth is unlocked only to project the device recipe; and it owns the device. In order, it:
-admits the case (`require_calibration`), starts the emulator through a recipe-only provider and serves the configurator
-a narrow control endpoint (status, observe, set_running, replace, release; stop and shutdown are owner-only), starts the
-configurator run with the device descriptor, the admission evidence hash and the sha256 of an evaluation token it keeps
-in memory, waits as a reconnecting client, stops the device once the run is terminal and seals the handoffs. Its state
-lives under a bench home beside the configurator home, never inside it."""
+to disk; the case truth is unlocked to project the device recipe before the run and to grade after it; and it owns the
+device. In order, it: admits the case (`require_calibration`), starts the emulator through a recipe-only provider and
+serves the configurator a narrow control endpoint (status, observe, set_running, replace, release; stop and shutdown are
+owner-only), starts the configurator run with the device descriptor, the admission evidence hash and the sha256 of an
+evaluation token it derives from the password, waits as a reconnecting client, stops the device once the run is terminal,
+grades a completed run's frozen driver once on a fresh emulator, seals the run evidence and posts the verdict with
+`record_evaluation`. Its state lives under a bench home beside the configurator home, never inside it."""
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -26,8 +28,10 @@ from pathlib import Path
 
 TRIAL = 'bench-trial/1'
 GOAL = 'Recover, check, package and freshly reuse the benchmark device interface for the desired functions.'
-# A trial the harness has finished with; grading after the run arrives with the evaluator.
-FINISHED = ('awaiting-evaluation', 'run-stopped', 'stop-unconfirmed', 'failed')
+# A trial the harness has finished with. `awaiting-evaluation` and `unscored` trials are completed by `resume`.
+FINISHED = ('evaluated', 'unscored', 'awaiting-evaluation', 'run-stopped', 'stop-unconfirmed', 'failed')
+# What a resume may still complete: the device stopped, confirmed, and the run's verdict not yet recorded.
+RESUMABLE = ('evaluating', 'awaiting-evaluation', 'unscored', 'evaluated')
 CONTROL = ('status', 'observe', 'set_running', 'replace', 'release')
 OWNER = (*CONTROL, 'stop', 'shutdown')
 TERMINAL = ('completed', 'failed', 'cancelled', 'blocked')
@@ -171,7 +175,7 @@ class DeviceServer:
 def device_recipe(case_id, trial_dir, options):
     """The device definition and nothing else: the harness unlocks the case truth for it with the password file in
     `options`, and everything but the recipe is dropped before a provider sees it."""
-    from .emulated_evidence import case_truth
+    from .evaluator import case_truth
     return case_truth(case_id, trial_dir, options)['recipe']
 
 
@@ -192,17 +196,81 @@ def admit(case_id, options, trial_dir, *, password_file, renode=None):
     return provider, {'calibration_evidence_sha256': admitted.get('evidence_sha256')}
 
 
-def seal(case_id, run_dir, accepted, password_file):
-    """Seal a terminal run's accepted handoffs with the existing run evidence sealing (until the evaluator seals
-    benchmark-run-evidence/2 in the trial directory). Nothing is graded here."""
-    from .emulated_evidence import finalize
-    finalize(case_id, Path(run_dir), accepted, {'evaluator_password_file': str(password_file)})
+def evaluation_token(password_file, trial_id):
+    """The trial's evaluation token, derived from the evaluator password and the trial id: a harness that resumes the
+    trial with the password derives it again, nothing writes it to disk, and the configurator holds only its sha256."""
+    import hmac
+    key = Path(password_file).read_text(encoding='utf-8').strip().encode('utf-8')
+    if not key:
+        raise ValueError('A nonempty evaluator password is required')
+    return hmac.new(key, b'generative-driver evaluation token/1\0' + str(trial_id).encode('utf-8'), hashlib.sha256).hexdigest()
 
 
-def finish(provider, case_id, run_dir, accepted, password_file, status=None):
-    """After the run is terminal: stop the device, confirmed, then seal the handoffs (`run_dir` None seals nothing). A
-    stop that is not confirmed keeps the device owned and names its live session and binding, which a recovery may
-    have replaced since the run started, for manual reconciliation; sealing needs no device and runs either way."""
+def _post(call, method, params):
+    """One configurator request; a refusal or an unreachable configurator is a reply with its reason, never a raise."""
+    try:
+        reply = call(method, params)
+    except Exception as error:
+        return {'ok': False, 'reason': type(error).__name__ + ': ' + str(error)}
+    return reply if isinstance(reply, dict) else {'ok': False, 'reason': 'Unreadable configurator reply'}
+
+
+def conclude(trial_dir, case_id, run_dir, result, *, password_file, renode=None, token=None, call=None, graded=True):
+    """What the harness does with a terminal run whose handoffs it read. A completed run whose verdict is pending is
+    graded once (`graded` False when its device stop was not confirmed: then nothing is graded), the run evidence is
+    sealed in the trial directory, and the verdict, or an unscored grade, is posted with record_evaluation; any other
+    run's handoffs are sealed alone. No grade is posted that was not sealed first; an unscored one carries none."""
+    from ..configurator import IntegrityError
+    from . import evaluator
+    if result.get('equivalence') is not None:
+        # The configurator already holds this run's verdict: nothing is graded, sealed or posted again.
+        return {'status': 'evaluated', 'equivalence': result['equivalence']}
+    pending = result.get('status') == 'completed' and (result.get('progress') or {}).get('equivalence') == 'pending'
+    accepted = result.get('accepted_handoffs') or []
+    frozen = (evaluator.emitted(accepted) or (None, None))[1]
+    done, content, equivalence = {}, {}, None
+    if pending and graded:
+        try:
+            equivalence, content['final'] = evaluator.grade(case_id, trial_dir, run_dir, result, password_file=password_file,
+                                                            renode=renode)
+            content['mission'] = equivalence.get('mission')
+        except IntegrityError as error:
+            equivalence, content['error'] = evaluator.unscored('integrity: ' + str(error), frozen), str(error)
+        except Exception as error:
+            # The message stays sealed: it may name what only the evaluator holds.
+            equivalence = evaluator.unscored('evaluator host fault: ' + type(error).__name__, frozen)
+            content['error'] = type(error).__name__ + ': ' + str(error)
+        content['equivalence'] = equivalence
+    try:
+        done.update(sealed=True, evidence=evaluator.seal(trial_dir, run_dir, result, password_file=password_file, **content))
+    except Exception as error:
+        done.update(sealed=False, sealing_failed=type(error).__name__ + ': ' + str(error))
+    finally:
+        shutil.rmtree(Path(trial_dir) / 'private', ignore_errors=True)
+    if equivalence is None:
+        return done
+    equivalence = {**equivalence, 'evidence_sha256': done['evidence']['sha256'] if done['sealed'] else None}
+    done['equivalence'] = equivalence
+    if not done['sealed'] and equivalence['status'] != 'unscored':
+        # A grade is posted only once it is sealed; a resume seals it again from the draft and never grades again.
+        done['status'] = 'awaiting-evaluation'
+        return done
+    posted = _post(call, 'record_evaluation', {'run_id': result['run_id'], 'token': token, 'equivalence': equivalence})
+    if posted.get('ok') is True:
+        done['status'] = 'unscored' if equivalence['status'] == 'unscored' else 'evaluated'
+    else:
+        # Graded and sealed, not recorded: a resume posts it again and never grades again.
+        done.update(status='unscored' if equivalence['status'] == 'unscored' else 'awaiting-evaluation',
+                    evaluation_failed=str(posted.get('reason')))
+    return done
+
+
+def finish(provider, case_id, run_dir, result, password_file, status=None, *, trial_dir=None, renode=None, token=None,
+           call=None, persist=None):
+    """After the run is terminal: stop the device, confirmed, then conclude the trial (`run_dir` None concludes nothing:
+    the harness did not read the run's handoffs). A stop that is not confirmed keeps the device owned and names its live
+    session and binding, which a recovery may have replaced since the run started, for manual reconciliation; nothing is
+    graded then, and the handoffs are sealed all the same. `persist(update)` records the stop before any grading."""
     done = {}
     try:
         done['device_stop'] = provider.stop()
@@ -212,14 +280,19 @@ def finish(provider, case_id, run_dir, accepted, password_file, status=None):
             done['device'] = provider.status()
         except Exception:
             pass
-    if run_dir is not None and password_file:
-        try:
-            seal(case_id, run_dir, accepted, password_file)
-            done['sealed'] = True
-        except Exception as error:
-            done.update(sealed=False, sealing_failed=type(error).__name__ + ': ' + str(error))
-    done['status'] = ('stop-unconfirmed' if done['device_stop'].get('confirmed') is not True else
-                      'awaiting-evaluation' if (status or {}).get('status') == 'completed' else 'run-stopped')
+    confirmed = done['device_stop'].get('confirmed') is True
+    completed = (status or {}).get('status') == 'completed'
+    done['status'] = ('stop-unconfirmed' if not confirmed else 'awaiting-evaluation' if completed else 'run-stopped')
+    if run_dir is not None and trial_dir is not None and password_file:
+        if confirmed and completed:
+            done['status'] = 'evaluating'
+        if persist:
+            persist(dict(done))
+        concluded = conclude(trial_dir, case_id, run_dir, result, password_file=password_file, renode=renode, token=token,
+                             call=call, graded=confirmed)
+        done.update({key: value for key, value in concluded.items() if key != 'status' or confirmed})
+        if confirmed and 'status' not in concluded:
+            done['status'] = 'awaiting-evaluation' if completed else 'run-stopped'
     return done
 
 
@@ -251,8 +324,9 @@ def _unread(status, result):
 
 
 def run_trial(trial_dir, request):
-    """One trial: admit, provide the device, start the run, wait, stop the device, seal. The password file path and
-    the emulator executable stay in this process's memory; trial.json never holds either."""
+    """One trial: admit, provide the device, start the run, wait, stop the device, grade a completed run once, seal,
+    post the verdict. The password file path and the emulator executable stay in this process's memory; trial.json never
+    holds either, nor the evaluation token."""
     from ..client import call
     trial_dir = Path(trial_dir)
     trial_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -262,7 +336,7 @@ def run_trial(trial_dir, request):
     # Every start carries a request_id, so a start whose reply was lost and is sent again reconnects to its run.
     request_id = request.get('request_id') or request['trial_id']
     record = {'schema': TRIAL, 'trial_id': request['trial_id'], 'request_id': request_id, 'case': request['case'],
-              'status': 'admitting', 'run_id': None, 'pid': os.getpid(), 'created': time.time()}
+              'home': str(home), 'status': 'admitting', 'run_id': None, 'pid': os.getpid(), 'created': time.time()}
     _private(trial_dir / 'trial.json', record)
     provider = server = None
     try:
@@ -274,8 +348,8 @@ def run_trial(trial_dir, request):
                                     password_file=password_file, renode=renode)
         provider.start()
         server = DeviceServer(provider, trial_dir / 'endpoint')
-        # The token stays in this process; the configurator holds its hash for the evaluation after the run.
-        token = secrets.token_hex(32)
+        # The configurator holds the token's hash, for the evaluation after the run; the token itself stays here.
+        token = evaluation_token(password_file, request['trial_id'])
         params = {key: request[key] for key in ('goal', 'case', 'executor', 'budget_seconds', 'effects', 'case_options',
                                                 'output_dir', 'scoped_tool_approval')
                   if request.get(key) is not None}
@@ -293,8 +367,15 @@ def run_trial(trial_dir, request):
                                                                  'harness_stopped') if key in status}
         result = call('result', {'run_id': started['run_id']}, home=home, autostart=False, read_timeout=60)
         unread = _unread(status, result)
-        done = finish(provider, request['case'], None if unread else home / 'runs' / started['run_id'],
-                      [] if unread else result.get('accepted_handoffs') or [], password_file, status)
+        def persist(update):
+            # The device stop is recorded before anything is graded; a crash after it leaves a trial a resume completes.
+            nonlocal provider
+            provider = None
+            record.update(update)
+            _private(trial_dir / 'trial.json', record)
+        done = finish(provider, request['case'], None if unread else home / 'runs' / started['run_id'], result,
+                      password_file, status, trial_dir=trial_dir, renode=renode, token=token, persist=persist,
+                      call=lambda method, params: call(method, params, home=home, autostart=False))
         provider = None
         if unread:
             # The device is stopped all the same; nothing is sealed that the harness did not read from a finished run.
@@ -315,6 +396,61 @@ def run_trial(trial_dir, request):
         record['finished'] = time.time()
         _private(trial_dir / 'trial.json', record)
     return record
+
+
+def resume(trial_dir, *, password_file, renode=None):
+    """Complete the evaluation of a trial whose harness has exited after its device stop was confirmed: one that died
+    after the stop, could not grade (unscored, an evaluator host fault) or could not post its verdict. A final the draft
+    already holds is rebuilt, never graded again; a verdict the configurator holds is never posted again."""
+    from ..client import call
+    trial_dir = Path(trial_dir)
+    record = read_trial(trial_dir)
+    if not isinstance(record, dict) or not record.get('run_id') or not record.get('home'):
+        raise ValueError('No trial with a run to evaluate: ' + str(trial_dir))
+    if not _harness_exited(None, record):
+        raise ValueError('The trial\'s bench harness is still running')
+    if (record.get('device_stop') or {}).get('confirmed') is not True:
+        raise ValueError('The trial\'s device stop was not confirmed; reconcile its device before evaluating')
+    if record.get('status') not in RESUMABLE:
+        raise ValueError('The trial awaits no evaluation: ' + str(record.get('status')))
+    home = Path(record['home'])
+    configurator = lambda method, params: call(method, params, home=home, autostart=False)
+    with _exclusive(trial_dir):
+        result = _post(configurator, 'result', {'run_id': record['run_id']})
+        unread = _unread({}, result)
+        if unread:
+            raise ValueError('Cannot evaluate the trial\'s run: ' + unread)
+        done = conclude(trial_dir, record['case'], home / 'runs' / record['run_id'], result, password_file=password_file,
+                        renode=renode, token=evaluation_token(password_file, record['trial_id']), call=configurator)
+        record.update(done, status=done.get('status') or 'run-stopped', resumed=time.time())
+        _private(trial_dir / 'trial.json', record)
+    return record
+
+
+@contextlib.contextmanager
+def _exclusive(trial_dir):
+    """One evaluation of a trial at a time: a lock file naming its process, taken over only from a process that ended."""
+    path = Path(trial_dir) / 'evaluation.lock'
+    for _ in range(2):
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            try:
+                holder = int(path.read_text(encoding='utf-8') or 0)
+            except (OSError, ValueError):
+                holder = 0
+            if _harness_exited(None, {'pid': holder}) or holder <= 0:
+                path.unlink(missing_ok=True)
+                continue
+            raise ValueError('Another evaluation of this trial is running (process ' + str(holder) + ')')
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            stream.write(str(os.getpid()))
+        try:
+            yield
+        finally:
+            path.unlink(missing_ok=True)
+        return
+    raise ValueError('Cannot take the evaluation lock of ' + str(trial_dir))
 
 
 def launch(case, output_dir=None, executor=None, options=None, approval=None, *, effects=(), autostart=True, wait=False,
@@ -438,7 +574,8 @@ def _follow(trial_dir, process, wait, timeout, *, duplicate):
         if record.get('run_id') and (not wait or exited or record.get('status') in FINISHED):
             return {'ok': True, 'trial_id': trial_dir.name, 'run_id': record['run_id'], 'trial_dir': str(trial_dir),
                     'duplicate': duplicate,
-                    **({key: record.get(key) for key in ('status', 'run_status', 'device_stop', 'sealed', 'sealing_failed')}
+                    **({key: record.get(key) for key in ('status', 'run_status', 'device_stop', 'sealed', 'sealing_failed',
+                                                         'evidence', 'equivalence', 'evaluation_failed')}
                        if wait else {})}
         if record.get('status') == 'stop-unconfirmed':
             raise ValueError(_unconfirmed(trial_dir, record))
@@ -453,12 +590,20 @@ def _follow(trial_dir, process, wait, timeout, *, duplicate):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='python -m generative_driver.benchmark_support.harness')
     parser.add_argument('--trial-dir', required=True)
+    parser.add_argument('--resume', action='store_true', help='Complete the evaluation of a finished trial; the password '
+                        'file and emulator paths arrive on stdin as JSON')
     args = parser.parse_args(argv)
     # Tests only: a fixture file that substitutes the case resources, admission and device session factory.
     fixture = os.environ.get('GD_TEST_HARNESS_FIXTURE')
     if fixture:
         runpy.run_path(fixture, run_name='gd_harness_fixture')
-    run_trial(Path(args.trial_dir), json.loads(sys.stdin.buffer.read().decode('utf-8')))
+    request = json.loads(sys.stdin.buffer.read().decode('utf-8'))
+    if args.resume:
+        record = resume(Path(args.trial_dir), password_file=request['password_file'], renode=request.get('renode'))
+        print(json.dumps({key: record.get(key) for key in ('trial_id', 'run_id', 'status', 'equivalence', 'evidence',
+                                                           'evaluation_failed', 'sealing_failed')}, indent=2))
+        return
+    run_trial(Path(args.trial_dir), request)
 
 
 if __name__ == '__main__':

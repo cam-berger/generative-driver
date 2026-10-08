@@ -81,19 +81,10 @@ def public_v2_report(payload: dict) -> dict:
 
 
 def _validate_payload(payload):
-    from .snapshots import canonical_digest
     from .behavior import validate_records, _sha
     if payload.get('schema') != 'benchmark-run-evidence/1':
         raise ValueError('Unsupported run evidence schema')
-    snapshot = payload['execution_snapshot']
-    if (snapshot.get('schema') != 'benchmark-execution-snapshot/1' or
-            canonical_digest({k: v for k, v in snapshot.items() if k != 'snapshot_sha256'}) != snapshot.get('snapshot_sha256') or
-            snapshot['case_pin'] != payload['case_pin']):
-        raise ValueError('Execution snapshot identity mismatch')
-    if payload['case_pin']['manifest'].get('schema') != 'benchmark-case/2':
-        raise ValueError('Run evidence requires a v2 case')
-    from .registry import validate_pinned_workflow
-    validate_pinned_workflow(payload['case_pin'])
+    _snapshot_identity(payload)
     seen = set()
     for evaluation in payload['evaluations']:
         key = (evaluation['phase'], evaluation['revision'])
@@ -113,6 +104,71 @@ def _validate_payload(payload):
                     if row.get('stage') == 'emit' and row.get('revision') == key[1]]
             if emit and not any(row.get('sha256') == digest for row in emit):
                 raise ValueError('Frozen final artifact differs from accepted emit package')
+
+
+def _snapshot_identity(payload):
+    from .snapshots import canonical_digest
+    snapshot = payload['execution_snapshot']
+    if (snapshot.get('schema') != 'benchmark-execution-snapshot/1' or
+            canonical_digest({k: v for k, v in snapshot.items() if k != 'snapshot_sha256'}) != snapshot.get('snapshot_sha256') or
+            snapshot['case_pin'] != payload['case_pin']):
+        raise ValueError('Execution snapshot identity mismatch')
+    if payload['case_pin']['manifest'].get('schema') != 'benchmark-case/2':
+        raise ValueError('Run evidence requires a v2 case')
+    from .registry import validate_pinned_workflow
+    validate_pinned_workflow(payload['case_pin'])
+
+
+def _validate_payload_v2(payload):
+    """An assistive run's evidence: its snapshot identity, every accepted artifact and notes hash, and at most one final,
+    which grades the run's accepted emitted driver: the first artifact of its latest emit handoff that handed one on."""
+    from ..benchmark import STAGES
+    from ..configurator import PROTOCOL
+    from .behavior import validate_records, _sha
+    if payload.get('schema') != 'benchmark-run-evidence/2' or payload.get('protocol') != PROTOCOL:
+        raise ValueError('Unsupported run evidence schema or protocol')
+    _snapshot_identity(payload)
+    rows = payload['accepted_artifacts']
+    for row in rows:
+        if (row.get('stage') not in STAGES or type(row.get('revision')) is not int or row['revision'] < 0
+                or not isinstance(row.get('assignment_id'), str) or row.get('kind') not in ('artifact', 'notes')
+                or not _sha(row.get('sha256'))):
+            raise ValueError('Accepted artifact identity mismatch')
+    emits = [row for row in rows if row['stage'] == 'emit' and row['kind'] == 'artifact']
+    accepted = next((row['sha256'] for row in emits if row['assignment_id'] == emits[-1]['assignment_id']), None) if emits else None
+    final = payload.get('final')
+    if final is not None:
+        digest, revision = final.get('frozen_artifact_sha256'), final.get('revision')
+        if (final.get('phase') != 'final' or final.get('run_id') != payload.get('run_id') or type(revision) is not int
+                or revision < 0 or not _sha(digest) or final['contract'].get('artifact_sha256') != digest):
+            raise ValueError('Evaluation artifact or revision identity mismatch')
+        if any(check.get('revision') != revision for check in final['contract']['checks']):
+            raise ValueError('Contract revision mismatch')
+        for record in final['records']:
+            if record.get('artifact_sha256') != digest or record.get('revision') != revision:
+                raise ValueError('Record artifact or revision mismatch')
+        validate_records(final['contract'], final['records'])
+        if digest != accepted:
+            raise ValueError('Frozen final artifact differs from the accepted emit package')
+    equivalence = payload.get('equivalence')
+    if equivalence is not None and equivalence.get('frozen_artifact_sha256') != accepted:
+        raise ValueError('Evaluated artifact differs from the accepted emit package')
+
+
+def seal_run_evidence_v2(payload: dict, path: Path, password_file: Path) -> dict:
+    """Seal benchmark-run-evidence/2 after re-hashing every accepted artifact it names."""
+    from .truth import seal
+    from ..configurator import digest as artifact_digest
+    _validate_payload_v2(payload)
+    for row in payload['accepted_artifacts']:
+        try:
+            observed = artifact_digest(Path(row['path']))
+        except (OSError, ValueError):
+            observed = None
+        if observed != row['sha256']:
+            raise ValueError('Accepted artifact bytes changed before sealing: ' + Path(row['path']).name)
+    digest = seal(payload, path, Path(password_file).read_text(encoding='utf-8').strip())
+    return {'path': Path(path).name, 'sha256': digest}
 
 
 def seal_run_evidence(payload: dict, path: Path, password_file: Path) -> dict:

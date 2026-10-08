@@ -392,7 +392,7 @@ class DiagnosticRepairTests(unittest.TestCase):
             (ws/'capabilities.json').write_text(json.dumps(capabilities))
             _write(root/'run/benchmark/state.json', {'adapted_model_dir': str(model_dir),
                 'adaptation': {'adapted_model_sha256': sha256(raw).hexdigest()}})
-            with patch('generative_driver.benchmark_support.emulated_evidence._diagnose') as dispatch, \
+            with patch('generative_driver.benchmark_support.evaluator.reference_execute') as dispatch, \
                  patch('generative_driver.toolkit.call_tool') as tools:
                 result = observe_stage('tq9-v2', 'probe', root/'run', ws, {'status': 'completed'})
             dispatch.assert_not_called(); tools.assert_not_called()

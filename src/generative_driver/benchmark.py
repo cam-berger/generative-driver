@@ -108,6 +108,11 @@ def main(argv=None):
     approval_flags.add_argument('--approve-emulator-tools', action='store_true', help='Explicitly authorize scoped tq9 emulator MCP tools; no physical device approval')
     running.add_argument('--binding-json', help='Operator-owned binding JSON, e.g. {"url":"ftdi://selected/1"}')
     running.add_argument('--wait', action='store_true', help='Follow an emulated trial until its bench harness has finished')
+    resuming = commands.add_parser('trial-resume', help='Complete the evaluation of an emulated trial whose harness has '
+                                   'finished: grade it if it is unscored (never a final already graded) and post the verdict')
+    resuming.add_argument('trial_dir')
+    resuming.add_argument('--password-file', required=True)
+    resuming.add_argument('--renode')
     comparing = commands.add_parser('compare')
     comparing.add_argument('before')
     comparing.add_argument('after')
@@ -167,6 +172,9 @@ def main(argv=None):
             from .benchmark_support.evaluator_cli import manage
             result = manage(args.action,args.case,args.password_file,args.output,args.new_password_file,args.compiler,args.authoring_dir,
                             renode=args.renode,ghidra_home=args.ghidra_home,java_home=args.java_home)
+        elif args.command == 'trial-resume':
+            from .benchmark_support.harness import resume
+            result = resume(args.trial_dir, password_file=args.password_file, renode=args.renode)
         elif args.command == 'compare':
             result = compare(args.before, args.after)
         else:

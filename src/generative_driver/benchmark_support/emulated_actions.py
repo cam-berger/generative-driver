@@ -1,7 +1,15 @@
 """Private evaluator action execution; no service, worker gateway or process owner."""
 from .behavior import _check_rejection_evidence
 from .cases import _write
-from .emulated import run_call
+
+
+def run_call(session, invoke, request):
+    """One evaluator call inside the device's window: the emulator runs only for the call, paused between calls."""
+    session.set_running(True)
+    try:
+        return invoke(request['operation'], request['parameters'])
+    finally:
+        session.set_running(False)
 
 
 def _binding_failure(task, error):

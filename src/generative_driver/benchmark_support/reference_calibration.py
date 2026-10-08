@@ -110,7 +110,7 @@ def calibrate(case_id, options):
     from .authoring import evaluator_directory, build_case
     from .registry import resolve_case, pin_case
     from .emulator import truth_for_case
-    from .emulated import reference_execute
+    from .evaluator import reference_execute
     from .truth import seal
     from .cases import _write
     from ..benchmark import case_root

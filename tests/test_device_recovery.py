@@ -20,7 +20,7 @@ from test_harness import Device, EVIDENCE, SOURCE
 
 TOKEN = 'scripted harness token'
 # Modules that decrypt truth or grade: neither the configurator nor its device modules import them.
-FORBIDDEN = {'emulator', 'truth', 'calibration', 'emulated_evidence', 'reference_calibration'}
+FORBIDDEN = {'emulator', 'truth', 'calibration', 'emulated_evidence', 'reference_calibration', 'evaluator'}
 
 
 def imported(path):
@@ -56,8 +56,10 @@ class ImportBoundaryTests(unittest.TestCase):
         from generative_driver.benchmark_support import emulated
         from generative_driver.configurator import Controller
         self.assertIsNone(importlib.util.find_spec('generative_driver.benchmark_support.emulated_recovery'))
+        # The evaluator grades after the run, in the harness: its code left the stage adapter.
+        self.assertIsNone(importlib.util.find_spec('generative_driver.benchmark_support.emulated_evidence'))
         for name in ('_OWNERS', '_truth', '_session', 'cleanup', 'package_execute', 'worker_tool', 'recover_emulator',
-                     'device_recipe'):
+                     'device_recipe', 'reference_execute', 'run_call'):
             self.assertFalse(hasattr(emulated, name), name)
         self.assertFalse(hasattr(benchmark, 'recover_emulator'))
         self.assertFalse(hasattr(Controller, '_evaluator_operation'))

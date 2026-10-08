@@ -353,7 +353,7 @@ class DeviceProviderTests(ProviderFixture):
         self.assertEqual(provider.stop(), {'stopped': True, 'confirmed': True})
 
     def test_the_provider_imports_nothing_that_decrypts_truth(self):
-        forbidden = {'truth', 'emulator', 'calibration', 'reference_calibration', 'evidence', 'emulated_evidence',
+        forbidden = {'truth', 'emulator', 'calibration', 'reference_calibration', 'evidence', 'emulated_evidence', 'evaluator',
                      'emulated', 'emulated_recovery', 'registry', 'cases', 'configurator'}
         for name in ('device_provider.py', 'instruments.py'):
             tree = ast.parse((SOURCE/name).read_text(encoding='utf-8'))
@@ -398,7 +398,7 @@ class HarnessDelegationTests(ProviderFixture):
         from generative_driver.benchmark_support import emulated, harness
         from generative_driver.device_client import DeviceUnavailable, open_device
         from generative_driver.toolkit import call_tool
-        with patch('generative_driver.benchmark_support.emulated_evidence.case_truth', return_value=self.truth) as unlocked:
+        with patch('generative_driver.benchmark_support.evaluator.case_truth', return_value=self.truth) as unlocked:
             self.assertEqual(harness.device_recipe('tq9-v2', self.trial, {}), RECIPE)
         unlocked.assert_called_once()
         self.assertFalse(hasattr(emulated, '_session'))

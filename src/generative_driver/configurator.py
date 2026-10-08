@@ -591,6 +591,52 @@ def _verdict_reason(equivalence):
     return 'Final verdict: ' + label + (': ' + detail if label != 'equivalent' and reasons else '')
 
 
+# The public evaluation record the bench harness posts after a run: check ids with passed flags and failing ids with a
+# reason. Expected values, tolerances, witnesses and raw records stay sealed, so no other field is accepted.
+EVALUATION = {'schema', 'status', 'equivalent', 'basis', 'method', 'checks', 'diff', 'passed', 'total', 'mission',
+              'frozen_artifact_sha256', 'capabilities_sha256', 'evidence_sha256', 'protocol'}
+
+
+def _evaluation_errors(record):
+    """Why a posted evaluation is not a well-formed equivalence/1 record, or []."""
+    sha = lambda value: value is None or isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None
+    text = lambda value: isinstance(value, str) and 0 < len(value) <= 300
+    if not isinstance(record, dict) or set(record) != EVALUATION:
+        return ['an equivalence/1 record has exactly the fields ' + ', '.join(sorted(EVALUATION))]
+    errors = []
+    if (record['schema'], record['basis'], record['method'], record['protocol']) != ('equivalence/1', 'evaluator', 'fresh-final', PROTOCOL):
+        errors.append('schema equivalence/1, basis evaluator, method fresh-final and protocol ' + PROTOCOL + ' are required')
+    checks, diff = record['checks'], record['diff']
+    if not isinstance(checks, list) or any(not isinstance(c, dict) or set(c) != {'id', 'passed'} or not text(c['id'])
+                                           or type(c['passed']) is not bool for c in checks):
+        errors.append('checks are [{id, passed}]')
+        checks = []
+    if not isinstance(diff, list) or any(not isinstance(d, dict) or set(d) != {'id', 'reason'} or not text(d['id'])
+                                         or not text(d['reason']) for d in diff):
+        errors.append('diff is [{id, reason}]')
+    if any(type(record[key]) is not int for key in ('passed', 'total')) or \
+            (record['passed'], record['total']) != (sum(c['passed'] for c in checks), len(checks)):
+        errors.append('passed and total count the checks')
+    status, equivalent = record['status'], record['equivalent']
+    if (status, type(equivalent)) not in (('graded', bool), ('no-driver', bool), ('unscored', type(None))) or \
+            status == 'no-driver' and equivalent is not False:
+        errors.append('status graded or no-driver with equivalent true or false, or unscored with equivalent null')
+    elif equivalent is True and (not checks or not all(c['passed'] for c in checks) or diff):
+        errors.append('an equivalent driver passed every check, with no difference')
+    elif equivalent is not True and not diff:
+        errors.append('a driver that is not judged equivalent names its differences')
+    mission = record['mission']
+    if mission is not None and (not isinstance(mission, dict) or not set(mission) <= {'name', 'passed', 'reason', 'fault'}
+                                or type(mission.get('passed')) not in (bool, type(None))
+                                or any(not isinstance(mission[k], str) or len(mission[k]) > 300 for k in set(mission) - {'passed'})):
+        errors.append('mission is {name, passed, reason, fault}')
+    if not all(sha(record[key]) for key in ('frozen_artifact_sha256', 'capabilities_sha256', 'evidence_sha256')):
+        errors.append('hashes are sha256 hex or null')
+    elif status != 'unscored' and record['evidence_sha256'] is None:
+        errors.append('a grade names the evidence it was sealed in')
+    return errors
+
+
 def _packages(handoff):
     """The emitted packages among a handoff's artifacts: directories that hold a manifest."""
     return [a for a in handoff['artifacts'] if Path(a['path']).is_dir() and (Path(a['path']) / 'manifest.json').is_file()]
@@ -1205,8 +1251,12 @@ class Controller:
         if method == 'cancel':
             with self._lock:
                 with self._db() as db:
-                    # A run completed from its final verdict keeps that status; there is nothing left to cancel.
-                    requested = db.execute("UPDATE runs SET cancelled=1 WHERE id=? AND NOT (status='completed' "
+                    # A run completed from its final verdict, or completed awaiting the independent evaluation after it,
+                    # keeps that status; there is nothing left to cancel.
+                    saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run_id,)).fetchone()
+                    awaiting = (db.execute('SELECT status FROM runs WHERE id=?', (run_id,)).fetchone()['status'] == 'completed'
+                                and saved is not None and json.loads(saved['payload']).get('equivalence') == 'pending')
+                    requested = 0 if awaiting else db.execute("UPDATE runs SET cancelled=1 WHERE id=? AND NOT (status='completed' "
                                            'AND EXISTS(SELECT 1 FROM verdicts WHERE id=?))', (run_id, run_id + FINAL)).rowcount
                 if not requested:
                     return self.call('status', {'run_id': run_id})
@@ -1241,6 +1291,8 @@ class Controller:
             return self.call('status', {'run_id': run_id})
         if method == 'attach_device':
             return self._attach_device(run_id, params)
+        if method == 'record_evaluation':
+            return self._record_evaluation(run_id, params)
         if method == 'resume':
             self._resume_device(run_id)
             with self._lock:
@@ -1895,7 +1947,8 @@ class Controller:
 
         A generic run's verdict is self-evidence. No evaluator is called here for a benchmark run (`spec.case`): an
         emulated case whose stages were observed without truth records `progress.equivalence = 'pending'` for the
-        independent grade after the run, and legacy cases keep the frozen final path their adapters run inside reuse."""
+        independent grade after the run, which its bench harness posts with record_evaluation, and legacy cases keep
+        the frozen final path their adapters run inside reuse."""
         with self._db() as db:
             final = _final_verdict(db, run_id)
         if final is not None:
@@ -2272,6 +2325,51 @@ class Controller:
                 self._event(run_id, 'device.attached', {'session_id': device['session_id'], 'binding': device['binding'],
                     'provider_id': device.get('provider_id'),
                     'previous': {'session_id': held.get('session_id'), 'binding': held.get('binding')}}, db)
+        return self.call('status', {'run_id': run_id})
+
+    def _record_evaluation(self, run_id, params):
+        """The bench harness posts the independent evaluation of a completed run's frozen driver, graded after the run.
+        Only the run's harness may (the sha256 of its evaluation token), only for a completed run with nothing uncertain
+        that awaits its evaluation, and only about the run's accepted emitted package: the first artifact of its latest
+        emit handoff that handed one on, or none. A graded or no-driver record becomes the run's one final verdict; an
+        identical repeat changes nothing and any other is refused. An unscored one is an event, and the run still awaits."""
+        spec = json.loads(self._row(run_id)['spec'])
+        if not spec.get('evaluation_token_sha256'):
+            raise ValueError('Only a run started by the bench harness can record an evaluation')
+        token, record = params.get('token'), params.get('equivalence')
+        if not isinstance(token, str) or not hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(),
+                                                                 spec['evaluation_token_sha256']):
+            raise ValueError('record_evaluation requires the run\'s evaluation token')
+        errors = _evaluation_errors(record)
+        if errors:
+            raise ValueError('Invalid evaluation record: ' + '; '.join(errors))
+        with self._lock:
+            row = self._row(run_id)
+            if row['status'] != 'completed' or run_id in self._workers or run_id in self._inflight:
+                raise ValueError('record_evaluation only for a completed run')
+            if row['uncertain']:
+                raise ValueError('Outstanding effect is uncertain; operator must respond with confirmed_safe after reconciliation')
+            with self._db() as db:
+                final = _final_verdict(db, run_id)
+                if final is not None:
+                    if final.get('equivalence') != record:
+                        raise ValueError('A different evaluation is already recorded for this run')
+                    return self.call('status', {'run_id': run_id})
+                progress = self._workflow_progress(run_id, db)
+                if progress.get('equivalence') != 'pending':
+                    raise ValueError('The run awaits no independent evaluation')
+                accepted = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM handoffs WHERE run_id=? ORDER BY created', (run_id,))]
+                frozen = next((h['artifacts'][0]['sha256'] for h in reversed(accepted) if h['stage'] == 'emit' and h['artifacts']), None)
+                if record['frozen_artifact_sha256'] != frozen:
+                    raise IntegrityError('The evaluated package is not the run\'s accepted emitted package')
+                if record['status'] == 'unscored':
+                    self._event(run_id, 'evaluation.unscored', {'diff': record['diff'], 'frozen_artifact_sha256': frozen}, db)
+                else:
+                    db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)', (run_id + FINAL, run_id, 'finalize', _json(
+                        {'stage': 'finalize', 'equivalence': record, 'protocol': PROTOCOL, 'frozen_artifact_sha256': frozen}), time.time()))
+                    db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)', (run_id, _json({**progress, 'equivalence': record['status']})))
+                    db.execute('UPDATE runs SET reason=?,updated=? WHERE id=?', (_verdict_reason(record), time.time(), run_id))
+                    self._event(run_id, 'run.finalized', {key: record[key] for key in ('equivalent', 'basis', 'diff')}, db)
         return self.call('status', {'run_id': run_id})
 
     def _device_lost(self, run_id, assignment):

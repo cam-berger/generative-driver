@@ -1165,7 +1165,7 @@
     },
     {
       "name": "emit_check",
-      "description": "Check generated package consistency offline. Schema 1 uses register fixtures; schemas 3-6 verify\nmanifest integrity and runtime currency separately. Current trusted packages run standalone wire replay;\nintact archived runtimes remain verifiable without executing their code. An external manifest pin\nestablishes artifact identity. Executable packages use their bundled model when model_dir is omitted;\nregister packages require it. This is not physical validation or sequence-safety evidence.\n",
+      "description": "Check generated package consistency offline. Schema 1 uses register fixtures; schemas 3-6 verify\nmanifest integrity and runtime currency separately. Current trusted packages run standalone wire replay;\nintact archived runtimes remain verifiable without executing their code. An external manifest pin\nestablishes artifact identity. Executable packages use their bundled model when model_dir is omitted;\nregister packages require it. A package it cannot read is refused (exit 1); when the host cannot run the\ncheck (a file, process or import failure, or a timeout) the result is fault host with exit 4, which says\nnothing about the package. This is not physical validation or sequence-safety evidence.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -1226,7 +1226,7 @@
     },
     {
       "name": "emit_test_live",
-      "description": "Stage 5. Run the emitted package live. A register package runs its own regression suite on the bus. An\ninterface package runs each of `operations` (default: identity) once through its own command line with\nthe operator's trusted `binding`, the `parameters` given per operation and the `allow_effects` grants,\nafter the same verified snapshot as emit_check; each run lands in emit/live-N.json. A malformed binding or a\nmissing grant is refused before any call. Exit 4 is a transport fault, inconclusive.\n",
+      "description": "Stage 5. Run the emitted package live. A register package runs its own regression suite on the bus. An\ninterface package runs each of `operations` (default: identity) once through its own command line with\nthe operator's trusted `binding`, the `parameters` given per operation and the `allow_effects` grants,\nafter the same verified snapshot as emit_check; each run lands in emit/live-N.json. A malformed binding or a\nmissing grant is refused before any call, as is a package that fails its snapshot check: every such refusal\nreturns transport_open_attempted false (exit 1). The identity operation alone verifies the device but exercises\nnone of its functions; name the operations to test. The result's manifest_sha256 names the snapshot that ran.\nExit 4 is a transport or host fault, inconclusive; when the host cannot write the live record the results are\nstill returned, with fault host.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {

@@ -62,9 +62,18 @@ def interface_describe(model_dir, **_):
             'capabilities':capabilities()}
 
 
+def before_contact(error, **extra):
+    """A tool's refusal before it contacted the device: no transport was opened, so nothing reached the device."""
+    return {'ok':False,'error':error,**extra,'transport_open_attempted':False,'_exit':1}
+
+
 @core.tool('interface_execute')
 def interface_execute(model_dir, operation, parameters=None, binding=None, allow_effects=None, replay=None, **_):
     model, sha = load(model_dir)
+    checked = validate_model(model)
+    if not checked['ok']:
+        # The runtime refuses this model before it opens any transport; say so, in the runtime's words.
+        return before_contact('ValueError: invalid model: ' + str(checked['defects']), model_sha256=sha)
     execution = run_samples(model, operation, parameters, binding=binding,
                             allow_effects=() if allow_effects is None else allow_effects,
                             replay=read_json(path(replay)) if replay is not None else None)
@@ -270,7 +279,12 @@ def _snapshot(pkg, sha, expected_manifest_sha256, temporary):
 
 def emit_check(package_dir, model_dir=None, expected_manifest_sha256=None):
     pkg = path(package_dir)
-    model, sha = load(pkg/'driver' if model_dir is None else model_dir)
+    source = pkg/'driver' if model_dir is None else path(model_dir)
+    if not (source/'model.json').is_file():
+        # A package without its driver model, or a model directory without one, is refused; it is no host fault.
+        return {'ok':False,'integrity_ok':False,'replay_status':'not_run','_exit':1,
+                'defects':[{'where':'driver/model.json' if model_dir is None else 'model_dir','what':'model.json is missing'}]}
+    model, sha = load(source)
     inspected = inspect_package(pkg, _trusted_python(), sha, expected_manifest_sha256)
     if not inspected['ok']:
         return {**inspected,'replay_status':'not_run','_exit':1}
@@ -318,17 +332,18 @@ def is_interface_package(package_dir):
 
 
 def _live_call(operation, command):
-    """One package command-line call; the verdict needs exit 0, ok true and a verified identity."""
-    with tempfile.TemporaryDirectory() as cwd:
-        try:
+    """One package command-line call; the verdict needs exit 0, ok true and a verified identity. A host failure
+    around the call (its working folder, starting the process, a timeout) is this call's host fault."""
+    try:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as cwd:
             done = subprocess.run(command, cwd=cwd, env={**os.environ,'PYTHONPATH':''},
                                   capture_output=True, text=True, timeout=300)
-        except subprocess.TimeoutExpired:
-            return {'operation':operation,'command':command,'returncode':None,'stdout_json':None,'stderr':'',
-                    'ok':False,'error_code':'timeout','error_message':'package call exceeded 300 s','fault':'host'}
-        except OSError as exc:
-            return {'operation':operation,'command':command,'returncode':None,'stdout_json':None,'stderr':'',
-                    'ok':False,'error_code':'open','error_message':str(exc),'fault':'host'}
+    except subprocess.TimeoutExpired:
+        return {'operation':operation,'command':command,'returncode':None,'stdout_json':None,'stderr':'',
+                'ok':False,'error_code':'timeout','error_message':'package call exceeded 300 s','fault':'host'}
+    except OSError as exc:
+        return {'operation':operation,'command':command,'returncode':None,'stdout_json':None,'stderr':'',
+                'ok':False,'error_code':'open','error_message':str(exc),'fault':'host'}
     try:
         result = json.loads(done.stdout)
     except ValueError:
@@ -357,48 +372,65 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
 
     The package runs from a freshly verified allowlisted snapshot whose Python equals the trusted runtime and
     template, under the bench interpreter in isolated mode, so a pass is evidence about these package bytes and
-    this binding. The binding is the operator's and is passed through unchanged; it is checked against the
-    model's channel, and every named operation's effect against the grants, before any call, so an operator
-    error is refused (exit 1) with no live record instead of being recorded as a package failure. The plan
-    stops at the first operator or host fault (exit 4, inconclusive). Every call is recorded append-only in
-    emit/live-N.json."""
-    if type(binding) is not dict:
-        raise ValueError('an interface package live test requires a binding object')
-    grants = [] if allow_effects is None else allow_effects
-    if type(grants) is not list or any(g not in ('read','write','actuate','reset') for g in grants):
-        raise ValueError('allow_effects must be a list of read, write, actuate or reset')
-    arguments = {} if parameters is None else parameters
-    if type(arguments) is not dict or any(type(v) is not dict for v in arguments.values()):
-        raise ValueError('parameters must map operation names to argument objects')
-    sha = load(model_dir)[1] if model_dir is not None else None
+    this binding; the result's manifest_sha256 names the snapshot that ran. The binding is the operator's and is
+    passed through unchanged; it is checked against the model's channel, and every named operation's effect against
+    the grants, before any call. Every refusal before the first call (arguments, binding, grants, a package that fails
+    its snapshot check) is returned with transport_open_attempted false and exit 1, with no live record, instead of
+    being recorded as a package failure. The plan stops at the first operator or host fault (exit 4, inconclusive).
+    Every call is recorded append-only in emit/live-N.json; when the host cannot write that record, the results are
+    still returned, as a host fault with exit 4, since the device was contacted."""
+    try:
+        if type(binding) is not dict:
+            raise ValueError('an interface package live test requires a binding object')
+        grants = [] if allow_effects is None else allow_effects
+        if type(grants) is not list or any(g not in ('read','write','actuate','reset') for g in grants):
+            raise ValueError('allow_effects must be a list of read, write, actuate or reset')
+        arguments = {} if parameters is None else parameters
+        if type(arguments) is not dict or any(type(v) is not dict for v in arguments.values()):
+            raise ValueError('parameters must map operation names to argument objects')
+        json.dumps([binding, arguments], allow_nan=False)
+        if model_dir is not None and not (path(model_dir)/'model.json').is_file():
+            raise ValueError('model_dir holds no model.json')
+        sha = load(model_dir)[1] if model_dir is not None else None
+    except (ValueError, TypeError) as exc:
+        return before_contact(f'{type(exc).__name__}: {exc}')
     pkg = path(package_dir)
     started = core.now()
-    with tempfile.TemporaryDirectory() as temporary:
-        snapshot, manifest, refused = _snapshot(pkg, sha, expected_manifest_sha256, temporary)
-        if refused is not None:
-            return refused
-        manifest_sha = digest(snapshot/'manifest.json')
-        model = read_json(snapshot/'driver/model.json', 1048576)
-        names = [model['identity']['operation']] if operations is None else operations
-        if (type(names) is not list or not names
-                or any(type(n) is not str or n not in model['operations'] for n in names)):
-            raise ValueError("operations must be a nonempty list of the model's operation names")
-        if set(arguments) - set(names):
-            raise ValueError('parameters name an operation that is not tested')
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
         try:
-            validate_binding(model['channel'], binding)
-        except TransportError as exc:
-            raise ValueError(f'binding refused before any call: {exc}') from None
-        ungranted = [n for n in names if model['operations'][n]['effect'] not in ['read', *grants]]
-        if ungranted:
-            raise ValueError('operations need an effect grant that allow_effects does not give: '
-                             + ', '.join(f"{n} ({model['operations'][n]['effect']})" for n in ungranted))
+            snapshot, manifest, refusal = _snapshot(pkg, sha, expected_manifest_sha256, temporary)
+            if refusal is not None:
+                return {**refusal, 'transport_open_attempted':False}
+            manifest_sha = digest(snapshot/'manifest.json')
+            model = read_json(snapshot/'driver/model.json', 1048576)
+            names = [model['identity']['operation']] if operations is None else operations
+            if (type(names) is not list or not names
+                    or any(type(n) is not str or n not in model['operations'] for n in names)):
+                raise ValueError("operations must be a nonempty list of the model's operation names")
+            if set(arguments) - set(names):
+                raise ValueError('parameters name an operation that is not tested')
+            try:
+                validate_binding(model['channel'], binding)
+            except TransportError as exc:
+                raise ValueError(f'binding refused before any call: {exc}') from None
+            ungranted = [n for n in names if model['operations'][n]['effect'] not in ['read', *grants]]
+            if ungranted:
+                raise ValueError('operations need an effect grant that allow_effects does not give: '
+                                 + ', '.join(f"{n} ({model['operations'][n]['effect']})" for n in ungranted))
+        except (ValueError, TypeError, LookupError) as exc:
+            return before_contact(f'{type(exc).__name__}: {exc}')
         flags = [flag for g in grants if g != 'read' for flag in ('--allow-effect', g)]
         results = []
         for name in names:
-            results.append(_live_call(name, [core.VENV_PY,'-I','-B','-c',BOOT,str(snapshot),'execute',name,
-                '--parameters',json.dumps(arguments.get(name,{}),allow_nan=False),
-                '--binding',json.dumps(binding,allow_nan=False),*flags]))
+            try:
+                results.append(_live_call(name, [core.VENV_PY,'-I','-B','-c',BOOT,str(snapshot),'execute',name,
+                    '--parameters',json.dumps(arguments.get(name,{}),allow_nan=False),
+                    '--binding',json.dumps(binding,allow_nan=False),*flags]))
+            except Exception as exc:
+                # The host failed around the call, which may already have reached the device.
+                results.append({'operation':name,'command':None,'returncode':None,'stdout_json':None,'stderr':'',
+                                'ok':False,'error_code':'host','error_message':f'{type(exc).__name__}: {exc}',
+                                'fault':'host'})
             if results[-1]['fault'] in ('operator','host'):
                 break
     passed = sum(1 for r in results if r['ok'])
@@ -406,18 +438,6 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
     ok = passed == len(names)
     transport = any(r['fault'] in ('operator','host') for r in results)
     verdict = 'pass' if ok else 'inconclusive' if transport else 'fail'
-    record = {'schema':'interface-live-test/1','package_dir':str(pkg),'manifest_sha256':manifest_sha,
-              'model_sha256':manifest['model_sha256'],'interpreter':core.VENV_PY,'binding':binding,
-              'operations':names,'parameters':arguments,'allow_effects':grants,'started':started,
-              'finished':core.now(),'results':results,'passed':passed,'failed':len(results)-passed,
-              'not_run':not_run,'ok':ok,'verdict':verdict}
-    folder = Path(core.resolve_run(run_dir or 'scratch'))/'emit'; folder.mkdir(parents=True, exist_ok=True)
-    index = 1
-    while (folder/f'live-{index}.json').exists():
-        index += 1
-    target = folder/f'live-{index}.json'
-    with target.open('x', encoding="utf-8") as stream:
-        stream.write(json.dumps(record, indent=2, allow_nan=False))
     # The runtime says whether it tried to open the transport, so a refusal of the caller's parameters before any
     # device contact stays distinguishable from a call that reached the device.
     summary = [{'operation':r['operation'],'ok':r['ok'],'returncode':r['returncode'],'error_code':r['error_code'],
@@ -426,9 +446,28 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
                    if type(r['stdout_json']) is dict},
                 **{k:r['stdout_json'][k] for k in ('transport_open_attempted',)
                    if type(r['stdout_json']) is dict and type(r['stdout_json'].get(k)) is bool}} for r in results]
-    return {'ok':ok,'passed':passed,'failed':len(results)-passed,'not_run':not_run,'verdict':verdict,
-            'results':summary,'live_record':str(target),'manifest_sha256':manifest_sha,
-            '_exit':0 if ok else 4 if transport else 1,'_files':{str(target):digest(target)}}
+    out = {'ok':ok,'passed':passed,'failed':len(results)-passed,'not_run':not_run,'verdict':verdict,
+           'results':summary,'manifest_sha256':manifest_sha}
+    try:
+        record = json.dumps({'schema':'interface-live-test/1','package_dir':str(pkg),'manifest_sha256':manifest_sha,
+                             'model_sha256':manifest['model_sha256'],'interpreter':core.VENV_PY,'binding':binding,
+                             'operations':names,'parameters':arguments,'allow_effects':grants,'started':started,
+                             'finished':core.now(),'results':results,'passed':passed,'failed':len(results)-passed,
+                             'not_run':not_run,'ok':ok,'verdict':verdict}, indent=2, allow_nan=False)
+        folder = Path(core.resolve_run(run_dir or 'scratch'))/'emit'; folder.mkdir(parents=True, exist_ok=True)
+        index = 1
+        while (folder/f'live-{index}.json').exists():
+            index += 1
+        target = folder/f'live-{index}.json'
+        with target.open('x', encoding="utf-8") as stream:
+            stream.write(record)
+        files = {str(target):digest(target)}
+    except Exception as exc:
+        # The device was contacted: keep what it did. Without its record the test is inconclusive for the host,
+        # unless the package already failed on the device.
+        return {**out, 'ok':False, 'verdict':'fail' if verdict == 'fail' else 'inconclusive', 'fault':'host',
+                'error':f'live record not written: {type(exc).__name__}: {exc}', 'live_record':None, '_exit':4}
+    return {**out, 'live_record':str(target), '_exit':0 if ok else 4 if transport else 1, '_files':files}
 
 
 def model_qualify(run_dir, model_dir, replies, **_):

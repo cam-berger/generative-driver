@@ -125,8 +125,15 @@ def reconcile(controller, run_id, spec, assignment, run_dir, progress):
                         or time.time() >= controller._row(run_id)['created']+spec['budget_seconds'])
         try:
             case = spec['case']
-            receipt = recover_emulator(case['id'] if isinstance(case,dict) else case, run_dir,
-                {**case_options(spec), 'recovery_evidence_ids':evidence, 'recovery_dispatch_ids':dispatches}, cancelled)
+            if spec.get('device'):
+                # The bench harness's provider replaces its device; the proof stays in its private journal.
+                from ..device_client import open_device
+                remaining = controller._row(run_id)['created'] + spec['budget_seconds'] - time.time()
+                receipt = open_device(spec['device']).replace((progress.get('device') or {}).get('session_id'), evidence,
+                                                              dispatches, deadline_seconds=max(0.0, remaining))
+            else:
+                receipt = recover_emulator(case['id'] if isinstance(case,dict) else case, run_dir,
+                    {**case_options(spec), 'recovery_evidence_ids':evidence, 'recovery_dispatch_ids':dispatches}, cancelled)
             if cancelled():
                 raise RuntimeError('Recovery cancelled before durable reconciliation')
             return {'recovery':{'assignment_id':assignment['id'],'receipt':receipt,

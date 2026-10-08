@@ -3567,7 +3567,11 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
             controller = Controller(Path(directory))
             params = {'goal':'Describe a supplied device', 'executor':'codex', 'request_id':'test-start',
                       'executor_config':{'command':['a-runtime-that-does-not-exist'],'model':'configured-model','version':'contract-version'},
-                      'case_options':{'evaluator_password_file':'not-an-agent-input'}}
+                      'case_options':{'operator_note':'not-an-agent-input'}}
+            # The configurator holds no password file: the bench harness does, for the cases that need one.
+            with self.assertRaisesRegex(ValueError, 'password'):
+                controller.call('start', {**params, 'request_id':'test-password',
+                                          'case_options':{'evaluator_password_file':'not-an-agent-input'}})
             run = controller.call('start', params)
             second = controller.call('start', params)
             self.assertEqual(run['run_id'], second['run_id'])

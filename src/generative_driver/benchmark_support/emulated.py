@@ -1,5 +1,5 @@
-"""Native benchmark stages, observed without truth. The emulator is held through a device provider built from the device
-recipe alone; it stays in-process until the harness owns it."""
+"""Native benchmark stages, observed without truth. The bench harness provides the emulator and the configurator reaches it
+through its device handle; a run started before the harness held devices keeps an in-process recipe-only provider."""
 import hashlib
 import re
 import shutil
@@ -173,7 +173,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                     'unwired_model': {'path': str(found[0]), 'sha256': found[1], 'reason': reason}}
         if adaptation['original_model_sha256'] != found[1]:
             raise IntegrityError('Accepted interpretation bytes changed while adapting the model')
-        session = _started(case_id, run_dir, options)
+        binding = _binding(case_id, run_dir, options, start=True)
         path, state = _state(run_dir)
         state.update(adaptation=adaptation, adapted_model_dir=str(ws/'model'), revision=int(options.get('revision', state.get('revision', 0))))
         _write(path, state)
@@ -197,15 +197,14 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                 'inputs': [str(ws/'model'), *guidance],
                 'context': {'model_dir': str(ws/'model'), 'capabilities_output': str(ws/'capabilities.json')},
                 'allowed_tools': ['interface_describe', 'interface_execute', 'probe_run', 'probe_diff', 'model_validate'],
-                'binding': session.binding, 'effects': ['write', 'actuate']}
+                'binding': binding, 'effects': ['write', 'actuate']}
     if stage == 'ground':
         from .ground import device_evidence
         prepared = device_evidence(accepted, ws)
         if prepared.get('skip'):
             return prepared
-        session = _session(case_id, run_dir, options)
         return {**prepared, 'allowed_tools': ['interface_execute', 'probe_run', 'probe_diff', 'model_validate'],
-                'binding': session.binding}
+                'binding': _binding(case_id, run_dir, options)}
     if stage == 'emit':
         found = _latest(accepted, ('probe',), 'model.json')
         if found is None:
@@ -259,7 +258,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
             _verified(capabilities, 'probe')
         state['capabilities_path'] = str(capabilities[0]) if capabilities else None
         _write(path, state)
-        session = _session(case_id, run_dir, options)
+        binding = _binding(case_id, run_dir, options)
         mission = 'Read temperature, enable the device, request 37 percent output, then disarm.'
         if case_id == 'sampled-sensor-v1':
             mission = 'Acquire and read two fresh temperature samples. Report their measured sequence numbers.'
@@ -267,7 +266,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
             mission = 'Commit bank B slot 1 to -7. Stage bank B slot 1 to 9, abort that transaction, then read bank B slot 1. Report observations and whether other cells changed.'
         return {'objective': 'Use only the emitted package and this objective: ' + mission + ' Use benchmark_package_execute for each operation. Find names and arguments in the package reference. Each result also carries an instrument reading of the emulated device after the call. Report actual observations and limitations.',
                 'inputs': [str(package)], 'allowed_tools': ['benchmark_package_execute'],
-                'context': {'package_dir': str(package)}, 'binding': session.binding,
+                'context': {'package_dir': str(package)}, 'binding': binding,
                 'boundary': 'fresh package-only mission'}
     if stage == 'interpret':
         from ..toolkit import call_tool, resources_root
@@ -625,6 +624,14 @@ def _started(case_id, run_dir, options):
     return options['start_device'](start) if callable(options.get('start_device')) else start()
 
 
+def _binding(case_id, run_dir, options, start=False):
+    """The binding of the device a stage runs on: the device the bench harness provides (from the configurator's
+    durable record), or, for a run started before the harness held devices, the in-process provider's."""
+    if options.get('device'):
+        return dict(options['device']['binding'])
+    return (_started if start else _session)(case_id, run_dir, options).binding
+
+
 def _sync(run_dir, device):
     """Record in the run state what the provider now holds: its live session's public descriptor, or nothing, in which
     case the owner is forgotten. A session it no longer holds becomes the previous session."""
@@ -678,53 +685,31 @@ def cleanup(case_id, run_dir, options=None):
     return {'ok': True}
 
 
-def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=None,
-                    binding=None, allow_effects=None, options=None):
-    """Run one operation of the reuse stage's package copy; the result carries the instrument reading after it."""
+def package_call(case_id, run_dir, stage, arguments):
+    """Check, before anything is dispatched, that the call runs the unchanged stage-assigned package copy, and return
+    the call: it runs the package's own CLI over the assigned binding with the assigned grants."""
     from ..configurator import digest
     from .emulated_actions import package_invoker
-    path, state = _state(run_dir)
-    package = Path(package_dir).resolve()
-    if str(package) != state.get('package_copies', {}).get(stage) or digest(package) != state['package_sha256']:
-        raise ValueError('Only the unchanged stage-assigned package may execute')
-    device = _session(case_id, run_dir, options or {})
-    if binding != device.binding:
-        raise ValueError('Package binding differs from the provided emulator')
-    before = reading(device.observe()) if case_id != 'tq9-v2' else {}
-    invoke = package_invoker(package, binding, allow_effects or [])
-    with device.window():
-        result = invoke(operation, parameters or {})
-    public = reading(device.observe())
-    events = Path(run_dir)/'benchmark/package-events.jsonl'
-    row = {'actor': 'worker', 'stage': stage, 'operation': operation, 'revision': state.get('revision', 0),
-           'attempt_id': state['package_attempts'][stage], 'assignment_id': (options or {}).get('assignment_id'),
-           'package_sha256': state['package_sha256'], 'result': result, 'observation': public,
-           'before_observation': before}
-    with events.open('a') as stream:
-        stream.write(json.dumps(row, allow_nan=False)+'\n')
-    return {**result, 'observation': public}
-
-
-def score(report, password_file=None, *, evidence_path=None):
-    """Offline regrade requires an explicit evaluator sidecar; never guesses paths."""
-    from .evidence import regrade_v2
-    return regrade_v2(report, evidence_path, password_file)
-
-
-def worker_tool(case_id, run_dir, name, arguments, options):
-    """Execute a gateway-approved live call on the provided emulator, inside its window, between instrument readings."""
-    from ..toolkit import call_tool
-    if name not in ('interface_execute', 'probe_run'):
-        raise ValueError('Unsupported native worker tool')
-    device = _session(case_id, run_dir, options)
-    if arguments.get('binding') != device.binding:
-        raise ValueError('Worker binding differs from the provided emulator')
-    parameters = arguments.get('parameters', {})
-    before = reading(device.observe())
-    with device.window():
-        result = call_tool(name, arguments)
-    observed = reading(device.observe())
     _, state = _state(run_dir)
+    package = Path(arguments['package_dir']).resolve()
+    if str(package) != state.get('package_copies', {}).get(stage) or digest(package) != state.get('package_sha256'):
+        raise ValueError('Only the unchanged stage-assigned package may execute')
+    invoke = package_invoker(package, arguments['binding'], arguments.get('allow_effects') or [])
+    return lambda: invoke(arguments['operation'], arguments.get('parameters') or {})
+
+
+def record_call(case_id, run_dir, stage, name, arguments, result, before, after, options=None):
+    """Journal one live call with the instrument readings around it: a package call for fresh reuse's mission note, a
+    model call in the live journal probe and ground hand on. Readings are device evidence; nothing here grades them."""
+    path, state = _state(run_dir)
+    if name == 'benchmark_package_execute':
+        row = {'actor': 'worker', 'stage': stage, 'operation': arguments.get('operation'), 'revision': state.get('revision', 0),
+               'attempt_id': state['package_attempts'][stage], 'assignment_id': (options or {}).get('assignment_id'),
+               'package_sha256': state['package_sha256'], 'result': result, 'observation': after,
+               'before_observation': before}
+        with (Path(run_dir)/'benchmark/package-events.jsonl').open('a') as stream:
+            stream.write(json.dumps(row, allow_nan=False)+'\n')
+        return
     def measured(value):
         kept = {key: value[key] for key in ('ok', 'outputs', 'units', 'transcript', 'error', 'transport_open_attempted')
                 if key in value}
@@ -734,8 +719,48 @@ def worker_tool(case_id, run_dir, name, arguments, options):
     journal = Path(run_dir)/'benchmark'/f'live-observations-{state.get("revision", 0)}.jsonl'
     journal.parent.mkdir(parents=True, exist_ok=True)
     with journal.open('a', encoding='utf-8') as stream:
-        stream.write(json.dumps({'operation': arguments.get('operation'), 'parameters': parameters,
-            'result': measured(result), 'before_observation': before, 'observation': observed}, allow_nan=False)+'\n')
+        stream.write(json.dumps({'operation': arguments.get('operation'), 'parameters': arguments.get('parameters', {}),
+            'result': measured(result), 'before_observation': before, 'observation': after}, allow_nan=False)+'\n')
+
+
+def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=None,
+                    binding=None, allow_effects=None, options=None):
+    """Run one operation of the reuse stage's package copy on the in-process provider (a run started before the bench
+    harness held devices); the result carries the instrument readings around it."""
+    arguments = {'package_dir': package_dir, 'operation': operation, 'parameters': parameters or {}, 'binding': binding,
+                 'allow_effects': allow_effects or []}
+    invoke = package_call(case_id, run_dir, stage, arguments)
+    device = _session(case_id, run_dir, options or {})
+    if binding != device.binding:
+        raise ValueError('Package binding differs from the provided emulator')
+    before = reading(device.observe())
+    with device.window():
+        result = invoke()
+    public = reading(device.observe())
+    record_call(case_id, run_dir, stage, 'benchmark_package_execute', arguments, result, before, public, options)
+    return {**result, 'before_observation': before, 'observation': public}
+
+
+def score(report, password_file=None, *, evidence_path=None):
+    """Offline regrade requires an explicit evaluator sidecar; never guesses paths."""
+    from .evidence import regrade_v2
+    return regrade_v2(report, evidence_path, password_file)
+
+
+def worker_tool(case_id, run_dir, name, arguments, options):
+    """Execute a gateway-approved live call on the in-process provider (a run started before the bench harness held
+    devices), inside its window, between instrument readings."""
+    from ..toolkit import call_tool
+    if name not in ('interface_execute', 'probe_run'):
+        raise ValueError('Unsupported native worker tool')
+    device = _session(case_id, run_dir, options)
+    if arguments.get('binding') != device.binding:
+        raise ValueError('Worker binding differs from the provided emulator')
+    before = reading(device.observe())
+    with device.window():
+        result = call_tool(name, arguments)
+    observed = reading(device.observe())
+    record_call(case_id, run_dir, None, name, arguments, result, before, observed, options)
     return {**result, 'before_observation': before, 'observation': observed}
 
 

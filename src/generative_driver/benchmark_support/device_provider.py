@@ -153,6 +153,13 @@ class DeviceProvider:
                 self.running = False
                 session.set_running(False)
 
+    def set_running(self, running):
+        """One edge of the window for a remote caller, which cannot hold the window across requests."""
+        with self._lock:
+            session = self._live()
+            self.running = bool(running)
+            session.set_running(self.running)
+
     def replace(self, expected_session_id, evidence_ids=(), dispatch_ids=(), cancelled=None):
         """Replace the live session after an uncertain write: the old process's stop is confirmed, a distinct process
         on a new binding starts from the recipe, and its startup reading must equal the baseline. The proof goes to the

@@ -272,6 +272,11 @@ class TQ9V2Tests(unittest.TestCase):
         self._scripted_controller_modes(('normal','rejected-write','repair-mapping','repair-decoder','repair-ground',
             'final-bounds','hidden-wrong','missing-mission','monitor-missing','snapshot-next'))
 
+    def test_a_provider_lost_before_dispatch_stops_for_the_operator_with_nothing_uncertain(self):
+        # Catches a device the configurator can no longer reach turning a refused call into an uncertain write, a
+        # host failure, or a call that reaches the device without its instrument readings and window.
+        self._scripted_controller_modes(('device-lost',))
+
     def test_an_interpreted_model_the_emulator_cannot_carry_drives_bounded_repair(self):
         # Catches a model the configurator's validation would reject skipping probe silently, with no repair.
         self._scripted_controller_modes(('unwired-model','unwired-budget'))
@@ -317,13 +322,16 @@ class TQ9V2Tests(unittest.TestCase):
         from unittest.mock import patch
         import generative_driver
         from generative_driver.benchmark_support.truth import seal, unlock
+        from generative_driver.benchmark_support import harness
+        from generative_driver import device_client
         from generative_driver.configurator import Controller
         from tq9_workflow_fixture import Silicon, WORKER
         from suite_fixtures import public_case_fixture
         for mode in modes:
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
-                root=Path(temp); resources=root/'resources'
-                manifest=public_case_fixture(resources,calibration={'status':'pending'})
+                root=Path(temp); resources=root/'resources';trial=root/'trial';evidence='e'*64
+                # The test plays the bench harness: it admits the case, provides the device and holds the password.
+                manifest=public_case_fixture(resources,calibration={'status':'passed','evidence_sha256':evidence})
                 case=resources/'cases/tq9-v2'
                 password=root/'password';password.write_text('synthetic fixture credential')
                 recipe={'stimuli':{'temperature':{'minimum':-100,'maximum':100,'command':'temp {value}'}},
@@ -347,13 +355,16 @@ class TQ9V2Tests(unittest.TestCase):
                     def do_POST(self):
                         request=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                         try:
+                            if mode=='device-lost' and request['params'].get('arguments',{}).get('parameters')=={'unexpected':1}:
+                                # The provider becomes unreachable once probe has its assignment, before its first call.
+                                endpoint.close()
                             response=controller.call(request['method'],request['params'])
                             if request['params'].get('name') in ('interface_execute','probe_run'):
                                 worker_live.append((request['params']['name'],response.get('ok'),peers[-1].running))
                                 if mode=='monitor-missing' and request['params']['name']=='probe_run':peers[-1].monitor_available=False
                             if mode=='recover-restart' and request['params'].get('arguments',{}).get('operation')=='disarm' and not response.get('ok'):
-                                from generative_driver.benchmark_support import emulated
-                                emulated._OWNERS.pop(str((root/'home/runs'/run['run_id']).resolve()),None)
+                                # The configurator loses its control of the device: the harness withdraws the endpoint.
+                                endpoint.close()
                         except Exception as error:response={'fixture_error':str(error)}
                         body=json.dumps(response).encode();self.send_response(200);self.end_headers();self.wfile.write(body)
                     def log_message(self,*args):pass
@@ -434,6 +445,13 @@ class TQ9V2Tests(unittest.TestCase):
                     source = source.replace("    assert measured['ok'], 'live interface_execute failed'\n", '')
                     source = source.replace("    assert probed['ok'], 'live probe_run failed'\n",
                         "    status='completed' if measured['ok'] and probed['ok'] else 'needs_revision'\n")
+                if mode == 'device-lost':
+                    # Every probe call, the effectful disarm too, is refused before it reaches the device.
+                    source = source.replace("    assert measured['ok'], 'live interface_execute failed'\n", '')
+                    source = source.replace("    assert probed['ok'], 'live probe_run failed'\n",
+                        "    disarmed=call('interface_execute',{'model_dir':model_dir,'operation':'disarm','parameters':{}})\n"
+                        "    assert not disarmed['ok'] and disarmed['error']['code']=='device_unavailable',disarmed\n"
+                        "    status='needs_revision'\n")
                 if mode == 'recover-variant':
                     # The worker runs its own copy of the model with a wrong disarm expectation: the write reaches the
                     # device and fails for that variant's model, never for the assigned one.
@@ -492,10 +510,10 @@ class TQ9V2Tests(unittest.TestCase):
                     self.assertEqual(Path(kwargs['image']).name,'firmware.bin')
                     peer=Silicon(kwargs['image']);peers.append(peer);peer.wrong_hidden=mode=='hidden-wrong'
                     session=peer.session(kwargs['recipe'],root/('native-'+str(len(peers))))
+                    class Process:
+                        def poll(self):return 0 if getattr(peer,'closed',False) else None
+                    session.process=Process()
                     if mode.startswith('recover-'):
-                        class Process:
-                            def poll(self):return 0 if getattr(peer,'closed',False) else None
-                        session.process=Process()
                         if mode=='recover-lost':session.process=None
                         if mode=='recover-stop':session.stop=lambda:None
                         if mode in ('recover-initial-stop-raise','recover-initial-stop-live'):
@@ -520,9 +538,10 @@ class TQ9V2Tests(unittest.TestCase):
                         # The external runtime boundary reports its own host/operator diagnostic ownership.
                         outcome['error']['fault']='host' if mode=='recover-write-then-host' else 'operator'
                     return outcome
-                original_recover=emulated.recover_emulator
-                def recover(*args,**kwargs):
-                    receipt=original_recover(*args,**kwargs)
+                original_replace=device_client.DeviceClient.replace
+                def replace(client,*args,**kwargs):
+                    # The configurator's recovery goes through its device handle; the harness's provider replaces.
+                    receipt=original_replace(client,*args,**kwargs)
                     if mode=='recover-commit-cancel':controller.call('cancel',run)
                     return receipt
                 original_event=controller._event
@@ -550,33 +569,49 @@ class TQ9V2Tests(unittest.TestCase):
                         changed=next(Path(a['path']) for a in interpreted.pop()['artifacts'] if a['path'].endswith('model.json'))
                         changed.write_text(changed.read_text()+' ')
                     return original_snapshot(*args,**kwargs)
-                # Truth is unlocked only to start the emulator (B3 moves that out); no stage runs the evaluator.
+                # Only the harness unlocks the truth, to take the device recipe before the run; the configurator never
+                # does, and no stage runs the evaluator.
                 import inspect
                 from generative_driver.benchmark_support import emulator as emulator_module
                 real_truth=emulator_module.truth_for_case;truth_callers=[]
                 def truth_for_case(*args,**kwargs):
                     names={frame.function for frame in inspect.stack(0)}
                     truth_callers.append(names)
-                    # Only the device recipe is taken from it, to start the emulator; a replacement reuses that recipe.
-                    if not {'device_recipe','_session'}<=names or names&{'replace','recover_emulator'}:
-                        raise AssertionError('Truth unlocked outside emulator start')
+                    if not {'device_recipe','admit'}<=names or names&{'replace','recover_emulator','reconcile','_run','_prepare','_check','_dispatch'}:
+                        raise AssertionError('Truth unlocked outside the harness')
                     return real_truth(*args,**kwargs)
-                # The device provider's private journal, outside the run directory.
-                devices=[]
-                def device_dir(run_dir):
-                    devices.append(root/('device-'+str(len(devices)+1)));return devices[-1]
                 def evaluator(*args,**kwargs):raise AssertionError('Evaluator called in the stage loop')
+                endpoint=provider=None
                 try:
-                    with patch.object(toolkit,'call_tool',side_effect=runtime_boundary),patch.object(emulated,'recover_emulator',side_effect=recover),patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
+                    with patch.object(toolkit,'call_tool',side_effect=runtime_boundary),patch.object(device_client.DeviceClient,'replace',replace),patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
                          patch.object(controller,'_check',side_effect=check),patch.object(controller,'_verify_snapshot',side_effect=verify_snapshot),\
-                         patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True}),\
+                         patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True,'evidence_sha256':evidence}),\
                          patch.object(emulator_module,'truth_for_case',side_effect=truth_for_case),\
                          patch('generative_driver.benchmark_support.emulated_evidence._diagnose',side_effect=evaluator),\
                          patch('generative_driver.benchmark_support.emulated_evidence._final',side_effect=evaluator),\
-                         patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=native_start),\
-                         patch.object(emulated,'_device_dir',side_effect=device_dir):
+                         patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=native_start):
+                        if mode in ('recover-initial-stop-raise','recover-initial-stop-live'):
+                            # The emulator's startup reading fails and so does its stop. The harness keeps the live
+                            # emulator owned and names it for manual reconciliation; no run starts on an unverified device.
+                            reached=lambda method,params=None,home=None,**kwargs:{'ok':True} if method=='ping' else controller.call(method,params or {})
+                            with patch('generative_driver.client.call',side_effect=reached):
+                                record=harness.run_trial(trial,{'trial_id':trial.name,'home':str(root/'home'),'case':'tq9-v2',
+                                    'case_options':{'scenario_id':'original'},'password_file':str(password)})
+                            self.assertEqual((record['status'],record['run_id']),('stop-unconfirmed',None))
+                            self.assertIn('emulator cleanup unverified',record['reason'])
+                            self.assertIs(record['device_stop']['confirmed'],False)
+                            self.assertEqual(len(peers),1);self.assertFalse(getattr(peers[0],'closed',False))
+                            self.assertTrue(record['device']['session_id']);self.assertIs(record['device']['healthy'],True)
+                            self.assertEqual(harness.read_trial(trial),record);self.assertNotIn(str(password),json.dumps(record))
+                            with controller._db() as db:
+                                self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0],0)
+                            continue
+                        provider,admission=harness.admit('tq9-v2',{'scenario_id':'original'},trial,password_file=password)
+                        provider.start()
+                        endpoint=harness.DeviceServer(provider,root/'endpoint');descriptor=endpoint.descriptor
                         run=controller.start({'goal':'scripted-contract-fixture','case':'tq9-v2','budget_seconds':60,
-                            'effects':['write','actuate'],'max_revisions':0 if mode in ('recover-budget','unwired-budget') else 2,'case_options':{'scenario_id':'original','evaluator_password_file':str(password)},
+                            'effects':['write','actuate'],'max_revisions':0 if mode in ('recover-budget','unwired-budget') else 2,'case_options':{'scenario_id':'original'},
+                            'device':descriptor,'admission':admission,'evaluation_token_sha256':hashlib.sha256(b'scripted harness token').hexdigest(),
                             'executor_config':{'command':[sys.executable,str(script)]}})
                         deadline=time.monotonic()+60
                         while True:
@@ -585,6 +620,11 @@ class TQ9V2Tests(unittest.TestCase):
                             if time.monotonic()>deadline:self.fail('Scripted controller deadline: '+str(status))
                             time.sleep(.01)
                         result=controller.call('result',run);events=controller.call('events',run)['events']
+                        held=provider.status()
+                        # As the harness does once the run is terminal: stop the device, confirmed, and seal the handoffs.
+                        finished=harness.finish(provider,'tq9-v2',root/'home/runs'/run['run_id'],result['accepted_handoffs'],password,status)
+                        self.assertNotIn(str(password),json.dumps(json.loads(controller._row(run['run_id'])['spec'])))
+                        self.assertFalse(truth_callers and any(names&{'_run','_dispatch'} for names in truth_callers))
                         assignments=[e['data'] for e in events if e['kind']=='stage.assigned']
                         self.assertNotIn('EVALUATOR SENTINEL',json.dumps(assignments))
                         self.assertNotIn('maintain',[a['stage'] for a in assignments])
@@ -596,10 +636,13 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertEqual(result['progress']['repairs'],0)
                             self.assertEqual(len(peers),2 if mode in ('recover-reset','recover-cancel','recover-commit-cancel','recover-commit-crash','recover-observe-stop','recover-observe-raise') else 1)
                             if mode in ('recover-cancel','recover-commit-cancel'):self.assertEqual(status['status'],'cancelled')
-                            # An effect left uncertain after the check is a safety stop; a failed cleanup stays host, and
-                            # an observed record that changed stays an integrity stop.
-                            else:self.assertEqual(status['outcome_category'],'integrity' if mode=='recover-observe-stop' else
-                                                  'host' if any(e['kind']=='cleanup.failed' for e in events) else 'safety')
+                            # An effect left uncertain after the check is a safety stop, and an observed record that
+                            # changed stays an integrity stop. The configurator stops no emulator, so no cleanup fails.
+                            else:self.assertEqual(status['outcome_category'],'integrity' if mode=='recover-observe-stop' else 'safety')
+                            self.assertFalse([e for e in events if e['kind']=='cleanup.failed'])
+                            # No recovery committed, so the run's device record still names the session it started with.
+                            self.assertEqual(result['progress']['device'],{'session_id':descriptor['session_id'],
+                                                                           'binding':descriptor['binding'],'receipts':[]})
                             if mode in ('recover-commit-crash','recover-observe-stop','recover-observe-raise'):
                                 # Nothing of the recovery committed: no handoff, the write's pending effect and the old
                                 # lease remain. The replacement started and was verified, so its abandonment is recorded
@@ -634,34 +677,49 @@ class TQ9V2Tests(unittest.TestCase):
                                 self.assertEqual(len(completions),0 if mode=='recover-dispatch-exception' else 1)
                                 reads=[e for e in events if e['kind']=='tool.finished' and e['data'].get('result',{}).get('operation')=='measure' and e['data'].get('result',{}).get('error',{}).get('fault')=='model']
                                 self.assertTrue(reads)
-                            if mode in ('recover-initial-stop-raise','recover-initial-stop-live'):
-                                self.assertEqual(status['status'],'blocked')
-                                key=str((root/'home/runs'/run['run_id']).resolve())
-                                owner=emulated._OWNERS[key]
-                                self.assertIsNone(owner.session.process.poll())
-                                persisted=json.loads((root/'home/runs'/run['run_id']/'benchmark/state.json').read_text())
-                                self.assertEqual(persisted['session']['session_id'],owner.session.info['session_id'])
-                                self.assertEqual(persisted['session']['session_id'],owner.status()['session_id'])
-                                self.assertTrue(any(e['kind']=='cleanup.failed' for e in events))
                             if mode=='recover-reset':self.assertTrue(peers[1].closed)
                             continue
-                        if mode in ('monitor-missing','snapshot-next','probe-input-changed'):
+                        if mode in ('monitor-missing','snapshot-next','probe-input-changed','device-lost'):
                             self.assertNotEqual(status['status'],'completed')
-                            if mode=='monitor-missing':self.assertEqual(status['outcome_category'],'host')
+                            if mode in ('monitor-missing','device-lost'):
+                                # The provided device cannot serve its readings or cannot be reached: each later call is
+                                # refused before it reaches the device, nothing is left uncertain, and the stage stops
+                                # for the operator once its worker returns.
+                                self.assertEqual((status['status'],status['outcome_category']),('blocked','operator'))
+                                self.assertIn('nothing was dispatched',status['reason'])
+                                self.assertIn('Device provider unavailable' if mode=='device-lost' else 'Device provider refused observe',status['reason'])
+                                self.assertFalse(result['uncertain_effect'])
+                                with controller._db() as db:
+                                    self.assertEqual(db.execute('SELECT COUNT(*) FROM pending_effects WHERE run_id=?',(run['run_id'],)).fetchone()[0],0)
+                                lost=[e['data'] for e in events if e['kind']=='device.unavailable']
+                                self.assertTrue(lost);self.assertEqual({e['phase'] for e in lost},{'before'})
+                                refused=[e['data'] for e in events if e['kind']=='tool.finished' and e['data']['assignment_id']==lost[0]['assignment_id']
+                                         and e['data'].get('connected')]
+                                self.assertTrue(refused)
+                                self.assertTrue(all(e['refused_before_open'] and not e['ok'] and 'observation' not in e['result'] for e in refused))
+                            if mode=='device-lost':
+                                self.assertEqual(status['stage'],'probe')
+                                disarm=next(e for e in refused if e['result'].get('error',{}).get('code')=='device_unavailable' and e['effectful'])
+                                self.assertTrue(disarm['effects_reconciled'])
+                                self.assertEqual(peers[0].device_commands,[]);self.assertEqual(len(peers),1)
+                                self.assertTrue(any(e['kind']=='device.release_failed' for e in events))
                             if mode=='snapshot-next':
-                                self.assertIn('hash',status['reason']);self.assertEqual(len(assignments),1);self.assertFalse(peers)
+                                self.assertIn('hash',status['reason']);self.assertEqual(len(assignments),1)
+                                self.assertEqual(peers[0].device_commands,[])
                             if mode=='probe-input-changed':
-                                # The changed bytes stop the run for integrity before any device starts: nothing was
-                                # dispatched, so no effect is pending and the run is not uncertain. (Sealing then finds
-                                # the same changed bytes and records its own failure.)
+                                # The changed bytes stop the run for integrity before any device use: nothing was
+                                # dispatched, so no effect is pending and the run is not uncertain. Sealing is the
+                                # harness's now, so the integrity stop stands as the run's outcome.
                                 blocked=[e['data'] for e in events if e['kind']=='run.blocked']
                                 self.assertEqual([b['outcome_category'] for b in blocked],['integrity'])
+                                self.assertEqual(status['outcome_category'],'integrity')
                                 self.assertIn('Accepted interpretation bytes changed',blocked[0]['reason'])
                                 self.assertFalse(result['uncertain_effect']);self.assertFalse(status['uncertain_effect'])
                                 with controller._db() as db:
                                     self.assertEqual(db.execute('SELECT COUNT(*) FROM pending_effects WHERE run_id=?',(run['run_id'],)).fetchone()[0],0)
                                 self.assertFalse([e for e in events if e['data'].get('actor')=='evaluator'])
-                                self.assertEqual([a['stage'] for a in assignments],['acquire','interpret']);self.assertFalse(peers)
+                                self.assertEqual([a['stage'] for a in assignments],['acquire','interpret'])
+                                self.assertEqual(peers[0].device_commands,[])
                             continue
                         if mode in ('unwired-model','unwired-budget'):
                             # Probe preparation finds an interpreted model the emulator cannot carry: no emulator starts
@@ -707,7 +765,7 @@ class TQ9V2Tests(unittest.TestCase):
                                 self.assertEqual(result['progress']['repairs'],0)
                                 self.assertFalse([h for h in handoffs if h.get('route')])
                                 self.assertEqual(notes['outcome'],{'kind':'advance','reason':'Repair budget exhausted; continuing with best revision'})
-                                self.assertFalse(peers)
+                                self.assertEqual(len(peers),1);self.assertEqual(peers[0].device_commands,[])
                             continue
                         # Every stage hands off, worker reports and the reuse mission are notes, and the frozen driver
                         # awaits independent grading after the run: no stage graded it against the truth.
@@ -716,12 +774,29 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertEqual(result['progress']['equivalence'],'pending')
                         self.assertIsNone(result['equivalence']);self.assertEqual(result['evaluator_verdicts'],[])
                         self.assertNotIn('terminal_final_failure',result['progress'])
-                        self.assertTrue(truth_callers)
-                        self.assertTrue(all({'device_recipe','_session'}<=names and not names&{'replace','recover_emulator'}
-                                            for names in truth_callers))
+                        # Only the harness unlocked the truth, once, for the device recipe; nothing in the run carries an
+                        # evaluator label, the emulator start included, which the harness made before the run.
+                        self.assertEqual(len(truth_callers),1)
+                        self.assertTrue(all({'device_recipe','admit'}<=names for names in truth_callers))
                         evaluated=[e['data'] for e in events if e['kind'] in ('tool.started','tool.finished') and e['data'].get('actor')=='evaluator']
-                        # Only the emulator start at probe preparation still carries the evaluator label (B4 removes it).
-                        self.assertTrue(all(e['name']=='benchmark_evaluate' and e['assignment_id'] is None and e['stage']=='probe' for e in evaluated))
+                        self.assertFalse(evaluated)
+                        # Every live call that reached the device carries the instrument readings around it, and runs
+                        # inside the device's window.
+                        live_calls=[e['data'] for e in events if e['kind']=='tool.finished' and e['data'].get('connected')
+                                    and not e['data'].get('refused_before_open')]
+                        self.assertTrue(live_calls)
+                        for call in live_calls:
+                            self.assertEqual((call['result']['before_observation']['source'],call['result']['observation']['source']),
+                                             ('instrument','instrument'),call['name'])
+                            self.assertEqual(call['result']['observation']['units'],{'duty':'permille','temperature_reference':'degC'})
+                        self.assertEqual({c['name'] for c in live_calls}>={'interface_execute','probe_run','benchmark_package_execute'},True)
+                        self.assertFalse([e for e in events if e['kind'] in ('device.unavailable','device.release_failed')])
+                        # The configurator released its control of the device; the harness stopped it, confirmed.
+                        self.assertTrue(provider.released)
+                        self.assertEqual(finished['device_stop'],{'stopped':True,'confirmed':True})
+                        self.assertEqual(finished['status'],'awaiting-evaluation');self.assertIs(finished['sealed'],True)
+                        self.assertEqual(result['progress']['device'],{'session_id':held['session_id'],'binding':held['binding'],
+                            'receipts':[r['receipt'] for r in result['emulator_recoveries']]})
                         handoffs=result['accepted_handoffs']
                         self.assertNotIn('EVALUATOR SENTINEL',json.dumps(handoffs))
                         expected=['acquire','interpret','probe','ground','emit','reuse']
@@ -883,9 +958,9 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertEqual(Path(next(iter(reuse['inputs']))).name,'package')
                         run_dir=root/'home/runs'/run['run_id'];state=json.loads((run_dir/'benchmark/state.json').read_text())
                         self.assertNotIn('stage_verdicts',state);self.assertNotIn('diagnostic',state)
-                        # The run records the device's public descriptor; its startup reading stays with the provider.
+                        # The harness holds the device: the run state records no session, and no startup reading.
                         self.assertNotIn('startup_observation',state)
-                        self.assertNotIn('session',state);self.assertEqual(state['previous_session']['schema'],'device-descriptor/1')
+                        self.assertNotIn('session',state);self.assertNotIn('previous_session',state)
                         sidecar=run_dir/'benchmark/run-evidence.enc'
                         sealed=unlock(sidecar,password.read_text(),state['final_evaluation']['evidence_sha256'])
                         self.assertEqual(state['final_evaluation']['verdict'],'unscored')
@@ -894,8 +969,9 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertEqual(sealed['accepted_gates'][-1]['stage'],'reuse')
                         # Recovery proofs stay in the provider's private journal, never in the run directory.
                         self.assertNotIn('emulator_recoveries',sealed);self.assertFalse(list(run_dir.rglob('journal.jsonl')))
-                        self.assertEqual(len(devices),1)
-                        journal=[json.loads(line) for line in (devices[0]/'journal.jsonl').read_text().splitlines()]
+                        self.assertFalse(list((root/'home').rglob('journal.jsonl')))
+                        journal=[json.loads(line) for line in (trial/'device/journal.jsonl').read_text().splitlines()]
+                        self.assertEqual(journal[-1]['kind'],'stopped')
                         proofs=[entry['proof'] for entry in journal if entry['kind']=='replaced']
                         self.assertEqual(len(proofs),result['emulator_recovery_count'])
                         if mode in ('recover-write','recover-variant','recover-budget','recover-repeat'):
@@ -935,9 +1011,9 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertEqual(len(updated['accepted_gates']),len([h for h in kept if h['artifacts']]))
                 finally:
                     controller.close();server.shutdown();server.server_close()
+                    if endpoint is not None:endpoint.close()
                     for peer in peers:
                         if not getattr(peer,'closed',False):peer.close()
-                    if 'run' in locals():emulated._OWNERS.pop(str((root/'home/runs'/run['run_id']).resolve()),None)
 
     def test_measured_calibration_checks_code_and_complete_reference_mutant_coverage(self):
         from test_benchmark_family_calibration import AdmissionTests

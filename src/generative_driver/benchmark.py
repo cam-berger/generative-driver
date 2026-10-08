@@ -43,6 +43,18 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
     return result
 
 
+def package_call(case_id, run_dir, stage, arguments):
+    """A provided device's package call, checked before anything is dispatched; returns the call to run."""
+    from .benchmark_support.registry import adapter_for
+    return adapter_for(case_id).package_call(case_id, run_dir, stage, arguments)
+
+
+def record_call(case_id, run_dir, stage, name, arguments, result, before, after, options=None):
+    """Journal one live call on a provided device with the instrument readings around it."""
+    from .benchmark_support.registry import adapter_for
+    return adapter_for(case_id).record_call(case_id, run_dir, stage, name, arguments, result, before, after, options)
+
+
 def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=None,
                     binding=None, allow_effects=None, options=None):
     from .benchmark_support.registry import adapter_for
@@ -95,6 +107,7 @@ def main(argv=None):
     approval_flags.add_argument('--approve-bound-device-tools', action='store_true', help='Explicitly authorize assigned BME280 tools for the selected physical binding and effects')
     approval_flags.add_argument('--approve-emulator-tools', action='store_true', help='Explicitly authorize scoped tq9 emulator MCP tools; no physical device approval')
     running.add_argument('--binding-json', help='Operator-owned binding JSON, e.g. {"url":"ftdi://selected/1"}')
+    running.add_argument('--wait', action='store_true', help='Follow an emulated trial until its bench harness has finished')
     comparing = commands.add_parser('compare')
     comparing.add_argument('before')
     comparing.add_argument('after')
@@ -148,7 +161,8 @@ def main(argv=None):
                           'home': args.home, 'request_id': args.request_id,
                           'scenario_id': args.scenario, 'case_seed': args.case_seed,
                           'binding': json.loads(args.binding_json) if args.binding_json else None,
-                          'scoped_tool_approval': 'bound-device' if args.approve_bound_device_tools else 'emulator' if args.approve_emulator_tools else None}.items() if v is not None})
+                          'scoped_tool_approval': 'bound-device' if args.approve_bound_device_tools else 'emulator' if args.approve_emulator_tools else None}.items() if v is not None},
+                         wait=args.wait)
         elif args.command == 'truth':
             from .benchmark_support.evaluator_cli import manage
             result = manage(args.action,args.case,args.password_file,args.output,args.new_password_file,args.compiler,args.authoring_dir,
@@ -168,14 +182,14 @@ def case_root():
     return Path(__file__).resolve().parent / 'resources' / 'bench'
 
 
-def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, autostart=True):
+def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, autostart=True, wait=False):
+    """Run the installation replay, or start an actual-agent trial. An emulated (v2) case starts a detached bench
+    harness, which admits the case, provides the device and holds the evaluator password file; the configurator never
+    receives it. That returns {trial_id, run_id}; `wait` follows the trial until the harness has finished with it."""
     from .benchmark_support.registry import resolve_case, pin_case
     options = dict(options or {})
     definition = resolve_case(case)
-    pin = pin_case(case, options.get('scenario_id'), options.get('case_seed', 0))
-    if definition.manifest.get('schema') == 'benchmark-case/2':
-        from .benchmark_support.registry import require_calibration
-        require_calibration(pin, options)
+    pin_case(case, options.get('scenario_id'), options.get('case_seed', 0))
     approval = options.pop('scoped_tool_approval', None)
     if approval == 'emulator' and not (definition.execution == 'actual-agent-emulation' and definition.approval_scope == 'emulator'):
         raise ValueError('Scoped approval requires tq9/emulator or bme280/bound-device')
@@ -185,6 +199,10 @@ def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, aut
         raise ValueError('Scoped approval requires tq9/emulator or bme280/bound-device')
     if approval == 'bound-device' and (not isinstance(options.get('binding'),dict) or not options['binding']):
         raise ValueError('Bound-device approval requires an explicit operator binding')
+    if definition.execution.startswith('actual-agent-') and definition.manifest.get('schema') == 'benchmark-case/2':
+        from .benchmark_support.harness import launch
+        return launch(case, output_dir, executor, options, approval, effects=definition.default_effects,
+                      autostart=autostart, wait=wait)
     if definition.execution.startswith('actual-agent-'):
         from .client import call
         options = dict(options or {})

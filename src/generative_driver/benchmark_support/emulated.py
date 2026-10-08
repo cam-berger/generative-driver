@@ -179,7 +179,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                     'unwired_model': {'path': str(found[0]), 'sha256': found[1], 'reason': reason}}
         if adaptation['original_model_sha256'] != found[1]:
             raise IntegrityError('Accepted interpretation bytes changed while adapting the model')
-        session = _session(case_id, run_dir, options)
+        session = _started(case_id, run_dir, options)
         path, state = _state(run_dir)
         state.update(adaptation=adaptation, adapted_model_dir=str(ws/'model'), revision=int(options.get('revision', state.get('revision', 0))))
         _write(path, state)
@@ -443,10 +443,16 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
                         reason = 'Capability file must contain valid UTF-8 JSON'
             if parsed and files.get('model.json'):
                 from .behavior import validate_capabilities
-                validation = validate_capabilities(mapping, json.loads(files['model.json'].read_text(encoding='utf-8')),
-                                                   _required_tasks(case_id))
-                errors = validation['errors'] if not validation['ok'] else None
-                reason = 'Invalid capability mapping' if errors else None
+                try:
+                    validation = validate_capabilities(mapping, json.loads(files['model.json'].read_text(encoding='utf-8')),
+                                                       _required_tasks(case_id))
+                except (KeyError, TypeError, AttributeError, IndexError, ValueError) as error:
+                    # The mapping check reads the model as a valid one; a model that fails validation still reaches
+                    # probe when the emulator can carry it, and its defects are the configurator's model_contract diff.
+                    reason = 'The mapping cannot be checked against this model: ' + type(error).__name__ + ': ' + str(error)
+                else:
+                    errors = validation['errors'] if not validation['ok'] else None
+                    reason = 'Invalid capability mapping' if errors else None
             elif parsed:
                 reason = 'No adapted model to check the mapping against'
             checks.append({'name': 'capability_mapping', 'passed': reason is None,
@@ -603,6 +609,13 @@ def _truth(case_id, run_dir, options):
         from .calibration import hydrate_truth
         return hydrate_truth(truth)
     return truth
+
+
+def _started(case_id, run_dir, options):
+    """Start (or keep) the owned emulator for probe. Only this step goes through the configurator's `start_device`
+    wrapper, which holds the run uncertain while it runs; preparation that reaches no device stays outside it."""
+    start = lambda: _session(case_id, run_dir, options)
+    return options['start_device'](start) if callable(options.get('start_device')) else start()
 
 
 def _session(case_id, run_dir, options):

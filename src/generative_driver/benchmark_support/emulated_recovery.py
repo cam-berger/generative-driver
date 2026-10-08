@@ -187,7 +187,9 @@ def reconcile(controller, run_id, spec, assignment, run_dir, progress):
 
     A verified replacement is returned as `recovery` for the stage's handoff to commit, in one transaction with the
     new binding, the cleared uncertainty and any route its device diff takes. This never routes the run or clears
-    uncertainty itself: until that commit the failed write stays uncertain, and it is never re-executed."""
+    uncertainty itself: until that commit the failed write stays uncertain, and it is never re-executed. The repair
+    budget plays no part: replacing the emulator is as safe with no repair left as with one, and the stage's outcome
+    alone decides whether its device diff revises or, with the budget spent, the run advances."""
     import threading
     import time
     from ..configurator import case_options
@@ -203,8 +205,6 @@ def reconcile(controller, run_id, spec, assignment, run_dir, progress):
                        and not progress.get('terminal_final_failure'))
             if not allowed:
                 return {'stop':{'category':'safety','reason':'Outstanding effect requires operator reconciliation'}}
-            if progress['repairs'] >= int(spec.get('max_revisions',2)):
-                return {'stop':{'category':'safety','reason':'Model repair budget exhausted with unresolved effect'}}
             evidence = sorted({str(i) for i,_ in failed})
             controller._event(run_id,'emulator.recovery_started',{'assignment_id':assignment['id'],
                 'unresolved_evidence_ids':evidence,'unresolved_dispatch_ids':dispatches,'revision':progress['revision']},db)

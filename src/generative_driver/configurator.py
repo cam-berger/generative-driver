@@ -1687,82 +1687,94 @@ class Controller:
                 if cancel.is_set():
                     return
                 report = result.get('report') if isinstance(result.get('report'), dict) else {}
-                checked = {}
-                if _runtime_stop(result) is None:
-                    self._verify_inputs(input_hashes)
-                    with _integrity_checked():
-                        if self._row(run_id)['uncertain']:
-                            from .benchmark_support.emulated_recovery import reconcile
-                            checked = reconcile(self, run_id, current_spec, assignment, run_dir, progress)
-                            if checked.get('recovery'):
-                                # The verified replacement commits with this stage's handoff; the effect stays uncertain until then.
-                                checked = {**self._check(current_spec, stage, run_dir, workspace, report, accepted, assignment),
-                                           'recovery': checked['recovery']}
-                        else:
-                            checked = self._check(current_spec, stage, run_dir, workspace, report, accepted, assignment)
-                    # Legacy benchmark adapters keep their frozen final path; emulated cases are graded after the run.
-                    terminal_final = (not checked.get('ok', True) and checked.get('final_evaluation') is True
-                                      and checked.get('fault') == 'model' and not checked.get('route'))
-                    if checked.get('evaluator') is not None or terminal_final:
-                        with self._db() as db:
-                            if checked.get('evaluator') is not None:
-                                db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)', (attempt, run_id, stage,
-                                    _json({'stage':stage, 'assignment_id':attempt, **checked['evaluator']}), time.time()))
-                            if terminal_final:
-                                progress['terminal_final_failure'] = True
-                                db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)', (run_id, _json(progress)))
-                                self._event(run_id, 'evaluation.final_failed',
-                                    {'assignment_id': attempt, 'revision': revision, 'fault': 'model'}, db)
-                    if terminal_final:
-                        self._state(run_id, 'failed', 'Frozen final evaluation failed', outcome_category='model')
-                        return
-                    if cancel.is_set():
-                        return
-                    self._verify_inputs(input_hashes)
-                recovery = checked.get('recovery')
-                if recovery and time.time() >= row['created'] + spec['budget_seconds']:
-                    self._event(run_id, 'emulator.recovery_failed', {'assignment_id': attempt,
-                        'reason': 'Recovery cancelled before durable reconciliation: the run budget ended'})
-                    self._state(run_id, 'blocked', 'Emulator recovery unverified: the run budget ended', stage, outcome_category='safety')
-                    return
-                outcome = _outcome(stage, result, checked, uncertain=bool(self._row(run_id)['uncertain']) and not recovery,
-                                   repairs=progress['repairs'], max_repairs=int(spec.get('max_revisions',2)))
-                if outcome.kind == 'stop':
-                    self._state(run_id, result['status'] if _runtime_stop(result) else 'blocked', outcome.reason, stage,
-                                outcome_category=outcome.category)
-                    return
-                if outcome.kind == 'revise' and (checked.get('ok') is False or checked.get('route')):
-                    # Benchmark adapter verdicts keep their legacy route, without a handoff, until Part B.
-                    if not checked.get('revision_committed'):
-                        progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=outcome.diff)
-                        self._route(run_id,progress,outcome.reason)
-                    revision = progress['revision']
-                    queue = list(STAGES[1:])
-                    continue
-                with self._db() as db:
-                    rows = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='tool.refused' ORDER BY seq", (run_id,)).fetchall()
-                refusals = [{'name': event.get('name'), 'reason': event.get('reason')} for event in (json.loads(r['payload']) for r in rows)
-                            if event.get('assignment_id') == attempt and event.get('actor') == 'worker']
-                notes = _notes(result, checked, outcome, refusals=refusals, missing=prepared.get('input_notes', ()))
-                if outcome.kind == 'revise':
-                    # The partial handoff, the new revision and the route to interpret commit together.
-                    progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=outcome.diff)
-                else:
-                    progress['next_stage'] = queue[0] if queue else 'finalize'
+                checked, recovery, settled = {}, None, False
+                def abandon(reason):
+                    # A verified replacement that did not commit with this stage's handoff: the write it replaced stays
+                    # uncertain and is never re-executed, and the recovery that started is recorded as failed, once.
+                    nonlocal settled
+                    if recovery and not settled:
+                        settled = True
+                        self._event(run_id, 'emulator.recovery_failed', {'assignment_id': attempt, 'reason': reason})
                 try:
+                    if _runtime_stop(result) is None:
+                        self._verify_inputs(input_hashes)
+                        with _integrity_checked():
+                            if self._row(run_id)['uncertain']:
+                                from .benchmark_support.emulated_recovery import reconcile
+                                checked = reconcile(self, run_id, current_spec, assignment, run_dir, progress)
+                                recovery = checked.get('recovery')
+                                if recovery:
+                                    # The verified replacement commits with this stage's handoff; until then the effect
+                                    # stays uncertain, and every exit before that commit records the recovery as failed.
+                                    checked = {**self._check(current_spec, stage, run_dir, workspace, report, accepted, assignment),
+                                               'recovery': recovery}
+                            else:
+                                checked = self._check(current_spec, stage, run_dir, workspace, report, accepted, assignment)
+                        # Legacy benchmark adapters keep their frozen final path; emulated cases are graded after the run.
+                        terminal_final = (not checked.get('ok', True) and checked.get('final_evaluation') is True
+                                          and checked.get('fault') == 'model' and not checked.get('route'))
+                        if checked.get('evaluator') is not None or terminal_final:
+                            with self._db() as db:
+                                if checked.get('evaluator') is not None:
+                                    db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)', (attempt, run_id, stage,
+                                        _json({'stage':stage, 'assignment_id':attempt, **checked['evaluator']}), time.time()))
+                                if terminal_final:
+                                    progress['terminal_final_failure'] = True
+                                    db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)', (run_id, _json(progress)))
+                                    self._event(run_id, 'evaluation.final_failed',
+                                        {'assignment_id': attempt, 'revision': revision, 'fault': 'model'}, db)
+                        if terminal_final:
+                            self._state(run_id, 'failed', 'Frozen final evaluation failed', outcome_category='model')
+                            return
+                        if cancel.is_set():
+                            abandon('Recovery cancelled before durable reconciliation')
+                            return
+                        self._verify_inputs(input_hashes)
+                    if recovery and time.time() >= row['created'] + spec['budget_seconds']:
+                        abandon('Recovery cancelled before durable reconciliation: the run budget ended')
+                        self._state(run_id, 'blocked', 'Emulator recovery unverified: the run budget ended', stage, outcome_category='safety')
+                        return
+                    outcome = _outcome(stage, result, checked, uncertain=bool(self._row(run_id)['uncertain']) and not recovery,
+                                       repairs=progress['repairs'], max_repairs=int(spec.get('max_revisions',2)))
+                    if outcome.kind == 'stop':
+                        # A stop of the stage's own observation (integrity when bytes it observed changed) keeps its category.
+                        abandon(outcome.reason)
+                        self._state(run_id, result['status'] if _runtime_stop(result) else 'blocked', outcome.reason, stage,
+                                    outcome_category=outcome.category)
+                        return
+                    if outcome.kind == 'revise' and (checked.get('ok') is False or checked.get('route')):
+                        # Benchmark adapter verdicts keep their legacy route, without a handoff, until Part B.
+                        if not checked.get('revision_committed'):
+                            progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=outcome.diff)
+                            self._route(run_id,progress,outcome.reason)
+                        revision = progress['revision']
+                        queue = list(STAGES[1:])
+                        continue
+                    with self._db() as db:
+                        rows = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='tool.refused' ORDER BY seq", (run_id,)).fetchall()
+                    refusals = [{'name': event.get('name'), 'reason': event.get('reason')} for event in (json.loads(r['payload']) for r in rows)
+                                if event.get('assignment_id') == attempt and event.get('actor') == 'worker']
+                    notes = _notes(result, checked, outcome, refusals=refusals, missing=prepared.get('input_notes', ()))
+                    if outcome.kind == 'revise':
+                        # The partial handoff, the new revision and the route to interpret commit together.
+                        progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=outcome.diff)
+                    else:
+                        progress['next_stage'] = queue[0] if queue else 'finalize'
                     handoff = self._accept(run_id, assignment, checked, run_dir, workspace, progress, notes,
                                            revise=outcome.reason if outcome.kind == 'revise' else None, recovery=recovery)
+                    settled = True
                 except Exception as error:
                     if not recovery:
                         raise
-                    # Nothing of the recovery committed: the write stays uncertain and is never re-executed. The recovery
-                    # that started is recorded as failed, and the run stops for safety (integrity when a hash changed).
-                    self._event(run_id, 'emulator.recovery_failed', {'assignment_id': attempt,
-                        'reason': type(error).__name__ + ': ' + str(error)})
+                    # Nothing of the recovery committed, whether the stage's observation or the commit failed: the write
+                    # stays uncertain and is never re-executed, and the run stops for safety (integrity when a hash changed).
+                    abandon(type(error).__name__ + ': ' + str(error))
                     if isinstance(error, IntegrityError):
                         raise
                     self._state(run_id, 'blocked', 'Emulator recovery unverified: ' + str(error), stage, outcome_category='safety')
                     return
+                finally:
+                    abandon('The stage ended before the emulator recovery committed')
                 accepted.append(handoff)
                 if outcome.kind == 'revise':
                     revision, queue = progress['revision'], list(STAGES[1:])
@@ -1984,10 +1996,10 @@ class Controller:
             if not _observed_case(spec):
                 return prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
             if stage == 'probe':
-                prepared = self._evaluator_operation(run_dir.name, stage, None, options,
-                    lambda: prepare_stage(case_id, stage, run_dir, workspace, accepted, options))
-            else:
-                prepared = prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
+                # Only the emulator start runs as an evaluator operation, which marks the run uncertain until it returns:
+                # choosing, hash-checking and wiring the model reach no device, so a failure there leaves nothing pending.
+                options['start_device'] = lambda start: self._evaluator_operation(run_dir.name, stage, None, options, start)
+            prepared = prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
             if prepared.get('unwired_model'):
                 prepared = {**prepared, **self._unwired_model(run_dir, workspace.name, prepared['unwired_model'])}
             # Stages observed without truth pass their earlier, truth-free notes forward, as generic stages do. Fresh
@@ -2088,7 +2100,8 @@ class Controller:
                 'allowed_tools': STAGE_TOOLS[stage], 'context': context, **({'input_notes': missing} if missing else {})}
 
     def _evaluator_operation(self, run_id, stage, assignment_id, options, invoke):
-        """One controller owns evaluator effects, uncertainty and actor-labelled evidence."""
+        """One controller owns evaluator effects, uncertainty and actor-labelled evidence. `invoke` returns a result
+        dict, or the device it started (the emulator start at v2 probe preparation, the only caller until B4)."""
         with self._lock:
             operation_lock = self._operations.setdefault(run_id, threading.RLock())
         with operation_lock, self._active_operation(run_id):
@@ -2102,14 +2115,15 @@ class Controller:
                 db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(evidence_id,run_id,assignment_id,'evaluator'))
             options['evaluator_evidence_ids'] = [str(evidence_id)]
             result = invoke()
+            outcome = result if isinstance(result, dict) else {}
             with self._db() as db:
                 cancelled = db.execute('SELECT cancelled FROM runs WHERE id=?',(run_id,)).fetchone()['cancelled']
-                acknowledged = result.get('fault') != 'host'
+                acknowledged = outcome.get('fault') != 'host'
                 if not cancelled and acknowledged:
                     db.execute('DELETE FROM pending_effects WHERE dispatch_id=?',(evidence_id,))
                     db.execute('UPDATE runs SET uncertain=EXISTS(SELECT 1 FROM pending_effects WHERE run_id=?) WHERE id=?',(run_id,run_id))
                 self._event(run_id, 'tool.finished', {'actor':'evaluator','stage':stage,'assignment_id':assignment_id,
-                    'name':'benchmark_evaluate','ok':bool(result.get('ok', True)), 'dispatch_id':str(evidence_id),
+                    'name':'benchmark_evaluate','ok':bool(outcome.get('ok', True)), 'dispatch_id':str(evidence_id),
                     'effectful':True,'effects_reconciled':bool(not cancelled and acknowledged), 'evaluation_event_id':str(evidence_id)}, db)
             return result
 

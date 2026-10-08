@@ -276,6 +276,16 @@ class TQ9V2Tests(unittest.TestCase):
         # Catches a model the configurator's validation would reject skipping probe silently, with no repair.
         self._scripted_controller_modes(('unwired-model','unwired-budget'))
 
+    def test_a_wired_model_that_fails_validation_is_repaired_from_its_device_diff(self):
+        # Catches the worker's mapping of an invalid but wired model turning into a host stop at probe, which would
+        # lose the configurator's model_contract diff that sends the model back for repair.
+        self._scripted_controller_modes(('invalid-model',))
+
+    def test_a_changed_interpretation_at_probe_preparation_leaves_no_uncertain_effect(self):
+        # Catches preparation that reaches no device (hash checks, model wiring) running inside the emulator start's
+        # effect wrapper, which would leave a resumable stop uncertain although nothing was dispatched.
+        self._scripted_controller_modes(('probe-input-changed',))
+
     def test_owned_emulator_recovery_revalidates_through_fresh_reuse(self):
         self._scripted_controller_modes(('recover-write',))
 
@@ -284,8 +294,13 @@ class TQ9V2Tests(unittest.TestCase):
         # commits with the probe handoff, the effect is cleared, nothing routes and the write is never re-executed.
         self._scripted_controller_modes(('recover-variant',))
 
+    def test_recovery_with_the_repair_budget_spent_commits_and_advances_with_the_best_revision(self):
+        # Catches the repair budget gating a recovery: replacing the emulator is as safe with no repair left as with
+        # one, so the replacement commits with the probe handoff and the spent budget only means advance, not stop.
+        self._scripted_controller_modes(('recover-budget','recover-repeat'))
+
     def test_emulator_recovery_safety_boundaries(self):
-        self._scripted_controller_modes(('recover-budget','recover-lost','recover-stop','recover-reset','recover-cancel','recover-commit-cancel','recover-repeat','recover-restart','recover-physical','recover-commit-crash'))
+        self._scripted_controller_modes(('recover-lost','recover-stop','recover-reset','recover-cancel','recover-commit-cancel','recover-restart','recover-physical','recover-commit-crash','recover-observe-stop','recover-observe-raise'))
 
     def test_recovery_requires_outcomes_for_every_uncertain_dispatch(self):
         self._scripted_controller_modes(('recover-dispatch-exception','recover-mixed-unknown'))
@@ -406,6 +421,19 @@ class TQ9V2Tests(unittest.TestCase):
                         "        assert pathlib.Path(prior['model.json']).read_text()=="+first+"\n"
                         "        pathlib.Path('model.json').write_text(json.dumps(model()))\n"
                         "    else:\n        pathlib.Path('model.json').write_text("+first+")")
+                if mode == 'invalid-model':
+                    # The first interpretation is wired (a uart channel) but fails validation: measure lacks parameters,
+                    # so the runtime refuses every call before the device opens, while the worker still maps it.
+                    source = source.replace("pathlib.Path('model.json').write_text(json.dumps(model()))",
+                        "candidate=model()\n    if pathlib.Path('REPAIR_CONTEXT.json').exists():\n"
+                        "        context=json.loads(pathlib.Path('REPAIR_CONTEXT.json').read_text())\n"
+                        "        defects=json.loads(pathlib.Path(context['feedback']).read_text())\n"
+                        "        assert [d['source'] for d in defects]==['model_contract'],defects\n"
+                        "    else:\n        del candidate['operations']['measure']['parameters']\n"
+                        "    pathlib.Path('model.json').write_text(json.dumps(candidate))")
+                    source = source.replace("    assert measured['ok'], 'live interface_execute failed'\n", '')
+                    source = source.replace("    assert probed['ok'], 'live probe_run failed'\n",
+                        "    status='completed' if measured['ok'] and probed['ok'] else 'needs_revision'\n")
                 if mode == 'recover-variant':
                     # The worker runs its own copy of the model with a wrong disarm expectation: the write reaches the
                     # device and fails for that variant's model, never for the assigned one.
@@ -428,6 +456,16 @@ class TQ9V2Tests(unittest.TestCase):
                         "    failed=call('interface_execute',{'model_dir':model_dir,'operation':'disarm','parameters':{}})\n"
                         "    if not failed['ok']:status='needs_revision'\n"
                         "    pathlib.Path('capabilities.json').write_text(json.dumps(capabilities()));artifacts=['capabilities.json']")
+                if mode == 'recover-observe-stop':
+                    # After the failed write the worker alters its probe record: the stage's observation after the
+                    # recovery stops for integrity before the replacement commits.
+                    source = source.replace("    if not failed['ok']:status='needs_revision'\n",
+                        "    if not failed['ok']:status='needs_revision'\n"
+                        "    record=pathlib.Path(probed['probe']);record.write_text(record.read_text()+' ')\n")
+                if mode in ('recover-budget','recover-repeat'):
+                    # The packaged model keeps the wrong disarm expectation; a fresh write of it would leave reuse with
+                    # an uncertain effect no recovery covers, so this reuse worker does not disarm.
+                    source = source.replace(",('disarm',{})]", "]")
                 if mode in ('recover-dispatch-exception','recover-mixed-unknown','recover-write-then-host','recover-write-then-operator'):
                     source=source.replace("    failed=call('interface_execute',{'model_dir':model_dir,'operation':'disarm','parameters':{}})\n    if not failed['ok']:status='needs_revision'",
                         "    try:\n        failed=call('interface_execute',{'model_dir':model_dir,'operation':'disarm','parameters':{}})\n"
@@ -493,12 +531,25 @@ class TQ9V2Tests(unittest.TestCase):
                     if mode=='recover-commit-crash' and kind=='emulator.recovered':raise RuntimeError('Controlled failure inside the recovery commit')
                     return original_event(run_id,kind,payload,db)
                 controller._event=event
-                original_accept=controller._accept
+                original_accept=controller._accept;interpreted=[]
                 def accept(*args,**kwargs):
                     handoff=original_accept(*args,**kwargs)
                     if mode=='snapshot-next' and handoff['stage']=='acquire':
                         (root/'home/runs'/args[0]/'benchmark/inputs/firmware.bin').write_bytes(b'tampered after acceptance')
+                    if handoff['stage']=='interpret':interpreted.append(handoff)
                     return handoff
+                original_check=controller._check
+                def check(*args,**kwargs):
+                    # In recover modes the probe is observed only after the recovery, which has not committed yet.
+                    if mode=='recover-observe-raise' and args[1]=='probe':raise RuntimeError('Controlled observation failure after recovery')
+                    return original_check(*args,**kwargs)
+                original_snapshot=controller._verify_snapshot
+                def verify_snapshot(*args,**kwargs):
+                    # Between the loop's handoff verification and probe preparation, the accepted model changes.
+                    if mode=='probe-input-changed' and interpreted:
+                        changed=next(Path(a['path']) for a in interpreted.pop()['artifacts'] if a['path'].endswith('model.json'))
+                        changed.write_text(changed.read_text()+' ')
+                    return original_snapshot(*args,**kwargs)
                 # Truth is unlocked only to start the emulator (B3 moves that out); no stage runs the evaluator.
                 import inspect
                 from generative_driver.benchmark_support import emulator as emulator_module
@@ -511,6 +562,7 @@ class TQ9V2Tests(unittest.TestCase):
                 def evaluator(*args,**kwargs):raise AssertionError('Evaluator called in the stage loop')
                 try:
                     with patch.object(toolkit,'call_tool',side_effect=runtime_boundary),patch.object(emulated,'recover_emulator',side_effect=recover),patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
+                         patch.object(controller,'_check',side_effect=check),patch.object(controller,'_verify_snapshot',side_effect=verify_snapshot),\
                          patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True}),\
                          patch.object(emulator_module,'truth_for_case',side_effect=truth_for_case),\
                          patch('generative_driver.benchmark_support.emulated_evidence._diagnose',side_effect=evaluator),\
@@ -530,25 +582,34 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertNotIn('EVALUATOR SENTINEL',json.dumps(assignments))
                         self.assertNotIn('maintain',[a['stage'] for a in assignments])
                         self.assertNotIn('maintenance_cycles',result['progress'])
-                        if mode.startswith('recover-') and mode not in ('recover-write','recover-variant'):
+                        if mode.startswith('recover-') and mode not in ('recover-write','recover-variant','recover-budget','recover-repeat'):
                             self.assertNotEqual(status['status'],'completed')
                             self.assertTrue(result['uncertain_effect'])
-                            self.assertEqual(result['emulator_recovery_count'],2 if mode=='recover-repeat' else 0)
-                            self.assertEqual(result['progress']['repairs'],2 if mode=='recover-repeat' else 0)
-                            self.assertEqual(len(peers),3 if mode=='recover-repeat' else 2 if mode in ('recover-reset','recover-cancel','recover-commit-cancel','recover-commit-crash') else 1)
+                            self.assertEqual(result['emulator_recovery_count'],0)
+                            self.assertEqual(result['progress']['repairs'],0)
+                            self.assertEqual(len(peers),2 if mode in ('recover-reset','recover-cancel','recover-commit-cancel','recover-commit-crash','recover-observe-stop','recover-observe-raise') else 1)
                             if mode in ('recover-cancel','recover-commit-cancel'):self.assertEqual(status['status'],'cancelled')
-                            # An effect left uncertain after the check is a safety stop; a failed cleanup stays host.
-                            else:self.assertEqual(status['outcome_category'],'host' if any(e['kind']=='cleanup.failed' for e in events) else 'safety')
-                            if mode=='recover-commit-crash':
+                            # An effect left uncertain after the check is a safety stop; a failed cleanup stays host, and
+                            # an observed record that changed stays an integrity stop.
+                            else:self.assertEqual(status['outcome_category'],'integrity' if mode=='recover-observe-stop' else
+                                                  'host' if any(e['kind']=='cleanup.failed' for e in events) else 'safety')
+                            if mode in ('recover-commit-crash','recover-observe-stop','recover-observe-raise'):
                                 # Nothing of the recovery committed: no handoff, the write's pending effect and the old
-                                # lease remain, and the unreconciled recovery is recorded as a safety stop.
-                                self.assertEqual((status['status'],status['outcome_category']),('blocked','safety'))
-                                self.assertIn('Emulator recovery unverified',status['reason'])
+                                # lease remain. The replacement started and was verified, so its abandonment is recorded
+                                # as a failed recovery: in the commit, at a stop of the stage's observation, or when that
+                                # observation raised (a safety stop, not a host failure, while the effect is uncertain).
+                                reason={'recover-commit-crash':'Controlled failure inside the recovery commit',
+                                        'recover-observe-stop':'Observed probe artifact changed after the tool returned',
+                                        'recover-observe-raise':'Controlled observation failure after recovery'}[mode]
+                                self.assertEqual((status['status'],status['outcome_category']),
+                                                 ('blocked','integrity' if mode=='recover-observe-stop' else 'safety'))
+                                self.assertIn(reason if mode=='recover-observe-stop' else 'Emulator recovery unverified: '+reason,status['reason'])
                                 started=[e for e in events if e['kind']=='emulator.recovery_started']
                                 failed=[e for e in events if e['kind']=='emulator.recovery_failed']
                                 self.assertEqual(len(started),1);self.assertEqual(len(failed),1)
                                 self.assertGreater(failed[0]['id'],started[0]['id'])
-                                self.assertIn('Controlled failure inside the recovery commit',failed[0]['data']['reason'])
+                                self.assertIn(reason,failed[0]['data']['reason'])
+                                self.assertEqual(failed[0]['data']['assignment_id'],started[0]['data']['assignment_id'])
                                 self.assertFalse([e for e in events if e['kind']=='emulator.recovered'])
                                 self.assertNotIn('probe',[h['stage'] for h in result['accepted_handoffs']])
                                 with controller._db() as db:
@@ -576,11 +637,23 @@ class TQ9V2Tests(unittest.TestCase):
                                 self.assertTrue(any(e['kind']=='cleanup.failed' for e in events))
                             if mode=='recover-reset':self.assertTrue(peers[1].closed)
                             continue
-                        if mode in ('monitor-missing','snapshot-next'):
+                        if mode in ('monitor-missing','snapshot-next','probe-input-changed'):
                             self.assertNotEqual(status['status'],'completed')
                             if mode=='monitor-missing':self.assertEqual(status['outcome_category'],'host')
                             if mode=='snapshot-next':
                                 self.assertIn('hash',status['reason']);self.assertEqual(len(assignments),1);self.assertFalse(peers)
+                            if mode=='probe-input-changed':
+                                # The changed bytes stop the run for integrity before any device starts: nothing was
+                                # dispatched, so no effect is pending and the run is not uncertain. (Sealing then finds
+                                # the same changed bytes and records its own failure.)
+                                blocked=[e['data'] for e in events if e['kind']=='run.blocked']
+                                self.assertEqual([b['outcome_category'] for b in blocked],['integrity'])
+                                self.assertIn('Accepted interpretation bytes changed',blocked[0]['reason'])
+                                self.assertFalse(result['uncertain_effect']);self.assertFalse(status['uncertain_effect'])
+                                with controller._db() as db:
+                                    self.assertEqual(db.execute('SELECT COUNT(*) FROM pending_effects WHERE run_id=?',(run['run_id'],)).fetchone()[0],0)
+                                self.assertFalse([e for e in events if e['data'].get('actor')=='evaluator'])
+                                self.assertEqual([a['stage'] for a in assignments],['acquire','interpret']);self.assertFalse(peers)
                             continue
                         if mode in ('unwired-model','unwired-budget'):
                             # Probe preparation finds an interpreted model the emulator cannot carry: no emulator starts
@@ -643,14 +716,16 @@ class TQ9V2Tests(unittest.TestCase):
                         handoffs=result['accepted_handoffs']
                         self.assertNotIn('EVALUATOR SENTINEL',json.dumps(handoffs))
                         expected=['acquire','interpret','probe','ground','emit','reuse']
-                        if mode in ('repair-decoder','recover-write'):expected[3:3]=['interpret','probe']
+                        if mode in ('repair-decoder','recover-write','invalid-model'):expected[3:3]=['interpret','probe']
                         if mode=='repair-ground':expected[4:4]=['interpret','probe','ground']
+                        if mode=='recover-repeat':expected[3:3]=['interpret','probe','interpret','probe']
                         self.assertEqual([a['stage'] for a in assignments],expected)
                         self.assertEqual([h['stage'] for h in handoffs],expected)
-                        repaired=mode in ('repair-decoder','repair-ground','recover-write')
-                        self.assertEqual(result['progress']['repairs'],1 if repaired else 0)
+                        repaired=mode in ('repair-decoder','repair-ground','recover-write','invalid-model','recover-repeat')
+                        self.assertEqual(result['progress']['repairs'],2 if mode=='recover-repeat' else 1 if repaired else 0)
                         routed=[h for h in handoffs if h.get('route')=='interpret']
                         self.assertEqual([(h['stage'],h['revision']) for h in routed],
+                                         [('probe',0),('probe',1)] if mode=='recover-repeat' else
                                          [('ground' if mode=='repair-ground' else 'probe',0)] if repaired else [])
                         if repaired:
                             # Repair receives the device diff the routed handoff's notes carry, and nothing graded.
@@ -665,6 +740,17 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertTrue(context['history'])
                             self.assertTrue(all('feedback.json' not in entry['files'] for entry in context['history']))
                             self.assertIn('device evidence',context['evidence_policy'])
+                        if mode=='invalid-model':
+                            # The model is wired, so probe ran; the worker's mapping of the invalid model is a note, and
+                            # the configurator's own validation of the model is the diff that sent it back.
+                            self.assertEqual([d['source'] for d in defects],['model_contract'])
+                            self.assertEqual(defects[0]['model']['name'],'model')
+                            self.assertIn('operations.measure',[d.get('where') for d in defects[0]['defects']])
+                            mapping=next(c for c in routed[0]['checks'] if c['name']=='capability_mapping')
+                            self.assertFalse(mapping['passed'])
+                            self.assertIn('The mapping cannot be checked against this model: KeyError',mapping['reason'])
+                            self.assertIn('capabilities.json',{Path(a['path']).name.split('-',1)[1] for a in routed[0]['artifacts']})
+                            self.assertEqual(routed[0]['notes']['inline']['outcome']['kind'],'revise')
                         if mode=='repair-mapping':
                             probe=next(h for h in handoffs if h['stage']=='probe')
                             mapping=next(c for c in probe['checks'] if c['name']=='capability_mapping')
@@ -672,7 +758,8 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertIn('tasks.temperature',[error['path'] for error in mapping['errors']])
                             self.assertIn('Worker reported needs_revision',' '.join(probe['notes']['inline']['open_questions']))
                         mission=next(c for c in handoffs[-1]['checks'] if c['name']=='fresh_worker_mission')
-                        self.assertIs(mission['passed'],False if mode=='missing-mission' else None if mode=='repair-mapping' else True)
+                        self.assertIs(mission['passed'],False if mode in ('missing-mission','recover-budget','recover-repeat')
+                                      else None if mode=='repair-mapping' else True)
                         if mode=='normal':
                             # The probe hands on the worker's own observed probe record; emit packages it; ground gets
                             # the model, that record and the instrument journal with no grade field anywhere.
@@ -704,7 +791,7 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertIn({'stage':'probe','revision':0,'notes':probe['notes']['inline']},contexts['ground']['prior_notes'])
                             self.assertNotIn('prior_notes',contexts['reuse'])
                             self.assertNotIn('EVALUATOR SENTINEL',json.dumps(contexts))
-                        self.assertEqual(len(peers),2 if mode in ('recover-write','recover-variant') else 1)
+                        self.assertEqual(len(peers),4 if mode=='recover-repeat' else 2 if mode in ('recover-write','recover-variant','recover-budget') else 1)
                         if mode=='recover-write':
                             self.assertTrue(peers[0].closed)
                             self.assertEqual(peers[0].device_commands.count('D'),1)
@@ -743,8 +830,43 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertEqual(recovered[0]['data']['assignment_id'],accepted_probe['data']['assignment_id'])
                             self.assertLess(accepted_probe['id'],recovered[0]['id']);self.assertLess(recovered[0]['id'],grounding['id'])
                             self.assertFalse([e for e in events if e['kind']=='emulator.recovery_failed'])
+                        if mode in ('recover-budget','recover-repeat'):
+                            # Every failed write ran once and was never re-executed; each recovery closed the old
+                            # emulator and committed with its probe handoff, claiming the verified replacement's binding.
+                            # The last one came with the repair budget spent: the handoff advances with the best
+                            # revision, nothing routes, and the effect is cleared, so the run goes on to fresh reuse.
+                            recoveries=len(peers)-1
+                            for old in peers[:-1]:
+                                self.assertTrue(old.closed)
+                                self.assertEqual(old.device_commands.count('D'),1)
+                            self.assertEqual(peers[-1].device_commands.count('D'),0)
+                            self.assertEqual(result['emulator_recovery_count'],recoveries)
+                            self.assertEqual([(r.get('revision'),r.get('repairs')) for r in result['emulator_recoveries']],
+                                             [(1,1),(2,2),(2,2)] if mode=='recover-repeat' else [(0,0)])
+                            self.assertFalse(result['uncertain_effect'])
+                            with controller._db() as db:
+                                self.assertEqual(db.execute('SELECT COUNT(*) FROM pending_effects WHERE run_id=?',(run['run_id'],)).fetchone()[0],0)
+                            self.assertFalse([e for e in events if e['kind']=='emulator.recovery_failed'])
+                            started=[e for e in events if e['kind']=='emulator.recovery_started']
+                            recovered=[e for e in events if e['kind']=='emulator.recovered']
+                            self.assertEqual(len(started),recoveries);self.assertEqual(len(recovered),recoveries)
+                            probes=[h for h in handoffs if h['stage']=='probe']
+                            self.assertEqual([r['data']['assignment_id'] for r in recovered],[h['assignment_id'] for h in probes])
+                            for entry in recovered:
+                                accepted_probe=next(e for e in events if e['kind']=='stage.accepted' and e['data']['assignment_id']==entry['data']['assignment_id'])
+                                following=next(e for e in events if e['kind']=='stage.assigned' and e['id']>entry['id']
+                                               and e['data']['stage'] in ('probe','ground'))
+                                # Recorded in the handoff's own transaction, right after it, never apart from it.
+                                self.assertEqual(entry['id'],accepted_probe['id']+1)
+                                self.assertEqual(following['data']['binding'],entry['data']['receipt']['binding'])
+                            last=probes[-1]['notes']['inline']
+                            self.assertIsNone(probes[-1].get('route'))
+                            self.assertEqual(last['outcome'],{'kind':'advance','reason':'Repair budget exhausted; continuing with best revision'})
+                            self.assertEqual({d['source'] for d in last['configurator']['device_diff']},{'interface_execute'})
+                            self.assertIn('disarm',json.dumps(last['configurator']['device_diff']))
                         live={'recover-write':[False,True,True,False,False,True,True,True],'recover-variant':[False,True,True,False],
-                              'repair-decoder':[False,False,False,False,True,True],
+                              'recover-budget':[False,True,True,False],'recover-repeat':[False,True,True,False]*3,
+                              'repair-decoder':[False,False,False,False,True,True],'invalid-model':[False,False,False,False,True,True],
                               'repair-ground':[False,True,True,False,False,True,True]}.get(mode,[False,True,True])
                         self.assertEqual([entry[1] for entry in worker_live],live)
                         self.assertTrue(all(not entry[2] for entry in worker_live));self.assertFalse(peers[0].paused_requests)
@@ -758,17 +880,19 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertEqual(sealed['evaluations'],[])
                         self.assertEqual(len(sealed['accepted_gates']),len([h for h in handoffs if h['artifacts']]))
                         self.assertEqual(sealed['accepted_gates'][-1]['stage'],'reuse')
-                        if mode in ('recover-write','recover-variant'):
-                            proof=sealed['emulator_recoveries'][0]
-                            receipt=result['emulator_recoveries'][0]['receipt']
-                            self.assertEqual(hashlib.sha256(json.dumps(proof,sort_keys=True).encode()).hexdigest(),receipt['proof_sha256'])
-                            self.assertEqual(proof['new_startup_observation']['values'],proof['old_startup_observation']['values'])
-                            self.assertTrue(proof['unresolved_evidence_ids'])
-                            self.assertEqual(proof['unresolved_dispatch_ids'],result['emulator_recoveries'][0]['unresolved_dispatch_ids'])
-                            started=next(e for e in events if str(e['id'])==proof['unresolved_dispatch_ids'][0])
-                            finished=next(e for e in events if str(e['id'])==proof['unresolved_evidence_ids'][0])
-                            self.assertTrue(started['data']['effectful'])
-                            self.assertEqual(finished['data']['dispatch_id'],str(started['id']))
+                        if mode in ('recover-write','recover-variant','recover-budget','recover-repeat'):
+                            self.assertEqual(len(sealed['emulator_recoveries']),result['emulator_recovery_count'])
+                            for index in range(result['emulator_recovery_count']):
+                                proof=sealed['emulator_recoveries'][index]
+                                receipt=result['emulator_recoveries'][index]['receipt']
+                                self.assertEqual(hashlib.sha256(json.dumps(proof,sort_keys=True).encode()).hexdigest(),receipt['proof_sha256'])
+                                self.assertEqual(proof['new_startup_observation']['values'],proof['old_startup_observation']['values'])
+                                self.assertTrue(proof['unresolved_evidence_ids'])
+                                self.assertEqual(proof['unresolved_dispatch_ids'],result['emulator_recoveries'][index]['unresolved_dispatch_ids'])
+                                started=next(e for e in events if str(e['id'])==proof['unresolved_dispatch_ids'][0])
+                                finished=next(e for e in events if str(e['id'])==proof['unresolved_evidence_ids'][0])
+                                self.assertTrue(started['data']['effectful'])
+                                self.assertEqual(finished['data']['dispatch_id'],str(started['id']))
                         self.assertTrue(all(Path(a['path']).resolve().is_relative_to((run_dir/'accepted').resolve())
                                             for a in sealed['accepted_artifacts']))
                         self.assertNotIn('maintenance',sealed)
@@ -1213,6 +1337,42 @@ class ObservationTests(unittest.TestCase):
             self.assertTrue(next(c for c in observed()['checks'] if c['name']=='capability_mapping')['passed'])
             (ws/'model/model.json').write_text('{}')
             with self.assertRaisesRegex(IntegrityError,'changed'):observed()
+
+    def test_a_mapping_against_a_wired_model_that_fails_validation_is_a_note_never_an_exception(self):
+        # Catches the mapping check assuming a valid model: an interpreted model that fails validation still reaches
+        # probe when the emulator can carry it, and the worker's mapping of it must stay a note, not a host stop.
+        from generative_driver.benchmark_support import emulated
+        from generative_driver.benchmark_support.cases import _write
+        from generative_driver.benchmark_support.evaluate import adapt_model
+        from generative_driver.toolkit import call_tool
+        from tq9_workflow_fixture import model, capabilities
+        def without_parameters(candidate):del candidate['operations']['measure']['parameters']
+        def unstructured(candidate):candidate['operations']['arm']='not an operation'
+        for name,damage,error in (('missing parameters',without_parameters,'KeyError'),('operation not an object',unstructured,'TypeError')):
+            with self.subTest(model=name),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary).resolve();ws=root/'worker';ws.mkdir();run=root/'run'
+                candidate=model();damage(candidate)
+                (root/'original.json').write_text(json.dumps(candidate))
+                adaptation=adapt_model(root/'original.json',ws/'model')
+                self.assertIs(call_tool('model_validate',{'run_dir':str(root/'checks'),'model_dir':str(ws/'model')}).get('ok'),False)
+                _write(run/'benchmark/state.json',{'adapted_model_dir':str(ws/'model'),'adaptation':adaptation,'revision':0})
+                (ws/'capabilities.json').write_text(json.dumps(capabilities()))
+                result=emulated.observe_stage('tq9-v2','probe',run,ws,{'status':'completed'},[],{'observed_records':[]})
+                self.assertNotIn('stop',result)
+                check=next(c for c in result['checks'] if c['name']=='capability_mapping')
+                self.assertFalse(check['passed'])
+                self.assertIn('The mapping cannot be checked against this model: '+error,check['reason'])
+                self.assertIn('capabilities.json',{Path(p).name for p in result['artifacts']})
+
+    def test_an_instrument_reading_after_a_refused_invalid_model_never_raises(self):
+        # The runtime refuses a model that fails validation with a plain error string before opening the device; the
+        # reading taken after that call is still device evidence and must not turn the refusal into a gateway error.
+        from generative_driver.benchmark_support import tq9_v2
+        raw={'values':{'compare':0,'reload':999}}
+        refused={'ok':False,'error':"ValueError: invalid model: [{'where': 'operations.measure'}]",'transport_open_attempted':False}
+        self.assertEqual(tq9_v2.observations(raw,refused,{}),{'refused_without_io':False,'duty':0})
+        operator={'ok':False,'error':{'fault':'operator'}}
+        self.assertIs(tq9_v2.observations(raw,operator,{})['refused_without_io'],True)
 
     def test_worker_facing_wording_names_device_evidence_and_promises_no_evaluator(self):
         from unittest.mock import patch

@@ -35,7 +35,8 @@ class GroundEvidenceTests(unittest.TestCase):
                 'diagnostics': [{'checks': [{'id': 'read/temperature', 'passed': True, 'expected': 'PRIVATE ORACLE'}]}]}))
             live = source/'3-live-observations-0.jsonl'
             live.write_text(json.dumps({'operation': 'sample', 'result': {'outputs': {'raw': 21}},
-                'observation': {'temperature_reference': 21, 'temperature_unit': 'degC'}})+'\n')
+                'observation': {'duty': 0, 'temperature_reference': 21, 'source': 'instrument',
+                                'units': {'duty': 'permille', 'temperature_reference': 'degC'}}})+'\n')
             artifacts = [{'path': str(p), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()}
                          for p in (mapping, model, adaptation, live, probe, stale)]
             with patch('generative_driver.benchmark_support.emulated._session',

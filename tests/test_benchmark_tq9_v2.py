@@ -557,8 +557,14 @@ class TQ9V2Tests(unittest.TestCase):
                 def truth_for_case(*args,**kwargs):
                     names={frame.function for frame in inspect.stack(0)}
                     truth_callers.append(names)
-                    if not names&{'_session','replace_owned'}:raise AssertionError('Truth unlocked outside emulator start')
+                    # Only the device recipe is taken from it, to start the emulator; a replacement reuses that recipe.
+                    if not {'device_recipe','_session'}<=names or names&{'replace','recover_emulator'}:
+                        raise AssertionError('Truth unlocked outside emulator start')
                     return real_truth(*args,**kwargs)
+                # The device provider's private journal, outside the run directory.
+                devices=[]
+                def device_dir(run_dir):
+                    devices.append(root/('device-'+str(len(devices)+1)));return devices[-1]
                 def evaluator(*args,**kwargs):raise AssertionError('Evaluator called in the stage loop')
                 try:
                     with patch.object(toolkit,'call_tool',side_effect=runtime_boundary),patch.object(emulated,'recover_emulator',side_effect=recover),patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
@@ -567,7 +573,8 @@ class TQ9V2Tests(unittest.TestCase):
                          patch.object(emulator_module,'truth_for_case',side_effect=truth_for_case),\
                          patch('generative_driver.benchmark_support.emulated_evidence._diagnose',side_effect=evaluator),\
                          patch('generative_driver.benchmark_support.emulated_evidence._final',side_effect=evaluator),\
-                         patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=native_start):
+                         patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=native_start),\
+                         patch.object(emulated,'_device_dir',side_effect=device_dir):
                         run=controller.start({'goal':'scripted-contract-fixture','case':'tq9-v2','budget_seconds':60,
                             'effects':['write','actuate'],'max_revisions':0 if mode in ('recover-budget','unwired-budget') else 2,'case_options':{'scenario_id':'original','evaluator_password_file':str(password)},
                             'executor_config':{'command':[sys.executable,str(script)]}})
@@ -631,9 +638,10 @@ class TQ9V2Tests(unittest.TestCase):
                                 self.assertEqual(status['status'],'blocked')
                                 key=str((root/'home/runs'/run['run_id']).resolve())
                                 owner=emulated._OWNERS[key]
-                                self.assertIsNone(owner.process.poll())
+                                self.assertIsNone(owner.session.process.poll())
                                 persisted=json.loads((root/'home/runs'/run['run_id']/'benchmark/state.json').read_text())
-                                self.assertEqual(persisted['session']['session_id'],owner.info['session_id'])
+                                self.assertEqual(persisted['session']['session_id'],owner.session.info['session_id'])
+                                self.assertEqual(persisted['session']['session_id'],owner.status()['session_id'])
                                 self.assertTrue(any(e['kind']=='cleanup.failed' for e in events))
                             if mode=='recover-reset':self.assertTrue(peers[1].closed)
                             continue
@@ -709,7 +717,8 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertIsNone(result['equivalence']);self.assertEqual(result['evaluator_verdicts'],[])
                         self.assertNotIn('terminal_final_failure',result['progress'])
                         self.assertTrue(truth_callers)
-                        self.assertTrue(all(names&{'_session','replace_owned'} for names in truth_callers))
+                        self.assertTrue(all({'device_recipe','_session'}<=names and not names&{'replace','recover_emulator'}
+                                            for names in truth_callers))
                         evaluated=[e['data'] for e in events if e['kind'] in ('tool.started','tool.finished') and e['data'].get('actor')=='evaluator']
                         # Only the emulator start at probe preparation still carries the evaluator label (B4 removes it).
                         self.assertTrue(all(e['name']=='benchmark_evaluate' and e['assignment_id'] is None and e['stage']=='probe' for e in evaluated))
@@ -874,16 +883,24 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertEqual(Path(next(iter(reuse['inputs']))).name,'package')
                         run_dir=root/'home/runs'/run['run_id'];state=json.loads((run_dir/'benchmark/state.json').read_text())
                         self.assertNotIn('stage_verdicts',state);self.assertNotIn('diagnostic',state)
+                        # The run records the device's public descriptor; its startup reading stays with the provider.
+                        self.assertNotIn('startup_observation',state)
+                        self.assertNotIn('session',state);self.assertEqual(state['previous_session']['schema'],'device-descriptor/1')
                         sidecar=run_dir/'benchmark/run-evidence.enc'
                         sealed=unlock(sidecar,password.read_text(),state['final_evaluation']['evidence_sha256'])
                         self.assertEqual(state['final_evaluation']['verdict'],'unscored')
                         self.assertEqual(sealed['evaluations'],[])
                         self.assertEqual(len(sealed['accepted_gates']),len([h for h in handoffs if h['artifacts']]))
                         self.assertEqual(sealed['accepted_gates'][-1]['stage'],'reuse')
+                        # Recovery proofs stay in the provider's private journal, never in the run directory.
+                        self.assertNotIn('emulator_recoveries',sealed);self.assertFalse(list(run_dir.rglob('journal.jsonl')))
+                        self.assertEqual(len(devices),1)
+                        journal=[json.loads(line) for line in (devices[0]/'journal.jsonl').read_text().splitlines()]
+                        proofs=[entry['proof'] for entry in journal if entry['kind']=='replaced']
+                        self.assertEqual(len(proofs),result['emulator_recovery_count'])
                         if mode in ('recover-write','recover-variant','recover-budget','recover-repeat'):
-                            self.assertEqual(len(sealed['emulator_recoveries']),result['emulator_recovery_count'])
                             for index in range(result['emulator_recovery_count']):
-                                proof=sealed['emulator_recoveries'][index]
+                                proof=proofs[index]
                                 receipt=result['emulator_recoveries'][index]['receipt']
                                 self.assertEqual(hashlib.sha256(json.dumps(proof,sort_keys=True).encode()).hexdigest(),receipt['proof_sha256'])
                                 self.assertEqual(proof['new_startup_observation']['values'],proof['old_startup_observation']['values'])

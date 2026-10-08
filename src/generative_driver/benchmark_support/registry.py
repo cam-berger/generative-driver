@@ -346,7 +346,7 @@ def require_calibration(pin: dict, options: dict) -> dict:
                      and {r['id']: r['model_sha256'] for r in record['references']} ==
                          {name: canonical_digest(ref['model']) for name, ref in truth['references'].items()}
                      and validate_calibration(manifest, record)['ok'])
-            from .emulated import family_for
+            from .instruments import family_for
             family=family_for(pin['case_id'])
             runs={r['id']:r for r in record['runs']}
             for reference in record['references']:

@@ -515,17 +515,24 @@ class PublicObservationTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from generative_driver.benchmark_support.emulated import package_execute
+        from generative_driver.benchmark_support.device_provider import DeviceProvider
         from generative_driver.benchmark_support.cases import _write
         from generative_driver.configurator import digest
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp).resolve();package=root/'package';package.mkdir();(package/'toy').write_text('toy')
             _write(root/'benchmark/state.json',{'package_copies':{'reuse':str(package)},'package_sha256':digest(package),
                 'package_attempts':{'reuse':'toy'}})
+            values={'latched_q4':65456,'acquisition_counter':3}
             class Session:
-                binding={'host':'toy'}
+                recipe={'observations':{name:{'command':name,'width':32,'count':1} for name in values}}
+                info={'binding':{'host':'toy'}};binding=info['binding'];process=None
                 def set_running(self,value):pass
-                def observe(self):return {'values':{'latched_q4':65456,'acquisition_counter':3}}
-            with patch('generative_driver.benchmark_support.emulated._session',return_value=Session()),patch(
+                def observe(self):return {'values':dict(values),'reads':[{'name':k,'value':v,'response':str(v)} for k,v in values.items()]}
+                def stop(self):pass
+            (root/'firmware.bin').write_bytes(b'toy')
+            device=DeviceProvider('sampled-sensor-v1',root/'firmware.bin',Session.recipe,None,root/'device',start=lambda **kwargs:Session())
+            device.start()
+            with patch('generative_driver.benchmark_support.emulated._session',return_value=device),patch(
                 'generative_driver.benchmark_support.emulated_actions.package_invoker',return_value=lambda *args:{'ok':True,'outputs':{}}):
                 result=package_execute('sampled-sensor-v1',root,'reuse',package,'toy',binding={'host':'toy'})
             self.assertEqual(result['observation']['reference_temperature'],-5)

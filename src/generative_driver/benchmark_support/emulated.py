@@ -1,4 +1,5 @@
-"""Native benchmark stages, observed without truth; the emulator stays in-process until the harness owns it."""
+"""Native benchmark stages, observed without truth. The emulator is held through a device provider built from the device
+recipe alone; it stays in-process until the harness owns it."""
 import hashlib
 import re
 import shutil
@@ -7,6 +8,8 @@ import json
 from pathlib import Path
 
 from .cases import _state, _write
+from .device_provider import DeviceProvider
+from .instruments import family_for, reading
 from .registry import resolve_case
 from .snapshots import read_snapshot
 
@@ -14,15 +17,6 @@ from .snapshots import read_snapshot
 INSTRUMENT = ('Live interface_execute and probe_run results carry before_observation and observation: instrument '
               'readings of the emulated device with units. They are device evidence, as a real device\'s readings would '
               'be, never a grade. ')
-
-
-def family_for(case_id):
-    from . import tq9_v2, sampled_sensor, parameter_store
-    families = {'tq9-v2': tq9_v2, 'sampled-sensor-v1': sampled_sensor,
-                'parameter-store-v1': parameter_store}
-    if case_id not in families:
-        raise ValueError('Unknown native family')
-    return families[case_id]
 
 
 def _required_tasks(case_id):
@@ -597,6 +591,7 @@ def reference_execute(pin, truth, model, capabilities, *, renode, image, output_
         session.stop()
 
 
+# The provider that owns each run's emulator, by resolved run directory (in-process until the harness owns it).
 _OWNERS = {}
 
 
@@ -611,6 +606,18 @@ def _truth(case_id, run_dir, options):
     return truth
 
 
+def device_recipe(case_id, run_dir, options):
+    """The device definition and nothing else. The case truth is still unlocked here, in-process, until the harness
+    owns the emulator; everything but the recipe is dropped before a provider sees it."""
+    return _truth(case_id, run_dir, options)['recipe']
+
+
+def _device_dir(run_dir):
+    """The provider's private directory, outside the run directory: its journal holds startup readings and recovery
+    proofs, which no stage or worker input needs."""
+    return Path(tempfile.mkdtemp(prefix='gd-device-'))
+
+
 def _started(case_id, run_dir, options):
     """Start (or keep) the owned emulator for probe. Only this step goes through the configurator's `start_device`
     wrapper, which holds the run uncertain while it runs; preparation that reaches no device stays outside it."""
@@ -618,63 +625,57 @@ def _started(case_id, run_dir, options):
     return options['start_device'](start) if callable(options.get('start_device')) else start()
 
 
+def _sync(run_dir, device):
+    """Record in the run state what the provider now holds: its live session's public descriptor, or nothing, in which
+    case the owner is forgotten. A session it no longer holds becomes the previous session."""
+    key = str(Path(run_dir).resolve())
+    path, state = _state(run_dir)
+    held = device.descriptor() if device.session is not None else None
+    if state.get('session') and (held is None or state['session'].get('session_id') != held['session_id']):
+        gone = state.pop('session')
+        if gone.get('session_id'):
+            state['previous_session'] = gone
+    if held is None:
+        _OWNERS.pop(key, None)
+    else:
+        state['session'] = held
+    _write(path, state)
+
+
 def _session(case_id, run_dir, options):
-    from .native import NativeSession
+    """The run's device provider, started on first use from the pinned image and the device recipe. The run records an
+    owner before any process starts, so a configurator that loses its provider refuses to start another."""
     key = str(Path(run_dir).resolve())
     path, state = _state(run_dir)
     if key in _OWNERS:
         return _OWNERS[key]
     if state.get('session'):
         raise RuntimeError('Native process ownership was lost; operator reconciliation is required')
-    inputs, _ = _inputs(case_id, run_dir)
-    session = NativeSession.start(renode=options.get('renode'),
-        image=inputs/'firmware.bin', recipe=_truth(case_id, run_dir, options)['recipe'])
-    import uuid
-    session.info['session_id'] = uuid.uuid4().hex
-    _OWNERS[key] = session
-    state['session'] = session.info
+    inputs, manifest = _inputs(case_id, run_dir)
+    device = DeviceProvider(case_id, inputs/'firmware.bin', device_recipe(case_id, run_dir, options), options.get('renode'),
+                            _device_dir(run_dir), image_sha256=manifest['images']['firmware.bin'])
+    state['session'] = {'provider_id': device.provider_id, 'session_id': None}
     _write(path, state)
-    from .emulated_recovery import observed_values
+    _OWNERS[key] = device
     try:
-        observation = observed_values(session)
-    except BaseException as failure:
-        try:
-            cleanup(case_id, run_dir, options)
-        except BaseException as stop_error:
-            raise RuntimeError(str(failure)+'; emulator cleanup unverified: '+str(stop_error)) from failure
-        raise
-    state['startup_observation'] = observation
-    _write(path, state)
-    return session
+        device.start()
+    finally:
+        _sync(run_dir, device)
+    return device
 
 
 def cleanup(case_id, run_dir, options=None):
     key = str(Path(run_dir).resolve())
-    path, state = _state(run_dir)
-    session = _OWNERS.get(key)
-    if session is None and state.get('session'):
+    _, state = _state(run_dir)
+    device = _OWNERS.get(key)
+    if device is None and state.get('session'):
         raise RuntimeError('Native process ownership was lost; operator reconciliation is required')
-    if session is not None:
-        session.stop()
-        if session.process is not None and session.process.poll() is None:
-            raise RuntimeError('Owned emulator stop was not confirmed')
-        _OWNERS.pop(key, None)
-        state['previous_session'] = state.pop('session', session.info)
-        _write(path, state)
+    if device is not None:
+        try:
+            device.stop()
+        finally:
+            _sync(run_dir, device)
     return {'ok': True}
-
-
-def public_observation(case_id, raw, result, parameters):
-    """Instrument readings of the emulated device: projected values and units only, without monitor access or grading
-    keys. Device evidence that workers see, as a real device's readings would be."""
-    family = family_for(case_id)
-    observed = family.observations(raw, result, parameters)
-    if case_id == 'tq9-v2':
-        return {'duty': observed['duty'], 'unit': 'permille',
-                'temperature_reference': raw['values']['temperature'], 'temperature_unit': 'degC',
-                'phase': 'diagnostic'}
-    return {**{key: observed[key] for key in family.observations.monitor_units},
-            'units': dict(family.observations.monitor_units), 'phase': 'diagnostic'}
 
 
 def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=None,
@@ -682,18 +683,18 @@ def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=
     """Run one operation of the reuse stage's package copy; the result carries the instrument reading after it."""
     from ..configurator import digest
     from .emulated_actions import package_invoker
-    family = family_for(case_id)
     path, state = _state(run_dir)
     package = Path(package_dir).resolve()
     if str(package) != state.get('package_copies', {}).get(stage) or digest(package) != state['package_sha256']:
         raise ValueError('Only the unchanged stage-assigned package may execute')
-    session = _session(case_id, run_dir, options or {})
-    if binding != session.binding:
-        raise ValueError('Package binding differs from the evaluator-owned emulator')
-    before = public_observation(case_id, session.observe(), {}, parameters or {}) if case_id != 'tq9-v2' else {}
-    result = run_call(session, package_invoker(package, binding, allow_effects or []),
-                      {'operation': operation, 'parameters': parameters or {}})
-    public = public_observation(case_id, session.observe(), result, parameters or {})
+    device = _session(case_id, run_dir, options or {})
+    if binding != device.binding:
+        raise ValueError('Package binding differs from the provided emulator')
+    before = reading(device.observe()) if case_id != 'tq9-v2' else {}
+    invoke = package_invoker(package, binding, allow_effects or [])
+    with device.window():
+        result = invoke(operation, parameters or {})
+    public = reading(device.observe())
     events = Path(run_dir)/'benchmark/package-events.jsonl'
     row = {'actor': 'worker', 'stage': stage, 'operation': operation, 'revision': state.get('revision', 0),
            'attempt_id': state['package_attempts'][stage], 'assignment_id': (options or {}).get('assignment_id'),
@@ -711,18 +712,18 @@ def score(report, password_file=None, *, evidence_path=None):
 
 
 def worker_tool(case_id, run_dir, name, arguments, options):
-    """Execute a gateway-approved live call with the existing native owner."""
+    """Execute a gateway-approved live call on the provided emulator, inside its window, between instrument readings."""
     from ..toolkit import call_tool
     if name not in ('interface_execute', 'probe_run'):
         raise ValueError('Unsupported native worker tool')
-    session = _session(case_id, run_dir, options)
-    if arguments.get('binding') != session.binding:
-        raise ValueError('Worker binding differs from evaluator-owned emulator')
+    device = _session(case_id, run_dir, options)
+    if arguments.get('binding') != device.binding:
+        raise ValueError('Worker binding differs from the provided emulator')
     parameters = arguments.get('parameters', {})
-    before = public_observation(case_id, session.observe(), {}, parameters)
-    result = run_call(session, lambda operation, parameters: call_tool(name, arguments),
-                      {'operation': arguments.get('operation'), 'parameters': parameters})
-    observed = public_observation(case_id, session.observe(), result, parameters)
+    before = reading(device.observe())
+    with device.window():
+        result = call_tool(name, arguments)
+    observed = reading(device.observe())
     _, state = _state(run_dir)
     def measured(value):
         kept = {key: value[key] for key in ('ok', 'outputs', 'units', 'transcript', 'error', 'transport_open_attempted')
@@ -739,6 +740,19 @@ def worker_tool(case_id, run_dir, name, arguments, options):
 
 
 def recover_emulator(case_id, run_dir, options, cancelled):
-    """Replace the owned emulator; the stage's observation keeps the candidate and its device evidence for repair."""
-    from .emulated_recovery import replace_owned
-    return replace_owned(case_id, run_dir, options, cancelled)
+    """Replace the owned emulator through its provider; the stage's observation keeps the candidate and its device
+    evidence for repair. The provider's journal keeps the proof; the run state keeps the receipt."""
+    key = str(Path(run_dir).resolve())
+    _, state = _state(run_dir)
+    device = _OWNERS.get(key)
+    if device is None or not state.get('session'):
+        raise RuntimeError('Owned emulator process handle and startup evidence are required')
+    try:
+        receipt = device.replace(state['session'].get('session_id'), options.get('recovery_evidence_ids', []),
+                                 options.get('recovery_dispatch_ids', []), cancelled)
+    finally:
+        _sync(run_dir, device)
+    path, state = _state(run_dir)
+    state.setdefault('emulator_recoveries', []).append(receipt)
+    _write(path, state)
+    return receipt

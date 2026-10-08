@@ -19,7 +19,7 @@ def _private(run_dir, options, value=None):
 
 def _diagnose(case_id, run_dir, model_dir, capabilities, options):
     from .emulated import _session, _truth
-    from .emulated import family_for
+    from .instruments import family_for
     family = family_for(case_id)
     from .behavior import validate_records
     from .emulated_actions import execute_plan, model_invoker
@@ -55,7 +55,7 @@ def _diagnose(case_id, run_dir, model_dir, capabilities, options):
 def _final(case_id, run_dir, package, capabilities, options):
     from .emulated import _session, _truth
     from .emulated_actions import execute_plan, canonical_package_invoker
-    from .emulated import family_for
+    from .instruments import family_for
     family = family_for(case_id)
     from .evidence import frozen_final_decision
     from ..configurator import digest

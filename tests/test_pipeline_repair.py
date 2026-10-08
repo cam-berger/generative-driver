@@ -200,6 +200,7 @@ class IndependentProbeObservationTests(unittest.TestCase):
     def test_live_probe_returns_measured_reference_to_compare_with_candidate_decoder(self):
         # Catches probing bytes without exposing the independent observation channel.
         from tq9_workflow_fixture import Silicon, model
+        from generative_driver.benchmark_support.device_provider import DeviceProvider
         from generative_driver.benchmark_support.emulated import worker_tool
         recipe = {'observations': {
             'compare': {'command': 'compare', 'width': 32, 'count': 1},
@@ -210,12 +211,15 @@ class IndependentProbeObservationTests(unittest.TestCase):
             peer = Silicon(root/'firmware.bin')
             self.addCleanup(peer.close)
             session = peer.session(recipe, root/'native')
+            (root/'firmware.bin').write_bytes(b'synthetic image')
+            device = DeviceProvider('tq9-v2', root/'firmware.bin', recipe, None, root/'device', start=lambda **kwargs: session)
+            device.start()
             candidate = model()
             candidate['channel'] = {'type': 'tcp'}
             candidate['operations']['measure']['outputs']['temperature']['scale'] = 10
             model_dir = root/'model'; model_dir.mkdir()
             (model_dir/'model.json').write_text(json.dumps(candidate))
-            with patch('generative_driver.benchmark_support.emulated._session', return_value=session):
+            with patch('generative_driver.benchmark_support.emulated._session', return_value=device):
                 result = worker_tool('tq9-v2', root/'run', 'interface_execute', {
                     'model_dir': str(model_dir), 'run_dir': str(root/'tools'), 'operation': 'measure',
                     'binding': session.binding}, {})
@@ -223,9 +227,11 @@ class IndependentProbeObservationTests(unittest.TestCase):
             self.assertEqual(result['outputs']['temperature'], 200)
             self.assertIn('observation', result, 'Probe hides independently measured reference')
             self.assertEqual(result['observation']['temperature_reference'], 20)
-            self.assertEqual(result['observation']['temperature_unit'], 'degC')
+            self.assertEqual(result['observation']['units'], {'duty': 'permille', 'temperature_reference': 'degC'})
             self.assertEqual(result['observation']['duty'], 0)
-            self.assertEqual(result['observation']['phase'], 'diagnostic')
+            # An instrument reading, labelled as one: never an evaluator phase.
+            self.assertEqual(result['observation']['source'], 'instrument')
+            self.assertNotIn('phase', result['observation'])
             self.assertFalse(peer.running)
             self.assertFalse(peer.paused_requests)
             self.assertNotIn('command', json.dumps(result['observation']))

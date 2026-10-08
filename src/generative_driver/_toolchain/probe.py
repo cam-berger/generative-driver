@@ -14,27 +14,38 @@ def probe_run(run_dir, model_dir, n=3, bus_url=None, period_override_ms=None,
     """Run the model on the bus: address discovery, init, state, identity, n measurements.
 
     Exit 0 ok, 2 identity unexpected, 3 the device did not acknowledge, 4 a bus or USB fault, which is a
-    hardware problem and makes the stage inconclusive rather than failed."""
+    hardware problem and makes the stage inconclusive rather than failed. Every refusal before the device is
+    contacted says so with transport_open_attempted false: model bytes the strict reader refuses (exit 1), and
+    for a register model the operator's binding or grants (fault operator, exit 4)."""
     run = core.resolve_run(run_dir)
     md = model_dir if os.path.isabs(model_dir) else os.path.join(core.BENCH, model_dir)
     from . import interface
-    loaded, _sha = interface.load(md)
+    try:
+        if not os.path.isfile(os.path.join(md, "model.json")):
+            raise ValueError("model_dir holds no model.json")
+        loaded, _sha = interface.load(md)
+        if not isinstance(loaded, dict):
+            raise ValueError("model.json is not a JSON object")
+    except (OSError, ValueError, TypeError, LookupError, RecursionError) as exc:
+        return interface.before_contact(f"{type(exc).__name__}: {exc}")
     schema = loaded.get("schema")
     if schema in interface.SCHEMAS:
         return interface.probe_run(run_dir, md, n=n, operation=operation, parameters=parameters,
             binding=binding, allow_effects=allow_effects, replay=replay)
+    # The operator's binding and grants are checked before the bus opens: such a refusal reached no device.
+    refused = {"ok": False, "fault": "operator", "transport_open_attempted": False, "_exit": 4}
     if binding is not None:
         if not isinstance(binding, dict) or set(binding) != {"url"}:
-            return {"ok": False, "fault": "operator", "reason": "Register binding must contain only url", "_exit": 4}
+            return {**refused, "reason": "Register binding must contain only url"}
         if bus_url is not None and bus_url != binding["url"]:
-            return {"ok": False, "fault": "operator", "reason": "binding.url and bus_url disagree", "_exit": 4}
+            return {**refused, "reason": "binding.url and bus_url disagree"}
         bus_url = binding["url"]
     if not isinstance(bus_url, str) or not bus_url.startswith("ftdi://"):
-        return {"ok": False, "fault": "operator", "reason": "Select an explicit ftdi:// binding.url or bus_url", "_exit": 4}
+        return {**refused, "reason": "Select an explicit ftdi:// binding.url or bus_url"}
     operations = loaded.get("operations", {})
     steps = sum((operations.get(key, []) for key in ("init", "identify", "measure")), []) + loaded.get("state", [])
     if any(step.get("op") in ("reg_write", "raw_write") for step in steps) and "write" not in (allow_effects or []):
-        return {"ok": False, "fault": "operator", "reason": "Explicit write effect grant required", "_exit": 4}
+        return {**refused, "reason": "Explicit write effect grant required"}
     model, convert = runner.load_model(md)
     try:
         be = runner.open_bus(model, bus_url)

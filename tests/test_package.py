@@ -309,6 +309,26 @@ class ToolFaultTests(unittest.TestCase):
             self.assertEqual(seen, [])
             self.assertFalse((run / "emit").exists())
 
+    def test_a_register_live_test_refuses_the_operators_binding_or_grants_as_its_contract_says(self):
+        """A register package's live suite refuses a binding that is no FTDI url, or a write without its grant, before
+        the bus opens: fault operator with exit 4, not exit 1 as an interface package's refusals are."""
+        from generative_driver.toolkit import call_tool, list_tools
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            package = root / "register-package"; (package / "driver").mkdir(parents=True)
+            (package / "manifest.json").write_text(json.dumps({"name": "register"}))
+            (package / "driver" / "model.json").write_text(json.dumps({"schema": "interface-model/1",
+                                                                        "operations": {"init": [{"op": "reg_write"}]}}))
+            for name, binding in (("a binding that is no FTDI url", {"host": "127.0.0.1", "port": 9}),
+                                  ("a write without its grant", {"url": "ftdi://ftdi:232h/1"})):
+                with self.subTest(refusal=name):
+                    live = call_tool("emit_test_live", {"run_dir": str(root / "run"), "package_dir": str(package), "binding": binding})
+                    self.assertEqual((live["_exit"], live["ok"], live["fault"], live["transport_open_attempted"]),
+                                     (4, False, "operator", False), live)
+        description = " ".join(next(t for t in list_tools() if t["name"] == "emit_test_live")["description"].split())
+        self.assertIn("every such refusal returns transport_open_attempted false, with exit 1, except a register package's "
+                      "binding or grant refusal, which is fault operator with exit 4.", description)
+
     def test_emit_check_reports_a_host_fault_as_one_and_a_broken_package_as_a_refusal(self):
         from generative_driver.toolkit import call_tool
         with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE)) as binding:
@@ -389,6 +409,77 @@ class ToolFaultTests(unittest.TestCase):
                                                        "operation": "measure", "binding": binding})
             self.assertEqual((executed["_exit"], executed["ok"], executed["outputs"]), (0, True, {"temperature": 21.5}), executed)
             self.assertNotEqual(seen, [])
+
+    def test_probe_run_declares_every_refusal_it_makes_before_it_opens_the_device(self):
+        """probe_run reads the model's bytes and checks the model, the operation, the sample count, the evidence bound
+        and a replay fixture before any transport opens; each refusal says so, and the device sees nothing. So does a
+        register probe's refusal of the operator's binding or grants."""
+        from interface_runtime import evidence
+        from generative_driver.toolkit import call_tool
+        seen, opened, real_open = [], [], evidence.open_transport
+        def recording_open(channel, binding):
+            opened.append(binding)
+            return real_open(channel, binding)
+        exchange = {"op": "exchange", "tx": [{"text": "T\n"}], "rx": {"mode": "until", "delimiter_hex": "0a", "max_bytes": 65536},
+                    "timeout_ms": 500}
+        # A valid model whose one-step dump fits the evidence reader once but not a hundred times.
+        bounded = tcp_model()
+        bounded["operations"]["dump"] = {"effect": "read", "parameters": {}, "steps": [dict(exchange, capture="c")],
+                                         "outputs": {"x": {"from": "c", "kind": "hex"}}}
+        bounded["provenance"].append({"item": "operations.dump", "source": "independent synthetic fixture"})
+        invalid = tcp_model()
+        invalid["operations"]["measure"]["steps"] = []
+        text = json.dumps(tcp_model())
+        register = json.dumps({"schema": "interface-model/1", "operations": {"init": [{"op": "reg_write"}]}})
+        with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE), seen) as binding, \
+                patch("interface_runtime.evidence.open_transport", recording_open):
+            root = Path(temp).resolve()
+            for name, content, arguments, exit_code, says in (
+                    ("a duplicate JSON key", text.replace('"device": {', '"device": {"name": "twice", ', 1), {}, 1,
+                     "ValueError: duplicate JSON key: name"),
+                    ("a non-finite constant", text.replace('"timeout_ms": 500', '"timeout_ms": NaN', 1), {}, 1,
+                     "ValueError: non-finite JSON constant: NaN"),
+                    ("nesting deeper than the parser allows", text[:-1] + ', "x": ' + "[" * 100000 + "]" * 100000 + "}",
+                     {}, 1, "RecursionError: "),
+                    ("no model.json", None, {}, 1, "ValueError: model_dir holds no model.json"),
+                    ("a model that is no JSON object", "[]", {}, 1, "ValueError: model.json is not a JSON object"),
+                    ("an invalid model", json.dumps(invalid), {}, 1, "ValueError: invalid model: "),
+                    ("no operation", text, {"operation": None}, 1, "ValueError: schema 3 probe requires an explicit operation"),
+                    ("an operation the model does not have", text, {"operation": "erase"}, 1, "ValueError: unknown operation"),
+                    ("too many samples", text, {"n": 101}, 1, "ValueError: sample count must be integer 1..100"),
+                    ("no samples", text, {"n": 0}, 1, "ValueError: sample count must be integer 1..100"),
+                    ("an evidence bound the model exceeds", json.dumps(bounded), {"operation": "dump", "n": 100}, 1,
+                     "ValueError: requested probe exceeds evidence bound"),
+                    ("a replay fixture that is not there", text, {"replay": str(root / "missing-replay.json")}, 1, "FileNotFoundError: "),
+                    ("a register binding that is no FTDI url", register, {}, 4, None),
+                    ("a register write without its grant", register, {"binding": {"url": "ftdi://ftdi:232h/1"}}, 4, None)):
+                with self.subTest(refusal=name):
+                    model = root / name.replace(" ", "-"); model.mkdir()
+                    if content is not None:
+                        (model / "model.json").write_text(content)
+                    refused = call_tool("probe_run", {"run_dir": str(root / "run"), "model_dir": str(model),
+                                                      **{"operation": "measure", "n": 1, "binding": binding, **arguments}})
+                    self.assertEqual((refused["_exit"], refused["ok"], refused["transport_open_attempted"]),
+                                     (exit_code, False, False), refused)
+                    if says is None:
+                        self.assertEqual(refused["fault"], "operator", refused)
+                    else:
+                        self.assertTrue(refused["error"].startswith(says), refused)
+                    self.assertNotIn("results", refused)
+                    self.assertNotIn("probe", refused)
+            self.assertEqual((seen, opened), ([], []))
+            # The same tool reaches the device with a model it accepts.
+            model = root / "model"; model.mkdir()
+            (model / "model.json").write_text(text)
+            probed = call_tool("probe_run", {"run_dir": str(root / "run"), "model_dir": str(model), "operation": "measure",
+                                             "n": 1, "binding": binding})
+            self.assertEqual((probed["_exit"], probed["ok"], probed["evidence_kind"]), (0, True, "live"), probed)
+            self.assertNotEqual(seen, [])
+            # The evidence bound counts the samples asked for: one sample of the dump fits it and reaches the device.
+            dumped = call_tool("probe_run", {"run_dir": str(root / "run"), "model_dir": str(root / "an-evidence-bound-the-model-exceeds"),
+                                             "operation": "dump", "n": 1, "binding": binding})
+            self.assertEqual((dumped["_exit"], dumped["ok"]), (0, True), dumped)
+            self.assertEqual(len(opened), 2)
 
     @staticmethod
     def reseal(package):

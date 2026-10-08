@@ -68,10 +68,11 @@ def before_contact(error, **extra):
     return {'ok':False,'error':error,**extra,'transport_open_attempted':False,'_exit':1}
 
 
-def _preflight(model, operation, parameters, allow_effects, replay):
+def _preflight(model, operation, parameters, allow_effects, replay, n=1):
     """The checks run_samples makes before it opens a transport, made here so that each refusal can be declared:
-    the evidence bound of a validated model (which also names an unknown operation) and the replay fixture."""
-    if _evidence_bound(model, operation, parameters, allow_effects, 1) > MAX_EVIDENCE_BYTES:
+    the evidence bound of a validated model for `n` samples (which also names an unknown operation) and the replay
+    fixture."""
+    if _evidence_bound(model, operation, parameters, allow_effects, n) > MAX_EVIDENCE_BYTES:
         raise ValueError('requested probe exceeds evidence bound; reduce samples, steps or output expansion')
     if replay is not None:
         ReplayFactory(replay)
@@ -106,12 +107,30 @@ def interface_execute(model_dir, operation, parameters=None, binding=None, allow
 
 
 def probe_run(run_dir, model_dir, n=1, operation=None, parameters=None, binding=None, allow_effects=None, replay=None):
-    model, sha = load(model_dir)
-    if operation is None:
-        raise ValueError('schema 3 probe requires an explicit operation name')
+    """Run one operation of a model `n` times and record the evidence. Every refusal before the transport opens (a
+    model.json that is missing, unreadable or not strict bounded JSON, an invalid model, a missing or unknown operation,
+    a sample count outside 1..100, an evidence bound the samples exceed, a replay fixture) is returned with
+    transport_open_attempted false and exit 1, and writes no record."""
     grants = [] if allow_effects is None else allow_effects
-    result = run_samples(model, operation, parameters, n=n, binding=binding, allow_effects=grants,
-                         replay=read_json(path(replay)) if replay is not None else None)
+    try:
+        if not (path(model_dir)/'model.json').is_file():
+            raise ValueError('model_dir holds no model.json')
+        model, sha = load(model_dir)
+    except (OSError, ValueError, TypeError, LookupError, RecursionError) as exc:
+        return before_contact(f'{type(exc).__name__}: {exc}')
+    try:
+        if operation is None:
+            raise ValueError('schema 3 probe requires an explicit operation name')
+        if type(n) is not int or not 1 <= n <= 100:
+            raise ValueError('sample count must be integer 1..100')
+        checked = validate_model(model)
+        if not checked['ok']:
+            raise ValueError('invalid model: ' + str(checked['defects']))
+        fixture = read_json(path(replay)) if replay is not None else None
+        _preflight(model, operation, parameters, grants, fixture, n)
+    except (OSError, ValueError, TypeError, LookupError, RecursionError) as exc:
+        return before_contact(f'{type(exc).__name__}: {exc}', model_sha256=sha)
+    result = run_samples(model, operation, parameters, n=n, binding=binding, allow_effects=grants, replay=fixture)
     envelope = {'schema':'interface-probe/1','model_sha256':sha,'operation':operation,
                 'parameters':{} if parameters is None else parameters,'allow_effects':grants,**result}
     folder = Path(core.resolve_run(run_dir))/'probe'; folder.mkdir(parents=True, exist_ok=True)

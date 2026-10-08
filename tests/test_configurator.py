@@ -791,6 +791,66 @@ class DeviceRepairTests(unittest.TestCase):
         model = notes['configurator']['device_diff'][0]['model']
         self.assertEqual(assigned['inputs'][next(p for p in assigned['inputs'] if Path(p).name == model['name'])], model['sha256'])
 
+    @staticmethod
+    def writing_thermometer():
+        """The valid thermometer with a write operation, so a run granted write dispatches it as an effect."""
+        model = thermometer_model()
+        model['operations']['set_rate'] = {'effect': 'write', 'parameters': {}, 'outputs': {}, 'steps': [
+            {'op': 'exchange', 'tx': [{'text': 'R\n'}], 'rx': {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 64},
+             'timeout_ms': 1000}]}
+        model['provenance'].append({'item': 'operations.set_rate', 'source': 'scripted fixture'})
+        return model
+
+    def test_an_effectful_dispatch_of_a_model_the_runtime_cannot_load_is_refused_at_the_gateway(self):
+        # The assigned model.json repeats a key. Plain JSON parsing keeps the last value and validation passes, but the
+        # runtime's strict reader refuses those bytes before it opens the device. The gateway reads the model as the
+        # runtime does, so the write is refused before it is marked uncertain, and the configurator's own validation
+        # sends the model back to interpret instead of a safety stop.
+        from unittest.mock import patch
+        model = self.writing_thermometer()
+        text = json.dumps(model).replace('"device": {', '"device": {"name": "twice", ', 1)
+        refusals = []
+        def work(call, assigned, workspace):
+            for name, arguments in (('probe_run', {'n': 1}), ('interface_execute', {})):
+                with self.assertRaisesRegex(ValueError, 'duplicate JSON key: name') as refused:
+                    call(name, model_dir=assigned, operation='set_rate', **arguments)
+                refusals.append(str(refused.exception))
+        opened = []
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('interface_runtime.evidence.open_transport', lambda channel, binding: opened.append(binding)):
+            result, events, _, calls = self.run_device_stage(Path(directory) / 'home', work, None, model=model,
+                extra={'model.json': text}, real=('interface_execute', 'probe_run'), effects=['read', 'write'], max_revisions=1)
+        self.assertEqual((result['status'], result['uncertain_effect']), ('completed', False), result)
+        self.assertEqual((calls, opened), ([], []))
+        self.assertFalse(any(e['kind'] in ('tool.started', 'tool.finished') for e in events))
+        ground = next(h for h in result['accepted_handoffs'] if h['stage'] == 'ground')
+        notes = ground['notes']['inline']
+        self.assertEqual([(r['name'], r['reason']) for r in notes['configurator']['tool_refusals']],
+                         list(zip(('probe_run', 'interface_execute'), refusals)))
+        self.assertEqual((ground['route'], [entry['source'] for entry in notes['configurator']['device_diff']]),
+                         ('interpret', ['model_contract']))
+
+    def test_an_effectful_probe_run_the_tool_refuses_before_it_opens_the_device_leaves_no_uncertain_effect(self):
+        # The gateway dispatches a write probe of a valid model, marking it uncertain; the real probe_run then refuses the
+        # worker's sample count before any transport opens, and declares that. The configurator reconciles the effect,
+        # so the run goes on instead of stopping for safety.
+        from unittest.mock import patch
+        seen = []
+        def work(call, assigned, workspace):
+            seen.append(call('probe_run', model_dir=assigned, operation='set_rate', n=101))
+        opened = []
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('interface_runtime.evidence.open_transport', lambda channel, binding: opened.append(binding)):
+            result, events, _, calls = self.run_device_stage(Path(directory) / 'home', work, None,
+                model=self.writing_thermometer(), real=('probe_run',), effects=['read', 'write'], max_revisions=1)
+        self.assertEqual((seen[0]['_exit'], seen[0]['transport_open_attempted']), (1, False), seen)
+        self.assertIn('sample count must be integer 1..100', seen[0]['error'])
+        self.assertEqual(([name for name, _ in calls], opened), (['probe_run'], []))
+        self.assertEqual((result['status'], result['uncertain_effect']), ('completed', False), result)
+        [finished] = [e['data'] for e in events if e['kind'] == 'tool.finished']
+        self.assertEqual((finished['effectful'], finished['refused_before_open'], finished['effects_reconciled']),
+                         (True, True, True), finished)
+
     def test_probe_and_ground_workers_cannot_validate_an_assigned_model_in_place(self):
         # The register validator writes defects.json beside the model it checks, which would alter an assigned input
         # and stop the run for integrity. The configurator validates each assigned model on its own copy and hands the
@@ -1153,12 +1213,13 @@ class DeviceRepairTests(unittest.TestCase):
 
 def driver_package(root, name='package', operations=None):
     """A minimal emitted package: its manifest and a driver model with an identity operation and, unless `operations`
-    names others, one read."""
+    names others, one read. Each operation exchanges with the device unless it names its steps."""
     package = Path(root) / name
     (package / 'driver').mkdir(parents=True)
     (package / 'manifest.json').write_text(json.dumps({'schema': 'interface-package/1', 'name': 'scripted'}))
+    operations = operations or {'identify': {'effect': 'read'}, 'read_temperature': {'effect': 'read'}}
     (package / 'driver' / 'model.json').write_text(json.dumps({'schema': 'scripted-model', 'identity': {'operation': 'identify'},
-        'operations': operations or {'identify': {'effect': 'read'}, 'read_temperature': {'effect': 'read'}}}))
+        'operations': {name: {'steps': [{'op': 'exchange'}], **operation} for name, operation in operations.items()}}))
     return package
 
 
@@ -1527,12 +1588,16 @@ class FinalVerdictTests(unittest.TestCase):
         verdict is unscored. With the write grant, running identity alone is still not equivalent."""
         from generative_driver.configurator import Controller, IDENTITY_ONLY, UNGRANTED
         identity = {**self.PASSED, 'results': [{'ok': True, 'operation': 'identify', 'fault': None}]}
-        operations = {'identify': {'effect': 'read'}, 'set_rate': {'effect': 'write'}}
+        settle = {**self.PASSED, 'results': [{'ok': True, 'operation': 'settle', 'fault': None}]}
+        operations = {'identify': {'effect': 'read'}, 'set_rate': {'effect': 'write'},
+                      'settle': {'effect': 'read', 'steps': [{'op': 'delay', 'ms': 1}]}}
         for grants, calls, equivalent, reason in (
                 (['read'], [('emit_test_live', None, {'operations': ['set_rate']}),
                             ('emit_test_live', identity, {'operations': ['identify']})], None, UNGRANTED),
+                # A granted operation that only waits is no function: the operator's grants still permit none.
+                (['read'], [('emit_test_live', settle, {'operations': ['settle']})], None, UNGRANTED),
                 (['read', 'write'], [('emit_test_live', identity, {'operations': ['identify']})], False, IDENTITY_ONLY)):
-            with self.subTest(grants=grants), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(grants=grants, calls=[c[2]['operations'] for c in calls]), tempfile.TemporaryDirectory() as directory:
                 controller = Controller(Path(directory) / 'home')
                 try:
                     with self.finishing(controller, calls=calls, operations=operations):
@@ -1546,7 +1611,7 @@ class FinalVerdictTests(unittest.TestCase):
                     self.assertIs(note['passed'], equivalent)
                     refused = [e['data'] for e in controller.call('events', run)['events'] if e['kind'] == 'tool.refused']
                     self.assertEqual([r['reason'] for r in refused],
-                                     ['Operation requires an effect grant the operator has not supplied'] if grants == ['read'] else [])
+                                     ['Operation requires an effect grant the operator has not supplied'] if len(calls) > 1 else [])
                 finally:
                     controller.close()
 
@@ -1893,6 +1958,67 @@ class FinalVerdictTests(unittest.TestCase):
             finally:
                 controller.close()
 
+    def test_a_host_failure_reading_the_frozen_package_at_finalize_stops_for_the_host_and_resume_grades_once(self):
+        """Finalize reads the frozen package's model and manifest to judge fresh reuse. A host that cannot read them
+        says nothing about the driver: the run stops for the host at finalize, records no verdict, and resume grades it."""
+        from unittest.mock import patch
+        from generative_driver import configurator
+        real_self_evidence, real_read_text = configurator._self_evidence, Path.read_text
+        attempts = []
+        def unreadable(path, *args, **kwargs):
+            if path.name == 'model.json' and path.parent.name == 'driver':
+                raise PermissionError(13, 'Permission denied', str(path))
+            return real_read_text(path, *args, **kwargs)
+        def self_evidence(*args, **kwargs):
+            attempts.append(1)
+            if len(attempts) > 1:
+                return real_self_evidence(*args, **kwargs)
+            with patch.object(Path, 'read_text', unreadable):
+                return real_self_evidence(*args, **kwargs)
+        with tempfile.TemporaryDirectory() as directory:
+            controller = configurator.Controller(Path(directory) / 'home')
+            try:
+                with self.finishing(controller), patch('generative_driver.configurator._self_evidence', self_evidence):
+                    run = self.start(controller)
+                    stopped = wait_stopped(controller, run)
+                    self.assertEqual((stopped['status'], stopped['outcome_category'], stopped['stage']),
+                                     ('failed', 'host', 'finalize'), stopped)
+                    self.assertIn('PermissionError', stopped['reason'])
+                    self.assertIsNone(stopped['equivalence'])
+                    self.assertEqual(final_verdicts(controller, run), [])
+                    resume_when_idle(self, controller, run)
+                    result = wait_stopped(controller, run)
+                self.assertEqual((result['status'], result['reason']), ('completed', 'Final verdict: equivalent'), result)
+                self.assertEqual((len(attempts), len(final_verdicts(controller, run))), (2, 1))
+            finally:
+                controller.close()
+
+    def test_the_frozen_package_facts_raise_only_for_a_host_failure_and_only_when_read_strictly(self):
+        """The package's functions are its operations beyond identity with a step that reaches the device. A part that
+        is absent or does not parse is the package's own (None) even when read strictly, as finalize reads it; a host
+        failure to read one raises there, and reads as None where the reuse notes read it."""
+        from unittest.mock import patch
+        from generative_driver.configurator import _frozen_package
+        with tempfile.TemporaryDirectory() as directory:
+            package = driver_package(Path(directory), operations={
+                'identify': {'effect': 'read'}, 'read_temperature': {'effect': 'read'}, 'set_rate': {'effect': 'write'},
+                'settle': {'effect': 'read', 'steps': [{'op': 'delay', 'ms': 1}]}})
+            frozen = {'path': str(package), 'sha256': 'frozen'}
+            facts = _frozen_package(frozen, strict=True)
+            self.assertEqual((facts['identity'], facts['functions']), ('identify', ['read_temperature', 'set_rate']))
+            self.assertEqual(facts['effects'], {'identify': 'read', 'read_temperature': 'read', 'set_rate': 'write', 'settle': 'read'})
+            model = package / 'driver' / 'model.json'
+            for name, change in (('absent', model.unlink), ('unparseable', lambda: model.write_text('{"identity": '))):
+                with self.subTest(model=name):
+                    change()
+                    facts = _frozen_package(frozen, strict=True)
+                    self.assertEqual((facts['identity'], facts['effects'], facts['functions']), (None, None, None))
+                    self.assertIsNotNone(facts['manifest_sha256'])
+            with patch.object(Path, 'read_text', side_effect=PermissionError(13, 'Permission denied')):
+                self.assertIsNone(_frozen_package(frozen)['identity'])
+                with self.assertRaises(PermissionError):
+                    _frozen_package(frozen, strict=True)
+
     def test_a_run_stopped_at_finalize_resumes_to_its_verdict_without_budget_binding_or_assumed_effects(self):
         """Finalize only reads the configurator's records and contacts no device. A generic run that stopped there
         before its verdict (a host fault, or a configurator restart) resumes to it with the budget lapsed and the
@@ -1945,9 +2071,10 @@ class RealToolVerdictTests(unittest.TestCase):
     acquire, interpret and ground are scripted, and interpret hands on the thermometer model."""
     DEVICE = {b'ID': b'THERMO-1\n', b'T': b'21.5\n'}
 
-    def run_generic(self, home, reuse, *, emit=None, replies=None, on_emit_check=None, resume=False):
+    def run_generic(self, home, reuse, *, emit=None, replies=None, on_emit_check=None, resume=False, model=None):
         """`reuse(call, package, workspace)` is the fresh-reuse worker; it calls the real tools with `call(name,
-        **arguments)`, which returns the result or the gateway's exception. `emit(call, model, record, workspace)`
+        **arguments)`, which returns the result or the gateway's exception. Interpret hands on `model` (the thermometer
+        by default). `emit(call, model, record, workspace)`
         returns the package the emit worker hands off; by default it packages the assigned model with the probe
         record handed on. `on_emit_check(attempt)` may return a context manager to run the configurator's own
         emit_check in. With `resume`, a run that stopped is resumed once. Returns the stopped result (or the first
@@ -1956,6 +2083,7 @@ class RealToolVerdictTests(unittest.TestCase):
         from generative_driver import toolkit
         from generative_driver.configurator import Controller, digest
         real_call_tool, packages, checks = toolkit.call_tool, {}, []
+        interpreted = model or thermometer_model()
         def call_tool(name, arguments):
             if name == 'emit_check' and Path(arguments['run_dir']).parent.name == 'checks' and on_emit_check:
                 checks.append(name)
@@ -1969,7 +2097,7 @@ class RealToolVerdictTests(unittest.TestCase):
                 return real_check(spec, stage, run_dir, workspace, report, accepted, assignment)
             if stage == 'interpret':
                 model = workspace / 'model'; model.mkdir()
-                (model / 'model.json').write_text(json.dumps(thermometer_model()))
+                (model / 'model.json').write_text(json.dumps(interpreted))
                 return {'ok': True, 'artifacts': [str(model)], 'checks': []}
             return {'ok': True, 'artifacts': [], 'checks': []}
         def prepare(original, spec, stage, run_dir, workspace, accepted):
@@ -2041,10 +2169,30 @@ class RealToolVerdictTests(unittest.TestCase):
                 note = self.reuse_note(result)
                 self.assertEqual(note['passed'], equivalent, note)
                 if not equivalent:
-                    reason = ('fresh reuse ran no operation of the frozen package beyond its identity operation with '
-                              'emit_test_live; identity alone is not evidence of function')
+                    reason = ('fresh reuse ran no function of the frozen package beyond its identity operation with '
+                              'emit_test_live; identity alone is not evidence of function, nor is an operation that only waits')
                     self.assertEqual(equivalence['diff'], [{'id': 'fresh_reuse_live_operations', 'reason': reason}])
                     self.assertEqual(note['reason'], reason)
+
+    def test_an_operation_that_only_waits_is_no_function_of_the_frozen_package(self):
+        """A settle operation of delays alone sends nothing to the device once identity is verified, so running it is
+        running identity alone: not equivalent. Running it with a function that exchanges with the device is."""
+        from generative_driver.configurator import IDENTITY_ONLY
+        model = thermometer_model()
+        model['operations']['settle'] = {'effect': 'read', 'parameters': {}, 'outputs': {}, 'steps': [{'op': 'delay', 'ms': 1}]}
+        model['provenance'].append({'item': 'operations.settle', 'source': 'scripted fixture'})
+        for operations, equivalent in ((['settle'], False), (['settle', 'read_temperature'], True)):
+            with self.subTest(operations=operations), tempfile.TemporaryDirectory() as directory:
+                ran = []
+                result, _ = self.run_generic(Path(directory) / 'home', lambda call, package, workspace: ran.append(
+                    call('emit_test_live', package_dir=str(package), operations=operations)), model=model)
+                self.assertEqual(result['status'], 'completed', result)
+                self.assertEqual((ran[0]['_exit'], [r['operation'] for r in ran[0]['results'] if r['ok']]), (0, operations), ran)
+                equivalence = result['equivalence']
+                self.assertEqual(equivalence['equivalent'], equivalent, equivalence)
+                self.assertEqual(self.outcomes(result), [('emit_test_live', 'succeeded')])
+                self.assertEqual(equivalence['diff'], [] if equivalent else [{'id': 'fresh_reuse_live_operations', 'reason': IDENTITY_ONLY}])
+                self.assertEqual(self.reuse_note(result)['passed'], equivalent)
 
     def test_a_host_fault_after_the_device_ran_the_package_never_reads_as_a_refusal(self):
         """The host cannot write the live record after the package ran on the device. What the device did is kept:

@@ -6,7 +6,14 @@ import tempfile
 import time
 import unittest
 
-from suite_fixtures import legacy_manifest, wait_owner_suite
+from suite_fixtures import drive_suite, legacy_manifest, settled_suite, wait_owner_suite
+
+
+def owner_home(temporary):
+    """A configurator home inside the test's directory, so the bench home beside it is inside it too."""
+    home = Path(temporary) / 'owner'
+    home.mkdir(exist_ok=True)
+    return home
 
 
 class DecisionTests(unittest.TestCase):
@@ -24,6 +31,25 @@ class DecisionTests(unittest.TestCase):
         for key in ('stopping','uncertain_effect'):
             incomplete = dict(stopped); incomplete.pop(key)
             self.assertEqual(child_disposition(incomplete), 'block')
+
+    def test_a_child_graded_after_its_run_advances_only_with_a_graded_or_no_driver_record(self):
+        # Catches a suite that counts an emulated child before its grade is recorded: an unscored or pending grade,
+        # or any stop, including a model failure, blocks the suite.
+        from generative_driver.benchmark_support.suites import child_disposition
+        completed = {'status':'completed','stopping':False,'uncertain_effect':False,'outcome_category':'completed',
+                     'graded_after_run':True}
+        for record in ({'status':'graded','equivalent':True}, {'status':'graded','equivalent':False},
+                       {'status':'no-driver','equivalent':False}):
+            self.assertEqual(child_disposition(dict(completed,equivalence=record)), 'advance')
+        for record in (None, {'status':'unscored','equivalent':None}, {'status':'pending'}):
+            self.assertEqual(child_disposition(dict(completed,equivalence=record)), 'block')
+        graded = {'status':'graded','equivalent':True}
+        for status,category in (('blocked','safety'),('blocked','integrity'),('blocked','operator'),('blocked','host'),
+                                ('failed','model'),('blocked','model'),('cancelled','cancelled')):
+            self.assertEqual(child_disposition(dict(completed,status=status,outcome_category=category,equivalence=graded)), 'block')
+        self.assertEqual(child_disposition(dict(completed,uncertain_effect=True,equivalence=graded)), 'block')
+        self.assertEqual(child_disposition(dict(completed,stopping=True,equivalence=graded)), 'wait')
+        self.assertEqual(child_disposition(dict(completed,status='running',equivalence=None)), 'wait')
 
 
 def wait_child(controller, run_id):
@@ -74,12 +100,15 @@ class ServiceTests(unittest.TestCase):
     def test_model_failure_finishes_a_measurement_and_starts_the_next_slot(self):
         from generative_driver.client import call
         from generative_driver.setup import configure
+        from generative_driver.benchmark_support.suites import start_suite
         from suite_fixtures import write_scripted_case_worker, wait_suite
-        with tempfile.TemporaryDirectory(prefix='suite scripted ') as home:
+        with tempfile.TemporaryDirectory(prefix='suite scripted ') as temporary:
+            home=owner_home(temporary)
             configure('codex',write_scripted_case_worker(home),home=home)
             try:
-                suite=call('suite_start',{'manifest':legacy_manifest(2),'executor':'codex',
-                    'options':{},'request_id':'two-scripted-children'},home)
+                # A detached bench harness drives the suite; the configurator schedules nothing itself.
+                suite=start_suite(legacy_manifest(2),'codex',{},'two-scripted-children',home=home)
+                self.assertTrue(suite['ok'],suite)
                 state=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='completed')
                 page=call('suite_result',{'suite_id':suite['suite_id'],'limit':100},home)
                 self.assertEqual(state['completed'],2)
@@ -94,17 +123,20 @@ class ServiceTests(unittest.TestCase):
     def test_missing_runtime_blockage_preserves_the_child_and_frozen_configuration(self):
         from generative_driver.client import call
         from generative_driver.setup import configure
+        from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import wait_suite
-        with tempfile.TemporaryDirectory() as home:
+        with tempfile.TemporaryDirectory() as temporary:
+            home=owner_home(temporary)
             configure('codex',['missing-first-runtime'],model='first-model',home=home)
             request={'manifest':legacy_manifest(2),'executor':'codex','options':{},'request_id':'freeze'}
             try:
-                suite=call('suite_start',request,home)
+                suite=start_suite(**request,home=home)
                 blocked=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked' and not s['stopping'])
                 child=blocked['active_child_id']
                 configure('codex',['missing-second-runtime'],model='second-model',home=home)
-                self.assertEqual(call('suite_start',request,home)['suite_id'],suite['suite_id'])
-                resumed=call('suite_resume',suite,home)
+                again=start_suite(**request,home=home)
+                self.assertEqual((again['suite_id'],again['duplicate']),(suite['suite_id'],True))
+                resumed=resume_suite(suite['suite_id'],home=home)
                 self.assertTrue(resumed['ok'],resumed)
                 again=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked' and not s['stopping'])
                 self.assertEqual(again['active_child_id'],child)
@@ -118,18 +150,21 @@ class ServiceTests(unittest.TestCase):
     def test_cancellation_drains_active_child_without_dispatching_another(self):
         from generative_driver.client import call
         from generative_driver.setup import configure
+        from generative_driver.benchmark_support.suites import start_suite
         from suite_fixtures import wait_suite
-        with tempfile.TemporaryDirectory() as home:
+        with tempfile.TemporaryDirectory() as temporary:
+            home=owner_home(temporary)
             configure('codex',[sys.executable,'-c','import time; time.sleep(120)'],home=home)
             try:
-                suite=call('suite_start',{'manifest':legacy_manifest(2),'executor':'codex','options':{}},home)
+                suite=start_suite(legacy_manifest(2),'codex',{},home=home)
                 active=wait_suite(call,suite['suite_id'],home,lambda s:bool(s['active_child_id']))
-                stopped=call('suite_cancel',suite,home)
+                stopped=call('suite_cancel',{'suite_id':suite['suite_id']},home)
                 self.assertTrue(stopped['ok'],stopped)
                 self.assertEqual(stopped['status'],'cancelled')
+                # The child stopped and the bench harness let go of the suite.
                 self.assertFalse(stopped['stopping'])
                 self.assertFalse(call('status',{'run_id':active['active_child_id']},home)['stopping'])
-                rows=call('suite_result',suite,home)['trials']
+                rows=call('suite_result',{'suite_id':suite['suite_id']},home)['trials']
                 self.assertEqual(sum(t['run_id'] is not None for t in rows),1)
                 self.assertEqual(rows[0]['status'],'cancelled')
                 self.assertEqual(rows[0]['outcome_category'],'cancelled')
@@ -174,12 +209,14 @@ class BudgetTests(unittest.TestCase):
     def test_expired_suite_cancels_child_and_extension_is_absolute_and_idempotent(self):
         from generative_driver.client import call
         from generative_driver.setup import configure
+        from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import wait_suite
-        with tempfile.TemporaryDirectory() as home:
+        with tempfile.TemporaryDirectory() as temporary:
+            home=owner_home(temporary)
             configure('codex',[sys.executable,'-c','import time; time.sleep(120)'],home=home)
             manifest=legacy_manifest(2);manifest.update(child_budget_seconds=.3,suite_budget_seconds=.3)
             try:
-                suite=call('suite_start',{'manifest':manifest},home)
+                suite={'suite_id':start_suite(manifest,home=home)['suite_id']}
                 blocked=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked')
                 self.assertEqual(blocked['completed'],0)
                 deadline=time.monotonic()+5
@@ -189,17 +226,18 @@ class BudgetTests(unittest.TestCase):
                     if not child['stopping'] and not state['stopping']:break
                     time.sleep(.02)
                 self.assertEqual(child['status'],'cancelled')
-                no_extension=call('suite_resume',suite,home)
+                # A resume relaunches the bench harness, which asks the configurator to resume the suite.
+                no_extension=resume_suite(suite['suite_id'],home=home)
                 self.assertFalse(no_extension['ok'])
-                resumed=call('suite_resume',{**suite,'suite_budget_seconds':120,'budget_reason':'PRIVATE-REASON'},home)
+                resumed=resume_suite(suite['suite_id'],home=home,suite_budget_seconds=120,budget_reason='PRIVATE-REASON')
                 # Child's exhausted budget needs its separate explicit extension.
                 self.assertFalse(resumed['ok'])
                 call('resume',{'run_id':child['run_id'],'budget_seconds':120,'budget_reason':'PRIVATE-CHILD'},home)
-                resumed=call('suite_resume',{**suite,'suite_budget_seconds':120,'budget_reason':'PRIVATE-REASON'},home)
+                resumed=resume_suite(suite['suite_id'],home=home,suite_budget_seconds=120,budget_reason='PRIVATE-REASON')
                 self.assertTrue(resumed['ok'],resumed)
                 cancelled=call('suite_cancel',suite,home)
                 self.assertEqual(cancelled['created'],blocked['created'])
-                repeated=call('suite_resume',{**suite,'suite_budget_seconds':120,'budget_reason':'repeat'},home)
+                repeated=resume_suite(suite['suite_id'],home=home,suite_budget_seconds=120,budget_reason='repeat')
                 self.assertTrue(repeated['ok'],repeated)
                 page=call('suite_result',suite,home)
                 budgets=page['experiment']['comparison_identity']['budgets']
@@ -209,16 +247,19 @@ class BudgetTests(unittest.TestCase):
                 events=call('suite_events',suite,home)['events']
                 self.assertEqual(sum(e['kind']=='suite.budget_extended' for e in events),1)
                 self.assertNotIn('PRIVATE',json.dumps(page))
-            finally:call('shutdown',{},home)
+            finally:
+                call('suite_cancel',suite,home)
+                call('shutdown',{},home)
 
     def test_invalid_suite_budget_extension_never_resumes_or_changes_creation(self):
         from generative_driver.configurator import Controller
         from generative_driver.setup import configure
-        with tempfile.TemporaryDirectory() as home:
+        with tempfile.TemporaryDirectory() as temporary:
+            home=owner_home(temporary);bench=Path(temporary)/'bench'
             configure('codex',['missing-runtime'],home=home)
             owner=Controller(home)
             try:
-                suite=owner.call('suite_start',{'manifest':legacy_manifest()})
+                suite={'suite_id':drive_suite(owner,bench,{'manifest':legacy_manifest()},wait=False)['suite_id']}
                 before=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
                 for fields in ({'suite_budget_seconds':True,'budget_reason':'x'},
                                {'suite_budget_seconds':float('inf'),'budget_reason':'x'},
@@ -227,7 +268,7 @@ class BudgetTests(unittest.TestCase):
                                {'suite_budget_seconds':604801,'budget_reason':'x'},
                                {'suite_budget_seconds':180,'budget_reason':' '}):
                     with self.subTest(fields=fields),self.assertRaises(ValueError):
-                        owner.call('suite_resume',{**suite,**fields})
+                        drive_suite(owner,bench,{**suite,**fields})
                 after=owner.call('suite_status',suite)
                 self.assertEqual(after['created'],before['created'])
                 self.assertEqual(after['status'],'blocked')
@@ -238,20 +279,22 @@ class RecoveryTests(unittest.TestCase):
     def test_resume_verifies_snapshots_of_finished_children_before_any_new_assignment(self):
         from generative_driver.client import call
         from generative_driver.setup import configure
+        from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import write_scripted_case_worker, wait_suite
-        with tempfile.TemporaryDirectory() as home:
+        with tempfile.TemporaryDirectory() as temporary:
+            home=owner_home(temporary)
             command=write_scripted_case_worker(home);script=Path(command[1])
             source=script.read_text().replace("    task=json.loads", "    counter=pathlib.Path("+repr(str(Path(home)/'counter'))+")\n    n=int(counter.read_text())+1 if counter.exists() else 1\n    counter.write_text(str(n))\n    if n>1: sys.exit(3)\n    task=json.loads")
             script.write_text(source);configure('codex',command,home=home)
             try:
-                suite=call('suite_start',{'manifest':legacy_manifest(3)},home)
+                suite={'suite_id':start_suite(legacy_manifest(3),home=home)['suite_id']}
                 blocked=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked' and not s['stopping'])
                 self.assertEqual(blocked['completed'],1)
                 trials=call('suite_result',suite,home)['trials']
                 image=Path(home)/'runs'/trials[0]['run_id']/'benchmark/inputs/firmware.bin'
                 image.write_bytes(b'changed temporary snapshot')
                 before=call('events',{'run_id':blocked['active_child_id']},home)['cursor']
-                refused=call('suite_resume',suite,home)
+                refused=resume_suite(suite['suite_id'],home=home)
                 self.assertFalse(refused['ok'],refused)
                 self.assertIn('Snapshot',refused['reason'])
                 self.assertEqual(call('events',{'run_id':blocked['active_child_id']},home)['cursor'],before)
@@ -260,10 +303,11 @@ class RecoveryTests(unittest.TestCase):
     def test_recovered_terminal_final_reconciles_same_child_and_settles_without_resume(self):
         from generative_driver.configurator import Controller
         from generative_driver.setup import configure
-        with tempfile.TemporaryDirectory() as home:
+        with tempfile.TemporaryDirectory() as temporary:
+            home=owner_home(temporary);bench=Path(temporary)/'bench'
             configure('codex',['missing-runtime'],home=home)
             owner=Controller(home)
-            suite=owner.call('suite_start',{'manifest':legacy_manifest(2)})
+            suite={'suite_id':drive_suite(owner,bench,{'manifest':legacy_manifest(2)},wait=False)['suite_id']}
             blocked=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
             child=blocked['active_child_id'];owner.close()
             # Durable public toy final-verdict fixture and a lost attachment, not evaluation.
@@ -279,8 +323,8 @@ class RecoveryTests(unittest.TestCase):
                 self.assertEqual(recovered['status'],'blocked')
                 self.assertIsNone(recovered['active_child_id'])
                 self.assertEqual(owner.find_request('suite:'+suite['suite_id']+':trial:0')['run_id'],child)
-                resumed=owner.call('suite_resume',suite)
-                self.assertTrue(resumed['ok'])
+                resumed=drive_suite(owner,bench,suite,wait=False)
+                self.assertTrue(resumed['accepted'])
                 end=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
                 self.assertEqual(end['completed'],1)
                 rows=owner.call('suite_result',suite)['trials']
@@ -297,14 +341,16 @@ class RecoveryTests(unittest.TestCase):
         import signal
         from generative_driver.client import call, _wait_for_exit
         from generative_driver.setup import configure
+        from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import wait_suite
-        with tempfile.TemporaryDirectory() as home:
+        with tempfile.TemporaryDirectory() as temporary:
+            home=owner_home(temporary)
             marker=Path(home)/'worker.pid'
             code='import os,pathlib,time; p=pathlib.Path('+repr(str(marker))+'); p.write_text(str(os.getpid())); time.sleep(120)'
             configure('codex',[sys.executable,'-c',code],home=home)
             pid=None
             try:
-                suite=call('suite_start',{'manifest':legacy_manifest(2)},home)
+                suite={'suite_id':start_suite(legacy_manifest(2),home=home)['suite_id']}
                 active=wait_suite(call,suite['suite_id'],home,lambda s:bool(s['active_child_id']))
                 deadline=time.monotonic()+5
                 while not marker.exists() and time.monotonic()<deadline:time.sleep(.02)
@@ -322,7 +368,9 @@ class RecoveryTests(unittest.TestCase):
                 self.assertEqual(sum(e['kind']=='suite.recovered' for e in events),1)
                 result=call('result',{'run_id':active['active_child_id']},home)
                 self.assertTrue(result['uncertain_effect'])
-                refused=call('suite_resume',suite,home)
+                # The bench harness that drove the suite saw its child stop, settled nothing and let go of the suite.
+                self.assertFalse(settled_suite(call,suite['suite_id'],home)['stopping'])
+                refused=resume_suite(suite['suite_id'],home=home)
                 self.assertFalse(refused['ok']);self.assertIn('uncertain',refused['reason'])
                 self.assertEqual(len([r for r in call('suite_result',suite,home)['trials'] if r['run_id']]),1)
             finally:
@@ -336,11 +384,12 @@ class InterventionTests(unittest.TestCase):
     def test_public_trials_retain_control_event_identity_without_operator_content(self):
         from generative_driver.configurator import Controller
         from generative_driver.setup import configure
-        with tempfile.TemporaryDirectory() as home:
+        with tempfile.TemporaryDirectory() as temporary:
+            home=owner_home(temporary)
             configure('codex',['missing-runtime'],home=home)
             owner=Controller(home)
             try:
-                suite=owner.call('suite_start',{'manifest':legacy_manifest()})
+                suite={'suite_id':drive_suite(owner,Path(temporary)/'bench',{'manifest':legacy_manifest()},wait=False)['suite_id']}
                 state=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
                 run={'run_id':state['active_child_id']}
                 owner.call('respond',{**run,'message':'PRIVATE-MESSAGE','observation':{'alien':'/PRIVATE/PATH'}})
@@ -374,11 +423,12 @@ class DelayedOperationTests(unittest.TestCase):
         server.daemon_threads=True
         server_thread=threading.Thread(target=server.serve_forever,daemon=True);server_thread.start()
         try:
-            with tempfile.TemporaryDirectory() as home:
+            with tempfile.TemporaryDirectory() as temporary:
+                home=owner_home(temporary)
                 configure('codex',[sys.executable,'-c','import time; time.sleep(120)'],home=home)
                 owner=Controller(home);worker=None
                 try:
-                    suite=owner.call('suite_start',{'manifest':legacy_manifest(2)})
+                    suite={'suite_id':drive_suite(owner,Path(temporary)/'bench',{'manifest':legacy_manifest(2)},wait=False)['suite_id']}
                     state=wait_owner_suite(owner,suite['suite_id'],lambda s:bool(s['active_child_id']))
                     run={'run_id':state['active_child_id']}
                     deadline=time.monotonic()+5;assignments=[];child_state={}
@@ -412,6 +462,7 @@ class DelayedOperationTests(unittest.TestCase):
                     release.set();worker.join(5);self.assertFalse(worker.is_alive())
                     child=wait_child(owner,run['run_id'])
                     self.assertTrue(child['uncertain_effect']);self.assertEqual(child['outcome_category'],'cancelled')
+                    self.assertFalse(settled_suite(lambda m,p,h:owner.call(m,p),suite['suite_id'])['stopping'])
                     with self.assertRaisesRegex(ValueError,'uncertain'):owner.call('suite_resume',suite)
                     self.assertEqual(sum(t['run_id'] is not None for t in owner.call('suite_result',suite)['trials']),1)
                     self.assertEqual(received.count(b'T\n'),1)
@@ -456,12 +507,15 @@ class CleanupFailureTests(unittest.TestCase):
             finally:owner.close()
 
     def _stopped_suite_at_completion(self, home):
-        """Public durable queue fixture; exercises cleanup, not six-stage grading."""
+        """Public durable queue fixture; exercises cleanup, not six-stage grading. The suite's bench harness plays in
+        this process (`self.bench`); a resume relaunches it."""
         from generative_driver.configurator import Controller
         from generative_driver.setup import configure
+        self.bench=Path(home)/'bench'
+        home=owner_home(home)
         configure('codex',['missing-runtime'],home=home)
         owner=Controller(home)
-        suite=owner.call('suite_start',{'manifest':legacy_manifest(2)})
+        suite={'suite_id':drive_suite(owner,self.bench,{'manifest':legacy_manifest(2)},wait=False)['suite_id']}
         state=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
         child=state['active_child_id']
         # Resume a durable exhausted stage queue so the real _run completion and
@@ -488,7 +542,7 @@ class CleanupFailureTests(unittest.TestCase):
             try:
                 # Only the external stop boundary fails; scheduling/state/leases are real.
                 with patch('generative_driver.benchmark.cleanup',side_effect=TimeoutError('scripted stop timeout')):
-                    owner.call('suite_resume',suite)
+                    drive_suite(owner,self.bench,suite,wait=False)
                     state=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
                 self.assertEqual(state['completed'],0)
                 result=owner.call('result',{'run_id':child})
@@ -504,8 +558,9 @@ class CleanupFailureTests(unittest.TestCase):
                     verdict={'stage':'reuse','assignment_id':'cleanup-final','final_evaluation':True,
                              'fault':'model','verdict':'failed','passed':0,'total':1}
                     db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)',('cleanup-final',child,'reuse',json.dumps(verdict),time.time()))
-                owner.close();owner=Controller(home)
+                owner.close();owner=Controller(owner.home)
                 with self.assertRaises(ValueError):owner.call('suite_resume',suite)
+                with self.assertRaisesRegex(ValueError,'uncertain'):drive_suite(owner,self.bench,suite)
                 still=owner.call('suite_result',suite)
                 self.assertEqual(still['completed'],0)
                 self.assertEqual([t['run_id'] for t in still['trials']],[child,None])
@@ -527,7 +582,7 @@ class CleanupFailureTests(unittest.TestCase):
             cancellation=None
             try:
                 with patch('generative_driver.benchmark.cleanup',side_effect=failed_stop):
-                    owner.call('suite_resume',suite)
+                    drive_suite(owner,self.bench,suite,wait=False)
                     self.assertTrue(entered.wait(5))
                     replies=[]
                     cancellation=threading.Thread(target=lambda:replies.append(owner.call('suite_cancel',suite)))
@@ -546,6 +601,7 @@ class CleanupFailureTests(unittest.TestCase):
                 self.assertTrue(result['uncertain_effect'])
                 self._assert_retained_lease(owner,child)
                 self.assertEqual(owner.call('suite_status',suite)['completed'],0)
+                self.assertFalse(settled_suite(lambda m,p,h:owner.call(m,p),suite['suite_id'])['stopping'])
                 with self.assertRaisesRegex(ValueError,'uncertain'):owner.call('suite_resume',suite)
             finally:
                 release.set()
@@ -589,7 +645,7 @@ class FreshReuseCategorySchedulingTests(unittest.TestCase):
                 with patch.object(owner,'_prepare',side_effect=fixture_prepare),patch.object(owner,'_check',side_effect=fixture_check), \
                      patch('generative_driver.configurator.execute',side_effect=fixture_execute), \
                      patch('generative_driver.benchmark.cleanup',side_effect=delayed_cleanup):
-                    owner.call('suite_resume',suite)
+                    drive_suite(owner,self.bench,suite,wait=False)
                     self.assertTrue(entered.wait(5),'Measured failure did not reach cleanup')
                     result=owner.call('result',{'run_id':child})
                     self.assertEqual(result['outcome_category'],'model');self.assertTrue(result['stopping'])

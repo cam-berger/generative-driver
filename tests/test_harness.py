@@ -297,18 +297,24 @@ class StartAdmissionTests(unittest.TestCase):
                 self.controller.start(spec)
         self.assertEqual(self.runs(), 0)
 
-    def test_an_emulated_suite_is_refused_before_anything_is_stored(self):
-        # Catches the configurator freezing and keeping evaluator password file and emulator paths for a suite whose
-        # emulated children cannot start without them.
+    def test_a_suite_holding_a_password_file_or_the_emulator_executable_is_refused_before_anything_is_stored(self):
+        # Catches the configurator freezing and keeping evaluator password file and emulator paths for a suite, whose
+        # emulated children the bench harness provides and grades with them; and a suite no harness drives.
         from suite_fixtures import legacy_manifest
         secret = self.root / 'private-password-handle'
         (self.root / 'home/config.json').write_text(json.dumps({'executors': {'codex': {'command': ['scripted-runtime']}}}))
         manifest = legacy_manifest()
         manifest['entries'] = [{'case': 'tq9-v2', 'scenario': 'original', 'case_seed': 0}]
-        for options in ({'evaluator_password_files': {'tq9-v2': str(secret)}, 'renode': '/opt/renode-handle'}, {}):
-            with self.subTest(options=options), self.assertRaisesRegex(ValueError, 'benchmark run'):
+        token = hashlib.sha256(b'harness token').hexdigest()
+        for options in ({'evaluator_password_files': {'tq9-v2': str(secret)}, 'renode': '/opt/renode-handle'},
+                        {'renode': '/opt/renode-handle'}, {'Evaluator_Password_File': str(secret)}, {'password': 'plaintext'}):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, 'bench harness'):
                 self.controller.call('suite_start', {'manifest': manifest, 'executor': 'codex', 'options': options,
-                                                     'request_id': 'emulated-suite'})
+                                                     'request_id': 'emulated-suite', 'harness_token_sha256': token})
+        # The configurator schedules nothing itself: a suite no bench harness drives is refused.
+        with self.assertRaisesRegex(ValueError, 'benchmark suite start'):
+            self.controller.call('suite_start', {'manifest': manifest, 'executor': 'codex', 'options': {},
+                                                 'request_id': 'emulated-suite'})
         with self.controller._db() as db:
             tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'suite%'")]
             self.assertTrue(tables)

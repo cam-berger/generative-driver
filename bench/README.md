@@ -90,7 +90,7 @@ python -m generative_driver --home "suite state" service start
 python -c "from pathlib import Path; from generative_driver.benchmark import case_root; Path('pilot.json').write_text((case_root() / 'suites/development-pilot.json').read_text(encoding='utf-8'), encoding='utf-8')"
 ```
 
-Create an operator-owned `suite-options.json`:
+Create an operator-owned `suite-options.json`. The command starts a detached bench harness that drives the suite: it alone receives the password files and the emulator executable, on its stdin; the configurator stores the rest.
 
 ```json
 {
@@ -115,9 +115,9 @@ python -m generative_driver --home "suite state" benchmark suite report SUITE_ID
 python -m generative_driver benchmark suite compare "reports/before/suite.json" "reports/pilot-approved-1/suite.json"
 ```
 
-Until the bench harness drives suites, the configurator refuses emulated suites, whose children would carry password files; run emulated trials one at a time with `benchmark run`. Save `suite_id`; a repeated request ID with the same inputs reconnects to the frozen suite. Results are paginated and preserve every planned slot. MCP provides `driver_benchmark_suite_start` and corresponding status/events/result/cancel/resume tools through the same owner. Use CLI to export reports and compare saved results offline. Physical cases remain separate from emulated suite aggregates.
+For each trial the harness provides the device, grades the frozen driver after the run and posts the verdict; the configurator settles the trial from what it records itself. A trial whose grade is unscored stops the suite, which counts `equivalent` drivers out of `planned`. Save `suite_id`; a repeated request ID with the same inputs reconnects to the frozen suite. Results are paginated and preserve every planned slot. MCP provides `driver_benchmark_suite_start` and corresponding status/events/result/cancel/resume tools through the same owner. Use CLI to export reports and compare saved results offline. Physical cases remain separate from emulated suite aggregates.
 
-To stop, use `benchmark suite cancel SUITE_ID`; after resolving the cause, use `benchmark suite resume SUITE_ID`. Both child and suite budgets include stopped wall time. A larger total requires an explicit recorded budget extension; prior attempts and consumed resources remain visible. Extend child and suite budgets separately using their resume commands and a `--budget-reason`.
+To stop, use `benchmark suite cancel SUITE_ID`; after resolving the cause, use `benchmark suite resume SUITE_ID --options "suite-options.json"` (only the password files and emulator path are read from it). The resume relaunches the harness, which continues the stopped trial on a newly provided device or grades an unscored one once. Suites started before the harness drove them are read-only. Both child and suite budgets include stopped wall time. A larger total requires an explicit recorded budget extension; prior attempts and consumed resources remain visible. Extend child and suite budgets separately using their resume commands and a `--budget-reason`.
 
 ## Optional physical trial
 

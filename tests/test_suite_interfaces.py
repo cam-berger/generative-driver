@@ -13,6 +13,13 @@ from mcp.client.stdio import stdio_client
 from suite_fixtures import legacy_manifest, wait_suite, write_scripted_case_worker
 
 
+def server_env(root):
+    """The MCP server's environment: the configured home, and the package under test (an MCP client passes no
+    PYTHONPATH of its own, so the server would otherwise import whatever installation the interpreter finds)."""
+    import generative_driver
+    return {'GENERATIVE_DRIVER_HOME': str(root), 'PYTHONPATH': str(Path(generative_driver.__file__).resolve().parents[1])}
+
+
 def invoke_cli(root, *args):
     return subprocess.run([sys.executable, '-m', 'generative_driver', '--home', str(root),
         'benchmark', 'suite', *args], capture_output=True, text=True, timeout=30)
@@ -72,8 +79,9 @@ raise SystemExit(main())
         from generative_driver.client import call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite CLI export ') as temporary:
-            root = Path(temporary)
-            absent = root/'absent owner'
+            # The bench home lies beside the configurator home, inside the test directory.
+            root = Path(temporary)/'owner'
+            absent = Path(temporary)/'absent owner'
             missing = invoke_cli(absent, 'report', 'unknown-suite')
             self.assertEqual(missing.returncode, 2, missing.stderr + missing.stdout)
             self.assertIn('--output', missing.stderr)
@@ -131,7 +139,7 @@ raise SystemExit(main())
         from generative_driver.client import call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite CLI duplicate ') as temporary:
-            root = Path(temporary)
+            root = Path(temporary)/'owner'
             configure('codex', ['missing-scripted-runtime'], home=root)
             path = root / 'manifest.json'
             path.write_text(json.dumps(legacy_manifest()), encoding='utf-8')
@@ -160,7 +168,7 @@ raise SystemExit(main())
         from generative_driver.client import call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite CLI ') as temporary:
-            root = Path(temporary)
+            root = Path(temporary)/'owner'
             configure('codex', ['missing-scripted-runtime'], home=root)
             manifest, options = root/'manifest.json', root/'options.json'
             manifest.write_text(json.dumps(legacy_manifest()), encoding='utf-8')
@@ -204,7 +212,7 @@ class SuiteMcpTests(unittest.TestCase):
         from generative_driver.client import call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite MCP disappearing owner ') as temporary:
-            root = Path(temporary)
+            root = Path(temporary)/'owner'
             configure('codex', ['missing-scripted-runtime'], home=root)
             call('ping', {}, root)
             # Control only the external connection boundary: stop the real owner
@@ -223,7 +231,7 @@ from generative_driver.mcp import main
 main()
 """
             params = StdioServerParameters(command=sys.executable, args=['-c', code],
-                env={'GENERATIVE_DRIVER_HOME': str(root)}, cwd=str(root))
+                env=server_env(root), cwd=str(root))
             try:
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
@@ -244,11 +252,11 @@ main()
         from generative_driver.client import call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite MCP control ') as temporary:
-            root = Path(temporary)
+            root = Path(temporary)/'owner'
             configure('codex', ['missing-scripted-runtime'], home=root)
             owner_pid = call('ping', {}, root)['pid']
             params = StdioServerParameters(command=sys.executable, args=['-m', 'generative_driver.mcp'],
-                env={'GENERATIVE_DRIVER_HOME': str(root)}, cwd=str(root))
+                env=server_env(root), cwd=str(root))
             async def invoke(session, action, **arguments):
                 reply = await session.call_tool('driver_benchmark_suite_' + action, arguments)
                 self.assertFalse(reply.is_error, reply)
@@ -284,11 +292,11 @@ main()
         from generative_driver.client import call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite MCP public parameters ') as temporary:
-            root, other = Path(temporary), Path(temporary)/'other owner'
+            root, other = Path(temporary)/'owner', Path(temporary)/'other owner'
             configure('codex', ['missing-scripted-runtime'], home=root)
             call('ping', {}, root)
             params = StdioServerParameters(command=sys.executable, args=['-m', 'generative_driver.mcp'],
-                env={'GENERATIVE_DRIVER_HOME': str(root)}, cwd=str(root))
+                env=server_env(root), cwd=str(root))
             expected_error_log = tempfile.TemporaryFile(mode='w+t')
             try:
                 async with stdio_client(params, errlog=expected_error_log) as (reader, writer):
@@ -333,7 +341,8 @@ main()
         from generative_driver.client import call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite MCP reconnect ') as temporary:
-            root = Path(temporary)
+            root = Path(temporary)/'owner'
+            root.mkdir()
             command = write_scripted_case_worker(root)
             script = Path(command[1])
             source = script.read_text(encoding='utf-8')
@@ -346,7 +355,7 @@ main()
             configure('codex', command, home=root)
             owner_pid = call('ping', {}, root)['pid']
             params = StdioServerParameters(command=sys.executable, args=['-m', 'generative_driver.mcp'],
-                env={'GENERATIVE_DRIVER_HOME': str(root)}, cwd=str(root))
+                env=server_env(root), cwd=str(root))
             async def invoke(session, action, **arguments):
                 reply = await session.call_tool('driver_benchmark_suite_' + action, arguments)
                 self.assertFalse(reply.is_error, reply)
@@ -400,10 +409,11 @@ main()
     async def absent_owner(self):
         from generative_driver.client import call
         with tempfile.TemporaryDirectory(prefix='suite MCP Windows policy ') as temporary:
-            root = Path(temporary)
+            root = Path(temporary)/'owner'
+            root.mkdir()
             params = StdioServerParameters(command=sys.executable,
                 args=['-c', "import platform; platform.system=lambda:'Windows'; from generative_driver.mcp import main; main()"],
-                env={'GENERATIVE_DRIVER_HOME': str(root)}, cwd=str(root))
+                env=server_env(root), cwd=str(root))
             try:
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:

@@ -2,6 +2,9 @@ import copy
 import unittest
 from suite_fixtures import pilot_manifest
 
+# The sha256 of a bench harness's token: every suite is frozen for the harness that drives it.
+TOKEN = 'a1' * 32
+
 
 class ManifestTests(unittest.TestCase):
     def test_repeat_slots_preserve_three_entries_and_three_families(self):
@@ -98,12 +101,12 @@ class FreezeTests(unittest.TestCase):
         from generative_driver.benchmark_support.registry import pin_case
         manifest = legacy_manifest()
         config = {'command': ['C:/Program Files/toy/runtime.exe'], 'model': 'toy-model', 'env': {'TOKEN': 'private-toy'}}
-        options = {'evaluator_password_files': {'tq9': 'C:/Private Keys/toy.handle'}, 'scoped_tool_approval': 'emulator'}
+        options = {'ghidra_home': 'C:/Tools/Ghidra', 'scoped_tool_approval': 'emulator'}
         provenance = {'skills_revision': 'a' * 64, 'environment': {'python': 'toy-version'}}
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / 'not-created'
             with patch.dict('os.environ', {'GENERATIVE_DRIVER_HOME': str(home)}):
-                frozen = freeze_suite(manifest, 'codex', config, options, provenance)
+                frozen = freeze_suite(manifest, 'codex', config, options, provenance, harness_token_sha256=TOKEN)
             self.assertFalse(home.exists())
         digest = hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
         self.assertEqual(frozen['manifest_sha256'], digest)
@@ -112,11 +115,14 @@ class FreezeTests(unittest.TestCase):
         self.assertEqual(frozen['entry_pins'][0]['calibration'], {'status': 'legacy-not-required'})
         self.assertEqual(frozen['scope'], 'full-workflow')
         self.assertEqual(frozen['request'], {'manifest': manifest, 'executor': 'codex', 'options': options})
+        # Frozen for the bench harness that drives the suite, by the sha256 of its token alone.
+        self.assertEqual((frozen['scheduler'], frozen['harness_token_sha256']), ('harness/1', TOKEN))
+        self.assertNotIn('harness_token_sha256', frozen['request'])
         original = copy.deepcopy(frozen)
-        manifest['entries'].clear(); config['command'].clear(); options['evaluator_password_files'].clear()
+        manifest['entries'].clear(); config['command'].clear(); options['ghidra_home'] = 'changed'
         provenance['environment']['python'] = 'changed'
         self.assertEqual(frozen, original)
-        other = freeze_suite(original['manifest'], 'goose', {'command': ['other-toy']}, {}, {})
+        other = freeze_suite(original['manifest'], 'goose', {'command': ['other-toy']}, {}, {}, harness_token_sha256=TOKEN)
         self.assertEqual(other['manifest_sha256'], digest)
 
     def test_replay_physical_unknown_and_bad_scenario_do_not_create_home(self):
@@ -131,7 +137,7 @@ class FreezeTests(unittest.TestCase):
                     manifest = pilot_manifest()
                     manifest['entries'] = [{'case': case, 'scenario': 'unsupported' if case == 'tq9' else 'original', 'case_seed': 0}]
                     with self.subTest(case=case), self.assertRaises(ValueError):
-                        freeze_suite(manifest, 'codex', {'command': ['scripted-runtime']}, {}, {})
+                        freeze_suite(manifest, 'codex', {'command': ['scripted-runtime']}, {}, {}, harness_token_sha256=TOKEN)
             self.assertFalse(home.exists())
 
     def test_unknown_options_invalid_commands_and_unselected_handles_are_refused(self):
@@ -139,15 +145,24 @@ class FreezeTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import freeze_suite
         for config in ({}, {'command': []}, {'command': ''}, {'command': ['']}, {'command': [None]}, None):
             with self.subTest(config=config), self.assertRaises(ValueError):
-                freeze_suite(legacy_manifest(), 'codex', config, {}, {})
+                freeze_suite(legacy_manifest(), 'codex', config, {}, {}, harness_token_sha256=TOKEN)
         for options in ({'binding': {}}, {'home': 'not-a-suite-option'}, {'scoped_tool_approval': 'bound-device'},
                         {'evaluator_password_files': {'other-case': 'private.handle'}},
                         {'evaluator_password_files': {'tq9': ''}}, {'evaluator_password_files': []},
-                        {'renode': []}, None):
+                        {'renode': []}, {'ghidra_home': ''}, None):
             with self.subTest(options=options), self.assertRaises(ValueError):
-                freeze_suite(legacy_manifest(), 'codex', {'command': ['toy']}, options, {})
+                freeze_suite(legacy_manifest(), 'codex', {'command': ['toy']}, options, {}, harness_token_sha256=TOKEN)
+        # Password files and the emulator executable belong to the bench harness, even well formed.
+        for options in ({'evaluator_password_files': {'tq9': 'private.handle'}}, {'renode': '/opt/renode'},
+                        {'Evaluator_Password_File': 'private.handle'}):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, 'bench harness'):
+                freeze_suite(legacy_manifest(), 'codex', {'command': ['toy']}, options, {}, harness_token_sha256=TOKEN)
         with self.assertRaises(ValueError):
-            freeze_suite(legacy_manifest(), 'other-runtime', {'command': ['toy']}, {}, {})
+            freeze_suite(legacy_manifest(), 'other-runtime', {'command': ['toy']}, {}, {}, harness_token_sha256=TOKEN)
+        # No suite is frozen without the harness that drives it.
+        for token in (None, '', 'A1' * 32, 'a1' * 31, 64):
+            with self.subTest(token=token), self.assertRaisesRegex(ValueError, 'harness'):
+                freeze_suite(legacy_manifest(), 'codex', {'command': ['toy']}, {}, {}, harness_token_sha256=token)
 
     def test_v2_pending_or_legacy_exception_and_stage_local_work_are_refused(self):
         import tempfile
@@ -161,7 +176,8 @@ class FreezeTests(unittest.TestCase):
                 root = Path(tmp); public_case_fixture(root, **changes)
                 manifest = pilot_manifest(); manifest['entries'] = manifest['entries'][:1]
                 with patch('generative_driver.benchmark.case_root', return_value=root), self.assertRaises(ValueError):
-                    freeze_suite(manifest, 'codex', {'command': ['toy']}, {'scoped_tool_approval': 'emulator'}, {})
+                    freeze_suite(manifest, 'codex', {'command': ['toy']}, {'scoped_tool_approval': 'emulator'}, {},
+                                 harness_token_sha256=TOKEN)
 
     def test_mixed_evidence_tracks_are_refused(self):
         import tempfile
@@ -175,9 +191,9 @@ class FreezeTests(unittest.TestCase):
             public_case_fixture(root, 'sampled-sensor-v1', evidence_track='other-track')
             manifest = pilot_manifest(); manifest['entries'] = [manifest['entries'][0], manifest['entries'][2]]
             with patch('generative_driver.benchmark.case_root', return_value=root), self.assertRaises(ValueError):
-                freeze_suite(manifest, 'codex', {'command': ['toy']}, {}, {})
+                freeze_suite(manifest, 'codex', {'command': ['toy']}, {}, {}, harness_token_sha256=TOKEN)
 
-    def test_child_projection_uses_selected_pin_handle_and_frozen_configuration(self):
+    def test_child_projection_uses_selected_pin_and_frozen_configuration_and_names_no_password(self):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
@@ -191,11 +207,9 @@ class FreezeTests(unittest.TestCase):
             manifest = pilot_manifest(); manifest['entries'] = [manifest['entries'][0], manifest['entries'][1]]
             manifest['entries'][1]['case_seed'] = 73
             config = {'command': ['scripted-contract-fixture'], 'model': 'toy-model'}
-            options = {'renode': 'C:/Tools/renode.exe', 'ghidra_home': 'C:/Tools/Ghidra',
-                       'java_home': 'C:/Tools/Java', 'scoped_tool_approval': 'emulator',
-                       'evaluator_password_files': {'tq9-v2': 'first.private', 'sampled-sensor-v1': 'second.private'}}
+            options = {'ghidra_home': 'C:/Tools/Ghidra', 'java_home': 'C:/Tools/Java', 'scoped_tool_approval': 'emulator'}
             with patch('generative_driver.benchmark.case_root', return_value=root):
-                frozen = freeze_suite(manifest, 'codex', config, options, {'skills_revision': 'toy'})
+                frozen = freeze_suite(manifest, 'codex', config, options, {'skills_revision': 'toy'}, harness_token_sha256=TOKEN)
                 trial = dict(frozen['trials'][3], child_request_id='suite-toy-entry-001-repeat-001')
                 child = child_request(frozen, trial)
             self.assertEqual(child['case'], 'sampled-sensor-v1')
@@ -205,10 +219,11 @@ class FreezeTests(unittest.TestCase):
             self.assertEqual(child['executor_config'], config)
             self.assertEqual(child['budget_seconds'], 10800)
             self.assertEqual(child['scoped_tool_approval'], 'emulator')
-            self.assertEqual(child['case_options'], {'renode': 'C:/Tools/renode.exe', 'ghidra_home': 'C:/Tools/Ghidra',
-                'java_home': 'C:/Tools/Java', 'evaluator_password_file': 'second.private',
+            # The bench harness adds the device, its admission and the evaluation token hash; no password file.
+            self.assertEqual(child['case_options'], {'ghidra_home': 'C:/Tools/Ghidra', 'java_home': 'C:/Tools/Java',
                 'scenario_id': 'original', 'case_seed': 73})
-            self.assertNotIn('first.private', str(child))
+            self.assertNotIn('password', str(child).lower())
+            self.assertNotIn('harness_token', str(child))
             self.assertNotIn('scenario', child['goal'])
             self.assertNotIn('development-pilot', child['goal'])
             self.assertEqual(case_options(child)['scenario_id'], 'original')
@@ -222,7 +237,7 @@ class FreezeTests(unittest.TestCase):
     def test_child_projection_refuses_changed_or_unreserved_slot_identity(self):
         from suite_fixtures import legacy_manifest
         from generative_driver.benchmark_support.suites import freeze_suite, child_request
-        frozen = freeze_suite(legacy_manifest(), 'codex', {'command': ['toy']}, {}, {})
+        frozen = freeze_suite(legacy_manifest(), 'codex', {'command': ['toy']}, {}, {}, harness_token_sha256=TOKEN)
         original = dict(frozen['trials'][0], child_request_id='suite-child-toy')
         mutations = [lambda t: t.update(case='tq9-v2'), lambda t: t.update(scenario='semantic'),
                      lambda t: t.update(case_seed=1), lambda t: t.update(entry_index=-1),

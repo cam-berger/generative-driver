@@ -1,4 +1,5 @@
-"""Durable suite slots in the existing controller database; no execution owner."""
+"""Durable suite slots in the existing controller database; no execution owner. The bench harness that drives a suite is
+recorded by the sha256 of its token, its process id and whether it is attached."""
 import json
 import time
 import uuid
@@ -23,7 +24,8 @@ class SuiteStore:
                     id TEXT PRIMARY KEY, request_id TEXT UNIQUE, request_json TEXT NOT NULL,
                     frozen_json TEXT NOT NULL, status TEXT NOT NULL, reason TEXT,
                     created REAL NOT NULL, updated REAL NOT NULL,
-                    budget_seconds REAL NOT NULL, cancelled INTEGER NOT NULL DEFAULT 0);
+                    budget_seconds REAL NOT NULL, cancelled INTEGER NOT NULL DEFAULT 0,
+                    harness_token_sha256 TEXT, harness_pid INTEGER, harness_attached INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS suite_trials (
                     suite_id TEXT NOT NULL, ordinal INTEGER NOT NULL, trial_json TEXT NOT NULL,
                     child_request_id TEXT NOT NULL UNIQUE, run_id TEXT UNIQUE,
@@ -33,6 +35,10 @@ class SuiteStore:
                     seq INTEGER PRIMARY KEY AUTOINCREMENT, suite_id TEXT NOT NULL,
                     kind TEXT NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL);
             ''')
+            columns={row['name'] for row in db.execute('PRAGMA table_info(suites)')}
+            for column,kind in (('harness_token_sha256','TEXT'),('harness_pid','INTEGER'),('harness_attached','INTEGER NOT NULL DEFAULT 0')):
+                if column not in columns:
+                    db.execute('ALTER TABLE suites ADD COLUMN '+column+' '+kind)
 
     def _event(self,db,suite_id,kind,payload):
         db.execute('INSERT INTO suite_events(suite_id,kind,payload,created) VALUES(?,?,?,?)',
@@ -43,6 +49,7 @@ class SuiteStore:
         if row is None:raise ValueError('Unknown suite_id')
         return {'suite_id':row['id'],**{key:row[key] for key in ('status','reason','created','updated','budget_seconds')},
             'cancelled':bool(row['cancelled']),'frozen':json.loads(row['frozen_json']),
+            'harness':{'token_sha256':row['harness_token_sha256'],'pid':row['harness_pid'],'attached':bool(row['harness_attached'])},
             'trials':[_slot(trial) for trial in db.execute('SELECT * FROM suite_trials WHERE suite_id=? ORDER BY ordinal',(suite_id,))]}
 
     def get(self,suite_id):
@@ -59,20 +66,40 @@ class SuiteStore:
     def find_request(self,request_id,canonical_request):
         with self.open_db() as db:return self._find_request(db,request_id,canonical_request)
 
-    def create(self,frozen,request_id=None):
+    def create(self,frozen,request_id=None,*,harness_pid=None):
+        """A new suite, attached to the harness whose token hash it was frozen with; a saved request is returned as it is."""
         suite_id='suite-'+uuid.uuid4().hex[:16]
         with self.open_db() as db:
             db.execute('BEGIN IMMEDIATE')
             saved=self._find_request(db,request_id,frozen['request'])
-            if saved is not None:return saved
+            if saved is not None:return {**saved,'duplicate':True}
             now=time.time()
-            db.execute('INSERT INTO suites(id,request_id,request_json,frozen_json,status,created,updated,budget_seconds) VALUES(?,?,?,?,?,?,?,?)',
-                (suite_id,request_id,_json(frozen['request']),_json(frozen),'queued',now,now,frozen['manifest']['suite_budget_seconds']))
+            token=frozen.get('harness_token_sha256')
+            db.execute('INSERT INTO suites(id,request_id,request_json,frozen_json,status,created,updated,budget_seconds,'
+                       'harness_token_sha256,harness_pid,harness_attached) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                (suite_id,request_id,_json(frozen['request']),_json(frozen),'queued',now,now,frozen['manifest']['suite_budget_seconds'],
+                 token,harness_pid,int(token is not None)))
             for trial in frozen['trials']:
                 db.execute('INSERT INTO suite_trials(suite_id,ordinal,trial_json,child_request_id,status) VALUES(?,?,?,?,?)',
                     (suite_id,trial['ordinal'],_json(trial),f"suite:{suite_id}:trial:{trial['ordinal']}",'pending'))
             self._event(db,suite_id,'suite.started',{'planned_trials':len(frozen['trials'])})
-            return self._get(db,suite_id)
+            return {**self._get(db,suite_id),'duplicate':False}
+
+    def attach_harness(self,suite_id,token_sha256,pid):
+        """A bench harness takes over the suite's scheduling: the token hash it holds replaces the previous one."""
+        with self.open_db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            self._get(db,suite_id)
+            db.execute('UPDATE suites SET harness_token_sha256=?,harness_pid=?,harness_attached=1,updated=? WHERE id=?',
+                       (token_sha256,pid,time.time(),suite_id))
+            self._event(db,suite_id,'suite.harness_attached',{})
+
+    def detach_harness(self,suite_id):
+        with self.open_db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if self._get(db,suite_id)['harness']['attached']:
+                db.execute('UPDATE suites SET harness_attached=0,updated=? WHERE id=?',(time.time(),suite_id))
+                self._event(db,suite_id,'suite.harness_detached',{})
 
     def set_state(self,suite_id,status,reason=None):
         with self.open_db() as db:
@@ -139,7 +166,11 @@ class SuiteStore:
             self._get(db,suite_id)
             rows=db.execute('SELECT * FROM suite_trials WHERE suite_id=? ORDER BY ordinal LIMIT ? OFFSET ?',(suite_id,limit+1,offset)).fetchall()
         fields=('ordinal','trial_key','case','scenario','case_seed','repeat_index','run_id','status','outcome_category')
-        return {'suite_id':suite_id,'trials':[{key:_slot(row)[key] for key in fields} for row in rows[:limit]],
+        def public(slot):
+            settled=slot['result'] or {}
+            return {**{key:slot[key] for key in fields},'equivalent':settled.get('equivalent'),
+                    'equivalence_status':settled.get('equivalence_status')}
+        return {'suite_id':suite_id,'trials':[public(_slot(row)) for row in rows[:limit]],
             'next_offset':offset+limit if len(rows)>limit else None}
 
     def events(self,suite_id,after=0):
@@ -158,7 +189,10 @@ class SuiteStore:
         category=result.get('outcome_category','unknown')
         if category not in ('completed','model','host','operator','cancelled','unknown'):
             raise ValueError('Invalid child outcome category')
-        public={'run_id':result.get('run_id'),'status':result['status'],'outcome_category':category}
+        # The child's recorded evaluation, as the configurator read it: none for a legacy child graded inside its run.
+        equivalence=result.get('equivalence') if isinstance(result.get('equivalence'),dict) else {}
+        public={'run_id':result.get('run_id'),'status':result['status'],'outcome_category':category,
+                'equivalent':equivalence.get('equivalent'),'equivalence_status':equivalence.get('status')}
         with self.open_db() as db:
             db.execute('BEGIN IMMEDIATE')
             row=db.execute('SELECT * FROM suite_trials WHERE suite_id=? AND ordinal=?',(suite_id,ordinal)).fetchone()

@@ -84,6 +84,8 @@ def main(argv=None):
         elif action == 'resume':
             lifecycle.add_argument('--suite-budget-seconds', type=float)
             lifecycle.add_argument('--budget-reason')
+            lifecycle.add_argument('--options', help='JSON file with the evaluator password files and emulator executable '
+                                   'for the bench harness that resumes the suite')
     exporting = suites.add_parser('report')
     exporting.add_argument('suite_id')
     exporting.add_argument('--output', required=True)
@@ -147,10 +149,15 @@ def main(argv=None):
                     'options': json.loads(Path(args.options).read_text(encoding='utf-8')) if args.options else {},
                     'request_id': args.request_id}
                 result = start_suite(**params)
+            elif args.action == 'resume':
+                # A newly launched bench harness takes the suite over; it alone receives password files and the emulator.
+                from .benchmark_support.suites import resume_suite
+                result = resume_suite(args.suite_id, json.loads(Path(args.options).read_text(encoding='utf-8')) if args.options else None,
+                                      suite_budget_seconds=args.suite_budget_seconds, budget_reason=args.budget_reason)
             else:
                 from .client import call
                 params = {'suite_id': args.suite_id}
-                for key in ('after', 'offset', 'limit', 'suite_budget_seconds', 'budget_reason'):
+                for key in ('after', 'offset', 'limit'):
                     if hasattr(args, key) and getattr(args, key) is not None:
                         params[key] = getattr(args, key)
                 result = call('suite_' + args.action, params)

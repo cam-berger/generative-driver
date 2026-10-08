@@ -103,7 +103,8 @@ def wait_suite(call, suite_id, home, predicate):
                 idle_stop, last_event = time.monotonic()+10, child_page['events'][-1]
         if predicate(state):
             return state
-        if state['status'] in ('failed','blocked','cancelled','completed'):
+        # A stopped suite whose bench harness has not let go of it yet is still settling.
+        if state['status'] in ('failed','blocked','cancelled','completed') and not state['stopping']:
             raise AssertionError({'unexpected_terminal':state,'last_event':last_event})
         time.sleep(.02)
     raise AssertionError({'wait_expired':state,'last_event':last_event})
@@ -111,3 +112,56 @@ def wait_suite(call, suite_id, home, predicate):
 
 def wait_owner_suite(owner, suite_id, predicate):
     return wait_suite(lambda method,params,home:owner.call(method,params),suite_id,None,predicate)
+
+
+def settled_suite(call, suite_id, home=None, seconds=10):
+    """The suite's status once nothing of it is stopping: its child has stopped and its bench harness let go."""
+    import time
+    deadline = time.monotonic() + seconds
+    while True:
+        state = call('suite_status', {'suite_id': suite_id}, home)
+        if not state['stopping'] or time.monotonic() > deadline:
+            return state
+        time.sleep(.02)
+
+
+def drive_suite(owner, bench, request, *, wait=True, calls=None, stop=None):
+    """Play the bench harness for an in-process owner: the harness's suite loop runs in a thread and makes its
+    configurator requests to `owner`. With `wait`, returns the harness's record once it has finished; otherwise the
+    record once the configurator took the suite on or refused it. A refusal raises ValueError with its reason."""
+    import threading
+    import uuid
+    from pathlib import Path
+    from generative_driver.benchmark_support import harness
+    def configurator(method, params=None):
+        if calls is not None:
+            calls.append((method, params))
+        if method == 'ping':
+            return {'ok': True}
+        try:
+            return owner.call(method, params or {})
+        except Exception as error:
+            return {'ok': False, 'error': type(error).__name__, 'reason': str(error)}
+    directory = Path(bench) / ('suite-' + uuid.uuid4().hex[:8])
+    done = {}
+    thread = threading.Thread(target=lambda: done.update(record=harness.run_suite(
+        directory, {'home': str(owner.home), **request}, call=configurator, stop=stop)), daemon=True)
+    thread.start()
+    if wait:
+        thread.join(60)
+        if thread.is_alive():
+            raise AssertionError('The suite harness did not finish: ' + str(harness.read_suite(directory)))
+        record = done['record']
+    else:
+        import time
+        deadline = time.monotonic() + 30
+        while True:
+            record = harness.read_suite(directory) or {}
+            if record.get('accepted') or record.get('status') in ('failed', 'finished') or not thread.is_alive():
+                break
+            if time.monotonic() > deadline:
+                raise AssertionError('The suite harness never took the suite on: ' + str(record))
+            time.sleep(.02)
+    if not record.get('accepted'):
+        raise ValueError(record.get('reason') or 'The suite harness stopped before the configurator took the suite on')
+    return record

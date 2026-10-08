@@ -44,7 +44,10 @@ def _experiment(value):
     _exact(value,('schema','comparison_identity','dimensions','execution_snapshots'))
     if value['schema']!='benchmark-suite-experiment/1':raise ValueError('Unsupported experiment')
     identity=value['comparison_identity']
-    _exact(identity,('manifest','manifest_sha256','entry_pins','trials','repetitions','execution','evidence_track','scope','time_policy','evaluator_revision','budgets','intervention_policy'))
+    # A suite the bench harness drives names its protocol; one frozen before it names none and keeps its meaning.
+    _exact(identity,('manifest','manifest_sha256','entry_pins','trials','repetitions','execution','evidence_track','scope','time_policy','evaluator_revision','budgets','intervention_policy')
+           +(('protocol',) if 'protocol' in identity else ()))
+    if 'protocol' in identity and identity['protocol']!='assistive/1':raise ValueError('Unsupported suite protocol')
     manifest=normalize_manifest(identity['manifest']);slots=expand_trials(manifest)
     if identity['manifest_sha256']!=_digest(manifest) or identity['trials']!=slots or identity['repetitions']!=manifest['repetitions']:
         raise ValueError('Frozen suite identity mismatch')
@@ -113,6 +116,7 @@ def _experiment(value):
         _exact(snapshot,('trial_key','snapshot_sha256'))
         if snapshot['trial_key']!=slot['trial_key'] or snapshot['snapshot_sha256'] is not None and not _sha(snapshot['snapshot_sha256']):raise ValueError('Invalid snapshot identity')
     return {'schema':'benchmark-suite-experiment/1','comparison_identity':{
+        **({'protocol':identity['protocol']} if 'protocol' in identity else {}),
         'manifest':manifest,'manifest_sha256':identity['manifest_sha256'],'entry_pins':public_pins,
         'trials':slots,'repetitions':manifest['repetitions'],
         **{key:identity[key] for key in ('execution','evidence_track','scope','evaluator_revision')},

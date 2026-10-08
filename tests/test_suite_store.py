@@ -3,7 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 from generative_driver.configurator import Controller
-from suite_fixtures import legacy_manifest,sqlite_context,wait_owner_suite
+from suite_fixtures import drive_suite,legacy_manifest,sqlite_context,wait_owner_suite
+
+# The sha256 of the token of the bench harness a suite is frozen for.
+TOKEN='a1'*32
 
 
 class StoreTests(unittest.TestCase):
@@ -14,7 +17,7 @@ class StoreTests(unittest.TestCase):
             home=Path(temporary);controller=Controller(home)
             try:
                 frozen=freeze_suite(legacy_manifest(),'codex',
-                    {'command':['missing-scripted-runtime'],'model':'frozen-model'},{},{})
+                    {'command':['missing-scripted-runtime'],'model':'frozen-model'},{},{},harness_token_sha256=TOKEN)
                 store=SuiteStore(sqlite_context(home/'runs.sqlite3'))
                 suite=store.create(frozen,'one-request')
                 store.set_state(suite['suite_id'],'running')
@@ -36,7 +39,7 @@ class StoreTests(unittest.TestCase):
         from generative_driver.benchmark_support.suite_store import SuiteStore
         with tempfile.TemporaryDirectory() as temporary:
             store=SuiteStore(sqlite_context(Path(temporary)/'runs.sqlite3'))
-            frozen=freeze_suite(legacy_manifest(2),'codex',{'command':['scripted'],'model':'original'},{},{})
+            frozen=freeze_suite(legacy_manifest(2),'codex',{'command':['scripted'],'model':'original'},{},{},harness_token_sha256=TOKEN)
             first=store.create(frozen,'request')
             current=deepcopy(frozen);current['executor_config']['model']='changed'
             repeated=store.create(current,'request')
@@ -56,7 +59,7 @@ class StoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             db=sqlite_context(Path(temporary)/'runs.sqlite3')
             first,second=SuiteStore(db),SuiteStore(db)
-            suite=first.create(freeze_suite(legacy_manifest(2),'codex',{'command':['scripted']},{},{}))
+            suite=first.create(freeze_suite(legacy_manifest(2),'codex',{'command':['scripted']},{},{},harness_token_sha256=TOKEN))
             sid=suite['suite_id']
             self.assertIsNone(first.reserve(sid))
             first.set_state(sid,'running');barrier=Barrier(2)
@@ -81,7 +84,7 @@ class StoreTests(unittest.TestCase):
         from generative_driver.benchmark_support.suite_store import SuiteStore
         with tempfile.TemporaryDirectory() as temporary:
             store=SuiteStore(sqlite_context(Path(temporary)/'runs.sqlite3'))
-            frozen=freeze_suite(legacy_manifest(3),'codex',{'command':['PRIVATE-COMMAND']},{},{})
+            frozen=freeze_suite(legacy_manifest(3),'codex',{'command':['PRIVATE-COMMAND']},{},{},harness_token_sha256=TOKEN)
             sid=store.create(frozen)['suite_id']
             for key,values in {'offset':[-1,True,1.5,'0'],'limit':[0,101,True,1.5,'2']}.items():
                 for value in values:
@@ -93,7 +96,8 @@ class StoreTests(unittest.TestCase):
             last=store.trials(sid,offset=page['next_offset'],limit=2)
             self.assertEqual([t['ordinal'] for t in last['trials']],[2])
             self.assertIsNone(last['next_offset'])
-            self.assertEqual(set(page['trials'][0]),{'ordinal','trial_key','case','scenario','case_seed','repeat_index','run_id','status','outcome_category'})
+            self.assertEqual(set(page['trials'][0]),{'ordinal','trial_key','case','scenario','case_seed','repeat_index','run_id','status',
+                                                     'outcome_category','equivalent','equivalence_status'})
             for value in [-1,True,1.5,'0']:
                 with self.subTest(after=value),self.assertRaises(ValueError):store.events(sid,after=value)
             for index in range(501):store.set_state(sid,'blocked','PRIVATE-REASON')
@@ -111,7 +115,7 @@ class StoreTests(unittest.TestCase):
         from generative_driver.benchmark_support.suite_store import SuiteStore
         with tempfile.TemporaryDirectory() as temporary:
             store=SuiteStore(sqlite_context(Path(temporary)/'runs.sqlite3'))
-            sid=store.create(freeze_suite(legacy_manifest(2),'codex',{'command':['scripted']},{},{}))['suite_id']
+            sid=store.create(freeze_suite(legacy_manifest(2),'codex',{'command':['scripted']},{},{},harness_token_sha256=TOKEN))['suite_id']
             store.set_state(sid,'running');slot=store.reserve(sid)
             store.attach(sid,0,slot['child_request_id'],'run-one')
             result={'run_id':'run-one','status':'failed','outcome_category':'model','stopping':False,'uncertain_effect':False}
@@ -125,7 +129,8 @@ class StoreTests(unittest.TestCase):
             saved=store.get(sid)['trials'][0]
             self.assertEqual(saved['status'],'finished')
             self.assertEqual(saved['outcome_category'],'model')
-            self.assertEqual(saved['result'],{'run_id':'run-one','status':'failed','outcome_category':'model'})
+            self.assertEqual(saved['result'],{'run_id':'run-one','status':'failed','outcome_category':'model',
+                                              'equivalent':None,'equivalence_status':None})
             self.assertEqual(store.reserve(sid)['ordinal'],1)
 
     def test_recovery_blocks_unfinished_suites_without_retry_or_repeated_events(self):
@@ -133,7 +138,7 @@ class StoreTests(unittest.TestCase):
         from generative_driver.benchmark_support.suite_store import SuiteStore
         with tempfile.TemporaryDirectory() as temporary:
             db=sqlite_context(Path(temporary)/'runs.sqlite3');store=SuiteStore(db)
-            frozen=freeze_suite(legacy_manifest(),'codex',{'command':['scripted']},{},{})
+            frozen=freeze_suite(legacy_manifest(),'codex',{'command':['scripted']},{},{},harness_token_sha256=TOKEN)
             queued=store.create(frozen)['suite_id'];running=store.create(frozen)['suite_id']
             done=store.create(frozen)['suite_id'];store.set_state(done,'completed')
             store.set_state(running,'running');reserved=store.reserve(running)
@@ -156,7 +161,7 @@ class ControllerStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             home=Path(temporary);controller=Controller(home)
             try:
-                frozen=freeze_suite(legacy_manifest(),'codex',{'command':['missing-scripted-runtime']},{},{})
+                frozen=freeze_suite(legacy_manifest(),'codex',{'command':['missing-scripted-runtime']},{},{},harness_token_sha256=TOKEN)
                 request=child_request(frozen,dict(frozen['trials'][0],child_request_id='pinned'))
                 changed=deepcopy(request);changed['case_pin']['manifest_sha256']='a'*64
                 with self.assertRaisesRegex(ValueError,'pin'):controller.start(changed)
@@ -175,7 +180,7 @@ class ControllerStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             home=Path(temporary);controller=Controller(home)
             try:
-                frozen=freeze_suite(legacy_manifest(),'codex',{'command':['missing-scripted-runtime'],'model':'frozen-model'},{},{})
+                frozen=freeze_suite(legacy_manifest(),'codex',{'command':['missing-scripted-runtime'],'model':'frozen-model'},{},{},harness_token_sha256=TOKEN)
                 (home/'config.json').write_text(json.dumps({'executors':{'codex':{'model':'new-model','reasoning_effort':'high'}}}),encoding='utf-8')
                 request=child_request(frozen,dict(frozen['trials'][0],child_request_id='frozen'))
                 missing=dict(request,request_id='missing-config');missing.pop('executor_config')
@@ -197,21 +202,23 @@ class ControllerStorageTests(unittest.TestCase):
         import json
         from generative_driver.benchmark_support.suites import child_request
         with tempfile.TemporaryDirectory() as temporary:
-            home=Path(temporary)
+            root=Path(temporary);home=root/'home';home.mkdir()
             config=home/'config.json'
             config.write_text(json.dumps({'executors':{'codex':{'command':['missing-scripted-runtime'],'model':'frozen-model'}}}),encoding='utf-8')
             controller=Controller(home)
             request={'manifest':legacy_manifest(2),'executor':'codex','request_id':'suite-request'}
             try:
-                started=controller.call('suite_start',request);sid=started['suite_id']
+                # The bench harness starts and drives the suite; the configurator freezes and stores it.
+                started=drive_suite(controller,root/'bench',request,wait=False);sid=started['suite_id']
                 self.assertFalse(started['duplicate'])
                 status=wait_owner_suite(controller,sid,lambda s:s['status']=='blocked' and not s['stopping'])
                 self.assertEqual((status['status'],status['planned'],status['completed']),('blocked',2,0))
                 self.assertIsNotNone(status['active_child_id']);self.assertFalse(status['stopping'])
                 config.write_text('INVALID CONFIG',encoding='utf-8')
-                duplicate=controller.call('suite_start',request)
+                duplicate=controller.call('suite_start',{**request,'harness_token_sha256':'b2'*32})
                 self.assertTrue(duplicate['duplicate']);self.assertEqual(duplicate['suite_id'],sid)
-                with self.assertRaises(ValueError):controller.call('suite_start',dict(request,manifest=legacy_manifest(3)))
+                with self.assertRaises(ValueError):
+                    controller.call('suite_start',dict(request,manifest=legacy_manifest(3),harness_token_sha256='b2'*32))
                 frozen=controller._suites.get(sid)['frozen']
                 controller._suites.set_state(sid,'running');slot=controller._suites.reserve(sid)
                 self.assertEqual(child_request(frozen,slot)['executor_config']['model'],'frozen-model')
@@ -233,15 +240,16 @@ class ControllerStorageTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import child_request
         from generative_driver.benchmark_support.evidence import public_pin
         with tempfile.TemporaryDirectory() as temporary:
-            home=Path(temporary)
+            root=Path(temporary);home=root/'home';home.mkdir()
             config={'command':['missing-scripted-runtime','PRIVATE-COMMAND'],'model':'frozen-model','provider':'provider',
                 'version':'version','reasoning_effort':'high','max_turns':4,'endpoint':'PRIVATE-ENDPOINT','api_key':'PRIVATE-KEY',
                 'settings':{'token':'PRIVATE-NESTED'}}
             (home/'config.json').write_text(json.dumps({'executors':{'codex':config}}),encoding='utf-8')
             controller=Controller(home)
             try:
-                request={'manifest':legacy_manifest(3),'options':{'evaluator_password_files':{'tq9':'PRIVATE-HANDLE'},'renode':'PRIVATE-PATH'}}
-                sid=controller.call('suite_start',request)['suite_id']
+                # Evaluator handles and the emulator executable reach the bench harness only.
+                request={'manifest':legacy_manifest(3),'options':{},'password_files':{'tq9':'PRIVATE-HANDLE'},'renode':'PRIVATE-PATH'}
+                sid=drive_suite(controller,root/'bench',request,wait=False)['suite_id']
                 state=wait_owner_suite(controller,sid,lambda s:s['status']=='blocked' and not s['stopping'])
                 frozen=controller._suites.get(sid)['frozen']
                 first=controller.call('suite_result',{'suite_id':sid,'limit':1})
@@ -249,6 +257,7 @@ class ControllerStorageTests(unittest.TestCase):
                 self.assertEqual(experiment['schema'],'benchmark-suite-experiment/1')
                 self.assertEqual(set(experiment),{'schema','comparison_identity','dimensions','execution_snapshots'})
                 identity=experiment['comparison_identity']
+                self.assertEqual(identity['protocol'],'assistive/1')
                 self.assertEqual(identity['manifest'],legacy_manifest(3))
                 self.assertEqual(identity['manifest_sha256'],frozen['manifest_sha256'])
                 self.assertEqual(identity['entry_pins'],[public_pin(pin) for pin in frozen['entry_pins']])
@@ -280,11 +289,11 @@ class ControllerStorageTests(unittest.TestCase):
         import time
         from generative_driver.benchmark_support.suites import child_request
         with tempfile.TemporaryDirectory() as temporary:
-            home=Path(temporary)
+            root=Path(temporary);home=root/'home';home.mkdir()
             (home/'config.json').write_text(json.dumps({'executors':{'codex':{'command':['missing-scripted-runtime']}}}),encoding='utf-8')
             controller=Controller(home)
             try:
-                sid=controller.call('suite_start',{'manifest':legacy_manifest(2)})['suite_id']
+                sid=drive_suite(controller,root/'bench',{'manifest':legacy_manifest(2)},wait=False)['suite_id']
                 state=wait_owner_suite(controller,sid,lambda s:s['status']=='blocked' and not s['stopping'])
                 slot=controller._suites.get(sid)['trials'][0];rid=slot['run_id']
                 before=controller.call('suite_result',{'suite_id':sid})['experiment']

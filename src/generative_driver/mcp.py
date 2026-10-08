@@ -126,7 +126,9 @@ def driver_benchmark_suite_start(manifest: dict, executor: str = 'codex',
                                  options: dict | None = None, request_id: str | None = None) -> str:
     """Start a durable emulated suite; save suite_id to reconnect from either client.
 
-    Use the configured MCP home; password file handles stay evaluator-only.
+    A detached bench harness drives the suite: it receives options.evaluator_password_files and options.renode (FILE
+    paths, never a password) on its stdin, provides each child's device and grades each frozen driver after its run;
+    the configurator never receives them. Use the configured MCP home.
     Emulator tool approval and inference budgets require explicit user authorization.
     Windows requires an independently started configurator.
     """
@@ -164,16 +166,21 @@ def driver_benchmark_suite_cancel(suite_id: str) -> str:
 
 @server.tool()
 def driver_benchmark_suite_resume(suite_id: str, suite_budget_seconds: float | None = None,
-                                  budget_reason: str | None = None) -> str:
-    """Resume a stopped incomplete suite after correcting its blocker.
+                                  budget_reason: str | None = None, options: dict | None = None) -> str:
+    """Resume a stopped incomplete suite after correcting its blocker; a newly launched bench harness takes it over.
 
+    options holds only evaluator_password_files and renode (FILE paths) for that harness; emulated suites need them.
     A user-approved extension increases the total suite wall-clock budget from
     original start and requires a reason; it does not extend a child's budget.
     """
-    params = {'suite_id': suite_id}
-    if suite_budget_seconds is not None:
-        params.update(suite_budget_seconds=suite_budget_seconds, budget_reason=budget_reason)
-    return _call('suite_resume', **params)
+    from .benchmark_support.suites import resume_suite
+    try:
+        return json.dumps(resume_suite(suite_id, options, autostart=platform.system() != 'Windows',
+                                       suite_budget_seconds=suite_budget_seconds,
+                                       budget_reason=budget_reason if suite_budget_seconds is not None else None),
+                          allow_nan=False, default=str)
+    except (OSError, ValueError, RuntimeError) as error:
+        return json.dumps({'ok': False, 'reason': str(error)})
 
 
 def main():

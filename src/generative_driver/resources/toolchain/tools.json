@@ -26,7 +26,7 @@
     },
     {
       "name": "interface_execute",
-      "description": "Execute one typed schema 3-6 operation after identity verification. Bindings are explicit host choices.\nOnly read effects by default; write/actuate require grants. Explicit replay is offline evidence.\n",
+      "description": "Execute one typed schema 3-6 operation after identity verification. Bindings are explicit host choices.\nOnly read effects by default; write/actuate require grants. Explicit replay is offline evidence. Every refusal\nbefore the transport opens (model bytes, validation, operation, evidence bound, replay fixture) returns\ntransport_open_attempted false (exit 1).\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -1165,7 +1165,7 @@
     },
     {
       "name": "emit_check",
-      "description": "Check generated package consistency offline. Schema 1 uses register fixtures; schemas 3-6 verify\nmanifest integrity and runtime currency separately. Current trusted packages run standalone wire replay;\nintact archived runtimes remain verifiable without executing their code. An external manifest pin\nestablishes artifact identity. Executable packages use their bundled model when model_dir is omitted;\nregister packages require it. A package it cannot read is refused (exit 1); when the host cannot run the\ncheck (a file, process or import failure, or a timeout) the result is fault host with exit 4, which says\nnothing about the package. This is not physical validation or sequence-safety evidence.\n",
+      "description": "Check generated package consistency offline. Schema 1 uses register fixtures; schemas 3-6 verify\nmanifest integrity and runtime currency separately. Current trusted packages run standalone wire replay;\nintact archived runtimes remain verifiable without executing their code. An external manifest pin\nestablishes artifact identity. Executable packages use their bundled model when model_dir is omitted;\nregister packages require it. A package it cannot read or parse is refused (exit 1). Only a failure outside\nthe package bytes (its temporary folder, starting the replay, an import, memory or a timeout) is fault host\nwith exit 4, which says nothing about the package. This is not physical validation or sequence-safety evidence.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {

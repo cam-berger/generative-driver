@@ -519,18 +519,14 @@ def _toolchain_fault(result):
     """The exception type a toolchain error result names ('OSError' for 'OSError: ...'), or 'toolchain error'."""
     error = result.get('error')
     kind = error.split(':', 1)[0].strip() if isinstance(error, str) and ':' in error else ''
-    return kind if re.fullmatch(r'[A-Za-z_][\w.]*(Error|Exception|Exit|Interrupt)', kind) else 'toolchain error'
-
-
-# Exceptions a tool raises to refuse its arguments or the content it was given, by the name a toolchain error names:
-# the built-in ValueError, TypeError and LookupError families and the runtime's own ValueErrors.
-_CONTENT_ERRORS = ('JSONDecodeError', 'ModelError', 'CheckError', 'FrameError', 'QualifyError')
+    return kind if re.fullmatch(r'[A-Za-z_][\w.]*(Error|Exception|Exit|Interrupt|Expired)', kind) else 'toolchain error'
 
 
 def _host_fault(result):
-    """Whether a tool result says the host, not its input, failed: the tool says so (fault host), or it is a toolchain
-    error that is no content refusal (an OSError, an ImportError, an unknown exception, or an error that names no
-    exception type, which the toolkit returns when even the tool's own event log failed)."""
+    """Whether a tool result says the host, not its input, failed, by a positive list: the tool says so (fault host),
+    or it is a toolchain error naming a host failure (the OSError family, ImportError, MemoryError or a subprocess
+    timeout), or an error that names no exception type, which the toolkit returns when even its own record of the call
+    failed. Any other error, such as an AttributeError or RecursionError on content a worker wrote, is no host fault."""
     if result.get('fault') == 'host':
         return True
     if not isinstance(result.get('error'), str):
@@ -538,7 +534,8 @@ def _host_fault(result):
     import builtins
     kind = _toolchain_fault(result)
     cls = getattr(builtins, kind, None)
-    return not (kind in _CONTENT_ERRORS or isinstance(cls, type) and issubclass(cls, (ValueError, TypeError, LookupError)))
+    return (kind == 'toolchain error' or kind.rsplit('.', 1)[-1] == 'TimeoutExpired'
+            or isinstance(cls, type) and issubclass(cls, (OSError, ImportError, MemoryError)))
 
 
 def _declared_refusal(result):
@@ -560,8 +557,8 @@ def _live_outcome(event):
       transport opened, or a register package's own live suite reported failing checks. The verdict counts it as the
       driver's only when the operation ran the frozen bytes;
     - 'inconclusive': anything else that did not succeed, such as an operator, host or transport fault (exit 4), or
-      a toolchain error the tool did not declare as a refusal, which may have come after the device was contacted.
-      It says nothing about the driver.
+      a toolchain error the tool did not declare as a refusal, which may have come after the device was contacted
+      (labelled a host fault only when it names one, `_host_fault`). It says nothing about the driver.
 
     Returns (outcome, fault detail for an inconclusive one)."""
     from interface_runtime.faults import classify_failure
@@ -589,35 +586,53 @@ def _live_outcome(event):
         # A register package's live suite ran on the device; failing checks are the driver's.
         return ('failed', None) if isinstance(result.get('failed'), int) and result['failed'] > 0 else (
             'inconclusive', 'live suite exited with an error')
-    return 'inconclusive', 'host fault (' + _toolchain_fault(result) + ')'
+    # The tool raised without declaring a refusal: say whether that names a host failure, never guess one.
+    return 'inconclusive', ('host fault' if _host_fault(result) else 'undeclared toolchain error') + (
+        ' (' + _toolchain_fault(result) + ')')
 
 
 def _frozen_package(package):
     """What judging a run of a frozen package needs, read from its bytes: its content digest, its manifest's digest
     (which the snapshot emit_test_live executes carries), its driver directory's digest (which interface_execute runs
-    as a model) and its identity operation. A part that cannot be read is None."""
+    as a model), its identity operation and each operation's declared effect (absent is actuate, as the gateway reads
+    it). A part that cannot be read is None."""
     root = Path(package['path'])
     def read(load):
         try:
             return load()
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             return None
     model = read(lambda: json.loads((root / 'driver' / 'model.json').read_text(encoding='utf-8')))
     identity = model.get('identity') if isinstance(model, dict) else None
+    operations = model.get('operations') if isinstance(model, dict) else None
+    effects = ({name: op.get('effect', 'actuate') if isinstance(op, dict) else None for name, op in operations.items()}
+               if isinstance(operations, dict) and model.get('schema') != 'interface-model/1' else None)
     return {'sha256': package['sha256'], 'manifest_sha256': read(lambda: digest(root / 'manifest.json')),
             'driver_sha256': read(lambda: digest(root / 'driver')),
-            'identity': identity.get('operation') if isinstance(identity, dict) else None}
+            'identity': identity.get('operation') if isinstance(identity, dict) else None, 'effects': effects}
 
 
 NEVER_RAN = 'fresh reuse never ran the frozen package with emit_test_live'
 IDENTITY_ONLY = ('fresh reuse ran no operation of the frozen package beyond its identity operation with emit_test_live; '
                  'identity alone is not evidence of function')
+UNGRANTED = ("the operator's effect grants permit no operation of the frozen package beyond its identity operation, so "
+             'fresh reuse could not test a function of it; that limit says nothing about the driver')
 
 
-def _fresh_reuse(package, events, started=()):
+def _ungranted(package, grants):
+    """Whether the operator's effect grants (`grants`, or None when not known) permit no operation of the frozen package
+    beyond its identity operation, although it has one: then the gateway refuses every function of it."""
+    if package is None or grants is None or package.get('identity') is None or not isinstance(package.get('effects'), dict):
+        return False
+    functions = [effect for name, effect in package['effects'].items() if name != package['identity']]
+    return bool(functions) and not any(effect in ('read', *grants) for effect in functions)
+
+
+def _fresh_reuse(package, events, started=(), grants=None):
     """Judge fresh reuse's live operations of a frozen package (`_frozen_package`, or None when there is none), from
     the configurator's own records: `events` are tool.finished payloads and `started` tool.started payloads with
-    their dispatch ids. The final verdict and each reuse attempt's notes use this one rule.
+    their dispatch ids; `grants` are the run's operator effect grants. The final verdict and each reuse attempt's
+    notes use this one rule.
 
     - It passes when every live operation succeeded (a call refused before the device was contacted is not one) and
       at least one emit_test_live ran the frozen package and an operation of it beyond its identity operation on the
@@ -627,7 +642,8 @@ def _fresh_reuse(package, events, started=()):
       bytes: the package for emit_test_live, or its driver directory for interface_execute), or when no such
       operation ran.
     - It is unsettled (None) when a live operation was inconclusive (an operator, host or transport fault, or a
-      failure of other bytes) or was dispatched without a recorded result.
+      failure of other bytes) or was dispatched without a recorded result, or when no function ran because the
+      operator's grants permit none beyond identity: the gateway refuses those calls, which says nothing of the driver.
 
     Returns (the fresh_reuse_live_operations check, its diff entries)."""
     shas = lambda e: e.get('argument_sha256') or {}
@@ -672,8 +688,9 @@ def _fresh_reuse(package, events, started=()):
     refused = sum(1 for _, outcome, _ in rows if outcome == 'refused')
     ran = [e for e, outcome, _ in rows if emitted(e) and outcome != 'refused']
     exercised = [e for e, outcome, _ in rows if functional(e, outcome)]
+    ungranted = not exercised and _ungranted(package, grants)
     check = {'id': 'fresh_reuse_live_operations',
-             'passed': False if failed or not exercised else None if unsettled else True,
+             'passed': False if failed else None if ungranted else False if not exercised else None if unsettled else True,
              'operations': [{'dispatch_id': e.get('dispatch_id'), 'name': e.get('name'), 'ok': outcome == 'succeeded',
                              'outcome': outcome, **({'fault': detail} if detail else {}), 'emitted_package': emitted(e)}
                             for e, outcome, detail in rows],
@@ -686,16 +703,17 @@ def _fresh_reuse(package, events, started=()):
     if not exercised:
         # The rule is a live test of a function of the frozen package itself; running its driver directory as a
         # model is judged above but is not that test.
-        diff.append({'id': check['id'], 'reason': IDENTITY_ONLY if ran else NEVER_RAN + (
+        diff.append({'id': check['id'], 'reason': UNGRANTED if ungranted else IDENTITY_ONLY if ran else NEVER_RAN + (
             ' (' + str(refused) + ' call' + ('s' if refused > 1 else '') + ' refused before the device was contacted)' if refused else '')})
     return check, diff
 
 
-def _self_evidence(accepted, events, started=(), assignments=()):
+def _self_evidence(accepted, events, started=(), assignments=(), grants=None):
     """A generic run's final verdict, from the configurator's own records only.
 
     `events` are tool.finished payloads; `started` are tool.started payloads with their dispatch ids; `assignments`
-    are the run's reuse assignments as {id, inputs}, with the input hashes the configurator recorded.
+    are the run's reuse assignments as {id, inputs}, with the input hashes the configurator recorded; `grants` are the
+    run's operator effect grants.
 
     - **Equivalent:** the emitted package passed emit_check replay of the recorded device exchanges, which the
       configurator ran at emit, and fresh reuse passed `_fresh_reuse`: every live operation succeeded, and at least
@@ -706,7 +724,8 @@ def _self_evidence(accepted, events, started=(), assignments=()):
       check, or a replay of exchanges the worker supplied, is not one), the driver failed on the device, or fresh reuse
       never ran a function of the package beyond its identity with emit_test_live.
     - **Unscored (None):** otherwise, when a live operation was inconclusive (an operator, host or transport fault, or
-      a failure of bytes other than the emitted driver) or was dispatched without a recorded result.
+      a failure of bytes other than the emitted driver) or was dispatched without a recorded result, or when the
+      operator's grants permit no function of the package beyond its identity, so none could run.
 
     Fresh reuse is every reuse assignment that received the frozen package, so an attempt that stopped before its
     handoff and was resumed is judged with the accepted one. This is self-evidence about the driver's outputs on the
@@ -731,7 +750,7 @@ def _self_evidence(accepted, events, started=(), assignments=()):
     judged |= {reuse['assignment_id']} if reuse is not None else set()
     mine = lambda e: e.get('assignment_id') in judged
     operations, live = _fresh_reuse(_frozen_package(packages[0]) if frozen else None,
-                                    [e for e in events if mine(e)], [e for e in started if mine(e)])
+                                    [e for e in events if mine(e)], [e for e in started if mine(e)], grants)
     diff = []
     if not replayed:
         if passed:
@@ -1620,7 +1639,8 @@ class Controller:
             equivalence = _self_evidence(accepted, [json.loads(row['payload']) for row in rows if row['kind'] == 'tool.finished'],
                                          [{**json.loads(row['payload']), 'dispatch_id': str(row['seq'])}
                                           for row in rows if row['kind'] == 'tool.started'],
-                                         [{'id': row['id'], 'inputs': json.loads(row['payload']).get('inputs')} for row in reuses])
+                                         [{'id': row['id'], 'inputs': json.loads(row['payload']).get('inputs')} for row in reuses],
+                                         spec.get('effects'))
         with self._db() as db:
             if db.execute('SELECT cancelled FROM runs WHERE id=?', (run_id,)).fetchone()['cancelled']:
                 return None
@@ -2062,7 +2082,9 @@ class Controller:
             candidates = list(dict.fromkeys(p for p in paths if p.is_dir() and (p/'manifest.json').is_file()))
             verified, rejected = [], []
             for package in candidates:
-                result = call_tool('emit_check',{'package_dir':str(package),'run_dir':str(workspace/'checks')})
+                # The check's own records go outside the worker's workspace, so nothing the worker leaves there can
+                # make the configurator's check fail for the host.
+                result = call_tool('emit_check',{'package_dir':str(package),'run_dir':str(run_dir/'checks'/assignment['id'])})
                 if _host_fault(result):
                     # The host could not run the check, which says nothing about the package: stop for the host
                     # (resumable) rather than reject the package.
@@ -2090,7 +2112,8 @@ class Controller:
                 started = [{**json.loads(row['payload']), 'dispatch_id': str(row['seq'])} for row in db.execute(
                     "SELECT seq,payload FROM events WHERE run_id=? AND kind='tool.started' ORDER BY seq", (run_dir.name,))]
             operations, live = _fresh_reuse(_frozen_package(package) if package else None, mine,
-                                            [e for e in started if e.get('assignment_id') == assignment['id']])
+                                            [e for e in started if e.get('assignment_id') == assignment['id']],
+                                            spec.get('effects'))
             executed = operations['passed'] is True
             selected = [str(p) for p in paths] if executed else []
             checks.append({'name':'fresh_package_execution','passed':operations['passed'],

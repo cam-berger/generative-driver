@@ -11,7 +11,8 @@ from . import core
 
 import interface_runtime
 from interface_runtime.engine import SCHEMAS, validate_model
-from interface_runtime.evidence import read_json, read_json_hashed, run_samples, check_probe, MAX_EVIDENCE_BYTES, probe_coverage, COVERAGE_SCOPE
+from interface_runtime.evidence import (read_json, read_json_hashed, run_samples, check_probe, MAX_EVIDENCE_BYTES,
+                                        probe_coverage, COVERAGE_SCOPE, ReplayFactory, _evidence_bound)
 from interface_runtime.package import digest, package_files, verify_package, inspect_package
 from interface_runtime.faults import classify_failure, LEGACY_TRANSPORT_CODES as TRANSPORT_CODES
 from interface_runtime.transports import TransportError, capabilities, validate_binding
@@ -67,16 +68,37 @@ def before_contact(error, **extra):
     return {'ok':False,'error':error,**extra,'transport_open_attempted':False,'_exit':1}
 
 
+def _preflight(model, operation, parameters, allow_effects, replay):
+    """The checks run_samples makes before it opens a transport, made here so that each refusal can be declared:
+    the evidence bound of a validated model (which also names an unknown operation) and the replay fixture."""
+    if _evidence_bound(model, operation, parameters, allow_effects, 1) > MAX_EVIDENCE_BYTES:
+        raise ValueError('requested probe exceeds evidence bound; reduce samples, steps or output expansion')
+    if replay is not None:
+        ReplayFactory(replay)
+
+
 @core.tool('interface_execute')
 def interface_execute(model_dir, operation, parameters=None, binding=None, allow_effects=None, replay=None, **_):
-    model, sha = load(model_dir)
+    """Execute one operation of a model once. Every refusal before the transport opens (a model.json that is missing,
+    unreadable or not strict bounded JSON, an invalid model, an unknown operation, an evidence bound the operation
+    exceeds, a replay fixture) is returned with transport_open_attempted false and exit 1."""
+    grants = () if allow_effects is None else allow_effects
+    try:
+        if not (path(model_dir)/'model.json').is_file():
+            raise ValueError('model_dir holds no model.json')
+        model, sha = load(model_dir)
+    except (OSError, ValueError, TypeError, LookupError, RecursionError) as exc:
+        return before_contact(f'{type(exc).__name__}: {exc}')
     checked = validate_model(model)
     if not checked['ok']:
         # The runtime refuses this model before it opens any transport; say so, in the runtime's words.
         return before_contact('ValueError: invalid model: ' + str(checked['defects']), model_sha256=sha)
-    execution = run_samples(model, operation, parameters, binding=binding,
-                            allow_effects=() if allow_effects is None else allow_effects,
-                            replay=read_json(path(replay)) if replay is not None else None)
+    try:
+        fixture = read_json(path(replay)) if replay is not None else None
+        _preflight(model, operation, parameters, grants, fixture)
+    except (OSError, ValueError, TypeError, LookupError, RecursionError) as exc:
+        return before_contact(f'{type(exc).__name__}: {exc}', model_sha256=sha)
+    execution = run_samples(model, operation, parameters, binding=binding, allow_effects=grants, replay=fixture)
     result = execution['results'][0]
     return {**result,'evidence_kind':execution['evidence_kind'],'timing_policy':execution['timing_policy'],
             'model_sha256':sha,
@@ -284,7 +306,13 @@ def emit_check(package_dir, model_dir=None, expected_manifest_sha256=None):
         # A package without its driver model, or a model directory without one, is refused; it is no host fault.
         return {'ok':False,'integrity_ok':False,'replay_status':'not_run','_exit':1,
                 'defects':[{'where':'driver/model.json' if model_dir is None else 'model_dir','what':'model.json is missing'}]}
-    model, sha = load(source)
+    try:
+        model, sha = load(source)
+    except (OSError, RecursionError) as exc:
+        # Model bytes that cannot be read or parsed are the package's (or model directory's) defect, not the host's.
+        return {'ok':False,'integrity_ok':False,'replay_status':'not_run','_exit':1,
+                'defects':[{'where':'driver/model.json' if model_dir is None else 'model_dir',
+                            'what':f'model.json is unreadable: {type(exc).__name__}: {exc}'}]}
     inspected = inspect_package(pkg, _trusted_python(), sha, expected_manifest_sha256)
     if not inspected['ok']:
         return {**inspected,'replay_status':'not_run','_exit':1}
@@ -293,7 +321,9 @@ def emit_check(package_dir, model_dir=None, expected_manifest_sha256=None):
                 'manifest_pin_verified':expected_manifest_sha256 is not None,
                 'replay_status':'not_run','replay_reason':'bundled Python differs from current trusted runtime/templates; integrity only',
                 'source_evidence_kind':inspected['manifest']['source_evidence_kind'],'_exit':0}
-    with tempfile.TemporaryDirectory() as temporary:
+    # A folder the host cannot remove at once (a file an indexer or antivirus holds open on Windows) is left behind;
+    # it never discards a check that ran.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
         snapshot, manifest, refused = _snapshot(pkg, sha, expected_manifest_sha256, temporary)
         if refused is not None:
             return refused
@@ -303,13 +333,16 @@ def emit_check(package_dir, model_dir=None, expected_manifest_sha256=None):
 
 
 def _check_snapshot(pkg, model, sha, manifest, expected_manifest_sha256):
-    evidence = read_json(pkg/'probe.json')
+    try:
+        evidence = read_json(pkg/'probe.json')
+    except (ValueError, RecursionError) as exc:
+        return {'ok':False,'defects':[{'where':'probe','what':f'{type(exc).__name__}: {exc}'}],'_exit':1}
     compared = check_probe(model, evidence, sha)
-    if manifest['source_evidence_kind'] != evidence.get('evidence_kind'):
+    if manifest['source_evidence_kind'] != (evidence.get('evidence_kind') if type(evidence) is dict else None):
         compared = {'ok':False,'defects':[{'where':'evidence_kind','what':'manifest and probe disagree'}]}
     if not compared['ok']:
         return {**compared,'_exit':1}
-    with tempfile.TemporaryDirectory() as cwd:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as cwd:
         result = subprocess.run([sys.executable,'-I','-B','-c',BOOT,
             str(pkg.resolve()),'replay'], cwd=cwd, env={**os.environ,'PYTHONPATH':''},
             capture_output=True,text=True,timeout=260)
@@ -392,7 +425,7 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
         if model_dir is not None and not (path(model_dir)/'model.json').is_file():
             raise ValueError('model_dir holds no model.json')
         sha = load(model_dir)[1] if model_dir is not None else None
-    except (ValueError, TypeError) as exc:
+    except (OSError, ValueError, TypeError, RecursionError) as exc:
         return before_contact(f'{type(exc).__name__}: {exc}')
     pkg = path(package_dir)
     started = core.now()
@@ -417,7 +450,7 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
             if ungranted:
                 raise ValueError('operations need an effect grant that allow_effects does not give: '
                                  + ', '.join(f"{n} ({model['operations'][n]['effect']})" for n in ungranted))
-        except (ValueError, TypeError, LookupError) as exc:
+        except (ValueError, TypeError, LookupError, RecursionError) as exc:
             return before_contact(f'{type(exc).__name__}: {exc}')
         flags = [flag for g in grants if g != 'read' for flag in ('--allow-effect', g)]
         results = []

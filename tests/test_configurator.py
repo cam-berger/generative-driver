@@ -1151,13 +1151,14 @@ class DeviceRepairTests(unittest.TestCase):
                 controller.close()
 
 
-def driver_package(root, name='package'):
-    """A minimal emitted package: its manifest and a driver model with an identity operation and one read."""
+def driver_package(root, name='package', operations=None):
+    """A minimal emitted package: its manifest and a driver model with an identity operation and, unless `operations`
+    names others, one read."""
     package = Path(root) / name
     (package / 'driver').mkdir(parents=True)
     (package / 'manifest.json').write_text(json.dumps({'schema': 'interface-package/1', 'name': 'scripted'}))
     (package / 'driver' / 'model.json').write_text(json.dumps({'schema': 'scripted-model', 'identity': {'operation': 'identify'},
-        'operations': {'identify': {'effect': 'read'}, 'read_temperature': {'effect': 'read'}}}))
+        'operations': operations or {'identify': {'effect': 'read'}, 'read_temperature': {'effect': 'read'}}}))
     return package
 
 
@@ -1220,7 +1221,7 @@ class FinalVerdictTests(unittest.TestCase):
     NEVER_RAN = 'fresh reuse never ran the frozen package with emit_test_live'
 
     @contextlib.contextmanager
-    def finishing(self, controller, *, replay='passed', live=True, calls=None, attempts=None):
+    def finishing(self, controller, *, replay='passed', live=True, calls=None, attempts=None, operations=None):
         """Acquire to ground are scripted. Emit and reuse use the real preparation and checks with scripted emit_check
         and live tools: the emit worker writes a package and the reuse worker runs it once on the device.
 
@@ -1229,7 +1230,9 @@ class FinalVerdictTests(unittest.TestCase):
         of the frozen package or interface_execute of its model, and a result that is an exception is raised by the tool.
         As the real tool does, an emit_test_live result that ran a snapshot names that snapshot's manifest digest, unless
         the script names one.
-        A third element 'elsewhere' runs the tool on a changed copy the worker made in its workspace instead.
+        A third element 'elsewhere' runs the tool on a changed copy the worker made in its workspace instead, and a third
+        element that is a dict adds those arguments. A result of None scripts a call the gateway refuses before dispatch.
+        `operations` gives the emitted package's model operations (`driver_package`).
         `attempts` scripts several fresh-reuse attempts, one list of calls each: the runtime of every attempt but the
         last exits with an error after its calls, so the run stops for the host until it is resumed."""
         import shutil
@@ -1237,7 +1240,7 @@ class FinalVerdictTests(unittest.TestCase):
         from generative_driver.configurator import digest
         real_check, tools = controller._check, []
         attempts = attempts or [list(calls) if calls is not None else [('emit_test_live', self.PASSED if live else self.MODEL_FAILURE)]]
-        results = iter([call[1] for attempt in attempts for call in attempt])
+        results = iter([call[1] for attempt in attempts for call in attempt if call[1] is not None])
         reused = []
         def fake_call_tool(name, arguments):
             tools.append(name)
@@ -1271,12 +1274,16 @@ class FinalVerdictTests(unittest.TestCase):
                             shutil.copytree(package, target)
                             model = json.loads((target / 'driver' / 'model.json').read_text())
                             (target / 'driver' / 'model.json').write_text(json.dumps({**model, 'changed': True}))
-                    arguments = ({'package_dir': str(target)} if tool == 'emit_test_live' else
-                                 {'model_dir': str(target / 'driver'), 'operation': 'read_temperature'})
+                    extra = call[2] if len(call) > 2 and isinstance(call[2], dict) else {}
+                    arguments = ({'package_dir': str(target), **extra} if tool == 'emit_test_live' else
+                                 {'model_dir': str(target / 'driver'), 'operation': 'read_temperature', **extra})
                     try:
                         controller.call('tool', {**gateway_identity(request), 'name': tool, 'arguments': arguments})
                     except RuntimeError:
                         pass
+                    except ValueError:
+                        if call[1] is not None:
+                            raise
                 reused.append(request.stage)
         def runtime(request):
             if request.stage == 'reuse' and len(reused) < len(attempts):
@@ -1284,7 +1291,7 @@ class FinalVerdictTests(unittest.TestCase):
                         'reason': 'Configured runtime exited with an error'}
         def report(request):
             if request.stage == 'emit':
-                package = driver_package(request.workspace)
+                package = driver_package(request.workspace, operations=operations)
                 return {'status': 'completed', 'summary': 'scripted emission', 'checks': [], 'unresolved': [],
                         'artifacts': [{'path': str(package), 'sha256': digest(package), 'kind': 'package'}]}
         with scripted_stages(controller, check=check, prepare=prepare, work=work, report=report, runtime=runtime), \
@@ -1473,6 +1480,73 @@ class FinalVerdictTests(unittest.TestCase):
                     self.assertEqual([d['reason'] for d in result['equivalence']['diff']],
                                      ['emit_test_live was inconclusive: host fault (OSError), not a driver failure (dispatch '
                                       + str(dispatch) + ')'])
+                finally:
+                    controller.close()
+
+    def test_an_undeclared_content_error_is_inconclusive_and_never_called_a_host_fault(self):
+        """A ValueError the tool did not declare as a refusal before contact leaves the verdict unscored, but it names no
+        host failure, so the reason says what it is: an undeclared toolchain error."""
+        from generative_driver.configurator import Controller
+        undeclared = {'_exit': 1, 'error': 'ValueError: a check the tool did not declare'}
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory) / 'home')
+            try:
+                with self.finishing(controller, calls=[('emit_test_live', undeclared), ('emit_test_live', self.PASSED)]):
+                    run = self.start(controller)
+                    result = wait_stopped(controller, run)
+                self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', None), result)
+                dispatch = next(e['id'] for e in controller.call('events', run)['events']
+                                if e['kind'] == 'tool.started' and e['data']['name'] == 'emit_test_live')
+                self.assertEqual([d['reason'] for d in result['equivalence']['diff']],
+                                 ['emit_test_live was inconclusive: undeclared toolchain error (ValueError), not a driver '
+                                  'failure (dispatch ' + str(dispatch) + ')'])
+            finally:
+                controller.close()
+
+    def test_only_a_named_host_failure_is_a_host_fault(self):
+        """The emit stage stops for the host only on a positive list; any other toolchain error refuses the content."""
+        from generative_driver.configurator import _host_fault, _toolchain_fault
+        for error, host in (('OSError: [Errno 28] No space left on device', True), ('PermissionError: denied', True),
+                            ('FileNotFoundError: no temporary directory', True), ('ModuleNotFoundError: no module', True),
+                            ('MemoryError: ', True), ('TimeoutExpired: Command timed out after 260 seconds', True),
+                            ('[Errno 20] Not a directory', True),
+                            ('ValueError: duplicate JSON key: name', False), ('KeyError: files', False),
+                            ('AttributeError: list has no attribute get', False),
+                            ('RecursionError: maximum recursion depth exceeded', False),
+                            ('ZeroDivisionError: division by zero', False), ('ModelError: identity', False)):
+            with self.subTest(error=error):
+                self.assertIs(_host_fault({'ok': False, 'error': error, '_exit': 1}), host)
+        self.assertIs(_host_fault({'ok': False, 'fault': 'host', '_exit': 4}), True)
+        # A timeout is named as one, so an undeclared one reads as a host fault (TimeoutExpired), not an unnamed error.
+        self.assertEqual(_toolchain_fault({'error': 'TimeoutExpired: Command timed out after 260 seconds'}), 'TimeoutExpired')
+        self.assertIs(_host_fault({'ok': False, 'defects': [{'where': 'probe', 'what': 'invalid'}], '_exit': 1}), False)
+
+    def test_functions_the_operator_did_not_grant_leave_the_verdict_unscored_never_not_equivalent(self):
+        """The frozen package's only function writes and the operator granted read alone: the gateway refuses every call
+        of it, so identity is all fresh reuse can run. That limit is the operator's, not the driver's, so the once-only
+        verdict is unscored. With the write grant, running identity alone is still not equivalent."""
+        from generative_driver.configurator import Controller, IDENTITY_ONLY, UNGRANTED
+        identity = {**self.PASSED, 'results': [{'ok': True, 'operation': 'identify', 'fault': None}]}
+        operations = {'identify': {'effect': 'read'}, 'set_rate': {'effect': 'write'}}
+        for grants, calls, equivalent, reason in (
+                (['read'], [('emit_test_live', None, {'operations': ['set_rate']}),
+                            ('emit_test_live', identity, {'operations': ['identify']})], None, UNGRANTED),
+                (['read', 'write'], [('emit_test_live', identity, {'operations': ['identify']})], False, IDENTITY_ONLY)):
+            with self.subTest(grants=grants), tempfile.TemporaryDirectory() as directory:
+                controller = Controller(Path(directory) / 'home')
+                try:
+                    with self.finishing(controller, calls=calls, operations=operations):
+                        run = self.start(controller, effects=grants)
+                        result = wait_stopped(controller, run)
+                    self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', equivalent), result)
+                    self.assertEqual(self.operations(result), [('emit_test_live', 'succeeded')])
+                    self.assertEqual([d['reason'] for d in result['equivalence']['diff']], [reason])
+                    reuse = next(h for h in result['accepted_handoffs'] if h['stage'] == 'reuse')
+                    note = next(c for c in reuse['checks'] if c['name'] == 'fresh_package_execution')
+                    self.assertIs(note['passed'], equivalent)
+                    refused = [e['data'] for e in controller.call('events', run)['events'] if e['kind'] == 'tool.refused']
+                    self.assertEqual([r['reason'] for r in refused],
+                                     ['Operation requires an effect grant the operator has not supplied'] if grants == ['read'] else [])
                 finally:
                     controller.close()
 
@@ -1883,7 +1957,7 @@ class RealToolVerdictTests(unittest.TestCase):
         from generative_driver.configurator import Controller, digest
         real_call_tool, packages, checks = toolkit.call_tool, {}, []
         def call_tool(name, arguments):
-            if name == 'emit_check' and Path(arguments['run_dir']).name == 'checks' and on_emit_check:
+            if name == 'emit_check' and Path(arguments['run_dir']).parent.name == 'checks' and on_emit_check:
                 checks.append(name)
                 with on_emit_check(len(checks)):
                     return real_call_tool(name, arguments)
@@ -2047,6 +2121,77 @@ class RealToolVerdictTests(unittest.TestCase):
                 self.assertIn(says, stopped['reason'])
                 self.assertIsNone(stopped['equivalence'])
                 self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', True), result)
+
+    def test_a_call_the_tool_refused_before_the_device_opened_is_no_live_operation(self):
+        """interface_execute checks a model's bytes and its evidence bound before it opens the transport and declares
+        each refusal. Fresh reuse that tries its own copy of the model and is refused that way, then runs a function of
+        the frozen package that passes, is equivalent: the refused call never reached the device."""
+        exchange = {'op': 'exchange', 'tx': [{'text': 'T\n'}], 'rx': {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 65536},
+                    'timeout_ms': 1000}
+        def duplicate_key(model):
+            return json.dumps(model).replace('"device": {', '"device": {"name": "twice", ', 1)
+        def beyond_the_evidence_bound(model):
+            model['operations']['dump'] = {'effect': 'read', 'parameters': {},
+                                           'steps': [dict(exchange, capture='c%d' % i) for i in range(100)],
+                                           'outputs': {'x%d' % i: {'from': 'c%d' % i, 'kind': 'hex'} for i in range(100)}}
+            model['provenance'].append({'item': 'operations.dump', 'source': 'scripted fixture'})
+            return json.dumps(model)
+        for name, write, operation, says in (('a duplicate JSON key', duplicate_key, 'read_temperature', 'duplicate JSON key'),
+                                             ('a probe beyond the evidence bound', beyond_the_evidence_bound, 'dump',
+                                              'requested probe exceeds evidence bound')):
+            with self.subTest(refusal=name), tempfile.TemporaryDirectory() as directory:
+                calls = []
+                def reuse(call, package, workspace):
+                    own = workspace / 'own'; own.mkdir()
+                    (own / 'model.json').write_text(write(json.loads((package / 'driver' / 'model.json').read_text())))
+                    calls.append(call('interface_execute', model_dir=str(own), operation=operation))
+                    calls.append(call('emit_test_live', package_dir=str(package), operations=['read_temperature']))
+                result, _ = self.run_generic(Path(directory) / 'home', reuse)
+                refused, passed = calls
+                self.assertEqual((refused['_exit'], refused['transport_open_attempted']), (1, False), refused)
+                self.assertIn(says, refused['error'])
+                self.assertEqual(passed['_exit'], 0, passed)
+                self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', True), result)
+                self.assertEqual(self.outcomes(result), [('interface_execute', 'refused'), ('emit_test_live', 'succeeded')])
+                self.assertEqual(result['equivalence']['diff'], [])
+                self.assertIs(self.reuse_note(result)['passed'], True)
+
+    def test_a_hand_edited_package_is_rejected_and_never_stops_the_run_for_the_host(self):
+        """Worker content never stops a run. A package the emit worker edited and resealed, however malformed, fails the
+        configurator's emit_check and is dropped; and a file the worker leaves where a check folder might go cannot
+        block the configurator's own check, which runs outside the worker's workspace."""
+        from interface_runtime.package import digest as file_digest, package_files
+        def edited(content):
+            def emit(call, model, record, workspace):
+                package = Path(call('emit_package', model_dir=str(model), probe_json=str(record))['package_dir'])
+                (package / 'probe.json').write_text(content(package))
+                manifest = json.loads((package / 'manifest.json').read_text())
+                manifest.update(files=package_files(package), probe_sha256=file_digest(package / 'probe.json'))
+                (package / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+                (package / 'manifest.sha256').write_text(file_digest(package / 'manifest.json') + '\n')
+                return str(package)
+            return emit
+        def unparsable_manifest(call, model, record, workspace):
+            package = Path(call('emit_package', model_dir=str(model), probe_json=str(record))['package_dir'])
+            (package / 'manifest.json').write_text('{"x": ' + '[' * 100000 + ']' * 100000 + '}')
+            return str(package)
+        def blocking(call, model, record, workspace):
+            (workspace / 'checks').write_text('a file where a folder could go')
+            return call('emit_package', model_dir=str(model), probe_json=str(record))['package_dir']
+        nested = lambda package: (package / 'probe.json').read_text().rstrip()[:-1] + ', "x": ' + '[' * 100000 + ']' * 100000 + '}'
+        for name, emit, equivalent in (('a probe record that is a JSON array', edited(lambda package: '[1, 2]'), False),
+                                       ('a probe record nested deeper than the parser allows', edited(nested), False),
+                                       ('a manifest nested deeper than the parser allows', unparsable_manifest, False),
+                                       ('a file where a check folder could go', blocking, True)):
+            with self.subTest(package=name), tempfile.TemporaryDirectory() as directory:
+                result, events = self.run_generic(Path(directory) / 'home',
+                    lambda call, package, workspace: call('emit_test_live', package_dir=str(package), operations=['read_temperature']),
+                    emit=emit)
+                self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', equivalent), result)
+                self.assertFalse(any(e['kind'] == 'run.failed' for e in events), [e for e in events if e['kind'] == 'run.failed'])
+                emitted = next(h for h in result['accepted_handoffs'] if h['stage'] == 'emit')
+                check = next(c for c in emitted['checks'] if c['name'] == 'package_integrity_and_replay')
+                self.assertEqual((check['passed'], 'rejected' in check), (equivalent, not equivalent), check)
 
     def test_a_package_built_from_supplied_exchanges_is_no_replay_of_the_device(self):
         """A probe record made from a replay the worker supplied reached no device. Its package passes emit_check

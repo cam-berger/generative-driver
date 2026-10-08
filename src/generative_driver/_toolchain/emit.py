@@ -359,6 +359,11 @@ def _register_snapshot(pkg, temporary, checked):
     return str(snapshot)
 
 
+# What only the host can make fail. The checks read the package's and the model's bytes inside their own handlers
+# and refuse what they cannot read, so an OSError that reaches emit_check came from the host's side of the check.
+HOST_FAULTS = (OSError, ImportError, subprocess.TimeoutExpired, MemoryError)
+
+
 @core.tool("emit_check")
 def emit_check(package_dir, model_dir=None, seeds=20, seed=0, tol_rel=1e-9, expected_manifest_sha256=None, **_):
     """Does the package do what its model says, and nothing else?
@@ -368,15 +373,14 @@ def emit_check(package_dir, model_dir=None, seeds=20, seed=0, tol_rel=1e-9, expe
     registers it touches to equal the set the model touches. No ground truth and no device knowledge, so
     this check works for any register device. An interface package replays its recorded exchanges instead.
 
-    A package or argument the check refuses is a failed check (exit 1). When the host cannot run the check (a
-    file, process or import failure, or a timeout), the result is fault host with exit 4: it says nothing about
-    the package.
+    A package or argument the check refuses is a failed check (exit 1), whatever the package bytes made fail,
+    including bytes it cannot read or parse. Only a failure outside the package bytes is the host's: a file or
+    process failure around the check (its temporary folder, starting the replay), an import, a timeout or memory
+    exhaustion. That result is fault host with exit 4: it says nothing about the package.
     """
     try:
         return _emit_check(package_dir, model_dir, seeds, seed, tol_rel, expected_manifest_sha256)
-    except (ValueError, TypeError, LookupError):
-        raise
-    except Exception as exc:
+    except HOST_FAULTS as exc:
         return {"ok": False, "fault": "host", "error": f"{type(exc).__name__}: {exc}", "replay_status": "not_run",
                 "_exit": 4}
 
@@ -392,7 +396,11 @@ def _emit_check(package_dir, model_dir, seeds, seed, tol_rel, expected_manifest_
     md = model_dir if os.path.isabs(model_dir) else os.path.join(core.BENCH, model_dir)
     if not os.path.isfile(os.path.join(md, "model.json")):
         return {'ok': False, 'defects': [{'where': 'model_dir', 'what': 'model.json is missing'}], '_exit': 1}
-    loaded, _sha = interface.load(md)
+    try:
+        loaded, _sha = interface.load(md)
+    except (OSError, RecursionError) as exc:
+        return {'ok': False, 'defects': [{'where': 'model_dir', 'what': f'model.json is unreadable: {type(exc).__name__}: {exc}'}],
+                'replay_status': 'not_run', '_exit': 1}
     schema = loaded.get("schema")
     if schema in interface.SCHEMAS:
         return interface.emit_check(pkg, md, expected_manifest_sha256)

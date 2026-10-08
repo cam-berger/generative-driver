@@ -345,6 +345,124 @@ class ToolFaultTests(unittest.TestCase):
             self.assertTrue(refused["error"].startswith("ValueError: invalid model: "), refused)
             self.assertEqual(seen, [])
 
+    def test_interface_execute_declares_every_refusal_it_makes_before_it_opens_the_device(self):
+        """The model's bytes, the operation and the evidence bound are all checked before the transport opens; each
+        refusal says so, with the tool's own reason, and the device sees nothing."""
+        from generative_driver.toolkit import call_tool
+        seen = []
+        exchange = {"op": "exchange", "tx": [{"text": "T\n"}], "rx": {"mode": "until", "delimiter_hex": "0a", "max_bytes": 65536},
+                    "timeout_ms": 500}
+        # A valid model whose operation could record more than the evidence reader accepts.
+        bounded = tcp_model()
+        bounded["operations"]["dump"] = {"effect": "read", "parameters": {},
+                                         "steps": [dict(exchange, capture="c%d" % i) for i in range(100)],
+                                         "outputs": {"x%d" % i: {"from": "c%d" % i, "kind": "hex"} for i in range(100)}}
+        bounded["provenance"].append({"item": "operations.dump", "source": "independent synthetic fixture"})
+        text = json.dumps(tcp_model())
+        with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE), seen) as binding:
+            root = Path(temp).resolve()
+            for name, content, operation, says in (
+                    ("a duplicate JSON key", text.replace('"device": {', '"device": {"name": "twice", ', 1), "measure",
+                     "ValueError: duplicate JSON key: name"),
+                    ("a non-finite constant", text.replace('"timeout_ms": 500', '"timeout_ms": NaN', 1), "measure",
+                     "ValueError: non-finite JSON constant: NaN"),
+                    ("nesting deeper than the parser allows", text[:-1] + ', "x": ' + "[" * 100000 + "]" * 100000 + "}",
+                     "measure", "RecursionError: "),
+                    ("no model.json", None, "measure", "ValueError: model_dir holds no model.json"),
+                    ("an operation the model does not have", text, "erase", "ValueError: unknown operation"),
+                    ("an evidence bound the model exceeds", json.dumps(bounded), "dump",
+                     "ValueError: requested probe exceeds evidence bound")):
+                with self.subTest(refusal=name):
+                    model = root / name.replace(" ", "-"); model.mkdir()
+                    if content is not None:
+                        (model / "model.json").write_text(content)
+                    refused = call_tool("interface_execute", {"run_dir": str(root / "run"), "model_dir": str(model),
+                                                              "operation": operation, "binding": binding})
+                    self.assertEqual((refused["_exit"], refused["ok"], refused["transport_open_attempted"]), (1, False, False), refused)
+                    self.assertTrue(refused["error"].startswith(says), refused)
+                    self.assertNotIn("transactions", refused)
+            self.assertEqual(seen, [])
+            # The same tool reaches the device with a model it accepts.
+            model = root / "model"; model.mkdir()
+            (model / "model.json").write_text(text)
+            executed = call_tool("interface_execute", {"run_dir": str(root / "run"), "model_dir": str(model),
+                                                       "operation": "measure", "binding": binding})
+            self.assertEqual((executed["_exit"], executed["ok"], executed["outputs"]), (0, True, {"temperature": 21.5}), executed)
+            self.assertNotEqual(seen, [])
+
+    @staticmethod
+    def reseal(package):
+        """Rewrite a package's manifest and checksum over its current files, as a worker editing its package could."""
+        from interface_runtime.package import digest, package_files
+        manifest = json.loads((package / "manifest.json").read_text())
+        manifest.update(files=package_files(package), probe_sha256=digest(package / "probe.json"),
+                        model_sha256=digest(package / "driver" / "model.json"))
+        (package / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        (package / "manifest.sha256").write_text(digest(package / "manifest.json") + "\n")
+
+    def test_emit_check_refuses_a_hand_edited_package_and_never_calls_it_a_host_fault(self):
+        """Content a worker wrote is the package's, however malformed: emit_check refuses it (exit 1) and never
+        reports it as a host fault, which would stop the run for the host."""
+        import os
+        from generative_driver.toolkit import call_tool
+        with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE)) as binding:
+            root = Path(temp).resolve()
+            _, emitted = self.emitted(root, binding)
+            record = (Path(emitted["package_dir"]) / "probe.json").read_text()
+            # Each refusal is declared with its defects, except where the toolchain's error names what failed.
+            for name, path, content, refusal in (
+                    ("a probe record that is a JSON array", "probe.json", "[1, 2]", "defects"),
+                    ("a probe record nested deeper than the parser allows", "probe.json",
+                     record.rstrip()[:-1] + ', "x": ' + "[" * 100000 + "]" * 100000 + "}", "defects"),
+                    ("a driver model nested deeper than the parser allows", "driver/model.json",
+                     '{"x": ' + "[" * 100000 + "]" * 100000 + "}", "defects"),
+                    ("a manifest nested deeper than the parser allows", "manifest.json",
+                     '{"x": ' + "[" * 100000 + "]" * 100000 + "}", "error"),
+                    ("a driver model the host may not read", "driver/model.json", None, "defects")):
+                with self.subTest(package=name):
+                    package = root / name.replace(" ", "-"); shutil.copytree(emitted["package_dir"], package)
+                    if content is not None:
+                        (package / path).write_text(content)
+                        if path != "manifest.json":
+                            self.reseal(package)
+                    else:
+                        (package / path).chmod(0)
+                        if os.access(package / path, os.R_OK):
+                            (package / path).chmod(0o644)
+                            self.skipTest("this host reads files without read permission")
+                    try:
+                        checked = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": str(package)})
+                    finally:
+                        (package / path).chmod(0o644)
+                    self.assertEqual((checked["_exit"], checked.get("ok", False)), (1, False), checked)
+                    self.assertTrue(checked.get(refusal), checked)
+                    self.assertNotIn("fault", checked)
+                    self.assertNotEqual(checked.get("replay_status"), "passed", checked)
+
+    def test_emit_check_keeps_a_passed_replay_when_its_temporary_folder_cannot_be_removed(self):
+        """On Windows an antivirus or indexer can hold a file open briefly, so removing a temporary folder fails after
+        the check finished. That cleanup failure neither discards a passed replay nor reads as a host fault."""
+        import errno, os
+        from generative_driver.toolkit import call_tool
+        real_rmtree = shutil.rmtree
+        def held_open(path, *args, onexc=None, onerror=None, **kwargs):
+            real_rmtree(path, ignore_errors=True)
+            try:
+                raise OSError(errno.EBUSY, "file in use by another process", str(path))
+            except OSError as error:
+                if onexc is not None:
+                    onexc(os.rmdir, str(path), error)
+                elif onerror is not None:
+                    onerror(os.rmdir, str(path), sys.exc_info())
+                elif not kwargs.get("ignore_errors"):
+                    raise
+        with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE)) as binding:
+            root = Path(temp).resolve()
+            _, emitted = self.emitted(root, binding)
+            with patch.object(shutil, "rmtree", held_open):
+                checked = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": emitted["package_dir"]})
+            self.assertEqual((checked["_exit"], checked["ok"], checked["replay_status"]), (0, True, "passed"), checked)
+
 
 if __name__ == "__main__":
     unittest.main()

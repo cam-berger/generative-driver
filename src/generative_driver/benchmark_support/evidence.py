@@ -56,7 +56,7 @@ def public_v2_report(payload: dict) -> dict:
                                 for row in payload.get('accepted_gates', [])]
     result['evaluator_verdicts'] = [_scalars(row, ('stage', 'assignment_id', 'revision', 'fault', 'final_evaluation', *COUNTS))
                                     for row in payload.get('evaluator_verdicts', [])]
-    result['progress'] = _scalars(payload.get('progress', {}), ('revision', 'repairs', 'terminal_final_failure'))
+    result['progress'] = _scalars(payload.get('progress', {}), ('revision', 'repairs', 'terminal_final_failure', 'protocol', 'equivalence'))
     result['attempt_limits'] = _scalars(payload.get('attempt_limits', {}), ('max_model_repairs',))
     result['usage'] = _scalars(payload.get('usage', {}), USAGE)
     result['executed'] = _executed(payload.get('executed', {}))
@@ -201,10 +201,15 @@ def regrade_v2(report: dict, evidence_path: Path, password_file: Path) -> dict:
     finals = [row for row in evaluations if row['phase'] == 'final']
     passed, total = sum(row['passed'] for row in finals), sum(row['total'] for row in finals)
     ok = bool(finals) and all(row['verdict'] == 'passed' for row in finals) and gates_ok
-    return public_v2_report({**report, 'evaluations': evaluations, 'accepted_gates': gates,
-        'verdict': 'passed' if ok else 'failed',
-        'final_evaluation': {'verdict': 'passed' if finals and passed == total else 'failed',
-            'passed': passed, 'total': total, 'evidence_sha256': report['final_evaluation']['evidence_sha256']}})
+    verdict, final = ('passed' if ok else 'failed'), ('passed' if finals and passed == total else 'failed')
+    from ..configurator import PROTOCOL
+    if not finals and (report.get('progress') or {}).get('protocol') == PROTOCOL:
+        # An assistive run grades nothing in its stage loop: without a final evaluation it is unscored, never failed.
+        # Earlier-protocol runs keep their recorded meaning.
+        verdict = final = 'unscored'
+    return public_v2_report({**report, 'evaluations': evaluations, 'accepted_gates': gates, 'verdict': verdict,
+        'final_evaluation': {'verdict': final, 'passed': passed, 'total': total,
+                             'evidence_sha256': report['final_evaluation']['evidence_sha256']}})
 
 
 def frozen_final_decision(contract: dict, records: list[dict]) -> dict:

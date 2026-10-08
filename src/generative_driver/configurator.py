@@ -1623,9 +1623,25 @@ class Controller:
                     self._state(run_id,'blocked',prepared['blocked'],stage)
                     return
                 if prepared.get('skip'):
-                    progress['next_stage'] = queue[0] if queue else 'finalize'
-                    accepted.append(self._skip(run_id, stage, attempt, revision, run_dir, workspace.resolve(), progress, prepared['skip']))
-                    completion = prepared['skip'] if stage == STAGES[-1] else completion
+                    # No worker runs. A difference preparation found in the model (one the device binding cannot carry)
+                    # is decided like any other device diff: it revises within the budget, then the run advances.
+                    diff = prepared.get('device_diff')
+                    outcome = (_outcome(stage, {}, {'device_diff': diff}, uncertain=bool(self._row(run_id)['uncertain']),
+                                        repairs=progress['repairs'], max_repairs=int(spec.get('max_revisions', 2)))
+                               if diff else Outcome('advance', prepared['skip']))
+                    if outcome.kind == 'stop':
+                        self._state(run_id, 'blocked', outcome.reason, stage, outcome_category=outcome.category)
+                        return
+                    if outcome.kind == 'revise':
+                        progress.update(revision=revision+1, next_stage='interpret', repairs=progress['repairs']+1, feedback=outcome.diff)
+                    else:
+                        progress['next_stage'] = queue[0] if queue else 'finalize'
+                    accepted.append(self._skip(run_id, stage, attempt, revision, run_dir, workspace.resolve(), progress,
+                                               prepared['skip'], checks=prepared.get('checks', ()), device_diff=diff, outcome=outcome))
+                    if outcome.kind == 'revise':
+                        revision, queue = progress['revision'], list(STAGES[1:])
+                    elif stage == STAGES[-1]:
+                        completion = prepared['skip']
                     continue
                 workspace = Path(prepared.get('work_dir', workspace)).resolve()
                 workspace.mkdir(parents=True, exist_ok=True)
@@ -1733,8 +1749,21 @@ class Controller:
                     progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=outcome.diff)
                 else:
                     progress['next_stage'] = queue[0] if queue else 'finalize'
-                accepted.append(self._accept(run_id, assignment, checked, run_dir, workspace, progress, notes,
-                                             revise=outcome.reason if outcome.kind == 'revise' else None, recovery=recovery))
+                try:
+                    handoff = self._accept(run_id, assignment, checked, run_dir, workspace, progress, notes,
+                                           revise=outcome.reason if outcome.kind == 'revise' else None, recovery=recovery)
+                except Exception as error:
+                    if not recovery:
+                        raise
+                    # Nothing of the recovery committed: the write stays uncertain and is never re-executed. The recovery
+                    # that started is recorded as failed, and the run stops for safety (integrity when a hash changed).
+                    self._event(run_id, 'emulator.recovery_failed', {'assignment_id': attempt,
+                        'reason': type(error).__name__ + ': ' + str(error)})
+                    if isinstance(error, IntegrityError):
+                        raise
+                    self._state(run_id, 'blocked', 'Emulator recovery unverified: ' + str(error), stage, outcome_category='safety')
+                    return
+                accepted.append(handoff)
                 if outcome.kind == 'revise':
                     revision, queue = progress['revision'], list(STAGES[1:])
             if cancel.is_set():
@@ -1952,10 +1981,21 @@ class Controller:
             from .benchmark import prepare_stage
             case_id = case['id'] if isinstance(case, dict) else case
             options = case_options(spec)
-            if spec.get('_case_pin', {}).get('manifest', {}).get('schema') == 'benchmark-case/2' and stage == 'probe':
-                return self._evaluator_operation(run_dir.name, stage, None, options,
+            if not _observed_case(spec):
+                return prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
+            if stage == 'probe':
+                prepared = self._evaluator_operation(run_dir.name, stage, None, options,
                     lambda: prepare_stage(case_id, stage, run_dir, workspace, accepted, options))
-            return prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
+            else:
+                prepared = prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
+            if prepared.get('unwired_model'):
+                prepared = {**prepared, **self._unwired_model(run_dir, workspace.name, prepared['unwired_model'])}
+            # Stages observed without truth pass their earlier, truth-free notes forward, as generic stages do. Fresh
+            # reuse never receives notes; legacy cases' notes may still carry graded checks, so they receive none.
+            prior = _prior_notes(accepted, spec.get('_revision', 0)) if stage != 'reuse' else []
+            if prior and not prepared.get('skip') and 'prompt' not in prepared:
+                prepared = {**prepared, 'context': {**(prepared.get('context') or {}), 'prior_notes': prior}}
+            return prepared
         if stage == 'interpret':
             # Interpretation that cannot start hands off empty with the reason; it never stops the run.
             from .toolkit import call_tool
@@ -2384,17 +2424,46 @@ class Controller:
                 self._event(run_id,'run.revision', {**progress,'reason':revise},db)
         return handoff
 
-    def _skip(self, run_id, stage, attempt, revision, run_dir, workspace, progress, reason):
-        """A stage with nothing to work on runs no worker; it hands off empty with the reason as a note."""
+    def _skip(self, run_id, stage, attempt, revision, run_dir, workspace, progress, reason, *, checks=(), device_diff=None,
+              outcome=None):
+        """A stage with nothing to work on runs no worker; it hands off empty with the reason as a note. The checks and
+        device diff its preparation found are notes too, and a revise its outcome takes commits with the handoff."""
+        outcome = outcome or Outcome('advance', reason)
         assignment = {'id': attempt, 'stage': stage, 'workspace': str(workspace), 'inputs': {}, 'allowed_tools': [],
                       'report_required': False, 'binding': None, 'effects': [], 'revision': revision, 'skipped': reason}
         with self._db() as db:
             db.execute('INSERT INTO assignments VALUES(?,?,?,?,?,?)', (attempt, run_id, stage, 'active', _json(assignment), time.time()))
             self._event(run_id, 'stage.skipped', {'stage': stage, 'assignment_id': attempt, 'revision': revision, 'reason': reason}, db)
         self._state(run_id, 'running', stage=stage)
-        notes = _notes({'status': 'skipped', 'reason': reason}, {}, Outcome('advance', reason), missing=[reason])
-        return self._accept(run_id, assignment, {'artifacts': [], 'checks': [], 'validation_scope': 'No worker ran: ' + reason},
-                            run_dir, workspace, progress, notes)
+        checked = {'artifacts': [], 'checks': list(checks), 'validation_scope': 'No worker ran: ' + reason,
+                   'notes': {'checks': list(checks)}, **({'device_diff': device_diff} if device_diff else {})}
+        notes = _notes({'status': 'skipped', 'reason': reason}, checked, outcome, missing=[reason])
+        return self._accept(run_id, assignment, checked, run_dir, workspace, progress, notes,
+                            revise=outcome.reason if outcome.kind == 'revise' else None)
+
+    def _unwired_model(self, run_dir, attempt, unwired):
+        """The configurator's own finding about an interpreted model the device binding cannot carry, so that no device
+        runs it: its validation of a copy of the model, as `_observe_device` validates an assigned model, and the wiring
+        error, as one `model_contract` device-diff entry, with their checks. Nothing here touched the device."""
+        from .toolkit import call_tool
+        source, expected = Path(unwired['path']), unwired['sha256']
+        scratch = run_dir / 'checks' / attempt; scratch.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch, ignore_cleanup_errors=True) as copied:
+            model = Path(copied) / 'model'; model.mkdir()
+            shutil.copyfile(source, model / 'model.json')
+            if digest(model / 'model.json') != expected:
+                raise IntegrityError('Accepted interpretation bytes changed: ' + source.name)
+            validation = _replaced(call_tool('model_validate', {'run_dir': str(scratch), 'model_dir': str(model)}),
+                                   [(str(model), 'model')])
+        defects = validation.get('defects') if validation.get('ok') is not True and isinstance(validation.get('defects'), list) else []
+        found = {'name': 'model.json', 'sha256': expected, 'passed': validation.get('ok') is True,
+                 **({'defects': defects} if defects else {}),
+                 **({'reason': 'Validation did not run: ' + str(validation['error'])} if validation.get('error') else {})}
+        wiring = {'where': 'channel', 'what': unwired['reason']}
+        return {'checks': [{'name': 'executable_model_contract', 'passed': found['passed'], 'models': [found]},
+                           {'name': 'emulator_wiring', 'passed': False, 'reason': unwired['reason']}],
+                'device_diff': [{'source': 'model_contract', 'model': {'name': 'model.json', 'sha256': expected},
+                                 'defects': [*defects, wiring]}]}
 
     def _managed_probe(self,run_id,assignment,model_dir,n):
         """Host-only evaluator callback; never exposed by the worker MCP server."""

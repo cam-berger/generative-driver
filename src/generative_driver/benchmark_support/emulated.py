@@ -88,14 +88,23 @@ def _named(path, name):
     return Path(path).name == name or bool(separator) and prefix.isdigit() and original == name
 
 
+def _artifact(handoff, name, sha256=None):
+    """(path, recorded sha256) of `name` in one accepted handoff (with that hash, when given), or None."""
+    for artifact in (handoff or {}).get('artifacts', []):
+        if _named(artifact['path'], name) and sha256 in (None, artifact['sha256']):
+            return Path(artifact['path']), artifact['sha256']
+    return None
+
+
+def _handoff_with(accepted, stages, name, sha256=None):
+    """The latest accepted handoff of these stages that carries `name` (with that hash, when given), or None. A
+    handoff is chosen first and its files after, so files of different candidates are never paired."""
+    return next((h for h in reversed(accepted or []) if h.get('stage') in stages and _artifact(h, name, sha256)), None)
+
+
 def _latest(accepted, stages, name):
     """(path, recorded sha256) of `name` in the latest accepted handoff of these stages that carries it, or None."""
-    for handoff in reversed(accepted or []):
-        if handoff.get('stage') in stages:
-            for artifact in handoff.get('artifacts', []):
-                if _named(artifact['path'], name):
-                    return Path(artifact['path']), artifact['sha256']
-    return None
+    return _artifact(_handoff_with(accepted, stages, name), name)
 
 
 def _verified(found, what):
@@ -115,15 +124,22 @@ def _observed(artifacts, checks, dropped=(), scope='Truth-free stage evidence; n
             'notes': {'checks': checks, 'dropped_artifacts': list(dropped)}}
 
 
-def _candidate_files(accepted):
-    """The interpreted candidate's own replies and notes from its latest accepted handoff, hash-verified."""
-    files = {}
+def _candidate_files(accepted, model_sha=None):
+    """The interpreted candidate's own replies and notes, hash-verified, from one interpret handoff only: the one whose
+    model.json is `model_sha` (the model probed), else the latest that carries a model.json."""
+    handoff, files = _handoff_with(accepted, ('interpret',), 'model.json', model_sha), {}
     for name in ('replies.json', 'NOTES.md'):
-        found = _latest(accepted, ('interpret',), name)
+        found = _artifact(handoff, name)
         if found is not None:
             _verified(found, 'interpretation')
             files[name] = found[0]
     return files
+
+
+def _emitted_mapping(accepted):
+    """(path, recorded sha256) of the capability mapping in the probe handoff whose model emit packaged (the latest
+    probe handoff that carries a model.json), or None when that handoff has none: never another model's mapping."""
+    return _artifact(_handoff_with(accepted, ('probe',), 'model.json'), 'capabilities.json')
 
 
 def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=None):
@@ -153,8 +169,14 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         try:
             adaptation = adapt_model(found[0], ws/'model')
         except (ValueError, KeyError, TypeError, AttributeError) as error:
-            # A model the emulator cannot carry is the candidate's: a note, never a stop; no emulator starts for it.
-            return {'skip': 'Probe skipped: the interpreted model cannot be wired to the emulator: ' + str(error)}
+            # A model the emulator cannot carry is the candidate's, never a stop, and no emulator starts for it. The
+            # configurator validates it and that diff drives repair, so the candidate is kept for the repair.
+            from .candidate_context import remember
+            remember(run_dir, 'probe', {'model.json': found[0], **_candidate_files(accepted, found[1])}, workspace=ws)
+            reason = ('The emulator binding (a UART byte stream over TCP) cannot carry this model: '
+                      + type(error).__name__ + ': ' + str(error))
+            return {'skip': 'Probe skipped: the interpreted model cannot be wired to the emulator: ' + str(error),
+                    'unwired_model': {'path': str(found[0]), 'sha256': found[1], 'reason': reason}}
         if adaptation['original_model_sha256'] != found[1]:
             raise IntegrityError('Accepted interpretation bytes changed while adapting the model')
         session = _session(case_id, run_dir, options)
@@ -238,7 +260,9 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
             raise IntegrityError('Accepted package identity changed')
         state.setdefault('package_copies', {})[stage] = str(package)
         state.setdefault('package_attempts', {})[stage] = uuid.uuid4().hex
-        capabilities = _latest(accepted, ('probe',), 'capabilities.json')
+        capabilities = _emitted_mapping(accepted)
+        if capabilities is not None:
+            _verified(capabilities, 'probe')
         state['capabilities_path'] = str(capabilities[0]) if capabilities else None
         _write(path, state)
         session = _session(case_id, run_dir, options)
@@ -384,15 +408,19 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
         from .candidate_context import remember
         from ..configurator import IntegrityError
         _, state = _state(run_dir)
-        artifacts, checks, dropped, files = [], [], [], {}
+        artifacts, checks, dropped, files, original = [], [], [], {}, None
         if state.get('adapted_model_dir') and stage == 'probe':
             model = Path(state['adapted_model_dir'])/'model.json'
             if hashlib.sha256(model.read_bytes()).hexdigest() != state['adaptation']['adapted_model_sha256']:
                 raise IntegrityError('Probe changed the accepted model')
             artifacts += [path for path in (model, model.parent/'adaptation.json') if path.is_file()]
-            files['model.json'] = model
+            files['model.json'], original = model, state['adaptation'].get('original_model_sha256')
         elif stage == 'ground' and (ws/'model/model.json').is_file():
             files['model.json'] = ws/'model/model.json'
+            try:
+                original = json.loads((ws/'model/adaptation.json').read_text(encoding='utf-8')).get('original_model_sha256')
+            except (OSError, ValueError, AttributeError):
+                original = None
         if stage == 'probe':
             capabilities, parsed, errors, reason = ws/'capabilities.json', False, None, None
             if capabilities.is_symlink() or capabilities.exists() and not capabilities.resolve().is_relative_to(ws.resolve()):
@@ -427,7 +455,8 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
         if live.is_file():
             artifacts.append(live)
             files['live-observations.jsonl'] = live
-        files.update(_candidate_files(accepted))
+        # The replies and notes of the candidate whose model this stage ran, never of another revision.
+        files.update(_candidate_files(accepted, original))
         files.update({f'probe-{i}.json': Path(p) for i, p in enumerate(options.get('observed_records', []), 1)})
         # The candidate's own files and the device evidence of its runs, kept for a later repair; nothing graded.
         remember(run_dir, stage, files, report, workspace=ws)

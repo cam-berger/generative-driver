@@ -1825,7 +1825,10 @@ class FinalVerdictTests(unittest.TestCase):
                         # The real listen tool: it could not open the port, or refused the worker's seconds.
                         [heard] = listens
                         self.assertFalse(heard['ok'], heard)
-                        self.assertEqual('error' in heard['result'], listen == 'unopened', heard)
+                        # pyserial raises opening a port that does not exist; a host without pyserial declares a host
+                        # fault. Either way the listen failed outside the worker's own arguments.
+                        failed_outside = 'error' in heard['result'] or heard['result'].get('fault') == 'host'
+                        self.assertEqual(failed_outside, listen == 'unopened', heard)
                     if replay == 'failed':
                         # Emit handed off no package, so reuse was skipped and made no call.
                         self.assertEqual(refusals, [])

@@ -192,7 +192,7 @@ class SuiteStore:
         category=result.get('outcome_category','unknown')
         if category not in ('completed','model','host','operator','cancelled','unknown'):
             raise ValueError('Invalid child outcome category')
-        # The child's recorded evaluation, as the configurator read it: none for a legacy child graded inside its run.
+        # The child's recorded evaluation, as the configurator read it: none for a child of a suite frozen before the harness.
         equivalence=result.get('equivalence') if isinstance(result.get('equivalence'),dict) else {}
         public={'run_id':result.get('run_id'),'status':result['status'],'outcome_category':category,
                 'equivalent':equivalence.get('equivalent'),'equivalence_status':equivalence.get('status')}

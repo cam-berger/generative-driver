@@ -144,14 +144,16 @@ def _validate_payload(payload):
                 raise ValueError('Frozen final artifact differs from accepted emit package')
 
 
-def _snapshot_identity(payload):
+def _snapshot_identity(payload, v2=True):
+    """The sealed snapshot is the run's, for its pinned case: a v2 case for benchmark-run-evidence/1 (`v2`), any
+    registered workflow case, legacy ones included, for an assistive run's evidence."""
     from .snapshots import canonical_digest
     snapshot = payload['execution_snapshot']
     if (snapshot.get('schema') != 'benchmark-execution-snapshot/1' or
             canonical_digest({k: v for k, v in snapshot.items() if k != 'snapshot_sha256'}) != snapshot.get('snapshot_sha256') or
             snapshot['case_pin'] != payload['case_pin']):
         raise ValueError('Execution snapshot identity mismatch')
-    if payload['case_pin']['manifest'].get('schema') != 'benchmark-case/2':
+    if v2 and payload['case_pin']['manifest'].get('schema') != 'benchmark-case/2':
         raise ValueError('Run evidence requires a v2 case')
     from .registry import validate_pinned_workflow
     validate_pinned_workflow(payload['case_pin'])
@@ -159,13 +161,14 @@ def _snapshot_identity(payload):
 
 def _validate_payload_v2(payload):
     """An assistive run's evidence: its snapshot identity, every accepted artifact and notes hash, and at most one final,
-    which grades the run's accepted emitted driver: the first artifact of its latest emit handoff that handed one on."""
+    which grades the run's accepted emitted driver: the first artifact of its latest emit handoff that handed one on.
+    A final graded from the run's recorded fresh reuse (`recorded-reuse`) has the same contract and records."""
     from ..benchmark import STAGES
     from ..configurator import PROTOCOL
     from .behavior import validate_records, _sha
     if payload.get('schema') != 'benchmark-run-evidence/2' or payload.get('protocol') != PROTOCOL:
         raise ValueError('Unsupported run evidence schema or protocol')
-    _snapshot_identity(payload)
+    _snapshot_identity(payload, v2=False)
     rows = payload['accepted_artifacts']
     for row in rows:
         if (row.get('stage') not in STAGES or type(row.get('revision')) is not int or row['revision'] < 0

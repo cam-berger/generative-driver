@@ -28,21 +28,6 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
     return adapter_for(case_id).observe_stage(case_id, stage, run_dir, workspace, report, accepted, options)
 
 
-def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, options=None):
-    """Legacy adapters' graded stage check (tq9, bme280) until they observe their stages too."""
-    from .benchmark_support.registry import adapter_for
-    adapter = adapter_for(case_id)
-    if hasattr(adapter, 'observe_stage'):
-        raise ValueError('This case observes its stages; it has no graded stage check')
-    result = adapter.check_stage(case_id, stage, run_dir, workspace, report, accepted, options)
-    from .benchmark_support.cases import _state, _write
-    state_path, state = _state(run_dir)
-    state.setdefault('stage_verdicts', {})[stage] = {'status': 'passed' if result.get('ok') else 'failed',
-        'checks': result.get('checks', []), 'revision': state.get('revision', 0), 'reason': result.get('reason')}
-    _write(state_path, state)
-    return result
-
-
 def package_call(case_id, run_dir, stage, arguments):
     """A provided device's package call, checked before anything is dispatched; returns the call to run."""
     from .benchmark_support.registry import adapter_for
@@ -57,6 +42,7 @@ def record_call(case_id, run_dir, stage, name, arguments, result, before, after,
 
 def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=None,
                     binding=None, allow_effects=None, options=None):
+    """A package call on the operator's bound device (bme280), which the configurator dispatches itself."""
     from .benchmark_support.registry import adapter_for
     return adapter_for(case_id).package_execute(case_id, run_dir, stage, package_dir,
         operation, parameters, binding, allow_effects, options)
@@ -112,9 +98,9 @@ def main(argv=None):
     approval_flags.add_argument('--approve-bound-device-tools', action='store_true', help='Explicitly authorize assigned BME280 tools for the selected physical binding and effects')
     approval_flags.add_argument('--approve-emulator-tools', action='store_true', help='Explicitly authorize scoped tq9 emulator MCP tools; no physical device approval')
     running.add_argument('--binding-json', help='Operator-owned binding JSON, e.g. {"url":"ftdi://selected/1"}')
-    running.add_argument('--wait', action='store_true', help='Follow an emulated trial until its bench harness has finished')
-    resuming = commands.add_parser('trial-resume', help='Complete the evaluation of an emulated trial whose harness has '
-                                   'finished: grade it if it is unscored (never a final already graded) and post the verdict')
+    running.add_argument('--wait', action='store_true', help='Follow a trial until its bench harness has finished')
+    resuming = commands.add_parser('trial-resume', help='Complete the evaluation of a trial whose harness has finished: '
+                                   'grade it if it is unscored (never a final already graded) and post the verdict')
     resuming.add_argument('trial_dir')
     resuming.add_argument('--password-file', required=True)
     resuming.add_argument('--renode', help='Emulator executable; required when the trial\'s frozen driver still needs grading')
@@ -203,9 +189,11 @@ def case_root():
 
 
 def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, autostart=True, wait=False):
-    """Run the installation replay, or start an actual-agent trial. An emulated (v2) case starts a detached bench
-    harness, which admits the case, provides the device and holds the evaluator password file; the configurator never
-    receives it. That returns {trial_id, run_id}; `wait` follows the trial until the harness has finished with it."""
+    """Run the installation replay, or start an actual-agent trial. Every actual-agent case starts a detached bench
+    harness, which admits the case, holds the evaluator password file and grades the frozen driver once after the run;
+    it provides the emulator of an emulated case (v2 or legacy tq9) and leaves the operator's bound device (bme280)
+    alone. The configurator never receives the password file. That returns {trial_id, run_id}; `wait` follows the
+    trial until the harness has finished with it."""
     from .benchmark_support.registry import resolve_case, pin_case
     options = dict(options or {})
     definition = resolve_case(case)
@@ -219,28 +207,16 @@ def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, aut
         raise ValueError('Scoped approval requires tq9/emulator or bme280/bound-device')
     if approval == 'bound-device' and (not isinstance(options.get('binding'),dict) or not options['binding']):
         raise ValueError('Bound-device approval requires an explicit operator binding')
-    if definition.execution.startswith('actual-agent-') and definition.manifest.get('schema') == 'benchmark-case/2':
+    if definition.execution.startswith('actual-agent-'):
         from .benchmark_support.harness import launch
+        if not autostart:
+            # A configurator that must already run (Windows) is asked before any harness or device starts.
+            from .client import call, default_home
+            reachable = call('ping', {}, home=Path(options.get('home') or default_home()).expanduser(), autostart=False)
+            if not reachable.get('ok'):
+                return reachable
         return launch(case, output_dir, executor, options, approval, effects=definition.default_effects,
                       autostart=autostart, wait=wait)
-    if definition.execution.startswith('actual-agent-'):
-        from .client import call
-        options = dict(options or {})
-        home, request_id = options.pop('home', None), options.pop('request_id', None)
-        budget = options.pop('budget_seconds', 10800)
-        effects = options.pop('effects', list(definition.default_effects))
-        args = {'goal': 'Recover, check, package and freshly reuse the benchmark device interface for the desired functions.',
-                'case': case, 'executor': executor or 'codex', 'budget_seconds': budget,
-                'effects': effects, 'case_options': options}
-        if options.get('binding') is not None:
-            args['binding'] = options['binding']
-        if approval is not None:
-            args['scoped_tool_approval'] = approval
-        if request_id:
-            args['request_id'] = request_id
-        if output_dir:
-            args['output_dir'] = str(Path(output_dir).resolve())
-        return call('start', args, home=home, autostart=autostart)
     from .toolkit import call_tool
     started = time.monotonic()
     output = Path(output_dir or tempfile.mkdtemp(prefix='generative-driver-smoke-')).resolve()
@@ -354,13 +330,11 @@ def score_observations(truth, observations):
 
 
 def cleanup(case_id, run_dir, options=None):
-    """A legacy adapter stops what it owns. An emulated case's device belongs to the bench harness, which alone stops
-    it: nothing here may stop or forget it, whatever a run state records."""
+    """No stage adapter owns a device. An emulated case's device belongs to the bench harness, which alone stops it, and
+    a bound device is the operator's: nothing here may stop or forget it, whatever a run state records."""
     from .benchmark_support.registry import adapter_for
-    adapter = adapter_for(case_id)
-    if not hasattr(adapter, 'cleanup'):
-        raise RuntimeError('The bench harness owns this case\'s device; the configurator holds no ownership to clean up')
-    return adapter.cleanup(case_id, run_dir, options)
+    adapter_for(case_id)
+    raise RuntimeError('The bench harness owns this case\'s device; the configurator holds no ownership to clean up')
 
 
 def score(report, password_file=None, *, evidence_path=None):
@@ -378,22 +352,4 @@ def score(report, password_file=None, *, evidence_path=None):
         return adapter_for(case_id).score(data, password_file, evidence_path=evidence_path)
     return adapter_for(case_id).score(data, password_file)
 
-
-def evaluation_fault(evaluation):
-    """Assign an independently observed failure; expected refusal is not a defect."""
-    if evaluation.get('score',{}).get('verdict')=='passed':
-        return None
-    calls=evaluation.get('calls',[])
-    if not calls:
-        return 'host'
-    faults=[]
-    for call in calls:
-        result=call.get('result',{})
-        if result.get('ok'):
-            continue
-        fault=result.get('fault')
-        if call.get('capability')=='set_duty' and call.get('grants')==[] and fault=='operator':
-            continue
-        faults.append(fault or 'host')
-    return 'operator' if 'operator' in faults else 'host' if 'host' in faults else 'model'
 

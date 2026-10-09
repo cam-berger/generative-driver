@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from generative_driver.configurator import Controller
-from suite_fixtures import drive_suite,legacy_manifest,sqlite_context,wait_owner_suite
+from suite_fixtures import drive_suite,legacy_devices,legacy_manifest,sqlite_context,wait_owner_suite
 
 # The sha256 of the token of the bench harness a suite is frozen for.
 TOKEN='a1'*32
@@ -206,11 +206,11 @@ class ControllerStorageTests(unittest.TestCase):
             root=Path(temporary);home=root/'home';home.mkdir()
             config=home/'config.json'
             config.write_text(json.dumps({'executors':{'codex':{'command':['missing-scripted-runtime'],'model':'frozen-model'}}}),encoding='utf-8')
-            controller=Controller(home)
+            controller=Controller(home);secrets=legacy_devices(self,root/'fixture')
             request={'manifest':legacy_manifest(2),'executor':'codex','request_id':'suite-request'}
             try:
                 # The bench harness starts and drives the suite; the configurator freezes and stores it.
-                started=drive_suite(controller,root/'bench',request,wait=False);sid=started['suite_id']
+                started=drive_suite(controller,root/'bench',{**request,**secrets},wait=False);sid=started['suite_id']
                 self.assertFalse(started['duplicate'])
                 status=wait_owner_suite(controller,sid,lambda s:s['status']=='blocked' and not s['stopping'])
                 self.assertEqual((status['status'],status['planned'],status['completed']),('blocked',2,0))
@@ -249,7 +249,7 @@ class ControllerStorageTests(unittest.TestCase):
             controller=Controller(home)
             try:
                 # Evaluator handles and the emulator executable reach the bench harness only.
-                request={'manifest':legacy_manifest(3),'options':{},'password_files':{'tq9':'PRIVATE-HANDLE'},'renode':'PRIVATE-PATH'}
+                request={'manifest':legacy_manifest(3),'options':{},**legacy_devices(self,root/'PRIVATE-HANDLES')}
                 sid=drive_suite(controller,root/'bench',request,wait=False)['suite_id']
                 state=wait_owner_suite(controller,sid,lambda s:s['status']=='blocked' and not s['stopping'])
                 frozen=controller._suites.get(sid)['frozen']
@@ -258,10 +258,10 @@ class ControllerStorageTests(unittest.TestCase):
                 self.assertEqual(experiment['schema'],'benchmark-suite-experiment/1')
                 self.assertEqual(set(experiment),{'schema','comparison_identity','dimensions','execution_snapshots'})
                 identity=experiment['comparison_identity']
-                # Legacy children are still graded inside their runs: the suite names no assistive protocol and counts
-                # no equivalent drivers, though its harness drives it.
-                self.assertNotIn('protocol',identity)
-                self.assertIsNone(state['equivalent'])
+                # Its harness drives it and grades every child after its run, legacy tq9 included: the suite names the
+                # assistive protocol and counts equivalent drivers.
+                self.assertEqual(identity['protocol'],'assistive/1')
+                self.assertEqual(state['equivalent'],0)
                 self.assertEqual(identity['manifest'],legacy_manifest(3))
                 self.assertEqual(identity['manifest_sha256'],frozen['manifest_sha256'])
                 self.assertEqual(identity['entry_pins'],[public_pin(pin) for pin in frozen['entry_pins']])
@@ -288,25 +288,27 @@ class ControllerStorageTests(unittest.TestCase):
                 self.assertNotIn('PRIVATE',json.dumps(after))
             finally:controller.close()
 
-    def test_a_suite_resume_extends_the_budget_of_its_stopped_legacy_child_with_an_approved_reason(self):
-        # Catches a suite resume that cannot continue a legacy child stopped by its own budget: an approved child
-        # extension reaches that child's resume, recorded with its reason, and no other child's budget.
+    def test_a_suite_resume_extends_the_budget_of_its_stopped_child_with_an_approved_reason(self):
+        # Catches a suite resume that cannot continue a child stopped by its own budget: an approved child extension
+        # reaches that child's resume on the device its harness provides anew, recorded with its reason, and no other
+        # child's budget.
         import json
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);home=root/'home';home.mkdir()
             (home/'config.json').write_text(json.dumps({'executors':{'codex':{'command':['missing-scripted-runtime']}}}),encoding='utf-8')
-            controller=Controller(home)
+            controller=Controller(home);secrets=legacy_devices(self,root/'fixture')
             try:
-                sid=drive_suite(controller,root/'bench',{'manifest':legacy_manifest(2)})['suite_id']
+                sid=drive_suite(controller,root/'bench',{'manifest':legacy_manifest(2),**secrets})['suite_id']
                 self.assertEqual(controller.call('suite_status',{'suite_id':sid})['status'],'blocked')
                 slot=controller._suites.get(sid)['trials'][0];rid=slot['run_id']
                 with controller._db() as db:
                     # The child's own budget is spent; the suite's is not.
                     db.execute('UPDATE runs SET created=created-1000 WHERE id=?',(rid,))
-                with self.assertRaisesRegex(ValueError,'budget exhausted'):
-                    drive_suite(controller,root/'bench',{'suite_id':sid})
+                refused=drive_suite(controller,root/'bench',{'suite_id':sid,**secrets})
+                self.assertEqual(refused['status'],'failed');self.assertIn('budget exhausted',refused['reason'])
+                self.assertEqual(controller.call('suite_status',{'suite_id':sid})['status'],'blocked')
                 drive_suite(controller,root/'bench',{'suite_id':sid,'child_budget_seconds':1200,
-                                                     'child_budget_reason':'Operator approved a longer child'})
+                                                     'child_budget_reason':'Operator approved a longer child',**secrets})
                 extended=[e['data'] for e in controller.call('events',{'run_id':rid})['events'] if e['kind']=='run.budget_extended']
                 self.assertEqual([(e['old_budget_seconds'],e['new_budget_seconds'],e['reason']) for e in extended],
                                  [(120,1200,'Operator approved a longer child')])
@@ -323,9 +325,9 @@ class ControllerStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);home=root/'home';home.mkdir()
             (home/'config.json').write_text(json.dumps({'executors':{'codex':{'command':['missing-scripted-runtime']}}}),encoding='utf-8')
-            controller=Controller(home)
+            controller=Controller(home);secrets=legacy_devices(self,root/'fixture')
             try:
-                sid=drive_suite(controller,root/'bench',{'manifest':legacy_manifest(2)},wait=False)['suite_id']
+                sid=drive_suite(controller,root/'bench',{'manifest':legacy_manifest(2),**secrets},wait=False)['suite_id']
                 state=wait_owner_suite(controller,sid,lambda s:s['status']=='blocked' and not s['stopping'])
                 slot=controller._suites.get(sid)['trials'][0];rid=slot['run_id']
                 before=controller.call('suite_result',{'suite_id':sid})['experiment']
@@ -335,7 +337,8 @@ class ControllerStorageTests(unittest.TestCase):
                     if status['status'] in ('failed','blocked') and not status['stopping']:break
                     time.sleep(.01)
                 self.assertIn(status['status'],('failed','blocked'));self.assertFalse(status['stopping'])
-                controller.call('resume',{'run_id':rid,'budget_seconds':180,'budget_reason':'PRIVATE-REASON'})
+                # The child's harness provides its device anew and passes the approved extension to its resume.
+                drive_suite(controller,root/'bench',{'suite_id':sid,'child_budget_seconds':180,'child_budget_reason':'PRIVATE-REASON',**secrets})
                 after=controller.call('suite_result',{'suite_id':sid,'offset':1})['experiment']
                 self.assertEqual(after['comparison_identity']['budgets']['effective']['child_budget_overrides'],
                     [{'trial_key':slot['trial_key'],'budget_seconds':180}])

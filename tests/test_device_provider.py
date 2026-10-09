@@ -203,8 +203,9 @@ class DeviceProviderTests(ProviderFixture):
                         {**RECIPE, 'evaluator_password_file': 'p'}, 'recipe'):
             with self.subTest(refused=refused), self.assertRaisesRegex(ValueError, 'recipe'):
                 self.provider(recipe=refused)
+        # A case whose device the operator owns has no instrument and no provider.
         with self.assertRaisesRegex(ValueError, 'Unknown native family'):
-            self.provider('tq9')
+            self.provider('bme280')
         # The pinned image only: a changed image starts nothing.
         self.image.write_bytes(b'another image')
         with self.assertRaisesRegex(ValueError, 'image'):

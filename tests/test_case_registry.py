@@ -248,14 +248,16 @@ class RegistryTests(unittest.TestCase):
                     pin_case('tq9-v2', 'original', 0)
 
     def test_extracted_legacy_package_checks_assignment_before_execution(self):
+        # A legacy tq9 package call runs on the device its bench harness provides, and only the stage-assigned copy:
+        # anything else is refused before the call exists to dispatch.
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark import package_execute
+        from generative_driver.benchmark import package_call
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            result = package_execute('tq9', root, 'reuse', root / 'unassigned', 'read')
-            self.assertFalse(result['ok'])
-            self.assertEqual(result['error']['code'], 'package')
+            with self.assertRaisesRegex(ValueError, 'stage-assigned package'):
+                package_call('tq9', root, 'reuse', {'package_dir': str(root / 'unassigned'), 'operation': 'read',
+                                                    'binding': {'host': '127.0.0.1', 'port': 1}, 'allow_effects': []})
 
     def test_v2_effect_defaults_must_be_a_grant_list(self):
         import json

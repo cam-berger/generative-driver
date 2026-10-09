@@ -55,7 +55,10 @@ def public_case_fixture(root, case_id='tq9-v2', *, calibration=None, **changes):
 
 
 def write_scripted_case_worker(directory, *, hold_on_repair=False):
-    """Write a subprocess contract fixture rejected by the real legacy model gate."""
+    """Write a subprocess contract fixture for legacy tq9 stages: it imports the supplied firmware at acquire, writes an
+    unrelated setup-smoke model at interpret (the real stage observation notes it unqualified) and reports every later
+    stage blocked, with nothing to hand on. `hold_on_repair` makes the first interpretation one the emulator binding
+    cannot carry, so probe skips and the configurator's model diff starts a repair, which it then holds."""
     import sys
     from pathlib import Path
     import generative_driver
@@ -67,22 +70,90 @@ from generative_driver.toolkit import resources_root
 prompt=sys.stdin.read()
 if prompt.startswith('Execute exactly'):
     task=json.loads(prompt.split('\\n',1)[1])
-    args=json.loads(next(a.split('=',1)[1] for a in sys.argv if a.startswith('mcp_servers.stage.args=')))
-    identity={'run_id':args[args.index('--run')+1],'assignment_id':args[args.index('--assignment')+1]}
-    image=pathlib.Path(task['inputs'][0])
-    out=call('tool',{**identity,'name':'acquire_firmware_artifact','arguments':{'source_path':str(image),'expected_sha256':hashlib.sha256(image.read_bytes()).hexdigest(),'origin':'provided_binary'}},args[args.index('--home')+1])
-    assert out.get('available'),out
-    report={'status':'completed','summary':'scripted import','artifacts':[{'path':out[k],'sha256':hashlib.sha256(pathlib.Path(out[k]).read_bytes()).hexdigest(),'kind':'evidence'} for k in ('artifact','provenance')],'checks':[{'name':'import','status':'pass','evidence':[out['provenance']]}],'unresolved':[]}
+    if task['stage']=='acquire':
+        args=json.loads(next(a.split('=',1)[1] for a in sys.argv if a.startswith('mcp_servers.stage.args=')))
+        identity={'run_id':args[args.index('--run')+1],'assignment_id':args[args.index('--assignment')+1]}
+        image=pathlib.Path(task['inputs'][0])
+        out=call('tool',{**identity,'name':'acquire_firmware_artifact','arguments':{'source_path':str(image),'expected_sha256':hashlib.sha256(image.read_bytes()).hexdigest(),'origin':'provided_binary'}},args[args.index('--home')+1])
+        assert out.get('available'),out
+        report={'status':'completed','summary':'scripted import','artifacts':[{'path':out[k],'sha256':hashlib.sha256(pathlib.Path(out[k]).read_bytes()).hexdigest(),'kind':'evidence'} for k in ('artifact','provenance')],'checks':[{'name':'import','status':'pass','evidence':[out['provenance']]}],'unresolved':[]}
+    else:
+        report={'status':'blocked','summary':'scripted contract: nothing to do in '+task['stage'],'artifacts':[],'checks':[],'unresolved':[]}
     print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps(report)}}))
 else:
-    # An intentionally unrelated, unqualified model. The real case gate rejects it.
+    # An intentionally unrelated, unqualified model; the real stage observation notes it.
     shutil.copy2(resources_root()/'bench/cases/setup-smoke/model.json','model.json')
 '''
     if hold_on_repair:
-        source = source.replace('else:\n', "else:\n    if pathlib.Path('DEFECTS.json').exists(): time.sleep(20)\n", 1)
+        source = source.replace("    shutil.copy2(resources_root()/'bench/cases/setup-smoke/model.json','model.json')\n",
+            "    if pathlib.Path('DEFECTS.json').exists(): time.sleep(20)\n"
+            "    model=json.loads((resources_root()/'bench/cases/setup-smoke/model.json').read_text())\n"
+            "    model['channel']={'type':'usb'}\n"
+            "    pathlib.Path('model.json').write_text(json.dumps(model))\n", 1)
     source = source.replace('PACKAGE_PARENT', repr(str(Path(generative_driver.__file__).resolve().parents[1])))
     path.write_text(source, encoding='utf-8')
     return [sys.executable, str(path)]
+
+
+LEGACY_DEVICE_FIXTURE = '''
+# Tests only: the bench harness's legacy tq9 device, a synthetic TCP peer per emulator session, and a toy legacy truth
+# for the device recipe and the grade. A spawned harness loads this through GD_TEST_HARNESS_FIXTURE.
+import sys
+sys.path.insert(0, TESTS)
+from suite_fixtures import legacy_device_patches
+for patcher in legacy_device_patches(PRIVATE)[0]:
+    patcher.start()
+'''
+
+
+def legacy_device_patches(private):
+    """([patchers], peers): a bench harness's legacy tq9 emulator sessions become synthetic TCP peers and its tq9 truth a
+    toy one; other cases' truth is unlocked as before."""
+    from pathlib import Path
+    from unittest.mock import patch
+    from tq9_workflow_fixture import Silicon, legacy_truth
+    from generative_driver.benchmark_support import evaluator
+    real, peers = evaluator.case_truth, []
+    def start(**kwargs):
+        peer = Silicon(kwargs['image']); peers.append(peer)
+        session = peer.session(kwargs['recipe'], Path(kwargs.get('private_dir') or Path(private) / ('native-' + str(len(peers)))))
+        class Process:
+            def poll(self):
+                return 0 if getattr(peer, 'closed', False) else None
+        session.process = Process()
+        return session
+    def case_truth(case_id, run_dir, options):
+        return legacy_truth() if case_id == 'tq9' else real(case_id, run_dir, options)
+    return ([patch('generative_driver.benchmark_support.evaluator.case_truth', side_effect=case_truth),
+             patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=start)], peers)
+
+
+def legacy_devices(test, root):
+    """Have every bench harness of a test provide legacy tq9 devices of synthetic peers: patches in this process, for an
+    in-process harness, and a fixture file that a spawned harness loads. Returns the harness's secrets for the suite:
+    {'password_files': {'tq9': a synthetic credential file}, 'renode': an emulator path}, which `options()` turns into
+    suite start options."""
+    import os
+    from pathlib import Path
+    from unittest.mock import patch
+    root = Path(root); root.mkdir(parents=True, exist_ok=True)
+    patchers, peers = legacy_device_patches(root / 'native')
+    for patcher in patchers:
+        patcher.start(); test.addCleanup(patcher.stop)
+    test.addCleanup(lambda: [peer.close() for peer in peers])
+    test.legacy_peers = peers  # The peers of devices an in-process harness provides.
+    fixture = root / 'legacy_harness_fixture.py'
+    fixture.write_text(LEGACY_DEVICE_FIXTURE.replace('TESTS', repr(str(Path(__file__).resolve().parent)))
+                       .replace('PRIVATE', repr(str(root / 'native'))), encoding='utf-8')
+    environment = patch.dict(os.environ, {'GD_TEST_HARNESS_FIXTURE': str(fixture)})
+    environment.start(); test.addCleanup(environment.stop)
+    password = root / 'legacy-password-handle'; password.write_text('synthetic fixture credential')
+    return {'password_files': {'tq9': str(password)}, 'renode': str(root / 'renode')}
+
+
+def options(secrets, **extra):
+    """Suite start or resume options carrying the harness's secrets from `legacy_devices`."""
+    return {'evaluator_password_files': dict(secrets['password_files']), 'renode': secrets['renode'], **extra}
 
 
 def wait_suite(call, suite_id, home, predicate):

@@ -101,17 +101,22 @@ class OutcomeModelTests(unittest.TestCase):
         with self.assertRaises(dataclasses.FrozenInstanceError):
             outcome.kind = 'stop'
 
-    def test_benchmark_adapter_verdicts_keep_their_gated_path_until_part_b(self):
-        # Adapter checks still grade against truth; Part B replaces them with truth-free checks.
-        route = {'ok': False, 'route': 'interpret', 'fault': 'model', 'reason': 'defect', 'feedback': {'f': 1}}
-        outcome = self.decide('interpret', checked=route, repairs=0)
-        self.assertEqual((outcome.kind, outcome.diff), ('revise', {'f': 1}))
-        spent = self.decide('probe', checked=route, repairs=2)
-        self.assertEqual((spent.kind, spent.category), ('stop', 'model'))
-        for fault, category in (('host', 'host'), ('operator', 'operator'), ('model', 'model'), (None, 'unknown')):
+    def test_no_adapter_verdict_decides_a_stage(self):
+        # Catches the gated protocol's adapter verdicts deciding a stage: a check that fails (ok False), names a route,
+        # a fault, feedback or a frozen final neither stops the run nor revises it. Only the device diff revises.
+        route = {'ok': False, 'route': 'interpret', 'fault': 'model', 'reason': 'defect', 'feedback': {'f': 1},
+                 'final_evaluation': True}
+        for stage in ('interpret', 'probe', 'ground', 'emit', 'reuse'):
+            for repairs in (0, 2):
+                with self.subTest(stage=stage, repairs=repairs):
+                    outcome = self.decide(stage, checked=route, repairs=repairs)
+                    self.assertEqual((outcome.kind, outcome.category, outcome.diff), ('advance', None, None))
+        for fault in ('host', 'operator', 'model', None):
             with self.subTest(fault=fault):
                 outcome = self.decide('emit', checked={'ok': False, 'fault': fault, 'reason': 'adapter'})
-                self.assertEqual((outcome.kind, outcome.category, outcome.reason), ('stop', category, 'adapter'))
+                self.assertEqual((outcome.kind, outcome.category), ('advance', None))
+        revised = self.decide('probe', checked={**route, 'device_diff': [{'source': 'probe_run'}]}, repairs=0)
+        self.assertEqual((revised.kind, revised.diff), ('revise', [{'source': 'probe_run'}]))
 
 
 def scripted_stages(controller, *, check, prepare=None, prompts=None, work=None, report=None, runtime=None):

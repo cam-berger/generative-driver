@@ -10,14 +10,18 @@ from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from suite_fixtures import legacy_manifest, wait_suite, write_scripted_case_worker
+from suite_fixtures import legacy_devices, legacy_manifest, options, wait_suite, write_scripted_case_worker
 
 
 def server_env(root):
     """The MCP server's environment: the configured home, and the package under test (an MCP client passes no
-    PYTHONPATH of its own, so the server would otherwise import whatever installation the interpreter finds)."""
+    PYTHONPATH of its own, so the server would otherwise import whatever installation the interpreter finds), and the
+    test's bench harness fixture, which the harness the server launches loads to provide legacy devices."""
+    import os
     import generative_driver
-    return {'GENERATIVE_DRIVER_HOME': str(root), 'PYTHONPATH': str(Path(generative_driver.__file__).resolve().parents[1])}
+    fixture = os.environ.get('GD_TEST_HARNESS_FIXTURE')
+    return {'GENERATIVE_DRIVER_HOME': str(root), 'PYTHONPATH': str(Path(generative_driver.__file__).resolve().parents[1]),
+            **({'GD_TEST_HARNESS_FIXTURE': fixture} if fixture else {})}
 
 
 def invoke_cli(root, *args):
@@ -87,10 +91,11 @@ raise SystemExit(main())
             self.assertIn('--output', missing.stderr)
             self.assertFalse(absent.exists())
             configure('codex', ['missing-scripted-runtime'], home=root)
-            manifest = root/'manifest.json'
+            manifest, secrets = root/'manifest.json', root/'options.json'
             manifest.write_text(json.dumps(legacy_manifest()), encoding='utf-8')
+            secrets.write_text(json.dumps(options(legacy_devices(self, Path(temporary)/'fixture'))), encoding='utf-8')
             try:
-                started = invoke_cli(root, 'start', '--manifest', str(manifest))
+                started = invoke_cli(root, 'start', '--manifest', str(manifest), '--options', str(secrets))
                 self.assertEqual(started.returncode, 0, started.stderr + started.stdout)
                 suite_id = json.loads(started.stdout)['suite_id']
                 wait_suite(call, suite_id, root, lambda state: state['status'] == 'blocked')
@@ -101,7 +106,9 @@ raise SystemExit(main())
                 self.assertTrue((root/'export/report.md').is_file())
                 report = json.loads((root/'export/suite.json').read_text(encoding='utf-8'))
                 self.assertTrue(report['provisional'])
-                self.assertEqual(report['success']['passed'], 0)
+                # Its harness grades every child after its run: the report counts equivalent drivers of the protocol.
+                self.assertEqual((report['schema'], report['protocol']), ('benchmark-suite-report/2', 'assistive/1'))
+                self.assertEqual(report['equivalence']['equivalent'], 0)
                 self.assertEqual(call('ping', {}, root, autostart=False)['pid'], owner_pid)
             finally:
                 call('shutdown', {}, root)
@@ -170,19 +177,19 @@ raise SystemExit(main())
         with tempfile.TemporaryDirectory(prefix='suite CLI ') as temporary:
             root = Path(temporary)/'owner'
             configure('codex', ['missing-scripted-runtime'], home=root)
-            manifest, options = root/'manifest.json', root/'options.json'
+            manifest, secrets = root/'manifest.json', root/'options.json'
             manifest.write_text(json.dumps(legacy_manifest()), encoding='utf-8')
-            options.write_text(json.dumps({'evaluator_password_files': {'tq9': 'PRIVATE_HANDLE'}}), encoding='utf-8')
+            secrets.write_text(json.dumps(options(legacy_devices(self, Path(temporary)/'PRIVATE_HANDLE'))), encoding='utf-8')
             def invoke(*args):
                 done = invoke_cli(root, *args)
                 self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
                 return json.loads(done.stdout)
             try:
                 first = invoke('start', '--manifest', str(manifest), '--executor', 'codex',
-                    '--options', str(options), '--request-id', 'cli-once')
+                    '--options', str(secrets), '--request-id', 'cli-once')
                 self.assertTrue(first['ok'])
                 wait_suite(call, first['suite_id'], root, lambda state: state['status'] == 'blocked')
-                again = invoke('start', '--manifest', str(manifest), '--options', str(options),
+                again = invoke('start', '--manifest', str(manifest), '--options', str(secrets),
                     '--request-id', 'cli-once')
                 self.assertEqual(first['suite_id'], again['suite_id'])
                 self.assertTrue(again['duplicate'])
@@ -195,7 +202,7 @@ raise SystemExit(main())
                 self.assertGreater(events['cursor'], 0)
                 self.assertEqual(invoke('cancel', first['suite_id'])['status'], 'cancelled')
                 resumed = invoke('resume', first['suite_id'], '--suite-budget-seconds', '240',
-                    '--budget-reason', 'scripted contract continuation')
+                    '--budget-reason', 'scripted contract continuation', '--options', str(secrets))
                 self.assertEqual(resumed['suite_id'], first['suite_id'])
                 wait_suite(call, first['suite_id'], root, lambda state: state['status'] == 'blocked')
                 experiment = invoke('result', first['suite_id'])['experiment']
@@ -253,6 +260,7 @@ main()
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite MCP control ') as temporary:
             root = Path(temporary)/'owner'
+            secrets = options(legacy_devices(self, Path(temporary)/'fixture'))
             configure('codex', ['missing-scripted-runtime'], home=root)
             owner_pid = call('ping', {}, root)['pid']
             params = StdioServerParameters(command=sys.executable, args=['-m', 'generative_driver.mcp'],
@@ -267,14 +275,15 @@ main()
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
                         await session.initialize()
-                        suite = await invoke(session, 'start', manifest=legacy_manifest(2))
+                        suite = await invoke(session, 'start', manifest=legacy_manifest(2), options=secrets)
                         stopped = await asyncio.to_thread(wait_suite, call, suite['suite_id'], root,
                             lambda state: state['status'] == 'blocked' and not state['stopping'])
                         child_id = stopped['active_child_id']
+                        self.assertIsNotNone(child_id)
                         cancelled = await invoke(session, 'cancel', suite_id=suite['suite_id'])
                         self.assertEqual(cancelled['status'], 'cancelled')
                         await invoke(session, 'resume', suite_id=suite['suite_id'], suite_budget_seconds=240,
-                            budget_reason='explicit scripted test extension')
+                            budget_reason='explicit scripted test extension', options=secrets)
                         stopped = await asyncio.to_thread(wait_suite, call, suite['suite_id'], root,
                             lambda state: state['status'] == 'blocked' and not state['stopping'])
                         self.assertEqual(stopped['active_child_id'], child_id)
@@ -343,6 +352,7 @@ main()
         with tempfile.TemporaryDirectory(prefix='suite MCP reconnect ') as temporary:
             root = Path(temporary)/'owner'
             root.mkdir()
+            secrets = options(legacy_devices(self, Path(temporary)/'fixture'))
             command = write_scripted_case_worker(root)
             script = Path(command[1])
             source = script.read_text(encoding='utf-8')
@@ -366,7 +376,7 @@ main()
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
                         await session.initialize()
-                        suite = await invoke(session, 'start', manifest=legacy_manifest(2), request_id='mcp-once')
+                        suite = await invoke(session, 'start', manifest=legacy_manifest(2), request_id='mcp-once', options=secrets)
                         deadline = time.monotonic() + 10
                         while not (root/'started').exists() and time.monotonic() < deadline:
                             await asyncio.sleep(.02)
@@ -377,7 +387,7 @@ main()
                         await session.initialize()
                         status = await invoke(session, 'status', suite_id=suite['suite_id'])
                         self.assertEqual(status['status'], 'running')
-                        again = await invoke(session, 'start', manifest=legacy_manifest(2), request_id='mcp-once')
+                        again = await invoke(session, 'start', manifest=legacy_manifest(2), request_id='mcp-once', options=secrets)
                         self.assertTrue(again['duplicate'])
                         self.assertEqual(again['suite_id'], suite['suite_id'])
                         (root/'release').write_text('continue', encoding='utf-8')

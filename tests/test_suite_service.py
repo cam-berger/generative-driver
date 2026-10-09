@@ -6,7 +6,7 @@ import tempfile
 import time
 import unittest
 
-from suite_fixtures import drive_suite, legacy_manifest, settled_suite, wait_owner_suite
+from suite_fixtures import drive_suite, legacy_devices, legacy_manifest, options, settled_suite, wait_owner_suite
 
 
 def owner_home(temporary):
@@ -17,27 +17,30 @@ def owner_home(temporary):
 
 
 class DecisionTests(unittest.TestCase):
-    def test_only_a_recorded_settled_model_failure_advances(self):
+    def test_a_stopped_child_never_advances_whatever_its_category(self):
+        # Catches the gated protocol's rule that a recorded model failure advances: every child, legacy tq9 included, is
+        # graded once after its run, so a stopped one blocks, and an unsettled one waits.
         from generative_driver.benchmark_support.suites import child_disposition
         stopped = {'status':'blocked','stopping':False,'uncertain_effect':False,
                    'outcome_category':'model','reason':'Arbitrary localized message'}
-        self.assertEqual(child_disposition(stopped), 'advance')
-        for category in ('host','operator','unknown','cancelled'):
-            self.assertEqual(child_disposition(dict(stopped,outcome_category=category)), 'block')
+        for category in ('model','host','operator','unknown','cancelled','safety','integrity'):
+            for record in (None, {'status':'graded','equivalent':False}):
+                self.assertEqual(child_disposition(dict(stopped,outcome_category=category,equivalence=record)), 'block')
+        self.assertEqual(child_disposition(dict(stopped,status='failed')), 'block')
         self.assertEqual(child_disposition(dict(stopped,uncertain_effect=True)), 'block')
         self.assertEqual(child_disposition(dict(stopped,stopping=True)), 'wait')
         self.assertEqual(child_disposition(dict(stopped,status='running')), 'wait')
-        self.assertEqual(child_disposition(dict(stopped,status='completed',outcome_category='completed')), 'advance')
+        self.assertEqual(child_disposition(dict(stopped,status='completed',outcome_category='completed')), 'block')
         for key in ('stopping','uncertain_effect'):
-            incomplete = dict(stopped); incomplete.pop(key)
+            incomplete = dict(stopped,status='completed',outcome_category='completed',equivalence={'status':'graded','equivalent':True})
+            incomplete.pop(key)
             self.assertEqual(child_disposition(incomplete), 'block')
 
     def test_a_child_graded_after_its_run_advances_only_with_a_graded_or_no_driver_record(self):
         # Catches a suite that counts an emulated child before its grade is recorded: an unscored or pending grade,
         # or any stop, including a model failure, blocks the suite.
         from generative_driver.benchmark_support.suites import child_disposition
-        completed = {'status':'completed','stopping':False,'uncertain_effect':False,'outcome_category':'completed',
-                     'graded_after_run':True}
+        completed = {'status':'completed','stopping':False,'uncertain_effect':False,'outcome_category':'completed'}
         for record in ({'status':'graded','equivalent':True}, {'status':'graded','equivalent':False},
                        {'status':'no-driver','equivalent':False}):
             self.assertEqual(child_disposition(dict(completed,equivalence=record)), 'advance')
@@ -78,7 +81,9 @@ class CategoryTests(unittest.TestCase):
             finally:
                 controller.close()
 
-    def test_scripted_qualification_exhaustion_is_a_trusted_model_failure(self):
+    def test_an_unqualified_interpretation_is_a_note_and_a_device_stage_waits_for_the_harness_device(self):
+        # Catches the legacy qualification gate stopping or repairing the run: the candidate's failed qualification is a
+        # note, the run continues, and a legacy run started without its bench harness's device stops for the operator.
         from generative_driver.client import call
         from suite_fixtures import write_scripted_case_worker
         with tempfile.TemporaryDirectory() as home:
@@ -90,30 +95,36 @@ class CategoryTests(unittest.TestCase):
                     result=call('result',run,home)
                     if result['status'] in ('blocked','failed') and not result['stopping']:break
                     time.sleep(.02)
-                self.assertEqual(result['progress']['repairs'],2,result)
-                self.assertEqual(result.get('outcome_category'),'model')
+                self.assertEqual((result['status'],result['outcome_category'],result['stage']),('blocked','operator','probe'),result)
+                self.assertEqual(result['progress']['repairs'],0)
+                self.assertIn('bench harness',result['reason'])
+                interpret=next(n for n in result['stage_notes'] if n['stage']=='interpret')
+                self.assertIn('predicted_reply_qualification',interpret['failed_checks'])
             finally:
                 call('shutdown',{},home)
 
 
 class ServiceTests(unittest.TestCase):
-    def test_model_failure_finishes_a_measurement_and_starts_the_next_slot(self):
+    def test_a_child_graded_after_its_run_finishes_a_measurement_and_starts_the_next_slot(self):
         from generative_driver.client import call
         from generative_driver.setup import configure
         from generative_driver.benchmark_support.suites import start_suite
         from suite_fixtures import write_scripted_case_worker, wait_suite
         with tempfile.TemporaryDirectory(prefix='suite scripted ') as temporary:
-            home=owner_home(temporary)
+            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
             configure('codex',write_scripted_case_worker(home),home=home)
             try:
-                # A detached bench harness drives the suite; the configurator schedules nothing itself.
-                suite=start_suite(legacy_manifest(2),'codex',{},'two-scripted-children',home=home)
+                # A detached bench harness drives the suite, provides each child's device and grades it after its run.
+                suite=start_suite(legacy_manifest(2),'codex',options(secrets),'two-scripted-children',home=home)
                 self.assertTrue(suite['ok'],suite)
                 state=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='completed')
                 page=call('suite_result',{'suite_id':suite['suite_id'],'limit':100},home)
                 self.assertEqual(state['completed'],2)
                 self.assertEqual(len({t['run_id'] for t in page['trials']}),2)
-                self.assertEqual([t['outcome_category'] for t in page['trials']],['model','model'])
+                # The scripted workers emit no driver: each child completes with a recorded no-driver verdict.
+                self.assertEqual([(t['outcome_category'],t['equivalence_status'],t['equivalent']) for t in page['trials']],
+                                 [('completed','no-driver',False)]*2)
+                self.assertEqual(state['equivalent'],0)
                 events=call('suite_events',suite,home)['events']
                 kinds=[e['kind'] for e in events]
                 self.assertLess(kinds.index('trial.finished'),[i for i,k in enumerate(kinds) if k=='trial.started'][1])
@@ -128,8 +139,8 @@ class ServiceTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import start_suite
         from suite_fixtures import write_scripted_case_worker, wait_suite
         with tempfile.TemporaryDirectory(prefix='suite retry ') as temporary:
-            home=owner_home(temporary)
-            request={'manifest':legacy_manifest(1),'executor':'codex','options':{},'request_id':'retry-after-refusal'}
+            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
+            request={'manifest':legacy_manifest(1),'executor':'codex','options':options(secrets),'request_id':'retry-after-refusal'}
             try:
                 refused=start_suite(**request,home=home)
                 self.assertFalse(refused['ok'],refused)
@@ -150,9 +161,9 @@ class ServiceTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import wait_suite
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary)
+            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
             configure('codex',['missing-first-runtime'],model='first-model',home=home)
-            request={'manifest':legacy_manifest(2),'executor':'codex','options':{},'request_id':'freeze'}
+            request={'manifest':legacy_manifest(2),'executor':'codex','options':options(secrets),'request_id':'freeze'}
             try:
                 suite=start_suite(**request,home=home)
                 blocked=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked' and not s['stopping'])
@@ -160,7 +171,7 @@ class ServiceTests(unittest.TestCase):
                 configure('codex',['missing-second-runtime'],model='second-model',home=home)
                 again=start_suite(**request,home=home)
                 self.assertEqual((again['suite_id'],again['duplicate']),(suite['suite_id'],True))
-                resumed=resume_suite(suite['suite_id'],home=home)
+                resumed=resume_suite(suite['suite_id'],options(secrets),home=home)
                 self.assertTrue(resumed['ok'],resumed)
                 again=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked' and not s['stopping'])
                 self.assertEqual(again['active_child_id'],child)
@@ -177,10 +188,10 @@ class ServiceTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import start_suite
         from suite_fixtures import wait_suite
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary)
+            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
             configure('codex',[sys.executable,'-c','import time; time.sleep(120)'],home=home)
             try:
-                suite=start_suite(legacy_manifest(2),'codex',{},home=home)
+                suite=start_suite(legacy_manifest(2),'codex',options(secrets),home=home)
                 active=wait_suite(call,suite['suite_id'],home,lambda s:bool(s['active_child_id']))
                 stopped=call('suite_cancel',{'suite_id':suite['suite_id']},home)
                 self.assertTrue(stopped['ok'],stopped)
@@ -236,11 +247,11 @@ class BudgetTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import wait_suite
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary)
+            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
             configure('codex',[sys.executable,'-c','import time; time.sleep(120)'],home=home)
             manifest=legacy_manifest(2);manifest.update(child_budget_seconds=.3,suite_budget_seconds=.3)
             try:
-                suite={'suite_id':start_suite(manifest,home=home)['suite_id']}
+                suite={'suite_id':start_suite(manifest,options=options(secrets),home=home)['suite_id']}
                 blocked=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked')
                 self.assertEqual(blocked['completed'],0)
                 deadline=time.monotonic()+5
@@ -251,17 +262,22 @@ class BudgetTests(unittest.TestCase):
                     time.sleep(.02)
                 self.assertEqual(child['status'],'cancelled')
                 # A resume relaunches the bench harness, which asks the configurator to resume the suite.
-                no_extension=resume_suite(suite['suite_id'],home=home)
+                no_extension=resume_suite(suite['suite_id'],options(secrets),home=home)
                 self.assertFalse(no_extension['ok'])
-                resumed=resume_suite(suite['suite_id'],home=home,suite_budget_seconds=120,budget_reason='PRIVATE-REASON')
-                # Child's exhausted budget needs its separate explicit extension.
-                self.assertFalse(resumed['ok'])
-                call('resume',{'run_id':child['run_id'],'budget_seconds':120,'budget_reason':'PRIVATE-CHILD'},home)
-                resumed=resume_suite(suite['suite_id'],home=home,suite_budget_seconds=120,budget_reason='PRIVATE-REASON')
+                resumed=resume_suite(suite['suite_id'],options(secrets),home=home,suite_budget_seconds=120,budget_reason='PRIVATE-REASON')
                 self.assertTrue(resumed['ok'],resumed)
+                # The child's exhausted budget needs its separate explicit extension: its harness provides a device anew
+                # and the child's resume is refused, so the suite stops again with the child as it was.
+                again=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked' and not s['stopping'])
+                self.assertEqual(again['active_child_id'],child['run_id'])
+                self.assertEqual(call('result',{'run_id':child['run_id']},home)['budget_seconds'],.3)
+                resumed=resume_suite(suite['suite_id'],options(secrets),home=home,child_budget_seconds=120,child_budget_reason='PRIVATE-CHILD')
+                self.assertTrue(resumed['ok'],resumed)
+                wait_suite(call,suite['suite_id'],home,lambda s:call('status',{'run_id':child['run_id']},home)['status']=='running')
                 cancelled=call('suite_cancel',suite,home)
                 self.assertEqual(cancelled['created'],blocked['created'])
-                repeated=resume_suite(suite['suite_id'],home=home,suite_budget_seconds=120,budget_reason='repeat')
+                settled_suite(call,suite['suite_id'],home)
+                repeated=resume_suite(suite['suite_id'],options(secrets),home=home,suite_budget_seconds=120,budget_reason='repeat')
                 self.assertTrue(repeated['ok'],repeated)
                 page=call('suite_result',suite,home)
                 budgets=page['experiment']['comparison_identity']['budgets']
@@ -279,11 +295,11 @@ class BudgetTests(unittest.TestCase):
         from generative_driver.configurator import Controller
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary);bench=Path(temporary)/'bench'
+            home=owner_home(temporary);bench=Path(temporary)/'bench';secrets=legacy_devices(self,Path(temporary)/'fixture')
             configure('codex',['missing-runtime'],home=home)
             owner=Controller(home)
             try:
-                suite={'suite_id':drive_suite(owner,bench,{'manifest':legacy_manifest()},wait=False)['suite_id']}
+                suite={'suite_id':drive_suite(owner,bench,{'manifest':legacy_manifest(),**secrets},wait=False)['suite_id']}
                 before=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
                 for fields in ({'suite_budget_seconds':True,'budget_reason':'x'},
                                {'suite_budget_seconds':float('inf'),'budget_reason':'x'},
@@ -292,7 +308,7 @@ class BudgetTests(unittest.TestCase):
                                {'suite_budget_seconds':604801,'budget_reason':'x'},
                                {'suite_budget_seconds':180,'budget_reason':' '}):
                     with self.subTest(fields=fields),self.assertRaises(ValueError):
-                        drive_suite(owner,bench,{**suite,**fields})
+                        drive_suite(owner,bench,{**suite,**fields,**secrets})
                 after=owner.call('suite_status',suite)
                 self.assertEqual(after['created'],before['created'])
                 self.assertEqual(after['status'],'blocked')
@@ -306,19 +322,20 @@ class RecoveryTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import write_scripted_case_worker, wait_suite
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary)
+            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
             command=write_scripted_case_worker(home);script=Path(command[1])
-            source=script.read_text().replace("    task=json.loads", "    counter=pathlib.Path("+repr(str(Path(home)/'counter'))+")\n    n=int(counter.read_text())+1 if counter.exists() else 1\n    counter.write_text(str(n))\n    if n>1: sys.exit(3)\n    task=json.loads")
+            # The first child's acquire, probe, ground and emit workers run; every later worker fails for the host.
+            source=script.read_text().replace("    task=json.loads", "    counter=pathlib.Path("+repr(str(Path(home)/'counter'))+")\n    n=int(counter.read_text())+1 if counter.exists() else 1\n    counter.write_text(str(n))\n    if n>4: sys.exit(3)\n    task=json.loads")
             script.write_text(source);configure('codex',command,home=home)
             try:
-                suite={'suite_id':start_suite(legacy_manifest(3),home=home)['suite_id']}
+                suite={'suite_id':start_suite(legacy_manifest(3),options=options(secrets),home=home)['suite_id']}
                 blocked=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked' and not s['stopping'])
                 self.assertEqual(blocked['completed'],1)
                 trials=call('suite_result',suite,home)['trials']
                 image=Path(home)/'runs'/trials[0]['run_id']/'benchmark/inputs/firmware.bin'
                 image.write_bytes(b'changed temporary snapshot')
                 before=call('events',{'run_id':blocked['active_child_id']},home)['cursor']
-                refused=resume_suite(suite['suite_id'],home=home)
+                refused=resume_suite(suite['suite_id'],options(secrets),home=home)
                 self.assertFalse(refused['ok'],refused)
                 self.assertIn('Snapshot',refused['reason'])
                 self.assertEqual(call('events',{'run_id':blocked['active_child_id']},home)['cursor'],before)
@@ -328,10 +345,10 @@ class RecoveryTests(unittest.TestCase):
         from generative_driver.configurator import Controller
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary);bench=Path(temporary)/'bench'
+            home=owner_home(temporary);bench=Path(temporary)/'bench';secrets=legacy_devices(self,Path(temporary)/'fixture')
             configure('codex',['missing-runtime'],home=home)
             owner=Controller(home)
-            suite={'suite_id':drive_suite(owner,bench,{'manifest':legacy_manifest(2)},wait=False)['suite_id']}
+            suite={'suite_id':drive_suite(owner,bench,{'manifest':legacy_manifest(2),**secrets},wait=False)['suite_id']}
             blocked=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
             child=blocked['active_child_id'];owner.close()
             # Durable public toy final-verdict fixture and a lost attachment, not evaluation.
@@ -347,7 +364,7 @@ class RecoveryTests(unittest.TestCase):
                 self.assertEqual(recovered['status'],'blocked')
                 self.assertIsNone(recovered['active_child_id'])
                 self.assertEqual(owner.find_request('suite:'+suite['suite_id']+':trial:0')['run_id'],child)
-                resumed=drive_suite(owner,bench,suite,wait=False)
+                resumed=drive_suite(owner,bench,{**suite,**secrets},wait=False)
                 self.assertTrue(resumed['accepted'])
                 end=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
                 self.assertEqual(end['completed'],1)
@@ -368,13 +385,13 @@ class RecoveryTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import wait_suite
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary)
+            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
             marker=Path(home)/'worker.pid'
             code='import os,pathlib,time; p=pathlib.Path('+repr(str(marker))+'); p.write_text(str(os.getpid())); time.sleep(120)'
             configure('codex',[sys.executable,'-c',code],home=home)
             pid=None
             try:
-                suite={'suite_id':start_suite(legacy_manifest(2),home=home)['suite_id']}
+                suite={'suite_id':start_suite(legacy_manifest(2),options=options(secrets),home=home)['suite_id']}
                 active=wait_suite(call,suite['suite_id'],home,lambda s:bool(s['active_child_id']))
                 deadline=time.monotonic()+5
                 while not marker.exists() and time.monotonic()<deadline:time.sleep(.02)
@@ -394,7 +411,7 @@ class RecoveryTests(unittest.TestCase):
                 self.assertTrue(result['uncertain_effect'])
                 # The bench harness that drove the suite saw its child stop, settled nothing and let go of the suite.
                 self.assertFalse(settled_suite(call,suite['suite_id'],home)['stopping'])
-                refused=resume_suite(suite['suite_id'],home=home)
+                refused=resume_suite(suite['suite_id'],options(secrets),home=home)
                 self.assertFalse(refused['ok']);self.assertIn('uncertain',refused['reason'])
                 self.assertEqual(len([r for r in call('suite_result',suite,home)['trials'] if r['run_id']]),1)
             finally:
@@ -409,11 +426,11 @@ class InterventionTests(unittest.TestCase):
         from generative_driver.configurator import Controller
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary)
+            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
             configure('codex',['missing-runtime'],home=home)
             owner=Controller(home)
             try:
-                suite={'suite_id':drive_suite(owner,Path(temporary)/'bench',{'manifest':legacy_manifest()},wait=False)['suite_id']}
+                suite={'suite_id':drive_suite(owner,Path(temporary)/'bench',{'manifest':legacy_manifest(),**secrets},wait=False)['suite_id']}
                 state=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
                 run={'run_id':state['active_child_id']}
                 owner.call('respond',{**run,'message':'PRIVATE-MESSAGE','observation':{'alien':'/PRIVATE/PATH'}})
@@ -427,76 +444,62 @@ class InterventionTests(unittest.TestCase):
 
 class DelayedOperationTests(unittest.TestCase):
     def test_suite_cancel_preserves_delayed_local_tcp_uncertainty_and_never_advances(self):
-        import socketserver
+        # A write on the child's device, the one its bench harness provides, is held in flight while the suite is
+        # cancelled: the write stays uncertain, runs once, and nothing advances or resumes until it is reconciled.
         import threading
         from generative_driver.configurator import Controller
         from generative_driver.setup import configure
-        from generative_driver.toolkit import resources_root
+        from tq9_workflow_fixture import model as tq9_model
         entered,release=threading.Event(),threading.Event()
-        received=[]
-        class Device(socketserver.StreamRequestHandler):
-            def handle(self):
-                while command:=self.rfile.readline():
-                    received.append(command)
-                    if command==b'ID?\n':
-                        self.wfile.write(b'DEMO-42\n');self.wfile.flush()
-                    else:
-                        entered.set();release.wait(5)
-                        self.wfile.write(b'T:21.5\n');self.wfile.flush()
-        server=socketserver.ThreadingTCPServer(('127.0.0.1',0),Device)
-        server.daemon_threads=True
-        server_thread=threading.Thread(target=server.serve_forever,daemon=True);server_thread.start()
-        try:
-            with tempfile.TemporaryDirectory() as temporary:
-                home=owner_home(temporary)
-                configure('codex',[sys.executable,'-c','import time; time.sleep(120)'],home=home)
-                owner=Controller(home);worker=None
-                try:
-                    suite={'suite_id':drive_suite(owner,Path(temporary)/'bench',{'manifest':legacy_manifest(2)},wait=False)['suite_id']}
-                    state=wait_owner_suite(owner,suite['suite_id'],lambda s:bool(s['active_child_id']))
-                    run={'run_id':state['active_child_id']}
-                    deadline=time.monotonic()+5;assignments=[];child_state={}
-                    while time.monotonic()<deadline:
-                        assignments=[e['data'] for e in owner.call('events',run)['events'] if e['kind']=='stage.assigned']
-                        child_state=owner.call('status',run)
-                        if assignments and (child_state['status'],child_state['stage'])==('running','acquire'):break
-                        time.sleep(.01)
-                    self.assertTrue(assignments)
-                    self.assertEqual((child_state.get('status'),child_state.get('stage')),('running','acquire'),child_state)
-                    assignment=assignments[0]
-                    # Public toy assignment fixture reaches the real managed TCP path
-                    # without passing the scored legacy interpretation gate or any emulator.
-                    model=json.loads((resources_root()/'bench/cases/setup-smoke/model.json').read_text())
-                    model['channel']={'type':'tcp'};model['operations']['measure']['effect']='write'
-                    model['operations']['measure']['steps'][0]['timeout_ms']=4000
-                    model_dir=Path(assignment['workspace'])/'toy';model_dir.mkdir()
-                    (model_dir/'model.json').write_text(json.dumps(model))
-                    assignment.update(allowed_tools=['interface_execute'],binding={'host':'127.0.0.1','port':server.server_address[1]},effects=['write'])
-                    with owner._db() as db:
-                        db.execute('UPDATE assignments SET payload=? WHERE id=?',(json.dumps(assignment),assignment['id']))
-                    responses=[]
-                    def invoke():
-                        responses.append(owner.call('tool',{**run,'assignment_id':assignment['id'],'name':'interface_execute','arguments':{'model_dir':str(model_dir),'operation':'measure'}}))
-                    worker=threading.Thread(target=invoke);worker.start()
-                    self.assertTrue(entered.wait(5))
-                    self.assertTrue(owner.call('status',run)['uncertain_effect'])
-                    cancelled=owner.call('suite_cancel',suite)
-                    self.assertEqual(cancelled['status'],'cancelled');self.assertTrue(cancelled['stopping'])
-                    with self.assertRaisesRegex(ValueError,'stopping'):owner.call('suite_resume',suite)
-                    release.set();worker.join(5);self.assertFalse(worker.is_alive())
-                    child=wait_child(owner,run['run_id'])
-                    self.assertTrue(child['uncertain_effect']);self.assertEqual(child['outcome_category'],'cancelled')
-                    self.assertFalse(settled_suite(lambda m,p,h:owner.call(m,p),suite['suite_id'])['stopping'])
-                    with self.assertRaisesRegex(ValueError,'uncertain'):owner.call('suite_resume',suite)
-                    self.assertEqual(sum(t['run_id'] is not None for t in owner.call('suite_result',suite)['trials']),1)
-                    self.assertEqual(received.count(b'T\n'),1)
-                    self.assertEqual(len(responses),1)
-                finally:
-                    release.set()
-                    if worker:worker.join(5)
-                    owner.close()
-        finally:
-            release.set();server.shutdown();server.server_close();server_thread.join(5)
+        with tempfile.TemporaryDirectory() as temporary:
+            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
+            configure('codex',[sys.executable,'-c','import time; time.sleep(120)'],home=home)
+            owner=Controller(home);worker=None
+            try:
+                suite={'suite_id':drive_suite(owner,Path(temporary)/'bench',{'manifest':legacy_manifest(2),**secrets},wait=False)['suite_id']}
+                state=wait_owner_suite(owner,suite['suite_id'],lambda s:bool(s['active_child_id']))
+                run={'run_id':state['active_child_id']}
+                deadline=time.monotonic()+5;assignments=[];child_state={}
+                while time.monotonic()<deadline:
+                    assignments=[e['data'] for e in owner.call('events',run)['events'] if e['kind']=='stage.assigned']
+                    child_state=owner.call('status',run)
+                    if assignments and (child_state['status'],child_state['stage'])==('running','acquire'):break
+                    time.sleep(.01)
+                self.assertTrue(assignments)
+                self.assertEqual((child_state.get('status'),child_state.get('stage')),('running','acquire'),child_state)
+                assignment=assignments[0]
+                peer=self.legacy_peers[-1];peer.gate=(entered,release)
+                # Public toy assignment fixture reaches the real managed path on the provided device without passing
+                # through any stage worker's model.
+                model=tq9_model();model['channel']={'type':'tcp'};model['operations']['measure']['effect']='write'
+                model['operations']['measure']['steps'][0]['timeout_ms']=4000
+                model_dir=Path(assignment['workspace'])/'toy';model_dir.mkdir()
+                (model_dir/'model.json').write_text(json.dumps(model))
+                device=owner.call('result',run)['progress']['device']
+                assignment.update(allowed_tools=['interface_execute'],binding=device['binding'],effects=['write'])
+                with owner._db() as db:
+                    db.execute('UPDATE assignments SET payload=? WHERE id=?',(json.dumps(assignment),assignment['id']))
+                responses=[]
+                def invoke():
+                    responses.append(owner.call('tool',{**run,'assignment_id':assignment['id'],'name':'interface_execute','arguments':{'model_dir':str(model_dir),'operation':'measure'}}))
+                worker=threading.Thread(target=invoke);worker.start()
+                self.assertTrue(entered.wait(5))
+                self.assertTrue(owner.call('status',run)['uncertain_effect'])
+                cancelled=owner.call('suite_cancel',suite)
+                self.assertEqual(cancelled['status'],'cancelled');self.assertTrue(cancelled['stopping'])
+                with self.assertRaisesRegex(ValueError,'stopping'):owner.call('suite_resume',suite)
+                release.set();worker.join(5);self.assertFalse(worker.is_alive())
+                child=wait_child(owner,run['run_id'])
+                self.assertTrue(child['uncertain_effect']);self.assertEqual(child['outcome_category'],'cancelled')
+                self.assertFalse(settled_suite(lambda m,p,h:owner.call(m,p),suite['suite_id'])['stopping'])
+                with self.assertRaisesRegex(ValueError,'uncertain'):owner.call('suite_resume',suite)
+                self.assertEqual(sum(t['run_id'] is not None for t in owner.call('suite_result',suite)['trials']),1)
+                self.assertEqual(peer.device_commands.count('T'),1)
+                self.assertEqual(len(responses),1)
+            finally:
+                release.set()
+                if worker:worker.join(5)
+                owner.close()
 
 
 class CleanupFailureTests(unittest.TestCase):
@@ -531,15 +534,16 @@ class CleanupFailureTests(unittest.TestCase):
             finally:owner.close()
 
     def _stopped_suite_at_completion(self, home):
-        """Public durable queue fixture; exercises cleanup, not six-stage grading. The suite's bench harness plays in
-        this process (`self.bench`); a resume relaunches it."""
+        """Public durable queue fixture; exercises the release of what a run holds, not six-stage grading. The suite's
+        bench harness plays in this process (`self.bench`) with the harness's secrets (`self.secrets`); a resume
+        relaunches it, which provides the child's device anew."""
         from generative_driver.configurator import Controller
         from generative_driver.setup import configure
-        self.bench=Path(home)/'bench'
+        self.bench=Path(home)/'bench';self.secrets=legacy_devices(self,Path(home)/'fixture')
         home=owner_home(home)
         configure('codex',['missing-runtime'],home=home)
         owner=Controller(home)
-        suite={'suite_id':drive_suite(owner,self.bench,{'manifest':legacy_manifest(2)},wait=False)['suite_id']}
+        suite={'suite_id':drive_suite(owner,self.bench,{'manifest':legacy_manifest(2),**self.secrets},wait=False)['suite_id']}
         state=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
         child=state['active_child_id']
         # Resume a durable exhausted stage queue so the real _run completion and
@@ -564,9 +568,9 @@ class CleanupFailureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             owner,suite,child=self._stopped_suite_at_completion(home)
             try:
-                # Only the external stop boundary fails; scheduling/state/leases are real.
-                with patch('generative_driver.benchmark.cleanup',side_effect=TimeoutError('scripted stop timeout')):
-                    drive_suite(owner,self.bench,suite,wait=False)
+                # Only the release of what the run holds fails; scheduling/state/leases are real.
+                with patch.object(owner,'_release',side_effect=TimeoutError('scripted stop timeout')):
+                    drive_suite(owner,self.bench,{**suite,**self.secrets},wait=False)
                     state=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
                 self.assertEqual(state['completed'],0)
                 result=owner.call('result',{'run_id':child})
@@ -584,7 +588,7 @@ class CleanupFailureTests(unittest.TestCase):
                     db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)',('cleanup-final',child,'reuse',json.dumps(verdict),time.time()))
                 owner.close();owner=Controller(owner.home)
                 with self.assertRaises(ValueError):owner.call('suite_resume',suite)
-                with self.assertRaisesRegex(ValueError,'uncertain'):drive_suite(owner,self.bench,suite)
+                with self.assertRaisesRegex(ValueError,'uncertain'):drive_suite(owner,self.bench,{**suite,**self.secrets})
                 still=owner.call('suite_result',suite)
                 self.assertEqual(still['completed'],0)
                 self.assertEqual([t['run_id'] for t in still['trials']],[child,None])
@@ -603,10 +607,19 @@ class CleanupFailureTests(unittest.TestCase):
             raise TimeoutError('scripted stop timeout')
         with tempfile.TemporaryDirectory() as home:
             owner,suite,child=self._stopped_suite_at_completion(home)
+            # The resumed child stops at its last stage, for the operator, and releases what it holds as any stopped run
+            # does; a cancellation arrives while that release hangs. (A run that completed awaiting its grade is never
+            # cancelled.)
+            with owner._db() as db:
+                progress={'revision':0,'next_stage':'reuse','repairs':0,'feedback':None,'protocol':'assistive/1'}
+                db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)',(child,json.dumps(progress)))
+            prepare=owner._prepare
+            def operator_stop(spec,stage,*args):
+                return {'blocked':'Scripted operator stop'} if stage=='reuse' else prepare(spec,stage,*args)
             cancellation=None
             try:
-                with patch('generative_driver.benchmark.cleanup',side_effect=failed_stop):
-                    drive_suite(owner,self.bench,suite,wait=False)
+                with patch.object(owner,'_release',side_effect=failed_stop),patch.object(owner,'_prepare',side_effect=operator_stop):
+                    drive_suite(owner,self.bench,{**suite,**self.secrets},wait=False)
                     self.assertTrue(entered.wait(5))
                     replies=[]
                     cancellation=threading.Thread(target=lambda:replies.append(owner.call('suite_cancel',suite)))
@@ -635,20 +648,22 @@ class CleanupFailureTests(unittest.TestCase):
 class FreshReuseCategorySchedulingTests(unittest.TestCase):
     _stopped_suite_at_completion = CleanupFailureTests._stopped_suite_at_completion
 
-    def test_final_failure_settles_and_next_slot_waits_for_cleanup(self):
+    def test_a_graded_child_settles_and_the_next_slot_waits_for_its_release(self):
+        # Catches the next slot starting while the previous child still holds what it is releasing, and a stage check in
+        # the gated protocol's terminal-final shape deciding the child: it completes, is graded after its run, settles.
         import threading
         from unittest.mock import patch
-        from generative_driver import configurator, benchmark
+        from generative_driver import configurator
         with tempfile.TemporaryDirectory() as home:
             owner,suite,child=self._stopped_suite_at_completion(home)
             entered,release,cleaned=threading.Event(),threading.Event(),threading.Event()
             with owner._db() as db:
                 progress={'revision':0,'next_stage':'reuse','repairs':0,'feedback':None,'protocol':'assistive/1'}
                 db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)',(child,json.dumps(progress)))
-            prepare,check,execute,cleanup=owner._prepare,owner._check,configurator.execute,benchmark.cleanup
+            prepare,check,execute,release_run=owner._prepare,owner._check,configurator.execute,owner._release
             def fixture_prepare(spec,stage,*args):
                 if stage=='reuse':return {'inputs':[],'allowed_tools':[]}
-                self.assertTrue(cleaned.is_set(),'Next slot began before previous cleanup')
+                self.assertTrue(cleaned.is_set(),'Next slot began before previous release')
                 return prepare(spec,stage,*args)
             def fixture_execute(request,*args):
                 if request.stage=='reuse':
@@ -656,29 +671,31 @@ class FreshReuseCategorySchedulingTests(unittest.TestCase):
                 return execute(request,*args)
             def fixture_check(spec,stage,*args):
                 if stage=='reuse':
-                    return {'ok':False, 'fault':'model', 'final_evaluation':True,
+                    return {'ok':False, 'fault':'model', 'final_evaluation':True, 'artifacts':[], 'checks':[],
                             'reason':'Scripted frozen final failure'}
                 return check(spec,stage,*args)
-            def delayed_cleanup(case,run_dir,options):
-                if Path(run_dir).name==child:
+            def delayed_release(run_id,spec,run_dir):
+                if run_id==child:
                     entered.set()
-                    if not release.wait(5):raise AssertionError('Cleanup release deadline')
-                    result=cleanup(case,run_dir,options);cleaned.set();return result
-                return cleanup(case,run_dir,options)
+                    if not release.wait(5):raise AssertionError('Release deadline')
+                    result=release_run(run_id,spec,run_dir);cleaned.set();return result
+                return release_run(run_id,spec,run_dir)
             try:
                 with patch.object(owner,'_prepare',side_effect=fixture_prepare),patch.object(owner,'_check',side_effect=fixture_check), \
                      patch('generative_driver.configurator.execute',side_effect=fixture_execute), \
-                     patch('generative_driver.benchmark.cleanup',side_effect=delayed_cleanup):
-                    drive_suite(owner,self.bench,suite,wait=False)
-                    self.assertTrue(entered.wait(5),'Measured failure did not reach cleanup')
+                     patch.object(owner,'_release',side_effect=delayed_release):
+                    drive_suite(owner,self.bench,{**suite,**self.secrets},wait=False)
+                    self.assertTrue(entered.wait(5),'The completed child did not reach its release')
                     result=owner.call('result',{'run_id':child})
-                    self.assertEqual(result['outcome_category'],'model');self.assertTrue(result['stopping'])
+                    self.assertEqual(result['outcome_category'],'completed');self.assertTrue(result['stopping'])
+                    self.assertNotIn('terminal_final_failure',result['progress'])
                     self.assertEqual([t['run_id'] for t in owner.call('suite_result',suite)['trials']],[child,None])
                     release.set()
                     state=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
                     self.assertEqual(state['completed'],1)
                     rows=owner.call('suite_result',suite)['trials']
-                    self.assertEqual(rows[0]['outcome_category'],'model');self.assertEqual(rows[0]['status'],'finished')
+                    self.assertEqual((rows[0]['outcome_category'],rows[0]['status'],rows[0]['equivalence_status']),
+                                     ('completed','finished','no-driver'))
                     self.assertIsNotNone(rows[1]['run_id']);self.assertNotEqual(rows[1]['run_id'],child)
                     self.assertEqual(rows[1]['outcome_category'],'operator')
                     kinds=[e['kind'] for e in owner.call('suite_events',suite)['events']]

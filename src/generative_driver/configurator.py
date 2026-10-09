@@ -56,9 +56,19 @@ PENDING = 'Frozen driver awaits independent evaluation'
 
 
 def _observed_case(spec):
-    """Whether a benchmark run's adapter observes its stages without truth (emulated v2 cases); legacy tq9 and bme280
-    adapters still grade inside the stage loop."""
-    return bool(spec.get('case')) and spec.get('_case_pin', {}).get('manifest', {}).get('schema') == 'benchmark-case/2'
+    """Whether a run is a benchmark run. Every case's adapter, legacy tq9 and bme280 included, observes its stages
+    without truth; the bench harness grades the frozen driver once, after the run."""
+    return bool(spec.get('case'))
+
+
+def _emulated(spec):
+    """Whether a benchmark run's device is an emulator the bench harness provides (the v2 cases and legacy tq9); a
+    bme280 run uses the operator's bound device."""
+    return (spec.get('_case_pin') or {}).get('execution') == 'actual-agent-emulation'
+
+
+def _v2(spec):
+    return (spec.get('_case_pin') or {}).get('manifest', {}).get('schema') == 'benchmark-case/2'
 
 
 def digest(path):
@@ -131,17 +141,10 @@ def case_options(spec):
         'operator_observations':spec.get('_operator_observations',[]),'configured_effects':spec['effects']}
 
 
-# Legacy cases still grade inside the stage loop with the evaluator password until they too are graded after the run.
-LEGACY_CASES = ('tq9', 'bme280')
-
-
 def _refuse_secrets(spec):
-    """The configurator never holds a password, a password file or the emulator executable: the bench harness does.
-    Only legacy cases keep their in-loop evaluator options until they are graded after the run. The request itself is
-    checked too, since the run keeps all of it as its spec."""
+    """The configurator never holds a password, a password file or the emulator executable, for any case: the bench
+    harness does. The request itself is checked too, since the run keeps all of it as its spec."""
     case = spec.get('case')
-    if (case.get('id') if isinstance(case, dict) else case) in LEGACY_CASES:
-        return
     for options in (spec, spec.get('case_options'), case.get('options') if isinstance(case, dict) else None):
         if isinstance(options, dict) and any('password' in str(key).lower() or str(key).lower() == 'renode'
                                              for key in options):
@@ -176,11 +179,9 @@ def _attached_to(suite, token_sha256):
 
 def _assistive(suite):
     """Whether every child of the suite is graded after its run, as the assistive protocol grades it: a suite its bench
-    harness drives whose frozen slots are all emulated cases. A suite frozen before the harness, or one with legacy
-    children (still graded inside their runs), names no protocol and counts no equivalent drivers."""
-    from .benchmark_support.suites import graded_after_run, harness_driven
-    frozen = suite['frozen']
-    return harness_driven(frozen) and all(graded_after_run(frozen, slot) for slot in frozen['trials'])
+    harness drives. A suite frozen before the harness names no protocol and counts no equivalent drivers."""
+    from .benchmark_support.suites import harness_driven
+    return harness_driven(suite['frozen'])
 
 
 # A child whose recorded request differs from its frozen slot holds that slot's request_id for good.
@@ -188,18 +189,20 @@ TAKEN = "; the slot's request_id is taken by that child, so start a new suite"
 
 
 def _provided_device(params, pin):
-    """The device record of an emulated run, from what the bench harness hands over: its admission of the case (the
-    calibration evidence hash, compared with the public pin), the sha256 of its evaluation token, and the descriptor of
-    the device it started from the pinned image. The configurator admits nothing itself and holds no truth."""
+    """The device record of an emulated run, from what the bench harness hands over: for a v2 case its admission (the
+    calibration evidence hash, compared with the public pin; legacy tq9 has no calibration), the sha256 of its
+    evaluation token, and the descriptor of the device it started from the pinned image. The configurator admits
+    nothing itself and holds no truth."""
     from .device_client import descriptor_errors
-    calibration = pin.get('calibration') or {}
-    if calibration.get('status') != 'passed':
-        raise ValueError('V2 case requires independently validated passed calibration before a run')
-    admission = params.get('admission') if isinstance(params.get('admission'), dict) else {}
-    if not isinstance(admission.get('calibration_evidence_sha256'), str) or \
-            admission['calibration_evidence_sha256'] != calibration.get('evidence_sha256'):
-        raise ValueError('Calibration admission evidence differs from the public case pin; the bench harness admits an '
-                         'emulated case')
+    if pin['manifest'].get('schema') == 'benchmark-case/2':
+        calibration = pin.get('calibration') or {}
+        if calibration.get('status') != 'passed':
+            raise ValueError('V2 case requires independently validated passed calibration before a run')
+        admission = params.get('admission') if isinstance(params.get('admission'), dict) else {}
+        if not isinstance(admission.get('calibration_evidence_sha256'), str) or \
+                admission['calibration_evidence_sha256'] != calibration.get('evidence_sha256'):
+            raise ValueError('Calibration admission evidence differs from the public case pin; the bench harness admits '
+                             'an emulated case')
     token = params.get('evaluation_token_sha256')
     if not isinstance(token, str) or not re.fullmatch('[0-9a-f]{64}', token):
         raise ValueError('An emulated case requires the sha256 of the bench harness evaluation token')
@@ -342,28 +345,13 @@ def _runtime_stop(result):
     return {'category': 'host' if host else 'operator', 'reason': result.get('reason') or 'Configured runtime ' + str(status)}
 
 
-def _adapter_verdict(stage, checked, repairs, max_repairs):
-    """Legacy benchmark adapters (tq9, bme280) still return truth-graded verdicts with their legacy categories until
-    they observe their stages as emulated cases do."""
-    if checked.get('ok', True):
-        raise ValueError('Unsupported evaluator revision route')
-    if checked.get('route') == 'interpret' and checked.get('fault') == 'model' and stage in ('interpret', 'probe', 'ground'):
-        if not checked.get('revision_committed') and repairs >= max_repairs:
-            return Outcome('stop', 'Model repair budget exhausted: ' + checked.get('reason', 'checks failed'), 'model')
-        return Outcome('revise', checked.get('reason'), diff=checked.get('feedback'))
-    fault = checked.get('fault')
-    return Outcome('stop', checked.get('reason', 'Independent stage checks failed'),
-                   fault if fault in ('model', 'host', 'operator') else 'unknown')
-
-
 def _outcome(stage, result, checked, *, uncertain, repairs, max_repairs):
-    """Decide one stage. Worker report status, failed or not_run checks and missing artifacts never stop."""
+    """Decide one stage. Worker report status, failed or not_run checks and missing artifacts never stop, and neither
+    does anything a stage observation reports beyond its stop: no adapter grades a stage."""
     stop = _runtime_stop(result) or checked.get('stop') or (uncertain and {'category': 'safety', 'reason':
         checked.get('reason') or 'Outstanding effect is uncertain; operator reconciliation is required before further execution'})
     if stop:
         return Outcome('stop', stop['reason'], stop['category'])
-    if checked.get('ok') is False or checked.get('route'):
-        return _adapter_verdict(stage, checked, repairs, max_repairs)
     diff = checked.get('device_diff') if stage in ('probe', 'ground') else None
     if diff and repairs < max_repairs:
         return Outcome('revise', 'Run evidence contradicts the model', diff=diff)
@@ -626,6 +614,11 @@ EVALUATION = {'schema', 'status', 'equivalent', 'basis', 'method', 'checks', 'di
               'frozen_artifact_sha256', 'capabilities_sha256', 'evidence_sha256', 'protocol'}
 
 
+# How the evaluator grades a frozen driver: on a fresh emulator of its own, or (legacy tq9 and bme280) from the fresh
+# reuse the run recorded.
+METHODS = ('fresh-final', 'recorded-reuse')
+
+
 def _evaluation_errors(record):
     """Why a posted evaluation is not a well-formed equivalence/1 record, or []."""
     sha = lambda value: value is None or isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None
@@ -633,8 +626,10 @@ def _evaluation_errors(record):
     if not isinstance(record, dict) or set(record) != EVALUATION:
         return ['an equivalence/1 record has exactly the fields ' + ', '.join(sorted(EVALUATION))]
     errors = []
-    if (record['schema'], record['basis'], record['method'], record['protocol']) != ('equivalence/1', 'evaluator', 'fresh-final', PROTOCOL):
-        errors.append('schema equivalence/1, basis evaluator, method fresh-final and protocol ' + PROTOCOL + ' are required')
+    if (record['schema'], record['basis'], record['protocol']) != ('equivalence/1', 'evaluator', PROTOCOL) or \
+            record['method'] not in METHODS:
+        errors.append('schema equivalence/1, basis evaluator, method ' + ' or '.join(METHODS) + ' and protocol ' + PROTOCOL
+                      + ' are required')
     checks, diff = record['checks'], record['diff']
     if not isinstance(checks, list) or any(not isinstance(c, dict) or set(c) != {'id', 'passed'} or not text(c['id'])
                                            or type(c['passed']) is not bool for c in checks):
@@ -1060,9 +1055,9 @@ def _integrity_checked():
 
 
 def _has_terminal_final_failure(db, run_id):
-    """Only the gated protocol's terminal shapes: the progress flag, or a frozen final evaluation that failed for the
-    model, which legacy benchmark adapters (tq9, bme280) still produce inside reuse. The final verdict (`<run_id>:final`)
-    ends a completed run whatever it says, so it is never one of them."""
+    """Only the gated protocol's terminal shapes, which no stage produces any more and runs recorded before keep: the
+    progress flag, or a frozen final evaluation that failed for the model inside reuse. The final verdict
+    (`<run_id>:final`) ends a completed run whatever it says, so it is never one of them."""
     saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run_id,)).fetchone()
     if saved and json.loads(saved['payload']).get('terminal_final_failure'):
         return True
@@ -1489,8 +1484,7 @@ class Controller:
 
     def _child_evaluation(self, run_id):
         """A suite child's evaluation as the configurator holds it: (its final equivalence or None, the reason of its
-        latest unscored evaluation while it still awaits its grade, or None). Whether the child is graded after its run
-        at all is the frozen slot's (`graded_after_run`), never the child's own say."""
+        latest unscored evaluation while it still awaits its grade, or None), never the child's own say."""
         with self._db() as db:
             final = _final_verdict(db, run_id)
             unscored = None if final else db.execute("SELECT payload FROM events WHERE run_id=? AND kind='evaluation.unscored' "
@@ -1683,7 +1677,7 @@ class Controller:
     def _suite_settle(self, suite_id, params):
         """Settle a slot from what the configurator reads itself, the child's status and its recorded evaluation; the
         harness names only the slot. A child that may not advance blocks a running suite."""
-        from .benchmark_support.suites import child_disposition, graded_after_run
+        from .benchmark_support.suites import child_disposition
         expired = None
         with self._suite_lock(suite_id):
             suite = self._suite_driver(suite_id, params)
@@ -1698,11 +1692,9 @@ class Controller:
             elif slot['status'] == 'finished':
                 decision = 'advance'
             else:
-                # The frozen slot, not the child, says whether the child is graded after its run.
-                graded = graded_after_run(suite['frozen'], slot)
+                # Every child is graded after its run: the configurator reads its recorded evaluation itself.
                 equivalence, unscored = self._child_evaluation(slot['run_id'])
-                observed = {**self.call('status',{'run_id':slot['run_id']}),'graded_after_run':graded,
-                            'equivalence':equivalence}
+                observed = {**self.call('status',{'run_id':slot['run_id']}),'equivalence':equivalence}
                 decision = child_disposition(observed)
                 mismatch = self._child_mismatch(suite, slot, slot['run_id']) if decision != 'wait' else None
                 if mismatch:
@@ -1713,7 +1705,7 @@ class Controller:
                     reason = (mismatch + TAKEN if mismatch else
                               'Trial ' + slot['trial_key'] + ' is unscored: ' + unscored if unscored else
                               'Trial ' + slot['trial_key'] + ' awaits its evaluation'
-                              if graded and observed.get('status') == 'completed' else observed.get('reason'))
+                              if observed.get('status') == 'completed' else observed.get('reason'))
                     self._suites.set_state(suite_id,'blocked',reason)
             status = self._suites.get(suite_id)['status']
         if expired:
@@ -1786,10 +1778,10 @@ class Controller:
 
     def _suite_resume(self, suite_id, params):
         """Resume a stopped suite for a newly launched bench harness, which takes over its scheduling with a token of its
-        own. A suite frozen before the harness drove suites is read-only. A stopped legacy child is resumed here, with an
-        approved child budget extension (`child_budget_seconds`, `child_budget_reason`) if one is given; an emulated
-        child is left to the harness, which first attaches a device it provides anew and passes that extension itself."""
-        from .benchmark_support.suites import graded_after_run, harness_driven
+        own. A suite frozen before the harness drove suites is read-only. A stopped child is left to the harness, which
+        first attaches a device it provides anew and passes an approved child budget extension itself; a child recorded
+        with the earlier protocol's terminal final failure is settled as it stands."""
+        from .benchmark_support.suites import harness_driven
         with self._suite_lock(suite_id):
             suite = self._suite(suite_id)
             if not harness_driven(suite['frozen']):
@@ -1822,11 +1814,6 @@ class Controller:
                     self._state(found['run_id'],'failed','Frozen final evaluation failed',outcome_category='model')
                     self._suites.settle(suite_id,active['ordinal'],
                         self.call('status',{'run_id':found['run_id']}),terminal_final=True)
-                elif found['status'] not in ('running','queued','completed') and not graded_after_run(suite['frozen'], active):
-                    # A stopped legacy child resumes here (its own resume refuses an uncertain effect again).
-                    self.call('resume',{'run_id':found['run_id'],**{key:params[name] for key,name in (
-                        ('budget_seconds','child_budget_seconds'),('budget_reason','child_budget_reason'))
-                        if params.get(name) is not None}})
             self._suites.attach_harness(suite_id,token,pid,lock)
             self._suites.set_state(suite_id,'running')
         return {**self._suite_call('suite_status',{'suite_id':suite_id}),'attached':True}
@@ -1857,8 +1844,8 @@ class Controller:
                 'reason':None if suite['reason'] is None else 'Explicit suite resolution required',
                 'active_child_id':active['run_id'] if active else None,
                 'planned':len(suite['trials']),'completed':sum(trial['status']=='finished' for trial in suite['trials']),
-                # Equivalent drivers among the settled children, out of `planned`; none applies to a suite whose
-                # children are not all graded after their runs (frozen before the harness, or with legacy children).
+                # Equivalent drivers among the settled children, out of `planned`; none applies to a suite frozen before
+                # the harness drove suites, whose children were graded inside their runs.
                 'equivalent':sum(trial['status']=='finished' and (trial['result'] or {}).get('equivalent') is True
                                  for trial in suite['trials']) if _assistive(suite) else None,
                 'stopping':(suite['status'] in TERMINAL and self._harness_alive(suite)) or bool(child and child['stopping'])}
@@ -1871,7 +1858,6 @@ class Controller:
         not settled, its child's current state."""
         from .reporting import _interventions
         from .benchmark_support.evidence import public_v2_report
-        from .benchmark_support.suites import graded_after_run
         for trial in page['trials']:
             events, cursor = [], 0
             if trial['run_id']:
@@ -1888,10 +1874,9 @@ class Controller:
                 if current['status'] in ('blocked','failed','cancelled','completed'):
                     trial['status'] = current['status']
                 equivalence, unscored = self._child_evaluation(trial['run_id'])
-                slot = next(t for t in suite['trials'] if t['ordinal'] == trial['ordinal'])
                 if equivalence:
                     trial.update(equivalent=equivalence.get('equivalent'),equivalence_status=equivalence.get('status'))
-                elif graded_after_run(suite['frozen'], slot) and current['status'] == 'completed':
+                elif current['status'] == 'completed':
                     # Not settled: its grade is unscored, or still pending.
                     trial['equivalence_status'] = 'unscored' if unscored else 'pending'
         return {**status,**page,'experiment':self._suite_experiment(suite)}
@@ -1914,7 +1899,7 @@ class Controller:
             if spec and spec['budget_seconds']!=policy['child_budget_seconds']:
                 overrides.append({'trial_key':trial['trial_key'],'budget_seconds':spec['budget_seconds']})
         return {'schema':'benchmark-suite-experiment/1',
-            # Only a suite whose children are all graded after their runs names the assistive protocol.
+            # Only a suite its bench harness drives, whose children are graded after their runs, names the assistive protocol.
             'comparison_identity':{**({'protocol':PROTOCOL} if _assistive(suite) else {}),
                 'manifest':manifest,'manifest_sha256':frozen['manifest_sha256'],
                 'entry_pins':[public_pin(pin) for pin in frozen['entry_pins']],
@@ -2003,8 +1988,15 @@ class Controller:
                         if required_effects - set(effects):
                             raise ValueError('Case evaluator requires the declared write/actuate effect grants before admission')
                         device = _provided_device(spec, pin)
+                    elif 'device' in spec and pin.get('execution') == 'actual-agent-emulation':
+                        # Legacy tq9 on the emulator its bench harness provides. Started without one, its device stages
+                        # stop for the operator: the configurator never starts an emulator itself.
+                        device = _provided_device(spec, pin)
                     elif 'device' in spec:
                         raise ValueError('A provided device descriptor belongs to an emulated benchmark case')
+                    elif 'evaluation_token_sha256' in spec and not (isinstance(spec['evaluation_token_sha256'], str) and
+                            re.fullmatch('[0-9a-f]{64}', spec['evaluation_token_sha256'])):
+                        raise ValueError('evaluation_token_sha256 must be the sha256 of the bench harness evaluation token')
                     spec['_case_pin'] = pin
                     saved = snapshot_case(self.home / 'runs' / run_id, pin, execution_provenance(config))
                     spec['_snapshot_sha256'] = saved['snapshot_sha256']
@@ -2075,7 +2067,9 @@ class Controller:
                 with _integrity_checked():
                     prepared = self._prepare(current_spec, stage, run_dir, workspace, accepted)
                 if prepared.get('blocked'):
-                    self._state(run_id,'blocked',prepared['blocked'],stage)
+                    # Preparation waits for the operator: a binding, a grant, a reference or the device the bench
+                    # harness provides.
+                    self._state(run_id,'blocked',prepared['blocked'],stage,outcome_category='operator')
                     return
                 if prepared.get('skip'):
                     # No worker runs. A difference preparation found in the model (one the device binding cannot carry)
@@ -2165,24 +2159,8 @@ class Controller:
                                                'recovery': recovery}
                             else:
                                 checked = self._check(current_spec, stage, run_dir, workspace, report, accepted, assignment)
-                        # Legacy benchmark adapters keep their frozen final path until they are graded after the run.
-                        # Emulated cases are observed without truth: nothing they return is a grade or a final.
-                        graded = not _observed_case(spec)
-                        terminal_final = (graded and not checked.get('ok', True) and checked.get('final_evaluation') is True
-                                          and checked.get('fault') == 'model' and not checked.get('route'))
-                        if graded and checked.get('evaluator') is not None or terminal_final:
-                            with self._db() as db:
-                                if graded and checked.get('evaluator') is not None:
-                                    db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)', (attempt, run_id, stage,
-                                        _json({'stage':stage, 'assignment_id':attempt, **checked['evaluator']}), time.time()))
-                                if terminal_final:
-                                    progress['terminal_final_failure'] = True
-                                    db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)', (run_id, _json(progress)))
-                                    self._event(run_id, 'evaluation.final_failed',
-                                        {'assignment_id': attempt, 'revision': revision, 'fault': 'model'}, db)
-                        if terminal_final:
-                            self._state(run_id, 'failed', 'Frozen final evaluation failed', outcome_category='model')
-                            return
+                        # Stages are observed without truth: nothing a check returns is a grade, a stage verdict or a
+                        # final. The bench harness grades the frozen driver once, after the run.
                         if cancel.is_set():
                             abandon('Recovery cancelled before durable reconciliation')
                             return
@@ -2199,14 +2177,6 @@ class Controller:
                         self._state(run_id, result['status'] if _runtime_stop(result) else 'blocked', outcome.reason, stage,
                                     outcome_category=outcome.category)
                         return
-                    if outcome.kind == 'revise' and (checked.get('ok') is False or checked.get('route')):
-                        # Benchmark adapter verdicts keep their legacy route, without a handoff, until Part B.
-                        if not checked.get('revision_committed'):
-                            progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=outcome.diff)
-                            self._route(run_id,progress,outcome.reason)
-                        revision = progress['revision']
-                        queue = list(STAGES[1:])
-                        continue
                     with self._db() as db:
                         rows = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='tool.refused' ORDER BY seq", (run_id,)).fetchall()
                     refusals = [{'name': event.get('name'), 'reason': event.get('reason')} for event in (json.loads(r['payload']) for r in rows)
@@ -2271,10 +2241,9 @@ class Controller:
         """Record the run's one final verdict after reuse, as `<run_id>:final`, and end the queue in the same
         transaction. A recorded verdict is returned as it is and never graded again.
 
-        A generic run's verdict is self-evidence. No evaluator is called here for a benchmark run (`spec.case`): an
-        emulated case whose stages were observed without truth records `progress.equivalence = 'pending'` for the
-        independent grade after the run, which its bench harness posts with record_evaluation, and legacy cases keep
-        the frozen final path their adapters run inside reuse."""
+        A generic run's verdict is self-evidence. No evaluator is called here for a benchmark run (`spec.case`), whose
+        stages were observed without truth: it records `progress.equivalence = 'pending'` for the independent grade
+        after the run, which its bench harness posts with record_evaluation."""
         with self._db() as db:
             final = _final_verdict(db, run_id)
         if final is not None:
@@ -2320,9 +2289,9 @@ class Controller:
 
     def _release(self, run_id, spec, run_dir):
         """Give up what the run holds. A provided device is released, never stopped or sealed here: the bench harness
-        owns the device and the evidence. A legacy benchmark run's adapter stops what it owns. Returns the failures in
-        the order they happened as (event kind, reason, event detail). A generic run owns nothing, and neither does an
-        emulated run without a provided device: the configurator never holds an emulator itself."""
+        owns the device and the evidence. Returns the failures in the order they happened as (event kind, reason, event
+        detail). A generic run owns nothing, and neither does any other benchmark run: the configurator never holds an
+        emulator itself, and the operator owns a bound device."""
         failures = []
         if not spec.get('case'):
             return failures
@@ -2340,24 +2309,14 @@ class Controller:
                     open_device(spec['device']).release(held.get('session_id'))
             except Exception as error:
                 failures.append(('device.release_failed', type(error).__name__ + ': ' + str(error), None))
-            return failures
-        if _observed_case(spec):
-            return failures
-        try:
-            from .benchmark import cleanup
-            case=spec['case']
-            options=spec.get('case_options',{})
-            if isinstance(case,dict): options={**case.get('options',{}),**options}
-            cleanup(case['id'] if isinstance(case,dict) else case,run_dir,options)
-        except Exception as exc:
-            failures.append(('cleanup.failed', type(exc).__name__+': '+str(exc), None))
         return failures
 
     def _settle_release(self, run_id, failures):
-        """Before a final verdict a failed stop of a legacy adapter's device retains the lease as uncertain. After the
-        verdict each failure is an event; the verdict and the completed status stand unless an effect is uncertain,
-        which blocks for safety. This relies on the configurator owning no device resource once a verdict exists:
-        generic runs own nothing, and the bench harness, not the configurator, stops and seals a provided device."""
+        """Before a final verdict a release that failed (`cleanup.failed`: giving up what the run holds raised) retains
+        the lease as uncertain. After the verdict each failure is an event; the verdict and the completed status stand
+        unless an effect is uncertain, which blocks for safety. This relies on the configurator owning no device resource
+        once a verdict exists: generic runs own nothing, and the bench harness, not the configurator, stops and seals a
+        provided device."""
         with self._db() as db:
             final = _final_verdict(db, run_id)
         for kind, reason, detail in failures:
@@ -2391,15 +2350,6 @@ class Controller:
                     row=db.execute('SELECT status,uncertain FROM runs WHERE id=?',(run_id,)).fetchone()
                     if row and row['status'] in TERMINAL and not row['uncertain'] and run_id not in self._workers:
                         db.execute('DELETE FROM bindings WHERE run_id=?',(run_id,))
-
-    def _route(self, run_id, progress, reason, db=None):
-        if db is None:
-            with self._db() as connection:
-                return self._route(run_id,progress,reason,connection)
-        db.execute("UPDATE assignments SET state='superseded' WHERE run_id=? AND state='active'",(run_id,))
-        db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)',(run_id,_json(progress)))
-        db.execute('UPDATE runs SET stage=? WHERE id=?',(progress['next_stage'],run_id))
-        self._event(run_id,'run.revision', {**progress,'reason':reason},db)
 
     def _claim_binding(self, binding, run_id, db):
         if not binding:
@@ -2464,8 +2414,6 @@ class Controller:
             from .benchmark import prepare_stage
             case_id = case['id'] if isinstance(case, dict) else case
             options = case_options(spec)
-            if not _observed_case(spec):
-                return prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
             prepared = prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
             if spec.get('device') and prepared.get('binding') and not prepared.get('skip'):
                 # The stage runs on the provided device as the durable record holds it, and only while it answers.
@@ -2475,7 +2423,7 @@ class Controller:
             if prepared.get('unwired_model'):
                 prepared = {**prepared, **self._unwired_model(run_dir, workspace.name, prepared['unwired_model'])}
             # Stages observed without truth pass their earlier, truth-free notes forward, as generic stages do. Fresh
-            # reuse never receives notes; legacy cases' notes may still carry graded checks, so they receive none.
+            # reuse never receives notes.
             prior = _prior_notes(accepted, spec.get('_revision', 0)) if stage != 'reuse' else []
             if prior and not prepared.get('skip') and 'prompt' not in prepared:
                 prepared = {**prepared, 'context': {**(prepared.get('context') or {}), 'prior_notes': prior}}
@@ -2592,7 +2540,7 @@ class Controller:
         from .device_client import DeviceUnavailable
         row = self._row(run_id)
         spec = json.loads(row['spec'])
-        if (not _observed_case(spec) or row['status'] not in ('blocked', 'failed', 'cancelled') or row['uncertain']
+        if (not _emulated(spec) or row['status'] not in ('blocked', 'failed', 'cancelled') or row['uncertain']
                 or run_id in self._workers or run_id in self._inflight):
             return
         try:
@@ -2602,6 +2550,8 @@ class Controller:
         if progress['next_stage'] not in STAGES:
             return
         if not spec.get('device'):
+            if not _v2(spec):
+                return  # Legacy tq9 started without its bench harness: its device stages stop for the operator again.
             raise ValueError('This emulated run started before the bench harness provided devices; start a new trial')
         try:
             self._device_ready({**spec, '_device': progress.get('device')})
@@ -2744,35 +2694,30 @@ class Controller:
 
     def _check(self, spec, stage, run_dir, workspace, report, accepted, assignment):
         if spec.get('case'):
+            # Truth-free observation, for every case: the adapter's case evidence and notes, and for probe and ground the
+            # configurator's own device evidence and diff. No evaluator runs and nothing is graded.
+            from .benchmark import observe_stage
             case = spec['case']
             case_id = case['id'] if isinstance(case, dict) else case
             options = case_options(spec)
-            if _observed_case(spec):
-                # Truth-free observation: the adapter's case evidence and notes, and for probe and ground the
-                # configurator's own device evidence and diff. No evaluator runs and nothing is graded.
-                from .benchmark import observe_stage
-                lost = self._device_lost(run_dir.name, assignment) if spec.get('device') else None
-                if lost:
-                    return lost
-                device = {}
-                if stage in ('probe', 'ground'):
-                    device = self._observe_device(stage, assignment, self._finished(run_dir.name, assignment), accepted,
-                                                  run_dir, workspace)
-                    if device.get('stop'):
-                        return device
-                options.update(assignment_id=assignment['id'], observed_records=device.get('artifacts', []))
-                checked = observe_stage(case_id, stage, run_dir, workspace, report, accepted, options)
-                if checked.get('stop') or not device:
-                    return checked
-                checks, notes = [*checked['checks'], *device['checks']], checked.get('notes') or {}
-                return {**checked, 'artifacts': list(dict.fromkeys([*checked['artifacts'], *device['artifacts']])),
-                        'checks': checks, 'notes': {'checks': checks, 'records': device['records'],
-                                                    'dropped_artifacts': [*notes.get('dropped_artifacts', []), *device['dropped']]},
-                        **({'device_diff': device['device_diff']} if device['device_diff'] else {})}
-            from .benchmark import check_stage
-            if case_id=='bme280':
-                options['managed_probe']=lambda model_dir,n: self._managed_probe(run_dir.name,assignment,model_dir,n)
-            return check_stage(case_id, stage, run_dir, workspace, report, accepted, options)
+            lost = self._device_lost(run_dir.name, assignment) if spec.get('device') else None
+            if lost:
+                return lost
+            device = {}
+            if stage in ('probe', 'ground'):
+                device = self._observe_device(stage, assignment, self._finished(run_dir.name, assignment), accepted,
+                                              run_dir, workspace)
+                if device.get('stop'):
+                    return device
+            options.update(assignment_id=assignment['id'], observed_records=device.get('artifacts', []))
+            checked = observe_stage(case_id, stage, run_dir, workspace, report, accepted, options)
+            if checked.get('stop') or not device:
+                return checked
+            checks, notes = [*checked['checks'], *device['checks']], checked.get('notes') or {}
+            return {**checked, 'artifacts': list(dict.fromkeys([*checked['artifacts'], *device['artifacts']])),
+                    'checks': checks, 'notes': {'checks': checks, 'records': device['records'],
+                                                'dropped_artifacts': [*notes.get('dropped_artifacts', []), *device['dropped']]},
+                    **({'device_diff': device['device_diff']} if device['device_diff'] else {})}
         # Generic checks use only run evidence. Failures become notes and the stage hands off what was
         # observed; only a recorded or observed hash that changed stops the run.
         def handed(selected, checks, dropped=(), scope='Observed tool outputs and executable artifact contracts; '
@@ -3110,27 +3055,6 @@ class Controller:
                 'device_diff': [{'source': 'model_contract', 'model': {'name': 'model.json', 'sha256': expected},
                                  'defects': [*defects, wiring]}]}
 
-    def _managed_probe(self,run_id,assignment,model_dir,n):
-        """Host-only evaluator callback; never exposed by the worker MCP server."""
-        if assignment['stage'] not in ('probe','ground') or type(n) is not int or not 1<=n<=3:
-            raise ValueError('Evaluator probe requires an assigned physical stage and one to three samples')
-        source=Path(model_dir).resolve()
-        if source!=Path(assignment['workspace'])/'model' or str(source) not in assignment['inputs']:
-            raise ValueError('Evaluator probe must use the pinned model in the current stage')
-        with self._lock:
-            operation_lock=self._operations.setdefault(run_id,threading.RLock())
-        with operation_lock, self._active_operation(run_id):
-            self._verify_inputs(assignment['inputs'])
-            # Copy checked bytes outside the worker workspace; the callback never
-            # accepts a worker-supplied binding, output path or permission grant.
-            workspace=self.home/'runs'/run_id/'evaluator'/assignment['id']/uuid.uuid4().hex
-            snapshot=workspace/'model'
-            shutil.copytree(source,snapshot)
-            if digest(snapshot)!=assignment['inputs'][str(source)]:
-                raise ValueError('Evaluator model changed while taking its pinned snapshot')
-            return self._tool('tool',{'assignment_id':assignment['id'],'name':'probe_run',
-                'arguments':{'model_dir':str(snapshot),'n':n}},self._row(run_id),evaluator_workspace=workspace)
-
     def _binding_state(self, run_id, until=None):
         """Per-run serial facts, from the run's events up to sequence number `until` when given: whether the device was
         listened to, whether opening it resets it, and whether, with no listen succeeding, one failed outside the
@@ -3165,22 +3089,21 @@ class Controller:
                     resets, overridden = False, True
         return {'listened': listened, 'resets_on_open': resets, 'unheard': not listened and (failed or bool(pending))}
 
-    def _tool(self, method, params, run, *, evaluator_workspace=None):
+    def _tool(self, method, params, run):
         """The worker gateway. A refusal before dispatch is recorded so that stage's notes can name it."""
         marker = {}
         try:
-            return self._dispatch(method, params, run, marker, evaluator_workspace=evaluator_workspace)
+            return self._dispatch(method, params, run, marker)
         except Exception as error:
             if method == 'tool' and 'assignment' in marker and 'dispatched' not in marker:
                 # A refusal the runtime owns (no port matches the bound device) names its fault.
                 fault = getattr(error, 'fault', None)
                 self._event(run['id'], 'tool.refused', {'stage': marker['assignment']['stage'],
                     'assignment_id': marker['assignment']['id'], 'name': params.get('name'), 'reason': str(error),
-                    **({'fault': fault} if fault in ('operator', 'host') else {}),
-                    'actor': 'evaluator' if evaluator_workspace is not None else 'worker'})
+                    **({'fault': fault} if fault in ('operator', 'host') else {}), 'actor': 'worker'})
             raise
 
-    def _dispatch(self, method, params, run, marker, *, evaluator_workspace=None):
+    def _dispatch(self, method, params, run, marker):
         from .toolkit import list_tools, call_tool
         if self._closing:
             raise ValueError('Configurator is stopping; no new tools may be dispatched')
@@ -3197,11 +3120,6 @@ class Controller:
             raise ValueError('Worker assignment is inactive after stage or revision change')
         marker['assignment'] = assignment
         allowed=assignment['allowed_tools']
-        if evaluator_workspace is not None:
-            spec=json.loads(run['spec']);case=spec.get('case')
-            if (case.get('id') if isinstance(case,dict) else case)!='bme280' or assignment['stage'] not in ('probe','ground'):
-                raise ValueError('Managed evaluator probes are restricted to the physical case stages')
-            allowed=['probe_run']
         contracts = [copy.deepcopy(t) for t in list_tools() if t['name'] in allowed]
         if 'benchmark_package_execute' in assignment['allowed_tools']:
             contracts.append(copy.deepcopy(BENCHMARK_PACKAGE_EXECUTE))
@@ -3219,7 +3137,7 @@ class Controller:
         arguments = dict(params.get('arguments', {}))
         if {'run_dir','binding','allow_effects','bus_url','allow_reset','port'} & arguments.keys():
             raise ValueError('Connection, output directory and effect grants are configurator-owned')
-        workspace = Path(evaluator_workspace or assignment['workspace'])
+        workspace = Path(assignment['workspace'])
         from .toolkit import _PATH_ARGUMENTS
         for key in _PATH_ARGUMENTS & arguments.keys():
             value = arguments[key]
@@ -3270,7 +3188,7 @@ class Controller:
             _refuse_invalid_model(arguments['model_dir'])
         spec = json.loads(run['spec'])
         device = invoke = None
-        if connected and _observed_case(spec) and not spec.get('device'):
+        if connected and _emulated(spec) and not spec.get('device'):
             # The configurator holds no emulator: an emulated case runs only on the device the bench harness provides.
             raise ValueError('An emulated case runs only on the device the bench harness provides')
         if connected and spec.get('device'):
@@ -3301,10 +3219,9 @@ class Controller:
                     db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run['id'],))
                 # The facts go on the start too: a dispatch that raises before it finishes is still known to the verdict.
                 dispatch_id = self._event(run['id'], 'tool.started', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'effectful':effectful,
-                    **facts, 'actor':'evaluator' if evaluator_workspace is not None else 'worker'}, db)
+                    **facts, 'actor':'worker'}, db)
                 if effectful:
-                    db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(dispatch_id,run['id'],assignment['id'],
-                        'evaluator' if evaluator_workspace is not None else 'worker'))
+                    db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(dispatch_id,run['id'],assignment['id'],'worker'))
         marker['dispatched'] = dispatch_id
         if device is not None:
             result = self._device_call(run, assignment, name, arguments, device, invoke)
@@ -3354,8 +3271,7 @@ class Controller:
                 db.execute('UPDATE runs SET uncertain=EXISTS(SELECT 1 FROM pending_effects WHERE run_id=?) WHERE id=?',(run['id'],run['id']))
             evidence_id = self._event(run['id'], 'tool.finished', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'ok':success,'result':result,'artifacts':observed_artifacts,
                 'dispatch_id':str(dispatch_id),'effectful':effectful,'effects_reconciled':effects_reconciled,
-                'refused_before_open':refused_before_open,**facts,
-                'actor':'evaluator' if evaluator_workspace is not None else 'worker'}, db)
+                'refused_before_open':refused_before_open,**facts,'actor':'worker'}, db)
         if name == 'benchmark_package_execute':
             result = {**result, 'evidence_id': str(evidence_id)}
         return result

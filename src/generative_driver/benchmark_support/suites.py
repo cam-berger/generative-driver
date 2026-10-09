@@ -96,8 +96,7 @@ def start_suite(manifest: dict, executor: str = 'codex', options: dict | None = 
                 request_id: str | None = None, *, home=None, autostart=True) -> dict:
     """Start a suite through a detached bench harness, which drives it; the configurator only freezes and stores it.
     Password files and the emulator executable in `options` go to the harness on its stdin, never into the suite tables
-    or an emulated child's run; until legacy children are graded after their runs, the harness gives a legacy child's
-    run its evaluator options. A selection is checked before any configurator starts; a repeated request_id with the
+    or a child's run. A selection is checked before any configurator starts; a repeated request_id with the
     same inputs follows the suite it started."""
     from ..client import call
     from .harness import launch_suite
@@ -200,7 +199,7 @@ def freeze_suite(manifest: dict, executor: str, executor_config: dict,
 
 def child_request(frozen: dict, trial: dict) -> dict:
     """Project this reserved slot into a child request. It names no password file or emulator executable: the bench
-    harness adds the device, its admission and the evaluation token hash (a legacy child's evaluator options)."""
+    harness adds the device, its admission (a v2 case's) and the evaluation token hash."""
     if not isinstance(trial, dict) or type(trial.get('ordinal')) is not int:
         raise ValueError('Child requires a frozen trial slot')
     ordinal = trial['ordinal']
@@ -224,31 +223,18 @@ def child_request(frozen: dict, trial: dict) -> dict:
             'scoped_tool_approval': approval, 'budget_seconds': frozen['manifest']['child_budget_seconds']}
 
 
-def graded_after_run(frozen: dict, trial: dict) -> bool:
-    """Whether the frozen slot's child is graded after its run (an emulated case the bench harness grades), from the
-    case pin the suite froze, never from what the child's run says of itself."""
-    pin = frozen['entry_pins'][trial['entry_index']]
-    return (pin.get('manifest') or {}).get('schema') == 'benchmark-case/2'
-
-
-# What the bench harness adds to a frozen child request: an emulated child's device, admission and evaluation token
-# hash, or a legacy child's evaluator options in its case options.
+# What the bench harness adds to a frozen child request: the child's device, its admission and the evaluation token hash.
 HARNESS_KEYS = ('device', 'admission', 'evaluation_token_sha256')
-LEGACY_HARNESS_OPTIONS = ('evaluator_password_file', 'renode')
 
 
 def child_identity_differs(frozen: dict, trial: dict, submitted) -> str | None:
     """Why a child request (as submitted, or as a run recorded it) is not the frozen slot's own, or None when it is:
-    the slot's `child_request` plus only what the bench harness adds for that slot's kind of case."""
+    the slot's `child_request` plus only what the bench harness adds."""
     if not isinstance(submitted, dict):
         return 'Frozen suite child identity mismatch: trial ' + str(trial.get('trial_key')) + ' has no submitted request'
     request = copy.deepcopy(submitted)
-    if graded_after_run(frozen, trial):
-        for key in HARNESS_KEYS:
-            request.pop(key, None)
-    elif isinstance(request.get('case_options'), dict):
-        for key in LEGACY_HARNESS_OPTIONS:
-            request['case_options'].pop(key, None)
+    for key in HARNESS_KEYS:
+        request.pop(key, None)
     canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
     expected = child_request(frozen, trial)
     if canonical(request) == canonical(expected):
@@ -260,21 +246,13 @@ def child_identity_differs(frozen: dict, trial: dict, submitted) -> str | None:
 
 
 def child_disposition(result: dict) -> str:
-    """Whether a suite's active child lets the suite advance. A child graded after its run (an emulated case, which the
-    bench harness grades) advances only once it completed with a graded or no-driver evaluation recorded: an unscored or
-    still pending evaluation, and every safety, integrity, operator, host or other stop, blocks the suite. A legacy
-    child, still graded inside its run, advances as before: completed, or an explicitly recorded model failure."""
+    """Whether a suite's active child lets the suite advance. Every child is graded once after its run by the bench
+    harness: it advances only once it completed with a graded or no-driver evaluation recorded. An unscored or still
+    pending evaluation, and every safety, integrity, operator, host or other stop, blocks the suite."""
     if result.get('stopping') or result.get('status') in ('queued', 'running'):
         return 'wait'
     if result.get('stopping') is not False or result.get('uncertain_effect') is not False:
         return 'block'
-    category = result.get('outcome_category', 'unknown')
-    completed = category == 'completed' and result.get('status') == 'completed'
-    if result.get('graded_after_run'):
-        equivalence = result.get('equivalence') if isinstance(result.get('equivalence'), dict) else {}
-        return 'advance' if completed and equivalence.get('status') in ('graded', 'no-driver') else 'block'
-    if completed:
-        return 'advance'
-    if category == 'model' and result.get('status') in ('failed', 'blocked'):
-        return 'advance'
-    return 'block'
+    completed = result.get('outcome_category', 'unknown') == 'completed' and result.get('status') == 'completed'
+    equivalence = result.get('equivalence') if isinstance(result.get('equivalence'), dict) else {}
+    return 'advance' if completed and equivalence.get('status') in ('graded', 'no-driver') else 'block'

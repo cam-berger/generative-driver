@@ -90,9 +90,10 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = No
     """Run installation replay or start a configured real-agent benchmark.
     setup-smoke uses no inference. tq9 and bme280 require explicit runtime and documented options.
     Supply evaluator password FILE paths through options, never the password itself.
-    Emulated cases (tq9-v2 and the v2 families) start a bench harness that holds the password file path, admits the
-    case, provides the emulator and, after the run, grades the frozen driver once and posts the run's verdict; the
-    configurator never receives the path. They return trial_id and run_id; the
+    Every real-agent case starts a bench harness that holds the password file path, admits the case and, after the
+    run, grades the frozen driver once and posts the run's verdict; the configurator never receives the path. For an
+    emulated case (tq9, tq9-v2 and the v2 families) the harness provides the emulator; bme280 runs on the operator's
+    bound device (options.binding), which the harness never touches. They return trial_id and run_id; the
     same options.request_id with the same inputs returns that trial again and starts no second emulator.
     For real-agent profiles, options.home must resolve to this MCP connection's configured home.
     """
@@ -128,8 +129,7 @@ def driver_benchmark_suite_start(manifest: dict, executor: str = 'codex',
 
     A detached bench harness drives the suite: it receives options.evaluator_password_files and options.renode (FILE
     paths, never a password) on its stdin, provides each child's device and grades each frozen driver after its run.
-    The suite tables never hold those paths and no emulated child's run receives them; a legacy tq9 child's run gets
-    its evaluator options from the harness, as driver_benchmark_run gives a legacy case. Use the configured MCP home.
+    The suite tables never hold those paths and no child's run receives them. Use the configured MCP home.
     Emulator tool approval and inference budgets require explicit user authorization.
     Windows requires an independently started configurator.
     """

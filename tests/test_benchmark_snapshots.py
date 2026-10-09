@@ -97,9 +97,13 @@ class ControllerSnapshotTests(unittest.TestCase):
             with patch('generative_driver.configurator.execute', execute):
                 controller = Controller(root)
                 try:
+                    # The configurator takes no evaluator handle for any case, legacy ones included: the bench harness does.
+                    with self.assertRaisesRegex(ValueError, 'password'):
+                        controller.start({'goal': 'snapshot contract', 'case': 'tq9', 'executor_config': {'model': 'scripted'},
+                                          'case_options': {'evaluator_password_file': '/private/secret-handle'}})
+                    self.assertFalse(list((root / 'runs').glob('*')) if (root / 'runs').exists() else [])
                     run = controller.start({'goal': 'snapshot contract', 'case': 'tq9',
-                        'executor_config': {'model': 'scripted'},
-                        'case_options': {'evaluator_password_file': '/private/secret-handle'}})
+                        'executor_config': {'model': 'scripted'}})
                     result = self.wait_stopped(controller, run)
                     self.assertTrue(seen and seen[0][0], result)
                     snapshot, config = seen[0]

@@ -17,8 +17,10 @@ from . import instruments
 
 DESCRIPTOR = 'device-descriptor/1'
 RECEIPT = 'emulator-recovery/2'
-# Keys of a decrypted case truth or a credential; a provider is given the device recipe and nothing else.
+# Keys of a decrypted case truth (a legacy one's too) or a credential; a provider is given the device recipe and nothing
+# else.
 TRUTH_KEYS = ('recipe', 'contracts', 'phases', 'scenarios', 'images', 'references', 'input_hashes',
+              'reuse_goal', 'max_tolerances', 'max_reference_age_seconds',
               'evaluator_password_file', 'password', 'password_file')
 
 
@@ -53,7 +55,7 @@ class DeviceProvider:
     def __init__(self, case_id, image, recipe, renode, private_dir, *, image_sha256=None, start=None):
         if not isinstance(recipe, dict) or any(key in recipe for key in TRUTH_KEYS):
             raise ValueError('A device provider takes the device recipe only, never truth or a password')
-        instruments.family_for(case_id)
+        instruments.units(case_id)
         self.case_id, self.image, self.renode = case_id, Path(image), renode
         self.recipe, self.private_dir, self.image_sha256 = copy.deepcopy(recipe), Path(private_dir), image_sha256
         self.provider_id, self._start, self._lock = uuid.uuid4().hex, start, threading.RLock()

@@ -1,4 +1,7 @@
-"""Optional physical profile; reference readings arrive only from the operator channel."""
+"""Optional physical profile (bme280), observed without truth. The operator owns the bound device and supplies the
+independent reference through driver_respond; the configurator reaches the device itself, under the operator's binding
+and grants. Nothing here unlocks truth or grades: after the run the evaluator grades the recorded fresh measurement
+against the operator reference and the truth's limits, once, and never touches the board."""
 import hashlib
 import json
 import math
@@ -7,31 +10,85 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from .cases import _state, _write, _accepted_file
+from .cases import _state, _write
+
+OUTPUTS = ('temperature', 'humidity', 'pressure')
+EVENTS = 'physical-package-events.jsonl'
+REUSE_EVENTS = 'reuse-events.jsonl'
+REFERENCE = 'reference.json'
 
 
-def _reuse_reference(state, options, measurement_time=None, preparing=False):
-    from .emulator import truth_for_case
-    from ..benchmark import case_root
-    manifest=json.loads((case_root()/'cases/bme280/case.json').read_text())
-    truth=truth_for_case(case_root(),manifest,options)
-    observed=state.get('physical_reuse_reference',{})
-    if preparing:
-        supplied=[o for o in options.get('operator_observations',[]) if isinstance(o,dict) and o.get('stage')=='reuse']
-        observed=supplied[-1] if supplied else observed or state.get('physical_grounding',{}).get('reference',{})
-    elif (not observed.get('evidence_sha256') or state.get('physical_reuse_reference_attempt')!=state.get('package_attempts',{}).get('reuse')):
-        return observed,{'ok':False,'reason':'Prepared independent reference missing for this reuse attempt'}
-    return observed,grade_physical_reference(observed,truth,measurement_time)
+def _finite(value):
+    return type(value) in (int, float) and math.isfinite(value)
 
 
 def _reference_request(reason):
-    return {'blocked':reason+'. Supply a fresh independent reference through driver_respond, then resume. '+
-        'Observation requires stage="reuse", channel, observed_at, evidence_path and reference values with absolute_tolerance '+
-        'for temperature (Celsius), humidity (percent RH) and pressure (pascals).'}
+    return {'blocked': reason + '. Supply a fresh independent reference through driver_respond, then resume. '
+            'Observation requires stage="reuse", channel, observed_at, evidence_path and reference values with absolute_tolerance '
+            'for temperature (Celsius), humidity (percent RH) and pressure (pascals). Take it while fresh reuse measures: after '
+            'the run the evaluator compares that measurement with the reference and its own limits.'}
+
+
+def reference_errors(observed):
+    """Why an operator reference is not a complete one, or None. Its age and the breadth of its tolerances are judged
+    against the evaluator's limits after the run: nothing here knows them."""
+    if not isinstance(observed, dict) or not isinstance(observed.get('channel'), str) or not observed['channel'].strip():
+        return 'Reference channel missing'
+    if not _finite(observed.get('observed_at')):
+        return 'Reference timestamp missing'
+    if not isinstance(observed.get('evidence_path'), str) or not Path(observed['evidence_path']).is_file():
+        return 'Independent photo/log evidence file missing'
+    refs = observed.get('reference')
+    if not isinstance(refs, dict) or set(refs) != set(OUTPUTS):
+        return 'All three independent reference values are required'
+    if any(not isinstance(row, dict) or not _finite(row.get('value')) or not _finite(row.get('absolute_tolerance'))
+           or row['absolute_tolerance'] <= 0 for row in refs.values()):
+        return 'Reference values and positive tolerances are required'
+    return None
+
+
+def mapping_errors(mapping):
+    """The structural errors of a bme280 capability mapping, or []: temperature, humidity and pressure each name an
+    output."""
+    if (not isinstance(mapping, dict) or set(mapping) != set(OUTPUTS)
+            or any(not isinstance(value, str) or not value for value in mapping.values())):
+        return [{'path': 'capabilities.json', 'message': 'Map temperature, humidity and pressure each to an output name'}]
+    return []
+
+
+def valid_rows(rows, mapping):
+    """The package measurements of fresh reuse that hold a finite value of every mapped output at a finite time."""
+    outputs = list(mapping.values()) if isinstance(mapping, dict) and not mapping_errors(mapping) else []
+    return [row for row in rows if isinstance(row, dict) and row.get('ok') is True and outputs and _finite(row.get('time'))
+            and isinstance(row.get('values'), dict) and all(_finite(row['values'].get(name)) for name in outputs)]
+
+
+def _datasheet_sha256():
+    """The official datasheet's hash, as the public datasheet registry pins it."""
+    from ..toolkit import resources_root
+    return json.loads((resources_root()/'toolchain/datasheets.json').read_text())['parts']['bme280']['sha256']
+
+
+def _model(accepted, stages, ws):
+    """The register model and converter of the latest handoff of these stages that carries both, hash-verified and
+    copied to `ws/model`; None when there is none."""
+    from .emulated import _artifact, _verified
+    for handoff in reversed(accepted or []):
+        if handoff.get('stage') not in stages:
+            continue
+        found = [_artifact(handoff, name) for name in ('model.json', 'convert.py')]
+        if None in found:
+            continue
+        (ws/'model').mkdir(parents=True, exist_ok=True)
+        for (path, sha), name in zip(found, ('model.json', 'convert.py')):
+            (ws/'model'/name).write_bytes(_verified((path, sha), handoff['stage']))
+        return ws/'model'
+    return None
 
 
 def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=None):
-    from ..toolkit import call_tool, resources_root
+    from ..toolkit import call_tool
+    from .emulated import _artifact, _handoff_with, _verified
     options = options or {}
     binding = options.get('binding')
     if not isinstance(binding, dict) or set(binding) != {'url'} or not str(binding['url']).startswith('ftdi://'):
@@ -44,67 +101,94 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         return {'objective':'Acquire the official BME280 datasheet with acquire_datasheet(part_hint="bme280"). Report the hash-checked PDF and extracted pages.',
                 'inputs':[],'allowed_tools':['acquire_datasheet'],'context':{'part_hint':'bme280'}}
     if stage=='interpret':
-        source=Path(state['datasheet_dir'])
-        pdf=_accepted_file(accepted,'acquire','datasheet.pdf',source/'datasheet.pdf')
-        pages=source/'pages'
-        for handoff in reversed(accepted or []):
-            if handoff.get('stage')=='acquire':
-                pages=next((Path(a['path']) for a in handoff['artifacts'] if Path(a['path']).is_dir() and Path(a['path']).name.split('-',1)[-1]=='pages'),None)
-                if pages is None:raise ValueError('Accepted acquisition has no extracted pages directory')
-                break
-        inputs={'datasheet.pdf':str(pdf),'pages':str(pages)}
-        prepared=call_tool('interpret_run',{'run_dir':str(Path(run_dir)/'benchmark/tools'),'front_end':'interpret-datasheet','inputs':inputs,
-            'mode':'prepare','attempt':state.get('interpret_attempt',0)+1,'workspace_root':tempfile.mkdtemp(prefix='gd-sensor-candidate-')})
+        handoff = _handoff_with(accepted, ('acquire',), 'datasheet.pdf')
+        pages = next((Path(a['path']) for a in (handoff or {}).get('artifacts', [])
+                      if Path(a['path']).is_dir() and Path(a['path']).name.split('-', 1)[-1] == 'pages'), None)
+        if handoff is None or pages is None:
+            return {'skip': 'Interpretation skipped: no acquired official datasheet with extracted pages'}
+        pdf = _artifact(handoff, 'datasheet.pdf')
+        _verified(pdf, 'acquisition')
+        prepared=call_tool('interpret_run',{'run_dir':str(Path(run_dir)/'benchmark/tools'),'front_end':'interpret-datasheet',
+            'inputs':{'datasheet.pdf':str(pdf[0]),'pages':str(pages)},'mode':'prepare','attempt':state.get('interpret_attempt',0)+1,
+            'workspace_root':tempfile.mkdtemp(prefix='gd-sensor-candidate-')})
         if not prepared.get('ok'):raise ValueError(str(prepared))
         state['interpret_attempt']=state.get('interpret_attempt',0)+1;state['interpret']=prepared;_write(state_path,state)
         return {'work_dir':prepared['workspace'],'prompt':prepared['prompt_for_agent'],'report_required':False,
                 'objective':'Recover the sensor register interface and conversion from supplied datasheet.',
                 'inputs':[str(Path(prepared['workspace'])/n) for n in prepared['sealed_inputs']], 'allowed_tools':[],
-                'boundary':'Sealed supplied datasheet; encrypted evaluator evidence; instruction isolation'}
+                'boundary':'Sealed supplied datasheet; instruction isolation'}
     if stage=='probe':
-        model=_accepted_file(accepted,'interpret','model.json',Path(state['model_dir'])/'model.json')
-        converter=_accepted_file(accepted,'interpret','convert.py',Path(state['model_dir'])/'convert.py')
-        (ws/'model').mkdir(exist_ok=True)
-        shutil.copy2(model,ws/'model/model.json');shutil.copy2(converter,ws/'model/convert.py')
-        state['physical_model_dir']=str(ws/'model');_write(state_path,state)
-        return {'objective':'Run probe_run on the supplied model with n=3. Write capabilities.json mapping temperature, humidity, pressure to the actual output names; units must be Celsius, percent RH and pascals. Report identity and observed finite values; no absolute calibration is established yet.',
-                'inputs':[str(ws/'model')],'allowed_tools':['probe_run','probe_diff'],
-                'context':{'model_dir':str(ws/'model')},'binding':binding,'effects':['write']}
-    if stage == 'ground':
-        observations=[o for o in options.get('operator_observations',[]) if isinstance(o,dict) and o.get('stage')==stage]
-        if not observations:
-            return {'blocked':'Supply an independent physical reference through driver_respond, then resume. Observation: {"stage":"'+stage+'","channel":"independent meter and identifier","observed_at":UNIX_SECONDS,"reference":{"temperature":{"value":NUMBER,"absolute_tolerance":NUMBER},"humidity":{"value":NUMBER,"absolute_tolerance":NUMBER},"pressure":{"value":NUMBER,"absolute_tolerance":NUMBER}},"evidence_path":"absolute photo/log path"}. Units: Celsius, percent RH, pascals. Do not use candidate output as the reference.'}
-        model=ws/'model';model.mkdir(exist_ok=True)
-        for name in ('model.json','convert.py'):
-            source=_accepted_file(accepted,'probe',name,Path(state['physical_model_dir'])/name)
-            shutil.copy2(source,model/name)
+        model = _model(accepted, ('interpret',), ws)
+        if model is None:
+            return {'skip': 'Probe skipped: no interpreted register model and converter available'}
         state['physical_model_dir']=str(model);_write(state_path,state)
-        evidence=ws/'physical-observation.json';_write(evidence,observations[-1])
-        return {'objective':'Assess the supplied independent physical reference and its scope. The evaluator will acquire a fresh sample and compare canonical temperature/humidity/pressure with that reference. Report missing evidence and distinguish observed agreement from absolute calibration.',
-                'inputs':[str(evidence),str(model)],'allowed_tools':[], 'binding':binding, 'effects':['write']}
+        return {'objective':'Run probe_run on the supplied model with n=3. Write capabilities.json mapping temperature, humidity, pressure to the actual output names; units must be Celsius, percent RH and pascals. Report identity and observed finite values; no absolute calibration is established yet.',
+                'inputs':[str(model)],'allowed_tools':['probe_run','probe_diff'],
+                'context':{'model_dir':str(model)},'binding':binding,'effects':['write']}
+    if stage == 'ground':
+        model = _model(accepted, ('probe',), ws)
+        if model is None:
+            return {'skip': 'Ground skipped: no probed register model available'}
+        observations=[o for o in options.get('operator_observations',[]) if isinstance(o,dict) and o.get('stage')==stage]
+        inputs, notes = [str(model)], []
+        if observations:
+            evidence=ws/'operator-observations.json';_write(evidence,observations);inputs.insert(0,str(evidence))
+        else:
+            notes.append('No operator observation for ground: an independent reading supplied through driver_respond with '
+                         'stage "ground" is compared where given')
+        return {'objective':'Test the meanings the supplied register model gives the sensor: units, scaling and conversion. '
+                'Run probe_run on the supplied model over the operator-owned binding and compare its finite values with the '
+                'operator observations where supplied (operator-observations.json). Report what the device did that the model '
+                'did not predict, needs_revision for a specific contradiction, and distinguish observed agreement from absolute '
+                'calibration.', 'inputs':inputs,'allowed_tools':['probe_run','probe_diff'],'context':{'model_dir':str(model)},
+                'binding':binding,'effects':['write'], **({'input_notes': notes} if notes else {})}
     if stage=='emit':
-        model=ws/'model';model.mkdir(exist_ok=True)
-        for name in ('model.json','convert.py'):
-            source=_accepted_file(accepted,'probe',name,Path(state['physical_model_dir'])/name)
-            shutil.copy2(source,model/name)
-        probe=_accepted_file(accepted,'probe','probe.json',state['physical_probe']['probe']);shutil.copy2(probe,ws/'probe.json')
-        return {'objective':'Emit the supplied register model with actual probe evidence, then check the package; report its directory.',
-                'inputs':[str(model),str(ws/'probe.json')],'allowed_tools':['emit_package','emit_check'],
-                'context':{'model_dir':str(model),'probe':str(ws/'probe.json')}}
+        model = _model(accepted, ('probe',), ws)
+        if model is None:
+            return {'skip': 'Emit skipped: no probed register model available'}
+        state['physical_model_dir']=str(model);_write(state_path,state)
+        # The latest probe record a worker's run left in the probe or ground handoff that read the expected identity.
+        for handoff in reversed(accepted or []):
+            if handoff.get('stage') not in ('probe', 'ground'):
+                continue
+            found = _artifact(handoff, 'probe.json')
+            if found is None:
+                continue
+            raw = _verified(found, handoff['stage'])
+            try:
+                record = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(record, dict) and record.get('identity_ok') is True:
+                (ws/'probe.json').write_bytes(raw)
+                return {'objective':'Emit the supplied register model with actual probe evidence, then check the package; report its directory.',
+                        'inputs':[str(model),str(ws/'probe.json')],'allowed_tools':['emit_package','emit_check'],
+                        'context':{'model_dir':str(model),'probe':str(ws/'probe.json')}}
+        missing = 'No probe record of the model that read its identity is available'
+        return {'objective':'Emit the supplied register model, then check the package; report its directory. ' + missing +
+                    '; emit_package needs one, so report what is missing.',
+                'inputs':[str(model)],'allowed_tools':['emit_package','emit_check'],
+                'context':{'model_dir':str(model),'input_notes':[missing]},'input_notes':[missing]}
     if stage=='reuse':
-        observed,validated=_reuse_reference(state,options,preparing=True)
-        if not validated['ok']:return _reference_request(validated['reason'])
+        from ..configurator import IntegrityError, digest
+        source = next(((Path(a['path']), a['sha256']) for h in reversed(accepted or []) if h.get('stage') == 'emit'
+                       for a in h.get('artifacts', []) if (Path(a['path'])/'manifest.json').is_file()), None)
+        if source is None:
+            return {'skip': 'Fresh reuse skipped: no accepted emitted package to reuse'}
+        # The operator's own reference, never one a worker claims: the latest supplied for reuse, complete.
+        supplied=[o for o in options.get('operator_observations',[]) if isinstance(o,dict) and o.get('stage')=='reuse']
+        observed = supplied[-1] if supplied else None
+        reason = reference_errors(observed) if observed else 'Fresh independent reference missing for this reuse'
+        if reason:
+            return _reference_request(reason)
         attempt=uuid.uuid4().hex
         reference_copy=Path(run_dir)/('benchmark/reference-reuse-'+attempt+Path(observed['evidence_path']).suffix)
         shutil.copy2(observed['evidence_path'],reference_copy)
-        if hashlib.sha256(reference_copy.read_bytes()).hexdigest()!=validated['evidence_sha256']:
-            return _reference_request('Independent evidence changed during preparation')
-        state['physical_reuse_reference']={**observed,'evidence_path':str(reference_copy),'evidence_sha256':validated['evidence_sha256']}
-        source=Path(state['package_dir'])
-        for h in reversed(accepted or []):
-            if h.get('stage')=='emit':
-                source=next((Path(a['path']) for a in h['artifacts'] if Path(a['path']).is_dir()),source);break
-        package=ws/'package';shutil.copytree(source,package)
+        state['physical_reuse_reference']={**observed,'evidence_path':str(reference_copy),
+                                           'evidence_sha256':hashlib.sha256(reference_copy.read_bytes()).hexdigest()}
+        package=ws/'package';shutil.copytree(source[0],package)
+        if digest(package) != source[1]:
+            raise IntegrityError('Accepted package identity changed')
         state.setdefault('package_copies',{})[stage]=str(package)
         state.setdefault('package_attempts',{})[stage]=attempt
         state['physical_reuse_reference_attempt']=attempt
@@ -115,114 +199,124 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
     raise ValueError('Unknown physical stage '+stage)
 
 
-def check_stage(case_id,stage,run_dir,workspace,report,accepted=None,options=None):
-    from ..toolkit import call_tool, resources_root
+def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, options=None):
+    """Observe a physical stage without truth: what it hands on, with its checks as notes. Only a changed sealed input
+    stops (integrity); emit_check the host could not run raises (a resumable host stop). Fresh reuse hands on its
+    recorded measurement and the operator reference it was taken against, for the evaluator after the run."""
+    import re
+    from ..toolkit import call_tool
+    from .emulated import _emitted_mapping, _host, _observed
     options=options or {};path,state=_state(run_dir);ws=Path(workspace)
-    def answer(ok,name,artifacts=(),reason=None,**extra):
-        return {'ok':bool(ok),'checks':[{'name':name,'passed':bool(ok)}],'artifacts':[str(p) for p in artifacts], 'reason':reason,**extra}
     if stage=='acquire':
-        registry=json.loads((resources_root()/'toolchain/datasheets.json').read_text())['parts']['bme280']
-        pdf=next((p for p in ws.rglob('datasheet.pdf') if hashlib.sha256(p.read_bytes()).hexdigest()==registry['sha256'] and (p.parent/'pages/index.json').is_file()),None)
-        if not pdf:return answer(False,'official_datasheet_hash',reason='No hash-checked official datasheet and pages')
-        state['datasheet_dir']=str(pdf.parent);_write(path,state)
-        return answer(True,'official_datasheet_hash',[pdf,pdf.parent/'pages'])
+        official=_datasheet_sha256()
+        pdf=next((p for p in sorted(ws.rglob('datasheet.pdf')) if hashlib.sha256(p.read_bytes()).hexdigest()==official
+                  and (p.parent/'pages/index.json').is_file()),None)
+        if pdf:
+            state['datasheet_dir']=str(pdf.parent);_write(path,state)
+        return _observed([pdf,pdf.parent/'pages'] if pdf else [],[{'name':'official_datasheet_hash','passed':bool(pdf),
+                         **({} if pdf else {'reason':'No hash-checked official datasheet and pages'})}])
     if stage=='interpret':
-        prepared=state['interpret'];result=call_tool('interpret_collect',{'run_dir':str(Path(run_dir)/'benchmark/tools'),
-            'attempt':state['interpret_attempt'],'expected_seal_sha256':prepared['seal_sha256'],'seal_kind':'instruction'})
-        model=Path(prepared['model_dir']);validated=call_tool('model_validate',{'run_dir':str(Path(run_dir)/'benchmark/tools'),'model_dir':str(model)})
-        ok=result.get('ok') and validated.get('ok') and (model/'convert.py').is_file()
+        prepared=state['interpret'];tools=str(Path(run_dir)/'benchmark/tools')
+        result=call_tool('interpret_collect',{'run_dir':tools,'attempt':state['interpret_attempt'],
+            'expected_seal_sha256':prepared['seal_sha256'],'seal_kind':'instruction'})
+        reason=result.get('reason') or result.get('error')
+        if result.get('sealed_inputs_unchanged') is False or (not result.get('ok') and re.search(r'(?i)seal|changed|differ', str(result.get('reason') or ''))):
+            return {'stop':{'category':'integrity','reason':'Sealed interpretation inputs changed or are unverifiable: '+str(reason)}}
+        model=Path(prepared['model_dir'])
+        intact=bool(result.get('ok') or result.get('sealed_inputs_unchanged') is True and result.get('frozen_copy') is True)
+        present=intact and (model/'model.json').is_file()
+        validated=call_tool('model_validate',{'run_dir':tools,'model_dir':str(model)}) if present else {}
+        converter=intact and (model/'convert.py').is_file()
         state['model_dir']=str(model);_write(path,state)
-        return answer(ok,'sealed_register_model',[model/'model.json',model/'convert.py'] if ok else [],evaluator=validated)
-    if stage == 'ground' and not any(isinstance(o,dict) and o.get('stage')==stage for o in options.get('operator_observations',[])):
-        return answer(False,'independent_reference',reason='Operator reference missing')
-    if stage in ('probe','ground') and ('write' not in options.get('configured_effects', []) or not callable(options.get('managed_probe'))):
-        return answer(False,'managed_physical_evaluator',reason='Physical evaluation requires an operator-granted managed probe hook; no device action was issued')
+        checks=[{'name':'sealed_inputs','passed':bool(result.get('ok')),**({} if result.get('ok') else {'reason':str(reason)})},
+                {'name':'executable_model','passed':bool(validated.get('ok')),**({'defects':validated['defects']} if validated.get('defects') else {}),
+                 **({} if present else {'reason':'No model.json behind an intact seal'})},
+                {'name':'register_converter','passed':converter,**({} if converter else {'reason':'No convert.py behind an intact seal'})}]
+        kept=[model/name for name in ('model.json','convert.py') if intact and (model/name).is_file()]
+        return _observed(kept,checks,scope='Sealed-input integrity, the register model\'s structure and its converter; meaning rests on the device')
     if stage=='probe':
-        mapping=ws/'capabilities.json'
-        if not mapping.is_file():return answer(False,'output_mapping',reason='capabilities.json missing')
-        caps=json.loads(mapping.read_text())
-        if set(caps)!={'temperature','humidity','pressure'} or any(not isinstance(v,str) for v in caps.values()):return answer(False,'output_mapping')
-        probe=options['managed_probe'](state['physical_model_dir'],3)
-        state['physical_probe']=probe;state['capabilities']=caps;_write(path,state)
-        good=probe.get('ok') and all(type(s.get(output)) in (int,float) and math.isfinite(s[output]) for s in probe.get('samples',[]) for output in caps.values()) and bool(probe.get('samples'))
-        return answer(good,'live_identity_and_finite_samples',[mapping,Path(state['physical_model_dir'])/'model.json',Path(state['physical_model_dir'])/'convert.py',probe['probe']] if good else [],evaluator=probe)
-    if stage == 'ground':
-        observations=[o for o in options.get('operator_observations',[]) if isinstance(o,dict) and o.get('stage')==stage]
-        if not observations:return answer(False,'independent_reference',reason='Operator reference missing')
-        observed=observations[-1]
-        from .emulator import truth_for_case
-        from ..benchmark import case_root
-        manifest=json.loads((case_root()/'cases/bme280/case.json').read_text());truth=truth_for_case(case_root(),manifest,options)
-        validated=grade_physical_reference(observed,truth)
-        if not validated['ok']:return answer(False,'independent_reference',reason=validated['reason'])
-        probe=options['managed_probe'](state['physical_model_dir'],3)
-        if not probe.get('ok'):return answer(False,'fresh_physical_measurement',evaluator=probe)
-        from ..benchmark import score_observations
-        values={k:sum(sample[output] for sample in probe['samples'])/len(probe['samples']) for k,output in state['capabilities'].items()}
-        contract={'checks':[{'id':k,'expected':v['value'],'absolute_tolerance':v['absolute_tolerance']} for k,v in observed['reference'].items()]}
-        grade=score_observations(contract,values)
-        copy=Path(run_dir)/('benchmark/reference-'+stage+Path(observed['evidence_path']).suffix)
-        shutil.copy2(observed['evidence_path'],copy)
-        if hashlib.sha256(copy.read_bytes()).hexdigest()!=validated['evidence_sha256']:
-            return answer(False,'independent_reference_integrity',reason='Independent evidence changed during measurement; submit a stable reference file')
-        observed={**observed,'evidence_path':str(copy),'evidence_sha256':validated['evidence_sha256']}
-        state['physical_grounding']={'observations':values,'reference':observed,'score':grade,'physical':True,'probe':probe['probe'],'measurement_time':time.time()};_write(path,state)
-        evidence=Path(run_dir)/('benchmark/physical-'+stage+'.json');_write(evidence,state['physical_grounding'])
-        return answer(grade['verdict']=='passed','independent_physical_agreement',[evidence,copy],evaluator=grade)
+        mapping_path,dropped,artifacts,reason,errors=ws/'capabilities.json',[],[],None,None
+        if mapping_path.is_symlink() or mapping_path.exists() and not mapping_path.resolve().is_relative_to(ws.resolve()):
+            reason='capabilities.json is a link or outside the workspace; it was not followed'
+            dropped.append({'path':str(mapping_path),'reason':reason})
+        elif not mapping_path.is_file():
+            reason='Missing capability mapping'
+        else:
+            try:
+                mapping=json.loads(mapping_path.read_text(encoding='utf-8'))
+            except (OSError,ValueError,UnicodeError) as error:
+                reason='capabilities.json is not readable JSON: '+type(error).__name__
+            else:
+                artifacts.append(mapping_path)
+                errors=mapping_errors(mapping) or None
+                reason='Invalid capability mapping' if errors else None
+        model=Path(state.get('physical_model_dir') or ws/'model')
+        artifacts+=[model/name for name in ('model.json','convert.py') if (model/name).is_file()]
+        return _observed(artifacts,[{'name':'capability_mapping','passed':reason is None,**({'reason':reason} if reason else {}),
+                                     **({'errors':errors} if errors else {})}],dropped,
+                         scope='The worker\'s mapping and the probed register model: device evidence, not a grade')
+    if stage=='ground':
+        return _observed([],[],scope='The configurator\'s own device tests of the model and their differences; physical '
+                         'meaning rests on operator observations where given')
     if stage=='emit':
-        for manifest in ws.rglob('manifest.json'):
+        rejected=[]
+        for manifest in sorted(ws.rglob('manifest.json')):
             checked=call_tool('emit_check',{'run_dir':str(Path(run_dir)/'benchmark/tools'),'package_dir':str(manifest.parent),'model_dir':str(ws/'model')})
+            if _host(checked):
+                raise RuntimeError('emit_check could not run on this host for '+manifest.parent.name+': '+str(checked.get('error')))
             if checked.get('ok') and checked.get('integrity_ok') and checked.get('runtime_current') and checked.get('seeds_run',0)>0:
-                state.update(package_dir=str(manifest.parent),package_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest());_write(path,state)
-                return answer(True,'register_package_integrity_and_replay',[manifest.parent],evaluator=checked)
-        return answer(False,'register_package_integrity_and_replay')
+                state.update(package_dir=str(manifest.parent),package_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                             physical_model_dir=str(ws/'model'));_write(path,state)
+                return _observed([manifest.parent],[{'name':'register_package_integrity_and_replay','passed':True,
+                                                     **({'rejected':rejected} if rejected else {})}])
+            rejected.append({'package':manifest.parent.name,'reason':'emit_check did not pass'})
+        return _observed([],[{'name':'register_package_integrity_and_replay','passed':False,
+                              'reason':'No package passed integrity and seeded replay',**({'rejected':rejected} if rejected else {})}],
+                         [{'path':row['package'],'reason':row['reason']} for row in rejected])
     if stage=='reuse':
-        events=Path(run_dir)/'benchmark/physical-package-events.jsonl'
-        rows=[json.loads(x) for x in events.read_text().splitlines()] if events.exists() else []
-        outputs=list(state.get('capabilities',{}).values())
         attempt=state.get('package_attempts',{}).get(stage)
-        valid=[r for r in rows if attempt and r.get('attempt_id')==attempt and r.get('ok') and r.get('stage')=='reuse' and len(outputs)==3
-               and type(r.get('time')) in (int,float) and math.isfinite(r['time'])
-               and all(type(r.get('values',{}).get(name)) in (int,float) and math.isfinite(r['values'][name]) for name in outputs)]
-        from ..benchmark import score_observations
-        observed,validated=_reuse_reference(state,options,valid[-1]['time']) if valid else ({},{'ok':False,'reason':'Fresh mission missing'})
-        if valid and not validated['ok']:
-            return answer(False,'fresh_independent_reference',reason=validated['reason'],fault='operator')
-        reference=observed.get('reference',{})
-        observations={key:valid[-1]['values'][output] for key,output in state.get('capabilities',{}).items()} if valid else {}
-        contract={'checks':[{'id':key,'expected':row['value'],'absolute_tolerance':row['absolute_tolerance']}
-                            for key,row in reference.items()]}
-        grade=score_observations(contract,observations)
-        ok=bool(valid) and set(reference)=={'temperature','humidity','pressure'} and grade['verdict']=='passed'
-        state['physical_final']={'observations':observations,'score':grade,'reference':observed,'measurement_time':valid[-1]['time'] if valid else None}
-        _write(path,state)
-        return answer(ok,'fresh_physical_package_measurement',[events] if events.exists() else [],
-            evaluator=grade,final_evaluation=bool(valid),fault=None if ok else 'model' if valid else None)
+        events=Path(run_dir)/'benchmark'/EVENTS
+        rows=[json.loads(line) for line in events.read_text(encoding='utf-8').splitlines()] if events.is_file() else []
+        mine=[row for row in rows if attempt and row.get('attempt_id')==attempt and row.get('stage')=='reuse'
+              and row.get('assignment_id')==options.get('assignment_id')]
+        folder=Path(run_dir)/'benchmark/reuse'/str(options.get('assignment_id'));folder.mkdir(parents=True,exist_ok=True)
+        # This assignment's measurements as the configurator recorded them, and the operator reference they were taken
+        # against: the evaluator grades the frozen driver from these after the run.
+        record=folder/REUSE_EVENTS
+        record.write_text(''.join(json.dumps(row)+'\n' for row in mine),encoding='utf-8')
+        handed=[Path(state['package_copies'][stage])] if Path(state.get('package_copies',{}).get(stage) or ws/'missing').is_dir() else []
+        handed.append(record)
+        reference=state.get('physical_reuse_reference') if attempt and state.get('physical_reuse_reference_attempt')==attempt else None
+        if reference:
+            saved=folder/REFERENCE
+            _write(saved,{key:reference.get(key) for key in ('channel','observed_at','reference','evidence_sha256')})
+            handed+=[saved,Path(reference['evidence_path'])]
+        found=_emitted_mapping(accepted)
+        try:
+            mapping=json.loads(found[0].read_text(encoding='utf-8')) if found else None
+        except (OSError,ValueError,UnicodeError):
+            mapping=None
+        measured=bool(valid_rows(mine,mapping))
+        mission={'name':'fresh_physical_measurement','passed':measured,
+                 **({} if measured else {'reason':'No finite measurement of every mapped output by the frozen package'})}
+        return _observed(handed,[mission,{'name':'operator_reference','passed':bool(reference),
+                                          **({} if reference else {'reason':'No operator reference for this reuse'})}],
+                         scope='The fresh measurement of the frozen package and the operator reference; a note, not a grade')
     raise ValueError('Unknown physical stage '+stage)
 
 
-def grade_physical_reference(observed, truth, measurement_time=None):
-    measured=time.time() if measurement_time is None else measurement_time
-    if (not observed.get('channel') or type(observed.get('observed_at')) not in (int,float)
-            or not math.isfinite(observed['observed_at']) or abs(measured-observed['observed_at'])>truth['max_reference_age_seconds']):
-        return {'ok':False,'reason':'Reference channel/timestamp missing or stale'}
-    path=Path(observed.get('evidence_path',''))
-    if not path.is_file():return {'ok':False,'reason':'Independent photo/log evidence file missing'}
-    refs=observed.get('reference',{})
-    if set(refs)!=set(truth['max_tolerances']):return {'ok':False,'reason':'All three independent reference values are required'}
-    for key,maximum in truth['max_tolerances'].items():
-        row=refs[key]
-        if not all(type(row.get(k)) in (int,float) and math.isfinite(row[k]) for k in ('value','absolute_tolerance')) or not 0<row['absolute_tolerance']<=maximum:
-            return {'ok':False,'reason':'Reference values/tolerances are invalid or too broad'}
-    actual=hashlib.sha256(path.read_bytes()).hexdigest()
-    if observed.get('evidence_sha256',actual)!=actual:
-        return {'ok':False,'reason':'Independent reference evidence changed'}
-    return {'ok':True,'evidence_sha256':actual}
+def _measure(package, binding):
+    """One measurement by the package's own CLI on the operator's bound device: (exit status, stdout, stderr)."""
+    import subprocess
+    import sys
+    result=subprocess.run([sys.executable,'-I','-B','-c',
+        'import runpy,sys;sys.path.insert(0,sys.argv.pop(1));runpy.run_module("driver",run_name="__main__")',
+        str(package),'--url',binding['url'],'--allow-write','--json','measure','--n','1'],
+        cwd=package.parent,capture_output=True,text=True,timeout=60)
+    return result.returncode,result.stdout,result.stderr
 
 
 def package_execute(case_id,run_dir,stage,package_dir,operation,parameters=None,binding=None,allow_effects=None,options=None):
-    import subprocess
-    import sys
     from ..toolkit import call_tool
     _,state=_state(run_dir);options=options or {};package=Path(package_dir).resolve()
     if package != Path(state.get('package_copies',{}).get(stage,'')).resolve() or binding!=options.get('binding'):
@@ -233,13 +327,12 @@ def package_execute(case_id,run_dir,stage,package_dir,operation,parameters=None,
         'model_dir':state['physical_model_dir'],'expected_manifest_sha256':state['package_sha256']})
     if not checked.get('ok') or not checked.get('integrity_ok') or not checked.get('runtime_current'):
         return {'ok':False,'error':{'fault':'host','code':'package','message':'Package check failed'}}
-    result=subprocess.run([sys.executable,'-I','-B','-c',
-        'import runpy,sys;sys.path.insert(0,sys.argv.pop(1));runpy.run_module("driver",run_name="__main__")',
-        str(package),'--url',binding['url'],'--allow-write','--json','measure','--n','1'],
-        cwd=package.parent,capture_output=True,text=True,timeout=60)
-    try:row=json.loads(result.stdout.strip().splitlines()[-1])
-    except (ValueError,IndexError):row={'status':'ERR','reason':result.stderr[-1000:]}
-    row.update(ok=result.returncode==0 and row.get('status')=='OK',stage=stage,attempt_id=state['package_attempts'][stage],execution='actual-physical-package',time=time.time(),package_sha256=state['package_sha256'])
-    evidence=Path(run_dir)/'benchmark/physical-package-events.jsonl'
+    status,stdout,stderr=_measure(package,binding)
+    try:row=json.loads(stdout.strip().splitlines()[-1])
+    except (ValueError,IndexError):row={'status':'ERR','reason':stderr[-1000:]}
+    row.update(ok=status==0 and row.get('status')=='OK',stage=stage,attempt_id=state['package_attempts'][stage],
+               assignment_id=options.get('assignment_id'),execution='actual-physical-package',time=time.time(),
+               package_sha256=state['package_sha256'])
+    evidence=Path(run_dir)/'benchmark'/EVENTS
     with evidence.open('a',encoding='utf-8') as stream:stream.write(json.dumps(row,allow_nan=False)+'\n')
     return {**row,'evidence':str(evidence)}

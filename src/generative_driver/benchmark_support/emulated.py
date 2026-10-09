@@ -1,5 +1,6 @@
 """Native benchmark stages, observed without truth. The bench harness provides the emulator and the configurator reaches it
-through its device handle; this adapter starts, holds and stops no device, and unlocks no truth for the stages."""
+through its device handle; this adapter starts, holds and stops no device, and unlocks no truth for the stages. Legacy
+tq9 (`cases.py`) shares its stages but interpretation and the probe's task mapping."""
 import hashlib
 import re
 import shutil
@@ -135,6 +136,39 @@ def _emitted_mapping(accepted):
     return _artifact(_handoff_with(accepted, ('probe',), 'model.json'), 'capabilities.json')
 
 
+def adapt(run_dir, ws, accepted, options):
+    """Probe's model: the latest interpreted model, hash-verified and wired to the emulator binding in `ws/model`, which
+    the run state records; {'binding'} of the provided device, or a stop for the operator without one. With no model, or
+    one the emulator binding cannot carry, the probe skips and no device is used: the candidate is kept for the repair
+    its configurator diff drives."""
+    from .evaluate import adapt_model
+    found = _latest(accepted, ('interpret',), 'model.json')
+    if found is None:
+        return {'skip': 'Probe skipped: no interpreted model available'}
+    from ..configurator import IntegrityError
+    _verified(found, 'interpretation')
+    try:
+        adaptation = adapt_model(found[0], ws/'model')
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        # A model the emulator cannot carry is the candidate's, never a stop, and no emulator starts for it. The
+        # configurator validates it and that diff drives repair, so the candidate is kept for the repair.
+        from .candidate_context import remember
+        remember(run_dir, 'probe', {'model.json': found[0], **_candidate_files(accepted, found[1])}, workspace=ws)
+        reason = ('The emulator binding (a UART byte stream over TCP) cannot carry this model: '
+                  + type(error).__name__ + ': ' + str(error))
+        return {'skip': 'Probe skipped: the interpreted model cannot be wired to the emulator: ' + str(error),
+                'unwired_model': {'path': str(found[0]), 'sha256': found[1], 'reason': reason}}
+    if adaptation['original_model_sha256'] != found[1]:
+        raise IntegrityError('Accepted interpretation bytes changed while adapting the model')
+    binding = _binding(options)
+    if binding is None:
+        return {'blocked': NO_DEVICE}
+    path, state = _state(run_dir)
+    state.update(adaptation=adaptation, adapted_model_dir=str(ws/'model'), revision=int(options.get('revision', state.get('revision', 0))))
+    _write(path, state)
+    return {'binding': binding}
+
+
 def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=None):
     options = options or {}
     if options.get('scenario_id') not in (None, 'original'):
@@ -153,29 +187,10 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                 'context': {'source_path': str(target), 'expected_sha256': manifest['images']['firmware.bin'],
                             'origin': 'provided_binary'}, 'boundary': 'provided artifact import'}
     if stage == 'probe':
-        from .evaluate import adapt_model
-        found = _latest(accepted, ('interpret',), 'model.json')
-        if found is None:
-            return {'skip': 'Probe skipped: no interpreted model available'}
-        from ..configurator import IntegrityError
-        _verified(found, 'interpretation')
-        try:
-            adaptation = adapt_model(found[0], ws/'model')
-        except (ValueError, KeyError, TypeError, AttributeError) as error:
-            # A model the emulator cannot carry is the candidate's, never a stop, and no emulator starts for it. The
-            # configurator validates it and that diff drives repair, so the candidate is kept for the repair.
-            from .candidate_context import remember
-            remember(run_dir, 'probe', {'model.json': found[0], **_candidate_files(accepted, found[1])}, workspace=ws)
-            reason = ('The emulator binding (a UART byte stream over TCP) cannot carry this model: '
-                      + type(error).__name__ + ': ' + str(error))
-            return {'skip': 'Probe skipped: the interpreted model cannot be wired to the emulator: ' + str(error),
-                    'unwired_model': {'path': str(found[0]), 'sha256': found[1], 'reason': reason}}
-        if adaptation['original_model_sha256'] != found[1]:
-            raise IntegrityError('Accepted interpretation bytes changed while adapting the model')
-        binding = _binding(options)
-        path, state = _state(run_dir)
-        state.update(adaptation=adaptation, adapted_model_dir=str(ws/'model'), revision=int(options.get('revision', state.get('revision', 0))))
-        _write(path, state)
+        adapted = adapt(run_dir, ws, accepted, options)
+        if adapted.get('skip') or adapted.get('blocked'):
+            return adapted
+        binding = adapted['binding']
         guidance = _capability_guidance(ws, case_id)
         from .candidate_context import task_contract
         _write(ws/'TASKS.json', task_contract(case_id, options.get('configured_effects', [])))
@@ -202,6 +217,8 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         prepared = device_evidence(accepted, ws)
         if prepared.get('skip'):
             return prepared
+        if _binding(options) is None:
+            return {'blocked': NO_DEVICE}
         return {**prepared, 'allowed_tools': ['interface_execute', 'probe_run', 'probe_diff', 'model_validate'],
                 'binding': _binding(options)}
     if stage == 'emit':
@@ -250,6 +267,9 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         copied = digest(package)
         if copied != source[1] or copied != state.get('package_sha256'):
             raise IntegrityError('Accepted package identity changed')
+        binding = _binding(options)
+        if binding is None:
+            return {'blocked': NO_DEVICE}
         state.setdefault('package_copies', {})[stage] = str(package)
         state.setdefault('package_attempts', {})[stage] = uuid.uuid4().hex
         capabilities = _emitted_mapping(accepted)
@@ -257,7 +277,6 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
             _verified(capabilities, 'probe')
         state['capabilities_path'] = str(capabilities[0]) if capabilities else None
         _write(path, state)
-        binding = _binding(options)
         mission = 'Read temperature, enable the device, request 37 percent output, then disarm.'
         if case_id == 'sampled-sensor-v1':
             mission = 'Acquire and read two fresh temperature samples. Report their measured sequence numbers.'
@@ -318,6 +337,9 @@ def _mission(case_id, events, capabilities):
     try:
         if case_id in ('sampled-sensor-v1', 'parameter-store-v1'):
             done = family_for(case_id).reuse_passed(events, capabilities)
+        elif case_id == 'tq9':
+            from .cases import mission_done
+            done = mission_done(events, capabilities)
         else:
             duties = [e['observation']['duty'] for e in events if e['result'].get('ok')]
             mapping = capabilities['tasks']['temperature']
@@ -336,6 +358,22 @@ def _mission(case_id, events, capabilities):
     fault = next((f for f in faults if f in ('host', 'operator')), default)
     return {'name': 'fresh_worker_mission', 'passed': False,
             'reason': 'Fresh worker mission lacks observed reading, requested effect or disarm', **({'fault': fault} if fault else {})}
+
+
+def _mapping_errors(case_id, mapping, model):
+    """The structural check of a probe's capability mapping against its model: {ok, errors}. Legacy tq9 maps its
+    tasks in the legacy form (`cases.mapping_errors`)."""
+    if case_id == 'tq9':
+        from .cases import mapping_errors
+        errors = mapping_errors(mapping, model)
+        return {'ok': not errors, 'errors': errors}
+    from .behavior import validate_capabilities
+    return validate_capabilities(mapping, model, _required_tasks(case_id))
+
+
+# Cases graded after the run from the fresh reuse the run recorded: their reuse hands on that record.
+RECORDED = ('tq9',)
+REUSE_EVENTS = 'reuse-events.jsonl'
 
 
 def _host(result):
@@ -434,10 +472,8 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
                     except (ValueError, UnicodeError):
                         reason = 'Capability file must contain valid UTF-8 JSON'
             if parsed and files.get('model.json'):
-                from .behavior import validate_capabilities
                 try:
-                    validation = validate_capabilities(mapping, json.loads(files['model.json'].read_text(encoding='utf-8')),
-                                                       _required_tasks(case_id))
+                    validation = _mapping_errors(case_id, mapping, json.loads(files['model.json'].read_text(encoding='utf-8')))
                 except (KeyError, TypeError, AttributeError, IndexError, ValueError) as error:
                     # The mapping check reads the model as a valid one; a model that fails validation still reaches
                     # probe when the emulator can carry it, and its defects are the configurator's model_contract diff.
@@ -497,17 +533,31 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
         else:
             mission = _mission(case_id, events, mapping)
         package = Path(state.get('package_copies', {}).get(stage) or ws/'missing')
-        return _observed([package] if package.is_dir() else [], [mission],
+        handed = [package] if package.is_dir() else []
+        if case_id in RECORDED:
+            # This assignment's package calls with the instrument readings after them, as the configurator recorded them:
+            # the evaluator grades the frozen driver from this record after the run.
+            record = Path(run_dir)/'benchmark/reuse'/str(options.get('assignment_id'))/REUSE_EVENTS
+            record.parent.mkdir(parents=True, exist_ok=True)
+            record.write_text(''.join(json.dumps(e, allow_nan=False) + '\n' for e in events
+                                      if e.get('assignment_id') == options.get('assignment_id')), encoding='utf-8')
+            handed.append(record)
+        return _observed(handed, [mission],
                          scope='The fresh worker\'s package calls and the instrument readings after them; a note, not a grade')
     raise ValueError('Native stage is not implemented: ' + stage)
 
 
+# A device stage of an emulated run without the device its bench harness provides waits for the operator.
+NO_DEVICE = ('An emulated case runs only on the device its bench harness provides, and this run has none: start it with '
+             '`benchmark run`, whose bench harness provides the device and grades the driver after the run')
+
+
 def _binding(options):
     """The binding of the device the bench harness provides, as the configurator's durable record holds it now (a
-    recovery changes it). The configurator holds no emulator of its own, so a stage without one has no device."""
+    recovery changes it), or None: the configurator holds no emulator of its own, so a stage without one has no device."""
     device = options.get('device')
     if not isinstance(device, dict) or not isinstance(device.get('binding'), dict) or not device['binding']:
-        raise ValueError('An emulated case runs only on the device the bench harness provides')
+        return None
     return dict(device['binding'])
 
 

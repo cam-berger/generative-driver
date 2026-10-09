@@ -1,21 +1,20 @@
-"""The bench harness: the benchmark's operator, one detached process per emulated trial or per suite.
+"""The bench harness: the benchmark's operator, one detached process per trial or per suite.
 
-For an emulated case it holds what the configurator never does. The evaluator password file path arrives on its stdin
-and is never a field of a record it writes; the case truth is unlocked to project the device recipe before the run and
-to grade after it; and it owns the device. In order, it: admits the case (`require_calibration`), starts the emulator
-through a recipe-only provider and serves the configurator a narrow control endpoint (status, observe, set_running,
-replace, release; stop and shutdown are owner-only), starts the configurator run with the device descriptor, the
-admission evidence hash and the sha256 of a random evaluation token it keeps sealed under the password, waits as a
-reconnecting client, stops the device once the run is terminal, grades a completed run's frozen driver once on a fresh
-emulator, seals the run evidence and posts the verdict with `record_evaluation`. Its state lives under a bench home
-beside the configurator home, never inside it.
+It holds what the configurator never does. The evaluator password file path arrives on its stdin and is never a field
+of a record it writes; the case truth is unlocked to project the device recipe before the run and to grade after it;
+and it owns an emulated case's device. In order, it: admits the case (`require_calibration`); for an emulated case (v2,
+or legacy tq9 from the legacy recipe) starts the emulator through a recipe-only provider and serves the configurator a
+narrow control endpoint (status, observe, set_running, replace, release; stop and shutdown are owner-only); starts the
+configurator run with the device descriptor, the admission evidence hash and the sha256 of a random evaluation token it
+keeps sealed under the password; waits as a reconnecting client; stops the device once the run is terminal; grades a
+completed run's frozen driver once, on a fresh emulator or from the fresh reuse the run recorded; seals the run evidence
+and posts the verdict with `record_evaluation`. A bme280 trial runs on the operator's bound device, which the harness
+never touches: it waits while the operator answers the run and resumes it, until the run completes. Its state lives
+under a bench home beside the configurator home, never inside it.
 
 A suite's harness (`run_suite`) drives the suite the configurator stores: it reserves each slot, runs that slot's trial as
 above, and has the configurator settle the slot from what the configurator reads itself. A resumed suite gets a new
-harness, which continues a stopped trial on a device it provides anew (`reattach`) or grades an unscored one once. Until
-legacy (tq9) children are graded after their runs, a suite's harness puts a legacy child's evaluator password file and
-emulator path into that child's run options, as `benchmark run` does for a legacy case, so the configurator's record of
-that run holds them."""
+harness, which continues a stopped trial on a device it provides anew (`reattach`) or grades an unscored one once."""
 import argparse
 import contextlib
 import hashlib
@@ -180,28 +179,43 @@ class DeviceServer:
             shutil.rmtree(self._sockets, ignore_errors=True)
 
 
+def legacy_recipe(truth):
+    """The legacy tq9 emulator's recipe, projected from the legacy truth: its sensor model and Renode setup, and the PWM
+    timer's compare and reload registers read through the monitor. Nothing else of the truth goes with it."""
+    read = lambda address: {'command': 'sysbus ReadDoubleWord 0x{:08x}'.format(int(address)), 'width': 32, 'count': 1}
+    return {'source_files': {'sensor.cs': truth['source_files']['BME280Bench.cs'], 'device.resc': truth['renode_setup']},
+            'includes': ['sensor.cs'], 'setup': 'device.resc',
+            'observations': {'compare': read(truth['monitor']['pwm_compare']), 'reload': read(truth['monitor']['pwm_reload'])}}
+
+
 def device_recipe(case_id, trial_dir, options):
     """The device definition and nothing else: the harness unlocks the case truth for it with the password file in
     `options`, and everything but the recipe is dropped before a provider sees it."""
     from .evaluator import case_truth
-    return case_truth(case_id, trial_dir, options)['recipe']
+    truth = case_truth(case_id, trial_dir, options)
+    return legacy_recipe(truth) if case_id == 'tq9' else truth['recipe']
 
 
 def admit(case_id, options, trial_dir, *, password_file, renode=None):
-    """Admit the case and build its device provider from the recipe alone: (provider, admission). Only this step unlocks
-    the case truth, to take the device recipe; everything else in it is dropped before the provider sees it. The caller
-    starts the provider, so that it holds the device even when the start fails."""
+    """Admit the case and, for an emulated one, build its device provider from the recipe alone: (provider or None,
+    admission). Only this step unlocks the case truth, to take the device recipe; everything else in it is dropped
+    before the provider sees it. A v2 case's admission names its calibration evidence; legacy cases have none. A bound
+    device (bme280) is the operator's: no provider. The caller starts the provider, so that it holds the device even
+    when the start fails."""
     from .device_provider import DeviceProvider
     from .registry import pin_case, require_calibration, resolve_case
     secret = {'evaluator_password_file': str(password_file)} if password_file else {}
     pin = pin_case(case_id, options.get('scenario_id'), options.get('case_seed', 0))
-    if pin['manifest'].get('schema') != 'benchmark-case/2':
-        raise ValueError('The bench harness provides emulated benchmark cases only')
+    if not pin['execution'].startswith('actual-agent-'):
+        raise ValueError('The bench harness runs actual-agent benchmark cases only')
     admitted = require_calibration(pin, secret)
+    if pin['execution'] != 'actual-agent-emulation':
+        return None, {}
     recipe = device_recipe(case_id, trial_dir, secret)
     provider = DeviceProvider(case_id, resolve_case(case_id).root / 'firmware.bin', recipe, renode, Path(trial_dir) / 'device',
                               image_sha256=pin['image_hashes']['firmware.bin'])
-    return provider, {'calibration_evidence_sha256': admitted.get('evidence_sha256')}
+    return provider, ({'calibration_evidence_sha256': admitted.get('evidence_sha256')}
+                      if pin['manifest'].get('schema') == 'benchmark-case/2' else {})
 
 
 TOKEN = 'evaluation-token.enc'
@@ -214,6 +228,8 @@ def evaluation_token(trial_dir, password_file, trial_id, *, create=False):
     password, and no plaintext copy is written. A password that does not unlock it is refused."""
     from .truth import seal, unlock
     path = Path(trial_dir) / TOKEN
+    if not password_file:
+        raise ValueError('The bench harness needs the evaluator password file to seal and unlock the trial\'s evaluation token')
     password = Path(password_file).read_text(encoding='utf-8').strip()
     if not password:
         raise ValueError('A nonempty evaluator password is required')
@@ -271,6 +287,7 @@ def conclude(trial_dir, case_id, run_dir, result, *, password_file, renode=None,
     pending = result.get('status') == 'completed' and (result.get('progress') or {}).get('equivalence') == 'pending'
     accepted = result.get('accepted_handoffs') or []
     frozen = (evaluator.emitted(accepted) or (None, None))[1]
+    method = evaluator.method_for(case_id)
     done, content, equivalence = {}, {}, None
     try:
         if pending and graded:
@@ -279,16 +296,19 @@ def conclude(trial_dir, case_id, run_dir, result, *, password_file, renode=None,
                                                                 password_file=password_file, renode=renode)
                 content['mission'] = equivalence.get('mission')
             except IntegrityError as error:
-                equivalence, content['error'] = evaluator.unscored('integrity: ' + str(error), frozen), str(error)
+                equivalence, content['error'] = evaluator.unscored('integrity: ' + str(error), frozen, method), str(error)
+            except evaluator.Unscorable as error:
+                # Recorded evidence that cannot grade the driver for a reason outside it; its message names no truth.
+                equivalence, content['error'] = evaluator.unscored(str(error), frozen, method), str(error)
             except Exception as error:
                 # The message stays sealed: it may name what only the evaluator holds.
-                equivalence = evaluator.unscored('evaluator host fault: ' + type(error).__name__, frozen)
+                equivalence = evaluator.unscored('evaluator host fault: ' + type(error).__name__, frozen, method)
                 content['error'] = type(error).__name__ + ': ' + str(error)
             errors = _evaluation_errors({**equivalence, 'evidence_sha256': None if equivalence['status'] == 'unscored'
                                          else '0' * 64})
             if errors:
                 # Every resume would rebuild the same record and have it refused: it is unscored, and why stays sealed.
-                equivalence = evaluator.unscored('evaluator host fault: invalid evaluation record', frozen)
+                equivalence = evaluator.unscored('evaluator host fault: invalid evaluation record', frozen, method)
                 content = {'error': 'Invalid evaluation record: ' + '; '.join(errors)}
             content['equivalence'] = equivalence
         try:
@@ -300,7 +320,7 @@ def conclude(trial_dir, case_id, run_dir, result, *, password_file, renode=None,
                                                 and equivalence['diff'][0]['reason'].startswith('integrity: ')):
                 # An accepted record changed after acceptance, or the snapshot no longer verifies: no retry seals it, so
                 # the grade is unscored for integrity. An unscored record needs no seal.
-                equivalence = evaluator.unscored('integrity: ' + str(error), frozen)
+                equivalence = evaluator.unscored('integrity: ' + str(error), frozen, method)
         except Exception as error:
             done.update(sealed=False, sealing_failed=type(error).__name__ + ': ' + str(error))
     finally:
@@ -332,7 +352,8 @@ def finish(provider, case_id, run_dir, result, password_file, status=None, *, tr
     graded then, and the handoffs are sealed all the same. `persist(update)` records the stop before any grading."""
     done = {}
     try:
-        done['device_stop'] = provider.stop()
+        # A bound device is the operator's: the harness holds none, so nothing of it is left to stop.
+        done['device_stop'] = provider.stop() if provider is not None else dict(UNHELD)
     except Exception as error:
         done['device_stop'] = {'stopped': False, 'confirmed': False, 'reason': type(error).__name__ + ': ' + str(error)}
         try:
@@ -357,6 +378,8 @@ def finish(provider, case_id, run_dir, result, password_file, status=None, *, tr
 
 # How long a harness waits through an unreachable configurator before it stops waiting for a run.
 UNREACHABLE = 300
+# The device stop of a trial whose device the operator owns: the harness held none.
+UNHELD = {'confirmed': True, 'held': False}
 
 
 def _configurator(home, autostart=True):
@@ -377,17 +400,17 @@ def _configurator(home, autostart=True):
     return configurator
 
 
-def _wait(call, run_id, deadline, shutdown, heartbeat=None, stop=None):
-    """Follow the run as a reconnecting client until it is terminal with nothing left stopping, the owner shut the
-    device down or the harness was asked to stop (`stop`); a configurator unreachable for long ends the wait too.
-    `heartbeat()` runs between reads."""
+def _wait(call, run_id, deadline, shutdown, heartbeat=None, stop=None, until=TERMINAL):
+    """Follow the run as a reconnecting client until its status is in `until` (terminal by default) with nothing left
+    stopping, the owner shut the device down or the harness was asked to stop (`stop`); a configurator unreachable for
+    long ends the wait too. `heartbeat()` runs between reads."""
     status, lost = {}, None
     halted = lambda: shutdown.is_set() or (stop is not None and stop.is_set())
     while time.monotonic() < deadline and not halted():
         observed = _post(call, 'status', {'run_id': run_id})
         if observed.get('ok'):
             status, lost = observed, None
-            if observed.get('status') in TERMINAL and not observed.get('stopping'):
+            if observed.get('status') in until and not observed.get('stopping'):
                 return status
         else:
             lost = lost or time.monotonic()
@@ -440,25 +463,28 @@ def run_trial(trial_dir, request, *, call=None, launch=None, heartbeat=None, sto
             raise ValueError(reachable.get('reason') or 'The configurator is not reachable')
         held['provider'], admission = admit(request['case'], (start or request).get('case_options') or {}, trial_dir,
                                             password_file=password_file, renode=renode)
-        held['provider'].start()
-        server = DeviceServer(held['provider'], trial_dir / 'endpoint')
+        if held['provider'] is not None:
+            held['provider'].start()
+            server = DeviceServer(held['provider'], trial_dir / 'endpoint')
         # The configurator holds the token's hash, for the evaluation after the run; the token stays in this process and,
         # for a resume, sealed under the password in the trial directory.
         token = evaluation_token(trial_dir, password_file, request['trial_id'], create=True)
         params = dict(start) if start else {key: request[key] for key in ('goal', 'case', 'executor', 'budget_seconds',
                                                                           'effects', 'case_options', 'output_dir',
-                                                                          'scoped_tool_approval')
+                                                                          'scoped_tool_approval', 'binding')
                                            if request.get(key) is not None}
-        params.update(request_id=request_id, device=server.descriptor, admission=admission,
-                      evaluation_token_sha256=hashlib.sha256(token.encode()).hexdigest())
+        params.update(request_id=request_id, evaluation_token_sha256=hashlib.sha256(token.encode()).hexdigest(),
+                      **({'device': server.descriptor} if server else {}), **({'admission': admission} if admission else {}))
         # From here a run may exist that this trial started, whether or not its reply arrives.
         record['start_sent'] = time.time()
         _private(trial_dir / 'trial.json', record)
-        started = _start_child(launch, params, server.shutdown, stop) if launch else configurator('start', params)
+        started = (_start_child(launch, params, server.shutdown if server else threading.Event(), stop) if launch
+                   else configurator('start', params))
         if not started.get('ok'):
             raise ValueError(started.get('reason') or 'The configurator refused the run')
         record.update(status='running', run_id=started['run_id'],
-                      device={key: params['device'][key] for key in ('provider_id', 'session_id', 'binding')})
+                      **({'device': {key: params['device'][key] for key in ('provider_id', 'session_id', 'binding')}}
+                         if server else {}))
         _private(trial_dir / 'trial.json', record)
         _follow_run(trial_dir, record, held, server, configurator, budget=params.get('budget_seconds') or 10800,
                     password_file=password_file, renode=renode, token=token, heartbeat=heartbeat, stop=stop)
@@ -490,9 +516,12 @@ def _start_child(launch, params, shutdown, stop=None):
 def _follow_run(trial_dir, record, held, server, configurator, *, budget, password_file, renode, token, heartbeat=None,
                 stop=None):
     """See a started run through: wait until it ends, then stop its device, confirmed, and conclude the trial. The device
-    `held` holds passes to `finish`, which records its stop before anything is graded."""
+    `held` holds passes to `finish`, which records its stop before anything is graded. A run on the operator's bound
+    device (no `server`) is followed until it completes or is cancelled: the operator answers and resumes it in between."""
     home, run_id = Path(record['home']), record['run_id']
-    status = _wait(configurator, run_id, time.monotonic() + float(budget) + 600, server.shutdown, heartbeat, stop)
+    status = _wait(configurator, run_id, time.monotonic() + float(budget) + 600,
+                   server.shutdown if server else threading.Event(), heartbeat, stop,
+                   until=TERMINAL if server else ('completed', 'cancelled'))
     record['run_status'] = {key: status.get(key) for key in ('status', 'outcome_category', 'reason', 'uncertain_effect',
                                                              'harness_stopped') if key in status}
     result = configurator('result', {'run_id': run_id})
@@ -559,6 +588,8 @@ def reattach(trial_dir, *, password_file, renode=None, call=None, heartbeat=None
         try:
             held['provider'], _ = admit(record['case'], {'scenario_id': pin.get('scenario_id'), 'case_seed': pin.get('case_seed', 0)},
                                         trial_dir, password_file=password_file, renode=renode)
+            if held['provider'] is None:
+                raise ValueError('A bound-device trial has no device to provide anew: its operator resumes the run')
             for key in ('device', 'reason', 'run_status', 'sealed', 'sealing_failed', 'evidence', 'equivalence',
                         'evaluation_failed'):
                 record.pop(key, None)
@@ -739,10 +770,10 @@ def _exclusive(trial_dir):
 
 def launch(case, output_dir=None, executor=None, options=None, approval=None, *, effects=(), autostart=True, wait=False,
            timeout=900):
-    """Start an emulated trial in a detached harness and return {trial_id, run_id} once the run has started; with
-    `wait`, follow the trial until the harness has finished with it. Password file and emulator paths reach the harness
-    on its stdin only. A repeated request_id with the same inputs follows the trial it started, with no second harness
-    or device; with other inputs it is refused."""
+    """Start a trial in a detached harness and return {trial_id, run_id} once the run has started; with `wait`, follow
+    the trial until the harness has finished with it. Password file and emulator paths reach the harness on its stdin
+    only. A repeated request_id with the same inputs follows the trial it started, with no second harness or device;
+    with other inputs it is refused."""
     from ..client import default_home
     options = dict(options or {})
     home = Path(options.pop('home', None) or default_home()).expanduser().resolve()
@@ -754,16 +785,18 @@ def launch(case, output_dir=None, executor=None, options=None, approval=None, *,
                              for path in (options.pop('evaluator_password_file', None), options.pop('renode', None)))
     budget, request_id = options.pop('budget_seconds', 10800), options.pop('request_id', None)
     chosen = options.pop('effects', list(effects))
+    # A bound device's binding is the operator's, for the configurator's run; the harness never opens it.
+    binding = options.pop('binding', None)
     case_options = {key: options.pop(key) for key in ('scenario_id', 'case_seed', 'ghidra_home', 'java_home') if key in options}
     if options:
-        raise ValueError('Unsupported options for an emulated benchmark trial: ' + ', '.join(sorted(options)))
+        raise ValueError('Unsupported options for a benchmark trial: ' + ', '.join(sorted(options)))
     if request_id is not None and (not isinstance(request_id, str) or not request_id.strip()):
         raise ValueError('request_id must be a nonblank string')
     trial_id = 'trial-' + uuid.uuid4().hex[:16]
     request = {'trial_id': trial_id, 'home': str(home), 'autostart': autostart, 'goal': GOAL, 'case': case,
                'executor': executor or 'codex', 'budget_seconds': budget, 'effects': chosen, 'case_options': case_options,
                'request_id': request_id, 'output_dir': str(Path(output_dir).resolve()) if output_dir else None,
-               'scoped_tool_approval': approval}
+               'scoped_tool_approval': approval, 'binding': binding}
     if request_id is not None:
         held = _claim(bench, request_id, trial_id, {key: request[key] for key in IDENTITY})
         if held is not None:
@@ -800,7 +833,8 @@ def _spawn(directory, arguments, payload):
 
 
 # What makes two launches the same request; never a password file or emulator path.
-IDENTITY = ('home', 'case', 'executor', 'budget_seconds', 'effects', 'case_options', 'output_dir', 'scoped_tool_approval')
+IDENTITY = ('home', 'case', 'executor', 'budget_seconds', 'effects', 'case_options', 'output_dir', 'scoped_tool_approval',
+            'binding')
 SUITE_IDENTITY = ('home', 'manifest', 'executor', 'options')
 
 
@@ -972,17 +1006,16 @@ def _refused(suite_dir):
 def run_suite(suite_dir, request, *, call=None, stop=None):
     """One bench harness run of a suite. It starts the suite on the configurator (or resumes a stopped one, given its
     `suite_id`) under a fresh random token, of which the configurator keeps only the sha256, and then works through the
-    suite one slot at a time: reserve the slot, run its trial (an emulated child on a device this harness provides,
-    graded once after its run; a legacy child graded inside its run), and have the configurator settle the slot from the
-    child's status and recorded evaluation, which it reads itself. It stops once the configurator reports the suite
-    complete, stopped or blocked, and lets go of it; a harness that stops while the suite runs leaves it blocked for a
-    resume. Password file and emulator paths are never fields of suite.json or the suite tables, and no emulated child's
-    run receives them; a legacy child's run gets its evaluator options from this harness (see the module docstring). The
-    reason a failure records in suite.json (written for this user only, in the bench home) quotes the error met, which
-    may name either path. The configurator learns of a failure only which trial failed and where this record is. An
-    approved child budget extension in `request` goes to the stopped child this run continues, and to no other. The
-    harness holds a lock file in `suite_dir` for as long as it runs, by which the configurator tells that it still
-    runs (its process id alone may come to name another process)."""
+    suite one slot at a time: reserve the slot, run its trial (a child on a device this harness provides, graded once
+    after its run), and have the configurator settle the slot from the child's status and recorded evaluation, which it
+    reads itself. It stops once the configurator reports the suite complete, stopped or blocked, and lets go of it; a
+    harness that stops while the suite runs leaves it blocked for a resume. Password file and emulator paths are never
+    fields of suite.json or the suite tables, and no child's run receives them. The reason a failure records in
+    suite.json (written for this user only, in the bench home) quotes the error met, which may name either path. The
+    configurator learns of a failure only which trial failed and where this record is. An approved child budget
+    extension in `request` goes to the stopped child this run continues, and to no other. The harness holds a lock file
+    in `suite_dir` for as long as it runs, by which the configurator tells that it still runs (its process id alone may
+    come to name another process)."""
     from ..client import hold_process_lock
     suite_dir = Path(suite_dir)
     suite_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1076,24 +1109,11 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
     (`launch(params)`), which starts and attaches it only while the suite runs. A slot whose child exists continues it:
     one still running is waited for, a completed one awaiting its grade is evaluated again (never a final the
     evaluator's draft holds), and a stopped one with nothing uncertain gets a device anew and resumes through its suite
-    (`resume_run(params)`), with the approved child budget `extension` if any. A legacy child is graded inside its run;
-    its evaluator options, if any, are the harness's to give. Whether the child is graded after its run is the frozen
-    case pin's say."""
+    (`resume_run(params)`), with the approved child budget `extension` if any. Every child, legacy tq9 included, is
+    graded once after its run."""
     case, run_id = slot['case'], slot['run_id']
     extension = extension or {}
     budget = float((child or {}).get('budget_seconds') or 10800)
-    if ((child or {}).get('case_pin') or {}).get('manifest', {}).get('schema') != 'benchmark-case/2':
-        if run_id is None:
-            params = json.loads(json.dumps(child))
-            if passwords.get(case):
-                params['case_options']['evaluator_password_file'] = passwords[case]
-            if renode:
-                params['case_options']['renode'] = renode
-            run_id = _expect(launch(params), 'The configurator refused the child')['run_id']
-        status = _wait(configurator, run_id, time.monotonic() + budget + 600, threading.Event(), heartbeat, stop)
-        if 'harness_stopped' in status:
-            raise ValueError('The bench harness stopped waiting for child ' + run_id + ': ' + status['harness_stopped'])
-        return
     def password():
         # Only providing, grading or continuing a device needs the case's password file: a child whose verdict is
         # recorded, or whose effect is uncertain, is left to the configurator's settlement without one.

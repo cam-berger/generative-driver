@@ -309,8 +309,9 @@ def report_run(run_id, home=None, output=None, *, autostart=True):
             'case_metadata': 'Case manifest and input hashes captured before execution.'}
     report["evaluator_verdicts"] = result.get("evaluator_verdicts", [])
     from .configurator import PROTOCOL
-    if snapshot and manifest.get('schema') == 'benchmark-case/2' and (result.get('progress') or {}).get('protocol') == PROTOCOL:
-        # An assistive run is graded once, after it: its report is its recorded verdict, and no stage evaluation exists.
+    if snapshot and (result.get('progress') or {}).get('protocol') == PROTOCOL:
+        # An assistive benchmark run, of any case, is graded once, after it: its report is its recorded verdict, and no
+        # stage evaluation exists.
         from .benchmark_support.evidence import public_v3_report
         report.update(progress=result['progress'], outcome_category=result.get('outcome_category'),
                       equivalence_status=_awaiting(result, events))

@@ -39,6 +39,27 @@ def replies():
         name:{'steps':[[reply]]} for name,reply in [('identify','DEMO-42'),('measure','T:20'),('arm','OK'),('set_duty','OK'),('disarm','OK')]}}
 
 
+# Toy register addresses of the legacy tq9 PWM timer, as a toy legacy truth names them (`legacy_truth`).
+REGISTERS = {0x40000034: 'compare', 0x4000002c: 'reload'}
+
+
+def legacy_truth(**changes):
+    """A toy legacy tq9 truth: emulator sources, the monitor's register map, the reuse goal and the temperature check.
+    Its sentinel never belongs in anything a stage, worker or configurator record holds."""
+    return {'source_files': {'BME280Bench.cs': '// toy sensor model'}, 'renode_setup': '# toy setup',
+            'monitor': {'pwm_compare': 0x40000034, 'pwm_reload': 0x4000002c},
+            'reuse_goal': {'fraction': .37, 'final_fraction': 0, 'tolerance': .005},
+            'checks': [{'id': 'temperature', 'expected': 20, 'absolute_tolerance': .5}],
+            'private_sentinel': 'LEGACY EVALUATOR SENTINEL', **changes}
+
+
+def legacy_capabilities():
+    """A legacy tq9 capability mapping of model(): each task names its operation, parameters and output."""
+    return {'temperature': {'operation': 'measure', 'parameters': {}, 'output': 'temperature'},
+            'arm': {'operation': 'arm', 'parameters': {}}, 'set_duty': {'operation': 'set_duty', 'parameters': {'duty': 650}},
+            'disarm': {'operation': 'disarm', 'parameters': {}}}
+
+
 class Silicon:
     def __init__(self, image):
         self.temperature, self.duty, self.armed = 20, 0, False
@@ -56,6 +77,10 @@ class Silicon:
                     if not owner.running:
                         owner.paused_requests.append(command)
                         return
+                    gate=getattr(owner,'gate',None)
+                    if command=='T' and gate:
+                        # A test holds the reply: (entered, release) events.
+                        gate[0].set();gate[1].wait(5)
                     if command=='ID?': reply='DEMO-42'
                     elif command=='T' and getattr(owner,'broken_measure',False):reply='BROKEN'
                     elif command=='T': reply='T:'+str(42 if getattr(owner,'wrong_hidden',False) and owner.temperature == -7 else owner.temperature)
@@ -76,6 +101,10 @@ class Silicon:
                 if line=='reset': owner.duty=0;owner.armed=False
                 if line.startswith('temp '): owner.temperature=int(line.split()[1])
                 value=getattr(owner,'monitor_error',None) or {'compare':owner.duty,'reload':999,'temperature':owner.temperature}.get(line,'')
+                if line.startswith('sysbus ReadDoubleWord ') and not getattr(owner,'monitor_error',None):
+                    # The legacy recipe reads the PWM timer's registers by address, as Renode's monitor does.
+                    register=REGISTERS.get(int(line.split()[-1],16))
+                    value=hex({'compare':owner.duty,'reload':999}[register]) if register else ''
                 self.wfile.write((line+'\r\n'+str(value)+'\r\n(device) ').encode());self.wfile.flush()
         class Server(socketserver.ThreadingTCPServer):
             allow_reuse_address=True

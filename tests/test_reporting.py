@@ -179,10 +179,15 @@ class ReportTests(unittest.TestCase):
                     self.assertEqual(report['snapshot_sha256'], saved['snapshot_sha256'])
                     self.assertEqual(report['toolchain_revision'], saved['executed']['toolchain_revision'])
                     self.assertEqual(report['evaluator_revision'], saved['executed']['evaluator_revision'])
-                    self.assertEqual(report['case_pin'], saved['case_pin'])
+                    # An assistive legacy run's report is benchmark-report/3: its pin is the snapshot's, public fields only.
+                    from generative_driver.benchmark_support.evidence import public_pin
+                    self.assertEqual((report['schema'], report['protocol']), ('benchmark-report/3', 'assistive/1'))
+                    self.assertEqual(report['case_pin'], public_pin(saved['case_pin']))
                     self.assertEqual(report['scenario_id'], 'original')
                     self.assertEqual(report['case_seed'], 0)
-                    self.assertNotIn('exporting installation', report['provenance_meaning']['toolchain_revision'])
+                    # Its executed identity is the snapshot's, never the exporting installation's.
+                    self.assertEqual(report['executed']['toolchain_revision'], saved['executed']['toolchain_revision'])
+                    self.assertNotIn('provenance_meaning', report)
                 finally:
                     controller.close()
 

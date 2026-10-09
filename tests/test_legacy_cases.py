@@ -158,6 +158,10 @@ class LegacyTrialTests(unittest.TestCase):
         from generative_driver.benchmark_support.truth import unlock
         record, result = self.trial()
         self.assertEqual(record['status'], 'evaluated', record)
+        # The configurator validates the assigned model on its own copy; the probe worker gets no validator that may
+        # write beside the model it checks.
+        assigned = [e['data'] for e in self.controller.call('events', {'run_id': record['run_id']})['events'] if e['kind'] == 'stage.assigned']
+        self.assertNotIn('model_validate', next(a for a in assigned if a['stage'] == 'probe')['allowed_tools'])
         equivalence = result['equivalence']
         self.assertEqual(record['equivalence'], equivalence)
         self.assertEqual((equivalence['status'], equivalence['equivalent'], equivalence['basis'], equivalence['method'],

@@ -129,7 +129,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
             'to interpretation.')
         return {'objective': objective, 'inputs': [str(ws/'model')],
                 'context': {'model_dir': str(ws/'model'), 'capabilities_output': str(ws/'capabilities.json')},
-                'allowed_tools': ['interface_describe', 'interface_execute', 'probe_run', 'probe_diff', 'model_validate'],
+                'allowed_tools': ['interface_describe', 'interface_execute', 'probe_run', 'probe_diff'],
                 'binding': adapted['binding'], 'effects': ['write', 'actuate']}
     raise ValueError('Benchmark stage is not implemented yet: ' + stage)
 

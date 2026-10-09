@@ -44,7 +44,7 @@ class GroundEvidenceTests(unittest.TestCase):
                 options={'device': {'session_id': 'provided', 'binding': {'host': '127.0.0.1', 'port': 1}}})
             ws = root/'worker'
             evidence = json.loads((ws/'ground-evidence/device-observations.json').read_text())
-            self.assertEqual(sorted(prepared['allowed_tools']), ['interface_execute', 'model_validate', 'probe_diff', 'probe_run'])
+            self.assertEqual(sorted(prepared['allowed_tools']), ['interface_execute', 'probe_diff', 'probe_run'])
             self.assertEqual(prepared['binding'], {'host': '127.0.0.1', 'port': 1})
             self.assertEqual((ws/'model/model.json').read_bytes(), model.read_bytes())
             self.assertEqual((ws/'model/adaptation.json').read_bytes(), adaptation.read_bytes())

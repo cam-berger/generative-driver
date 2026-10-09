@@ -2,6 +2,12 @@
 
 All workflows end at acquire, interpret, probe, ground, emit, reuse. Scripted tests, installation replay, native reference qualification, model execution and physical observations retain separate labels.
 
+## Assistive protocol — 2026-10-08
+
+New runs follow `assistive/1` ([design amendment](design.md#assistive-protocol-amendment--2026-10-07)): stages hand off with notes, only safety, integrity, operator and host faults stop a run, device differences drive repair and each run records one equivalence verdict. For benchmarks a bench harness holds the evaluator password, owns the emulator and grades the frozen driver once after the run; the configurator holds no password, recipe or truth. Workers see instrument readings of the emulated device as device evidence. Workers are not read-isolated until a real sandbox exists; separation from the answer keys is password-based.
+
+Its results are a new series. The results below, the 2/3 trial included, keep their gated meaning and are not compared with it. This protocol changes the evaluator implementation, so the evaluator identities and calibrations recorded below describe their own revisions only; the version 5 calibration was already stale at `52eb018`. A fresh native calibration by the password holder must precede the nine-trial end test, which also needs explicit authorization for an actual model run. Sealed evidence of an earlier revision regrades only from a preserved checkout of that revision. So far only scripted contract tests exercise this protocol: no model trial, native calibration, Renode session or physical operation has run under it.
+
 ## PR #5 pipeline and dashboard integration — 2026-10-06
 
 The user authorized combining pipeline branch `359f5be` with dashboard branch `ca7599b` in [PR #5](https://github.com/cam-berger/generative-driver/pull/5), including all previous results despite the unmet original 3/3 publication condition. The original model trial remains **2/3**: TQ9 and sensor completed fresh reuse and final grading; store remains blocked with unresolved effect and final behavior not reached. No new model or native reference trial ran for this integration.

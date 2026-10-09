@@ -1,6 +1,8 @@
 # Benchmark review and growth handoff — 2026-10-06
 
-The workflow is acquire, interpret, probe, ground, emit, reuse. All six gates, a fresh agent's package-only mission and independent final behavior are required for acceptance. The current research core has three original firmware families and a nine-slot default suite; the model study has not run.
+The workflow is acquire, interpret, probe, ground, emit, reuse. Under the gated protocol of the results below, all six gates, a fresh agent's package-only mission and independent final behavior were required for acceptance. The current research core has three original firmware families and a nine-slot default suite; the model study has not run.
+
+Since 2026-10-07 new runs follow `assistive/1` ([design amendment](../design.md#assistive-protocol-amendment--2026-10-07)): no stage gates a run, the device's differences from the model drive repair, and each run ends with one equivalence verdict, which for benchmarks the bench harness grades once after the run. Assistive results are a new series; the gated results below keep their meaning and are not compared with it. Before its nine-trial end test, the password holder needs a fresh native calibration, and the actual model run needs explicit authorization.
 
 Current PR branch: `feat/run-dashboard`, [PR #5](https://github.com/cam-berger/generative-driver/pull/5), incorporating `fix/pipeline-discovery-repair` at `359f5be` alongside the dashboard. The latest [transaction/recovery trial](../research/2026-10-06-transaction-recovery-results.md), frozen at `272c1b1`, completes **2/3** with `gpt-6.1-sol`, medium reasoning. TQ9 and sensor pass fresh reuse and independent final grading. Store stops during its second revised probe on an intentional rejected commit, with its repair budget already exhausted. No extra trials ran, and the original 3/3 publication condition was not met. The user subsequently authorized publishing the fixes and all results in PR #5 while preserving that partial outcome; [the trial index](transaction-recovery-trial-verification.json) retains metrics and evidence identities.
 
@@ -23,6 +25,8 @@ The subsequent three-family model trial reused that exact tested installation an
 The combined PR passes 471 source/installed tests per environment with both archive gates enabled and zero skips. Browser contracts, both installed replays and authenticated version 5 admissions pass; [integration verification](../verification.md#pr-5-pipeline-and-dashboard-integration--2026-10-06) records the distinct software evidence. No additional model trial ran. Current platform checks are on PR #5.
 
 ## Next work
+
+Under `assistive/1` the first step is that fresh native calibration and then the nine-trial end test; the items below are the gated series' follow-up.
 
 1. Preserve this 2/3 trial, the earlier three-family context experiment and unchanged store repeat. The earlier experiment's and repeat's version 3 probe/final passes retain their original coverage and do not become acceptance under version 5. The subsequent explicit authorization permits publication in PR #5; it does not turn the trial into a 3/3 pass.
 2. Reproduce the intentional negative-probe stop through the existing runtime, evaluator and configurator interfaces. Define how independently verified rejection differs from a model discrepancy while keeping candidate-controlled claims insufficient, uncertain writes unreplayed, and repair budgets bounded. Diagnose before changing the guard or adding retries.

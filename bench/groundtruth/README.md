@@ -74,7 +74,7 @@ The explicitly selected native test gate is `python -m unittest discover -s test
 
 ## Offline scoring and evidence
 
-V2 runs produce encrypted sidecars with the frozen execution snapshot, accepted artifact identities, evaluator action/observation records, six accepted stage gates and final package grades. Preserve accepted artifacts with the sidecar. Offline scoring verifies their bytes and recomputes grades without worker inference or device access:
+An `assistive/1` run's bench harness seals `benchmark-run-evidence/2` as `run-evidence.enc` in its trial directory: the frozen execution snapshot, every accepted artifact and notes hash, the single final grade with its evaluator records, and the device's recovery receipts. Earlier gated V2 sidecars (`/1`) hold six accepted stage gates and final package grades instead. Preserve accepted artifacts with the sidecar. Scoring needs the evaluator implementation that sealed the evidence; regrade an earlier revision's evidence from a preserved checkout of that revision. Offline scoring verifies their bytes and recomputes grades without worker inference or device access:
 
 ```sh
 python -m generative_driver benchmark score "reports/trial.json" --evidence "/private/evaluator/run-evidence.enc" --password-file "/private/evaluator/tq9-v2.password"

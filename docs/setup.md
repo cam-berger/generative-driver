@@ -65,7 +65,7 @@ Benchmark suites use this same configurator. Save the `suite_id` from `benchmark
 
 ## Developer command line
 
-`python -m generative_driver tools` lists the installed tool catalog. Use `tool NAME --arguments arguments.json` to execute one tool with explicit paths and bindings. These direct developer calls are separate from a managed workflow; use the configurator when ownership and checked stage progression are required.
+`python -m generative_driver tools` lists the installed tool catalog. Use `tool NAME --arguments arguments.json` to execute one tool with explicit paths and bindings. These direct developer calls are separate from a managed workflow; use the configurator when ownership and durable stage handoffs with notes are required.
 
 Start a managed run with `run --spec run.json`. The JSON contains `goal`, `executor`, `inputs`, `binding`, `effects`, and `budget_seconds`; `request_id` makes a retried start idempotent. Follow it with `status RUN_ID`, `events RUN_ID --after CURSOR`, `result RUN_ID`, `cancel RUN_ID`, or `resume RUN_ID`. Use `respond RUN_ID --observation observation.json` for a requested independently sourced observation. `--home DIRECTORY` precedes the command when selecting a separate state directory.
 

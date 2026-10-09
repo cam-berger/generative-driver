@@ -28,7 +28,7 @@ The page reports disconnection and reconnects when the service becomes reachable
 
 ## Read the status
 
-An accepted stage has a checked handoff from the configurator. A finished worker shows “checking” until its handoff is accepted. A repair returns progress to the current revision; superseded stages cease to count as accepted. Blockers and unresolved device effects remain visible.
+Every stage hands off its artifacts with notes: the worker's checks, the configurator's truth-free checks and open questions. The page shows each stage's latest notes. A failed check is recorded in the notes, not used as a gate: the stage still hands off, and a device difference or a model the configurator's validation rejects returns the run to interpretation as a model repair within the repair budget. A stage counts as accepted once its handoff is recorded; a finished worker shows “checking” while the configurator checks and records its handoff. The final equivalence verdict appears with its basis once recorded. A repair returns progress to the current revision; superseded stages cease to count as accepted. Blockers and unresolved device effects remain visible.
 
 The run log retains the latest 200 configurator events. Uncheck “Follow” to read earlier entries without automatic scrolling. Agent activity shows the latest 12 progress messages and command/tool status entries from the current worker. Full command arguments, outputs and evaluator payloads stay in their original run artifacts.
 

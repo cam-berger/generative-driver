@@ -368,6 +368,52 @@ class ProvidedRunTests(unittest.TestCase):
         self.assertEqual(len(second.peers), 2)
         self.assertEqual([peer.device_commands for peer in second.peers], [[], []])
 
+    def awaiting(self, status='running', next_stage=None, uncertain=0):
+        """The run as fresh reuse's handoff left it: `next_stage` 'finalize' after the commit, or None with the frozen
+        driver awaiting its grade once finalize recorded that."""
+        from generative_driver.configurator import _json
+        with self.controller._db() as db:
+            progress = {**self.controller._workflow_progress(self.run_id, db), 'next_stage': next_stage,
+                        **({'equivalence': 'pending'} if next_stage is None else {})}
+            db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)', (self.run_id, _json(progress)))
+            db.execute('UPDATE runs SET status=?,uncertain=?,stage=? WHERE id=?', (status, uncertain, 'reuse', self.run_id))
+
+    def test_an_uncertain_effect_on_a_run_awaiting_its_grade_blocks_it_until_reconciled_and_resumed(self):
+        # Catches a run completed awaiting its grade with an effect still uncertain (a call marked after fresh reuse's
+        # observation): record_evaluation refuses an uncertain run and respond and resume refuse a completed one, so
+        # nothing could grade it and its suite was blocked for good.
+        from generative_driver.configurator import PENDING
+        self.awaiting('completed', uncertain=1)
+        self.controller._settle_release(self.run_id, [])
+        status = self.controller.call('status', self.run)
+        self.assertEqual((status['status'], status['outcome_category'], status['uncertain_effect']), ('blocked', 'safety', True))
+        self.controller.call('respond', {**self.run, 'message': 'checked the device', 'effect_resolution': 'confirmed_safe'})
+        # Finalize contacts no device and runs no stage: neither the spent budget nor the released device matters.
+        with self.controller._db() as db:
+            db.execute('UPDATE runs SET created=? WHERE id=?', (time.time() - 86400, self.run_id))
+        self.controller.call('resume', self.run)
+        result = wait_stopped(self.controller, self.run)
+        self.assertEqual((result['status'], result['reason'], result['progress']['equivalence']), ('completed', PENDING, 'pending'))
+        self.assertEqual(len(self.events('stage.assigned')), 1)
+        self.assertEqual([peer.device_commands for peer in self.first.peers], [[]])
+
+    def test_a_restart_after_fresh_reuse_completes_a_benchmark_run_awaiting_its_grade(self):
+        # Catches a benchmark run stopped by a restart with only finalize left coming back blocked and uncertain from
+        # its write grants (finalize dispatches nothing), so its harness recorded it stopped and nothing graded it.
+        from generative_driver.configurator import Controller, PENDING
+        for next_stage, uncertain in (('finalize', 0), (None, 0), ('finalize', 1)):
+            with self.subTest(next_stage=next_stage, uncertain=uncertain):
+                self.awaiting('running', next_stage, uncertain)
+                self.controller.close()
+                self.controller = Controller(self.root / 'home')
+                status = self.controller.call('status', self.run)
+                if uncertain:
+                    self.assertEqual((status['status'], status['uncertain_effect']), ('blocked', True))
+                    continue
+                result = self.result()
+                self.assertEqual((status['status'], status['reason'], status['uncertain_effect']), ('completed', PENDING, False))
+                self.assertEqual((result['progress']['next_stage'], result['progress']['equivalence']), (None, 'pending'))
+
     def test_a_crash_between_the_replacement_and_its_commit_stays_uncertain_on_restart(self):
         from generative_driver.configurator import Controller
         second = Device(self, self.image, self.root / 'second')

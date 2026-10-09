@@ -593,6 +593,8 @@ FINAL = ':final'
 REPLAYED, SUPPLIED = 'replay of the recorded device exchanges', 'replay of supplied exchanges, not recorded from the device'
 SEEDED = 'seeded package-versus-model check'
 UNCERTAIN_AFTER_VERDICT = 'Outstanding effect is uncertain after the final verdict; operator reconciliation is required'
+UNCERTAIN_AWAITING = ('Outstanding effect is uncertain after fresh reuse; reconcile it, then resume, and the frozen driver '
+                      'awaits its grade')
 
 
 def _final_verdict(db, run_id):
@@ -1143,9 +1145,18 @@ class Controller:
                 except ValueError as error:
                     reason = str(error)
                 else:
-                    if not spec.get('case') and progress['next_stage'] == 'finalize':
+                    if progress['next_stage'] in ('finalize', None):
                         # Reuse was accepted and finalize dispatches nothing: only a recorded pending effect is outstanding.
                         uncertain = row['uncertain']
+                        if spec.get('case') and not uncertain:
+                            # A benchmark run's finalize only records that its frozen driver awaits the grade after the run.
+                            db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)', (row['id'], _json(
+                                {**progress, 'next_stage': None, 'equivalence': 'pending'})))
+                            db.execute("UPDATE runs SET status='completed',outcome_category='completed',reason=?,updated=? WHERE id=?",
+                                       (PENDING, time.time(), row['id']))
+                            db.execute("UPDATE assignments SET state='interrupted' WHERE run_id=? AND state='active'", (row['id'],))
+                            self._event(row['id'], 'run.recovered', {'awaiting_evaluation': True, 'uncertain_effect': False}, db)
+                            continue
                 db.execute("UPDATE runs SET status='blocked',reason=?,uncertain=?,updated=? WHERE id=?",
                            (reason, int(uncertain),time.time(),row['id']))
                 db.execute("UPDATE assignments SET state='interrupted' WHERE run_id=? AND state='active'", (row['id'],))
@@ -1351,9 +1362,10 @@ class Controller:
                 progress = self._workflow_progress(run_id)
                 original_spec=json.loads(row['spec'])
                 spec = dict(original_spec)
-                # A generic run stopped before its verdict only computes it: finalize reads the configurator's records,
-                # runs no stage and contacts no device, so neither the budget nor the device lease applies.
-                finalizing = not spec.get('case') and progress.get('next_stage') == 'finalize'
+                # A run stopped after fresh reuse only finalizes: a generic run computes its verdict from the
+                # configurator's records and a benchmark run records that its driver awaits the grade. Neither runs a
+                # stage or contacts a device, so neither the budget nor the device lease applies.
+                finalizing = progress.get('next_stage') in ('finalize', None)
                 try:
                     with _integrity_checked():
                         self._verify_snapshot(spec, self.home / 'runs' / run_id)
@@ -2144,6 +2156,12 @@ class Controller:
                     self._event(run_id, 'worker.finished', {'stage':stage, 'runtime':result['runtime'], 'status':result['status'], 'usage':result.get('usage')}, db)
                 if cancel.is_set():
                     return
+                # The stage is observed and committed under the run's operation lock: a call of this worker still in the
+                # gateway (it gave up waiting, or its process group was killed) finishes first, and one queued behind it
+                # finds the assignment closed.
+                with self._lock:
+                    operation_lock = self._operations.setdefault(run_id, threading.RLock())
+                operation_lock.acquire()
                 report = result.get('report') if isinstance(result.get('report'), dict) else {}
                 checked, recovery, settled = {}, None, False
                 def abandon(reason):
@@ -2211,6 +2229,7 @@ class Controller:
                     return
                 finally:
                     abandon('The stage ended before the emulator recovery committed')
+                    operation_lock.release()
                 accepted.append(handoff)
                 if outcome.kind == 'revise':
                     revision, queue = progress['revision'], list(STAGES[1:])
@@ -2323,11 +2342,16 @@ class Controller:
     def _settle_release(self, run_id, failures):
         """Before a final verdict a release that failed (`cleanup.failed`: giving up what the run holds raised) retains
         the lease as uncertain. After the verdict each failure is an event; the verdict and the completed status stand
-        unless an effect is uncertain, which blocks for safety. This relies on the configurator owning no device resource
-        once a verdict exists: generic runs own nothing, and the bench harness, not the configurator, stops and seals a
-        provided device."""
+        unless an effect is uncertain, which blocks for safety. So does an uncertain effect on a run that completed
+        awaiting its independent grade, which an uncertain run cannot record. This relies on the configurator owning no
+        device resource once a verdict exists: generic runs own nothing, and the bench harness, not the configurator,
+        stops and seals a provided device."""
         with self._db() as db:
             final = _final_verdict(db, run_id)
+            saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run_id,)).fetchone()
+        awaiting = final is None and saved is not None and json.loads(saved['payload']).get('equivalence') == 'pending'
+        if any(kind != 'device.release_failed' for kind, _, _ in failures):
+            awaiting = False  # The failed cleanup blocks the run for the host below.
         for kind, reason, detail in failures:
             if kind == 'device.release_failed':
                 # The harness still owns the device and stops it after the run; the run's status stands.
@@ -2343,8 +2367,10 @@ class Controller:
                 if final is None:
                     self._state(run_id,'blocked','Benchmark cleanup failed; operator reconciliation required',
                                 outcome_category='host')
-        if final is not None and self._row(run_id)['uncertain']:
-            self._state(run_id, 'blocked', UNCERTAIN_AFTER_VERDICT, outcome_category='safety')
+        if (final is not None or awaiting) and self._row(run_id)['uncertain']:
+            # The operator's reconciliation and resume complete a run awaiting its grade again.
+            self._state(run_id, 'blocked', UNCERTAIN_AFTER_VERDICT if final is not None else UNCERTAIN_AWAITING,
+                        outcome_category='safety')
 
     @contextmanager
     def _active_operation(self,run_id):
@@ -3286,8 +3312,14 @@ class Controller:
         # cannot turn an outstanding physical effect into an automatic retry.
         with self._lock:
             with self._db() as db:
-                active = db.execute('SELECT status,cancelled,uncertain FROM runs WHERE id=?',(run['id'],)).fetchone()
-                if active['cancelled'] or active['status'] != 'running':
+                active = db.execute('SELECT status,stage,cancelled,uncertain FROM runs WHERE id=?',(run['id'],)).fetchone()
+                # The assignment is checked again where the dispatch is marked: one whose stage was accepted, superseded
+                # or left since the call arrived dispatches nothing, so no call runs outside the stage that observes it.
+                current = db.execute('SELECT state FROM assignments WHERE id=? AND run_id=?', (assignment['id'], run['id'])).fetchone()
+                saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run['id'],)).fetchone()
+                if (active['cancelled'] or active['status'] != 'running' or not current or current['state'] != 'active'
+                        or assignment['stage'] != active['stage']
+                        or assignment.get('revision', 0) != (json.loads(saved['payload']) if saved else {}).get('revision', 0)):
                     raise ValueError('Worker assignment became inactive before dispatch')
                 if effectful and active['uncertain']:
                     raise ValueError('Outstanding effect is uncertain; another effectful operation is refused until operator reconciliation')

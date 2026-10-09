@@ -667,7 +667,9 @@ def resume(trial_dir, *, password_file, renode=None, call=None):
     password that does not unlock the trial's evaluation token is refused before anything is graded, sealed or posted.
     A trial on the operator's bound device, of which the harness held nothing, is completed too when its harness
     stopped following the run (its budget's deadline passed, it was stopped, or it died) and the operator has since
-    completed or cancelled the run; while the run is still stopped, the operator resumes it first."""
+    completed or cancelled the run; while the run is still stopped, the operator resumes it first. So is a trial
+    recorded `run-stopped` whose run has since completed awaiting its grade (stopped after fresh reuse, by a restart
+    say, and resumed): grading uses a fresh emulator, so the confirmed stop of the trial's device is all it needs."""
     from ..client import call as client_call
     from . import evaluator
     trial_dir = Path(trial_dir)
@@ -684,7 +686,7 @@ def resume(trial_dir, *, password_file, renode=None, call=None):
             raise ValueError('The trial\'s device stop was not confirmed; reconcile its device before evaluating')
         # A bound-device trial whose harness stopped following its run: the operator may have completed the run since.
         followed = record['device_stop'].get('held') is False and record.get('status') in ('run-stopped', 'running')
-        if record.get('status') not in RESUMABLE and not followed:
+        if record.get('status') not in (*RESUMABLE, 'run-stopped') and not followed:
             raise ValueError('The trial awaits no evaluation: ' + str(record.get('status')))
         # Only the password the trial ran with unlocks its token: under any other, nothing is graded, sealed or posted.
         token = evaluation_token(trial_dir, password_file, record['trial_id'])
@@ -697,6 +699,10 @@ def resume(trial_dir, *, password_file, renode=None, call=None):
         if followed and result.get('status') not in ('completed', 'cancelled'):
             raise ValueError('The trial\'s run has not completed (' + str(result.get('status')) + '): its operator answers '
                              'and resumes the run on the bound device, and the trial is evaluated once it has completed')
+        if (record.get('status') == 'run-stopped' and not followed
+                and (result.get('status') != 'completed' or (result.get('progress') or {}).get('equivalence') != 'pending')):
+            raise ValueError('The trial awaits no evaluation: run-stopped, and its run (' + str(result.get('status'))
+                             + ') does not await its grade')
         if renode is None and evaluator.needs_grading(trial_dir, result, password_file=password_file):
             raise ValueError('The trial\'s frozen driver is not graded yet: grading starts a fresh emulator, so pass its '
                              'executable (--renode)')

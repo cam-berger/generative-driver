@@ -648,7 +648,7 @@ class HarnessGradingTests(PendingRunFixture):
         for case, change, held, message in (
                 ('harness running', {'finished': None, 'pid': os.getpid()}, None, 'still running'),
                 ('stop unconfirmed', {'device_stop': {'stopped': False, 'confirmed': False}}, None, 'not confirmed'),
-                ('not resumable', {'status': 'run-stopped'}, None, 'awaits no evaluation'),
+                ('not resumable', {'status': 'failed'}, None, 'awaits no evaluation'),
                 ('lock held', {}, str(os.getpid()) + ' ' + 'a' * 32, 'Another evaluation'),
                 ('lock being written', {}, '', 'Another evaluation')):
             with self.subTest(case=case):
@@ -681,6 +681,30 @@ class HarnessGradingTests(PendingRunFixture):
         self.assertFalse(lock.exists())
         self.assertEqual(sorted(p.name for p in trial.iterdir() if 'lock' in p.name), [])
         self.assertEqual(len(self.verdicts({'run_id': record['run_id']})), 1)
+
+    def test_a_trial_recorded_stopped_whose_run_completed_since_awaiting_its_grade_is_graded_by_resume(self):
+        # Catches a trial its harness recorded run-stopped (the run stopped after fresh reuse, by a restart, say) whose
+        # run its operator has since completed awaiting the grade: no resume graded it, so the trial never got a verdict
+        # and its suite stayed blocked. Grading needs only the confirmed stop: it uses a fresh emulator.
+        from generative_driver.benchmark_support import evaluator, harness
+        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
+                patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
+            trial, record = self.trial()
+        run = {'run_id': record['run_id']}
+        stopped = {**record, 'status': 'run-stopped'}
+        harness._private(trial / 'trial.json', stopped)
+        with self.controller._db() as db:
+            db.execute("UPDATE runs SET status='blocked' WHERE id=?", (run['run_id'],))
+        with patch.object(evaluator, 'grade', side_effect=AssertionError('graded')), \
+                self.assertRaisesRegex(ValueError, 'awaits no evaluation'):
+            self.resume(trial, renode='scripted-emulator')
+        self.assertEqual(harness.read_trial(trial), stopped)
+        with self.controller._db() as db:
+            db.execute("UPDATE runs SET status='completed' WHERE id=?", (run['run_id'],))
+        resumed = self.resume(trial, renode='scripted-emulator')
+        self.assertEqual((resumed['status'], resumed['sealed']), ('evaluated', True))
+        self.assertEqual(self.controller.call('status', run)['equivalence'], resumed['equivalence'])
 
     def test_a_resume_reads_the_trial_under_the_lock_and_lets_go_only_of_its_own_lock(self):
         # Catches a resume that waited for the lock and then wrote back the trial record it read before, over the one

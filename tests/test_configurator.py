@@ -2401,6 +2401,101 @@ class FinalVerdictTests(unittest.TestCase):
                     controller.close()
 
 
+class StageBoundaryTests(unittest.TestCase):
+    """One stage at a time: a gateway call dispatches only while its assignment is the run's active one, and the
+    configurator observes a stage only after every call of it has left the gateway."""
+
+    def emit_run(self, work, call_tool):
+        """A generic run whose stages are scripted except emit's real checks; `work(controller, request, call)` is the
+        emit worker, where `call(name, arguments)` sends a gateway call. Returns the stopped result and the events."""
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory) / 'home')
+            real_check = controller._check
+            def check(spec, stage, run_dir, workspace, report, accepted, assignment):
+                if stage == 'emit':
+                    return real_check(spec, stage, run_dir, workspace, report, accepted, assignment)
+                return {'ok': True, 'artifacts': [], 'checks': []}
+            def prepare(original, spec, stage, run_dir, workspace, accepted):
+                return original(spec, stage, run_dir, workspace, accepted) if stage == 'emit' else {'inputs': [], 'allowed_tools': []}
+            def staged(request):
+                if request.stage == 'emit':
+                    call = lambda name, arguments: controller.call('tool', {**gateway_identity(request), 'name': name,
+                                                                            'arguments': arguments})
+                    work(controller, request, call)
+            try:
+                with scripted_stages(controller, check=check, prepare=prepare, work=staged), \
+                        patch('generative_driver.toolkit.call_tool', side_effect=call_tool):
+                    run = controller.call('start', {'goal': 'Scripted stage boundary; no model or device',
+                                                    'executor_config': {'command': ['never-launched']}})
+                    result = wait_stopped(controller, run)
+                return result, controller.call('events', run)['events']
+            finally:
+                controller.close()
+
+    def test_a_call_whose_assignment_was_accepted_before_it_was_marked_is_refused(self):
+        # Catches a dispatch checked only on arrival: the stage's handoff committed while the call was on its way to
+        # being marked, so the call ran against a closed assignment, outside the stage that observed it.
+        from unittest.mock import patch
+        from generative_driver import configurator
+        real_digests, outcome = configurator._argument_digests, []
+        def work(controller, request, call):
+            assignment = gateway_identity(request)['assignment_id']
+            def accepted_meanwhile(arguments):
+                with controller._db() as db:
+                    db.execute("UPDATE assignments SET state='accepted' WHERE id=?", (assignment,))
+                return real_digests(arguments)
+            with patch.object(configurator, '_argument_digests', side_effect=accepted_meanwhile):
+                try:
+                    call('emit_package', {'model_dir': str(Path(request.workspace) / 'model'),
+                                          'probe': str(Path(request.workspace) / 'probe.json')})
+                except ValueError as error:
+                    outcome.append(str(error))
+            with controller._db() as db:
+                db.execute("UPDATE assignments SET state='active' WHERE id=?", (assignment,))
+        def call_tool(name, arguments):
+            raise AssertionError('dispatched ' + name)
+        result, events = self.emit_run(work, call_tool)
+        self.assertEqual(result['status'], 'completed', result)
+        self.assertEqual(len(outcome), 1)
+        self.assertIn('inactive', outcome[0])
+        self.assertFalse([e for e in events if e['kind'] == 'tool.started'])
+        self.assertEqual([e['data']['name'] for e in events if e['kind'] == 'tool.refused'], ['emit_package'])
+
+    def test_a_stage_is_observed_only_after_its_calls_in_the_gateway_have_finished(self):
+        # Catches a stage observed and accepted while a call of its worker is still in the gateway (a worker that gave
+        # up waiting on a slow call and exited, with another queued behind it): that call's effect would be missing
+        # from the stage's observation and land against a closed assignment.
+        import threading
+        slow, entered = threading.Event(), threading.Event()
+        def work(controller, request, call):
+            workspace = Path(request.workspace)
+            arguments = {'model_dir': str(workspace / 'model'), 'probe': str(workspace / 'probe.json')}
+            def attempt():
+                try:
+                    call('emit_package', arguments)
+                except ValueError:
+                    pass
+            threading.Thread(target=attempt, daemon=True).start()
+            self.assertTrue(entered.wait(5))
+            threading.Thread(target=attempt, daemon=True).start()
+            threading.Timer(.5, slow.set).start()
+        def call_tool(name, arguments):
+            if name == 'emit_package':
+                entered.set()
+                slow.wait(5)
+            return {'ok': False, '_exit': 1, 'error': 'scripted: nothing packaged'}
+        result, events = self.emit_run(work, call_tool)
+        self.assertEqual(result['status'], 'completed', result)
+        accepted = next(e['id'] for e in events if e['kind'] == 'stage.accepted' and e['data']['stage'] == 'emit')
+        emit = next(e['data']['id'] for e in events if e['kind'] == 'stage.assigned' and e['data']['stage'] == 'emit')
+        calls = [e for e in events if e['kind'] in ('tool.started', 'tool.finished', 'tool.refused')
+                 and e['data'].get('assignment_id') == emit]
+        self.assertTrue([e for e in calls if e['kind'] == 'tool.finished'])
+        self.assertTrue(all(e['id'] < accepted for e in calls if e['kind'] != 'tool.refused'), calls)
+
+
 class GenericEmitInputTests(unittest.TestCase):
     """Generic emit receives an interpreted model and a successful probe record that model wrote, from probe or ground,
     as the configurator bound each record to its writer in the handoff notes."""

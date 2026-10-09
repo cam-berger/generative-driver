@@ -18,25 +18,36 @@ REQUIRED_SCENARIOS = ('original',)
 CORE_MUTANTS = ('wrong-scale', 'constant-output', 'wrong-state')
 
 
+# The toolchain tools grading calls (probe_run, emit_package, emit_check and the interface runtime tools) and the
+# analysis wrappers calibration runs. The rest of the kit is the candidate's side.
+GRADING_TOOLCHAIN = ('__init__.py', 'core.py', 'runner.py', 'probe.py', 'emit.py', 'interface.py')
+CALIBRATION_ANALYSIS = ('resources/tools/workspace/ghidra_run.py',
+                        'resources/toolchain/skills/interpret-firmware-binary/ExportDecomp.java',
+                        'resources/toolchain/skills/interpret-firmware-binary/SeedCortexM.java')
+
+
 def calibration_identity():
-    """Explicit implementation/dependency inventory; excludes containing resources."""
+    """The grading closure a calibration qualifies: the evaluator package, the interface runtime, the package template,
+    the toolchain tools grading calls and the analysis wrappers calibration runs, with the cryptography dependency.
+    The configurator, the other toolchain stages, skills and reports are the candidate's kit: changing them never
+    voids admission, so a new kit is measured against the same qualified evaluator. Excludes containing resources."""
     import interface_runtime
     package = Path(__file__).resolve().parents[1]
+    sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
     files = {}
     roots = {'benchmark_support': package/'benchmark_support',
              'interface_runtime': Path(interface_runtime.__file__).parent,
-             'toolchain': package/'_toolchain'}
+             'template': package/'resources/toolchain/template'}
     for label, root in roots.items():
         for path in sorted(root.rglob('*.py')):
-            files[label+'/'+path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
-    for name in ('benchmark.py','configurator.py','toolkit.py','reporting.py'):
-        files[name] = hashlib.sha256((package/name).read_bytes()).hexdigest()
-    for root in (package/'resources/tools', package/'resources/toolchain/skills'):
-        for path in sorted(root.rglob('*')):
-            if path.is_file() and path.suffix in ('.py', '.java'):
-                files[path.relative_to(package).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
-    dependencies = {name: importlib.metadata.version(name) for name in ('cryptography','mcp')}
-    body = {'schema':'benchmark-evaluator-identity/1','files':files,'dependencies':dependencies}
+            files[label+'/'+path.relative_to(root).as_posix()] = sha(path)
+    for name in GRADING_TOOLCHAIN:
+        files['toolchain/'+name] = sha(package/'_toolchain'/name)
+    files['toolkit.py'] = sha(package/'toolkit.py')
+    for name in CALIBRATION_ANALYSIS:
+        files[name] = sha(package/name)
+    dependencies = {'cryptography': importlib.metadata.version('cryptography')}
+    body = {'schema':'benchmark-evaluator-identity/2','files':files,'dependencies':dependencies}
     return {**body,'sha256':canonical_digest(body)}
 
 

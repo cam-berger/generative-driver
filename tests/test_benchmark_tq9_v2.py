@@ -1562,6 +1562,22 @@ class TQ9V2Tests(unittest.TestCase):
         self.assertIn('resources/toolchain/skills/interpret-firmware-binary/ExportDecomp.java',files)
         self.assertFalse(any('/bench/cases/' in path or path.endswith('.enc') for path in files))
 
+    def test_calibration_identity_is_the_grading_closure_not_the_kit(self):
+        # A change to the candidate-side kit (configurator, stage tools, skills, reports) must not void a calibration,
+        # so a new kit is measured against the same qualified evaluator. Grading code and the runtime still are pinned.
+        from generative_driver.benchmark_support.reference_calibration import calibration_identity
+        identity = calibration_identity()
+        files = identity['files']
+        for pinned in ('benchmark_support/evaluator.py', 'benchmark_support/emulated_actions.py', 'interface_runtime/engine.py',
+                       'toolchain/emit.py', 'toolchain/probe.py', 'toolchain/interface.py', 'toolkit.py',
+                       'resources/tools/workspace/ghidra_run.py'):
+            self.assertIn(pinned, files)
+        self.assertTrue(any(path.startswith('template/') for path in files), files)
+        for kit in ('configurator.py', 'benchmark.py', 'reporting.py', 'toolchain/acquire.py', 'toolchain/interpret.py',
+                    'resources/tools/esp_image_to_elf.py', 'resources/tools/read_flash_chunked.py'):
+            self.assertNotIn(kit, files)
+        self.assertEqual(set(identity['dependencies']), {'cryptography'})
+
     def test_monitor_rejection_keeps_recipe_and_response_in_private_evidence(self):
         # TCP fixture: a worker-visible exception must not echo private monitor data.
         from tq9_workflow_fixture import Silicon

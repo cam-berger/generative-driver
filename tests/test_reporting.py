@@ -80,7 +80,12 @@ class ReportTests(unittest.TestCase):
         self.assertEqual((report["protocol"], report["equivalence"]), ("assistive/1", equivalence))
         # Self-evidence is not an independent grade.
         self.assertEqual(report["verdict"], "unscored")
-        self.assertIn("Equivalence (self-evidence): **equivalent**", markdown(report))
+        text = markdown(report)
+        self.assertIn("Equivalence (self-evidence): **equivalent**", text)
+        # Nothing graded an assistive run's stages and no evaluator grades a generic run: its Markdown shows neither an
+        # independent verdict nor a stage evaluator column, which would read as ungraded beside its self-evidence.
+        self.assertNotIn("Independent verdict", text)
+        self.assertNotIn("Evaluator |", text)
         earlier = summarize({**result, "progress": {}, "equivalence": None}, [])
         self.assertIsNone(earlier["equivalence"])
         self.assertIsNone(earlier["protocol"])

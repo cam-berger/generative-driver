@@ -180,17 +180,22 @@ def _public(value, home):
 def markdown(report):
     def show(value):
         return "unknown" if value is None else f"{value:.2f}" if isinstance(value, float) else str(value)
+    from .configurator import PROTOCOL
+    # Nothing grades an assistive run's stages, and only a benchmark run's evaluator grades its driver
+    # (benchmark-report/3): a generic assistive run has neither a stage evaluator column nor an independent verdict.
+    assistive = report.get("protocol") == PROTOCOL
+    independent = not assistive or report.get("schema") == "benchmark-report/3"
     lines = ["# Generative Driver benchmark", "",
              f"Run: `{report['run_id']}`. Execution: `{report['execution']}`.", "",
-             f"Workflow: **{report['workflow_status']}**. Independent verdict: **{report['verdict']}**.", ""]
+             f"Workflow: **{report['workflow_status']}**." +
+             (f" Independent verdict: **{report['verdict']}**." if independent else ""), ""]
     final = report.get("equivalence")
     if isinstance(final, dict):
         from .configurator import equivalence_label
         diff = "; ".join(str(d.get("reason")) for d in final.get("diff") or [] if isinstance(d, dict))
         lines += [f"Equivalence ({final.get('basis', 'unknown basis')}): **{equivalence_label(final)}**. "
                   f"Protocol: `{report.get('protocol')}`." + (f" Differences: {diff}." if diff else ""), ""]
-    # An assistive run's stages are graded by nothing: its report has no stage evaluator column.
-    graded = all("evaluator_status" in row for row in report["stages"].values())
+    graded = not assistive and all("evaluator_status" in row for row in report["stages"].values())
     lines += ["| Stage | Workflow |" + (" Evaluator |" if graded else "") + " Attempts | Worker seconds | Tool seconds | Tokens |",
               "|---|---|" + ("---|" if graded else "") + "---:|---:|---:|---:|"]
     for name, row in report["stages"].items():

@@ -62,11 +62,13 @@ class ProviderFixture(unittest.TestCase):
         self.image.write_bytes(b'synthetic image')
         self.sha = hashlib.sha256(self.image.read_bytes()).hexdigest()
         self.peers, self.tweak, Peer = [], (lambda peer, session: None), Silicon
+        self.private = []
         def start(**kwargs):
-            self.assertEqual(set(kwargs), {'renode', 'image', 'recipe'})
+            self.assertEqual(set(kwargs), {'renode', 'image', 'recipe', 'private_dir'})
             self.assertEqual(kwargs['recipe'], RECIPE)
+            self.private.append(Path(kwargs['private_dir']))
             peer = Peer(kwargs['image']); self.peers.append(peer); self.addCleanup(peer.close)
-            session = peer.session(kwargs['recipe'], self.root/('native-' + str(len(self.peers))))
+            session = peer.session(kwargs['recipe'], kwargs['private_dir'])
             session.process = Process(peer)
             self.tweak(peer, session)
             return session
@@ -89,6 +91,29 @@ class ProviderFixture(unittest.TestCase):
 
 
 class DeviceProviderTests(ProviderFixture):
+    def test_each_session_keeps_its_files_in_the_providers_private_directory_until_its_stop_is_confirmed(self):
+        # Catches sessions started without a private directory: their emulator log and rejected monitor commands (the
+        # recipe's register commands and the device's answers) stayed in the system temporary directory, readable by
+        # any process of the user, workers included, for good.
+        import os
+        provider = self.provider()
+        first = provider.start()['session_id']
+        sessions = self.root/'device/sessions'
+        self.assertEqual(self.private, [sessions/first])
+        self.assertTrue((sessions/first).is_dir())
+        if os.name == 'posix':
+            self.assertEqual((sessions/first).stat().st_mode & 0o777, 0o700)
+        # A rejected monitor command is kept, in the private journal, once its session's directory is removed.
+        (sessions/first/'monitor-errors.jsonl').write_text(json.dumps({'command': 'rejected', 'response': 'Error'}) + '\n')
+        second = provider.replace(first, ['7'], ['6'])['new_session_id']
+        self.assertEqual(self.private, [sessions/first, sessions/second])
+        self.assertFalse((sessions/first).exists()); self.assertTrue((sessions/second).is_dir())
+        self.assertEqual(provider.stop(), {'stopped': True, 'confirmed': True})
+        self.assertFalse((sessions/second).exists())
+        kept = [entry for entry in self.journal() if entry['kind'] == 'monitor_errors']
+        self.assertEqual([(entry['session_id'], entry['entries']) for entry in kept],
+                         [(first, [{'command': 'rejected', 'response': 'Error'}])])
+
     def test_provider_starts_observes_replaces_and_stops_from_the_recipe_alone(self):
         provider = self.provider()
         descriptor = provider.start()
@@ -148,10 +173,13 @@ class DeviceProviderTests(ProviderFixture):
         self.assertEqual(proof['old_startup_observation'], journal[0]['startup_observation'])
         self.assertEqual((proof['unresolved_evidence_ids'], proof['unresolved_dispatch_ids']), (['7'], ['6']))
         self.assertEqual({k: v for k, v in proof['receipt'].items()}, {k: v for k, v in receipt.items() if k != 'proof_sha256'})
-        self.assertEqual({p.name for p in (self.root/'device').iterdir()}, {'journal.jsonl'})
+        # Beside the journal, only the live session's own files: the replaced session's were removed.
+        self.assertEqual({p.name for p in (self.root/'device').iterdir()}, {'journal.jsonl', 'sessions'})
+        self.assertEqual([p.name for p in (self.root/'device/sessions').iterdir()], [receipt['new_session_id']])
         self.assertEqual(provider.stop(), {'stopped': True, 'confirmed': True})
         self.assertTrue(self.peers[1].closed)
         self.assertEqual(self.journal()[-1]['kind'], 'stopped')
+        self.assertEqual({p.name for p in (self.root/'device').iterdir()}, {'journal.jsonl'})
         with self.assertRaisesRegex(RuntimeError, 'No live device session'):
             provider.observe()
         self.assertEqual(provider.stop(), {'stopped': True, 'confirmed': True})

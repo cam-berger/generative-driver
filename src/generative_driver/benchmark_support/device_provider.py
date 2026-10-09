@@ -8,6 +8,7 @@ import copy
 import hashlib
 import json
 import math
+import shutil
 import threading
 import time
 import uuid
@@ -50,7 +51,9 @@ def _sha256(value):
 
 class DeviceProvider:
     """Owns one emulated device session at a time. `start` is the session factory (NativeSession.start by default),
-    called with renode, image and recipe only. Control calls are served one at a time."""
+    called with renode, image, recipe and the session's own private directory (`sessions/<session_id>` under the
+    provider's, mode 0700), which holds the session's files (its log, rejected monitor commands) and is removed once its
+    stop is confirmed. Control calls are served one at a time."""
 
     def __init__(self, case_id, image, recipe, renode, private_dir, *, image_sha256=None, start=None):
         if not isinstance(recipe, dict) or any(key in recipe for key in TRUTH_KEYS):
@@ -72,9 +75,36 @@ class DeviceProvider:
         if start is None:
             from .native import NativeSession
             start = NativeSession.start
-        session = start(renode=self.renode, image=self.image, recipe=copy.deepcopy(self.recipe))
-        session.info['session_id'] = uuid.uuid4().hex
+        session_id = uuid.uuid4().hex
+        private = self._session_dir(session_id)
+        private.mkdir(parents=True, mode=0o700)
+        private.chmod(0o700)
+        session = start(renode=self.renode, image=self.image, recipe=copy.deepcopy(self.recipe), private_dir=private)
+        session.info['session_id'] = session_id
         return session
+
+    def _session_dir(self, session_id):
+        return self.private_dir / 'sessions' / session_id
+
+    def _discard(self, session_id):
+        """Remove the private files of a session whose stop was confirmed. Monitor commands it rejected (the recipe's
+        commands and the device's answers) are kept in the private journal first, for diagnosis."""
+        folder = self._session_dir(session_id)
+        try:
+            lines = (folder / 'monitor-errors.jsonl').read_text(encoding='utf-8').splitlines()
+        except OSError:
+            lines = []
+        entries = []
+        for line in lines:
+            try:
+                entries.append(json.loads(line))
+            except ValueError:
+                entries.append({'unparsed': line})
+        if entries:
+            self._journal('monitor_errors', session_id=session_id, entries=entries)
+        shutil.rmtree(folder, ignore_errors=True)
+        with contextlib.suppress(OSError):
+            folder.parent.rmdir()  # Only once no session's files remain.
 
     def _journal(self, kind, **entry):
         """Append to the private device journal; recovery proofs and startup readings live only here."""
@@ -178,6 +208,7 @@ class DeviceProvider:
             if old.process.poll() is None:
                 raise RuntimeError('Old emulator stop could not be confirmed')
             self._hold(None)
+            self._discard(old_id)
             replacement = None
             try:
                 if cancelled():
@@ -208,6 +239,8 @@ class DeviceProvider:
                         if replacement.process is None or replacement.process.poll() is None:
                             # Retain handles for cleanup even when a failed replacement cannot stop.
                             self._hold(replacement)
+                        else:
+                            self._discard(replacement.info['session_id'])
                 raise
 
     def release(self, session_id):
@@ -233,4 +266,6 @@ class DeviceProvider:
             self._hold(None)
             self.running = False
             self._journal('stopped', session_id=stopped, confirmed=confirmed)
+            if confirmed:
+                self._discard(stopped)
             return {'stopped': True, 'confirmed': confirmed}

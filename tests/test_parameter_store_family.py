@@ -219,10 +219,12 @@ class ParameterStoreOracleTests(unittest.TestCase):
                         binding={}, allow_effects=[] if mode=='denied-effect' else grants,
                         transport_factory=device.factory), plan, contract,
                         Path(temp)/'evidence.json', parameter_store.observations)
-                if mode=='timeout':
-                    with self.assertRaisesRegex(RuntimeError, 'Host execution failed'): run()
-                    continue
                 rows = run()
+                if mode=='timeout':
+                    # The device still answers its monitor, so a reply that never came is graded against the
+                    # driver: it is no complete rejection, and nothing is left unscored.
+                    failed = [r for r in rows if r.get('invocation_failed')]
+                    self.assertTrue(failed and all(r['invocation_error']['fault'] == 'model' for r in failed), rows)
             with self.subTest(mode=mode):
                 self.assertEqual(validate_records(contract, rows)['verdict'], 'passed' if mode=='complete' else 'failed')
 

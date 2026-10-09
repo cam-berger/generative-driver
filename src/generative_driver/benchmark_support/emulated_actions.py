@@ -3,6 +3,22 @@ from .behavior import _check_rejection_evidence
 from .cases import _write
 
 
+# A package call's deadline outlasts the longest operation a valid model may declare (120 s) plus the process start.
+PACKAGE_CALL_SECONDS = 150
+
+
+def _device_healthy(session):
+    """Whether the evaluator's own emulator still runs and answers its monitor."""
+    process = getattr(session, 'process', None)
+    if process is not None and process.poll() is not None:
+        return False
+    try:
+        session.observe()
+    except Exception:
+        return False
+    return True
+
+
 def run_call(session, invoke, request):
     """One evaluator call inside the device's window: the emulator runs only for the call, paused between calls."""
     session.set_running(True)
@@ -54,8 +70,14 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
                 needs_settle = False
                 event['result'] = result
                 if result.get('error', {}).get('fault') == 'host':
-                    raw_events.append(event)
-                    raise RuntimeError('Host execution failed; behavioral grading is unavailable')
+                    # The device was verified healthy before the episode and only this call touched it. If it still
+                    # runs and answers its monitor, the call failed on a healthy device: the driver's failure, graded.
+                    event['device_healthy'] = _device_healthy(session)
+                    if not event['device_healthy']:
+                        raw_events.append(event)
+                        raise RuntimeError('Host execution failed; behavioral grading is unavailable')
+                    result = event['result'] = {**result, 'error': {**result['error'], 'fault': 'model',
+                                                                     'classified': 'healthy-device'}}
             elif kind == 'observe':
                 raw = session.observe()
                 event['raw'] = raw
@@ -149,12 +171,18 @@ def package_invoker(package, binding, grants):
         for effect in grants:
             if effect != 'read':
                 command.extend(['--allow-effect', effect])
-        completed = subprocess.run(command, cwd=Path(package).parent, capture_output=True, text=True, timeout=30)
+        failed = lambda code, message: {'ok': False, 'error': {'fault': 'host', 'code': code, 'message': message},
+                                        'outputs': {}, 'units': {}, 'transcript': []}
+        try:
+            completed = subprocess.run(command, cwd=Path(package).parent, capture_output=True, text=True,
+                                       timeout=PACKAGE_CALL_SECONDS)
+        except subprocess.TimeoutExpired:
+            return failed('timeout', f'The package call did not finish within {PACKAGE_CALL_SECONDS} s')
         try:
             result = json.loads(completed.stdout)
-        except ValueError as error:
-            raise RuntimeError('Package did not return a runtime result') from error
-        return result
+        except ValueError:
+            return failed('no_result', 'The package returned no runtime result (exit %d)' % completed.returncode)
+        return result if isinstance(result, dict) else failed('no_result', 'The package result is not an object')
     return invoke
 
 

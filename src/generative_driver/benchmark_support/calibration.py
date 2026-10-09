@@ -244,7 +244,7 @@ def authoring_payload(root):
         'inventory_sha256':canonical_digest({n:e['sha256'] for n,e in entries.items()})}
 
 
-def calibrate(case_id, *, authoring_root, renode, ghidra_home, java_home, output_dir):
+def calibrate(case_id, *, authoring_root, renode, ghidra_home, java_home, output_dir, compiler=None):
     """Evaluator Python return includes private evidence. CLI uses safe_summary only."""
     import os
     from pathlib import Path
@@ -253,7 +253,7 @@ def calibrate(case_id, *, authoring_root, renode, ghidra_home, java_home, output
     from .registry import resolve_case
     if case_id not in ('sampled-sensor-v1','parameter-store-v1'):raise ValueError('Unknown authored family')
     tool_paths={'renode':Path(renode),'ghidra_home':Path(ghidra_home),'java_home':Path(java_home)}
-    compiler=Path(os.environ.get('ARM_NONE_EABI_GCC',''))
+    compiler=Path(compiler or os.environ.get('ARM_NONE_EABI_GCC',''))
     if (any(not p.is_absolute() or not p.exists() for p in tool_paths.values())
             or not compiler.is_absolute() or not compiler.is_file()):
         raise ValueError('Explicit absolute native tool configuration required')

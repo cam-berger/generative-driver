@@ -7,6 +7,15 @@ from pathlib import Path
 
 def manage(action, case, password_file, output, new_password_file=None, compiler=None, authoring_dir=None, *, renode=None, ghidra_home=None, java_home=None):
     if action == 'calibrate':
+        if case in ('sampled-sensor-v1', 'parameter-store-v1'):
+            # A family is calibrated from its private authoring root, whose sibling <case>.password is the handle.
+            if not authoring_dir:
+                raise ValueError('Family calibration needs --authoring-dir: the private authoring root beside its '
+                                 + case + '.password')
+            from .calibration import calibrate as calibrate_family, safe_summary
+            return safe_summary(calibrate_family(case, authoring_root=Path(authoring_dir), renode=Path(renode or ''),
+                ghidra_home=Path(ghidra_home or ''), java_home=Path(java_home or ''), output_dir=Path(output),
+                compiler=Path(compiler) if compiler else None))
         from .authoring import calibrate
         return calibrate(case, {'evaluator_password_file':password_file,'output':output,'compiler':compiler,
                                'renode':renode,'ghidra_home':ghidra_home,'java_home':java_home})

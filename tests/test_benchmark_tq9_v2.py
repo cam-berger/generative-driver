@@ -1425,6 +1425,55 @@ class TQ9V2Tests(unittest.TestCase):
             self.assertTrue(raw['incomplete'])
             self.assertEqual(raw['events'][0]['result']['error']['fault'], 'host')
 
+    def test_a_call_that_fails_on_the_evaluators_healthy_device_is_the_drivers(self):
+        # A driver whose request gets no reply, or that hangs, on the evaluator's own fresh emulator: that emulator still
+        # runs and answers its monitor, so the failure is the driver's and is graded, never left unscored.
+        from generative_driver.benchmark_support.emulated_actions import execute_plan
+        from generative_driver.benchmark_support.behavior import validate_records
+        class Session:
+            running = False
+            def set_running(self, value): self.running = value
+            def observe(self): return {'values': {}, 'reads': []}
+        class Dead(Session):
+            def observe(self): raise RuntimeError('Host fault: missing or malformed scalar observation: compare')
+        contract = {'schema': 'benchmark-behavior/1', 'artifact_sha256': 'a'*64, 'checks': [
+            {'id': 'e/1/temperature', 'revision': 0, 'kind': 'number', 'expected': 12,
+             'absolute_tolerance': 0, 'unit': 'degC', 'channel': 'runtime-transcript'}]}
+        plan = [{'episode': 'e', 'step': '1', 'kind': 'call', 'task': 'temperature', 'inputs': {}, 'grants': []},
+                {'episode': 'e', 'step': '1', 'kind': 'observe', 'checks': ['e/1/temperature']}]
+        no_reply = {'ok': False, 'identity_verified': False, 'outputs': {}, 'units': {}, 'transcript': [],
+                    'error': {'fault': 'host', 'code': 'timeout', 'message': 'no reply before the deadline'}}
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)/'raw.json'
+            rows = execute_plan(Session(), lambda *args: dict(no_reply), plan, contract, path,
+                                lambda raw, result, inputs: result.get('outputs', {}))
+            self.assertEqual(validate_records(contract, rows)['verdict'], 'failed')
+            self.assertTrue(rows[0]['invocation_failed'])
+            self.assertEqual(rows[0]['invocation_error']['fault'], 'model')
+            event = json.loads(path.read_text())['events'][0]
+            self.assertIs(event['device_healthy'], True)
+            self.assertEqual(event['result']['error']['fault'], 'model')
+            # An emulator that no longer answers its monitor leaves the grade unscored, as before.
+            with self.assertRaisesRegex(RuntimeError, 'Host execution failed'):
+                execute_plan(Dead(), lambda *args: dict(no_reply), plan, contract, path, lambda *args: {})
+            self.assertIs(json.loads(path.read_text())['events'][0]['device_healthy'], False)
+
+    def test_a_package_call_that_hangs_or_prints_no_result_is_reported_not_raised(self):
+        # The evaluator decides whose failure it is from its device's health; the package call only reports it. The
+        # deadline outlasts the longest operation a valid model may declare (120 s) plus the process start.
+        import subprocess
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.emulated_actions import package_invoker, PACKAGE_CALL_SECONDS
+        self.assertGreater(PACKAGE_CALL_SECONDS, 120)
+        call = package_invoker('/frozen/package', {'host': '127.0.0.1', 'port': 1}, ['write'])
+        with patch('subprocess.run', side_effect=subprocess.TimeoutExpired(['driver'], PACKAGE_CALL_SECONDS)) as ran:
+            hung = call('read', {})
+        self.assertEqual(ran.call_args.kwargs['timeout'], PACKAGE_CALL_SECONDS)
+        self.assertEqual((hung['ok'], hung['error']['fault'], hung['error']['code']), (False, 'host', 'timeout'))
+        with patch('subprocess.run', return_value=subprocess.CompletedProcess(['driver'], 1, 'Traceback (most recent call last)', '')):
+            silent = call('read', {})
+        self.assertEqual((silent['ok'], silent['error']['fault'], silent['error']['code']), (False, 'host', 'no_result'))
+
     def test_fresh_reuse_acknowledgements_do_not_substitute_for_a_reading(self):
         # Public adapter seam: actuator ACK outputs alone do not finish the mission, which is a note, never a stop.
         from generative_driver.benchmark_support.cases import _write

@@ -575,6 +575,24 @@ class WrapperTests(unittest.TestCase):
                 calibrate('sampled-sensor-v1',authoring_root=Path('/absent-authoring'),renode=Path('relative'),
                     ghidra_home=Path('/absent-ghidra'),java_home=Path('/absent-java'),output_dir=Path('/absent-output'))
 
+    def test_the_truth_calibrate_command_routes_a_family_to_its_authoring_calibration(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.evaluator_cli import manage
+        with self.assertRaisesRegex(ValueError, '--authoring-dir'):
+            manage('calibrate', 'parameter-store-v1', None, '/absent-output')
+        record = {'ok': True, 'case': 'sampled-sensor-v1', 'execution': 'reference-calibration', 'backend': 'native-renode',
+                  'status': 'passed', 'references': [1], 'mutants': [1, 2], 'private': 'evaluator-only evidence'}
+        with patch('generative_driver.benchmark_support.calibration.calibrate', return_value=record) as family:
+            summary = manage('calibrate', 'sampled-sensor-v1', None, '/private/out', compiler='/opt/arm/bin/arm-none-eabi-gcc',
+                             authoring_dir='/private/sampled-sensor-v1-authoring', renode='/opt/renode',
+                             ghidra_home='/opt/ghidra', java_home='/opt/java')
+        family.assert_called_once_with('sampled-sensor-v1', authoring_root=Path('/private/sampled-sensor-v1-authoring'),
+            renode=Path('/opt/renode'), ghidra_home=Path('/opt/ghidra'), java_home=Path('/opt/java'),
+            output_dir=Path('/private/out'), compiler=Path('/opt/arm/bin/arm-none-eabi-gcc'))
+        self.assertTrue(summary['ok'])
+        self.assertNotIn('private', summary)
+
 class SeedEpisodeTests(unittest.TestCase):
     def test_seed_rotates_only_whole_reset_delimited_episodes(self):
         from generative_driver.benchmark_support.family_support import private_phase

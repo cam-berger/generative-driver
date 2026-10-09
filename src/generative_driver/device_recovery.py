@@ -116,21 +116,21 @@ def reconcile(controller, run_id, spec, assignment, run_dir, progress):
     """Consume trusted runtime evidence once the worker has exited, under its lease, and have the provider replace the
     run's provided emulator.
 
-    Only a write the runtime attributed to the model, after it verified the device's identity and opened it, on a
-    provided emulator the public pin approves for emulator tools, is replaced. A verified replacement is returned as
-    `recovery` for the stage's handoff to commit, in one transaction with the new binding and session, the cleared
-    uncertainty and any route its device diff takes. This never routes the run or clears uncertainty itself: until
-    that commit the failed write stays uncertain, and it is never re-executed. A provider that cannot be reached, a
-    failed or cancelled replacement and an unverified receipt are recorded as a failed recovery and stop for safety.
-    The repair budget plays no part: replacing the emulator is as safe with no repair left as with one."""
+    Only a write the runtime attributed to the model, after it verified the device's identity and opened it, on an
+    emulator the bench harness provides (a `provided-emulator` descriptor; a physical device has none), is replaced, at
+    any stage. A verified replacement is returned as `recovery` for the stage's handoff to commit, in one transaction
+    with the new binding and session, the cleared uncertainty and any route its device diff takes. During emit or fresh
+    reuse the failed write is evidence about the frozen driver: the handoff advances and the driver is graded after the
+    run, never repaired. This never routes the run or clears uncertainty itself: until that commit the failed write
+    stays uncertain, and it is never re-executed. A provider that cannot be reached, a failed or cancelled replacement
+    and an unverified receipt are recorded as a failed recovery and stop for safety. The repair budget plays no part:
+    replacing the emulator is as safe with no repair left as with one."""
     with controller._lock:
         lock = controller._operations.setdefault(run_id, threading.RLock())
     with lock, controller._active_operation(run_id):
         with controller._db() as db:
             category, failed, dispatches = unresolved_outcomes(db,run_id,assignment)
-            allowed = (failed and category == 'model' and assignment['stage'] in ('interpret','probe','ground')
-                       and (spec.get('device') or {}).get('kind') == 'provided-emulator'
-                       and spec.get('_case_pin',{}).get('manifest',{}).get('approval_scope') == 'emulator')
+            allowed = failed and category == 'model' and (spec.get('device') or {}).get('kind') == 'provided-emulator'
             if not allowed:
                 return {'stop':{'category':'safety','reason':'Outstanding effect requires operator reconciliation'}}
             evidence = sorted({str(i) for i,_ in failed})

@@ -330,8 +330,15 @@ class TQ9V2Tests(unittest.TestCase):
         # one, so the replacement commits with the probe handoff and the spent budget only means advance, not stop.
         self._scripted_controller_modes(('recover-budget','recover-repeat'))
 
+    def test_a_failed_write_of_the_frozen_driver_during_fresh_reuse_is_recovered_and_the_driver_graded(self):
+        # Catches a write the frozen driver fails during fresh reuse stalling the trial: with the repair budget spent the
+        # package keeps the probe's defect, and reuse's failed write of it left the run blocked for safety, so the harness
+        # sealed only the handoffs and the trial had no verdict. The provided emulator is replaced without re-executing
+        # the write, the replacement commits with the reuse handoff, and the driver is graded after the run.
+        self._scripted_controller_modes(('recover-reuse',))
+
     def test_emulator_recovery_safety_boundaries(self):
-        self._scripted_controller_modes(('recover-lost','recover-stop','recover-reset','recover-cancel','recover-commit-cancel','recover-restart','recover-physical','recover-commit-crash','recover-observe-stop','recover-observe-raise','recover-receipt-forged'))
+        self._scripted_controller_modes(('recover-lost','recover-stop','recover-reset','recover-cancel','recover-commit-cancel','recover-restart','recover-commit-crash','recover-observe-stop','recover-observe-raise','recover-receipt-forged'))
 
     def test_recovery_requires_outcomes_for_every_uncertain_dispatch(self):
         self._scripted_controller_modes(('recover-dispatch-exception','recover-mixed-unknown'))
@@ -373,7 +380,6 @@ class TQ9V2Tests(unittest.TestCase):
                 truth={'private_sentinel':'EVALUATOR SENTINEL','images':manifest['images'],'recipe':recipe,
                     'contracts':{'units':{'temperature':'degC','duty':'permille'},'scenarios':{'original':{'phases':phases}},
                                  'time_policy':{'sample_settle_seconds':0}}}
-                if mode=='recover-physical':manifest['approval_scope']='bound-device'
                 manifest['truth']['sha256']=seal(truth,resources/manifest['truth']['path'],password.read_text())
                 (case/'case.json').write_text(json.dumps(manifest))
                 controller=Controller(root/'home');peers=[];worker_live=[]
@@ -702,7 +708,7 @@ class TQ9V2Tests(unittest.TestCase):
                             controller._release=run_release
                         endpoint=harness.DeviceServer(provider,root/'endpoint');descriptor=endpoint.descriptor
                         run=controller.start({'goal':'scripted-contract-fixture','case':'tq9-v2','budget_seconds':60,
-                            'effects':['write','actuate'],'max_revisions':0 if mode in ('recover-budget','unwired-budget') else 2,'case_options':{'scenario_id':'original'},
+                            'effects':['write','actuate'],'max_revisions':0 if mode in ('recover-budget','recover-reuse','unwired-budget') else 2,'case_options':{'scenario_id':'original'},
                             'device':descriptor,'admission':admission,'evaluation_token_sha256':hashlib.sha256(b'scripted harness token').hexdigest(),
                             'executor_config':{'command':[sys.executable,str(script)]}})
                         deadline=time.monotonic()+60
@@ -749,7 +755,7 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertFalse(peers[0].paused_requests)
                             self.assertFalse(result['uncertain_effect'])
                             continue
-                        if mode.startswith('recover-') and mode not in ('recover-write','recover-variant','recover-budget','recover-repeat'):
+                        if mode.startswith('recover-') and mode not in ('recover-write','recover-variant','recover-budget','recover-repeat','recover-reuse'):
                             self.assertNotEqual(status['status'],'completed')
                             self.assertTrue(result['uncertain_effect'])
                             self.assertEqual(result['emulator_recovery_count'],0)
@@ -1035,7 +1041,7 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertIn('tasks.temperature',[error['path'] for error in mapping['errors']])
                             self.assertIn('Worker reported needs_revision',' '.join(probe['notes']['inline']['open_questions']))
                         mission=next(c for c in handoffs[-1]['checks'] if c['name']=='fresh_worker_mission')
-                        self.assertIs(mission['passed'],False if mode in ('missing-mission','recover-budget','recover-repeat')
+                        self.assertIs(mission['passed'],False if mode in ('missing-mission','recover-budget','recover-repeat','recover-reuse')
                                       else None if mode=='repair-mapping' else True)
                         if mode=='normal':
                             # The probe hands on the worker's own observed probe record; emit packages it; ground gets
@@ -1068,7 +1074,7 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertIn({'stage':'probe','revision':0,'notes':probe['notes']['inline']},contexts['ground']['prior_notes'])
                             self.assertNotIn('prior_notes',contexts['reuse'])
                             self.assertNotIn('EVALUATOR SENTINEL',json.dumps(contexts))
-                        self.assertEqual(len(peers),4 if mode=='recover-repeat' else 2 if mode in ('recover-write','recover-variant','recover-budget') else 1)
+                        self.assertEqual(len(peers),4 if mode=='recover-repeat' else 3 if mode=='recover-reuse' else 2 if mode in ('recover-write','recover-variant','recover-budget') else 1)
                         if mode=='recover-write':
                             self.assertTrue(peers[0].closed)
                             self.assertEqual(peers[0].device_commands.count('D'),1)
@@ -1141,8 +1147,34 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertEqual(last['outcome'],{'kind':'advance','reason':'Repair budget exhausted; continuing with best revision'})
                             self.assertEqual({d['source'] for d in last['configurator']['device_diff']},{'interface_execute'})
                             self.assertIn('disarm',json.dumps(last['configurator']['device_diff']))
+                        if mode=='recover-reuse':
+                            # The probe's failed write and fresh reuse's failed write of the frozen package each ran
+                            # once, on the emulator then replaced, and neither was executed again. Reuse's replacement
+                            # committed with the reuse handoff, which advanced: the failure is evidence about the
+                            # driver, kept in its notes and graded after the run, never a repair.
+                            for old in peers[:-1]:
+                                self.assertTrue(old.closed)
+                                self.assertEqual(old.device_commands.count('D'),1)
+                            self.assertEqual(peers[-1].device_commands.count('D'),0)
+                            self.assertEqual(result['emulator_recovery_count'],2)
+                            recovered=[e['data'] for e in events if e['kind']=='emulator.recovered']
+                            stages={h['assignment_id']:h['stage'] for h in handoffs}
+                            self.assertEqual([stages[r['assignment_id']] for r in recovered],['probe','reuse'])
+                            self.assertFalse([e for e in events if e['kind']=='emulator.recovery_failed'])
+                            self.assertFalse(result['uncertain_effect'])
+                            with controller._db() as db:
+                                self.assertEqual(db.execute('SELECT COUNT(*) FROM pending_effects WHERE run_id=?',(run['run_id'],)).fetchone()[0],0)
+                            reused=handoffs[-1]
+                            self.assertEqual((reused['stage'],reused.get('route')),('reuse',None))
+                            self.assertEqual(reused['notes']['inline']['outcome']['kind'],'advance')
+                            failed=[e['data'] for e in events if e['kind']=='tool.finished' and e['data']['name']=='benchmark_package_execute'
+                                    and e['data']['assignment_id']==reused['assignment_id'] and not e['data']['ok']]
+                            self.assertEqual(len(failed),1)
+                            self.assertEqual(failed[0]['result']['error']['fault'],'model')
+                            self.assertEqual(recovered[1]['unresolved_evidence_ids'],[next(str(e['id']) for e in events
+                                if e['kind']=='tool.finished' and e['data'].get('dispatch_id')==failed[0]['dispatch_id'])])
                         live={'recover-write':[False,True,True,False,False,True,True,True],'recover-variant':[False,True,True,False],
-                              'recover-budget':[False,True,True,False],'recover-repeat':[False,True,True,False]*3,
+                              'recover-budget':[False,True,True,False],'recover-reuse':[False,True,True,False],'recover-repeat':[False,True,True,False]*3,
                               'repair-decoder':[False,False,False,False,True,True],'invalid-model':[False,False,False,False,True,True],
                               'repair-ground':[False,True,True,False,False,True,True],
                               'concurrent-calls':[False,True,True,True,True]}.get(mode,[False,True,True])
@@ -1172,7 +1204,7 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertEqual(journal[-1]['kind'],'stopped')
                         proofs=[entry['proof'] for entry in journal if entry['kind']=='replaced']
                         self.assertEqual(len(proofs),result['emulator_recovery_count'])
-                        if mode in ('recover-write','recover-variant','recover-budget','recover-repeat'):
+                        if mode in ('recover-write','recover-variant','recover-budget','recover-repeat','recover-reuse'):
                             for index in range(result['emulator_recovery_count']):
                                 proof=proofs[index]
                                 receipt=result['emulator_recoveries'][index]['receipt']

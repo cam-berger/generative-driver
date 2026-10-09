@@ -350,6 +350,24 @@ class ProvidedRunTests(unittest.TestCase):
         self.assertEqual(kinds[-3:], ['stage.accepted', 'emulator.recovered', 'run.revision'])
         self.assertEqual(second.provider.status()['session_id'], receipt['new_session_id'])
 
+    def test_a_failed_write_of_any_stage_on_a_provided_emulator_is_replaced(self):
+        # Catches recovery gated on the stage or the pin's approval scope: a write the frozen driver fails during fresh
+        # reuse (or emit), or on legacy tq9's emulator, whose pin names no approval scope, stopped the trial for safety
+        # with no verdict, though the harness provides that emulator as it does any other.
+        second = Device(self, self.image, self.root / 'second')
+        self.attach(second)
+        assignment, progress, started, finished = self.uncertain_write(second)
+        from generative_driver.device_recovery import reconcile
+        pin = self.spec()['_case_pin']
+        legacy = {**pin, 'manifest': {k: v for k, v in pin['manifest'].items() if k != 'approval_scope'}}
+        spec = {**self.spec(), '_case_pin': legacy, '_device': progress.get('device')}
+        checked = reconcile(self.controller, self.run_id, spec, {**assignment, 'stage': 'reuse'},
+                            self.root / 'home/runs' / self.run_id, progress)
+        self.assertEqual((checked['recovery']['unresolved_dispatch_ids'], checked['recovery']['unresolved_evidence_ids']),
+                         ([str(started)], [str(finished)]))
+        self.assertEqual(len(second.peers), 2)
+        self.assertEqual([peer.device_commands for peer in second.peers], [[], []])
+
     def test_a_crash_between_the_replacement_and_its_commit_stays_uncertain_on_restart(self):
         from generative_driver.configurator import Controller
         second = Device(self, self.image, self.root / 'second')
@@ -396,8 +414,7 @@ class ProvidedRunTests(unittest.TestCase):
             second.provider.session.stop()
             raise RuntimeError('provider process died during the replacement')
         cases = (('no provided device', {'device': None}, None, 'Outstanding effect requires operator reconciliation'),
-                 ('physical approval', {'_case_pin': {**self.spec()['_case_pin'], 'manifest': {
-                     **self.spec()['_case_pin']['manifest'], 'approval_scope': 'bound-device'}}}, None,
+                 ('no provided emulator', {'device': {**self.spec()['device'], 'kind': 'physical'}}, None,
                   'Outstanding effect requires operator reconciliation'),
                  ('forged receipt', {}, patch.object(DeviceClient, 'replace', forged), 'Emulator recovery unverified'),
                  ('provider died', {}, patch.object(second.provider, 'replace', side_effect=dying), 'Emulator recovery unverified'),

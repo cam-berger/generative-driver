@@ -22,11 +22,12 @@ def _call(method, **params):
 
 
 @server.tool()
-def driver_start(goal: str, executor: str = "codex", inputs: dict | None = None,
+def driver_start(goal: str, executor: Literal["codex", "goose"] | None = None, inputs: dict | None = None,
                  binding: dict | None = None, effects: list[str] | None = None,
                  budget_seconds: int = 10800, request_id: str | None = None,
                  scoped_tool_approval: Literal["bound-device"] | None = None) -> str:
     """Start a durable six-stage run using a configured runtime. Save the returned run_id.
+    executor defaults to the one runtime configured with `generative-driver configure`; an unconfigured one is refused.
     Supply explicit inputs and operator binding; effects default to read. request_id deduplicates starts.
     Effects are read, write, actuate and reset; grant reset only for devices that restart when their port opens.
     Set bound-device approval only with the user's explicit consent to assigned tools for that binding/effect scope.

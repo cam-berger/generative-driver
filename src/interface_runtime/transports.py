@@ -180,7 +180,8 @@ def _dependency(name):
     try:
         return importlib.import_module(name)
     except ImportError as exc:
-        raise TransportError('dependency', f'optional dependency {name} is required') from exc
+        # A missing optional extra is this host's setup; it says nothing about the device or the driver.
+        raise TransportError('dependency', f'optional dependency {name} is required', Fault.HOST) from exc
 
 
 class _Handle:

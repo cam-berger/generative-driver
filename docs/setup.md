@@ -13,7 +13,7 @@ python -m generative_driver configure --executor codex --command "/absolute/path
 python -m generative_driver configure --executor goose --command "/absolute/path/to/goose" --model YOUR_MODEL --provider YOUR_PROVIDER
 ```
 
-On Windows supply the installed `.exe` path. A runtime command is stored as an argument array, not a shell command. Additional wrapper arguments use repeated `--argument` options. Configuration contains runtime selection; authentication remains with the runtime. Configure the model explicitly so comparisons record the intended selection. Codex also accepts `--reasoning-effort` using a value supported by the selected model; Goose reasoning controls remain in its provider setup.
+The configurator launches only a configured runtime: a start naming an unconfigured one is refused instead of running whatever has that name on `PATH`, and a start that names none uses the single configured runtime (Codex when both are configured). On Windows supply the installed `.exe` path. A runtime command is stored as an argument array, not a shell command. Additional wrapper arguments use repeated `--argument` options. Configuration contains runtime selection; authentication remains with the runtime. Configure the model explicitly so comparisons record the intended selection. Codex also accepts `--reasoning-effort` using a value supported by the selected model; Goose reasoning controls remain in its provider setup.
 
 Run state defaults to the native user data directory: `~/Library/Application Support/GenerativeDriver` on macOS and `%LOCALAPPDATA%\GenerativeDriver` on Windows. Set `GENERATIVE_DRIVER_HOME` or the CLI's leading `--home` option for a separate installation. Configure and connect both interfaces to the same directory to share runs.
 
@@ -31,6 +31,8 @@ Use your installation environment's Python executable. `start` returns the backg
 Windows MCP hosts can terminate their entire child-process tree when a session closes. Windows MCP connections therefore require an existing independent owner and return setup instructions if it is absent. They do not create a background owner inside that process tree. macOS clients can start the owner automatically; these explicit commands work there too.
 
 Start the service again after a reboot or sign-out. After work finishes, stop it explicitly with `python -m generative_driver service stop`. Closing a Goose/Codex conversation does not send that shutdown command.
+
+After upgrading or editing the installation, restart the service. A client refuses to drive a configurator that runs other code than its own, and `service status` then reports `"compatible": false`; run `service stop` and `service start`.
 
 ## Add optional hardware tools
 

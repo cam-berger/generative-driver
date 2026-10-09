@@ -67,6 +67,15 @@ class SerialTransportTests(unittest.TestCase):
                 resolve_serial_port({"vendor_id": 0x10C4, "product_id": 0xEA60}, ports)
             self.assertEqual((raised.exception.code, raised.exception.fault), ("binding", "operator"))
 
+    def test_missing_pyserial_is_a_host_fault(self):
+        # The optional hardware extra is absent on this host: no device or driver is at fault.
+        with patch.dict(sys.modules, {"serial": None, "serial.tools": None, "serial.tools.list_ports": None}):
+            for attempt in (lambda: resolve_serial_port({"vendor_id": 0x10C4, "product_id": 0xEA60}),
+                            lambda: open_transport(CHANNEL, {"port": "/dev/cu.test"})):
+                with self.assertRaises(TransportError) as raised:
+                    attempt()
+                self.assertEqual((raised.exception.code, raised.exception.fault), ("dependency", "host"))
+
     def test_open_releases_control_lines_before_opening_and_flushes(self):
         FakeSerial.instances.clear()
         with patch.dict(sys.modules, {"serial": fake_serial_module()}):

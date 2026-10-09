@@ -203,7 +203,11 @@ def acquire_serial_listen(run_dir, port, baudrate=115200, seconds=8, **_):
         return {"available": False, "reason": "seconds must be in (0, 30]", "_exit": 1}
     if type(baudrate) is not int or not 1 <= baudrate <= 12000000:
         return {"available": False, "reason": "baudrate must be an integer 1..12000000", "_exit": 1}
-    import serial  # optional hardware dependency, imported only when listening
+    try:
+        import serial  # optional hardware dependency, imported only when listening
+    except ImportError:
+        return {"available": False, "fault": "host", "_exit": 4,
+                "reason": 'pyserial is not installed on this host; install "generative-driver[hardware]"'}
     run = core.resolve_run(run_dir)
     out = _mkdir(run, "acquire")
     handle = serial.Serial()

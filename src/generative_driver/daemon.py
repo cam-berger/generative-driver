@@ -9,6 +9,7 @@ from pathlib import Path
 import threading
 import time
 
+from .client import code_identity
 from .configurator import Controller
 
 
@@ -52,7 +53,7 @@ def serve(home):
                     request = json.loads(conn.recv_bytes(2 * 1024 * 1024))
                     method, params = request['method'], request.get('params', {})
                     if method == 'ping':
-                        result = {'ok': True, 'pid': os.getpid()}
+                        result = {'ok': True, 'pid': os.getpid(), 'code': code_identity()}
                     elif method == 'shutdown':
                         deadline = time.monotonic() + 20
                         settled = controller.close(timeout=10)

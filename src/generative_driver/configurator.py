@@ -1950,7 +1950,12 @@ class Controller:
         goal = params.get('goal')
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError('start requires a nonempty goal')
-        executor = params.get('executor', 'codex')
+        config_path = self.home / 'config.json'
+        configured = json.loads(config_path.read_text(encoding='utf-8')).get('executors', {}) if config_path.is_file() else {}
+        executor = params.get('executor')
+        if executor is None:
+            # An omitted executor is the one runtime the operator configured; codex only when both or neither are.
+            executor = next(iter(configured)) if len(configured) == 1 else 'codex'
         if executor not in ('codex', 'goose'):
             raise ValueError('executor must be codex or goose')
         budget = params.get('budget_seconds', 10800)
@@ -1960,15 +1965,18 @@ class Controller:
         if not isinstance(effects, list) or not set(effects) <= {'read', 'write', 'actuate', 'reset'}:
             raise ValueError('effects must contain only read, write, actuate, reset')
         config = {}
-        config_path = self.home / 'config.json'
         if 'case_pin' in params:
             if not isinstance(params.get('executor_config'),dict):
                 raise ValueError('Frozen case pin requires complete executor_config')
             if not params.get('case'):
                 raise ValueError('Expected case pin requires a registered case')
-        elif config_path.is_file():
-            config = json.loads(config_path.read_text(encoding='utf-8')).get('executors', {}).get(executor, {})
+        else:
+            config = configured.get(executor, {})
         config = {**config, **params.get('executor_config', {}), 'runtime': executor}
+        if not config.get('command'):
+            # Never fall back to whatever program of that name is on PATH: it may be something else entirely.
+            raise ValueError(f'{executor} is not configured; run `generative-driver configure {executor} <command>` '
+                             'with the runtime this configurator should launch')
         spec = {**params, 'executor': executor, 'executor_config': config, 'budget_seconds': budget, 'effects': effects,
                 '_submitted_intent': params}
         case=spec.get('case')

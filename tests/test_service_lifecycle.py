@@ -98,6 +98,35 @@ class ServiceLifecycleTests(unittest.TestCase):
             finally:
                 call('shutdown', {}, home)
 
+    def test_a_client_never_drives_a_configurator_running_other_code(self):
+        import json
+        from generative_driver.client import call, code_identity
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / 'service'
+            try:
+                owner = call('ping', {}, home)
+                self.assertEqual((owner['code'], owner['compatible']), (code_identity(), True), owner)
+                # The running configurator was started by another installation, or before this code was edited.
+                record = home / 'service.json'
+                record.write_text(json.dumps({**json.loads(record.read_text(encoding='utf-8')), 'code': 'other'}),
+                                  encoding='utf-8')
+                refused = call('start', {'goal': 'Must not reach older code'}, home)
+                self.assertFalse(refused['ok'], refused)
+                self.assertIn('service stop', refused['reason'])
+                self.assertFalse((home / 'runs').exists() and list((home / 'runs').iterdir()))
+                pinged = call('ping', {}, home)
+                self.assertEqual((pinged['pid'], pinged['compatible']), (owner['pid'], False), pinged)
+                self.assertIn('service stop', pinged['reason'])
+            finally:
+                self.assertTrue(call('shutdown', {}, home)['stopped'])
+            # With the incompatible configurator gone, the next call starts one running this code.
+            try:
+                restarted = call('ping', {}, home)
+                self.assertNotEqual(restarted['pid'], owner['pid'])
+                self.assertTrue(restarted['compatible'], restarted)
+            finally:
+                call('shutdown', {}, home)
+
     def test_shutdown_drains_an_accepted_tool_before_confirming_exit(self):
         from generative_driver.client import call
         entered, release = threading.Event(), threading.Event()

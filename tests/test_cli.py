@@ -9,6 +9,8 @@ import time
 import unittest
 from pathlib import Path
 
+from package_env import package_env
+
 
 class CliTests(unittest.TestCase):
     def test_setup_connections_keep_the_explicit_state_home(self):
@@ -20,8 +22,8 @@ class CliTests(unittest.TestCase):
             inherited = root / "different inherited state"
             async def doctor(connection, command_key, environment_key):
                 params = StdioServerParameters(command=connection[command_key], args=connection['args'],
-                    cwd=str(root), env={'GENERATIVE_DRIVER_HOME': str(inherited),
-                                       **connection.get(environment_key, {})})
+                    cwd=str(root), env=package_env(**{'GENERATIVE_DRIVER_HOME': str(inherited),
+                                                      **connection.get(environment_key, {})}))
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
                         await session.initialize()

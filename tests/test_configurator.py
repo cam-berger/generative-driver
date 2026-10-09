@@ -9,6 +9,8 @@ import tempfile
 import time
 import unittest
 import sys
+import types
+import unittest.mock
 
 from line_device import line_device
 
@@ -1345,7 +1347,7 @@ class FinalVerdictTests(unittest.TestCase):
         supplied, or 'seeded' for a register package's seeded check). `listen`, when given, has the acquire worker
         listen to the bound serial device through the gateway, which hears unsolicited output (a reset on open) when
         it is True. With 'unopened' the real listen tool runs on the bound port, which does not exist (with 'unfound' the
-        gateway cannot resolve the bound port at all); with 'bad-arguments' it refuses the worker's own seconds; with
+        gateway cannot resolve the bound port at all, and with 'no-pyserial' the host cannot list serial ports); with 'bad-arguments' it refuses the worker's own seconds; with
         'unrecorded' the dispatched listen never returns a result to record.
         `calls` scripts the reuse worker instead: (tool, result) pairs called in order, where the tool is emit_test_live
         of the frozen package or interface_execute of its model, and a result that is an exception is raised by the tool.
@@ -1771,6 +1773,9 @@ class FinalVerdictTests(unittest.TestCase):
                  'supplied', None, None, None, [unreplayed, UNHEARD]),
                 ('a bound device the gateway cannot find to listen to, without the reset grant', ['read'], 'unfound', uart,
                  'supplied', None, None, None, [unreplayed, UNHEARD]),
+                # A host without the optional pyserial extra cannot list ports: the host's setup, not the driver.
+                ('a host that cannot list serial ports, without the reset grant', ['read'], 'no-pyserial', uart,
+                 'supplied', None, None, None, [unreplayed, UNHEARD]),
                 # Listening needs no grant: the pipeline that never listened kept fresh reuse from the device.
                 ('a device no worker listened to, without the reset grant', ['read'], None, uart, 'supplied', None,
                  False, False, [unreplayed, UNLISTENED]),
@@ -1784,13 +1789,21 @@ class FinalVerdictTests(unittest.TestCase):
                  True, [])):
             with self.subTest(name), tempfile.TemporaryDirectory() as directory:
                 controller = Controller(Path(directory) / 'home')
+                # The host lists no serial port, whether or not the optional pyserial extra is installed.
+                no_ports = types.ModuleType('serial.tools.list_ports')
+                no_ports.comports = lambda: []
+                ports = (unittest.mock.patch.dict(sys.modules, {'serial': types.ModuleType('serial'),
+                         'serial.tools': types.ModuleType('serial.tools'), 'serial.tools.list_ports': no_ports})
+                         if listen == 'unfound' else
+                         unittest.mock.patch.dict(sys.modules, dict.fromkeys(('serial', 'serial.tools', 'serial.tools.list_ports')))
+                         if listen == 'no-pyserial' else contextlib.nullcontext())
                 try:
-                    with self.finishing(controller, calls=[('emit_test_live', result, {'operations': ['read_temperature']})],
-                                        replay=replay, channel=channel, listen=listen):
+                    with ports, self.finishing(controller, calls=[('emit_test_live', result, {'operations': ['read_temperature']})],
+                                               replay=replay, channel=channel, listen=listen):
                         # A port that does not exist: the real listen tool cannot open it. No port matches the
                         # identity of a device that is not attached.
                         run = self.start(controller, effects=grants, binding=(
-                            {'vendor_id': 0xFFFF, 'product_id': 0xFFFE, 'serial_number': 'no-such-device'} if listen == 'unfound'
+                            {'vendor_id': 0xFFFF, 'product_id': 0xFFFE, 'serial_number': 'no-such-device'} if listen in ('unfound', 'no-pyserial')
                             else {'port': str(Path(directory).resolve() / 'no-such-serial-port')}))
                         result_of_run = wait_stopped(controller, run)
                     self.assertEqual((result_of_run['status'], result_of_run['equivalence']['equivalent']),
@@ -1801,10 +1814,12 @@ class FinalVerdictTests(unittest.TestCase):
                     events = controller.call('events', run)['events']
                     refusals = [e['data']['reason'] for e in events if e['kind'] == 'tool.refused' and e['data']['stage'] == 'reuse']
                     listens = [e['data'] for e in events if e['kind'] == 'tool.finished' and e['data']['name'] == 'acquire_serial_listen']
-                    if listen == 'unfound':
-                        # The gateway refused the listen for the operator: no port matches the bound device.
+                    if listen in ('unfound', 'no-pyserial'):
+                        # The gateway refused the listen: no port matches the bound device (the operator's), or the
+                        # host cannot list ports at all (the host's).
                         [unfound] = [e['data'] for e in events if e['kind'] == 'tool.refused' and e['data']['stage'] == 'acquire']
-                        self.assertEqual((unfound['name'], unfound['fault']), ('acquire_serial_listen', 'operator'), unfound)
+                        self.assertEqual((unfound['name'], unfound['fault']),
+                                         ('acquire_serial_listen', 'operator' if listen == 'unfound' else 'host'), unfound)
                         self.assertEqual(listens, [])
                     if listen in ('unopened', 'bad-arguments'):
                         # The real listen tool: it could not open the port, or refused the worker's seconds.
@@ -3254,6 +3269,27 @@ class ConfiguratorTests(unittest.TestCase):
                 self.assertIn('Cannot start configured runtime', result['reason'])
                 self.assertIn(resume_when_idle(self, controller, run)['status'], ('queued', 'running', 'blocked'))
                 self.assertEqual(len([e for e in controller.call('events', run)['events'] if e['kind'] == 'run.resumed']), 1)
+            finally:
+                controller.close()
+
+    def test_an_unconfigured_executor_is_refused_and_the_only_configured_one_is_the_default(self):
+        from generative_driver.configurator import Controller
+        from generative_driver.setup import configure
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            controller = Controller(home)
+            try:
+                # Nothing named codex was configured, so whatever `codex` resolves to on PATH is never launched.
+                with self.assertRaisesRegex(ValueError, 'codex is not configured'):
+                    controller.call('start', {'goal': 'Unconfigured runtime', 'executor': 'codex'})
+                self.assertEqual(list((home / 'runs').glob('*')) if (home / 'runs').exists() else [], [])
+                configure('goose', ['missing-goose-runtime'], home=home)
+                for request in ({'goal': 'The one configured runtime'}, {'goal': 'Omitted', 'executor': None}):
+                    run = controller.call('start', request)
+                    self.assertEqual(controller.call('result', run)['agent']['runtime'], 'goose')
+                    wait_stopped(controller, run)
+                with self.assertRaisesRegex(ValueError, 'codex is not configured'):
+                    controller.call('start', {'goal': 'Named but unconfigured', 'executor': 'codex'})
             finally:
                 controller.close()
 

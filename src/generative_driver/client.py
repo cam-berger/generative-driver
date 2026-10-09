@@ -114,6 +114,28 @@ def _confirmed_shutdown(pid, timeout=10):
             **({} if stopped else {'reason': 'Daemon exit was not confirmed before the shutdown deadline'})}
 
 
+_CODE = None
+
+
+def code_identity():
+    """Digest of the Python sources this process runs. A client never drives a configurator running other code: an
+    older installation, another checkout, or this one before an edit, whatever version number they share."""
+    global _CODE
+    if _CODE is None:
+        digest, root = hashlib.sha256(), Path(__file__).resolve().parents[1]
+        for package in ('generative_driver', 'interface_runtime'):
+            for path in sorted((root / package).rglob('*.py')):
+                digest.update(path.relative_to(root).as_posix().encode() + b'\0' + path.read_bytes() + b'\0')
+        _CODE = digest.hexdigest()
+    return _CODE
+
+
+def _incompatible(endpoint):
+    return ('The running configurator (pid {}) runs other generative-driver code than this client. Stop it with '
+            '`generative-driver service stop`, then start it with `generative-driver service start`.'
+            .format(endpoint.get('pid')))
+
+
 def default_home():
     if os.environ.get('GENERATIVE_DRIVER_HOME'):
         return Path(os.environ['GENERATIVE_DRIVER_HOME']).expanduser().resolve()
@@ -168,7 +190,7 @@ def _start(home):
             ipc_dir.mkdir(mode=0o700, exist_ok=True)
             address = str(ipc_dir / 'owner.sock')
             Path(address).unlink(missing_ok=True)
-        endpoint = {'family': family, 'address': address, 'authkey': secrets.token_hex(32)}
+        endpoint = {'family': family, 'address': address, 'authkey': secrets.token_hex(32), 'code': code_identity()}
         path = home / 'service.json'
         env = os.environ.copy()
         env['PYTHONPATH'] = str(Path(__file__).resolve().parents[1])
@@ -216,6 +238,18 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
     directory = Path(home or default_home()).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     params = params or {}
+    if method not in ('ping', 'shutdown'):
+        try:
+            endpoint = json.loads((directory / 'service.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            endpoint = None
+        if endpoint is not None and endpoint.get('code') != code_identity():
+            try:
+                reachable = _request(directory, 'ping', {}).get('ok')
+            except (OSError, EOFError, ValueError):
+                reachable = False
+            if reachable:
+                return {'ok': False, 'reason': _incompatible(endpoint)}
     try:
         result = _request(directory, method, params, **request_options)
     except (OSError, EOFError, ValueError):
@@ -230,7 +264,14 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
         if not autostart:
             return {'ok': False, 'reason': 'Configurator is not reachable. Run generative-driver service start from an operator terminal, then reconnect this UI.'}
         _start(directory)
-        return _request(directory, method, params, **request_options)
+        result = _request(directory, method, params, **request_options)
     if method == 'shutdown' and result.get('stopped'):
         return _confirmed_shutdown(result.get('pid'))
+    if method == 'ping' and result.get('ok'):
+        try:
+            recorded = json.loads((directory / 'service.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            recorded = {}
+        compatible = recorded.get('code') == code_identity() and result.get('code') == code_identity()
+        result = {**result, 'compatible': compatible, **({} if compatible else {'reason': _incompatible(recorded)})}
     return result

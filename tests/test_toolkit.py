@@ -482,6 +482,16 @@ print(json.dumps(call_tool('usage_record',json.loads(sys.argv[1]))))
             self.assertTrue(all(Path(p).is_file() for p in paths))
             self.assertFalse(any(Path(p).suffix.lower() in (".bin", ".elf") for p in paths), paths)
 
+    def test_serial_listen_without_pyserial_names_the_extra_as_a_host_fault(self):
+        import sys
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        with tempfile.TemporaryDirectory() as temp, patch.dict(sys.modules, {"serial": None}):
+            result = call_tool("acquire_serial_listen", {"run_dir": temp, "port": "/dev/cu.fake", "seconds": 0.1})
+        self.assertFalse(result["available"], result)
+        self.assertEqual(result["fault"], "host")
+        self.assertIn("generative-driver[hardware]", result["reason"])
+
     def test_coverage_scope_does_not_claim_a_connection_per_call(self):
         from interface_runtime.evidence import COVERAGE_SCOPE
         self.assertNotIn("separate connection", COVERAGE_SCOPE)

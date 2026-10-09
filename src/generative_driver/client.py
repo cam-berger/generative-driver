@@ -130,6 +130,17 @@ def code_identity():
     return _CODE
 
 
+def _runs_other_code(endpoint):
+    """Whether service.json names a live configurator started from other code. Decided without IPC: a live one is never
+    sent the request, and a dead one is replaced by the ordinary start."""
+    if endpoint.get('code') == code_identity() or type(endpoint.get('pid')) is not int or endpoint['pid'] <= 0:
+        return False
+    try:
+        return not _wait_for_exit(endpoint['pid'], 0)
+    except OSError:
+        return True  # It exists, owned by someone this client may not signal.
+
+
 def _incompatible(endpoint):
     return ('The running configurator (pid {}) runs other generative-driver code than this client. Stop it with '
             '`generative-driver service stop`, then start it with `generative-driver service start`.'
@@ -243,13 +254,8 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
             endpoint = json.loads((directory / 'service.json').read_text(encoding='utf-8'))
         except (OSError, ValueError):
             endpoint = None
-        if endpoint is not None and endpoint.get('code') != code_identity():
-            try:
-                reachable = _request(directory, 'ping', {}).get('ok')
-            except (OSError, EOFError, ValueError):
-                reachable = False
-            if reachable:
-                return {'ok': False, 'reason': _incompatible(endpoint)}
+        if endpoint is not None and _runs_other_code(endpoint):
+            return {'ok': False, 'reason': _incompatible(endpoint)}
     try:
         result = _request(directory, method, params, **request_options)
     except (OSError, EOFError, ValueError):

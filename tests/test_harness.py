@@ -552,7 +552,8 @@ class HarnessTrialTests(unittest.TestCase):
             sockets = Path(tempfile.mkdtemp(prefix='gd-t-'))
             self.addCleanup(shutil.rmtree, sockets, True)
             (home / 'service.json').write_text(json.dumps({'family': 'AF_UNIX', 'address': str(sockets / 'owner.sock'),
-                                                           'authkey': secrets.token_hex(32), 'pid': os.getpid()}))
+                                                           'authkey': secrets.token_hex(32), 'pid': os.getpid(),
+                                                           'code': client.code_identity()}))
             for target, value in (('generative_driver.benchmark.case_root', {'return_value': resources}),
                                   ('generative_driver.benchmark_support.registry.require_calibration',
                                    {'side_effect': AssertionError('the configurator admitted the case')}),

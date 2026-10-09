@@ -1973,10 +1973,6 @@ class Controller:
         else:
             config = configured.get(executor, {})
         config = {**config, **params.get('executor_config', {}), 'runtime': executor}
-        if not config.get('command'):
-            # Never fall back to whatever program of that name is on PATH: it may be something else entirely.
-            raise ValueError(f'{executor} is not configured; run `generative-driver configure {executor} <command>` '
-                             'with the runtime this configurator should launch')
         spec = {**params, 'executor': executor, 'executor_config': config, 'budget_seconds': budget, 'effects': effects,
                 '_submitted_intent': params}
         case=spec.get('case')
@@ -2025,6 +2021,11 @@ class Controller:
                     elif 'evaluation_token_sha256' in spec and not (isinstance(spec['evaluation_token_sha256'], str) and
                             re.fullmatch('[0-9a-f]{64}', spec['evaluation_token_sha256'])):
                         raise ValueError('evaluation_token_sha256 must be the sha256 of the bench harness evaluation token')
+                if not config.get('command'):
+                    # Never fall back to whatever program of that name is on PATH: it may be something else entirely.
+                    raise ValueError(f'{executor} is not configured; run `generative-driver configure {executor} <command>` '
+                                     'with the runtime this configurator should launch')
+                if case:
                     spec['_case_pin'] = pin
                     saved = snapshot_case(self.home / 'runs' / run_id, pin, execution_provenance(config))
                     spec['_snapshot_sha256'] = saved['snapshot_sha256']

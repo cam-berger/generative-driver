@@ -42,6 +42,12 @@ class SnapshotTests(unittest.TestCase):
             self.assertNotIn('secret-', text)
             self.assertEqual(saved['executed']['runtime_configuration'], {'model': 'scripted'})
 
+def scripted_runtime(home):
+    """A configured runtime for runs whose worker launch these tests replace; the configurator launches no other."""
+    import json
+    Path(home).mkdir(parents=True, exist_ok=True)
+    (Path(home) / 'config.json').write_text(json.dumps({'executors': {'codex': {'command': ['scripted-codex']}}}))
+
 
 class ControllerSnapshotTests(unittest.TestCase):
     def wait_stopped(self, controller, run):
@@ -66,9 +72,10 @@ class ControllerSnapshotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, patch('generative_driver.configurator.execute', self.blocked_executor):
             root = Path(temp)
             controller = Controller(root)
+            scripted_runtime(root)
             try:
                 config = root / 'config.json'
-                config.write_text(json.dumps({'executors': {'codex': {'model': 'original'}}}))
+                config.write_text(json.dumps({'executors': {'codex': {'model': 'original', 'command': ['scripted-codex']}}}))
                 request = {'goal': 'snapshot contract', 'case': 'tq9', 'request_id': 'same-request'}
                 run = controller.start(request)
                 self.wait_stopped(controller, run)
@@ -96,6 +103,7 @@ class ControllerSnapshotTests(unittest.TestCase):
                 return self.blocked_executor(request, config, cancel)
             with patch('generative_driver.configurator.execute', execute):
                 controller = Controller(root)
+                scripted_runtime(root)
                 try:
                     # The configurator takes no evaluator handle for any case, legacy ones included: the bench harness does.
                     with self.assertRaisesRegex(ValueError, 'password'):
@@ -121,6 +129,7 @@ class ControllerSnapshotTests(unittest.TestCase):
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as temp, patch('generative_driver.configurator.execute', self.blocked_executor):
             controller = Controller(Path(temp))
+            scripted_runtime(Path(temp))
             try:
                 run = controller.start({'goal': 'resume integrity', 'case': 'tq9'})
                 before = self.wait_stopped(controller, run)
@@ -151,6 +160,7 @@ class ControllerSnapshotTests(unittest.TestCase):
                         'artifacts': [], 'checks': [], 'unresolved': []}}
             with patch('generative_driver.configurator.execute', execute):
                 controller = Controller(root)
+                scripted_runtime(root)
                 try:
                     run = controller.start({'goal': 'stage integrity', 'case': 'tq9'})
                     result = self.wait_stopped(controller, run)
@@ -177,6 +187,7 @@ class ControllerSnapshotTests(unittest.TestCase):
                 return self.blocked_executor(request, config, cancel)
             with patch('generative_driver.benchmark.case_root', return_value=installed), patch('generative_driver.configurator.execute', execute):
                 controller = Controller(root / 'home')
+                scripted_runtime(root / 'home')
                 try:
                     run = controller.start({'goal': 'use captured firmware', 'case': 'tq9'})
                     self.wait_stopped(controller, run)
@@ -198,6 +209,7 @@ class ControllerSnapshotTests(unittest.TestCase):
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as temp, patch('generative_driver.configurator.execute', self.blocked_executor):
             controller = Controller(Path(temp))
+            scripted_runtime(Path(temp))
             try:
                 run = controller.start({'goal': 'implementation identity', 'case': 'tq9'})
                 before = self.wait_stopped(controller, run)
@@ -226,6 +238,7 @@ class ControllerSnapshotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, patch('generative_driver.configurator.execute', self.blocked_executor):
             root = Path(temp)
             controller = Controller(root)
+            scripted_runtime(root)
             try:
                 run = controller.start({'goal': 'legacy fixture', 'case': 'tq9'})
                 self.wait_stopped(controller, run)
@@ -259,6 +272,7 @@ class ControllerSnapshotTests(unittest.TestCase):
             RegistryTests._v2_case(root / 'installed')
             with patch('generative_driver.benchmark.case_root', return_value=root / 'installed'):
                 controller = Controller(root / 'home')
+                scripted_runtime(root / 'home')
                 try:
                     with self.assertRaisesRegex(ValueError, 'calibration'):
                         controller.start({'goal': 'pending v2', 'case': 'tq9-v2',
@@ -274,6 +288,7 @@ class ControllerSnapshotTests(unittest.TestCase):
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as temp, patch('generative_driver.configurator.execute', self.blocked_executor):
             controller = Controller(Path(temp))
+            scripted_runtime(Path(temp))
             try:
                 request = {'goal': 'typed intent', 'case': 'tq9', 'request_id': 'typed',
                            'case_options': {'case_seed': 0}}

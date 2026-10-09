@@ -164,7 +164,7 @@ class ReportTests(unittest.TestCase):
                 controller = Controller(root / 'home')
                 try:
                     run = controller.start({'goal': 'report pinned execution', 'case': 'tq9',
-                        'executor_config': {'model': 'original'}})
+                        'executor_config': {'model': 'original', 'command': ['scripted-codex']}})
                     until = time.monotonic() + 5
                     while time.monotonic() < until:
                         status = controller.call('status', run)

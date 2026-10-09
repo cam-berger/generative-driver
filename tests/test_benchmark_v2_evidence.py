@@ -311,7 +311,8 @@ class EvidenceBoundaryTests(unittest.TestCase):
                      patch.object(Controller, '_check', side_effect=check), \
                      patch('generative_driver.configurator.execute', side_effect=execute):
                     with patch.object(controller, '_state', side_effect=state), ThreadPoolExecutor(max_workers=1) as pool:
-                        run = controller.start({'goal': 'scripted-contract-fixture', 'budget_seconds': 30})
+                        run = controller.start({'goal': 'scripted-contract-fixture', 'budget_seconds': 30,
+                                                 'executor_config': {'command': ['scripted-runtime']}})
                         self.assertTrue(check_started.wait(5), 'Final check never ran')
                         cancelled = pool.submit(controller.call, 'cancel', run).result(timeout=5)
                         self.assertFalse(cancelled['stopping'])

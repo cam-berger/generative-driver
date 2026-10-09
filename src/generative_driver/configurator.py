@@ -2875,10 +2875,11 @@ class Controller:
                           'model and their differences from it; physical meaning rests on operator observations where given'}))
         elif stage == 'emit':
             from .toolkit import call_tool
-            # A package is bytes the configurator observed, as probe records are: the package_dir of an emit_package
-            # this assignment ran, hashed when the tool returned, or a package whose bytes equal one an emit_check of
-            # this assignment was given, hashed before dispatch. The report may name which; without a named package
-            # the newest emit_package build is taken. A worker's claimed hash is never used.
+            # A package is bytes the configurator observed, as probe records are: those of a package_dir an
+            # emit_package of this assignment built, hashed when the tool returned, or of a package an emit_check of
+            # this assignment was given, hashed before dispatch. The report may name which (a copy of those bytes
+            # elsewhere in the workspace too); without a named package the newest emit_package build is taken. A
+            # worker's claimed hash is never used.
             built = {}
             for event in observed:
                 raw = _result_of(event).get('package_dir') if event['name'] == 'emit_package' else None
@@ -2886,7 +2887,8 @@ class Controller:
                 if path in (event.get('artifacts') or {}):
                     built.pop(path, None)
                     built[path] = event['artifacts'][path]
-            given = {(e.get('argument_sha256') or {}).get('package_dir') for e in mine if e['name'] == 'emit_check'} - {None}
+            given = ({(e.get('argument_sha256') or {}).get('package_dir') for e in mine if e['name'] == 'emit_check'}
+                     | set(built.values())) - {None}
             packages = [p for p in dict.fromkeys(named) if p.is_dir() and (p / 'manifest.json').is_file()]
             packages = packages or [Path(path) for path in list(built)[-1:]]
             candidates, verified, rejected, unobserved = [], [], [], []
@@ -2895,7 +2897,7 @@ class Controller:
                     current = digest(package)
                 except (OSError, ValueError):
                     current = None
-                if current is not None and (current == built.get(str(package)) or current in given):
+                if current is not None and current in given:
                     candidates.append(package)
                     continue
                 why = ('changed after emit_package returned' if str(package) in built else

@@ -1426,16 +1426,22 @@ class TQ9V2Tests(unittest.TestCase):
             self.assertEqual(raw['events'][0]['result']['error']['fault'], 'host')
 
     def test_a_call_that_fails_on_the_evaluators_healthy_device_is_the_drivers(self):
-        # A driver whose request gets no reply, or that hangs, on the evaluator's own fresh emulator: that emulator still
-        # runs and answers its monitor, so the failure is the driver's and is graded, never left unscored.
+        # Grading a candidate: a request that gets no reply on the evaluator's own fresh emulator, which still runs,
+        # answers its monitor and accepts a connection on the driver's channel, is the driver's failure and is graded.
+        # Calibration never reclassifies: an outage there must not pass for a mutant's rejection.
+        import socket
         from generative_driver.benchmark_support.emulated_actions import execute_plan
         from generative_driver.benchmark_support.behavior import validate_records
+        channel = socket.socket(); channel.bind(('127.0.0.1', 0)); channel.listen(4); self.addCleanup(channel.close)
         class Session:
             running = False
+            binding = {'host': '127.0.0.1', 'port': channel.getsockname()[1]}
             def set_running(self, value): self.running = value
             def observe(self): return {'values': {}, 'reads': []}
         class Dead(Session):
             def observe(self): raise RuntimeError('Host fault: missing or malformed scalar observation: compare')
+        class Closed(Session):
+            binding = {'host': '127.0.0.1', 'port': 9}
         contract = {'schema': 'benchmark-behavior/1', 'artifact_sha256': 'a'*64, 'checks': [
             {'id': 'e/1/temperature', 'revision': 0, 'kind': 'number', 'expected': 12,
              'absolute_tolerance': 0, 'unit': 'degC', 'channel': 'runtime-transcript'}]}
@@ -1446,33 +1452,47 @@ class TQ9V2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp)/'raw.json'
             rows = execute_plan(Session(), lambda *args: dict(no_reply), plan, contract, path,
-                                lambda raw, result, inputs: result.get('outputs', {}))
+                                lambda raw, result, inputs: result.get('outputs', {}), healthy_device_failures=True)
             self.assertEqual(validate_records(contract, rows)['verdict'], 'failed')
             self.assertTrue(rows[0]['invocation_failed'])
             self.assertEqual(rows[0]['invocation_error']['fault'], 'model')
             event = json.loads(path.read_text())['events'][0]
             self.assertIs(event['device_healthy'], True)
-            self.assertEqual(event['result']['error']['fault'], 'model')
-            # An emulator that no longer answers its monitor leaves the grade unscored, as before.
-            with self.assertRaisesRegex(RuntimeError, 'Host execution failed'):
-                execute_plan(Dead(), lambda *args: dict(no_reply), plan, contract, path, lambda *args: {})
-            self.assertIs(json.loads(path.read_text())['events'][0]['device_healthy'], False)
+            self.assertEqual((event['result']['error']['fault'], event['result']['error']['reported_fault']), ('model', 'host'))
+            # A device that stopped answering its monitor, or whose channel refuses connections, leaves it unscored;
+            # so does every host fault while calibrating.
+            for session, opted in ((Dead(), True), (Closed(), True), (Session(), False)):
+                with self.subTest(session=type(session).__name__, opted=opted):
+                    with self.assertRaisesRegex(RuntimeError, 'Host execution failed'):
+                        execute_plan(session, lambda *args: dict(no_reply), plan, contract, path, lambda *args: {},
+                                     healthy_device_failures=opted)
 
-    def test_a_package_call_that_hangs_or_prints_no_result_is_reported_not_raised(self):
-        # The evaluator decides whose failure it is from its device's health; the package call only reports it. The
-        # deadline outlasts the longest operation a valid model may declare (120 s) plus the process start.
+    def test_a_package_process_that_hangs_or_prints_no_result_is_the_hosts(self):
+        # The package's Python is the evaluator's trusted template and runtime, which enforces every deadline the model
+        # declares: a call that outlasts identity plus the longest operation, or prints nothing, failed on the host. It
+        # is reported, never raised, and never blamed on the driver however healthy the device is.
+        import socket
         import subprocess
         from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated_actions import package_invoker, PACKAGE_CALL_SECONDS
-        self.assertGreater(PACKAGE_CALL_SECONDS, 120)
+        from generative_driver.benchmark_support.emulated_actions import package_invoker, execute_plan, PACKAGE_CALL_SECONDS
+        self.assertGreaterEqual(PACKAGE_CALL_SECONDS, 2 * 120 + 5)
         call = package_invoker('/frozen/package', {'host': '127.0.0.1', 'port': 1}, ['write'])
         with patch('subprocess.run', side_effect=subprocess.TimeoutExpired(['driver'], PACKAGE_CALL_SECONDS)) as ran:
             hung = call('read', {})
         self.assertEqual(ran.call_args.kwargs['timeout'], PACKAGE_CALL_SECONDS)
-        self.assertEqual((hung['ok'], hung['error']['fault'], hung['error']['code']), (False, 'host', 'timeout'))
         with patch('subprocess.run', return_value=subprocess.CompletedProcess(['driver'], 1, 'Traceback (most recent call last)', '')):
             silent = call('read', {})
-        self.assertEqual((silent['ok'], silent['error']['fault'], silent['error']['code']), (False, 'host', 'no_result'))
+        for failed, code in ((hung, 'timeout'), (silent, 'no_result')):
+            self.assertEqual((failed['ok'], failed['error']['fault'], failed['error']['source'], failed['error']['code']),
+                             (False, 'host', 'package-process', code))
+        channel = socket.socket(); channel.bind(('127.0.0.1', 0)); channel.listen(4); self.addCleanup(channel.close)
+        class Session:
+            binding = {'host': '127.0.0.1', 'port': channel.getsockname()[1]}
+            def set_running(self, value): pass
+            def observe(self): return {'values': {}, 'reads': []}
+        with tempfile.TemporaryDirectory() as temp, self.assertRaisesRegex(RuntimeError, 'Host execution failed'):
+            execute_plan(Session(), lambda *args: dict(hung), [{'kind': 'call', 'task': 'read', 'inputs': {}, 'grants': []}],
+                         {'checks': []}, Path(temp)/'raw.json', lambda *args: {}, healthy_device_failures=True)
 
     def test_fresh_reuse_acknowledgements_do_not_substitute_for_a_reading(self):
         # Public adapter seam: actuator ACK outputs alone do not finish the mission, which is a note, never a stop.
@@ -1570,7 +1590,7 @@ class TQ9V2Tests(unittest.TestCase):
         files = identity['files']
         for pinned in ('benchmark_support/evaluator.py', 'benchmark_support/emulated_actions.py', 'interface_runtime/engine.py',
                        'toolchain/emit.py', 'toolchain/probe.py', 'toolchain/interface.py', 'toolkit.py',
-                       'resources/tools/workspace/ghidra_run.py'):
+                       'resources/tools/workspace/ghidra_run.py', 'resources/tools/model_exec.py'):
             self.assertIn(pinned, files)
         self.assertTrue(any(path.startswith('template/') for path in files), files)
         for kit in ('configurator.py', 'benchmark.py', 'reporting.py', 'toolchain/acquire.py', 'toolchain/interpret.py',

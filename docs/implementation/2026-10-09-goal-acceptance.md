@@ -1,5 +1,32 @@
 # Goal acceptance: assistive configurator branch
 
+## Status after the finishing pass (2026-10-09)
+
+The most important fixes below are done; the assessment that follows is kept as written at `0e8e0fe`.
+
+- **Kit (goal 1).**
+  - MCP and CLI stdio tests now test the package under test.
+  - A missing pyserial is a host fault, never a verdict about the driver.
+  - Every start resolves an omitted runtime to the one configured. A start, a resumed run or a benchmark naming an unconfigured runtime is refused or stops for the operator, instead of launching whatever has that name on `PATH`.
+  - A client refuses to drive a configurator running other code, and the configurator refuses to start under another installation's record. Worker gateways are exempt, so a host change never cuts a stage off from its tools.
+- **Benchmark (goal 2).**
+  - A candidate driver whose call fails on the evaluator's healthy device is graded against it. Healthy means the emulator runs, answers its monitor and accepts a connection on the driver's channel. Before this pass such a trial was left unscored and blocked its suite.
+  - A package process that hangs past 300 s or prints nothing, a dead device, and every host fault during calibration stay unscored.
+  - The evaluator identity pins only the grading closure, so a kit change no longer voids a calibration.
+  - `benchmark truth calibrate` runs the family calibrations and exits 1 when one fails.
+- **Verified.**
+  - The source suite and the CI-equivalent run pass: an installed wheel in a clean venv whose path has spaces, without the hardware extras, outside the checkout, with the archive gates and the setup smoke.
+  - An independent review of the pass was addressed.
+- **Still open, needing the operator.**
+  - Recalibrate the three emulated families natively with the evaluator password.
+  - Authorize the nine-trial end test.
+- **Not done (lower priority).**
+  - Reset-on-open as a real stop (G1-4) and Goose adapter parity (G1-5).
+  - The replay executor (G2-4).
+  - Report and comparison improvements (G2-5 to G2-15).
+  - The simplification candidates below.
+
+
 Branch `claude/goose-new-device-trial-5c6f78` at 0e8e0fe. It is compared against `d1121ad`, the branch point before the refactor, and `main`, the previous release line. The objective is `docs/superpowers/specs/2026-10-07-assistive-configurator.md`. This report combines four assessments: deployment, modularity, benchmark robustness and benchmark usefulness.
 
 **Scope of the evidence.** All results come from scripted runs, a silent stub runtime, local TCP peers, the scripted AssistiveFixture and reading the code. No real model ran. No Renode session or native grading ran. No physical device was touched, and nothing ran on Windows. Findings marked "code read" were not reproduced.
@@ -16,7 +43,7 @@ Both goals are **partly met**. The branch is clearly better than the last versio
 | Installed wheel outside the checkout, using the main venv's site-packages (pyserial present) | 764 run, 1 error |
 | Installed wheel in a clean venv with no extras (the same setup as CI's "Test outside the checkout" step) | 764 run, 1 failure, 1 error, 3 skipped |
 
-The documented recipe hides both problems. The MCP stdio tests start their server with only `env={'GENERATIVE_DRIVER_HOME': ...}`. That child process loses `PYTHONPATH`, so it imports the main checkout's editable install (`/Users/cberg/Research/generative-driver/src` at 359f5be, with local edits) instead of the worktree. Under that recipe, every stdio test in `tests/test_mcp.py` tests main's server, and so do the MCP subprocesses in `tests/test_cli.py`.
+The documented recipe hides both problems. The MCP stdio tests start their server with only `env={'GENERATIVE_DRIVER_HOME': ...}`. That child process loses `PYTHONPATH`, so it imports the main checkout's editable install (another checkout's `src`, with local edits) instead of the worktree. Under that recipe, every stdio test in `tests/test_mcp.py` tests main's server, and so do the MCP subprocesses in `tests/test_cli.py`.
 
 Sizes used below: S is under about 50 lines or a few hours. M is about 50 to 200 lines, or about a day. L is several days or needs operator tooling.
 
@@ -57,7 +84,7 @@ G1-1. **Make the installed-wheel test run pass, and stop the recipe from hiding 
 
 G1-2. **Do not launch a `codex` that was never configured.** [S] Files: `src/generative_driver/mcp.py:25, 126`, the configurator's executor lookup, doctor
 - `driver_start` and `driver_benchmark_suite_start` default `executor` to `codex`. The configurator then falls back to whatever bare `codex` is on PATH.
-- In one run, a Goose-only user got 4 launches of an unverified binary. On this machine, `codex` on PATH is an unrelated Python app, and doctor reports it as available.
+- In one run, a Goose-only user got 4 launches of an unverified binary. On the test host, `codex` on PATH was an unrelated Python app, and doctor reports it as available.
 - Fix: default to the single configured executor, and refuse an executor that is not configured with an operator stop. Have doctor mark a runtime found only on PATH as unverified.
 
 G1-3. **Add a version handshake between client and daemon.** [S-M] Files: `src/generative_driver/daemon.py:55`, `client.py`

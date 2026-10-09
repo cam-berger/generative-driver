@@ -16,6 +16,10 @@ from .configurator import Controller
 def serve(home):
     home = Path(home).resolve()
     endpoint = json.loads((home / 'service.json').read_text(encoding='utf-8'))
+    if endpoint.get('code') != code_identity():
+        # The starting client loaded other code than this process imports: serving would mislabel every reply.
+        raise RuntimeError('service.json records other generative-driver code than this configurator runs; '
+                           'start the service again from one installation')
     controller = Controller(home)
     listener = Listener(endpoint['address'], family=endpoint['family'], authkey=bytes.fromhex(endpoint['authkey']))
     ordinary_slots = threading.BoundedSemaphore(24)

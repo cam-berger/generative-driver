@@ -830,9 +830,10 @@ def launch(case, output_dir=None, executor=None, options=None, approval=None, *,
         raise ValueError('Unsupported options for a benchmark trial: ' + ', '.join(sorted(options)))
     if request_id is not None and (not isinstance(request_id, str) or not request_id.strip()):
         raise ValueError('request_id must be a nonblank string')
+    from ..setup import configured_executor
     trial_id = 'trial-' + uuid.uuid4().hex[:16]
     request = {'trial_id': trial_id, 'home': str(home), 'autostart': autostart, 'goal': GOAL, 'case': case,
-               'executor': executor or 'codex', 'budget_seconds': budget, 'effects': chosen, 'case_options': case_options,
+               'executor': configured_executor(executor, home), 'budget_seconds': budget, 'effects': chosen, 'case_options': case_options,
                'request_id': request_id, 'output_dir': str(Path(output_dir).resolve()) if output_dir else None,
                'scoped_tool_approval': approval, 'binding': binding}
     if request_id is not None:
@@ -1080,7 +1081,7 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
                                                      if request.get(key) is not None}, **extension})
         else:
             # Every start carries a request_id, so a start the client sends again after a lost reply finds its suite.
-            reply = configurator('suite_start', {'manifest': request.get('manifest'), 'executor': request.get('executor') or 'codex',
+            reply = configurator('suite_start', {'manifest': request.get('manifest'), 'executor': request.get('executor'),
                                                  'options': request.get('options') or {},
                                                  'request_id': request.get('request_id') or 'harness-' + uuid.uuid4().hex,
                                                  **identity})

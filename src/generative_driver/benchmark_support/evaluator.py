@@ -47,7 +47,8 @@ def case_truth(case_id, run_dir, options):
 
 
 def reference_execute(pin, truth, model, capabilities, *, renode, image, output_dir,
-                      phase='final', package=None, expected_package_sha256=None, package_final=True, private_dir=None):
+                      phase='final', package=None, expected_package_sha256=None, package_final=True, private_dir=None,
+                      healthy_device_failures=False):
     """Measured evaluator-only seam using normal models and frozen packages, on a fresh emulator it starts and stops.
     The emulator session keeps its files (its log, the monitor commands it rendered) in `private_dir` when given."""
     if pin.get('scenario_id') != 'original':
@@ -113,7 +114,8 @@ def reference_execute(pin, truth, model, capabilities, *, renode, image, output_
         local = {**truth, 'artifact_sha256': frozen or model_hash}
         contract = family.contract(pin, local, phase)
         records = execute_plan(session, invoke, family.build_plan(pin, local, phase), contract,
-            output/'raw.json', family.observations, truth['contracts']['time_policy']['sample_settle_seconds'])
+            output/'raw.json', family.observations, truth['contracts']['time_policy']['sample_settle_seconds'],
+            healthy_device_failures=healthy_device_failures)
         if frozen and digest(package) != frozen:
             raise ValueError('Frozen package changed during final episode')
         result = {'execution': 'reference-calibration', 'backend': 'native-renode',
@@ -304,7 +306,8 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
         # which the harness removes however grading ends.
         evaluation = reference_execute({**pin, 'revision': revision}, truth, model, capabilities, renode=renode,
                                        image=inputs/'firmware.bin', output_dir=output, phase='final', package=package,
-                                       expected_package_sha256=sha, private_dir=private/'native')
+                                       expected_package_sha256=sha, private_dir=private/'native',
+                                       healthy_device_failures=True)
         raw = output/'raw.json'
         final = {'run_id': result['run_id'], 'phase': 'final', 'revision': revision, 'frozen_artifact_sha256': sha,
                  'capabilities_sha256': capabilities_sha, 'contract': evaluation['contract'], 'records': evaluation['records'],

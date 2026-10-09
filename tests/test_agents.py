@@ -8,6 +8,19 @@ import time
 
 
 class AgentAdapterTests(unittest.TestCase):
+    def test_a_runtime_without_a_configured_command_is_never_looked_up_on_path(self):
+        # Whatever has the runtime's name on PATH may be another program: with no configured command the stage stops
+        # for the operator and nothing is launched.
+        from unittest.mock import patch
+        from generative_driver.agents import StageRequest, execute
+        with tempfile.TemporaryDirectory(prefix='unconfigured runtime ') as directory, \
+                patch('subprocess.Popen', side_effect=AssertionError('a runtime was launched')):
+            for runtime in ('codex', 'goose'):
+                blocked = execute(StageRequest(stage='acquire', workspace=Path(directory)/runtime, prompt='fixture'),
+                                  {'runtime': runtime})
+                self.assertEqual((blocked['status'], blocked['cause']), ('blocked', 'runtime_unavailable'), blocked)
+                self.assertIn('configure', blocked['reason'])
+
     def test_launcher_failure_is_a_blocker_while_runtime_exit_remains_a_failure(self):
         from generative_driver.agents import StageRequest, execute
         with tempfile.TemporaryDirectory(prefix='runtime launch contract ') as directory:

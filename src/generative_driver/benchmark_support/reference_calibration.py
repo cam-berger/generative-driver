@@ -18,10 +18,13 @@ REQUIRED_SCENARIOS = ('original',)
 CORE_MUTANTS = ('wrong-scale', 'constant-output', 'wrong-state')
 
 
-# The toolchain tools grading calls (probe_run, emit_package, emit_check and the interface runtime tools) and the
-# analysis wrappers calibration runs. The rest of the kit is the candidate's side.
+# The toolchain tools grading calls (probe_run, emit_package, emit_check and the interface runtime tools), what they
+# execute, and the analysis wrappers calibration runs. The rest of the kit is the candidate's side. Grading also uses a
+# few shared helpers outside this closure (configurator.digest, benchmark.case_root, reporting's tree hash): a change
+# there alters hashes and fails integrity checks rather than changing a grade.
 GRADING_TOOLCHAIN = ('__init__.py', 'core.py', 'runner.py', 'probe.py', 'emit.py', 'interface.py')
-CALIBRATION_ANALYSIS = ('resources/tools/workspace/ghidra_run.py',
+CALIBRATION_ANALYSIS = ('resources/tools/model_exec.py',  # the toolchain runner executes it on import
+                        'resources/tools/workspace/ghidra_run.py',
                         'resources/toolchain/skills/interpret-firmware-binary/ExportDecomp.java',
                         'resources/toolchain/skills/interpret-firmware-binary/SeedCortexM.java')
 

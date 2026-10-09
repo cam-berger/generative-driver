@@ -92,7 +92,7 @@ def _launch_options(options, home):
     return directory, selected, selected.pop('evaluator_password_files', None), selected.pop('renode', None)
 
 
-def start_suite(manifest: dict, executor: str = 'codex', options: dict | None = None,
+def start_suite(manifest: dict, executor: str | None = None, options: dict | None = None,
                 request_id: str | None = None, *, home=None, autostart=True) -> dict:
     """Start a suite through a detached bench harness, which drives it; the configurator only freezes and stores it.
     Password files and the emulator executable in `options` go to the harness on its stdin, never into the suite tables
@@ -105,7 +105,9 @@ def start_suite(manifest: dict, executor: str = 'codex', options: dict | None = 
     if not call('ping', {}, directory, autostart=False).get('ok'):
         # Refuse an invalid selection before a configurator exists; a running one checks it again as it freezes.
         preflight_selection(normalized)
-    return launch_suite({'manifest': normalized, 'executor': executor, 'options': selected, 'request_id': request_id},
+    from ..setup import configured_executor
+    return launch_suite({'manifest': normalized, 'executor': configured_executor(executor, directory), 'options': selected,
+                         'request_id': request_id},
                         home=directory, password_files=passwords, renode=renode, autostart=autostart)
 
 

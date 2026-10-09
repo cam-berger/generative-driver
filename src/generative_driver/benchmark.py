@@ -56,7 +56,7 @@ def main(argv=None):
     suites = commands.add_parser('suite').add_subparsers(dest='action', required=True)
     starting = suites.add_parser('start')
     starting.add_argument('--manifest', required=True)
-    starting.add_argument('--executor', choices=['codex', 'goose'], default='codex')
+    starting.add_argument('--executor', choices=['codex', 'goose'], help='Default: the one configured runtime')
     starting.add_argument('--options')
     starting.add_argument('--request-id')
     for action in ('status', 'events', 'result', 'cancel', 'resume'):
@@ -86,7 +86,7 @@ def main(argv=None):
     running.add_argument('--scenario')
     running.add_argument('--case-seed', type=int, default=0)
     running.add_argument('--output')
-    running.add_argument('--executor', choices=['codex', 'goose'], default='codex')
+    running.add_argument('--executor', choices=['codex', 'goose'], help='Default: the one configured runtime')
     running.add_argument('--budget-seconds', type=int, default=10800)
     running.add_argument('--password-file')
     running.add_argument('--renode')
@@ -179,7 +179,9 @@ def main(argv=None):
         else:
             result = score(args.report, args.password_file, evidence_path=args.evidence)
         print(json.dumps(result, indent=2, allow_nan=False))
-        return 0 if not isinstance(result, dict) or result.get('verdict') not in ('failed', 'not equivalent') else 1
+        failed = isinstance(result, dict) and (result.get('verdict') in ('failed', 'not equivalent')
+                                               or args.command == 'truth' and result.get('ok') is False)
+        return 1 if failed else 0
     except (OSError, ValueError, RuntimeError) as error:
         print(json.dumps({'ok': False, 'error': str(error)}))
         return 1

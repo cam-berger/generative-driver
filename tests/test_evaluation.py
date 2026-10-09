@@ -36,13 +36,14 @@ def reference(values, calls=None, before=None, after=None):
     """A scripted final phase in reference_execute's shape: the toy contract, records with `values`, raw evidence and
     the plaintext evaluation output the real one leaves in its output directory. `after` runs once that output exists."""
     def execute(pin, truth, model, capabilities, *, renode, image, output_dir, phase='final', package=None,
-                expected_package_sha256=None, package_final=True, private_dir=None):
+                expected_package_sha256=None, package_final=True, private_dir=None, healthy_device_failures=False):
         if before:
             before()
         if calls is not None:
             calls.append({'pin': pin, 'model': model, 'capabilities': capabilities, 'image': Path(image), 'phase': phase,
                           'package': Path(package), 'sha': expected_package_sha256, 'output': Path(output_dir),
-                          'renode': renode, 'private': Path(private_dir) if private_dir else None})
+                          'renode': renode, 'private': Path(private_dir) if private_dir else None,
+                          'healthy_device_failures': healthy_device_failures})
         if private_dir:
             # What a native session leaves in its private directory after a monitor rejection: the rendered evaluator
             # command, with the hidden stimulus in it.
@@ -353,6 +354,8 @@ class HarnessGradingTests(PendingRunFixture):
                 # The grading session's own files (its log, the monitor commands it rendered) live where grading's
                 # cleanup reaches them, never in a temporary directory that outlives the trial's evaluation.
                 self.assertIsNotNone(call['private']); self.assertTrue(call['private'].is_relative_to(trial / 'private'))
+                # Grading a candidate's frozen driver counts a no-reply on the evaluator's healthy device against it.
+                self.assertIs(call['healthy_device_failures'], True)
                 self.assertEqual(call['image'], self.home / 'runs' / record['run_id'] / 'benchmark/inputs/firmware.bin')
                 self.assertEqual(unlocked[0][1], self.home / 'runs' / record['run_id'])
                 # The verdict the harness posted is the one the configurator holds.

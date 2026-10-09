@@ -117,9 +117,15 @@ class RegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._v2_case(root, calibration={'status': 'passed'})
+            home = root / 'owner'
+            # A public 'passed' label admits nothing by itself: without a running configurator, a start that may not
+            # create one is refused before any harness, device or owner exists (admission is the harness's, later).
             with patch('generative_driver.benchmark.case_root', return_value=root):
-                with self.assertRaisesRegex(ValueError, 'calibration'):
-                    run('tq9-v2', options={'scenario_id': 'original'}, autostart=False)
+                refused = run('tq9-v2', options={'scenario_id': 'original', 'home': str(home)}, autostart=False)
+            self.assertFalse(refused['ok'], refused)
+            self.assertIn('service start', refused['reason'])
+            self.assertFalse((home / 'service.json').exists())
+            self.assertFalse(any(path.name.endswith('-bench') for path in root.iterdir()))
 
     def test_registered_emulated_v2_uses_registry_approval_scope(self):
         import tempfile

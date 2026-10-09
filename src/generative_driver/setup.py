@@ -13,6 +13,16 @@ def home_path(home=None):
     return Path(home or default_home()).expanduser().resolve()
 
 
+def configured_executor(executor=None, home=None):
+    """The runtime a start uses: the one it names, else the one runtime the operator configured (codex when both or
+    neither are). Resolved before a request is compared or frozen, so an omitted runtime always means the same one."""
+    if executor is not None:
+        return executor
+    path = home_path(home) / "config.json"
+    configured = json.loads(path.read_text(encoding="utf-8")).get("executors", {}) if path.is_file() else {}
+    return next(iter(configured)) if len(configured) == 1 else "codex"
+
+
 def configure(executor, command, model=None, provider=None, home=None, reasoning_effort=None):
     """Persist an explicit runtime selection without touching runtime credentials."""
     if executor not in ("codex", "goose") or not command or not all(isinstance(s, str) and s for s in command):

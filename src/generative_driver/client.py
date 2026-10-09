@@ -114,19 +114,21 @@ def _confirmed_shutdown(pid, timeout=10):
             **({} if stopped else {'reason': 'Daemon exit was not confirmed before the shutdown deadline'})}
 
 
-_CODE = None
+def _sources_digest():
+    digest, root = hashlib.sha256(), Path(__file__).resolve().parents[1]
+    for package in ('generative_driver', 'interface_runtime'):
+        for path in sorted((root / package).rglob('*.py')):
+            digest.update(path.relative_to(root).as_posix().encode() + b'\0' + path.read_bytes() + b'\0')
+    return digest.hexdigest()
+
+
+# Taken when this process loads the package: the code it runs, not the files on disk at some later call.
+_CODE = _sources_digest()
 
 
 def code_identity():
-    """Digest of the Python sources this process runs. A client never drives a configurator running other code: an
+    """Digest of the Python sources this process loaded. A client never drives a configurator running other code: an
     older installation, another checkout, or this one before an edit, whatever version number they share."""
-    global _CODE
-    if _CODE is None:
-        digest, root = hashlib.sha256(), Path(__file__).resolve().parents[1]
-        for package in ('generative_driver', 'interface_runtime'):
-            for path in sorted((root / package).rglob('*.py')):
-                digest.update(path.relative_to(root).as_posix().encode() + b'\0' + path.read_bytes() + b'\0')
-        _CODE = digest.hexdigest()
     return _CODE
 
 
@@ -249,7 +251,8 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
     directory = Path(home or default_home()).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     params = params or {}
-    if method not in ('ping', 'shutdown'):
+    # A worker gateway (tools, tool) is the configurator's own machinery for an assignment it authenticates.
+    if method not in ('ping', 'shutdown', 'tools', 'tool'):
         try:
             endpoint = json.loads((directory / 'service.json').read_text(encoding='utf-8'))
         except (OSError, ValueError):
@@ -279,5 +282,7 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
         except (OSError, ValueError):
             recorded = {}
         compatible = recorded.get('code') == code_identity() and result.get('code') == code_identity()
-        result = {**result, 'compatible': compatible, **({} if compatible else {'reason': _incompatible(recorded)})}
+        # Every preflight asks ping before it admits a case or starts a device: one running other code is no owner.
+        result = {**result, 'compatible': compatible,
+                  **({} if compatible else {'ok': False, 'reason': _incompatible(recorded)})}
     return result

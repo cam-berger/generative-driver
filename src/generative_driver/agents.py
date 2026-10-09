@@ -99,7 +99,7 @@ def validate_report(value):
 
 def _launch(request, config):
     runtime = config.get('runtime', 'codex')
-    command = config.get('command') or [runtime]
+    command = config['command']
     if isinstance(command, str):
         command = [command]
     if not isinstance(command, list) or not command or not all(isinstance(v, str) and v for v in command):
@@ -199,6 +199,12 @@ def execute(request, config, cancel_event=None, on_event=None):
 
     A result that is not completed names its `cause`: runtime_unavailable, run_budget, cancelled,
     exit_error, output_limit, no_report or invalid_report."""
+    if not config.get('command'):
+        # Never look the runtime up on PATH: whatever has that name there may be another program.
+        runtime = config.get('runtime', 'codex')
+        return {'runtime': runtime, 'model': config.get('model'), 'provider': config.get('provider'), 'report': None,
+                'usage': None, 'status': 'blocked', 'cause': 'runtime_unavailable', 'elapsed_seconds': 0,
+                'reason': f'No {runtime} command is configured; run `generative-driver configure {runtime} <command>`'}
     command, env, prompt = _launch(request, config)
     work = Path(request.workspace).resolve()
     transcript = work / '_agent_events.jsonl'

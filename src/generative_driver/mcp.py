@@ -124,7 +124,7 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = No
 
 
 @server.tool()
-def driver_benchmark_suite_start(manifest: dict, executor: str = 'codex',
+def driver_benchmark_suite_start(manifest: dict, executor: Literal['codex', 'goose'] | None = None,
                                  options: dict | None = None, request_id: str | None = None) -> str:
     """Start a durable emulated suite; save suite_id to reconnect from either client.
 

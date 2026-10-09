@@ -115,8 +115,12 @@ class ServiceLifecycleTests(unittest.TestCase):
                 self.assertIn('service stop', refused['reason'])
                 self.assertFalse((home / 'runs').exists() and list((home / 'runs').iterdir()))
                 pinged = call('ping', {}, home)
-                self.assertEqual((pinged['pid'], pinged['compatible']), (owner['pid'], False), pinged)
+                self.assertEqual((pinged['ok'], pinged['pid'], pinged['compatible']), (False, owner['pid'], False), pinged)
                 self.assertIn('service stop', pinged['reason'])
+                # A worker gateway is the configurator's own machinery, launched from its tree for one assignment it
+                # authenticates: a host change during a run must never cut a stage off from its tools.
+                gateway = call('tools', {'run_id': 'run-absent', 'assignment_id': 'absent'}, home, autostart=False)
+                self.assertNotIn('service stop', gateway.get('reason', ''), gateway)
             finally:
                 self.assertTrue(call('shutdown', {}, home)['stopped'])
             # With the incompatible configurator gone, the next call starts one running this code.
@@ -126,6 +130,19 @@ class ServiceLifecycleTests(unittest.TestCase):
                 self.assertTrue(restarted['compatible'], restarted)
             finally:
                 call('shutdown', {}, home)
+
+    def test_a_configurator_never_serves_under_another_installations_record(self):
+        import json
+        from generative_driver import daemon
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            (home / 'service.json').write_text(json.dumps({'family': 'AF_UNIX', 'address': str(home / 'owner.sock'),
+                                                            'authkey': '00' * 32, 'code': 'other'}), encoding='utf-8')
+            # Started by a client that loaded other code than this configurator imports: it fails at startup, loudly,
+            # instead of serving clients that record a digest it does not run.
+            with self.assertRaisesRegex(RuntimeError, 'other generative-driver code'):
+                daemon.serve(home)
+            self.assertFalse((home / 'runs.sqlite3').exists())
 
     def test_shutdown_drains_an_accepted_tool_before_confirming_exit(self):
         from generative_driver.client import call

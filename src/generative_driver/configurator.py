@@ -18,6 +18,7 @@ import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 
+from .setup import configured_executor
 from .agents import StageRequest, execute
 
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
@@ -1415,13 +1416,17 @@ class Controller:
             return self.call('status',{'run_id':run_id})
         raise ValueError('Unknown method: ' + str(method))
 
+    def _configured_executors(self):
+        path = self.home / 'config.json'
+        return json.loads(path.read_text(encoding='utf-8')).get('executors', {}) if path.is_file() else {}
+
     def suite_start(self,params):
         """Freeze and store a suite for the bench harness that drives it, attached by the sha256 of its token. Nothing is
         scheduled here: the harness reserves, starts, attaches and settles each slot."""
         from .benchmark_support.suites import normalize_manifest,freeze_suite,refuse_secrets
         from .benchmark_support.snapshots import execution_provenance
         manifest=normalize_manifest(params.get('manifest'))
-        executor=params.get('executor','codex')
+        executor=configured_executor(params.get('executor'),self.home)
         options=params.get('options',{})
         refuse_secrets(options)
         token,pid,lock=_harness_identity(params,'A suite is started and driven by its bench harness: `benchmark suite start`')
@@ -1430,9 +1435,7 @@ class Controller:
             saved=self._suites.find_request(params.get('request_id'),request)
             if saved is None:
                 if self._closing:raise ValueError('Configurator is stopping')
-                config_path=self.home/'config.json'
-                config=json.loads(config_path.read_text(encoding='utf-8')).get('executors',{}).get(executor,{}) if config_path.is_file() else {}
-                config={**config,'runtime':executor}
+                config={**self._configured_executors().get(executor,{}),'runtime':executor}
                 frozen=freeze_suite(manifest,executor,config,options,execution_provenance(config),harness_token_sha256=token)
                 saved=self._suites.create(frozen,params.get('request_id'),harness_pid=pid,harness_lock=lock)
                 if not saved['duplicate']:
@@ -1950,12 +1953,7 @@ class Controller:
         goal = params.get('goal')
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError('start requires a nonempty goal')
-        config_path = self.home / 'config.json'
-        configured = json.loads(config_path.read_text(encoding='utf-8')).get('executors', {}) if config_path.is_file() else {}
-        executor = params.get('executor')
-        if executor is None:
-            # An omitted executor is the one runtime the operator configured; codex only when both or neither are.
-            executor = next(iter(configured)) if len(configured) == 1 else 'codex'
+        executor = configured_executor(params.get('executor'), self.home)
         if executor not in ('codex', 'goose'):
             raise ValueError('executor must be codex or goose')
         budget = params.get('budget_seconds', 10800)
@@ -1971,7 +1969,7 @@ class Controller:
             if not params.get('case'):
                 raise ValueError('Expected case pin requires a registered case')
         else:
-            config = configured.get(executor, {})
+            config = self._configured_executors().get(executor, {})
         config = {**config, **params.get('executor_config', {}), 'runtime': executor}
         spec = {**params, 'executor': executor, 'executor_config': config, 'budget_seconds': budget, 'effects': effects,
                 '_submitted_intent': params}

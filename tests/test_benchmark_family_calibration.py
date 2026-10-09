@@ -592,6 +592,18 @@ class WrapperTests(unittest.TestCase):
             output_dir=Path('/private/out'), compiler=Path('/opt/arm/bin/arm-none-eabi-gcc'))
         self.assertTrue(summary['ok'])
         self.assertNotIn('private', summary)
+        with self.assertRaisesRegex(ValueError, 'password'):
+            manage('calibrate', 'sampled-sensor-v1', '/elsewhere/other.password', '/private/out',
+                   authoring_dir='/private/sampled-sensor-v1-authoring')
+        # The command exits 1 when the calibration did not pass, as the family's own CLI does.
+        import io, contextlib
+        from generative_driver.benchmark import main
+        with patch('generative_driver.benchmark_support.calibration.calibrate', return_value={**record, 'ok': False}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            code = main(['truth', 'calibrate', '--case', 'sampled-sensor-v1', '--output', '/private/out',
+                         '--authoring-dir', '/private/sampled-sensor-v1-authoring', '--renode', '/opt/renode',
+                         '--ghidra-home', '/opt/ghidra', '--java-home', '/opt/java'])
+        self.assertEqual(code, 1)
 
 class SeedEpisodeTests(unittest.TestCase):
     def test_seed_rotates_only_whole_reset_delimited_episodes(self):

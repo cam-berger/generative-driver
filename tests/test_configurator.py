@@ -2937,7 +2937,12 @@ class RealToolVerdictTests(unittest.TestCase):
             {'path': package, 'sha256': (Path(package) / 'manifest.sha256').read_text().strip(), 'kind': 'package'}]}
         silent = lambda request: {'runtime': 'codex', 'status': 'failed', 'cause': 'no_report', 'elapsed_seconds': 0,
                                   'usage': None, 'report': None, 'reason': 'Runtime did not produce a structured stage report'}
+        def copied(call, model, record, workspace):
+            built = call('emit_package', model_dir=str(model), probe_json=str(record))['package_dir']
+            shutil.copytree(built, workspace / 'copy')
+            return str(workspace / 'copy')
         for name, options in (('a report giving the manifest hash', {'emit_report': named}),
+                              ('a report naming a copy of the build', {'emit': copied}),
                               ('a report naming no artifact', {'emit_report': lambda package: None}),
                               ('no report', {'emit_runtime': silent})):
             with self.subTest(report=name), tempfile.TemporaryDirectory() as directory:

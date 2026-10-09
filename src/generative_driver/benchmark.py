@@ -100,7 +100,8 @@ def main(argv=None):
     running.add_argument('--binding-json', help='Operator-owned binding JSON, e.g. {"url":"ftdi://selected/1"}')
     running.add_argument('--wait', action='store_true', help='Follow a trial until its bench harness has finished')
     resuming = commands.add_parser('trial-resume', help='Complete the evaluation of a trial whose harness has finished: '
-                                   'grade it if it is unscored (never a final already graded) and post the verdict')
+                                   'grade it if it is unscored (never a final already graded), or a bound-device trial '
+                                   'whose run completed after its harness stopped following it, and post the verdict')
     resuming.add_argument('trial_dir')
     resuming.add_argument('--password-file', required=True)
     resuming.add_argument('--renode', help='Emulator executable; required when the trial\'s frozen driver still needs grading')

@@ -36,7 +36,7 @@ Read the entries for your task.
 - **Only these stop a run:**
   - `safety`: effect grants, the reset rule, uncertain writes, binding conflicts;
   - `integrity`: a recorded or observed hash that changed, a changed sealed input, a stale or duplicate handoff;
-  - `operator`: cancellation, wall-clock budget, a configured runtime that cannot start, a missing binding;
+  - `operator`: cancellation, wall-clock budget, a configured runtime that cannot start, a missing binding (including the operator input a bound device needs, such as a physical reuse reference: Ruling 8);
   - `host`: the runtime crashed with a nonzero exit, or an unexpected configurator exception. Both are resumable.
 
   Nothing else stops a run.
@@ -71,6 +71,7 @@ Read the entries for your task.
    - and every fresh-reuse live operation succeeded.
 
    It is labelled `"basis": "self-evidence"`. Benchmark runs use `"basis": "evaluator"`.
+8. **A physical reuse awaiting the operator's reference is an `operator` stop** (B8 review). It belongs to the missing-binding class of operator input: bme280 fresh reuse cannot be graded without an independent reference the operator takes at the time of the measurement, and no worker may supply one. The stop is `blocked` with `outcome_category = "operator"`; the operator answers with `driver_respond` (stage `reuse`) and resumes. The end-test check "no stop outside the stop list" counts it as an operator stop.
 
 ## Review focus
 
@@ -484,7 +485,8 @@ The device stays in-process for this task. It moves out in B3.
 - device readings are visible to workers;
 - workers are not read-isolated until a real sandbox exists;
 - a fresh native calibration is required before the end test, because the current calibration is already stale at `52eb018`;
-- historical sealed evidence needs a preserved checkout to regrade.
+- historical sealed evidence needs a preserved checkout to regrade;
+- a provided emulator (v2 and legacy tq9) runs paused between live calls, which probe objectives tell workers; the case manifests' `time_policy.probe` text ("continuous emulator virtual time") is unchanged because it is part of the case pin, and is not the provided device's policy (B8 review).
 
 **Tests:** the distribution and skill-sync tests pass, and the full suite passes.
 

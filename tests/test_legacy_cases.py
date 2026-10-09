@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from test_configurator import gateway_identity, scripted_stages, task_of, wait_stopped
+from test_configurator import context_of, gateway_identity, scripted_stages, task_of, wait_stopped
 from test_device_provider import MONITOR, keys
 from test_device_recovery import FORBIDDEN, imported
 from test_harness import SOURCE
@@ -122,13 +122,14 @@ class LegacyTrialTests(unittest.TestCase):
     def trial(self, *, duty=370, disarm=True):
         """Run one trial with scripted workers; the reuse worker requests `duty` permille and disarms when `disarm`."""
         from generative_driver.benchmark_support import harness
-        real_check = self.controller._check
+        real_check, self.objectives = self.controller._check, {}
         def work(request):
             if request.stage == 'interpret':
                 (Path(request.workspace) / 'model.json').write_text(json.dumps(tq9_model()))
                 (Path(request.workspace) / 'replies.json').write_text(json.dumps(replies()))
                 return
             task = task_of(request.prompt)
+            self.objectives[request.stage] = task.get('objective')
             if request.stage == 'acquire':
                 self.tool(request, 'acquire_firmware_artifact', task['context'])
             elif request.stage == 'probe':
@@ -163,6 +164,8 @@ class LegacyTrialTests(unittest.TestCase):
                           equivalence['protocol']), ('graded', True, 'evaluator', 'recorded-reuse', 'assistive/1'))
         self.assertEqual([check['id'] for check in equivalence['checks']], REUSE_CHECKS)
         self.assertEqual((result['status'], result['reason']), ('completed', 'Final verdict: equivalent'))
+        # The probe worker is told the provided emulator's time policy, not the manifest's continuous virtual time.
+        self.assertIn('paused between calls', self.objectives['probe'])
         self.assertEqual((result['progress']['equivalence'], result['evaluator_verdicts']), ('graded', []))
         self.assertNotIn('terminal_final_failure', result['progress'])
         self.assertEqual([h['stage'] for h in result['accepted_handoffs']], list(STAGES))
@@ -233,6 +236,10 @@ class LegacyTrialTests(unittest.TestCase):
         with scripted_stages(self.controller, check=self.controller._check, prepare=lambda original, *args: original(*args), work=work):
             run = self.controller.start({'goal': 'Legacy contract without a harness', 'case': 'tq9'})
             result = wait_stopped(self.controller, run)
+        # The start says plainly, before any worker runs, that the run cannot pass probe without its bench harness.
+        started = [e['data'] for e in self.controller.call('events', {'run_id': run['run_id']})['events'] if e['kind'] == 'run.started']
+        self.assertIn('`benchmark run`', run['note'])
+        self.assertEqual([event.get('note') for event in started], [run['note']])
         self.assertEqual((result['status'], result['outcome_category'], result['stage']), ('blocked', 'operator', 'probe'))
         self.assertIn('bench harness', result['reason'])
         self.assertEqual([h['stage'] for h in result['accepted_handoffs']], ['acquire', 'interpret'])
@@ -337,66 +344,334 @@ class ConcludeTests(unittest.TestCase):
         self.assertEqual([(method, params['equivalence']) for method, params in posted], [('record_evaluation', done['equivalence'])])
 
 
-class PhysicalTrialTests(unittest.TestCase):
-    """A bme280 trial: the bench harness provides no device and never touches the operator's board; it waits while the
-    operator resumes the run, and grades it once the run has completed."""
+BINDING = {'url': 'ftdi://scripted/1'}
+PHYSICAL_MAPPING = {'temperature': 't', 'humidity': 'h', 'pressure': 'p'}
+PHYSICAL_TRUTH = {'max_reference_age_seconds': 60, 'max_tolerances': {'temperature': .2, 'humidity': 1, 'pressure': 10}}
+UNHELD = {'confirmed': True, 'held': False}
+
+
+def blocked_once(stage):
+    """A scripted runtime whose first `stage` worker finds no runtime: an operator stop, which the operator resumes."""
+    attempts = []
+    def runtime(request):
+        attempts.append(request.stage)
+        if request.stage == stage and attempts.count(stage) == 1:
+            return {'runtime': 'codex', 'status': 'blocked', 'cause': 'launch', 'reason': 'Cannot start configured runtime',
+                    'elapsed_seconds': 0, 'usage': None, 'report': None}
+    return runtime, attempts
+
+
+class BoundDeviceFixture(unittest.TestCase):
+    """bme280 runs on the in-process configurator under the operator's binding. The board is never reached: a
+    measurement is scripted, and the truth the bench harness unlocks is a toy one."""
+
+    def setUp(self):
+        from generative_driver.configurator import Controller
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.password = self.root / 'password'
+        self.password.write_text('synthetic fixture credential')
+        self.home = self.root / 'home'; self.home.mkdir(mode=0o700)
+        (self.home / 'config.json').write_text(json.dumps({'executors': {'codex': {'command': ['scripted-runtime']}}}))
+        self.controller = Controller(self.home)
+        self.addCleanup(self.controller.close)
+        self.started, self.unlocked = {}, []
+
+    def configurator(self, method, params=None):
+        if method == 'ping':
+            return {'ok': True}
+        reply = self.controller.call(method, params or {})
+        if method == 'start':
+            self.started.update(reply)
+        return reply
+
+    def request(self, trial_id, **changes):
+        return {'trial_id': trial_id, 'home': str(self.home), 'goal': 'Physical scripted contract', 'case': 'bme280',
+                'executor': 'codex', 'budget_seconds': 120, 'effects': ['write'], 'case_options': {}, 'binding': BINDING,
+                'scoped_tool_approval': 'bound-device', 'password_file': str(self.password), **changes}
+
+    def tool(self, request, name, arguments):
+        return self.controller.call('tool', {**gateway_identity(request), 'name': name, 'arguments': arguments})
+
+    def status(self):
+        run_id = self.started.get('run_id')
+        return self.controller.call('status', {'run_id': run_id}) if run_id else None
+
+    def guarded(self):
+        """Only the bench harness unlocks the (toy) truth, through the evaluator, and nothing in the run does; every
+        unlock is recorded with whether the harness admitted or graded and the run's status then."""
+        from contextlib import ExitStack
+        def case_truth(case_id, where, options):
+            callers = {frame.function for frame in inspect.stack()}
+            run = self.status()
+            self.unlocked.append(('admit' in callers, 'grade' in callers, run and run['status']))
+            if Path(options['evaluator_password_file']).read_text() != self.password.read_text():
+                raise ValueError('The evaluator password does not unlock the case truth')
+            return json.loads(json.dumps(PHYSICAL_TRUTH))
+        stack = ExitStack()
+        stack.enter_context(patch('generative_driver.benchmark_support.evaluator.case_truth', side_effect=case_truth))
+        stack.enter_context(patch('generative_driver.benchmark_support.emulator.truth_for_case',
+                                  side_effect=AssertionError('truth unlocked in the run')))
+        return stack
+
+
+class PhysicalTrialTests(BoundDeviceFixture):
+    """A bme280 trial: the bench harness provides no device and never touches the operator's board. It authenticates the
+    evaluator password before the run starts, follows the run while the operator answers and resumes it, an extended
+    budget included, and grades it once the run has completed; `trial-resume` grades a run that completed after its
+    harness stopped following it."""
+
+    def test_a_wrong_evaluator_password_is_refused_before_the_bound_device_run_starts(self):
+        # Catches a bme280 trial that first meets its password when it grades: a whole physical run left ungradeable,
+        # whose token no password both unlocks and grades with.
+        from generative_driver.benchmark_support import harness
+        from test_benchmark_physical import reference_fixture
+        resources, _, secret = reference_fixture(self.root / 'sealed')
+        wrong = self.root / 'wrong-password'; wrong.write_text('another synthetic credential')
+        calls = []
+        def configurator(method, params=None):
+            calls.append(method)
+            # A start is refused here, so a trial the harness let through ends at once instead of running.
+            return {'ok': True} if method == 'ping' else {'ok': False, 'reason': 'The run must not start'}
+        with patch('generative_driver.benchmark.case_root', return_value=resources):
+            record = harness.run_trial(self.root / 'refused', self.request('trial-refused', password_file=str(wrong)),
+                                       call=configurator)
+            self.assertEqual((record['status'], record['run_id'], calls), ('failed', None, ['ping']), record)
+            self.assertFalse((self.root / 'refused' / harness.TOKEN).exists())
+            # The password the truth is sealed under admits the case; the operator's board gets no provider.
+            self.assertEqual(harness.admit('bme280', {}, self.root / 'admitted', password_file=secret['evaluator_password_file']),
+                             (None, {}))
 
     def test_a_bound_device_trial_is_graded_after_its_run_without_the_harness_touching_the_board(self):
         from generative_driver.benchmark_support import harness
-        from generative_driver.configurator import Controller
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary).resolve()
-            password = root / 'password'; password.write_text('synthetic fixture credential')
-            home = root / 'home'; home.mkdir(mode=0o700)
-            (home / 'config.json').write_text(json.dumps({'executors': {'codex': {'command': ['scripted-runtime']}}}))
-            controller = Controller(home); self.addCleanup(controller.close)
-            started = {}
-            def configurator(method, params=None):
-                if method == 'ping':
-                    return {'ok': True}
-                reply = controller.call(method, params or {})
-                if method == 'start':
-                    started.update(reply)
-                return reply
-            attempts = []
-            def runtime(request):
-                # The first acquisition finds no runtime: an operator stop, which the operator resumes.
-                attempts.append(request.stage)
-                if attempts.count('acquire') == 1 and request.stage == 'acquire':
-                    return {'runtime': 'codex', 'status': 'blocked', 'cause': 'launch', 'reason': 'Cannot start configured runtime',
-                            'elapsed_seconds': 0, 'usage': None, 'report': None}
-            def resume_when_blocked():
-                deadline = time.monotonic() + 20
-                while time.monotonic() < deadline:
-                    run_id = started.get('run_id')
-                    if run_id and controller.call('status', {'run_id': run_id})['status'] == 'blocked':
-                        # Long enough for the harness, which reads the run's status every quarter second, to see the stop.
-                        time.sleep(1.5)
-                        controller.call('resume', {'run_id': run_id}); return
-                    time.sleep(.02)
-            import threading
-            operator = threading.Thread(target=resume_when_blocked, daemon=True)
-            request = {'trial_id': 'trial-physical', 'home': str(home), 'goal': 'Physical scripted contract', 'case': 'bme280',
-                       'executor': 'codex', 'budget_seconds': 120, 'effects': ['write'], 'case_options': {},
-                       'binding': {'url': 'ftdi://scripted/1'}, 'scoped_tool_approval': 'bound-device',
-                       'password_file': str(password)}
-            with patch('generative_driver.benchmark_support.physical.package_execute', side_effect=AssertionError('board touched')), \
-                 patch('generative_driver.benchmark_support.evaluator.case_truth', side_effect=AssertionError('no driver needs no truth')), \
-                 patch('generative_driver.benchmark_support.emulator.truth_for_case', side_effect=AssertionError('truth unlocked in the run')), \
-                 scripted_stages(controller, check=controller._check, prepare=lambda original, *args: original(*args), runtime=runtime):
-                operator.start()
-                record = harness.run_trial(root / 'trial', request, call=configurator)
-            operator.join(5)
-            result = controller.call('result', {'run_id': record['run_id']})
-            # No datasheet was acquired, so no driver was emitted: a recorded no-driver verdict, never a stop.
-            self.assertEqual((record['status'], result['status']), ('evaluated', 'completed'), (record, result['reason']))
-            self.assertEqual((result['equivalence']['status'], result['equivalence']['equivalent'], result['equivalence']['method']),
-                             ('no-driver', False, 'recorded-reuse'))
-            self.assertEqual(attempts.count('acquire'), 2)
-            self.assertEqual(record['device_stop'], {'confirmed': True, 'held': False})
-            self.assertNotIn('device', json.loads(controller._row(record['run_id'])['spec']))
-            spec = controller._row(record['run_id'])['spec']
-            self.assertNotIn('password', spec.lower())
+        runtime, attempts = blocked_once('acquire')
+        def resume_when_blocked():
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                status = self.status()
+                if status and status['status'] == 'blocked':
+                    # Long enough for the harness, which reads the run's status every quarter second, to see the stop.
+                    time.sleep(1.5)
+                    self.controller.call('resume', {'run_id': status['run_id']}); return
+                time.sleep(.02)
+        import threading
+        operator = threading.Thread(target=resume_when_blocked, daemon=True)
+        with patch('generative_driver.benchmark_support.physical.package_execute', side_effect=AssertionError('board touched')), \
+             self.guarded(), \
+             scripted_stages(self.controller, check=self.controller._check, prepare=lambda original, *args: original(*args),
+                             runtime=runtime):
+            operator.start()
+            record = harness.run_trial(self.root / 'trial', self.request('trial-physical'), call=self.configurator)
+        operator.join(5)
+        result = self.controller.call('result', {'run_id': record['run_id']})
+        # No datasheet was acquired, so no driver was emitted: a recorded no-driver verdict, never a stop.
+        self.assertEqual((record['status'], result['status']), ('evaluated', 'completed'), (record, result['reason']))
+        self.assertEqual((result['equivalence']['status'], result['equivalence']['equivalent'], result['equivalence']['method']),
+                         ('no-driver', False, 'recorded-reuse'))
+        self.assertEqual(attempts.count('acquire'), 2)
+        self.assertEqual(record['device_stop'], UNHELD)
+        # The harness unlocked the truth once, to authenticate the password before the run started; no driver needs it.
+        self.assertEqual(self.unlocked, [(True, False, None)])
+        spec = self.controller._row(record['run_id'])['spec']
+        self.assertNotIn('device', json.loads(spec))
+        self.assertNotIn('password', spec.lower())
+
+    def test_a_graded_bound_device_trial_follows_its_run_through_an_extended_budget(self):
+        # Catches a harness that stops following a bound-device run at the end of the budget it was started with although
+        # the operator extended it, a trial record a dead harness would leave unresumable, and the bme280 path broken
+        # anywhere from the emitted package to the posted verdict: the reuse reference request, the operator's answer
+        # and resume, the package's measurement, the reference and evidence handoff, the recorded-reuse grade, the seal
+        # and record_evaluation.
+        from generative_driver import toolkit
+        from generative_driver.benchmark_support import evaluator, harness
+        evidence = self.root / 'reference.txt'
+        evidence.write_text('Scripted independent reference; no physical observation claimed.')
+        reference = {'stage': 'reuse', 'channel': 'scripted independent meter', 'evidence_path': str(evidence),
+                     'reference': {'temperature': {'value': 21.5, 'absolute_tolerance': .2},
+                                   'humidity': {'value': 40, 'absolute_tolerance': 1},
+                                   'pressure': {'value': 101325, 'absolute_tolerance': 10}}}
+        budget, began = 3, time.monotonic()
+        real_check, real_call = self.controller._check, toolkit.call_tool
+        boards, calls, seen = [], [], []
+        def prepare(original, spec, stage, run_dir, workspace, accepted):
+            # The real preparations from emit on; the earlier stages are scripted.
+            return (original(spec, stage, run_dir, workspace, accepted) if stage in ('emit', 'reuse')
+                    else {'inputs': [], 'allowed_tools': []})
+        def check(spec, stage, run_dir, workspace, report, accepted, assignment):
+            if stage == 'probe':
+                folder = run_dir / 'scripted-probe'; folder.mkdir()
+                for name, content in (('model.json', '{}'), ('convert.py', '# scripted converter\n'),
+                                      ('capabilities.json', json.dumps(PHYSICAL_MAPPING))):
+                    (folder / name).write_text(content)
+                return {'artifacts': [str(folder / n) for n in ('model.json', 'convert.py', 'capabilities.json')], 'checks': []}
+            if stage in ('emit', 'reuse'):
+                return real_check(spec, stage, run_dir, workspace, report, accepted, assignment)
+            return {'artifacts': [], 'checks': []}
+        def work(request):
+            if request.stage == 'emit':
+                package = Path(request.workspace) / 'package'; (package / 'driver').mkdir(parents=True)
+                (package / 'manifest.json').write_text(json.dumps({'name': 'scripted'}))
+                (package / 'driver/model.json').write_text(json.dumps({'schema': 'interface-model/1',
+                                                                        'operations': {'measure': [{'op': 'reg_write'}]}}))
+            if request.stage == 'reuse':
+                # Fresh reuse measures after the end of the budget the harness was started with.
+                time.sleep(max(0, began + budget + .5 - time.monotonic()))
+                calls.append(self.tool(request, 'benchmark_package_execute',
+                                          {'package_dir': context_of(request.prompt)['package_dir'], 'operation': 'measure'}))
+        def call_tool(name, arguments):
+            # The package check passes; everything else is the real toolkit.
+            if name == 'emit_check':
+                return {'ok': True, 'integrity_ok': True, 'runtime_current': True, 'seeds_run': 1}
+            return real_call(name, arguments)
+        def measure(package, binding):
+            boards.append((binding, time.monotonic()))
+            return 0, json.dumps({'status': 'OK', 'values': {'t': 21.5, 'h': 40, 'p': 101325}}), ''
+        def operator():
+            # The operator answers the reuse reference request and resumes, extending the run's budget.
+            answered, until = False, time.monotonic() + 30
+            while time.monotonic() < until:
+                status = self.status()
+                if status and status['status'] in ('completed', 'cancelled'):
+                    return
+                if status and status['status'] == 'blocked' and not status['stopping']:
+                    seen.append((status['stage'], status['reason'], harness.read_trial(self.root / 'trial')))
+                    if status['stage'] == 'reuse' and not answered:
+                        self.controller.call('respond', {'run_id': status['run_id'],
+                                                         'observation': {**reference, 'observed_at': time.time()}})
+                        answered = True
+                    try:
+                        self.controller.call('resume', {'run_id': status['run_id'], 'budget_seconds': 60,
+                                                        'budget_reason': 'The operator supplied the reuse reference'})
+                    except ValueError:
+                        pass
+                time.sleep(.02)
+        import threading
+        thread = threading.Thread(target=operator, daemon=True)
+        with self.guarded(), patch.object(harness, 'GRACE', 0), \
+             patch('generative_driver.toolkit.call_tool', side_effect=call_tool), \
+             patch('generative_driver.benchmark_support.physical._measure', side_effect=measure), \
+             scripted_stages(self.controller, check=check, prepare=prepare, work=work):
+            thread.start()
+            record = harness.run_trial(self.root / 'trial', self.request('trial-graded', budget_seconds=budget),
+                                       call=self.configurator)
+        thread.join(5)
+        result = self.controller.call('result', {'run_id': record['run_id']})
+        self.assertEqual((record['status'], result['status'], result['budget_seconds']), ('evaluated', 'completed', 60),
+                         (record, result['reason']))
+        # The run stopped for the operator's reuse reference; meanwhile the trial record already named the device stop
+        # of the operator's board, which the harness never held.
+        self.assertEqual({stage for stage, _, _ in seen}, {'reuse'})
+        self.assertIn('reference', seen[0][1])
+        self.assertEqual((seen[0][2]['status'], seen[0][2]['device_stop']), ('running', UNHELD))
+        # The package measured once, through the configurator on the operator's binding, after the harness's first
+        # deadline.
+        self.assertEqual(([binding for binding, _ in boards], [call['ok'] for call in calls]), ([BINDING], [True]))
+        self.assertGreater(boards[0][1], began + budget)
+        reuse = next(h for h in reversed(result['accepted_handoffs']) if h['stage'] == 'reuse')
+        handed = sorted(Path(a['path']).name.split('-', 1)[1] for a in reuse['artifacts'])
+        self.assertEqual(handed[:1] + handed[2:], ['package', 'reference.json', 'reuse-events.jsonl'])
+        self.assertRegex(handed[1], r'^reference-reuse-[0-9a-f]{32}\.txt$')
+        equivalence = result['equivalence']
+        self.assertEqual((equivalence['status'], equivalence['equivalent'], equivalence['method'],
+                          [c['id'] for c in equivalence['checks']]),
+                         ('graded', True, 'recorded-reuse', ['temperature', 'humidity', 'pressure']))
+        # Sealed before it was posted, and the evaluator unlocked the truth once more only after the run completed.
+        sealed = self.root / 'trial' / evaluator.EVIDENCE
+        self.assertEqual(equivalence['evidence_sha256'], hashlib.sha256(sealed.read_bytes()).hexdigest())
+        self.assertEqual(self.unlocked, [(True, False, None), (False, True, 'completed')])
+        self.assertFalse((self.root / 'trial' / 'private').exists())
+        self.assertNotIn('password', self.controller._row(record['run_id'])['spec'].lower())
+
+    def test_trial_resume_grades_a_bound_device_run_completed_after_its_harness_stopped_following(self):
+        # Catches a bme280 trial left ungradeable once its harness stopped waiting (the deadline of the budget it was
+        # started with passed, or it was stopped or died) before the operator completed the run, a resume that grades a
+        # run still stopped, and a grade posted under another method than the case's.
+        from generative_driver.benchmark_support import harness
+        runtime, attempts = blocked_once('acquire')
+        trial = self.root / 'trial'
+        with self.guarded(), patch.object(harness, 'GRACE', 0), \
+             scripted_stages(self.controller, check=lambda *args: {'artifacts': [], 'checks': []}, runtime=runtime):
+            record = harness.run_trial(trial, self.request('trial-stopped', budget_seconds=1), call=self.configurator)
+            self.assertEqual((record['status'], record['device_stop'], record['run_status']['status'],
+                              record['run_status']['harness_stopped']), ('run-stopped', UNHELD, 'blocked', 'deadline'), record)
+            run = {'run_id': record['run_id']}
+            # Nothing is graded while the run is stopped: its operator answers and resumes it first. No device is provided
+            # anew for the operator's board, and the refusal leaves the trial as it was.
+            with self.assertRaisesRegex(ValueError, 'has not completed'):
+                harness.resume(trial, password_file=self.password, call=self.configurator)
+            with self.assertRaisesRegex(ValueError, 'no device to provide anew'):
+                harness.reattach(trial, password_file=self.password, call=self.configurator)
+            self.assertEqual(harness.read_trial(trial), record)
+            self.controller.call('resume', {**run, 'budget_seconds': 60, 'budget_reason': 'The operator resumes the run'})
+            self.assertEqual(wait_stopped(self.controller, run)['status'], 'completed')
+            # The configurator takes a grade only under the case's method.
+            token = harness.evaluation_token(trial, self.password, 'trial-stopped')
+            other = {'schema': 'equivalence/1', 'status': 'no-driver', 'equivalent': False, 'basis': 'evaluator',
+                     'method': 'fresh-final', 'checks': [], 'diff': [{'id': 'frozen_package', 'reason': 'no driver emitted'}],
+                     'passed': 0, 'total': 0, 'mission': None, 'frozen_artifact_sha256': None, 'capabilities_sha256': None,
+                     'evidence_sha256': 'e' * 64, 'protocol': 'assistive/1'}
+            with self.assertRaisesRegex(ValueError, 'recorded-reuse'):
+                self.controller.call('record_evaluation', {**run, 'token': token, 'equivalence': other})
+            done = harness.resume(trial, password_file=self.password, call=self.configurator)
+        self.assertEqual((done['status'], done['device_stop'], done['sealed']), ('evaluated', UNHELD, True), done)
+        self.assertNotIn('sealing_failed', done)
+        equivalence = self.controller.call('result', run)['equivalence']
+        self.assertEqual((equivalence['status'], equivalence['method']), ('no-driver', 'recorded-reuse'))
+        self.assertEqual(attempts.count('acquire'), 2)
+        # Graded once: a second resume finds the verdict recorded.
+        self.assertEqual(harness.resume(trial, password_file=self.password, call=self.configurator)['equivalence'], equivalence)
+
+
+class PhysicalRepairTests(BoundDeviceFixture):
+    def test_a_probe_device_diff_sends_bme280_back_to_interpretation_with_that_diff(self):
+        # Catches a bme280 repair that re-interprets the same sealed datasheet blind: the configurator's diff of the
+        # probed model, and the candidate it contradicts, must be sealed inputs of the repair interpretation.
+        real_check, prepared = self.controller._check, []
+        def prepare(original, spec, stage, run_dir, workspace, accepted):
+            if stage in ('interpret', 'probe'):
+                done = original(spec, stage, run_dir, workspace, accepted)
+                prepared.append((stage, spec.get('_revision'), done))
+                return done
+            return {'inputs': [], 'allowed_tools': []} if stage == 'acquire' else {'skip': 'Outside this contract'}
+        def check(spec, stage, run_dir, workspace, report, accepted, assignment):
+            if stage == 'acquire':
+                (workspace / 'datasheet.pdf').write_bytes(b'%PDF-1.4 scripted datasheet\n')
+                (workspace / 'pages').mkdir(); (workspace / 'pages/index.json').write_text('{"pages": []}')
+                return {'artifacts': [str(workspace / 'datasheet.pdf'), str(workspace / 'pages')], 'checks': []}
+            if stage == 'interpret':
+                # A candidate the configurator's own validation finds defects in.
+                model = run_dir / 'scripted-interpret' / str(assignment['revision']); model.mkdir(parents=True)
+                (model / 'model.json').write_text(json.dumps({'schema': 'interface-model/1', 'revision': assignment['revision']}))
+                (model / 'convert.py').write_text('# scripted converter\n')
+                return {'artifacts': [str(model / 'model.json'), str(model / 'convert.py')], 'checks': []}
+            return real_check(spec, stage, run_dir, workspace, report, accepted, assignment)
+        with self.guarded(), scripted_stages(self.controller, check=check, prepare=prepare):
+            run = self.controller.start({'goal': 'Physical repair contract', 'case': 'bme280', 'effects': ['write'],
+                                         'binding': BINDING, 'executor_config': {'command': ['scripted-runtime']}})
+            result = wait_stopped(self.controller, run, 60)
+        self.assertEqual(result['status'], 'completed', result['reason'])
+        revisions = [e['data'] for e in self.controller.call('events', run)['events'] if e['kind'] == 'run.revision']
+        self.assertEqual([r['revision'] for r in revisions], [1, 2])
+        self.assertTrue(all(r['feedback'] and r['feedback'][0]['source'] == 'model_contract' for r in revisions), revisions)
+        interpretations = [(revision, done) for stage, revision, done in prepared if stage == 'interpret']
+        self.assertEqual([revision for revision, _ in interpretations], [0, 1, 2])
+        sealed = lambda done: {Path(p).relative_to(done['work_dir']).as_posix(): Path(p) for p in done['inputs']}
+        first = sealed(interpretations[0][1])
+        self.assertFalse({name for name in first if 'DEFECTS' in name or name.startswith(('previous-model', 'REPAIR'))}, first)
+        for (revision, done), recorded in zip(interpretations[1:], revisions):
+            inputs = sealed(done)
+            with self.subTest(revision=revision):
+                # The repair sees what the device diff says the previous candidate got wrong, and that candidate.
+                self.assertEqual(json.loads(inputs['repair/DEFECTS.json'].read_text()), recorded['feedback'])
+                self.assertEqual(json.loads(inputs['previous-model/model.json'].read_text())['revision'], revision - 1)
+                self.assertIn('previous-model/convert.py', inputs)
+                context = json.loads(inputs['REPAIR_CONTEXT.json'].read_text())
+                self.assertEqual((context['mode'], context['feedback'], context['previous_candidate']),
+                                 ('repair', 'repair/DEFECTS.json', 'previous-model/'))
+                # Still the datasheet's own sealed inputs, with no case truth.
+                self.assertIn('datasheet.pdf', inputs)
+        self.assertEqual(self.unlocked, [])
 
 
 class StageBoundaryTests(unittest.TestCase):

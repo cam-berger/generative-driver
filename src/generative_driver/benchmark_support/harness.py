@@ -1,16 +1,17 @@
 """The bench harness: the benchmark's operator, one detached process per trial or per suite.
 
-It holds what the configurator never does. The evaluator password file path arrives on its stdin and is never a field
-of a record it writes; the case truth is unlocked to project the device recipe before the run and to grade after it;
-and it owns an emulated case's device. In order, it: admits the case (`require_calibration`); for an emulated case (v2,
-or legacy tq9 from the legacy recipe) starts the emulator through a recipe-only provider and serves the configurator a
-narrow control endpoint (status, observe, set_running, replace, release; stop and shutdown are owner-only); starts the
-configurator run with the device descriptor, the admission evidence hash and the sha256 of a random evaluation token it
-keeps sealed under the password; waits as a reconnecting client; stops the device once the run is terminal; grades a
-completed run's frozen driver once, on a fresh emulator or from the fresh reuse the run recorded; seals the run evidence
-and posts the verdict with `record_evaluation`. A bme280 trial runs on the operator's bound device, which the harness
-never touches: it waits while the operator answers the run and resumes it, until the run completes. Its state lives
-under a bench home beside the configurator home, never inside it.
+It holds what the configurator never does. The evaluator password file path arrives on its stdin and is never a field of
+a record it writes; the case truth is unlocked before the run to project the device recipe (for a bound device, to
+authenticate the password) and to grade after it; and it owns an emulated case's device. In order, it: admits the case
+(`require_calibration`); for an emulated case (v2, or legacy tq9 from the legacy recipe) starts the emulator through a
+recipe-only provider and serves the configurator a narrow control endpoint (status, observe, set_running, replace,
+release; stop and shutdown are owner-only); starts the configurator run with the device descriptor, the admission
+evidence hash and the sha256 of a random evaluation token it keeps sealed under the password; waits as a reconnecting
+client; stops the device once the run is terminal; grades a completed run's frozen driver once, on a fresh emulator or
+from the fresh reuse the run recorded; seals the run evidence and posts the verdict with `record_evaluation`. A bme280
+trial runs on the operator's bound device, which the harness never touches: it waits while the operator answers the run
+and resumes it, until the run completes, and a trial whose harness stopped waiting first is graded by `resume` once the
+run has completed. Its state lives under a bench home beside the configurator home, never inside it.
 
 A suite's harness (`run_suite`) drives the suite the configurator stores: it reserves each slot, runs that slot's trial as
 above, and has the configurator settle the slot from what the configurator reads itself. A resumed suite gets a new
@@ -200,9 +201,11 @@ def admit(case_id, options, trial_dir, *, password_file, renode=None):
     """Admit the case and, for an emulated one, build its device provider from the recipe alone: (provider or None,
     admission). Only this step unlocks the case truth, to take the device recipe; everything else in it is dropped
     before the provider sees it. A v2 case's admission names its calibration evidence; legacy cases have none. A bound
-    device (bme280) is the operator's: no provider. The caller starts the provider, so that it holds the device even
-    when the start fails."""
+    device (bme280) is the operator's: no provider, and the truth is unlocked only to authenticate the password, so a
+    password that could not grade the run refuses it before it starts. The caller starts the provider, so that it holds
+    the device even when the start fails."""
     from .device_provider import DeviceProvider
+    from .evaluator import case_truth
     from .registry import pin_case, require_calibration, resolve_case
     secret = {'evaluator_password_file': str(password_file)} if password_file else {}
     pin = pin_case(case_id, options.get('scenario_id'), options.get('case_seed', 0))
@@ -210,6 +213,7 @@ def admit(case_id, options, trial_dir, *, password_file, renode=None):
         raise ValueError('The bench harness runs actual-agent benchmark cases only')
     admitted = require_calibration(pin, secret)
     if pin['execution'] != 'actual-agent-emulation':
+        case_truth(case_id, trial_dir, secret)
         return None, {}
     recipe = device_recipe(case_id, trial_dir, secret)
     provider = DeviceProvider(case_id, resolve_case(case_id).root / 'firmware.bin', recipe, renode, Path(trial_dir) / 'device',
@@ -378,6 +382,8 @@ def finish(provider, case_id, run_dir, result, password_file, status=None, *, tr
 
 # How long a harness waits through an unreachable configurator before it stops waiting for a run.
 UNREACHABLE = 300
+# How long past the end of a run's wall-clock budget a harness keeps following the run.
+GRACE = 600
 # The device stop of a trial whose device the operator owns: the harness held none.
 UNHELD = {'confirmed': True, 'held': False}
 
@@ -482,9 +488,11 @@ def run_trial(trial_dir, request, *, call=None, launch=None, heartbeat=None, sto
                    else configurator('start', params))
         if not started.get('ok'):
             raise ValueError(started.get('reason') or 'The configurator refused the run')
+        # A bound device is the operator's: the record names the stop of a device the harness never held from the start,
+        # so a harness lost while it follows the run leaves a trial `resume` grades once the run has completed.
         record.update(status='running', run_id=started['run_id'],
                       **({'device': {key: params['device'][key] for key in ('provider_id', 'session_id', 'binding')}}
-                         if server else {}))
+                         if server else {'device_stop': dict(UNHELD)}))
         _private(trial_dir / 'trial.json', record)
         _follow_run(trial_dir, record, held, server, configurator, budget=params.get('budget_seconds') or 10800,
                     password_file=password_file, renode=renode, token=token, heartbeat=heartbeat, stop=stop)
@@ -517,11 +525,23 @@ def _follow_run(trial_dir, record, held, server, configurator, *, budget, passwo
                 stop=None):
     """See a started run through: wait until it ends, then stop its device, confirmed, and conclude the trial. The device
     `held` holds passes to `finish`, which records its stop before anything is graded. A run on the operator's bound
-    device (no `server`) is followed until it completes or is cancelled: the operator answers and resumes it in between."""
+    device (no `server`) is followed until it completes or is cancelled: the operator answers and resumes it in between,
+    and may extend its budget, which extends the wait."""
     home, run_id = Path(record['home']), record['run_id']
-    status = _wait(configurator, run_id, time.monotonic() + float(budget) + 600,
-                   server.shutdown if server else threading.Event(), heartbeat, stop,
-                   until=TERMINAL if server else ('completed', 'cancelled'))
+    deadline = time.monotonic() + float(budget) + GRACE
+    while True:
+        status = _wait(configurator, run_id, deadline, server.shutdown if server else threading.Event(), heartbeat, stop,
+                       until=TERMINAL if server else ('completed', 'cancelled'))
+        if server is not None or status.get('harness_stopped') != 'deadline':
+            break
+        # The run's own budget, which the operator's resume may have extended, ends the wait: not the one it started with.
+        current = _post(configurator, 'result', {'run_id': run_id})
+        remaining = (float(current['created']) + float(current['budget_seconds']) + GRACE - time.time()
+                     if current.get('ok') is True and isinstance(current.get('created'), (int, float))
+                     and isinstance(current.get('budget_seconds'), (int, float)) else 0)
+        if remaining <= 0:
+            break
+        deadline = time.monotonic() + remaining
     record['run_status'] = {key: status.get(key) for key in ('status', 'outcome_category', 'reason', 'uncertain_effect',
                                                              'harness_stopped') if key in status}
     result = configurator('result', {'run_id': run_id})
@@ -575,6 +595,10 @@ def reattach(trial_dir, *, password_file, renode=None, call=None, heartbeat=None
             raise ValueError('The trial\'s bench harness is still running')
         if (record.get('device_stop') or {}).get('confirmed') is not True:
             raise ValueError('The trial\'s device stop was not confirmed; reconcile its device before continuing the run')
+        if record['device_stop'].get('held') is False:
+            # Refused before the record changes, so the trial stays one `resume` grades once the run has completed.
+            raise ValueError('A bound-device trial has no device to provide anew: its operator resumes the run, and '
+                             'trial-resume grades it once the run has completed')
         token = evaluation_token(trial_dir, password_file, record['trial_id'])
         configurator = call or _configurator(Path(record['home']), False)
         result = _post(configurator, 'result', {'run_id': record['run_id']})
@@ -640,7 +664,10 @@ def resume(trial_dir, *, password_file, renode=None, call=None):
     after the stop, could not grade (unscored, an evaluator host fault) or could not post its verdict. A final the draft
     already holds is rebuilt, never graded again; a verdict the configurator holds is never posted again. Grading needs
     the emulator executable (`renode`); without it a resume that would grade refuses before it unlocks anything. A
-    password that does not unlock the trial's evaluation token is refused before anything is graded, sealed or posted."""
+    password that does not unlock the trial's evaluation token is refused before anything is graded, sealed or posted.
+    A trial on the operator's bound device, of which the harness held nothing, is completed too when its harness
+    stopped following the run (its budget's deadline passed, it was stopped, or it died) and the operator has since
+    completed or cancelled the run; while the run is still stopped, the operator resumes it first."""
     from ..client import call as client_call
     from . import evaluator
     trial_dir = Path(trial_dir)
@@ -655,7 +682,9 @@ def resume(trial_dir, *, password_file, renode=None, call=None):
             raise ValueError('The trial\'s bench harness is still running')
         if (record.get('device_stop') or {}).get('confirmed') is not True:
             raise ValueError('The trial\'s device stop was not confirmed; reconcile its device before evaluating')
-        if record.get('status') not in RESUMABLE:
+        # A bound-device trial whose harness stopped following its run: the operator may have completed the run since.
+        followed = record['device_stop'].get('held') is False and record.get('status') in ('run-stopped', 'running')
+        if record.get('status') not in RESUMABLE and not followed:
             raise ValueError('The trial awaits no evaluation: ' + str(record.get('status')))
         # Only the password the trial ran with unlocks its token: under any other, nothing is graded, sealed or posted.
         token = evaluation_token(trial_dir, password_file, record['trial_id'])
@@ -665,6 +694,9 @@ def resume(trial_dir, *, password_file, renode=None, call=None):
         unread = _unread({}, result)
         if unread:
             raise ValueError('Cannot evaluate the trial\'s run: ' + unread)
+        if followed and result.get('status') not in ('completed', 'cancelled'):
+            raise ValueError('The trial\'s run has not completed (' + str(result.get('status')) + '): its operator answers '
+                             'and resumes the run on the bound device, and the trial is evaluated once it has completed')
         if renode is None and evaluator.needs_grading(trial_dir, result, password_file=password_file):
             raise ValueError('The trial\'s frozen driver is not graded yet: grading starts a fresh emulator, so pass its '
                              'executable (--renode)')
@@ -1133,7 +1165,7 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
                                        'password_file': password(), 'renode': renode},
                            call=configurator, launch=launch, heartbeat=heartbeat, stop=stop)
     else:
-        status = _wait(configurator, run_id, time.monotonic() + budget + 600, threading.Event(), heartbeat, stop)
+        status = _wait(configurator, run_id, time.monotonic() + budget + GRACE, threading.Event(), heartbeat, stop)
         if 'harness_stopped' in status:
             raise ValueError('The bench harness stopped waiting for child ' + run_id + ': ' + status['harness_stopped'])
         if status.get('status') == 'completed':

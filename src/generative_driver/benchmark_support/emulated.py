@@ -16,7 +16,8 @@ from .snapshots import read_snapshot
 # Instrument readings are device evidence, as a real device's readings would be; workers see them, nothing grades them.
 INSTRUMENT = ('Live interface_execute and probe_run results carry before_observation and observation: instrument '
               'readings of the emulated device with units. They are device evidence, as a real device\'s readings would '
-              'be, never a grade. ')
+              'be, never a grade. The provided emulator runs only inside each live call and is paused between calls, so '
+              'device time advances during a call and not while you work between calls. ')
 
 
 def _required_tasks(case_id):

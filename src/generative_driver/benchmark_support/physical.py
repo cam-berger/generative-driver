@@ -86,6 +86,38 @@ def _model(accepted, stages, ws):
     return None
 
 
+def _repair_inputs(accepted, ws, feedback):
+    """A repair interpretation's further sealed inputs: the device diff (`feedback`: what the device did that the probed
+    candidate did not predict, and what the configurator's own validation found in it) and that candidate, hash-verified,
+    with a REPAIR_CONTEXT.json that names them. The diff goes under repair/, because the register validator the worker
+    runs rewrites defects.json at the workspace root, which a case-insensitive filesystem holds as DEFECTS.json."""
+    repair = ws/'repair'
+    defects = repair/'DEFECTS.json'
+    _write(defects, feedback)
+    inputs = {'repair/DEFECTS.json': str(defects)}
+    # The candidate the diff is about: the latest probed (or interpreted) model and converter.
+    previous = _model(accepted, ('probe', 'interpret'), repair)
+    if previous is not None:
+        inputs['previous-model'] = str(previous)
+    sealed = ['datasheet.pdf', 'pages/', *(['previous-model/'] if previous else []), 'repair/DEFECTS.json',
+              'REPAIR_CONTEXT.json']
+    context = repair/'REPAIR_CONTEXT.json'
+    _write(context, {'schema': 'device-repair-context/1', 'mode': 'repair',
+        **({'previous_candidate': 'previous-model/'} if previous else {}), 'feedback': 'repair/DEFECTS.json',
+        'feedback_meaning': 'What the previous candidate got wrong, from the configurator\'s own record: what the sensor '
+            'did that the candidate did not predict, in tool results it observed through the operator\'s binding, and, in '
+            'entries with source model_contract, defects the configurator\'s own validation found in the candidate. It is '
+            'evidence, not a grade.',
+        'sealed_inputs': sealed,
+        'instructions': ('Start from previous-model/ and change what the evidence contradicts. ' if previous else
+                         'Change what the evidence contradicts. ') + ', '.join(sealed[:-1]) + ' and ' + sealed[-1] +
+            ' are sealed inputs: read them and leave them unchanged; changing any sealed input stops the run. Write the '
+            'revised model.json and convert.py at the workspace root and record which evidence each correction addresses '
+            'in NOTES.md.'})
+    inputs['REPAIR_CONTEXT.json'] = str(context)
+    return inputs
+
+
 def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=None):
     from ..toolkit import call_tool
     from .emulated import _artifact, _handoff_with, _verified
@@ -108,8 +140,12 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
             return {'skip': 'Interpretation skipped: no acquired official datasheet with extracted pages'}
         pdf = _artifact(handoff, 'datasheet.pdf')
         _verified(pdf, 'acquisition')
+        inputs = {'datasheet.pdf': str(pdf[0]), 'pages': str(pages)}
+        if options.get('feedback'):
+            # A repair: the device diff that sent the run back here, and the candidate it contradicts.
+            inputs.update(_repair_inputs(accepted, ws, options['feedback']))
         prepared=call_tool('interpret_run',{'run_dir':str(Path(run_dir)/'benchmark/tools'),'front_end':'interpret-datasheet',
-            'inputs':{'datasheet.pdf':str(pdf[0]),'pages':str(pages)},'mode':'prepare','attempt':state.get('interpret_attempt',0)+1,
+            'inputs':inputs,'mode':'prepare','attempt':state.get('interpret_attempt',0)+1,
             'workspace_root':tempfile.mkdtemp(prefix='gd-sensor-candidate-')})
         if not prepared.get('ok'):raise ValueError(str(prepared))
         state['interpret_attempt']=state.get('interpret_attempt',0)+1;state['interpret']=prepared;_write(state_path,state)

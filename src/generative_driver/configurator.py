@@ -53,6 +53,10 @@ BENCHMARK_PACKAGE_EXECUTE = {'name':'benchmark_package_execute','description':'E
         'properties':{'package_dir':{'type':'string'},'operation':{'type':'string'},'parameters':{'type':'object'}}}}
 # A benchmark run whose stages are observed without truth completes awaiting the independent grade after the run.
 PENDING = 'Frozen driver awaits independent evaluation'
+# What the start of an emulated run without the device its bench harness provides says: its workers run until probe.
+NO_HARNESS_DEVICE = ('This run has no device its bench harness provides: acquisition and interpretation run, and every '
+                     'device stage from probe on stops for the operator, so it never reaches a verdict. Start it with '
+                     '`benchmark run`, whose bench harness provides the emulator and grades the driver after the run.')
 
 
 def _observed_case(spec):
@@ -1963,7 +1967,7 @@ class Controller:
         if 'device' in spec and not case:
             raise ValueError('A provided device descriptor belongs to an emulated benchmark case')
         encoded = _json(spec)
-        device = None
+        device = note = None
         with self._lock:
             if self._closing:
                 raise ValueError('Configurator is stopping')
@@ -1992,6 +1996,8 @@ class Controller:
                         # Legacy tq9 on the emulator its bench harness provides. Started without one, its device stages
                         # stop for the operator: the configurator never starts an emulator itself.
                         device = _provided_device(spec, pin)
+                    elif pin.get('execution') == 'actual-agent-emulation':
+                        note = NO_HARNESS_DEVICE
                     elif 'device' in spec:
                         raise ValueError('A provided device descriptor belongs to an emulated benchmark case')
                     elif 'evaluation_token_sha256' in spec and not (isinstance(spec['evaluation_token_sha256'], str) and
@@ -2010,9 +2016,10 @@ class Controller:
                            (run_id, params.get('request_id'), encoded, 'queued', 'acquire', now, now))
                 db.execute('INSERT INTO progress VALUES(?,?)',(run_id,_json({'revision':0,'next_stage':'acquire','repairs':0,
                     'feedback':None,'protocol':PROTOCOL,**({'device':device} if device else {})})))
-                self._event(run_id, 'run.started', {'goal': goal, 'executor': executor, 'budget_seconds': budget}, db)
+                self._event(run_id, 'run.started', {'goal': goal, 'executor': executor, 'budget_seconds': budget,
+                                                    **({'note': note} if note else {})}, db)
             self._spawn(run_id)
-        return {'ok': True, 'run_id': run_id, 'duplicate': False}
+        return {'ok': True, 'run_id': run_id, 'duplicate': False, **({'note': note} if note else {})}
 
     def _workflow_progress(self, run_id, db=None):
         if db is None:
@@ -2606,7 +2613,8 @@ class Controller:
     def _record_evaluation(self, run_id, params):
         """The bench harness posts the independent evaluation of a completed run's frozen driver, graded after the run.
         Only the run's harness may (the sha256 of its evaluation token), only for a completed run with nothing uncertain
-        that awaits its evaluation, and only about the run's accepted emitted package: the first artifact of its latest
+        that awaits its evaluation, only under its case's grading method (`fresh-final` for a v2 case, `recorded-reuse`
+        for legacy tq9 and bme280), and only about the run's accepted emitted package: the first artifact of its latest
         emit handoff that handed one on, or none. A graded or no-driver record becomes the run's one final verdict; an
         identical repeat changes nothing and any other is refused. An unscored one is an event, and the run still awaits."""
         spec = json.loads(self._row(run_id)['spec'])
@@ -2619,6 +2627,10 @@ class Controller:
         errors = _evaluation_errors(record)
         if errors:
             raise ValueError('Invalid evaluation record: ' + '; '.join(errors))
+        # The method keeps grades on a fresh emulator apart from grades of recorded reuse: the run's pinned case names it.
+        method = 'fresh-final' if _v2(spec) else 'recorded-reuse'
+        if record['method'] != method:
+            raise ValueError('The run\'s case is graded by method ' + method + ', not ' + str(record['method']))
         with self._lock:
             row = self._row(run_id)
             if row['status'] != 'completed' or run_id in self._workers or run_id in self._inflight:

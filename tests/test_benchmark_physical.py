@@ -24,6 +24,27 @@ def handoff(stage, paths, assignment=None):
             'artifacts': [{'path': str(path), 'sha256': digest(path)} for path in paths]}
 
 
+def reference_fixture(root, age=0):
+    """A toy bme280 case whose toy truth is sealed under a synthetic credential, and an operator reference for reuse:
+    (resources root, observation, evaluator options)."""
+    from generative_driver.benchmark_support.truth import seal
+    resources=root/'resources';case=resources/'cases/bme280';case.mkdir(parents=True)
+    password=root/'password';password.write_text('public toy fixture password')
+    truth={'max_reference_age_seconds':60,'max_tolerances':{'temperature':.2,'humidity':1,'pressure':10}}
+    encrypted=resources/'groundtruth/bme280.enc'
+    digest=seal(truth,encrypted,password.read_text())
+    (case/'case.json').write_text(json.dumps({'schema':'benchmark-case/1','id':'bme280','version':'3','evaluator_version':'3',
+        'execution':'actual-agent-physical','scenarios':['original'],
+        'required_stages':['acquire','interpret','probe','ground','emit','reuse'],
+        'truth':{'path':'groundtruth/bme280.enc','sha256':digest}}))
+    evidence=root/'reference.txt';evidence.write_text('Scripted independent reference; no physical observation claimed.')
+    observed={'stage':'reuse','channel':'scripted independent meter','observed_at':time.time()-age,
+        'evidence_path':str(evidence),
+        'reference':{'temperature':{'value':21.5,'absolute_tolerance':.2},'humidity':{'value':40,'absolute_tolerance':1},
+                     'pressure':{'value':101325,'absolute_tolerance':10}}}
+    return resources,observed,{'evaluator_password_file':str(password)}
+
+
 class PhysicalPrerequisitesTests(unittest.TestCase):
     def test_physical_profile_requests_explicit_binding_before_agent_or_io(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -72,22 +93,7 @@ class RecordedReuseTests(unittest.TestCase):
     by the evaluator after the run from what the stage handed on."""
 
     def reference_fixture(self, root, age=0):
-        from generative_driver.benchmark_support.truth import seal
-        resources=root/'resources';case=resources/'cases/bme280';case.mkdir(parents=True)
-        password=root/'password';password.write_text('public toy fixture password')
-        truth={'max_reference_age_seconds':60,'max_tolerances':{'temperature':.2,'humidity':1,'pressure':10}}
-        encrypted=resources/'groundtruth/bme280.enc'
-        digest=seal(truth,encrypted,password.read_text())
-        (case/'case.json').write_text(json.dumps({'schema':'benchmark-case/1','id':'bme280','version':'3','evaluator_version':'3',
-            'execution':'actual-agent-physical','scenarios':['original'],
-            'required_stages':['acquire','interpret','probe','ground','emit','reuse'],
-            'truth':{'path':'groundtruth/bme280.enc','sha256':digest}}))
-        evidence=root/'reference.txt';evidence.write_text('Scripted independent reference; no physical observation claimed.')
-        observed={'stage':'reuse','channel':'scripted independent meter','observed_at':time.time()-age,
-            'evidence_path':str(evidence),
-            'reference':{'temperature':{'value':21.5,'absolute_tolerance':.2},'humidity':{'value':40,'absolute_tolerance':1},
-                         'pressure':{'value':101325,'absolute_tolerance':10}}}
-        return resources,observed,{'evaluator_password_file':str(password)}
+        return reference_fixture(root, age)
 
     def setUp(self):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)

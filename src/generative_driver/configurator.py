@@ -24,10 +24,10 @@ STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 TERMINAL = {'completed', 'failed', 'cancelled', 'blocked'}
 # Runs record their protocol; a run saved without this label used the earlier gated stage progression.
 PROTOCOL = 'assistive/1'
-# Generic stage inputs, each taken from the latest accepted handoff of its stage that has artifacts.
+# Generic stage inputs, each taken from the latest accepted handoff of its stage that has artifacts. Emit's are a model
+# and a record it wrote (`Controller._emit_inputs`).
 STAGE_INPUTS = {'probe': (('interpret', 'interpreted model'),),
-                'ground': (('interpret', 'interpreted model'), ('probe', 'probe records')),
-                'emit': (('interpret', 'interpreted model'), ('probe', 'probe records'))}
+                'ground': (('interpret', 'interpreted model'), ('probe', 'probe records'))}
 STAGE_TOOLS = {
     'acquire': ['acquire_serial_listen','acquire_firmware_artifact','acquire_datasheet','acquire_protocol_spec','acquire_classify'],
     'interpret': ['firmware_prepare','firmware_collect','firmware_validate','model_validate','model_provenance_audit','ghidra_run','image_map_check'],
@@ -1032,7 +1032,9 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None, un
             latest = check_of(emits[-1] if emits else None)
             candidates = latest.get('candidates') if isinstance(latest.get('candidates'), int) else 0
             why = next((r['reason'] for r in latest.get('rejected') or [] if isinstance(r, dict) and isinstance(r.get('reason'), str)), None)
-            reason = ('no driver emitted' if not candidates else
+            # A package emit built whose bytes the configurator did not observe was not handed off: a driver was built.
+            gone = next((r['reason'] for r in latest.get('not_handed_off') or [] if isinstance(r, dict) and isinstance(r.get('reason'), str)), None)
+            reason = ('emitted package not handed off: ' + gone if not candidates and gone else 'no driver emitted' if not candidates else
                       'the emitted package did not pass emit_check' + (': ' + why if why else '') if candidates == 1 else
                       'none of the ' + str(candidates) + ' emitted packages passed emit_check')
         diff.append({'id': replay['id'], 'reason': reason})
@@ -2403,6 +2405,36 @@ class Controller:
         return selected, missing
 
     @staticmethod
+    def _emit_inputs(accepted):
+        """Generic emit's inputs: an interpreted model and the newest successful probe record that model wrote, from a
+        probe or ground handoff, as the configurator bound each record to the digest of its writer in that handoff's
+        notes. The latest model is preferred; when it wrote no successful record, the newest model that did is taken,
+        so the model and its record always belong together. Without one, the latest model alone, with a note."""
+        models = [a for h in reversed(accepted) if h['stage'] == 'interpret' for a in h['artifacts']
+                  if (Path(a['path']) / 'model.json').is_file()]
+        if not models:
+            return [], ['No interpreted model available']
+        def successful(path):
+            try:
+                record = json.loads(Path(path).read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                return False
+            # An interface probe record says ok; a register probe's record says whether the identity answered.
+            return isinstance(record, dict) and (record.get('ok') is True or record.get('identity_ok') is True)
+        written = []  # (record path, digests of the models that wrote it), newest first
+        for handoff in reversed(accepted):
+            if handoff['stage'] in ('probe', 'ground'):
+                writers = _record_writers([handoff])
+                written += [(a['path'], writers[a['sha256']]) for a in reversed(handoff['artifacts'])
+                            if a['sha256'] in writers and successful(a['path'])]
+        for rank, model in enumerate(models):
+            record = next((path for path, writers in written if model['sha256'] in writers), None)
+            if record:
+                return [model['path'], record], ([] if rank == 0 else [
+                    'No successful probe record of the latest interpreted model; emitting the latest model that wrote one'])
+        return [models[0]['path']], ['No successful probe record of an interpreted model available']
+
+    @staticmethod
     def _verify_snapshot(spec, run_dir):
         if '_snapshot_sha256' not in spec:
             return None  # Historical runs have no execution evidence to reconstruct.
@@ -2496,6 +2528,8 @@ class Controller:
                 return {'skip': 'Fresh reuse skipped: no single accepted emitted package to reuse'}
         elif stage == STAGES[0]:
             source = list(spec.get('inputs', {}).values())
+        elif stage == 'emit':
+            source, missing = self._emit_inputs(accepted)
         else:
             source, missing = self._stage_inputs(stage, accepted)
         inputs = []
@@ -2761,7 +2795,7 @@ class Controller:
                  **({} if present else {'reason':'No model.json to validate'})}],
                 scope='Sealed-input integrity and executable model contract; meaning requires probe and independent ground evidence')
         report = report if isinstance(report, dict) else {}
-        paths, dropped = [], []
+        paths, dropped, named = [], [], []
         for artifact in report.get('artifacts') if isinstance(report.get('artifacts'), list) else []:
             # Worker artifacts are claims: the configurator hashes the bytes itself and drops mismatches.
             raw = artifact.get('path') if isinstance(artifact, dict) else None
@@ -2770,6 +2804,10 @@ class Controller:
             path = Path(raw) if Path(raw).is_absolute() else workspace / raw
             if not path.resolve().is_relative_to(workspace):
                 dropped.append({'path':raw,'reason':'Reported artifact is outside the assigned workspace'})
+                continue
+            if stage == 'emit':
+                # An emit report names which package it means; the configurator's own record supplies its hash.
+                named.append(path.resolve())
                 continue
             try:
                 observed_hash = digest(path)
@@ -2811,8 +2849,33 @@ class Controller:
                           'model and their differences from it; physical meaning rests on operator observations where given'}))
         elif stage == 'emit':
             from .toolkit import call_tool
-            candidates = list(dict.fromkeys(p for p in paths if p.is_dir() and (p/'manifest.json').is_file()))
-            verified, rejected = [], []
+            # A package is bytes the configurator observed, as probe records are: the package_dir of an emit_package
+            # this assignment ran, hashed when the tool returned, or a package whose bytes equal one an emit_check of
+            # this assignment was given, hashed before dispatch. The report may name which; without a named package
+            # the newest emit_package build is taken. A worker's claimed hash is never used.
+            built = {}
+            for event in observed:
+                raw = _result_of(event).get('package_dir') if event['name'] == 'emit_package' else None
+                path = str(Path(raw).resolve()) if isinstance(raw, str) else None
+                if path in (event.get('artifacts') or {}):
+                    built.pop(path, None)
+                    built[path] = event['artifacts'][path]
+            given = {(e.get('argument_sha256') or {}).get('package_dir') for e in mine if e['name'] == 'emit_check'} - {None}
+            packages = [p for p in dict.fromkeys(named) if p.is_dir() and (p / 'manifest.json').is_file()]
+            packages = packages or [Path(path) for path in list(built)[-1:]]
+            candidates, verified, rejected, unobserved = [], [], [], []
+            for package in packages:
+                try:
+                    current = digest(package)
+                except (OSError, ValueError):
+                    current = None
+                if current is not None and (current == built.get(str(package)) or current in given):
+                    candidates.append(package)
+                    continue
+                why = ('changed after emit_package returned' if str(package) in built else
+                       'not built by emit_package or given to emit_check through the configurator')
+                unobserved.append({'package': package.name, 'reason': why})
+                dropped.append({'path': str(package), 'reason': 'Package not handed off: ' + why})
             for package in candidates:
                 # The check's own records go outside the worker's workspace, so nothing the worker leaves there can
                 # make the configurator's check fail for the host.
@@ -2835,7 +2898,8 @@ class Controller:
                     rejected.append({'package': package.name, 'reason': why})
                     dropped.append({'path': str(package), 'reason': 'emit_check did not pass: ' + why})
             check('package_integrity_and_replay', 'No independently checked emitted package', candidates=len(candidates),
-                  **({'verified_by': verified} if verified else {}), **({'rejected': rejected} if rejected else {}))
+                  **({'verified_by': verified} if verified else {}), **({'rejected': rejected} if rejected else {}),
+                  **({'not_handed_off': unobserved} if unobserved else {}))
         elif stage == 'reuse':
             # This attempt's live operations, judged by the final verdict's rule for the package it received.
             package = next(({'path':raw,'sha256':sha} for raw, sha in (assignment.get('inputs') or {}).items()

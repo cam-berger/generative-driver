@@ -1,6 +1,7 @@
 """Public configurator behavior with a deliberately unavailable external runtime."""
 from pathlib import Path
 import codecs
+import hashlib
 import contextlib
 import json
 import shutil
@@ -182,6 +183,16 @@ def strings(value):
             yield from strings(item)
 
 
+def probed(workspace, assignment):
+    """A scripted probe stage's observation: one successful record of its assigned model, bound to that model's digest
+    in the notes as the configurator binds the records it observed."""
+    record = Path(workspace) / 'interface-1.json'
+    record.write_text(json.dumps({'schema': 'interface-probe/1', 'ok': True, 'revision': assignment['revision']}))
+    sha = hashlib.sha256(record.read_bytes()).hexdigest()
+    bound = [{'name': record.name, 'sha256': sha, 'model_sha256': model} for model in (assignment.get('inputs') or {}).values()]
+    return {'ok': True, 'artifacts': [str(record)], 'checks': [], 'notes': {'records': bound}}
+
+
 class AssistiveHandoffTests(unittest.TestCase):
     """Every stage hands off notes; a revise commits with its partial handoff; protocol labels gate resume."""
     def test_crash_after_an_accepted_revise_resumes_at_interpret_with_the_new_revision(self):
@@ -249,7 +260,7 @@ class AssistiveHandoffTests(unittest.TestCase):
                 (model / 'model.json').write_text('{"schema": "scripted-model"}')
                 return {'ok': True, 'artifacts': [str(model)], 'checks': []}
             if stage == 'probe':
-                return {'ok': True, 'artifacts': [str(workspace / 'out.json')], 'checks': []}
+                return probed(workspace, assignment)
             if stage == 'emit':
                 package = workspace / 'package'; package.mkdir()
                 (package / 'manifest.json').write_text('{"fixture": "scripted package"}')
@@ -274,7 +285,7 @@ class AssistiveHandoffTests(unittest.TestCase):
                 assigned = {e['data']['stage']: e['data'] for e in controller.call('events', run)['events'] if e['kind'] == 'stage.assigned'}
                 hashes = lambda stage: sorted(assigned[stage]['inputs'].values())
                 self.assertEqual(hashes('probe'), [digest(model)])
-                # Ground handed off nothing; emit still receives the model and the latest probe records.
+                # Ground handed off nothing; emit receives the model and the successful probe record it wrote.
                 self.assertEqual(hashes('emit'), sorted([digest(model), digest(probe)]))
                 self.assertTrue(any((Path(p) / 'model.json').is_file() for p in assigned['emit']['inputs']))
                 contexts = {stage: context_of(prompt) for stage, prompt in prompts if prompt.startswith('Execute exactly')}
@@ -302,14 +313,14 @@ class AssistiveHandoffTests(unittest.TestCase):
                 accepted = [handoff('acquire', 0, []), handoff('interpret', 0, [model]), handoff('probe', 0, [records]),
                             handoff('interpret', 1, []), handoff('probe', 1, [])]
                 spec = {'goal': 'x', 'effects': ['read'], '_revision': 1}
-                for stage in ('ground', 'emit'):
-                    with self.subTest(stage=stage):
-                        selected, missing = controller._stage_inputs(stage, accepted)
-                        self.assertEqual(selected, [str(model), str(records)])
-                        self.assertEqual(missing, [])
+                selected, missing = controller._stage_inputs('ground', accepted)
+                self.assertEqual(selected, [str(model), str(records)])
+                self.assertEqual(missing, [])
                 (root / 'emit').mkdir()
                 prepared = controller._prepare(spec, 'emit', root / 'run', root / 'emit', accepted)
-                self.assertEqual(sorted(digest(p) for p in prepared['inputs']), sorted([digest(model), digest(records)]))
+                # Emit takes only a successful record the model wrote, as the notes bind it: none here, so the model alone.
+                self.assertEqual([digest(p) for p in prepared['inputs']], [digest(model)])
+                self.assertEqual(prepared['input_notes'], ['No successful probe record of an interpreted model available'])
                 # Notes of the current revision only: acquire is shared, revision-0 interpret and probe are not.
                 self.assertEqual([(n['stage'], n['revision']) for n in prepared['context']['prior_notes']],
                                  [('acquire', 0), ('interpret', 1), ('probe', 1)])
@@ -1215,9 +1226,11 @@ class DeviceRepairTests(unittest.TestCase):
                 (model / 'model.json').write_text(json.dumps({'schema': 'scripted-model', 'revision': assignment['revision']}))
                 return {'ok': True, 'artifacts': [str(model)], 'checks': []}
             if stage == 'probe':
-                return {'ok': True, 'artifacts': [str(workspace / 'out.json')], 'checks': [], 'device_diff': diff}
+                return {**probed(workspace, assignment), 'device_diff': diff}
             return {'ok': True, 'artifacts': [], 'checks': []}
         def prepare(original, spec, stage, run_dir, workspace, accepted):
+            if stage == 'probe':
+                return original(spec, stage, run_dir, workspace, accepted)
             return original(spec, stage, run_dir, workspace, accepted) if stage in ('ground', 'emit', 'reuse') else {'inputs': [], 'allowed_tools': []}
         prompts = []
         with tempfile.TemporaryDirectory() as directory:
@@ -1324,8 +1337,9 @@ class FinalVerdictTests(unittest.TestCase):
     @contextlib.contextmanager
     def finishing(self, controller, *, replay='passed', live=True, calls=None, attempts=None, operations=None,
                   channel=None, listen=None):
-        """Acquire to ground are scripted. Emit and reuse use the real preparation and checks with scripted emit_check
-        and live tools: the emit worker writes a package and the reuse worker runs it once on the device.
+        """Acquire to ground are scripted. Emit and reuse use the real preparation and checks with scripted emit_package,
+        emit_check and live tools: the emit worker builds a package with emit_package through the gateway and the reuse
+        worker runs it once on the device.
 
         `replay` is the emit_check outcome ('passed', 'failed', 'supplied' for a passed replay of exchanges the worker
         supplied, or 'seeded' for a register package's seeded check). `listen`, when given, has the acquire worker
@@ -1351,6 +1365,9 @@ class FinalVerdictTests(unittest.TestCase):
         results = iter([call[1] for attempt in attempts for call in attempt if call[1] is not None])
         reused = []
         def fake_call_tool(name, arguments):
+            if name == 'emit_package':
+                package = driver_package(arguments['run_dir'], operations=operations, channel=channel)
+                return {'ok': True, '_exit': 0, 'package_dir': str(package), 'manifest_sha256': digest(package / 'manifest.json')}
             tools.append(name)
             if name == 'acquire_serial_listen':
                 if listen == 'unrecorded':
@@ -1388,6 +1405,10 @@ class FinalVerdictTests(unittest.TestCase):
                                              'arguments': {'seconds': 0} if listen == 'bad-arguments' else {}})
                 except (RuntimeError, OSError):
                     pass
+            if request.stage == 'emit':
+                workspace = Path(request.workspace)
+                controller.call('tool', {**gateway_identity(request), 'name': 'emit_package', 'arguments': {
+                    'model_dir': str(workspace / 'model'), 'probe': str(workspace / 'probe.json')}})
             if request.stage == 'reuse':
                 package = Path(task_of(request.prompt)['inputs'][0])
                 for call in attempts[len(reused)]:
@@ -1415,7 +1436,7 @@ class FinalVerdictTests(unittest.TestCase):
                         'reason': 'Configured runtime exited with an error'}
         def report(request):
             if request.stage == 'emit':
-                package = driver_package(request.workspace, operations=operations, channel=channel)
+                package = Path(request.workspace) / 'tools' / 'package'
                 return {'status': 'completed', 'summary': 'scripted emission', 'checks': [], 'unresolved': [],
                         'artifacts': [{'path': str(package), 'sha256': digest(package), 'kind': 'package'}]}
         with scripted_stages(controller, check=check, prepare=prepare, work=work, report=report, runtime=runtime), \
@@ -2380,18 +2401,93 @@ class FinalVerdictTests(unittest.TestCase):
                     controller.close()
 
 
+class GenericEmitInputTests(unittest.TestCase):
+    """Generic emit receives an interpreted model and a successful probe record that model wrote, from probe or ground,
+    as the configurator bound each record to its writer in the handoff notes."""
+
+    def setUp(self):
+        from generative_driver.configurator import Controller
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.controller = Controller(self.root / 'home')
+        self.addCleanup(self.controller.close)
+
+    def model(self, revision, name):
+        from generative_driver.configurator import digest
+        folder = self.root / 'accepted' / str(revision) / 'interpret' / 'model'
+        folder.mkdir(parents=True)
+        (folder / 'model.json').write_text(json.dumps(thermometer_model(name)))
+        return {'stage': 'interpret', 'revision': revision, 'assignment_id': 'i' + str(revision),
+                'artifacts': [{'path': str(folder), 'sha256': digest(folder), 'kind': 'directory'}]}
+
+    def records(self, stage, revision, *written):
+        """A probe or ground handoff of records, each (name, ok, writer model's digest), bound in its notes."""
+        folder = self.root / 'accepted' / str(revision) / stage
+        folder.mkdir(parents=True, exist_ok=True)
+        artifacts, bound = [], []
+        for name, ok, writer in written:
+            path = folder / name
+            path.write_text(json.dumps({'schema': 'interface-probe/1', 'ok': ok, 'results': [], 'sample': name}))
+            sha = hashlib.sha256(path.read_bytes()).hexdigest()
+            artifacts.append({'path': str(path), 'sha256': sha, 'kind': 'file'})
+            bound.append({'name': name, 'sha256': sha, 'model_sha256': writer})
+        return {'stage': stage, 'revision': revision, 'assignment_id': stage[0] + str(revision), 'artifacts': artifacts,
+                'notes': {'inline': {'configurator': {'records': bound}}}}
+
+    def prepared(self, accepted):
+        workspace = self.root / 'work' / str(len(list(self.root.glob('work/*'))))
+        workspace.mkdir(parents=True)
+        prepared = self.controller._prepare({'goal': 'g', 'effects': ['read']}, 'emit', self.root / 'run', workspace, accepted)
+        names = [Path(path).name.split('-', 1)[1] for path in prepared['inputs']]
+        shas = [Path(path).read_bytes() if Path(path).is_file() else json.loads((Path(path) / 'model.json').read_text())['device']['name']
+                for path in prepared['inputs']]
+        return names, shas, prepared.get('input_notes', [])
+
+    def test_emit_takes_the_latest_model_with_a_successful_record_it_wrote_from_probe_or_ground(self):
+        first, second = self.model(0, 'first'), self.model(1, 'second')
+        a, b = first['artifacts'][0]['sha256'], second['artifacts'][0]['sha256']
+        # Revision 1's probe handed on nothing; its ground wrote a successful record of the second model. An older
+        # probe's records, and records of other models, are not the second model's.
+        accepted = [first, self.records('probe', 0, ('interface-1.json', True, a)), second,
+                    self.records('probe', 1), self.records('ground', 1, ('interface-2.json', True, b),
+                                                           ('interface-3.json', True, 'f' * 64))]
+        names, held, notes = self.prepared(accepted)
+        self.assertEqual(names, ['model', 'interface-2.json'])
+        self.assertEqual(held[0], 'second')
+        self.assertEqual(notes, [])
+
+    def test_emit_falls_back_to_the_model_that_wrote_a_successful_record_and_notes_it(self):
+        first, second = self.model(0, 'first'), self.model(1, 'second')
+        a, b = first['artifacts'][0]['sha256'], second['artifacts'][0]['sha256']
+        # The second model's only record failed: emit packages the first model with the record it wrote.
+        accepted = [first, self.records('probe', 0, ('interface-1.json', True, a)), second,
+                    self.records('probe', 1, ('interface-2.json', False, b))]
+        names, held, notes = self.prepared(accepted)
+        self.assertEqual((names, held[0]), (['model', 'interface-1.json'], 'first'))
+        self.assertEqual(len(notes), 1)
+        self.assertIn('latest interpreted model', notes[0])
+        # No successful record at all: the latest model alone, with a note.
+        names, held, notes = self.prepared([first, second, self.records('probe', 1, ('interface-2.json', False, b))])
+        self.assertEqual((names, held), (['model'], ['second']))
+        self.assertIn('No successful probe record', notes[0])
+
+
 class RealToolVerdictTests(unittest.TestCase):
     """Whole generic runs whose probe, emit and fresh-reuse workers call the real tools through the configurator's
     gateway, on a fictional line-protocol thermometer served on a localhost socket. No hardware and no model run:
     acquire, interpret and ground are scripted, and interpret hands on the thermometer model."""
     DEVICE = {b'ID': b'THERMO-1\n', b'T': b'21.5\n'}
 
-    def run_generic(self, home, reuse, *, emit=None, replies=None, on_emit_check=None, resume=False, model=None, effects=None):
+    def run_generic(self, home, reuse, *, emit=None, replies=None, on_emit_check=None, resume=False, model=None, effects=None,
+                    emit_report=None, emit_runtime=None):
         """`reuse(call, package, workspace)` is the fresh-reuse worker; it calls the real tools with `call(name,
         **arguments)`, which returns the result or the gateway's exception. Interpret hands on `model` (the thermometer
         by default). `emit(call, model, record, workspace)`
         returns the package the emit worker hands off; by default it packages the assigned model with the probe
-        record handed on. `on_emit_check(attempt)` may return a context manager to run the configurator's own
+        record handed on. `emit_report(package)` is the emit worker's report (None: one that names no artifact); by
+        default it names the package with the configurator's digest. `emit_runtime(request)` may replace the emit
+        runtime's whole result. `on_emit_check(attempt)` may return a context manager to run the configurator's own
         emit_check in. With `resume`, a run that stopped is resumed once. `effects` are the run's grants. Returns the
         stopped result (or the first stop and the final result when resumed) and the events."""
         from unittest.mock import patch
@@ -2437,11 +2533,15 @@ class RealToolVerdictTests(unittest.TestCase):
         def report(request):
             if request.stage == 'emit':
                 package = packages[request.workspace]
+                if emit_report:
+                    return emit_report(package)
                 return {'status': 'completed', 'summary': 'packaged', 'checks': [], 'unresolved': [],
                         'artifacts': [{'path': package, 'sha256': digest(package), 'kind': 'package'}]}
+        def runtime(request):
+            return emit_runtime(request) if emit_runtime and request.stage == 'emit' else None
         try:
             with line_device(replies if replies is not None else dict(self.DEVICE)) as binding, \
-                    scripted_stages(controller, check=check, prepare=prepare, work=work, report=report), \
+                    scripted_stages(controller, check=check, prepare=prepare, work=work, report=report, runtime=runtime), \
                     patch('generative_driver.toolkit.call_tool', call_tool):
                 run = controller.call('start', {'goal': 'Real-tool verdict contract on a localhost line device; no model',
                                                 'binding': binding, 'executor_config': {'command': ['never-launched']},
@@ -2706,11 +2806,14 @@ class RealToolVerdictTests(unittest.TestCase):
                 manifest.update(files=package_files(package), probe_sha256=file_digest(package / 'probe.json'))
                 (package / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
                 (package / 'manifest.sha256').write_text(file_digest(package / 'manifest.json') + '\n')
+                # The worker checks its edit through the configurator, which hashes the package it is given.
+                call('emit_check', package_dir=str(package))
                 return str(package)
             return emit
         def unparsable_manifest(call, model, record, workspace):
             package = Path(call('emit_package', model_dir=str(model), probe_json=str(record))['package_dir'])
             (package / 'manifest.json').write_text('{"x": ' + '[' * 100000 + ']' * 100000 + '}')
+            call('emit_check', package_dir=str(package))
             return str(package)
         def blocking(call, model, record, workspace):
             (workspace / 'checks').write_text('a file where a folder could go')
@@ -2729,6 +2832,49 @@ class RealToolVerdictTests(unittest.TestCase):
                 emitted = next(h for h in result['accepted_handoffs'] if h['stage'] == 'emit')
                 check = next(c for c in emitted['checks'] if c['name'] == 'package_integrity_and_replay')
                 self.assertEqual((check['passed'], 'rejected' in check), (equivalent, not equivalent), check)
+
+    def test_emit_hands_off_the_package_the_configurator_saw_emit_package_build_whatever_the_report_claims(self):
+        """The configurator's own record of emit_package decides which bytes are the driver: a report that gives the
+        manifest hash, names nothing or is missing still hands off the package emit_package built, and reuse runs it.
+        A report may name which package; it never supplies the hash."""
+        reuse = lambda call, package, workspace: call('emit_test_live', package_dir=str(package), operations=['read_temperature'])
+        named = lambda package: {'status': 'completed', 'summary': 'packaged', 'checks': [], 'unresolved': [], 'artifacts': [
+            {'path': package, 'sha256': (Path(package) / 'manifest.sha256').read_text().strip(), 'kind': 'package'}]}
+        silent = lambda request: {'runtime': 'codex', 'status': 'failed', 'cause': 'no_report', 'elapsed_seconds': 0,
+                                  'usage': None, 'report': None, 'reason': 'Runtime did not produce a structured stage report'}
+        for name, options in (('a report giving the manifest hash', {'emit_report': named}),
+                              ('a report naming no artifact', {'emit_report': lambda package: None}),
+                              ('no report', {'emit_runtime': silent})):
+            with self.subTest(report=name), tempfile.TemporaryDirectory() as directory:
+                result, events = self.run_generic(Path(directory) / 'home', reuse, **options)
+                self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', True), result)
+                emitted = next(h for h in result['accepted_handoffs'] if h['stage'] == 'emit')
+                built = next(e['data'] for e in events if e['kind'] == 'tool.finished' and e['data']['name'] == 'emit_package')
+                self.assertEqual([a['sha256'] for a in emitted['artifacts']], list(built['artifacts'].values()))
+                self.assertFalse(emitted['notes']['inline']['configurator']['dropped_artifacts'])
+                # Fresh reuse received that package.
+                reused = [e['data'] for e in events if e['kind'] == 'stage.assigned' and e['data']['stage'] == 'reuse']
+                self.assertEqual([list(a['inputs'].values()) for a in reused], [[emitted['artifacts'][0]['sha256']]])
+
+    def test_a_package_changed_after_emit_package_returned_is_not_handed_off_and_the_verdict_says_so(self):
+        """Bytes the configurator never observed are no driver it hands off, and the verdict names why rather than
+        saying no driver was emitted."""
+        def edited(call, model, record, workspace):
+            package = Path(call('emit_package', model_dir=str(model), probe_json=str(record))['package_dir'])
+            (package / 'REFERENCE.md').write_text('rewritten after the tool returned')
+            return str(package)
+        with tempfile.TemporaryDirectory() as directory:
+            result, _ = self.run_generic(Path(directory) / 'home',
+                lambda call, package, workspace: call('emit_test_live', package_dir=str(package), operations=['read_temperature']),
+                emit=edited)
+        self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', False), result)
+        emitted = next(h for h in result['accepted_handoffs'] if h['stage'] == 'emit')
+        self.assertEqual(emitted['artifacts'], [])
+        check = next(c for c in emitted['checks'] if c['name'] == 'package_integrity_and_replay')
+        self.assertEqual((check['passed'], check['candidates']), (False, 0))
+        self.assertIn('changed after emit_package returned', json.dumps(check['not_handed_off']))
+        self.assertEqual(result['equivalence']['diff'][0]['reason'],
+                         'emitted package not handed off: changed after emit_package returned')
 
     def test_a_package_built_from_supplied_exchanges_is_no_replay_of_the_device(self):
         """A probe record made from a replay the worker supplied reached no device. Its package passes emit_check

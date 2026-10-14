@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -41,6 +42,75 @@ def process_alive(pid):
 
 
 class ServiceLifecycleTests(unittest.TestCase):
+    def test_burst_of_clients_reconnects_to_one_owner_without_dropped_connections(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            started = call('ping', {}, home)
+            try:
+                with ThreadPoolExecutor(max_workers=32) as clients:
+                    replies = list(clients.map(lambda _:call('ping', {}, home, autostart=False), range(32)))
+                self.assertTrue(all(reply.get('ok') for reply in replies), replies)
+                self.assertEqual({reply['pid'] for reply in replies}, {started['pid']})
+            finally:
+                call('shutdown', {}, home)
+
+    def test_transient_ipc_errors_never_replace_a_live_owner(self):
+        from generative_driver import client
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            started = client.call('ping', {}, home)
+            original, failures = client._request, []
+            def interrupted(*args, **kwargs):
+                if len(failures) < 2:
+                    failures.append(True)
+                    raise ConnectionRefusedError('transient connection refusal')
+                return original(*args, **kwargs)
+            try:
+                with patch.object(client, '_request', side_effect=interrupted), \
+                     patch('subprocess.Popen', side_effect=AssertionError('A live owner must not be replaced')):
+                    reconnected = client.call('ping', {}, home)
+                self.assertEqual(reconnected['pid'], started['pid'])
+                self.assertTrue(process_alive(started['pid']))
+            finally:
+                client.call('shutdown', {}, home)
+
+    def test_unreachable_live_owner_preserves_its_endpoint(self):
+        from generative_driver import client
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            client.call('ping', {}, home)
+            endpoint = (home/'service.json').read_bytes()
+            try:
+                with patch.object(client, '_request', side_effect=ConnectionRefusedError('unreachable')), \
+                     patch('subprocess.Popen', side_effect=AssertionError('A live owner must not be replaced')):
+                    with self.assertRaisesRegex(TimeoutError, 'still running'):
+                        client._start(home, timeout=.01)
+                self.assertEqual((home/'service.json').read_bytes(), endpoint)
+            finally:
+                client.call('shutdown', {}, home)
+
+    def test_lost_tool_reply_is_reported_without_dispatching_the_operation_again(self):
+        import json
+        from generative_driver import client
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            (home/'service.json').write_text(json.dumps({'address':'fixture', 'family':'AF_PIPE', 'authkey':'aa'}))
+            class Connection:
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+                def send_bytes(self, data): sent.append(json.loads(data))
+                def poll(self, timeout): return True
+                def recv_bytes(self, limit): raise EOFError('reply lost after dispatch')
+            sent = []
+            with patch.object(client, 'Client', return_value=Connection()), \
+                 patch.object(client, '_start', side_effect=AssertionError('Do not replay an interrupted write')):
+                result = client.call('tool', {'name':'interface_execute'}, home)
+            self.assertFalse(result['ok'])
+            self.assertIn('interrupted', result['reason'])
+            self.assertEqual([item['method'] for item in sent], ['tool'])
+
     def test_unpublished_daemon_exits_when_starting_client_disconnects(self):
         with tempfile.TemporaryDirectory() as temporary:
             child = subprocess.run([sys.executable, '-m', 'generative_driver.daemon',

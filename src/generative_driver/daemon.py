@@ -21,7 +21,9 @@ def serve(home):
         raise RuntimeError('service.json records other generative-driver code than this configurator runs; '
                            'start the service again from one installation')
     controller = Controller(home)
-    listener = Listener(endpoint['address'], family=endpoint['family'], authkey=bytes.fromhex(endpoint['authkey']))
+    # Queue concurrent worker, harness and UI handshakes rather than refusing a
+    # burst before the ordinary/tool capacity limits can handle the requests.
+    listener = Listener(endpoint['address'], family=endpoint['family'], authkey=bytes.fromhex(endpoint['authkey']), backlog=64)
     ordinary_slots = threading.BoundedSemaphore(24)
     tool_slots = threading.BoundedSemaphore(8)
     requests = set()

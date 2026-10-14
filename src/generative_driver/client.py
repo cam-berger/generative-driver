@@ -159,19 +159,27 @@ def default_home():
     return Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'generative-driver'
 
 
+class _RequestInterrupted(OSError):
+    """Dispatch was attempted; a lost reply cannot authorize repeating an operation."""
+
+
 def _request(home, method, params, *, reply_timeout=None):
     endpoint = json.loads((home / 'service.json').read_text(encoding='utf-8'))
     with Client(endpoint['address'], family=endpoint['family'], authkey=bytes.fromhex(endpoint['authkey'])) as conn:
-        conn.send_bytes(json.dumps({'method': method, 'params': params}).encode('utf-8'))
-        timeout = reply_timeout if reply_timeout is not None else (620 if method == 'tool' else 30)
-        if not conn.poll(timeout):
-            raise TimeoutError('Configurator request timed out')
-        return json.loads(conn.recv_bytes(4 * 1024 * 1024))
+        message = json.dumps({'method': method, 'params': params}).encode('utf-8')
+        try:
+            conn.send_bytes(message)
+            timeout = reply_timeout if reply_timeout is not None else (620 if method == 'tool' else 30)
+            if not conn.poll(timeout):
+                raise TimeoutError('Configurator request timed out')
+            return json.loads(conn.recv_bytes(4 * 1024 * 1024))
+        except (OSError, EOFError, ValueError) as error:
+            raise _RequestInterrupted('Configurator request interrupted after dispatch: ' + str(error)) from error
 
 
-def _start(home):
+def _start(home, timeout=30):
     lock = home / 'startup.lock'
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + timeout
     while True:
         try:
             lock.mkdir()
@@ -189,11 +197,25 @@ def _start(home):
                 raise TimeoutError('Another client is starting the configurator')
             time.sleep(.1)
     try:
-        try:
-            if _request(home, 'ping', {}).get('ok'):
-                return
-        except (OSError, EOFError, ValueError):
-            pass
+        while True:
+            try:
+                if _request(home, 'ping', {}).get('ok'):
+                    return
+            except (OSError, EOFError, ValueError):
+                pass
+            try:
+                recorded = json.loads((home / 'service.json').read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                recorded = {}
+            pid = recorded.get('pid')
+            if type(pid) is not int or pid <= 0 or _wait_for_exit(pid, 0):
+                break
+            # A refused connection is not proof of process exit. Replacing this
+            # endpoint would orphan its live workers and recover its database
+            # under a second owner. Retry only the read-only readiness probe.
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Configurator is still running but not reachable; reconnect to the existing owner')
+            time.sleep(min(.05, max(0, deadline - time.monotonic())))
         identity = hashlib.sha256(str(home).encode()).hexdigest()[:20]
         if os.name == 'nt':
             family, address = 'AF_PIPE', r'\\.\pipe\generative-driver-' + identity
@@ -261,7 +283,7 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
             return {'ok': False, 'reason': _incompatible(endpoint)}
     try:
         result = _request(directory, method, params, **request_options)
-    except (OSError, EOFError, ValueError):
+    except (OSError, EOFError, ValueError) as error:
         if method == 'shutdown':
             try:
                 endpoint = json.loads((directory / 'service.json').read_text(encoding='utf-8'))
@@ -269,11 +291,18 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
                 return {'ok': True, 'stopped': True}
             except (OSError, ValueError) as exc:
                 return {'ok': False, 'stopped': False, 'reason': 'Cannot confirm daemon identity: ' + str(exc)}
-            return _confirmed_shutdown(endpoint.get('pid'), timeout=0)
+            return _confirmed_shutdown(endpoint.get('pid'), timeout=10 if isinstance(error, _RequestInterrupted) else 0)
+        # Never silently replay a tool or state-changing request whose reply was
+        # lost. The owner may already have performed it; reconnect to its state.
+        if isinstance(error, _RequestInterrupted):
+            return {'ok':False, 'reason':str(error)}
         if not autostart:
             return {'ok': False, 'reason': 'Configurator is not reachable. Run generative-driver service start from an operator terminal, then reconnect this UI.'}
         _start(directory)
-        result = _request(directory, method, params, **request_options)
+        try:
+            result = _request(directory, method, params, **request_options)
+        except _RequestInterrupted as error:
+            return {'ok':False, 'reason':str(error)}
     if method == 'shutdown' and result.get('stopped'):
         return _confirmed_shutdown(result.get('pid'))
     if method == 'ping' and result.get('ok'):

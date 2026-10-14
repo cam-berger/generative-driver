@@ -675,6 +675,13 @@ class ChildStartReplyTests(HarnessSuiteFixture):
         # Catches a slot whose child exists but whose trial names no run, because the configurator never answered its
         # start: a resume finds no trial for the child and fails for good, its sealed evaluation token unused.
         from generative_driver.benchmark_support import harness
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        def delayed_worker(request):
+            if request.stage == 'acquire':
+                entered.set()
+                if not release.wait(60):
+                    raise AssertionError('The held scripted worker was not released')
         sent = []
         def intercept(method, params, forward):
             if method == 'suite_start_child':
@@ -682,15 +689,20 @@ class ChildStartReplyTests(HarnessSuiteFixture):
                     sent.append(forward(method, params))
                 return self.UNREACHABLE
             return forward(method, params)
-        with self.harness(PASS), patch.object(harness, 'UNREACHABLE', .5):
+        with self.harness(PASS, runtime=delayed_worker), patch.object(harness, 'UNREACHABLE', .5):
             record = self.drive(intercept=intercept, manifest=manifest(1), executor='codex', options={})
+            self.assertTrue(entered.wait(60), 'The child never reached its scripted worker')
+            release.set()
+            # The child outlives the lost reply and its harness. Its scripted
+            # execution/check fixtures must outlive the child, too.
+            from test_configurator import wait_stopped
+            completed = wait_stopped(self.controller, {'run_id':sent[0]['run_id']})
+            self.assertEqual(completed['status'], 'completed', completed)
         self.assertEqual(record['status'], 'failed', record)
         sid, child = record['suite_id'], {'run_id': sent[0]['run_id']}
         [trial] = self.trials()
         self.assertEqual((trial['run_id'], trial['status'], trial['device_stop']['confirmed']), (None, 'failed', True))
         self.assertEqual(self.controller.call('suite_status', {'suite_id': sid})['status'], 'blocked')
-        from test_configurator import wait_stopped
-        self.assertEqual(wait_stopped(self.controller, child)['status'], 'completed')
         with self.harness(PASS):
             resumed = self.drive(suite_id=sid)
         self.assertEqual(resumed['status'], 'finished', resumed)

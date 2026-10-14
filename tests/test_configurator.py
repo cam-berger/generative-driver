@@ -15,7 +15,24 @@ import unittest.mock
 from line_device import line_device
 
 
-def wait_stopped(controller, run, seconds=60):
+WORKFLOW_TIMEOUT = 60
+
+
+def wait_worker_exit(controller, run, seconds=WORKFLOW_TIMEOUT):
+    """Wait for a scripted crash's worker, whose durable status can remain running.
+
+    Join the worker rather than repeatedly materializing every handoff while the
+    six-stage fixture is still writing them. Read full diagnostics only on failure.
+    """
+    with controller._lock:
+        worker = controller._workers.get(run['run_id'])
+    if worker:
+        worker[1].join(seconds)
+        if worker[1].is_alive():
+            raise AssertionError(controller.call('result', run))
+
+
+def wait_stopped(controller, run, seconds=WORKFLOW_TIMEOUT):
     until = time.monotonic() + seconds
     while time.monotonic() < until:
         result = controller.call('result', run)
@@ -219,10 +236,7 @@ class AssistiveHandoffTests(unittest.TestCase):
                 with scripted_stages(controller, check=check), patch.object(controller, '_accept', side_effect=accept_then_crash):
                     run = controller.call('start', {'goal': 'Scripted revise contract; no model or device',
                                                     'executor_config': {'command': ['never-launched']}})
-                    until = time.monotonic() + 10
-                    while run['run_id'] in controller._workers:
-                        self.assertLess(time.monotonic(), until, controller.call('result', run))
-                        time.sleep(.02)
+                    wait_worker_exit(controller, run)
                 self.assertEqual(controller.call('status', run)['status'], 'running')
             finally:
                 controller.close()
@@ -2184,10 +2198,7 @@ class FinalVerdictTests(unittest.TestCase):
                 try:
                     with self.finishing(controller), patch.object(controller, '_state', side_effect=die_on_completion):
                         run = self.start(controller)
-                        until = time.monotonic() + 10
-                        while run['run_id'] in controller._workers:
-                            self.assertLess(time.monotonic(), until, controller.call('result', run))
-                            time.sleep(.02)
+                        wait_worker_exit(controller, run)
                     crashed = controller.call('result', run)
                     self.assertEqual((crashed['status'], crashed['stage']), ('running', 'finalize'))
                     self.assertTrue(crashed['equivalence']['equivalent'])
@@ -2389,10 +2400,7 @@ class FinalVerdictTests(unittest.TestCase):
                     with self.finishing(controller), \
                          patch('generative_driver.configurator._self_evidence', side_effect=fault):
                         run = self.start(controller, effects=['read', 'write'])
-                        until = time.monotonic() + 10
-                        while run['run_id'] in controller._workers or controller._row(run['run_id'])['stage'] != 'finalize':
-                            self.assertLess(time.monotonic(), until, controller.call('result', run))
-                            time.sleep(.02)
+                        wait_worker_exit(controller, run)
                     stopped = controller.call('result', run)
                     self.assertEqual(stopped['status'], 'failed' if stop == 'host fault' else 'running', stopped)
                     if stop == 'restart':

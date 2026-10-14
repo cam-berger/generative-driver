@@ -15,7 +15,7 @@ import unittest.mock
 from line_device import line_device
 
 
-WORKFLOW_TIMEOUT = 60
+WORKFLOW_TIMEOUT = 120
 
 
 def wait_worker_exit(controller, run, seconds=WORKFLOW_TIMEOUT):
@@ -34,11 +34,14 @@ def wait_worker_exit(controller, run, seconds=WORKFLOW_TIMEOUT):
 
 def wait_stopped(controller, run, seconds=WORKFLOW_TIMEOUT):
     until = time.monotonic() + seconds
+    # A full result expands all stage reports and handoffs. Re-reading it while
+    # the same worker writes those files can starve Windows fixture progress.
+    wait_worker_exit(controller, run, seconds)
     while time.monotonic() < until:
-        result = controller.call('result', run)
-        if result['status'] not in ('queued', 'running') and not result['stopping']:
-            return result
-        time.sleep(.02)
+        status = controller.call('status', run)
+        if status['status'] not in ('queued', 'running') and not status['stopping']:
+            return controller.call('result', run)
+        time.sleep(.05)
     raise AssertionError(controller.call('result', run))
 
 
@@ -619,11 +622,14 @@ class DeviceRepairTests(unittest.TestCase):
         try:
             with scripted_stages(controller, check=check, prepare=prepare, prompts=prompts, work=worker), \
                  patch('generative_driver.toolkit.call_tool', fake_call_tool):
-                run = controller.call('start', {'goal': 'Scripted ' + '/'.join(stages) + ' contract; no model or device',
-                                                'binding': binding or self.BINDING, 'executor_config': {'command': ['never-launched']},
-                                                **({'effects': effects} if effects else {}),
-                                                **({'max_revisions': max_revisions} if max_revisions is not None else {})})
-                result = wait_stopped(controller, run)
+                try:
+                    run = controller.call('start', {'goal': 'Scripted ' + '/'.join(stages) + ' contract; no model or device',
+                                                    'binding': binding or self.BINDING, 'executor_config': {'command': ['never-launched']},
+                                                    **({'effects': effects} if effects else {}),
+                                                    **({'max_revisions': max_revisions} if max_revisions is not None else {})})
+                    result = wait_stopped(controller, run)
+                finally:
+                    self.assertTrue(controller.close(timeout=WORKFLOW_TIMEOUT), 'Fixture worker did not release its files')
             return result, controller.call('events', run)['events'], prompts, calls
         finally:
             controller.close()

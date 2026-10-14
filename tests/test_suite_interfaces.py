@@ -10,7 +10,7 @@ from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from suite_fixtures import legacy_devices, legacy_manifest, options, wait_suite, write_scripted_case_worker
+from suite_fixtures import shutdown_owner, legacy_devices, legacy_manifest, options, wait_suite, write_scripted_case_worker
 
 
 def server_env(root):
@@ -59,7 +59,7 @@ raise SystemExit(main())
                 self.assertFalse((home/'runs.sqlite3').exists())
             finally:
                 if (home/'service.json').exists():
-                    call('shutdown', {}, home)
+                    shutdown_owner(home)
 
     def test_saved_comparison_is_offline_and_incompatibility_sets_exit_status(self):
         from test_suite_reporting import comparison_fixture
@@ -111,7 +111,7 @@ raise SystemExit(main())
                 self.assertEqual(report['equivalence']['equivalent'], 0)
                 self.assertEqual(call('ping', {}, root, autostart=False)['pid'], owner_pid)
             finally:
-                call('shutdown', {}, root)
+                shutdown_owner(root)
             no_owner = invoke_cli(root, 'report', suite_id, '--output', str(root/'refused'))
             self.assertEqual(no_owner.returncode, 1, no_owner.stderr + no_owner.stdout)
             self.assertFalse((root/'refused').exists())
@@ -140,7 +140,7 @@ raise SystemExit(main())
                         self.assertFalse((home / 'runs.sqlite3').exists())
                     finally:
                         if (home / 'service.json').exists():
-                            call('shutdown', {}, home)
+                            shutdown_owner(home)
 
     def test_duplicate_reconnect_does_not_repin_current_registry_assets(self):
         from generative_driver.client import call
@@ -169,7 +169,7 @@ raise SystemExit(main())
                 self.assertEqual(json.loads(done.stdout)['suite_id'], suite['suite_id'])
                 self.assertTrue(json.loads(done.stdout)['duplicate'])
             finally:
-                call('shutdown', {}, root)
+                shutdown_owner(root)
 
     def test_separate_cli_processes_reconnect_to_the_same_suite(self):
         from generative_driver.client import call
@@ -208,7 +208,7 @@ raise SystemExit(main())
                 experiment = invoke('result', first['suite_id'])['experiment']
                 self.assertEqual(experiment['comparison_identity']['budgets']['effective']['suite_budget_seconds'], 240)
             finally:
-                call('shutdown', {}, root)
+                shutdown_owner(root)
 
 
 class SuiteMcpTests(unittest.TestCase):
@@ -250,7 +250,7 @@ main()
                         self.assertIn('service start', refused['reason'])
                 self.assertFalse(call('ping', {}, root, autostart=False)['ok'])
             finally:
-                call('shutdown', {}, root)
+                shutdown_owner(root)
 
     def test_cancel_and_resume_use_the_same_durable_owner_and_child(self):
         asyncio.run(self.cancel_and_resume())
@@ -292,7 +292,7 @@ main()
                         self.assertEqual(page['experiment']['comparison_identity']['budgets']['effective']['suite_budget_seconds'], 240)
                 self.assertEqual(call('ping', {}, root, autostart=False)['pid'], owner_pid)
             finally:
-                call('shutdown', {}, root)
+                shutdown_owner(root)
 
     def test_home_selection_resolves_and_pagination_rejects_invalid_numbers(self):
         asyncio.run(self.home_and_pagination())
@@ -341,7 +341,7 @@ main()
                 self.assertFalse(other.exists())
             finally:
                 expected_error_log.close()
-                call('shutdown', {}, root)
+                shutdown_owner(root)
 
     def test_suite_reconnects_with_running_child_and_paginates_every_slot(self):
         asyncio.run(self.reconnect_running_child())
@@ -364,7 +364,10 @@ main()
             script.write_text(source, encoding='utf-8')
             configure('codex', command, home=root)
             owner_pid = call('ping', {}, root)['pid']
-            params = StdioServerParameters(command=sys.executable, args=['-m', 'generative_driver.mcp'],
+            # Exercise the owner-launched Windows path on every host, as well as
+            # under the SDK's real kill-on-close Job Object on Windows CI.
+            params = StdioServerParameters(command=sys.executable,
+                args=['-c', "import platform; platform.system=lambda:'Windows'; from generative_driver.mcp import main; main()"],
                 env=server_env(root), cwd=str(root))
             async def invoke(session, action, **arguments):
                 reply = await session.call_tool('driver_benchmark_suite_' + action, arguments)
@@ -411,7 +414,7 @@ main()
                 self.assertEqual(call('ping', {}, root, autostart=False)['pid'], owner_pid)
             finally:
                 (root/'release').write_text('cleanup', encoding='utf-8')
-                call('shutdown', {}, root)
+                shutdown_owner(root)
 
     def test_windows_suite_does_not_create_an_owner(self):
         asyncio.run(self.absent_owner())
@@ -438,4 +441,4 @@ main()
                 self.assertFalse((root/'runs.sqlite3').exists())
             finally:
                 if (root/'service.json').exists():
-                    call('shutdown', {}, root)
+                    shutdown_owner(root)

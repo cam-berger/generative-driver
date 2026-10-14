@@ -118,7 +118,7 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = No
                 return json.dumps(owner, default=str)
     try:
         return json.dumps(run(case=profile, output_dir=output_dir, executor=executor, options=options,
-                              autostart=autostart), default=str)
+                              autostart=autostart, via_owner=not autostart), default=str)
     except ValueError as error:
         return json.dumps({'ok': False, 'reason': str(error)})
 
@@ -137,7 +137,7 @@ def driver_benchmark_suite_start(manifest: dict, executor: Literal['codex', 'goo
     from .benchmark_support.suites import start_suite
     try:
         return json.dumps(start_suite(manifest, executor, options, request_id,
-            autostart=platform.system() != 'Windows'), allow_nan=False)
+            autostart=platform.system() != 'Windows', via_owner=platform.system() == 'Windows'), allow_nan=False)
     except (OSError, ValueError, RuntimeError) as error:
         return json.dumps({'ok': False, 'reason': str(error)})
 
@@ -181,6 +181,7 @@ def driver_benchmark_suite_resume(suite_id: str, suite_budget_seconds: float | N
     from .benchmark_support.suites import resume_suite
     try:
         return json.dumps(resume_suite(suite_id, options, autostart=platform.system() != 'Windows',
+                                       via_owner=platform.system() == 'Windows',
                                        suite_budget_seconds=suite_budget_seconds,
                                        budget_reason=budget_reason if suite_budget_seconds is not None else None,
                                        child_budget_seconds=child_budget_seconds,

@@ -42,6 +42,13 @@ class HarnessSuiteFixture(PendingRunFixture):
     def setUp(self):
         super().setUp()
         self.peers, self.admitted, self.graded = [], [], []
+        self.addCleanup(self.join_harnesses)
+
+    def join_harnesses(self):
+        self.assertTrue(self.controller.close(timeout=60), 'Test workers still own files at cleanup')
+        for thread in getattr(self.controller, '_test_harness_threads', []):
+            thread.join(60)
+            self.assertFalse(thread.is_alive(), 'Test harness still owns files at cleanup')
 
     def admit(self, case_id, options, trial_dir, *, password_file, renode=None):
         self.admitted.append({'case': case_id, 'trial': Path(trial_dir), 'password_file': password_file, 'renode': renode,
@@ -682,9 +689,8 @@ class ChildStartReplyTests(HarnessSuiteFixture):
         [trial] = self.trials()
         self.assertEqual((trial['run_id'], trial['status'], trial['device_stop']['confirmed']), (None, 'failed', True))
         self.assertEqual(self.controller.call('suite_status', {'suite_id': sid})['status'], 'blocked')
-        until = time.monotonic() + 20
-        while (self.controller.call('status', child)['status'], self.controller.call('status', child)['stopping']) != ('completed', False):
-            self.assertLess(time.monotonic(), until); time.sleep(.05)
+        from test_configurator import wait_stopped
+        self.assertEqual(wait_stopped(self.controller, child)['status'], 'completed')
         with self.harness(PASS):
             resumed = self.drive(suite_id=sid)
         self.assertEqual(resumed['status'], 'finished', resumed)

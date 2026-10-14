@@ -1222,6 +1222,23 @@ class Controller:
 
     def call(self, method, params=None):
         params = params or {}
+        if method == 'benchmark_spawn':
+            from .benchmark_support.harness import bench_home, _spawn
+            kind = params.get('kind')
+            directory = Path(params['directory']).resolve()
+            if kind not in ('trial', 'suite') or directory.parent != bench_home(self.home) / (
+                    'trials' if kind == 'trial' else 'suites'):
+                raise ValueError('A bench harness must launch in its owner\'s bench directory')
+            channel = params.get('channel') or {}
+            if (set(channel) != {'schema', 'port', 'token'} or channel['schema'] != 'bench-launch-channel/1'
+                    or type(channel['port']) is not int or not 0 < channel['port'] < 65536
+                    or not isinstance(channel['token'], str) or not re.fullmatch('[0-9a-f]{64}', channel['token'])):
+                raise ValueError('Invalid bench harness launch channel')
+            with self._lock:
+                if self._closing:
+                    raise ValueError('Configurator is stopping')
+                process = _spawn(directory, ['--' + kind + '-dir', str(directory)], channel)
+            return {'ok':True, 'pid':process.pid}
         if method == 'start':
             return self.start(params)
         if method.startswith('suite_'):

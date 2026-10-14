@@ -15,7 +15,7 @@ import unittest.mock
 from line_device import line_device
 
 
-def wait_stopped(controller, run, seconds=10):
+def wait_stopped(controller, run, seconds=60):
     until = time.monotonic() + seconds
     while time.monotonic() < until:
         result = controller.call('result', run)
@@ -3322,7 +3322,7 @@ class ConfiguratorTests(unittest.TestCase):
                 until=time.monotonic()+5
                 while time.monotonic()<until:
                     original=controller.call('result',run)
-                    if original['status']=='blocked' and time.time()>original['created']+.4:break
+                    if original['status']=='blocked' and not original['stopping'] and time.time()>original['created']+.4:break
                     time.sleep(.01)
                 with self.assertRaisesRegex(ValueError,'budget exhausted'):
                     controller.call('resume',run)

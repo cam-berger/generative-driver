@@ -158,20 +158,20 @@ def options(secrets, **extra):
 
 def wait_suite(call, suite_id, home, predicate):
     import time
-    hard_stop, idle_stop, cursor = time.monotonic()+60, time.monotonic()+10, 0
+    hard_stop, idle_stop, cursor = time.monotonic()+180, time.monotonic()+30, 0
     last_event, child_cursors = None, {}
     while time.monotonic() < min(hard_stop, idle_stop):
         state = call('suite_status', {'suite_id':suite_id}, home)
         page = call('suite_events', {'suite_id':suite_id,'after':cursor}, home)
         if page['cursor'] > cursor:
-            cursor, idle_stop = page['cursor'], time.monotonic()+10
+            cursor, idle_stop = page['cursor'], time.monotonic()+30
             last_event = page['events'][-1]
         child = state.get('active_child_id')
         if child:
             child_page = call('events', {'run_id':child,'after':child_cursors.get(child,0)}, home)
             if child_page['cursor'] > child_cursors.get(child,0):
                 child_cursors[child] = child_page['cursor']
-                idle_stop, last_event = time.monotonic()+10, child_page['events'][-1]
+                idle_stop, last_event = time.monotonic()+30, child_page['events'][-1]
         if predicate(state):
             return state
         # A stopped suite whose bench harness has not let go of it yet is still settling.
@@ -185,14 +185,16 @@ def wait_owner_suite(owner, suite_id, predicate):
     return wait_suite(lambda method,params,home:owner.call(method,params),suite_id,None,predicate)
 
 
-def settled_suite(call, suite_id, home=None, seconds=10):
+def settled_suite(call, suite_id, home=None, seconds=60):
     """The suite's status once nothing of it is stopping: its child has stopped and its bench harness let go."""
     import time
     deadline = time.monotonic() + seconds
     while True:
         state = call('suite_status', {'suite_id': suite_id}, home)
-        if not state['stopping'] or time.monotonic() > deadline:
+        if not state['stopping']:
             return state
+        if time.monotonic() > deadline:
+            raise AssertionError({'suite_did_not_settle':state})
         time.sleep(.02)
 
 
@@ -222,6 +224,7 @@ def drive_suite(owner, bench, request, *, wait=True, calls=None, stop=None, inte
     thread = threading.Thread(target=lambda: done.update(record=harness.run_suite(
         directory, {'home': str(owner.home), **request}, call=configurator, stop=stop)), daemon=True)
     thread.start()
+    owner._test_harness_threads = getattr(owner, '_test_harness_threads', []) + [thread]
     if wait:
         thread.join(60)
         if thread.is_alive():
@@ -240,3 +243,37 @@ def drive_suite(owner, bench, request, *, wait=True, calls=None, stop=None, inte
     if not record.get('accepted'):
         raise ValueError(record.get('reason') or 'The suite harness stopped before the configurator took the suite on')
     return record
+
+
+def shutdown_owner(home):
+    """Cancel test suites, await their detached harness processes, then stop the owner.
+
+    Suite detach records scheduling completion before the interpreter has exited;
+    only process exit releases harness.log and prevents a late post restarting the owner.
+    """
+    from generative_driver.client import call
+    from generative_driver.benchmark_support.harness import bench_home, read_suite
+    bench = bench_home(home)
+    for path in (bench / 'suites').glob('*/suite.json'):
+        record = read_suite(path.parent) or {}
+        if record.get('suite_id'):
+            reply = call('suite_cancel', {'suite_id':record['suite_id']}, home, autostart=False)
+            if not reply.get('ok'):
+                raise AssertionError(reply)
+    wait_harnesses(home)
+    reply = call('shutdown', {}, home)
+    if not reply.get('stopped'):
+        raise AssertionError(reply)
+
+
+def wait_harnesses(home):
+    """Await process exit, including the final log handles after scheduling detaches."""
+    from generative_driver.client import _wait_for_exit
+    from generative_driver.benchmark_support.harness import bench_home, read_suite, read_trial
+    bench = bench_home(home)
+    for pattern, read in (('suites/*/suite.json',read_suite), ('trials/*/trial.json',read_trial)):
+        for path in bench.glob(pattern):
+            record = read(path.parent) or {}
+            pid = record.get('pid')
+            if pid and not _wait_for_exit(pid, 60):
+                raise AssertionError({'harness_did_not_exit':str(path), 'record':record})

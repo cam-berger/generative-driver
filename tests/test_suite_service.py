@@ -6,7 +6,7 @@ import tempfile
 import time
 import unittest
 
-from suite_fixtures import drive_suite, legacy_devices, legacy_manifest, options, settled_suite, wait_owner_suite
+from suite_fixtures import shutdown_owner, drive_suite, legacy_devices, legacy_manifest, options, settled_suite, wait_owner_suite
 
 
 def owner_home(temporary):
@@ -101,7 +101,7 @@ class CategoryTests(unittest.TestCase):
                 interpret=next(n for n in result['stage_notes'] if n['stage']=='interpret')
                 self.assertIn('predicted_reply_qualification',interpret['failed_checks'])
             finally:
-                call('shutdown',{},home)
+                shutdown_owner(home)
 
 
 class ServiceTests(unittest.TestCase):
@@ -129,7 +129,7 @@ class ServiceTests(unittest.TestCase):
                 kinds=[e['kind'] for e in events]
                 self.assertLess(kinds.index('trial.finished'),[i for i,k in enumerate(kinds) if k=='trial.started'][1])
             finally:
-                call('shutdown',{},home)
+                shutdown_owner(home)
 
     def test_a_request_id_whose_suite_was_refused_starts_afresh_once_the_cause_is_fixed(self):
         # Catches a request_id claimed by a suite start the configurator refused: every later start under it would
@@ -153,7 +153,7 @@ class ServiceTests(unittest.TestCase):
                 self.assertEqual((again['ok'],again['suite_id'],again['duplicate']),(True,started['suite_id'],True))
                 state=wait_suite(call,started['suite_id'],home,lambda s:s['status']=='completed' and not s['stopping'])
                 self.assertEqual(state['completed'],1)
-            finally:call('shutdown',{},home)
+            finally:shutdown_owner(home)
 
     def test_missing_runtime_blockage_preserves_the_child_and_frozen_configuration(self):
         from generative_driver.client import call
@@ -180,7 +180,7 @@ class ServiceTests(unittest.TestCase):
                 self.assertEqual(result['outcome_category'],'operator')
                 rows=call('suite_result',suite,home)['trials']
                 self.assertEqual(sum(t['run_id'] is not None for t in rows),1)
-            finally:call('shutdown',{},home)
+            finally:shutdown_owner(home)
 
     def test_cancellation_drains_active_child_without_dispatching_another(self):
         from generative_driver.client import call
@@ -203,7 +203,7 @@ class ServiceTests(unittest.TestCase):
                 self.assertEqual(sum(t['run_id'] is not None for t in rows),1)
                 self.assertEqual(rows[0]['status'],'cancelled')
                 self.assertEqual(rows[0]['outcome_category'],'cancelled')
-            finally:call('shutdown',{},home)
+            finally:shutdown_owner(home)
 
 
 class SummaryTests(unittest.TestCase):
@@ -249,47 +249,53 @@ class BudgetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
             configure('codex',[sys.executable,'-c','import time; time.sleep(120)'],home=home)
-            manifest=legacy_manifest(2);manifest.update(child_budget_seconds=.3,suite_budget_seconds=.3)
+            manifest=legacy_manifest(2)
             try:
                 suite={'suite_id':start_suite(manifest,options=options(secrets),home=home)['suite_id']}
+                running=wait_suite(call,suite['suite_id'],home,lambda s:bool(s['active_child_id']) and
+                    call('status',{'run_id':s['active_child_id']},home)['status']=='running')
+                # Spend both frozen budgets only after a child exists. A subsecond
+                # startup allowance raced Windows imports and expired before dispatch.
+                from suite_fixtures import sqlite_context
+                with sqlite_context(home/'runs.sqlite3')() as db:
+                    elapsed=time.time()-121
+                    db.execute('UPDATE suites SET created=? WHERE id=?',(elapsed,suite['suite_id']))
+                    db.execute('UPDATE runs SET created=? WHERE id=?',(elapsed,running['active_child_id']))
                 blocked=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked')
                 self.assertEqual(blocked['completed'],0)
-                deadline=time.monotonic()+5
-                while time.monotonic()<deadline:
-                    child=call('status',{'run_id':blocked['active_child_id']},home)
-                    state=call('suite_status',suite,home)
-                    if not child['stopping'] and not state['stopping']:break
-                    time.sleep(.02)
+                settled_suite(call,suite['suite_id'],home)
+                child=call('status',{'run_id':blocked['active_child_id']},home)
+                self.assertFalse(child['stopping'],child)
                 self.assertEqual(child['status'],'cancelled')
                 # A resume relaunches the bench harness, which asks the configurator to resume the suite.
                 no_extension=resume_suite(suite['suite_id'],options(secrets),home=home)
                 self.assertFalse(no_extension['ok'])
-                resumed=resume_suite(suite['suite_id'],options(secrets),home=home,suite_budget_seconds=120,budget_reason='PRIVATE-REASON')
+                resumed=resume_suite(suite['suite_id'],options(secrets),home=home,suite_budget_seconds=240,budget_reason='PRIVATE-REASON')
                 self.assertTrue(resumed['ok'],resumed)
                 # The child's exhausted budget needs its separate explicit extension: its harness provides a device anew
                 # and the child's resume is refused, so the suite stops again with the child as it was.
                 again=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked' and not s['stopping'])
                 self.assertEqual(again['active_child_id'],child['run_id'])
-                self.assertEqual(call('result',{'run_id':child['run_id']},home)['budget_seconds'],.3)
-                resumed=resume_suite(suite['suite_id'],options(secrets),home=home,child_budget_seconds=120,child_budget_reason='PRIVATE-CHILD')
+                self.assertEqual(call('result',{'run_id':child['run_id']},home)['budget_seconds'],120)
+                resumed=resume_suite(suite['suite_id'],options(secrets),home=home,child_budget_seconds=240,child_budget_reason='PRIVATE-CHILD')
                 self.assertTrue(resumed['ok'],resumed)
                 wait_suite(call,suite['suite_id'],home,lambda s:call('status',{'run_id':child['run_id']},home)['status']=='running')
                 cancelled=call('suite_cancel',suite,home)
                 self.assertEqual(cancelled['created'],blocked['created'])
                 settled_suite(call,suite['suite_id'],home)
-                repeated=resume_suite(suite['suite_id'],options(secrets),home=home,suite_budget_seconds=120,budget_reason='repeat')
+                repeated=resume_suite(suite['suite_id'],options(secrets),home=home,suite_budget_seconds=240,budget_reason='repeat')
                 self.assertTrue(repeated['ok'],repeated)
                 page=call('suite_result',suite,home)
                 budgets=page['experiment']['comparison_identity']['budgets']
-                self.assertEqual(budgets['original']['suite_budget_seconds'],.3)
-                self.assertEqual(budgets['effective']['suite_budget_seconds'],120)
-                self.assertEqual(budgets['effective']['child_budget_overrides'],[{'trial_key':'entry-000-repeat-000','budget_seconds':120}])
+                self.assertEqual(budgets['original']['suite_budget_seconds'],120)
+                self.assertEqual(budgets['effective']['suite_budget_seconds'],240)
+                self.assertEqual(budgets['effective']['child_budget_overrides'],[{'trial_key':'entry-000-repeat-000','budget_seconds':240}])
                 events=call('suite_events',suite,home)['events']
                 self.assertEqual(sum(e['kind']=='suite.budget_extended' for e in events),1)
                 self.assertNotIn('PRIVATE',json.dumps(page))
             finally:
                 call('suite_cancel',suite,home)
-                call('shutdown',{},home)
+                shutdown_owner(home)
 
     def test_invalid_suite_budget_extension_never_resumes_or_changes_creation(self):
         from generative_driver.configurator import Controller
@@ -339,7 +345,7 @@ class RecoveryTests(unittest.TestCase):
                 self.assertFalse(refused['ok'],refused)
                 self.assertIn('Snapshot',refused['reason'])
                 self.assertEqual(call('events',{'run_id':blocked['active_child_id']},home)['cursor'],before)
-            finally:call('shutdown',{},home)
+            finally:shutdown_owner(home)
 
     def test_recovered_terminal_final_reconciles_same_child_and_settles_without_resume(self):
         from generative_driver.configurator import Controller
@@ -418,7 +424,7 @@ class RecoveryTests(unittest.TestCase):
                 if pid:
                     try:os.kill(pid,signal.SIGTERM)
                     except ProcessLookupError:pass
-                call('shutdown',{},home)
+                shutdown_owner(home)
 
 
 class InterventionTests(unittest.TestCase):

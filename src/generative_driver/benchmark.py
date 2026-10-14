@@ -191,7 +191,7 @@ def case_root():
     return Path(__file__).resolve().parent / 'resources' / 'bench'
 
 
-def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, autostart=True, wait=False):
+def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, autostart=True, wait=False, via_owner=False):
     """Run the installation replay, or start an actual-agent trial. Every actual-agent case starts a detached bench
     harness, which admits the case, holds the evaluator password file and grades the frozen driver once after the run;
     it provides the emulator of an emulated case (v2 or legacy tq9) and leaves the operator's bound device (bme280)
@@ -219,7 +219,7 @@ def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, aut
             if not reachable.get('ok'):
                 return reachable
         return launch(case, output_dir, executor, options, approval, effects=definition.default_effects,
-                      autostart=autostart, wait=wait)
+                      autostart=autostart, wait=wait, via_owner=via_owner)
     from .toolkit import call_tool
     started = time.monotonic()
     output = Path(output_dir or tempfile.mkdtemp(prefix='generative-driver-smoke-')).resolve()

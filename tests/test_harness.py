@@ -442,6 +442,8 @@ class LaunchTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
+        from suite_fixtures import wait_harnesses
+        self.addCleanup(wait_harnesses, self.root / 'home')
         public_case_fixture(self.root / 'resources', calibration={'status': 'passed', 'evidence_sha256': EVIDENCE})
         (self.root / 'password-handle').write_text('synthetic fixture credential')
         (self.root / 'renode-handle').write_text('')
@@ -463,6 +465,65 @@ class LaunchTests(unittest.TestCase):
         trials = list((self.root / 'home-bench/trials').iterdir())
         self.assertEqual(len(trials), 1)
         return trials[0], read_trial(trials[0])
+
+    def test_owner_launch_hands_credentials_directly_to_harness(self):
+        from generative_driver.client import call
+        from generative_driver.benchmark_support import harness
+        from suite_fixtures import shutdown_owner
+        home = self.root / 'home'
+        fixture = self.root / 'launch_fixture.py'
+        fixture.write_text(LAUNCH_FIXTURE.replace('TESTS_DIR', repr(str(Path(__file__).resolve().parent)))
+            .replace('PRIVATE_DIR', repr(str(self.root / 'native')))
+            .replace('RESOURCES_DIR', repr(str(self.root / 'resources')))
+            .replace('EVIDENCE_SHA', repr(EVIDENCE)).replace('FIXTURE_MODE', repr('refused')))
+        with patch.dict(os.environ, {'GD_TEST_HARNESS_FIXTURE':str(fixture)}):
+            call('ping', {}, home)
+        owner_requests = []
+        original = call
+        def observe(method, params=None, *args, **kwargs):
+            owner_requests.append((method, params))
+            return original(method, params, *args, **kwargs)
+        try:
+            with patch('generative_driver.client.call', side_effect=observe), \
+                 patch.object(harness, '_spawn', wraps=harness._spawn) as spawn:
+                # A real detached harness, started by the owner rather than this client.
+                with self.assertRaisesRegex(ValueError, 'configurator refused the fixture run'):
+                    harness.launch('tq9-v2', executor='codex', autostart=False, via_owner=True,
+                        options={'home':str(home), 'evaluator_password_file':str(self.root/'password-handle'),
+                                 'renode':str(self.root/'renode-handle')})
+                self.assertEqual(spawn.call_count, 0)
+            request = next(params for method, params in owner_requests if method == 'benchmark_spawn')
+            for secret in ('password-handle', 'renode-handle'):
+                self.assertNotIn(secret, json.dumps(request))
+            _, record = self.trial()
+            self.assertEqual(record['status'], 'failed')
+        finally:
+            shutdown_owner(home)
+
+    def test_owner_launch_refuses_other_directories_and_non_channel_payloads(self):
+        from generative_driver.configurator import Controller
+        owner = Controller(self.root / 'home')
+        channel = {'schema':'bench-launch-channel/1', 'port':12345, 'token':'a'*64}
+        valid = {'directory':str(self.root/'home-bench/trials/trial-test'), 'kind':'trial', 'channel':channel}
+        try:
+            with patch('generative_driver.benchmark_support.harness._spawn') as spawn:
+                for changes in ({'directory':str(self.root/'home')}, {'kind':'arbitrary-program'},
+                                {'channel':{**channel, 'password_file':'private-handle'}},
+                                {'channel':{**channel, 'port':True}}, {'channel':{**channel, 'token':'short'}}):
+                    with self.subTest(changes=changes), self.assertRaises(ValueError):
+                        owner.call('benchmark_spawn', {**valid, **changes})
+                spawn.assert_not_called()
+        finally:
+            self.assertTrue(owner.close())
+
+    def test_refused_owner_launch_keeps_a_claimed_trial_from_hanging_on_retry(self):
+        from generative_driver.benchmark_support.harness import launch
+        options = {'home':str(self.root/'home'), 'request_id':'owner-refused'}
+        with patch('generative_driver.client.call', return_value={'ok':False, 'reason':'owner offline'}) as call:
+            for attempt in range(2):
+                with self.subTest(attempt=attempt), self.assertRaisesRegex(ValueError, 'owner offline'):
+                    launch('tq9-v2', executor='codex', options=options, via_owner=True, timeout=.01)
+            self.assertEqual(call.call_count, 1)
 
     def test_relative_password_and_emulator_paths_resolve_against_the_caller(self):
         # Catches paths forwarded as given and then resolved in the trial directory, where the harness runs: the

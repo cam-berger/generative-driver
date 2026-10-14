@@ -93,7 +93,7 @@ def _launch_options(options, home):
 
 
 def start_suite(manifest: dict, executor: str | None = None, options: dict | None = None,
-                request_id: str | None = None, *, home=None, autostart=True) -> dict:
+                request_id: str | None = None, *, home=None, autostart=True, via_owner=False) -> dict:
     """Start a suite through a detached bench harness, which drives it; the configurator only freezes and stores it.
     Password files and the emulator executable in `options` go to the harness on its stdin, never into the suite tables
     or a child's run. A selection is checked before any configurator starts; a repeated request_id with the
@@ -108,10 +108,10 @@ def start_suite(manifest: dict, executor: str | None = None, options: dict | Non
     from ..setup import configured_executor
     return launch_suite({'manifest': normalized, 'executor': configured_executor(executor, directory), 'options': selected,
                          'request_id': request_id},
-                        home=directory, password_files=passwords, renode=renode, autostart=autostart)
+                        home=directory, password_files=passwords, renode=renode, autostart=autostart, via_owner=via_owner)
 
 
-def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autostart=True,
+def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autostart=True, via_owner=False,
                  suite_budget_seconds=None, budget_reason=None, child_budget_seconds=None,
                  child_budget_reason=None) -> dict:
     """Resume a stopped suite through a newly launched bench harness, which takes over its scheduling. Only the password
@@ -133,7 +133,7 @@ def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autos
         ('suite_budget_seconds', suite_budget_seconds), ('budget_reason', budget_reason),
         ('child_budget_seconds', child_budget_seconds),
         ('child_budget_reason', child_budget_reason if child_budget_seconds is not None else None)) if value is not None}}
-    return launch_suite(request, home=directory, password_files=passwords, renode=renode, autostart=autostart)
+    return launch_suite(request, home=directory, password_files=passwords, renode=renode, autostart=autostart, via_owner=via_owner)
 
 
 SCHEDULER = 'harness/1'

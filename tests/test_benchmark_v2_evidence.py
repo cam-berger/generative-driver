@@ -303,7 +303,7 @@ class EvidenceBoundaryTests(unittest.TestCase):
                     'absolute_tolerance': 0, 'unit': 'V', 'channel': 'independent-monitor'}]}
                 decision = evidence.frozen_final_decision(contract, [])
                 check_started.set()
-                if not cancel_committed.wait(5):
+                if not cancel_committed.wait(60):
                     raise AssertionError('External cancellation did not commit')
                 return decision
             try:
@@ -311,10 +311,14 @@ class EvidenceBoundaryTests(unittest.TestCase):
                      patch.object(Controller, '_check', side_effect=check), \
                      patch('generative_driver.configurator.execute', side_effect=execute):
                     with patch.object(controller, '_state', side_effect=state), ThreadPoolExecutor(max_workers=1) as pool:
-                        run = controller.start({'goal': 'scripted-contract-fixture', 'budget_seconds': 30,
+                        run = controller.start({'goal': 'scripted-contract-fixture', 'budget_seconds': 120,
                                                  'executor_config': {'command': ['scripted-runtime']}})
-                        self.assertTrue(check_started.wait(5), 'Final check never ran')
-                        cancelled = pool.submit(controller.call, 'cancel', run).result(timeout=5)
+                        # Six persisted stages precede this barrier. Test the
+                        # cancellation ordering without requiring their file/DB
+                        # work to fit a five-second startup allowance.
+                        if not check_started.wait(60):
+                            self.fail('Final check never ran: ' + str(controller.call('result', run)))
+                        cancelled = pool.submit(controller.call, 'cancel', run).result(timeout=60)
                         self.assertFalse(cancelled['stopping'])
                     result = controller.call('result', run)
                     self.assertEqual((result['status'], result['outcome_category']), ('cancelled', 'cancelled'))

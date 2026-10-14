@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from test_configurator import context_of, gateway_identity, scripted_stages, task_of, wait_stopped
+from test_configurator import WORKFLOW_TIMEOUT, context_of, gateway_identity, scripted_stages, task_of, wait_stopped
 from test_device_provider import MONITOR, keys
 from test_device_recovery import FORBIDDEN, imported
 from test_harness import SOURCE
@@ -354,6 +354,14 @@ PHYSICAL_TRUTH = {'max_reference_age_seconds': 60, 'max_tolerances': {'temperatu
 UNHELD = {'confirmed': True, 'held': False}
 
 
+class HarnessClock:
+    """Control harness deadlines without advancing controller or reference clocks."""
+    offset = 0
+    def monotonic(self): return time.monotonic() + self.offset
+    def time(self): return time.time() + self.offset
+    def sleep(self, seconds): time.sleep(seconds)
+
+
 def blocked_once(stage):
     """A scripted runtime whose first `stage` worker finds no runtime: an operator stop, which the operator resumes."""
     attempts = []
@@ -495,7 +503,13 @@ class PhysicalTrialTests(BoundDeviceFixture):
                      'reference': {'temperature': {'value': 21.5, 'absolute_tolerance': .2},
                                    'humidity': {'value': 40, 'absolute_tolerance': 1},
                                    'pressure': {'value': 101325, 'absolute_tolerance': 10}}}
-        budget, began = 3, time.monotonic()
+        import threading
+        # Advance only the harness's clock after the operator has extended the
+        # run. Its original deadline expires deterministically, independently of
+        # how long six persisted stages take on a Windows runner.
+        clock = HarnessClock()
+        budget, extended_budget, began = 120, 360, clock.monotonic()
+        advanced, renewed, stop = threading.Event(), threading.Event(), threading.Event()
         real_check, real_call = self.controller._check, toolkit.call_tool
         boards, calls, seen = [], [], []
         def prepare(original, spec, stage, run_dir, workspace, accepted):
@@ -519,8 +533,9 @@ class PhysicalTrialTests(BoundDeviceFixture):
                 (package / 'driver/model.json').write_text(json.dumps({'schema': 'interface-model/1',
                                                                         'operations': {'measure': [{'op': 'reg_write'}]}}))
             if request.stage == 'reuse':
-                # Fresh reuse measures after the end of the budget the harness was started with.
-                time.sleep(max(0, began + budget + .5 - time.monotonic()))
+                # Wait until the harness has read the extended budget after its
+                # original deadline, then measure after that deadline on its clock.
+                self.assertTrue(renewed.wait(WORKFLOW_TIMEOUT), 'Harness never followed the extended budget')
                 calls.append(self.tool(request, 'benchmark_package_execute',
                                           {'package_dir': context_of(request.prompt)['package_dir'], 'operation': 'measure'}))
         def call_tool(name, arguments):
@@ -529,12 +544,12 @@ class PhysicalTrialTests(BoundDeviceFixture):
                 return {'ok': True, 'integrity_ok': True, 'runtime_current': True, 'seeds_run': 1}
             return real_call(name, arguments)
         def measure(package, binding):
-            boards.append((binding, time.monotonic()))
+            boards.append((binding, clock.monotonic()))
             return 0, json.dumps({'status': 'OK', 'values': {'t': 21.5, 'h': 40, 'p': 101325}}), ''
         def operator():
             # The operator answers the reuse reference request and resumes, extending the run's budget.
-            answered, until = False, time.monotonic() + 30
-            while time.monotonic() < until:
+            answered, until = False, time.monotonic() + WORKFLOW_TIMEOUT
+            while time.monotonic() < until and not stop.is_set():
                 status = self.status()
                 if status and status['status'] in ('completed', 'cancelled'):
                     return
@@ -545,23 +560,36 @@ class PhysicalTrialTests(BoundDeviceFixture):
                                                          'observation': {**reference, 'observed_at': time.time()}})
                         answered = True
                     try:
-                        self.controller.call('resume', {'run_id': status['run_id'], 'budget_seconds': 60,
+                        self.controller.call('resume', {'run_id': status['run_id'], 'budget_seconds': extended_budget,
                                                         'budget_reason': 'The operator supplied the reuse reference'})
+                        if answered:
+                            clock.offset = budget + 1
+                            advanced.set()
                     except ValueError:
                         pass
                 time.sleep(.02)
-        import threading
+            stop.set()
+        def configurator(method, params):
+            result = self.configurator(method, params)
+            if method == 'result' and advanced.is_set() and result.get('budget_seconds') == extended_budget:
+                renewed.set()
+            return result
         thread = threading.Thread(target=operator, daemon=True)
-        with self.guarded(), patch.object(harness, 'GRACE', 0), \
+        with self.guarded(), patch.object(harness, 'GRACE', 0), patch.object(harness, 'time', clock), \
              patch('generative_driver.toolkit.call_tool', side_effect=call_tool), \
              patch('generative_driver.benchmark_support.physical._measure', side_effect=measure), \
              scripted_stages(self.controller, check=check, prepare=prepare, work=work):
             thread.start()
-            record = harness.run_trial(self.root / 'trial', self.request('trial-graded', budget_seconds=budget),
-                                       call=self.configurator)
-        thread.join(5)
+            try:
+                record = harness.run_trial(self.root / 'trial', self.request('trial-graded', budget_seconds=budget),
+                                           call=configurator, stop=stop)
+            finally:
+                stop.set(); renewed.set()
+                thread.join(WORKFLOW_TIMEOUT)
+                self.assertFalse(thread.is_alive(), 'Fixture operator did not stop')
+                self.assertTrue(self.controller.close(timeout=WORKFLOW_TIMEOUT), 'Fixture worker did not stop')
         result = self.controller.call('result', {'run_id': record['run_id']})
-        self.assertEqual((record['status'], result['status'], result['budget_seconds']), ('evaluated', 'completed', 60),
+        self.assertEqual((record['status'], result['status'], result['budget_seconds']), ('evaluated', 'completed', extended_budget),
                          (record, result['reason']))
         # The run stopped for the operator's reuse reference; meanwhile the trial record already named the device stop
         # of the operator's board, which the harness never held.
@@ -594,9 +622,15 @@ class PhysicalTrialTests(BoundDeviceFixture):
         from generative_driver.benchmark_support import harness
         runtime, attempts = blocked_once('acquire')
         trial = self.root / 'trial'
-        with self.guarded(), patch.object(harness, 'GRACE', 0), \
+        clock, budget = HarnessClock(), 120
+        def configurator(method, params):
+            result = self.configurator(method, params)
+            if method == 'status' and result.get('status') == 'blocked' and not result.get('stopping'):
+                clock.offset = budget + 1
+            return result
+        with self.guarded(), patch.object(harness, 'GRACE', 0), patch.object(harness, 'time', clock), \
              scripted_stages(self.controller, check=lambda *args: {'artifacts': [], 'checks': []}, runtime=runtime):
-            record = harness.run_trial(trial, self.request('trial-stopped', budget_seconds=1), call=self.configurator)
+            record = harness.run_trial(trial, self.request('trial-stopped', budget_seconds=budget), call=configurator)
             self.assertEqual((record['status'], record['device_stop'], record['run_status']['status'],
                               record['run_status']['harness_stopped']), ('run-stopped', UNHELD, 'blocked', 'deadline'), record)
             run = {'run_id': record['run_id']}
@@ -607,7 +641,7 @@ class PhysicalTrialTests(BoundDeviceFixture):
             with self.assertRaisesRegex(ValueError, 'no device to provide anew'):
                 harness.reattach(trial, password_file=self.password, call=self.configurator)
             self.assertEqual(harness.read_trial(trial), record)
-            self.controller.call('resume', {**run, 'budget_seconds': 60, 'budget_reason': 'The operator resumes the run'})
+            self.controller.call('resume', {**run, 'budget_seconds': 360, 'budget_reason': 'The operator resumes the run'})
             self.assertEqual(wait_stopped(self.controller, run)['status'], 'completed')
             # The configurator takes a grade only under the case's method.
             token = harness.evaluation_token(trial, self.password, 'trial-stopped')

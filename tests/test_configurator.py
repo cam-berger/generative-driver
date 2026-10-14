@@ -1196,7 +1196,7 @@ class DeviceRepairTests(unittest.TestCase):
                         if e['kind'] == 'stage.assigned' and e['data']['stage'] == 'interpret']
             self.assertEqual(sorted(Path(p).relative_to(second).as_posix() for p in assigned[1]['inputs']
                                     if Path(p).relative_to(second).parts[0] != '_toolkit'),
-                             ['BRIEF.md', 'INTERFACE_MODEL.md', 'REPAIR_CONTEXT.json', 'defects.json', 'image.bin',
+                             ['BRIEF.md', 'INTERFACE_MODEL.md', 'REPAIR_CONTEXT.json', 'TASKS.json', 'defects.json', 'image.bin',
                               'image_map_check.py', 'previous-model/model.json', 'qualify.py', 'validate.py'])
             self.assertEqual(assigned[1]['collection']['expected_seal_sha256'], digest(Path(assigned[1]['collection']['run_dir']) / 'interpret/attempt1.seal.json'))
 
@@ -1210,7 +1210,7 @@ class DeviceRepairTests(unittest.TestCase):
                     (workspace / name).write_text('{"addressed": true}', encoding='utf-8')
                 with self.repaired(edit) as (controller, run, result, sealed, probes, home):
                     context, = contexts
-                    self.assertEqual(context['sealed_inputs'], ['image.bin', 'previous-model/', 'defects.json', 'REPAIR_CONTEXT.json'])
+                    self.assertEqual(context['sealed_inputs'], ['image.bin', 'TASKS.json', 'previous-model/', 'defects.json', 'REPAIR_CONTEXT.json'])
                     for words in ('read them and leave them unchanged', 'changing any sealed input stops the run'):
                         self.assertIn(words, context['instructions'])
                     self.assertEqual((result['status'], result['outcome_category'], result['stage']), ('blocked', 'integrity', 'interpret'), result)
@@ -3925,6 +3925,9 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                 seen = {}
                 def fake_call_tool(name, arguments):
                     seen.update(arguments['inputs'])
+                    for key in ('BINDING_CONTEXT.json', 'TASKS.json'):
+                        if key in arguments['inputs']:
+                            seen[key] = json.loads(Path(arguments['inputs'][key]).read_text())
                     return {'ok': False, 'reason': 'scripted stop'}
                 with patch('generative_driver.toolkit.call_tool', fake_call_tool):
                     prepared = controller._prepare({'goal': 'x', 'effects': ['read']}, 'interpret', root / 'run', root / 'work', accepted)
@@ -3938,10 +3941,41 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
         self.assertNotIn('blocked', prepared)
         self.assertIn('no single acquired binary', prepared['skip'])
 
+    def test_interpret_selects_named_image_after_acceptance_prefixing(self):
+        seen, _, acquired = self._interpret_selection([
+            ('2-app.bin', b'app'), ('3-app.elf', b'elf'), ('5-flash.bin', b'flash'),
+            ('6-interpret-input.elf', b'elf')])
+        self.assertIn('image.bin', seen)
+        self.assertEqual(seen['image.bin'], str(acquired / '6-interpret-input.elf'))
+
     def test_listen_plus_imported_image_selects_the_image(self):
         seen, prepared, acquired = self._interpret_selection(
             [('listen-1.raw', b'boot text'), ('listen-1.json', b'{}'), ('image.bin', b'\xe9firmware')])
         self.assertEqual(seen['image.bin'], str(acquired / 'image.bin'))
+
+    def test_interpret_receives_observed_serial_settings_as_sealed_evidence(self):
+        trace = json.dumps({'schema': 'serial-listen/1', 'baudrate': 115200,
+                            'unsolicited_output': True, 'text': 'boot evidence'}).encode()
+        seen, _, acquired = self._interpret_selection([
+            ('0-listen-1.json', trace), ('1-listen-1.raw', b'boot evidence'),
+            ('2-interpret-input.elf', b'elf')])
+        self.assertIn('serial-listen.json', seen)
+        self.assertEqual(seen['serial-listen.json'], str(acquired / '0-listen-1.json'))
+
+    def test_interpret_binding_context_declares_observed_uart_and_reset(self):
+        trace = json.dumps({'schema': 'serial-listen/1', 'baudrate': 115200,
+                            'unsolicited_output': True, 'text': 'boot evidence'}).encode()
+        seen, _, _ = self._interpret_selection([
+            ('0-listen-1.json', trace), ('2-interpret-input.elf', b'elf')])
+        self.assertIn('BINDING_CONTEXT.json', seen)
+        self.assertEqual(seen['BINDING_CONTEXT.json']['runtime_channel'],
+                         {'type': 'uart', 'baudrate': 115200, 'resets_on_open': True})
+
+    def test_interpret_receives_requested_behavior_and_effect_grants(self):
+        seen, _, _ = self._interpret_selection([('interpret-input.elf', b'elf')])
+        self.assertIn('TASKS.json', seen)
+        self.assertEqual(seen['TASKS.json']['tasks']['requested']['meaning'], 'x')
+        self.assertEqual(seen['TASKS.json']['effect_grants'], ['read'])
 
     def test_acquire_context_explains_listen_and_reset_without_the_port(self):
         from generative_driver.configurator import Controller

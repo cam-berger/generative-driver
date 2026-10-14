@@ -2505,7 +2505,7 @@ class Controller:
             from .toolkit import call_tool
             acquisition = next((h for h in reversed(accepted) if h['stage']=='acquire'),None)
             artifacts = [Path(a['path']) for a in acquisition['artifacts']] if acquisition else []
-            named = [p for p in artifacts if p.name in ('interpret-input.elf', 'interpret-input.bin')]
+            named = [p for p in artifacts if re.fullmatch(r'(?:\d+-)?interpret-input\.(?:elf|bin)', p.name)]
             images = named if len(named) == 1 else [p for p in artifacts if p.suffix.lower() in ('.bin', '.elf')]
             if spec.get('front_end','interpret-interface') != 'interpret-interface':
                 return {'skip':'Interpretation skipped: generic blind interpretation supports only front_end=interpret-interface'}
@@ -2513,6 +2513,38 @@ class Controller:
                 return {'skip':'Interpretation skipped: no single acquired binary to interpret (' + str(len(images)) + ' candidates)'}
             # A repair keeps the sealed workspace and adds the device diff and the candidate it contradicts.
             inputs = {'image.bin':str(images[0])}
+            # A successful passive listen records transport settings and boot/reset evidence.
+            # Keep that observed acquisition evidence in the sealed interpretation inputs.
+            for artifact in artifacts:
+                if artifact.suffix.lower() != '.json':
+                    continue
+                try:
+                    evidence = json.loads(artifact.read_text(encoding='utf-8'))
+                except (OSError, ValueError):
+                    continue
+                if isinstance(evidence, dict) and evidence.get('schema') == 'serial-listen/1':
+                    key = 'serial-listen.json' if 'serial-listen.json' not in inputs else artifact.name
+                    inputs[key] = str(artifact)
+                    if key == 'serial-listen.json' and type(evidence.get('baudrate')) is int:
+                        binding_context = run_dir / 'preparation' / workspace.name / 'context' / 'BINDING_CONTEXT.json'
+                        binding_context.parent.mkdir(parents=True, exist_ok=True)
+                        binding_context.write_text(json.dumps({
+                            'runtime_channel': {'type': 'uart', 'baudrate': evidence['baudrate'],
+                                'resets_on_open': evidence.get('unsolicited_output') is True},
+                            'source': 'Observed acquisition in serial-listen.json; no physical endpoint is supplied.',
+                            'instructions': 'Use runtime_channel for the executable model. resets_on_open declares '
+                                'the reset property the configurator observed; startup synchronization still requires '
+                                'an evidence-backed exchange. The configurator supplies the endpoint separately.'
+                        }, indent=1), encoding='utf-8')
+                        inputs['BINDING_CONTEXT.json'] = str(binding_context)
+            tasks = run_dir / 'preparation' / workspace.name / 'context' / 'TASKS.json'
+            tasks.parent.mkdir(parents=True, exist_ok=True)
+            tasks.write_text(json.dumps({'schema': 'candidate-task-contract/1',
+                'tasks': {'requested': {'meaning': spec['goal']}}, 'effect_grants': spec.get('effects', ['read']),
+                'instructions': 'The objective describes requested behavior, not protocol evidence. Recover bytes, '
+                    'decoders and units from supplied evidence. Report unsupported behavior. Do not execute or '
+                    'relabel effects outside the grants.'}, indent=1), encoding='utf-8')
+            inputs['TASKS.json'] = str(tasks)
             previous = next((a['path'] for h in reversed(accepted) if h['stage'] == 'interpret' for a in h['artifacts']
                              if (Path(a['path']) / 'model.json').is_file()), None)
             if previous:
@@ -2522,7 +2554,7 @@ class Controller:
             if previous or defects:
                 # Say what each repair input is, so the agent starts from the prior candidate, and that every repair
                 # input is sealed: the configurator re-hashes them after the agent, and a change stops the run.
-                sealed = ['image.bin', *(['previous-model/'] if previous else []), *(['defects.json'] if defects else []),
+                sealed = [*(key + ('/' if key == 'previous-model' else '') for key in inputs), *(['defects.json'] if defects else []),
                           'REPAIR_CONTEXT.json']
                 context = tool_run / 'repair' / 'REPAIR_CONTEXT.json'
                 context.parent.mkdir(parents=True, exist_ok=True)

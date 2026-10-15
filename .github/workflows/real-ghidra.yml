@@ -1,0 +1,119 @@
+name: Real Ghidra
+# Headless Ghidra 12.1.3 imports, analyzes and exports the hand-assembled Cortex-M image of
+# tests/native_ghidra_exports.py on native macOS and Windows, through the public
+# `generative_driver tool ghidra_run` command. Downloads are pinned to their published SHA-256 and
+# verified again after every cache restore.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/real-ghidra.yml
+      - src/generative_driver/cli.py
+      - src/generative_driver/toolkit.py
+      - src/generative_driver/_toolchain/core.py
+      - src/generative_driver/_toolchain/ghidra.py
+      - src/generative_driver/resources/tools/workspace/ghidra_run.py
+      - src/generative_driver/resources/toolchain/skills/interpret-firmware-binary/*.java
+      - tests/native_ghidra.py
+      - tests/native_ghidra_exports.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: real-ghidra-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  GHIDRA_URL: https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.3_build/ghidra_12.1.3_PUBLIC_20260817.zip
+  GHIDRA_SHA256: 93a5d11a9ad510622acaaf908c556a7b9b764d338e78a7567f3689bf5081fd54
+  JDK_RELEASE: https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1
+jobs:
+  ghidra:
+    name: Ghidra on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ghidra 12.1.3 ships its macOS decompiler for Apple silicon only.
+          - os: macos-26
+            jdk: OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.12.1_1.tar.gz
+            jdk_sha256: 3623232f33a9c3baadf304480b2535f9a3cba8a58d42ecbb438ba267315d9998
+          - os: windows-2025
+            jdk: OpenJDK21U-jdk_x64_windows_hotspot_21.0.12.1_1.zip
+            jdk_sha256: f9d6e191ab098c0d416e7d588a24420a8621cd2f4720dab2459b8b7b2d2d8b4e
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/downloads
+          key: real-ghidra-${{ runner.os }}-${{ env.GHIDRA_SHA256 }}-${{ matrix.jdk_sha256 }}
+      - name: Fetch, verify and unpack Ghidra and the JDK
+        shell: python
+        env:
+          JDK_URL: ${{ env.JDK_RELEASE }}/${{ matrix.jdk }}
+          JDK_SHA256: ${{ matrix.jdk_sha256 }}
+        run: |
+          import hashlib, os, subprocess, sys
+          from pathlib import Path
+          temp = Path(os.environ["RUNNER_TEMP"])
+          downloads, tools = temp / "downloads", temp / "tools"
+          downloads.mkdir(exist_ok=True)
+          tools.mkdir(exist_ok=True)
+          def digest(path):
+              sha = hashlib.sha256()
+              with open(path, "rb") as stream:
+                  for block in iter(lambda: stream.read(1 << 20), b""):
+                      sha.update(block)
+              return sha.hexdigest()
+          def fetch(url, expected):
+              # A restored cache is only a copy: the published hash decides, and a mismatch is downloaded again.
+              path = downloads / url.rsplit("/", 1)[1]
+              if not (path.is_file() and digest(path) == expected):
+                  subprocess.run(["curl", "--fail", "--location", "--silent", "--show-error", "--retry", "3",
+                                  "--retry-all-errors", "--output", str(path), url], check=True)
+              actual = digest(path)
+              if actual != expected:
+                  sys.exit(f"{path.name}: sha256 {actual} is not the published {expected}")
+              print(f"{path.name}: sha256 {actual} verified")
+              return path
+          def unpack(archive):
+              if os.name == "nt":
+                  command = [str(Path(os.environ["SystemRoot"], "System32", "tar.exe")), "-xf", str(archive), "-C", str(tools)]
+              elif archive.suffix == ".zip":
+                  command = ["/usr/bin/unzip", "-q", "-o", str(archive), "-d", str(tools)]
+              else:
+                  command = ["/usr/bin/tar", "-xzf", str(archive), "-C", str(tools)]
+              subprocess.run(command, check=True)
+          unpack(fetch(os.environ["GHIDRA_URL"], os.environ["GHIDRA_SHA256"]))
+          unpack(fetch(os.environ["JDK_URL"], os.environ["JDK_SHA256"]))
+          ghidra, = tools.glob("ghidra_12.1.3_PUBLIC")
+          java_home, = [p for p in (*tools.glob("jdk-*/Contents/Home"), *tools.glob("jdk-*")) if (p / "bin").is_dir()]
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"GD_NATIVE_GHIDRA_HOME={ghidra}\nGD_NATIVE_JAVA_HOME={java_home}\n")
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/downloads
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Install the package
+        run: python -m pip install .
+      # The Cortex-M image needs no compiler; the Xtensa ELF class of native_ghidra_exports.py needs an
+      # Xtensa GCC that this lane does not install.
+      - name: Run Ghidra through the public tool command
+        working-directory: tests
+        env:
+          GD_NATIVE_GHIDRA_EVIDENCE: ${{ runner.temp }}/evidence
+        run: python -m unittest -v native_ghidra native_ghidra_exports.NativeGhidraExportTests
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: real-ghidra-${{ matrix.os }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: warn
+          retention-days: 30

@@ -27,6 +27,8 @@ env:
   JDK_RELEASE: https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1
   # Espressif's GCC 14.2.0 for Xtensa, the release the export gate was first observed with.
   XTENSA_RELEASE: https://github.com/espressif/crosstool-NG/releases/download/esp-14.2.0_20260121
+  # The Gradle version of the release's own support/gradle wrapper, used to build its macOS natives.
+  GRADLE_RELEASE: https://services.gradle.org/distributions
 jobs:
   ghidra:
     name: Ghidra on ${{ matrix.os }}
@@ -34,12 +36,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Ghidra 12.1.3 ships its macOS decompiler for Apple silicon only.
+          # Ghidra 12.1.3 ships native binaries for Linux and Windows x86-64 only. On macOS the job builds
+          # the decompiler and the other natives from the release's own sources; see "Provide the macOS natives".
           - os: macos-26
             jdk: OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.12.1_1.tar.gz
             jdk_sha256: 3623232f33a9c3baadf304480b2535f9a3cba8a58d42ecbb438ba267315d9998
             xtensa: xtensa-esp-elf-14.2.0_20260121-aarch64-apple-darwin.tar.xz
             xtensa_sha256: a450db49cea5f191a96345c5b7f0e1a9671a9cf132fecfd9fb1faf6c2a30637e
+            gradle: gradle-9.6.1-bin.zip
+            gradle_sha256: 9c0f7faeeb306cb14e4279a3e084ca6b596894089a0638e68a07c945a32c9e14
           - os: windows-2025
             jdk: OpenJDK21U-jdk_x64_windows_hotspot_21.0.12.1_1.zip
             jdk_sha256: f9d6e191ab098c0d416e7d588a24420a8621cd2f4720dab2459b8b7b2d2d8b4e
@@ -58,14 +63,16 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/downloads
-          key: real-ghidra-${{ runner.os }}-${{ env.GHIDRA_SHA256 }}-${{ matrix.jdk_sha256 }}-${{ matrix.xtensa_sha256 }}
-      - name: Fetch, verify and unpack Ghidra, the JDK and the Xtensa GCC
+          key: real-ghidra-${{ runner.os }}-${{ env.GHIDRA_SHA256 }}-${{ matrix.jdk_sha256 }}-${{ matrix.xtensa_sha256 }}-${{ matrix.gradle_sha256 }}
+      - name: Fetch, verify and unpack the pinned tools
         shell: python
         env:
           JDK_URL: ${{ env.JDK_RELEASE }}/${{ matrix.jdk }}
           JDK_SHA256: ${{ matrix.jdk_sha256 }}
           XTENSA_URL: ${{ env.XTENSA_RELEASE }}/${{ matrix.xtensa }}
           XTENSA_SHA256: ${{ matrix.xtensa_sha256 }}
+          GRADLE_URL: ${{ matrix.gradle && format('{0}/{1}', env.GRADLE_RELEASE, matrix.gradle) || '' }}
+          GRADLE_SHA256: ${{ matrix.gradle_sha256 }}
         run: |
           import hashlib, os, subprocess, sys
           from pathlib import Path
@@ -98,8 +105,9 @@ jobs:
               else:
                   command = ["/usr/bin/tar", "-xf", str(archive), "-C", str(tools)]
               subprocess.run(command, check=True)
-          for name in ("GHIDRA", "JDK", "XTENSA"):
-              unpack(fetch(os.environ[name + "_URL"], os.environ[name + "_SHA256"]))
+          for name in ("GHIDRA", "JDK", "XTENSA", "GRADLE"):
+              if os.environ.get(name + "_URL"):
+                  unpack(fetch(os.environ[name + "_URL"], os.environ[name + "_SHA256"]))
           ghidra, = tools.glob("ghidra_12.1.3_PUBLIC")
           java_home, = [p for p in (*tools.glob("jdk-*/Contents/Home"), *tools.glob("jdk-*")) if (p / "bin").is_dir()]
           gcc = tools / "xtensa-esp-elf" / "bin" / ("xtensa-esp32s3-elf-gcc.exe" if os.name == "nt" else "xtensa-esp32s3-elf-gcc")
@@ -107,11 +115,78 @@ jobs:
               sys.exit(f"{gcc} is not in the Xtensa archive")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
               env.write(f"GD_NATIVE_GHIDRA_HOME={ghidra}\nGD_NATIVE_JAVA_HOME={java_home}\nGD_NATIVE_XTENSA_GCC={gcc}\n")
+              for gradle in tools.glob("gradle-*/bin/gradle"):
+                  env.write(f"GHIDRA_NATIVES_GRADLE={gradle}\n")
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/downloads
           key: ${{ steps.cache.outputs.cache-primary-key }}
+      # The release ships no macOS natives, so this job builds them from the release's own sources with
+      # Ghidra's documented `gradle buildNatives` (docs/GettingStarted.md, "Building Native Components"):
+      # offline, with the pinned Gradle and JDK and the runner's Xcode clang. The natives land in each
+      # module's build/os/<platform>/, which Ghidra prefers to os/<platform>/.
+      - id: natives
+        if: runner.os == 'macOS'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/natives
+          key: real-ghidra-natives-${{ runner.os }}-${{ runner.arch }}-${{ env.GHIDRA_SHA256 }}-${{ matrix.jdk_sha256 }}-${{ matrix.gradle_sha256 }}
+      - name: Provide the macOS natives
+        if: runner.os == 'macOS'
+        shell: python
+        env:
+          RESTORED: ${{ steps.natives.outputs.cache-hit }}
+          GRADLE_ARCHIVE: ${{ matrix.gradle }}
+          GRADLE_SHA256: ${{ matrix.gradle_sha256 }}
+          JDK_SHA256: ${{ matrix.jdk_sha256 }}
+        run: |
+          import hashlib, json, os, shutil, subprocess, sys
+          from pathlib import Path
+          home, temp = Path(os.environ["GD_NATIVE_GHIDRA_HOME"]), Path(os.environ["RUNNER_TEMP"])
+          natives, files = temp / "natives", temp / "natives" / "files"
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+          if os.environ["RESTORED"] == "true":
+              for path in sorted(p for p in files.rglob("*") if p.is_file()):
+                  target = home / path.relative_to(files)
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(path, target)
+          else:
+              subprocess.run([os.environ["GHIDRA_NATIVES_GRADLE"], "--no-daemon", "--offline", "buildNatives"],
+                             cwd=home / "support" / "gradle", env={**os.environ, "JAVA_HOME": os.environ["GD_NATIVE_JAVA_HOME"]},
+                             check=True)
+              built = sorted(p for p in home.glob("**/build/os/*/*") if p.is_file())
+              files.mkdir(parents=True, exist_ok=True)
+              for path in built:
+                  target = files / path.relative_to(home)
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(path, target)
+              clang = subprocess.run(["xcrun", "clang", "--version"], capture_output=True, text=True, check=True)
+              record = {"origin": "built in CI from the Ghidra 12.1.3 release sources with gradle buildNatives; "
+                                  "the release ships no macOS natives",
+                        "run": f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+                        "runner_image": [os.environ.get("ImageOS"), os.environ.get("ImageVersion")],
+                        "clang": clang.stdout.splitlines()[0], "gradle": [os.environ["GRADLE_ARCHIVE"], os.environ["GRADLE_SHA256"]],
+                        "ghidra_sha256": os.environ["GHIDRA_SHA256"], "jdk_sha256": os.environ["JDK_SHA256"],
+                        "files": {str(p.relative_to(home)): digest(p) for p in built}}
+              (natives / "natives.json").write_text(json.dumps(record, indent=1), encoding="utf-8")
+          # A restore is checked against the record its build left; the record itself names that build.
+          record = json.loads((natives / "natives.json").read_text(encoding="utf-8"))
+          for relative, expected in record["files"].items():
+              if digest(home / relative) != expected:
+                  sys.exit(f"{relative} does not match natives.json")
+          if not any(os.access(p, os.X_OK) for p in home.glob("Ghidra/Features/Decompiler/build/os/*/decompile")):
+              sys.exit("no executable decompiler was built")
+          (temp / "evidence").mkdir(exist_ok=True)
+          (temp / "evidence" / "natives.json").write_text(json.dumps({**record, "restored_from_cache": os.environ["RESTORED"] == "true"},
+                                                                    indent=1), encoding="utf-8")
+          print(json.dumps(record, indent=1))
+      - if: runner.os == 'macOS' && steps.natives.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/natives
+          key: ${{ steps.natives.outputs.cache-primary-key }}
       - name: Install the package
         run: python -m pip install .
       - name: Run Ghidra through the public tool command

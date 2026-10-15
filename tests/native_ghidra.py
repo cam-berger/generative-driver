@@ -150,10 +150,15 @@ class NativeGhidraTests(unittest.TestCase):
                 elif (root / name).is_file():
                     kept.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(root / name, kept / name)
-            properties = Path(os.environ["GD_NATIVE_GHIDRA_HOME"], "Ghidra", "application.properties")
+            home = Path(os.environ["GD_NATIVE_GHIDRA_HOME"])
+            properties = home / "Ghidra" / "application.properties"
             host = {"platform": platform.platform(), "machine": platform.machine(), "python": sys.version,
                     "ghidra": [line for line in properties.read_text(encoding="utf-8").splitlines()
                                if line.startswith(("application.version=", "application.build.date="))],
+                    # Shipped decompilers sit in os/<platform>/; a local build adds build/os/<platform>/,
+                    # which Ghidra prefers.
+                    "decompilers": {p.relative_to(home).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                                    for p in sorted(home.glob("Ghidra/Features/Decompiler/**/os/*/decompile*"))},
                     "runner_image": [os.environ.get("ImageOS"), os.environ.get("ImageVersion")],
                     "image_sha256": hashlib.sha256(cortex_m_image()).hexdigest()}
             (kept / "host.json").write_text(json.dumps(host, indent=1), encoding="utf-8")

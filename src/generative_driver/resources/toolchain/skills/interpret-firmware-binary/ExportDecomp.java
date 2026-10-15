@@ -7,6 +7,9 @@ import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressIterator;
+import ghidra.program.model.address.AddressSet;
+import ghidra.program.model.data.StringDataInstance;
+import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
 import ghidra.program.model.listing.Instruction;
@@ -25,11 +28,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.TreeSet;
 
 public class ExportDecomp extends GhidraScript {
     private static final long DEFAULT_TABLE_BYTES = 16L << 20;
     private static final long MIN_TABLE_BYTES = 1024;
     private static final long MAX_TABLE_BYTES = 1L << 30;
+    private static final int MAX_STRING_CHARS = 4096;
     private static final String NOTE = "Static analysis facts: a reference, a string use or a switch case does not "
         + "show that the code runs or is reachable at run time.";
 
@@ -85,6 +90,7 @@ public class ExportDecomp extends GhidraScript {
         }
         List<Table> tables = new ArrayList<>();
         tables.add(exportReferences(output, tableBytes));
+        tables.add(exportStrings(output, tableBytes));
         writeManifest(output, tableBytes, tables);
     }
 
@@ -110,6 +116,78 @@ public class ExportDecomp extends GhidraScript {
             }
             return table;
         }
+    }
+
+    // Every string Ghidra defined, with the functions containing a reference to any of its bytes and the
+    // references from outside every function, such as pointer tables. A value longer than MAX_STRING_CHARS is
+    // clipped to that many characters and marked; control characters and backslashes are escaped.
+    private Table exportStrings(File output, long tableBytes) throws Exception {
+        ReferenceManager manager = currentProgram.getReferenceManager();
+        try (Table table = new Table(output, "strings.tsv", tableBytes,
+                "address", "encoding", "length", "clipped", "functions", "refs_outside_functions", "value")) {
+            for (Data data : currentProgram.getListing().getDefinedData(true)) {
+                monitor.checkCancelled();
+                if (!StringDataInstance.isString(data)) {
+                    continue;
+                }
+                TreeSet<Address> functions = new TreeSet<>();
+                TreeSet<Address> outside = new TreeSet<>();
+                AddressIterator targets = manager.getReferenceDestinationIterator(
+                    new AddressSet(data.getMinAddress(), data.getMaxAddress()), true);
+                while (targets.hasNext()) {
+                    for (Reference reference : manager.getReferencesTo(targets.next())) {
+                        Function function = getFunctionContaining(reference.getFromAddress());
+                        if (function != null) {
+                            functions.add(function.getEntryPoint());
+                        } else {
+                            outside.add(reference.getFromAddress());
+                        }
+                    }
+                }
+                StringDataInstance string = StringDataInstance.getStringDataInstance(data);
+                String value = string.getStringValue();
+                String charset = string.getCharsetName();
+                int length = value == null ? 0 : value.codePointCount(0, value.length());
+                boolean clipped = length > MAX_STRING_CHARS;
+                if (clipped) {
+                    value = value.substring(0, value.offsetByCodePoints(0, MAX_STRING_CHARS));
+                }
+                table.row(data.getMinAddress().toString(), charset == null ? "unknown" : charset,
+                    value == null ? "unknown" : Integer.toString(length), Boolean.toString(clipped),
+                    join(functions), join(outside), value == null ? "" : escape(value));
+            }
+            return table;
+        }
+    }
+
+    private static String join(TreeSet<Address> addresses) {
+        StringBuilder text = new StringBuilder();
+        for (Address address : addresses) {
+            text.append(text.length() == 0 ? "" : ",").append(address);
+        }
+        return text.toString();
+    }
+
+    // One line per value: backslash, tab, newline and carriage return become \\, \t, \n and \r; other control
+    // characters and U+2028/U+2029 become a backslash, the letter u and four hexadecimal digits.
+    private static String escape(String value) {
+        StringBuilder text = new StringBuilder(value.length());
+        for (char c : value.toCharArray()) {
+            if (c == '\\') {
+                text.append("\\\\");
+            } else if (c == '\t') {
+                text.append("\\t");
+            } else if (c == '\n') {
+                text.append("\\n");
+            } else if (c == '\r') {
+                text.append("\\r");
+            } else if (Character.isISOControl(c) || c == '\u2028' || c == '\u2029') {
+                text.append(String.format("\\u%04x", (int) c));
+            } else {
+                text.append(c);
+            }
+        }
+        return text.toString();
     }
 
     // The entry address of the function containing `address`, or empty when no function does.

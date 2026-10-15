@@ -11,10 +11,13 @@ import unittest
 from pathlib import Path
 
 BASE = 0x08000000
-RESET, DISPATCH, CLASSIFY, GREET, LOOKUP = 0x08000040, 0x08000058, 0x0800007C, 0x08000098, 0x080000A0
-NAMES, HELLO = 0x080000AC, 0x080000BC
-COMMANDS = {0x080000D0: "read-status", 0x080000DC: "write-config", 0x080000EC: "reset-device",
-            0x080000FC: "identify-unit"}
+RESET, DISPATCH, CLASSIFY, GREET, LOOKUP, BANNER = (0x08000040, 0x0800005C, 0x08000080, 0x0800009C, 0x080000A4,
+                                                    0x080000B0)
+NAMES, HELLO = 0x080000C0, 0x080000D0
+COMMANDS = {0x080000E4: "read-status", 0x080000F0: "write-config", 0x08000100: "reset-device",
+            0x08000110: "identify-unit"}
+ESCAPED, LONG = 0x08000120, 0x08000138
+LONG_TEXT = "status register value " * 230   # 5060 characters, more than the exporter shows of one string
 
 
 def cortex_m_image():
@@ -48,11 +51,12 @@ def cortex_m_image():
     half(0x2001); bl(CLASSIFY)           # movs r0,#1; bl classify
     bl(GREET)                            # bl greet
     half(0x2003); bl(LOOKUP)             # movs r0,#3; bl lookup
+    bl(BANNER)                           # bl banner
     half(0xE7FE)                         # b .
     at(DISPATCH)                         # a switch whose bounds check leads to its own default block
-    half(0x2803, 0xD80B)                 # cmp r0,#3; bhi 0x08000074
+    half(0x2803, 0xD80B)                 # cmp r0,#3; bhi 0x08000078
     half(0xE8DF, 0xF000)                 # tbb [pc,r0]
-    code.extend(bytes([2, 4, 6, 8]))     # cases 0..3 -> 0x08000064, 68, 6c, 70
+    code.extend(bytes([2, 4, 6, 8]))     # cases 0..3 -> 0x08000068, 6c, 70, 74
     half(0x4804, 0x4770)                 # case 0: ldr r0,[pc,#0x10] (hello); bx lr
     half(0x2011, 0x4770)                 # case 1: movs r0,#0x11; bx lr
     half(0x2022, 0x4770)                 # case 2: movs r0,#0x22; bx lr
@@ -60,9 +64,9 @@ def cortex_m_image():
     half(0x2000, 0x4770)                 # default: movs r0,#0; bx lr
     word(HELLO)                          # literal pool
     at(CLASSIFY)                         # a switch whose bounds check joins case 2
-    half(0x2803, 0xD809)                 # cmp r0,#3; bhi 0x08000094
+    half(0x2803, 0xD809)                 # cmp r0,#3; bhi 0x08000098
     half(0xE8DF, 0xF000)                 # tbb [pc,r0]
-    code.extend(bytes([2, 4, 8, 6]))     # cases 0..3 -> 0x08000088, 8c, 94, 90
+    code.extend(bytes([2, 4, 8, 6]))     # cases 0..3 -> 0x0800008c, 90, 98, 94
     half(0x200A, 0x4770)                 # case 0: movs r0,#0xa; bx lr
     half(0x200B, 0x4770)                 # case 1: movs r0,#0xb; bx lr
     half(0x200C, 0x4770)                 # case 3: movs r0,#0xc; bx lr
@@ -75,6 +79,12 @@ def cortex_m_image():
     half(0xF851, 0x0020)                 # ldr.w r0,[r1,r0,lsl #2]
     half(0x4770)                         # bx lr
     word(NAMES)
+    at(BANNER)
+    half(0x4801)                         # ldr r0,[pc,#4] (escaped)
+    half(0x4902)                         # ldr r1,[pc,#8] (long)
+    half(0x4770, 0x0000)                 # bx lr; padding
+    word(ESCAPED)
+    word(LONG)
     at(NAMES)                            # a table of pointers to command names
     for address in COMMANDS:
         word(address)
@@ -83,6 +93,10 @@ def cortex_m_image():
     for address, text in COMMANDS.items():
         at(address)
         cstring(text)
+    at(ESCAPED)
+    cstring("tab\there\r\nback\\slash")
+    at(LONG)
+    cstring(LONG_TEXT)
     return bytes(code)
 
 
@@ -117,25 +131,36 @@ class NativeGhidraExportTests(unittest.TestCase):
     def test_the_reference_table_names_both_ends_and_their_functions(self):
         self.assertTrue(self.result["ok"], self.result.get("reasons"))
         references = rows(self.root, "references.tsv")
-        for row in (("08000042", "08000040", "08000058", "08000058", "UNCONDITIONAL_CALL"),
-                    ("08000052", "08000040", "080000a0", "080000a0", "UNCONDITIONAL_CALL"),
-                    ("08000064", "08000058", "08000078", "", "READ"),
-                    ("080000ac", "", "080000d0", "", "DATA")):
+        for row in (("08000042", "08000040", "0800005c", "0800005c", "UNCONDITIONAL_CALL"),
+                    ("08000052", "08000040", "080000a4", "080000a4", "UNCONDITIONAL_CALL"),
+                    ("08000068", "0800005c", "0800007c", "", "READ"),
+                    ("080000c0", "", "080000e4", "", "DATA")):
             self.assertIn(row, references)
         self.assertEqual(self.result["exports"]["truncated"], [])
 
-    def test_a_small_bound_keeps_the_leading_references_and_reports_the_rest(self):
+    def test_the_strings_table_gives_each_string_its_users_and_an_escaped_bounded_value(self):
+        self.assertTrue(self.result["ok"], self.result.get("reasons"))
+        self.assertEqual(rows(self.root, "strings.tsv"), [
+            ("080000d0", "US-ASCII", "18", "false", "0800005c,0800009c", "", "hello from fixture"),
+            ("080000e4", "US-ASCII", "11", "false", "", "080000c0", "read-status"),
+            ("080000f0", "US-ASCII", "12", "false", "", "080000c4", "write-config"),
+            ("08000100", "US-ASCII", "12", "false", "", "080000c8", "reset-device"),
+            ("08000110", "US-ASCII", "13", "false", "", "080000cc", "identify-unit"),
+            ("08000120", "US-ASCII", "20", "false", "080000b0", "", r"tab\there\r\nback\\slash"),
+            ("08000138", "US-ASCII", "5060", "true", "", "", LONG_TEXT[:4096])])
+
+    def test_a_small_bound_keeps_the_leading_rows_of_each_table_and_reports_the_rest(self):
         result, root = analyze(navigation_max_bytes=1024)
         self.addCleanup(shutil.rmtree, root, True)
         self.assertTrue(result["ok"], result.get("reasons"))
-        self.assertEqual(result["exports"]["truncated"], ["references.tsv"])
-        table = result["exports"]["navigation"]["tables"]["references.tsv"]
-        complete = rows(self.root, "references.tsv")
-        kept = rows(root, "references.tsv")
-        self.assertLessEqual((root / "exports/references.tsv").stat().st_size, 1024)
-        self.assertEqual(kept, complete[:len(kept)])
-        self.assertEqual((table["rows"], table["rows_found"]), (len(kept), len(complete)))
-        self.assertLess(len(kept), len(complete))
+        self.assertEqual(result["exports"]["truncated"], ["references.tsv", "strings.tsv"])
+        for name, table in result["exports"]["navigation"]["tables"].items():
+            with self.subTest(name):
+                complete, kept = rows(self.root, name), rows(root, name)
+                self.assertLessEqual((root / "exports" / name).stat().st_size, 1024)
+                self.assertEqual(kept, complete[:len(kept)])
+                self.assertEqual((table["rows"], table["rows_found"]), (len(kept), len(complete)))
+                self.assertEqual(table["truncated"], len(kept) < len(complete))
 
 
 if __name__ == "__main__":

@@ -5,6 +5,9 @@ import time
 import uuid
 
 
+RESTARTED='Configurator restarted; explicit resume required'
+
+
 def _json(value):
     return json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False)
 
@@ -109,7 +112,7 @@ class SuiteStore:
             self._get(db,suite_id)
             db.execute('UPDATE suites SET status=?,reason=?,updated=?,cancelled=? WHERE id=?',
                 (status,reason,time.time(),int(status=='cancelled'),suite_id))
-            self._event(db,suite_id,'suite.'+status,{})
+            self._event(db,suite_id,'suite.'+status,{} if reason is None else {'reason':reason})
 
     def cancel(self, suite_id):
         with self.open_db() as db:
@@ -216,5 +219,5 @@ class SuiteStore:
             rows=db.execute("SELECT id FROM suites WHERE status IN ('queued','running')").fetchall()
             for row in rows:
                 db.execute("UPDATE suites SET status='blocked',reason=?,updated=? WHERE id=?",
-                    ('Configurator restarted; explicit resume required',time.time(),row['id']))
-                self._event(db,row['id'],'suite.recovered',{})
+                    (RESTARTED,time.time(),row['id']))
+                self._event(db,row['id'],'suite.recovered',{'reason':RESTARTED})

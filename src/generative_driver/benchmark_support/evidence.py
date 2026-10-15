@@ -102,7 +102,9 @@ def public_v3_report(payload: dict) -> dict:
     """An assistive run's public report, benchmark-report/3: its success is the one equivalence verdict the evaluator
     recorded after the run. Nothing graded its stages, so it carries no gates, stage evaluations or stage verdicts. Its
     verdict reads the record (equivalent, not equivalent, or unscored while there is none: awaiting its grade, unscored
-    or stopped); a report found unqualified keeps that word. Unknown fields never cross this boundary."""
+    or stopped); a report found unqualified keeps that word. Its reason says why (a stop, the verdict or the unscored
+    grade's reasons, with paths already scrubbed by its exporter) and `stopped_stage` names where a stopped run stopped.
+    Unknown fields never cross this boundary."""
     from ..configurator import PROTOCOL, equivalence_label
     result = public_v2_report(payload)
     for key in ('accepted_gates', 'evaluations', 'final_evaluation', 'evaluator_verdicts'):
@@ -114,7 +116,7 @@ def public_v3_report(payload: dict) -> dict:
     result.update(schema='benchmark-report/3', protocol=PROTOCOL, equivalence=equivalence,
                   equivalence_status=equivalence.get('status') if equivalence else awaiting if awaiting in ('pending', 'unscored') else None,
                   verdict='unqualified' if payload.get('verdict') == 'unqualified' else equivalence_label(equivalence),
-                  **_scalars(payload, ('outcome_category',)))
+                  **_scalars(payload, ('outcome_category', 'reason', 'stopped_stage')))
     return result
 
 
@@ -365,7 +367,8 @@ def regrade_v3(report: dict, evidence_path: Path, password_file: Path) -> dict:
         if (sealed['status'] != 'graded' or final.get('capabilities_sha256') != sealed['capabilities_sha256']
                 or ids(regraded) != ids(sealed)):
             raise ValueError('Sealed verdict differs from its final evaluation')
-    return public_v3_report({**report, 'verdict': None, 'equivalence_status': None,
+    from ..configurator import _verdict_reason
+    return public_v3_report({**report, 'verdict': None, 'equivalence_status': None, 'reason': _verdict_reason(regraded),
                              'equivalence': {**regraded, 'evidence_sha256': recorded['evidence_sha256']}})
 
 

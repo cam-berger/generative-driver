@@ -7,6 +7,7 @@ import copy
 import hashlib
 import io
 import json
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -144,11 +145,13 @@ class ScoreTests(AssistiveFixture):
         trial, record = self.trial('wrong', FAIL)
         report = self.report(record['run_id'], 'wrong')
         claimed = copy.deepcopy(report)
-        claimed['verdict'] = 'equivalent'
+        claimed.update(verdict='equivalent', reason='Final verdict: equivalent')
         claimed['equivalence'].update(equivalent=True, diff=[], passed=2,
                                       checks=[{**c, 'passed': True} for c in report['equivalence']['checks']])
         scored = self.score(claimed, trial / 'run-evidence.enc')
         self.assertEqual((scored['verdict'], scored['equivalence']), ('not equivalent', report['equivalence']))
+        # The reason says what the regrade found, never what was claimed.
+        self.assertEqual(scored['reason'], 'Final verdict: not equivalent: value mismatch')
         trial, record = self.trial('good', PASS)
         report = self.report(record['run_id'], 'good')
         claimed = copy.deepcopy(report)
@@ -379,6 +382,22 @@ class SuiteAggregateTests(unittest.TestCase):
         self.assertNotIn('PRIVATE', json.dumps(result))
         self.assertNotIn('final_evaluation', json.dumps(rows))
 
+    def test_each_trial_row_has_the_outcome_of_the_count_it_is_in(self):
+        # Catches a trial row whose outcome disagrees with the count that holds it, and a claimed equivalent the suite
+        # does not count that does not say why.
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        suite, trials, reports, experiment = assistive_fixture()
+        trials[0]['status'] = 'completed'  # An equivalent verdict the configurator did not settle.
+        result = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+        rows, counts = result['trials'], result['counts']
+        self.assertEqual([row['outcome'] for row in rows], ['unqualified', 'not_equivalent', 'not_equivalent', 'unscored',
+                                                           'unscored', 'stopped', 'stopped', 'stopped', 'not_run'])
+        for outcome in ('not_run', 'equivalent', 'not_equivalent', 'unqualified', 'unscored', 'running'):
+            self.assertEqual(sum(row['outcome'] == outcome for row in rows), counts[outcome], outcome)
+        self.assertEqual(sum(row['outcome'] == 'stopped' for row in rows), sum(counts['stopped'].values()))
+        self.assertEqual(rows[0]['reason'], 'Not counted: the equivalent verdict is not a settled, qualified record')
+        self.assertEqual((rows[8]['reason'], rows[8]['stopped_stage'], rows[8]['repairs']), (None, None, None))
+
     def test_a_verdict_is_counted_only_from_a_settled_complete_record(self):
         # Catches an equivalent driver counted from a trial the configurator did not settle, or from a record that is
         # not a complete evaluator grade.
@@ -479,6 +498,59 @@ class SuiteAggregateTests(unittest.TestCase):
 
 
 class SuiteExportTests(AssistiveFixture):
+    def test_an_exported_suite_says_why_each_trial_stands_as_it_does(self):
+        # Catches an export that drops why a trial stopped or is unscored: each trial row, and the report it names,
+        # carries the trial's outcome, a reason with no path or expected value, the stage where it stopped and the
+        # repairs it used.
+        from generative_driver.benchmark_support.suite_reporting import report_suite
+        with self.harness(PASS, FAIL, RuntimeError('evaluator host stopped')):
+            graded = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
+                                request_id='three-children')
+        def stopping(request):
+            # The child stops at probe for a runtime its reason names by a path in the configurator's home.
+            if request.stage == 'probe':
+                return {'runtime': 'codex', 'elapsed_seconds': 0, 'usage': None, 'report': None, 'status': 'blocked',
+                        'cause': 'runtime_unavailable', 'reason': 'Cannot start configured runtime: ' + str(self.home / 'codex')}
+        with self.harness(runtime=stopping):
+            stopped = self.drive(manifest=manifest(), executor='codex', options={}, request_id='stopped-child')
+        expected = {graded['suite_id']: [('equivalent', 'Final verdict: equivalent', None, 0),
+                                         ('not_equivalent', 'Final verdict: not equivalent: value mismatch', None, 0),
+                                         ('unscored', 'Unscored: evaluator host fault: RuntimeError', None, 0)],
+                    stopped['suite_id']: [('stopped', 'Cannot start configured runtime: ' + os.path.join('RUN_HOME', 'codex'),
+                                           'probe', 0), ('not_run', None, None, None), ('not_run', None, None, None)]}
+        for sid, rows in expected.items():
+            with self.subTest(suite=sid), self.owner():
+                result = report_suite(sid, home=self.home, output=self.root / sid)
+                self.assertEqual([(row['outcome'], row['reason'], row['stopped_stage'], row['repairs'])
+                                  for row in result['trials']], rows)
+                for row in result['trials']:
+                    if row['run_id']:
+                        saved = json.loads((self.root / sid / row['report_path']).read_text())
+                        self.assertEqual((saved['reason'], saved['stopped_stage']), (row['reason'], row['stopped_stage']))
+                for path in files(self.root / sid):
+                    self.assertNotIn(str(EXPECTED), path.read_text()); self.assertNotIn(str(self.root), path.read_text())
+
+    def test_the_suite_markdown_says_why_from_each_trials_outcome(self):
+        # Catches a report.md that is one count and the keys of the unscored trials: it names the experiment's
+        # dimensions and why the suite stopped, gives each trial's outcome with its reason, stop stage, repairs, time
+        # and tokens, and lists the most frequent failing check ids, with no path or expected value.
+        from generative_driver.benchmark_support.suite_reporting import report_suite
+        with self.harness(PASS, FAIL, RuntimeError('evaluator host stopped')):
+            record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
+                                request_id='three-children')
+        with self.owner():
+            result = report_suite(record['suite_id'], home=self.home, output=self.root / 'export')
+        text = (self.root / 'export/report.md').read_text()
+        self.assertEqual(result['reason'], 'Trial entry-000-repeat-002 is unscored: evaluator host fault: RuntimeError')
+        self.assertIn('Suite status: blocked: ' + result['reason'], text)
+        self.assertIn('runtime `codex`', text)
+        for row in result['trials']:
+            line = next(line for line in text.splitlines() if line.startswith('| ' + row['trial_key'] + ' |'))
+            cells = [cell.strip() for cell in line.strip().strip('|').split('|')]
+            self.assertEqual(cells[:6], [row['trial_key'], row['case'], row['outcome'], row['reason'], '', str(row['repairs'])])
+        self.assertIn('Most frequent failing checks: `final/effect-1/duty` (1)', text)
+        self.assertNotIn(str(EXPECTED), text); self.assertNotIn(str(self.root), text)
+
     def test_an_assistive_suite_exports_its_equivalent_drivers_and_regrades_their_sealed_evidence(self):
         # Catches an exported assistive suite counted by gates, an unscored trial hidden or regraded, evidence that does
         # not cover exactly the graded trials, and an export that carries an expected value.

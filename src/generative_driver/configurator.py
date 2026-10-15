@@ -1740,10 +1740,12 @@ class Controller:
                 if decision == 'advance':
                     self._suites.settle(suite_id,slot['ordinal'],observed)
                 elif decision == 'block' and suite['status'] == 'running' and not suite['cancelled']:
+                    stop = observed.get('reason')
                     reason = (mismatch + TAKEN if mismatch else
                               'Trial ' + slot['trial_key'] + ' is unscored: ' + unscored if unscored else
                               'Trial ' + slot['trial_key'] + ' awaits its evaluation'
-                              if observed.get('status') == 'completed' else observed.get('reason'))
+                              if observed.get('status') == 'completed' else
+                              'Trial ' + slot['trial_key'] + ' stopped' + (': ' + str(stop) if stop else ''))
                     self._suites.set_state(suite_id,'blocked',reason)
             status = self._suites.get(suite_id)['status']
         if expired:
@@ -1868,7 +1870,14 @@ class Controller:
         if method=='suite_resume_child':return self._suite_resume_child(suite_id,params)
         if method=='suite_settle':return self._suite_settle(suite_id,params)
         if method=='suite_detach':return self._suite_detach(suite_id,params)
-        if method=='suite_events':return {'ok':True,**self._suites.events(suite_id,params.get('after',0))}
+        if method=='suite_events':
+            # Each event says why the suite stopped where it did, with paths scrubbed as reports scrub them.
+            from .reporting import _public
+            page=self._suites.events(suite_id,params.get('after',0))
+            for event in page['events']:
+                if isinstance(event['data'].get('reason'),str):
+                    event['data']['reason']=_public(event['data']['reason'],self.home)
+            return {'ok':True,**page}
         if method not in ('suite_status','suite_result'):
             raise ValueError('Unknown suite method: '+str(method))
         # The slots and the harness's liveness are read together under the suite's lock, which settlement and detach
@@ -1878,8 +1887,10 @@ class Controller:
             suite=self._suites.get(suite_id)
             active=next((trial for trial in suite['trials'] if trial['status'] in ('launching','running')),None)
             child = self.call('status',{'run_id':active['run_id']}) if active and active['run_id'] else None
+            from .reporting import _public
             status={'ok':True,'suite_id':suite_id,**{key:suite[key] for key in ('status','created','updated')},
-                'reason':None if suite['reason'] is None else 'Explicit suite resolution required',
+                # Why the suite stopped (which child, and why it stopped or is unscored), with paths scrubbed.
+                'reason':None if suite['reason'] is None else _public(suite['reason'],self.home),
                 'active_child_id':active['run_id'] if active else None,
                 'planned':len(suite['trials']),'completed':sum(trial['status']=='finished' for trial in suite['trials']),
                 # Equivalent drivers among the settled children, out of `planned`; none applies to a suite frozen before

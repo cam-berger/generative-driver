@@ -1,8 +1,8 @@
 name: Real Ghidra
-# Headless Ghidra 12.1.3 imports, analyzes and exports the hand-assembled Cortex-M image of
-# tests/native_ghidra_exports.py on native macOS and Windows, through the public
-# `generative_driver tool ghidra_run` command. Downloads are pinned to their published SHA-256 and
-# verified again after every cache restore.
+# Headless Ghidra 12.1.3 imports, analyzes and exports the hand-assembled Cortex-M image and an Xtensa ELF
+# that tests/native_ghidra_exports.py compiles from its own source, on native macOS and Windows, through
+# the public `generative_driver tool ghidra_run` command and its toolchain facade. Downloads are pinned to
+# their published SHA-256 and verified again after every cache restore.
 on:
   pull_request:
     paths:
@@ -25,6 +25,8 @@ env:
   GHIDRA_URL: https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.3_build/ghidra_12.1.3_PUBLIC_20260817.zip
   GHIDRA_SHA256: 93a5d11a9ad510622acaaf908c556a7b9b764d338e78a7567f3689bf5081fd54
   JDK_RELEASE: https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1
+  # Espressif's GCC 14.2.0 for Xtensa, the release the export gate was first observed with.
+  XTENSA_RELEASE: https://github.com/espressif/crosstool-NG/releases/download/esp-14.2.0_20260121
 jobs:
   ghidra:
     name: Ghidra on ${{ matrix.os }}
@@ -36,11 +38,15 @@ jobs:
           - os: macos-26
             jdk: OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.12.1_1.tar.gz
             jdk_sha256: 3623232f33a9c3baadf304480b2535f9a3cba8a58d42ecbb438ba267315d9998
+            xtensa: xtensa-esp-elf-14.2.0_20260121-aarch64-apple-darwin.tar.xz
+            xtensa_sha256: a450db49cea5f191a96345c5b7f0e1a9671a9cf132fecfd9fb1faf6c2a30637e
           - os: windows-2025
             jdk: OpenJDK21U-jdk_x64_windows_hotspot_21.0.12.1_1.zip
             jdk_sha256: f9d6e191ab098c0d416e7d588a24420a8621cd2f4720dab2459b8b7b2d2d8b4e
+            xtensa: xtensa-esp-elf-14.2.0_20260121-x86_64-w64-mingw32.zip
+            xtensa_sha256: 82cbe0353c2e7c96acc8755c854aaa2d93d346c6a378fc692e60b3912c560108
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -52,12 +58,14 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/downloads
-          key: real-ghidra-${{ runner.os }}-${{ env.GHIDRA_SHA256 }}-${{ matrix.jdk_sha256 }}
-      - name: Fetch, verify and unpack Ghidra and the JDK
+          key: real-ghidra-${{ runner.os }}-${{ env.GHIDRA_SHA256 }}-${{ matrix.jdk_sha256 }}-${{ matrix.xtensa_sha256 }}
+      - name: Fetch, verify and unpack Ghidra, the JDK and the Xtensa GCC
         shell: python
         env:
           JDK_URL: ${{ env.JDK_RELEASE }}/${{ matrix.jdk }}
           JDK_SHA256: ${{ matrix.jdk_sha256 }}
+          XTENSA_URL: ${{ env.XTENSA_RELEASE }}/${{ matrix.xtensa }}
+          XTENSA_SHA256: ${{ matrix.xtensa_sha256 }}
         run: |
           import hashlib, os, subprocess, sys
           from pathlib import Path
@@ -88,14 +96,17 @@ jobs:
               elif archive.suffix == ".zip":
                   command = ["/usr/bin/unzip", "-q", "-o", str(archive), "-d", str(tools)]
               else:
-                  command = ["/usr/bin/tar", "-xzf", str(archive), "-C", str(tools)]
+                  command = ["/usr/bin/tar", "-xf", str(archive), "-C", str(tools)]
               subprocess.run(command, check=True)
-          unpack(fetch(os.environ["GHIDRA_URL"], os.environ["GHIDRA_SHA256"]))
-          unpack(fetch(os.environ["JDK_URL"], os.environ["JDK_SHA256"]))
+          for name in ("GHIDRA", "JDK", "XTENSA"):
+              unpack(fetch(os.environ[name + "_URL"], os.environ[name + "_SHA256"]))
           ghidra, = tools.glob("ghidra_12.1.3_PUBLIC")
           java_home, = [p for p in (*tools.glob("jdk-*/Contents/Home"), *tools.glob("jdk-*")) if (p / "bin").is_dir()]
+          gcc = tools / "xtensa-esp-elf" / "bin" / ("xtensa-esp32s3-elf-gcc.exe" if os.name == "nt" else "xtensa-esp32s3-elf-gcc")
+          if not gcc.is_file():
+              sys.exit(f"{gcc} is not in the Xtensa archive")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
-              env.write(f"GD_NATIVE_GHIDRA_HOME={ghidra}\nGD_NATIVE_JAVA_HOME={java_home}\n")
+              env.write(f"GD_NATIVE_GHIDRA_HOME={ghidra}\nGD_NATIVE_JAVA_HOME={java_home}\nGD_NATIVE_XTENSA_GCC={gcc}\n")
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -103,13 +114,11 @@ jobs:
           key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: Install the package
         run: python -m pip install .
-      # The Cortex-M image needs no compiler; the Xtensa ELF class of native_ghidra_exports.py needs an
-      # Xtensa GCC that this lane does not install.
       - name: Run Ghidra through the public tool command
         working-directory: tests
         env:
           GD_NATIVE_GHIDRA_EVIDENCE: ${{ runner.temp }}/evidence
-        run: python -m unittest -v native_ghidra native_ghidra_exports.NativeGhidraExportTests
+        run: python -m unittest -v native_ghidra native_ghidra_exports
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

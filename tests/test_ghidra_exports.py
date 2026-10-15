@@ -33,18 +33,20 @@ REFERENCES = ("from_address\tfrom_function\tto_address\tto_function\ttype\n"
               "08000042\t08000040\t08000058\t08000058\tUNCONDITIONAL_CALL\n")
 STRINGS = ("address\tencoding\tlength\tclipped\tfunctions\trefs_outside_functions\tvalue\n"
            "080000d0\tUS-ASCII\t18\tfalse\t0800005c,0800009c\t\thello from fixture\n")
+SWITCHES = ("function\tswitch_address\tcase_value\ttarget\n"
+            "0800005c\t08000060\tunknown\t08000078\n")
 ONE_ROW = {"rows": 1, "rows_found": 1, "truncated": False}
 
 
 def manifest(max_bytes=16777216, **tables):
     """navigation.json for one-row tables, with `tables` (references_tsv=...) replacing their counts."""
-    counts = {"references.tsv": ONE_ROW, "strings.tsv": ONE_ROW}
+    counts = {"references.tsv": ONE_ROW, "strings.tsv": ONE_ROW, "switches.tsv": ONE_ROW}
     counts.update({name.replace("_", "."): value for name, value in tables.items()})
     return json.dumps({"schema": "ghidra-navigation/1", "max_bytes": max_bytes, "tables": counts})
 
 
-def export(references=REFERENCES, strings=STRINGS, navigation=None):
-    return {**CLASSIC, "references.tsv": references, "strings.tsv": strings,
+def export(references=REFERENCES, strings=STRINGS, switches=SWITCHES, navigation=None):
+    return {**CLASSIC, "references.tsv": references, "strings.tsv": strings, "switches.tsv": switches,
             "navigation.json": navigation if navigation is not None else manifest()}
 
 
@@ -120,6 +122,8 @@ class GhidraExportVerificationTests(unittest.TestCase):
             "strings table missing": ({k: v for k, v in export().items() if k != "strings.tsv"}, "strings.tsv"),
             "raw tab in a string value": (export(strings=STRINGS.replace("hello from", "hello\tfrom")),
                                           "strings.tsv"),
+            "switch table missing": ({k: v for k, v in export().items() if k != "switches.tsv"}, "switches.tsv"),
+            "case without its target": (export(switches=SWITCHES.replace("\t08000078", "")), "switches.tsv"),
         }
         for name, (files, culprit) in cases.items():
             with self.subTest(name):

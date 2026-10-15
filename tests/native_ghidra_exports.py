@@ -149,6 +149,19 @@ class NativeGhidraExportTests(unittest.TestCase):
             ("08000120", "US-ASCII", "20", "false", "080000b0", "", r"tab\there\r\nback\\slash"),
             ("08000138", "US-ASCII", "5060", "true", "", "", LONG_TEXT[:4096])])
 
+    def test_the_switch_table_keeps_every_target_and_marks_one_without_a_value_unknown(self):
+        self.assertTrue(self.result["ok"], self.result.get("reasons"))
+        self.assertEqual(rows(self.root, "switches.tsv"), [
+            ("0800005c", "08000060", "0x0", "08000068"),
+            ("0800005c", "08000060", "0x1", "0800006c"),
+            ("0800005c", "08000060", "0x2", "08000070"),
+            ("0800005c", "08000060", "0x3", "08000074"),
+            ("0800005c", "08000060", "unknown", "08000078"),    # the bounds check's own default block
+            ("08000080", "08000084", "0x0", "0800008c"),
+            ("08000080", "08000084", "0x1", "08000090"),
+            ("08000080", "08000084", "0x2", "08000098"),        # also the bounds check's target
+            ("08000080", "08000084", "0x3", "08000094")])
+
     def test_a_small_bound_keeps_the_leading_rows_of_each_table_and_reports_the_rest(self):
         result, root = analyze(navigation_max_bytes=1024)
         self.addCleanup(shutil.rmtree, root, True)

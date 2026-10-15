@@ -70,6 +70,7 @@ NAVIGATION_BOUNDS = (1024, 1 << 30)  # a requested byte bound per table; the exp
 NAVIGATION_TABLES = {
     "references.tsv": ("from_address", "from_function", "to_address", "to_function", "type"),
     "strings.tsv": ("address", "encoding", "length", "clipped", "functions", "refs_outside_functions", "value"),
+    "switches.tsv": ("function", "switch_address", "case_value", "target"),
 }
 
 # Which `-loader` spellings the installed headless analyzer accepts, measured on the local installation

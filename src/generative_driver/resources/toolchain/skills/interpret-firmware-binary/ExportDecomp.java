@@ -3,6 +3,8 @@
 // which records every table's rows, the rows found and whether its bound truncated it.
 // @category Analysis
 import ghidra.app.script.GhidraScript;
+import ghidra.app.decompiler.ClangCaseToken;
+import ghidra.app.decompiler.ClangNode;
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.address.Address;
@@ -14,6 +16,9 @@ import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.InstructionIterator;
+import ghidra.program.model.pcode.HighFunction;
+import ghidra.program.model.pcode.JumpTable;
+import ghidra.program.model.pcode.PcodeOp;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.ReferenceManager;
 import java.io.BufferedWriter;
@@ -27,7 +32,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.TreeSet;
 
 public class ExportDecomp extends GhidraScript {
@@ -35,6 +43,7 @@ public class ExportDecomp extends GhidraScript {
     private static final long MIN_TABLE_BYTES = 1024;
     private static final long MAX_TABLE_BYTES = 1L << 30;
     private static final int MAX_STRING_CHARS = 4096;
+    private static final long NO_LABEL = 0xBAD1ABE1BAD1ABE1L;  // the decompiler's value for a case without a label
     private static final String NOTE = "Static analysis facts: a reference, a string use or a switch case does not "
         + "show that the code runs or is reachable at run time.";
 
@@ -54,6 +63,7 @@ public class ExportDecomp extends GhidraScript {
         if (!output.isDirectory() && !output.mkdirs()) {
             throw new IllegalStateException("Cannot create export directory");
         }
+        List<String[]> switchCases = new ArrayList<>();
         DecompInterface decompiler = new DecompInterface();
         try {
             if (!decompiler.openProgram(currentProgram)) {
@@ -76,6 +86,7 @@ public class ExportDecomp extends GhidraScript {
                             text.println("// DECOMPILATION FAILED: " + result.getErrorMessage());
                         }
                     }
+                    switchCases.addAll(switchCases(function, result));
                 }
             }
             try (PrintWriter listing = writer(new File(output, "disassembly.txt"))) {
@@ -91,7 +102,80 @@ public class ExportDecomp extends GhidraScript {
         List<Table> tables = new ArrayList<>();
         tables.add(exportReferences(output, tableBytes));
         tables.add(exportStrings(output, tableBytes));
+        try (Table switches = new Table(output, "switches.tsv", tableBytes,
+                "function", "switch_address", "case_value", "target")) {
+            for (String[] row : switchCases) {
+                switches.row(row);
+            }
+            tables.add(switches);
+        }
         writeManifest(output, tableBytes, tables);
+    }
+
+    // The cases of every jump table the decompiler recovered in `function`: a row for each value and its target,
+    // and a row with the value unknown for each target the decompiler gave no value.
+    private List<String[]> switchCases(Function function, DecompileResults result) {
+        List<String[]> rows = new ArrayList<>();
+        HighFunction high = result.getHighFunction();
+        if (high == null) {
+            return rows;
+        }
+        String entry = function.getEntryPoint().toString();
+        JumpTable[] tables = high.getJumpTables();
+        Arrays.sort(tables, Comparator.comparing(JumpTable::getSwitchAddress,
+            Comparator.nullsFirst(Comparator.naturalOrder())));
+        for (JumpTable table : tables) {
+            if (table.isEmpty()) {
+                continue;
+            }
+            String at = table.getSwitchAddress().toString();
+            Address[] targets = table.getCases();
+            Integer[] labels = table.getLabelValues();
+            if (labels.length == targets.length) {
+                for (int i = 0; i < targets.length; i++) {
+                    rows.add(new String[] {entry, at, "0x" + Integer.toHexString(labels[i]), targets[i].toString()});
+                }
+                continue;
+            }
+            // Ghidra drops the labels the decompiler could not give and does not say which targets lacked them,
+            // so each value comes from the case labels the decompiler printed for the block at that target.
+            Map<Address, TreeSet<Long>> printed = printedCases(result, table.getSwitchAddress());
+            for (Address target : new LinkedHashSet<>(Arrays.asList(targets))) {
+                TreeSet<Long> values = printed.get(target);
+                if (values == null) {
+                    rows.add(new String[] {entry, at, "unknown", target.toString()});
+                    continue;
+                }
+                for (long value : values) {
+                    rows.add(new String[] {entry, at, "0x" + Long.toHexString(value), target.toString()});
+                }
+            }
+        }
+        return rows;
+    }
+
+    // The case values the decompiled C prints for one switch, by the start address of each case's block.
+    private static Map<Address, TreeSet<Long>> printedCases(DecompileResults result, Address switchAddress) {
+        Map<Address, TreeSet<Long>> printed = new HashMap<>();
+        if (result.getCCodeMarkup() == null) {
+            return printed;
+        }
+        List<ClangNode> tokens = new ArrayList<>();
+        result.getCCodeMarkup().flatten(tokens);
+        for (ClangNode node : tokens) {
+            if (!(node instanceof ClangCaseToken)) {
+                continue;
+            }
+            ClangCaseToken token = (ClangCaseToken) node;
+            PcodeOp first = token.getPcodeOp();
+            PcodeOp branch = token.getSwitchOp();
+            if (first != null && first.getParent() != null && branch != null && token.getValue() != NO_LABEL
+                    && switchAddress.equals(branch.getSeqnum().getTarget())) {
+                printed.computeIfAbsent(first.getParent().getStart(), start -> new TreeSet<>(Long::compareUnsigned))
+                    .add(token.getValue());
+            }
+        }
+        return printed;
     }
 
     // Every memory reference, by source address: stack, register and external references are left out.

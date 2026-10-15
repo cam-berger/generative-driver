@@ -686,6 +686,41 @@ def _emit_check_failure(result):
     return 'seeded check failed' if 'seeds_run' in result else 'emit_check reported failure'
 
 
+def _emit_builds(events):
+    """{path: sha256} of each package_dir a successful emit_package built, as the configurator hashed it when the tool
+    returned, oldest first: its own record of one assignment's tools (tool.finished payloads), never a worker's claim."""
+    built = {}
+    for event in events:
+        raw = _result_of(event).get('package_dir') if event.get('ok') and event.get('name') == 'emit_package' else None
+        path = str(Path(raw).resolve()) if isinstance(raw, str) else None
+        if path in (event.get('artifacts') or {}):
+            built.pop(path, None)
+            built[path] = event['artifacts'][path]
+    return built
+
+
+def _observed_packages(named, built, given, unseen):
+    """The packages an emit may hand on: those the worker's report names (a directory with a manifest.json), else the
+    newest emit_package build, each only while its bytes are ones the configurator observed (`given`: digests it
+    recorded itself). A report names which package, never its hash. Returns (packages, not_handed_off, dropped); a
+    package is not handed off as `unseen`, or as changed when it is a build whose bytes changed after the tool returned."""
+    packages = [p for p in dict.fromkeys(named) if p.is_dir() and (p / 'manifest.json').is_file()]
+    packages = packages or [Path(path) for path in list(built)[-1:]]
+    observed, not_handed_off, dropped = [], [], []
+    for package in packages:
+        try:
+            current = digest(package)
+        except (OSError, ValueError):
+            current = None
+        if current is not None and current in given:
+            observed.append(package)
+            continue
+        why = 'changed after emit_package returned' if str(package) in built else unseen
+        not_handed_off.append({'package': package.name, 'reason': why})
+        dropped.append({'path': str(package), 'reason': 'Package not handed off: ' + why})
+    return observed, not_handed_off, dropped
+
+
 def _toolchain_fault(result):
     """The exception type a toolchain error result names ('OSError' for 'OSError: ...'), or 'toolchain error'."""
     error = result.get('error')
@@ -2838,6 +2873,10 @@ class Controller:
                 if device.get('stop'):
                     return device
             options.update(assignment_id=assignment['id'], observed_records=device.get('artifacts', []))
+            if stage == 'emit':
+                # The packages it saw emit_package build in this assignment, by the hash it recorded when the tool
+                # returned: the only bytes a benchmark emit may hand on.
+                options['emit_builds'] = _emit_builds(self._finished(run_dir.name, assignment))
             checked = observe_stage(case_id, stage, run_dir, workspace, report, accepted, options)
             if checked.get('stop') or not device:
                 return checked
@@ -2936,30 +2975,13 @@ class Controller:
             # this assignment was given, hashed before dispatch. The report may name which (a copy of those bytes
             # elsewhere in the workspace too); without a named package the newest emit_package build is taken. A
             # worker's claimed hash is never used.
-            built = {}
-            for event in observed:
-                raw = _result_of(event).get('package_dir') if event['name'] == 'emit_package' else None
-                path = str(Path(raw).resolve()) if isinstance(raw, str) else None
-                if path in (event.get('artifacts') or {}):
-                    built.pop(path, None)
-                    built[path] = event['artifacts'][path]
+            built = _emit_builds(observed)
             given = ({(e.get('argument_sha256') or {}).get('package_dir') for e in mine if e['name'] == 'emit_check'}
                      | set(built.values())) - {None}
-            packages = [p for p in dict.fromkeys(named) if p.is_dir() and (p / 'manifest.json').is_file()]
-            packages = packages or [Path(path) for path in list(built)[-1:]]
-            candidates, verified, rejected, unobserved = [], [], [], []
-            for package in packages:
-                try:
-                    current = digest(package)
-                except (OSError, ValueError):
-                    current = None
-                if current is not None and current in given:
-                    candidates.append(package)
-                    continue
-                why = ('changed after emit_package returned' if str(package) in built else
-                       'not built by emit_package or given to emit_check through the configurator')
-                unobserved.append({'package': package.name, 'reason': why})
-                dropped.append({'path': str(package), 'reason': 'Package not handed off: ' + why})
+            candidates, unobserved, gone = _observed_packages(
+                named, built, given, 'not built by emit_package or given to emit_check through the configurator')
+            dropped += gone
+            verified, rejected = [], []
             for package in candidates:
                 # The check's own records go outside the worker's workspace, so nothing the worker leaves there can
                 # make the configurator's check fail for the host.

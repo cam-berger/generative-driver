@@ -241,7 +241,7 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
     recorded measurement and the operator reference it was taken against, for the evaluator after the run."""
     import re
     from ..toolkit import call_tool
-    from .emulated import _emitted_mapping, _host, _observed
+    from .emulated import _emitted, _emitted_mapping, _host, _observed
     options=options or {};path,state=_state(run_dir);ws=Path(workspace)
     if stage=='acquire':
         official=_datasheet_sha256()
@@ -295,20 +295,24 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
         return _observed([],[],scope='The configurator\'s own device tests of the model and their differences; physical '
                          'meaning rests on operator observations where given')
     if stage=='emit':
-        rejected=[]
-        for manifest in sorted(ws.rglob('manifest.json')):
-            checked=call_tool('emit_check',{'run_dir':str(Path(run_dir)/'benchmark/tools'),'package_dir':str(manifest.parent),'model_dir':str(ws/'model')})
+        # Only a package an emit_package of this assignment built, unchanged since the tool returned (`_emitted`).
+        packages,not_handed_off,dropped=_emitted(ws,report,options)
+        rejected,noted=[],{'not_handed_off':not_handed_off} if not_handed_off else {}
+        for package in packages:
+            manifest=package/'manifest.json'
+            checked=call_tool('emit_check',{'run_dir':str(Path(run_dir)/'benchmark/tools'),'package_dir':str(package),'model_dir':str(ws/'model')})
             if _host(checked):
-                raise RuntimeError('emit_check could not run on this host for '+manifest.parent.name+': '+str(checked.get('error')))
+                raise RuntimeError('emit_check could not run on this host for '+package.name+': '+str(checked.get('error')))
             if checked.get('ok') and checked.get('integrity_ok') and checked.get('runtime_current') and checked.get('seeds_run',0)>0:
-                state.update(package_dir=str(manifest.parent),package_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                state.update(package_dir=str(package),package_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
                              physical_model_dir=str(ws/'model'));_write(path,state)
-                return _observed([manifest.parent],[{'name':'register_package_integrity_and_replay','passed':True,
-                                                     **({'rejected':rejected} if rejected else {})}])
-            rejected.append({'package':manifest.parent.name,'reason':'emit_check did not pass'})
+                return _observed([package],[{'name':'register_package_integrity_and_replay','passed':True,
+                                             **({'rejected':rejected} if rejected else {}),**noted}],dropped)
+            rejected.append({'package':package.name,'reason':'emit_check did not pass'})
         return _observed([],[{'name':'register_package_integrity_and_replay','passed':False,
-                              'reason':'No package passed integrity and seeded replay',**({'rejected':rejected} if rejected else {})}],
-                         [{'path':row['package'],'reason':row['reason']} for row in rejected])
+                              'reason':'No package emit_package built in this assignment passed integrity and seeded replay',
+                              **({'rejected':rejected} if rejected else {}),**noted}],
+                         dropped+[{'path':row['package'],'reason':row['reason']} for row in rejected])
     if stage=='reuse':
         attempt=state.get('package_attempts',{}).get(stage)
         events=Path(run_dir)/'benchmark'/EVENTS

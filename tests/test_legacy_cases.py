@@ -528,10 +528,8 @@ class PhysicalTrialTests(BoundDeviceFixture):
             return {'artifacts': [], 'checks': []}
         def work(request):
             if request.stage == 'emit':
-                package = Path(request.workspace) / 'package'; (package / 'driver').mkdir(parents=True)
-                (package / 'manifest.json').write_text(json.dumps({'name': 'scripted'}))
-                (package / 'driver/model.json').write_text(json.dumps({'schema': 'interface-model/1',
-                                                                        'operations': {'measure': [{'op': 'reg_write'}]}}))
+                # The package is built with emit_package through the configurator, which records its hash.
+                self.tool(request, 'emit_package', {'model_dir': context_of(request.prompt)['model_dir']})
             if request.stage == 'reuse':
                 # Wait until the harness has read the extended budget after its
                 # original deadline, then measure after that deadline on its clock.
@@ -539,7 +537,13 @@ class PhysicalTrialTests(BoundDeviceFixture):
                 calls.append(self.tool(request, 'benchmark_package_execute',
                                           {'package_dir': context_of(request.prompt)['package_dir'], 'operation': 'measure'}))
         def call_tool(name, arguments):
-            # The package check passes; everything else is the real toolkit.
+            # emit_package builds a scripted package and the package check passes; everything else is the real toolkit.
+            if name == 'emit_package':
+                package = Path(arguments['run_dir']) / 'package'; (package / 'driver').mkdir(parents=True)
+                (package / 'manifest.json').write_text(json.dumps({'name': 'scripted'}))
+                (package / 'driver/model.json').write_text(json.dumps({'schema': 'interface-model/1',
+                                                                        'operations': {'measure': [{'op': 'reg_write'}]}}))
+                return {'ok': True, 'package_dir': str(package)}
             if name == 'emit_check':
                 return {'ok': True, 'integrity_ok': True, 'runtime_current': True, 'seeds_run': 1}
             return real_call(name, arguments)
@@ -614,6 +618,66 @@ class PhysicalTrialTests(BoundDeviceFixture):
         self.assertEqual(self.unlocked, [(True, False, None), (False, True, 'completed')])
         self.assertFalse((self.root / 'trial' / 'private').exists())
         self.assertNotIn('password', self.controller._row(record['run_id'])['spec'].lower())
+
+    def test_a_package_the_emit_worker_wrote_itself_is_never_handed_off_or_graded(self):
+        # Catches bme280 emit handing on, and the harness then grading, a package the emit worker wrote itself rather
+        # than built with emit_package, although it passes the configurator's emit_check.
+        from generative_driver import toolkit
+        from generative_driver.benchmark_support import harness
+        real_check, real_call = self.controller._check, toolkit.call_tool
+        def prepare(original, spec, stage, run_dir, workspace, accepted):
+            return (original(spec, stage, run_dir, workspace, accepted) if stage in ('emit', 'reuse')
+                    else {'inputs': [], 'allowed_tools': []})
+        def check(spec, stage, run_dir, workspace, report, accepted, assignment):
+            if stage == 'probe':
+                folder = run_dir / 'scripted-probe'; folder.mkdir()
+                for name, content in (('model.json', '{}'), ('convert.py', '# scripted converter\n'),
+                                      ('capabilities.json', json.dumps(PHYSICAL_MAPPING))):
+                    (folder / name).write_text(content)
+                return {'artifacts': [str(folder / n) for n in ('model.json', 'convert.py', 'capabilities.json')], 'checks': []}
+            if stage == 'emit':
+                return real_check(spec, stage, run_dir, workspace, report, accepted, assignment)
+            return {'artifacts': [], 'checks': []}
+        def work(request):
+            if request.stage == 'emit':
+                package = Path(request.workspace) / 'package'; (package / 'driver').mkdir(parents=True)
+                (package / 'manifest.json').write_text(json.dumps({'name': 'scripted'}))
+                (package / 'driver/model.json').write_text(json.dumps({'schema': 'interface-model/1',
+                                                                        'operations': {'measure': [{'op': 'reg_write'}]}}))
+        def report(request):
+            package = Path(request.workspace) / 'package'
+            return {'status': 'completed', 'summary': 'scripted ' + request.stage, 'checks': [], 'unresolved': [],
+                    'artifacts': [{'path': str(package), 'sha256': 'f' * 64, 'kind': 'package'}] if request.stage == 'emit' else []}
+        def call_tool(name, arguments):
+            # The package check passes; everything else is the real toolkit.
+            if name == 'emit_check':
+                return {'ok': True, 'integrity_ok': True, 'runtime_current': True, 'seeds_run': 1}
+            return real_call(name, arguments)
+        # A handed-on package would stop the run at reuse for the operator's reference: the harness then gives up at once.
+        clock, budget = HarnessClock(), 120
+        def configurator(method, params):
+            result = self.configurator(method, params)
+            if method == 'status' and result.get('status') == 'blocked' and not result.get('stopping'):
+                clock.offset = budget + 1
+            return result
+        with self.guarded(), patch.object(harness, 'GRACE', 0), patch.object(harness, 'time', clock), \
+             patch('generative_driver.toolkit.call_tool', side_effect=call_tool), \
+             patch('generative_driver.benchmark_support.physical.package_execute', side_effect=AssertionError('board touched')), \
+             scripted_stages(self.controller, check=check, prepare=prepare, work=work, report=report):
+            record = harness.run_trial(self.root / 'trial', self.request('trial-own-package', budget_seconds=budget),
+                                       call=configurator)
+        result = self.controller.call('result', {'run_id': record['run_id']})
+        self.assertEqual((record['status'], result['status']), ('evaluated', 'completed'), (record, result['reason']))
+        emitted = next(h for h in result['accepted_handoffs'] if h['stage'] == 'emit')
+        self.assertEqual(emitted['artifacts'], [])
+        noted = next(c for c in emitted['checks'] if c['name'] == 'register_package_integrity_and_replay')
+        self.assertEqual((noted['passed'], [row['reason'] for row in noted['not_handed_off']]),
+                         (False, ['not built by emit_package in this assignment']))
+        self.assertEqual([row['reason'] for row in emitted['notes']['inline']['configurator']['dropped_artifacts']],
+                         ['Package not handed off: not built by emit_package in this assignment'])
+        self.assertEqual((result['equivalence']['status'], result['equivalence']['equivalent']), ('no-driver', False))
+        # The truth was unlocked once, to authenticate the password before the run; no driver was graded.
+        self.assertEqual(self.unlocked, [(True, False, None)])
 
     def test_trial_resume_grades_a_bound_device_run_completed_after_its_harness_stopped_following(self):
         # Catches a bme280 trial left ungradeable once its harness stopped waiting (the deadline of the budget it was

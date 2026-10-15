@@ -109,7 +109,9 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
     if not compatible:
         verdict = "incompatible"
         reason = "Unsupported historical stage inventory; this report cannot be scored as a fresh reuse workflow"
-    execution = case_manifest.get("execution", "unclassified")
+    from .replay import execution_label
+    execution = execution_label(case_manifest.get("execution", "unclassified"),
+                                ((provenance or {}).get("agent") or {}).get("runtime"))
     evidence = {"stage_verdicts": verdicts,
                 "probe_evaluation": {"observations": case_state.get("probe_evaluation", {}).get("observations", {})}}
     if "physical_grounding" in case_state:

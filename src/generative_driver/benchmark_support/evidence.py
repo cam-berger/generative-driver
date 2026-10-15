@@ -37,7 +37,7 @@ def _executed(value):
     result = _scalars(value, ('toolchain_revision', 'skills_revision', 'evaluator_revision'))
     result['environment'] = _scalars(value.get('environment', {}), ('system', 'release', 'architecture', 'python'))
     result['runtime_configuration'] = _scalars(value.get('runtime_configuration', {}),
-        ('runtime', 'model', 'provider', 'version', 'reasoning_effort', 'max_turns'))
+        ('runtime', 'model', 'provider', 'version', 'reasoning_effort', 'max_turns', 'candidate_sha256'))
     return result
 
 
@@ -276,7 +276,10 @@ def _execution_identity(report, payload):
         raise ValueError('Report and sealed execution identity mismatch')
     expected_aliases = {key: payload['case_pin'].get(key) for key in
                         ('case_version', 'evaluator_version', 'scenario_id', 'case_seed')}
-    execution = payload['case_pin'].get('execution', 'unclassified')
+    # A replayed candidate's label comes from the sealed snapshot's runtime, so a relabelled replay never matches it.
+    from ..replay import execution_label
+    execution = execution_label(payload['case_pin'].get('execution', 'unclassified'),
+                                (snapshot['executed'].get('runtime_configuration') or {}).get('runtime'))
     expected_aliases.update(case=payload['case_pin']['case_id'], execution=execution,
         model_benchmark=execution in ('actual-agent-emulation', 'actual-agent-physical'),
         **{key: snapshot['executed'][key] for key in

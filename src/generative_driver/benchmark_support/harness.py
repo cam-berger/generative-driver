@@ -476,9 +476,9 @@ def run_trial(trial_dir, request, *, call=None, launch=None, heartbeat=None, sto
         # The configurator holds the token's hash, for the evaluation after the run; the token stays in this process and,
         # for a resume, sealed under the password in the trial directory.
         token = evaluation_token(trial_dir, password_file, request['trial_id'], create=True)
-        params = dict(start) if start else {key: request[key] for key in ('goal', 'case', 'executor', 'budget_seconds',
-                                                                          'effects', 'case_options', 'output_dir',
-                                                                          'scoped_tool_approval', 'binding')
+        params = dict(start) if start else {key: request[key] for key in ('goal', 'case', 'executor', 'executor_config',
+                                                                          'budget_seconds', 'effects', 'case_options',
+                                                                          'output_dir', 'scoped_tool_approval', 'binding')
                                            if request.get(key) is not None}
         params.update(request_id=request_id, evaluation_token_sha256=hashlib.sha256(token.encode()).hexdigest(),
                       **({'device': server.descriptor} if server else {}), **({'admission': admission} if admission else {}))
@@ -827,18 +827,29 @@ def launch(case, output_dir=None, executor=None, options=None, approval=None, *,
     # A bound device's binding is the operator's, for the configurator's run; the harness never opens it.
     binding = options.pop('binding', None)
     case_options = {key: options.pop(key) for key in ('scenario_id', 'case_seed', 'ghidra_home', 'java_home') if key in options}
+    candidate = options.pop('replay_candidate', None)
     if options:
         raise ValueError('Unsupported options for a benchmark trial: ' + ', '.join(sorted(options)))
     if request_id is not None and (not isinstance(request_id, str) or not request_id.strip()):
         raise ValueError('request_id must be a nonblank string')
     from ..setup import configured_executor
+    executor = configured_executor(executor, home)
+    if (executor == 'replay') != (candidate is not None):
+        raise ValueError('Only the replay executor takes a saved candidate, and it needs one: replay_candidate')
     trial_id = 'trial-' + uuid.uuid4().hex[:16]
     request = {'trial_id': trial_id, 'home': str(home), 'autostart': autostart, 'goal': GOAL, 'case': case,
-               'executor': configured_executor(executor, home), 'budget_seconds': budget, 'effects': chosen, 'case_options': case_options,
+               'executor': executor, 'budget_seconds': budget, 'effects': chosen, 'case_options': case_options,
                'request_id': request_id, 'output_dir': str(Path(output_dir).resolve()) if output_dir else None,
                'scoped_tool_approval': approval, 'binding': binding}
+    if candidate is not None:
+        # The candidate's path and the hash of its files, which the configurator checks again before every stage.
+        from ..replay import candidate_config
+        request['executor_config'] = candidate_config({'candidate': str(Path(candidate).expanduser().resolve())})
     if request_id is not None:
-        held = _claim(bench, request_id, trial_id, {key: request[key] for key in IDENTITY})
+        identity = {key: request[key] for key in IDENTITY}
+        if 'executor_config' in request:
+            identity['executor_config'] = request['executor_config']
+        held = _claim(bench, request_id, trial_id, identity)
         if held is not None:
             return _follow(bench / 'trials' / held, None, wait, timeout, duplicate=True)
     trial_dir = bench / 'trials' / trial_id

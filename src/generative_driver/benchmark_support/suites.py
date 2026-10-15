@@ -176,6 +176,9 @@ def freeze_suite(manifest: dict, executor: str, executor_config: dict,
         raise ValueError('Unknown suite options')
     if not isinstance(harness_token_sha256, str) or not re.fullmatch('[0-9a-f]{64}', harness_token_sha256):
         raise ValueError('A suite is frozen for the bench harness that drives it: the sha256 of its token is required')
+    if executor == 'replay':
+        raise ValueError('Suites run Codex or Goose; replay a saved candidate one case at a time with '
+                         '`benchmark run --executor replay`')
     if (executor not in ('codex', 'goose') or not isinstance(executor_config, dict)
             or not isinstance(executor_config.get('command'), list) or not executor_config['command']
             or any(not isinstance(arg, str) or not arg.strip() for arg in executor_config['command'])):

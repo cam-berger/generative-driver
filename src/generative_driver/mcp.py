@@ -96,6 +96,8 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = No
     emulated case (tq9, tq9-v2 and the v2 families) the harness provides the emulator; bme280 runs on the operator's
     bound device (options.binding), which the harness never touches. They return trial_id and run_id; the
     same options.request_id with the same inputs returns that trial again and starts no second emulator.
+    executor "replay" runs an emulated case without a model from options.replay_candidate, a saved candidate directory;
+    its results are labelled replay-emulation and never count as model runs.
     For real-agent profiles, options.home must resolve to this MCP connection's configured home.
     """
     from .benchmark import run

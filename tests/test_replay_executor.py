@@ -245,6 +245,120 @@ class ReplayStartTests(unittest.TestCase):
         with self.controller._db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 0)
 
+    def test_a_suite_never_freezes_the_replay_executor(self):
+        from generative_driver.benchmark_support.suites import freeze_suite
+        from generative_driver.replay import candidate_config
+        from suite_fixtures import pilot_manifest
+        # A suite's identity names a model runtime; replays run as single trials, one case each.
+        with self.assertRaisesRegex(ValueError, 'benchmark run --executor replay'):
+            freeze_suite(pilot_manifest(), 'replay', candidate_config({'candidate': str(self.candidate)}), {}, {},
+                         harness_token_sha256='a' * 64)
+
+
+class ReplayTrialTests(unittest.TestCase):
+    """`benchmark run --executor replay` through a real detached bench harness, which admits the case, provides the
+    device, grades the frozen driver once after the run and seals the evidence, as it does for a model run."""
+
+    def test_a_replay_trial_is_graded_labelled_replay_and_never_compared_with_a_model_run(self):
+        from generative_driver.benchmark import compare, run, score
+        from generative_driver.benchmark_support.truth import seal
+        from generative_driver.configurator import digest
+        from generative_driver.reporting import report_run
+        from suite_fixtures import public_case_fixture
+        from test_device_provider import RECIPE
+        from test_harness import HARNESS_FIXTURE
+        from tq9_workflow_fixture import replay_candidate
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        candidate = replay_candidate(root / 'candidate')
+        resources, home = root / 'resources', root / 'home'
+        manifest = public_case_fixture(resources, calibration={'status': 'passed', 'evidence_sha256': EVIDENCE})
+        password = root / 'password-handle'
+        password.write_text('synthetic fixture credential')
+        # The final phase the harness grades the frozen driver with after the run, on a fresh emulator of its own.
+        final = {'temperature_vectors': [{'stimulus': v, 'expected': v, 'absolute_tolerance': .01} for v in (-7, 29)],
+                 'effect_vectors': [{'task': 'arm', 'inputs': {}}, {'task': 'set_duty', 'inputs': {'duty': 400}},
+                                    {'task': 'disarm', 'inputs': {}}]}
+        truth = {'private_sentinel': 'EVALUATOR SENTINEL', 'images': manifest['images'],
+                 'recipe': {'stimuli': {'temperature': {'minimum': -100, 'maximum': 100, 'command': 'temp {value}'}},
+                            **RECIPE, 'reset_commands': ['reset']},
+                 'contracts': {'units': {'temperature': 'degC', 'duty': 'permille'},
+                               'scenarios': {'original': {'phases': {'final': final}}},
+                               'time_policy': {'sample_settle_seconds': 0}}}
+        manifest['truth']['sha256'] = seal(truth, resources / manifest['truth']['path'], password.read_text())
+        (resources / 'cases/tq9-v2/case.json').write_text(json.dumps(manifest))
+        fixture = root / 'harness_fixture.py'
+        fixture.write_text(HARNESS_FIXTURE.replace('TESTS', repr(str(Path(__file__).resolve().parent)))
+                           .replace('PRIVATE', repr(str(root / 'native'))).replace('RESOURCES', repr(str(resources)))
+                           .replace('EVIDENCE', repr(EVIDENCE)))
+        for target, value in (('generative_driver.benchmark.case_root', {'return_value': resources}),
+                              ('generative_driver.benchmark_support.registry.require_calibration',
+                               {'side_effect': AssertionError('the configurator admitted the case')}),
+                              ('generative_driver.benchmark_support.emulator.truth_for_case',
+                               {'side_effect': AssertionError('the configurator unlocked the case truth')})):
+            guard = patch(target, **value)
+            guard.start()
+            self.addCleanup(guard.stop)
+        call = serve(self, home)
+        options = {'home': str(home), 'evaluator_password_file': str(password), 'effects': ['write', 'actuate'],
+                   'renode': str(root / 'renode-executable-handle'), 'budget_seconds': TIMEOUT, 'scenario_id': 'original',
+                   'replay_candidate': str(candidate)}
+        with patch.dict(os.environ, {'GD_TEST_HARNESS_FIXTURE': str(fixture)}):
+            launched = run('tq9-v2', executor='replay', wait=True, options=options)
+        trial = Path(launched['trial_dir'])
+        log = (trial / 'harness.log').read_text(errors='replace') if (trial / 'harness.log').is_file() else ''
+        self.assertEqual(launched['status'], 'evaluated', (launched, log))
+        # The harness graded the replayed driver once, as it grades a model's.
+        result = call('result', {'run_id': launched['run_id']})
+        self.assertEqual((result['equivalence']['equivalent'], result['equivalence']['basis']), (True, 'evaluator'), result)
+        # Its report says replay, never a model run, and names the candidate by its hash alone.
+        report = report_run(launched['run_id'], home=home, output=root / 'report/report.json', autostart=False)
+        self.assertEqual((report['schema'], report['verdict'], report['execution'], report['model_benchmark']),
+                         ('benchmark-report/3', 'equivalent', 'replay-emulation', False))
+        self.assertEqual(report['executed']['runtime_configuration'], {'runtime': 'replay', 'candidate_sha256': digest(candidate)})
+        self.assertIn('Execution: `replay-emulation`', (root / 'report/report.md').read_text())
+        # Scoring regrades it from the sealed evidence; the replay label comes from the sealed snapshot, so a replay
+        # relabelled as a model run no longer matches it.
+        evidence = trial / 'run-evidence.enc'
+        self.assertEqual(score(report, str(password), evidence_path=evidence)['verdict'], 'equivalent')
+        relabelled = {**report, 'execution': 'actual-agent-emulation', 'model_benchmark': True}
+        with self.assertRaisesRegex(ValueError, 'execution identity'):
+            score(relabelled, str(password), evidence_path=evidence)
+        # A replay and a model run are separate series: never compared, while two replays compare as usual.
+        model_run = {**relabelled, 'executed': {**report['executed'], 'runtime_configuration': {'runtime': 'codex'}}}
+        for before, after in ((report, model_run), (model_run, report)):
+            compared = compare(before, after)
+            self.assertEqual((compared['compatible'], compared['incompatible_fields']), (False, ['execution']), compared)
+            self.assertIn('separate series', compared['reason'])
+        self.assertEqual((compare(report, report)['compatible'], compare(report, report)['comparison_kind']), (True, 'repeat'))
+
+
+class ReplayCommandTests(unittest.TestCase):
+    def test_only_the_replay_executor_takes_a_saved_candidate_and_only_for_an_emulated_case(self):
+        import contextlib
+        import io
+        from generative_driver.benchmark import main
+        from tq9_workflow_fixture import replay_candidate
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            candidate = str(replay_candidate(root / 'candidate'))
+            for argv, message in ((['--case', 'tq9-v2', '--executor', 'replay'], 'saved candidate'),
+                                  (['--case', 'tq9-v2', '--executor', 'codex', '--replay-candidate', candidate],
+                                   'replay executor'),
+                                  (['--case', 'bme280', '--executor', 'replay', '--replay-candidate', candidate],
+                                   'emulated benchmark cases only'),
+                                  (['--case', 'setup-smoke', '--executor', 'replay', '--replay-candidate', candidate],
+                                   'emulated benchmark cases only')):
+                with self.subTest(argv=argv):
+                    printed = io.StringIO()
+                    with contextlib.redirect_stdout(printed):
+                        code = main(['run', '--home', str(root / 'home'), *argv])
+                    self.assertEqual(code, 1, printed.getvalue())
+                    self.assertIn(message, json.loads(printed.getvalue())['error'])
+            # Each was refused before any bench harness, trial or configurator started.
+            self.assertEqual(sorted(path.name for path in root.iterdir()), ['candidate'])
+
 
 if __name__ == '__main__':
     unittest.main()

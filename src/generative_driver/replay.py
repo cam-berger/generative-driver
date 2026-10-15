@@ -77,6 +77,12 @@ def candidate_config(config):
     return {'runtime': RUNTIME, 'candidate': str(root.resolve()), 'candidate_sha256': sha256}
 
 
+def execution_label(case_execution, runtime):
+    """How a benchmark run executed: a candidate replayed on an emulated case is `replay-emulation`, since no model ran
+    it, and never an actual-agent result."""
+    return 'replay-emulation' if runtime == RUNTIME and case_execution == 'actual-agent-emulation' else case_execution
+
+
 def _context(prompt):
     """The assignment context of a stage prompt: its JSON body after the instruction line, or none."""
     try:

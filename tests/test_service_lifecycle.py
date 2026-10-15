@@ -240,6 +240,24 @@ class ServiceLifecycleTests(unittest.TestCase):
             finally:
                 call('shutdown', {}, home)
 
+    def test_a_record_of_other_code_whose_configurator_ended_refuses_no_client_even_when_its_process_id_was_reused(self):
+        # Catches a client refused as though a configurator running other code still ran, from the bare process id its
+        # record names: once that configurator ended, the id may name another running process (as the system reuses
+        # ids), and every request was refused, with advice to stop a configurator that no longer runs.
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            try:
+                # Another installation's configurator ran here and ended; this test's parent process stands in for an
+                # unrelated process that took over its id.
+                self.ended(home, code='other', pid=os.getppid())
+                # A configurator running this code is started and answers.
+                reply = call('status', {'run_id': 'run-absent'}, home)
+                self.assertEqual((reply['ok'], reply.get('reason')), (False, 'Unknown run_id'), reply)
+                self.assertTrue(call('ping', {}, home, autostart=False)['compatible'])
+            finally:
+                call('shutdown', {}, home)
+
     def test_a_configurator_holds_its_home_from_before_its_record_names_it(self):
         # Catches a record that names a starting configurator whose lock is not held yet: a client that read it
         # meanwhile would take the configurator for one that ended.

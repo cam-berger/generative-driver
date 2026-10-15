@@ -166,13 +166,13 @@ def code_identity():
     return _CODE
 
 
-def _runs_other_code(endpoint):
+def _runs_other_code(endpoint, home):
     """Whether service.json names a live configurator started from other code. Decided without IPC: a live one is never
     sent the request, and a dead one is replaced by the ordinary start."""
-    if endpoint.get('code') == code_identity() or type(endpoint.get('pid')) is not int or endpoint['pid'] <= 0:
+    if endpoint.get('code') == code_identity():
         return False
     try:
-        return not _wait_for_exit(endpoint['pid'], 0)
+        return bool(_service_running(home, endpoint))
     except OSError:
         return True  # It exists, owned by someone this client may not signal.
 
@@ -317,7 +317,7 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
             endpoint = json.loads((directory / 'service.json').read_text(encoding='utf-8'))
         except (OSError, ValueError):
             endpoint = None
-        if endpoint is not None and _runs_other_code(endpoint):
+        if endpoint is not None and _runs_other_code(endpoint, directory):
             return {'ok': False, 'reason': _incompatible(endpoint)}
     try:
         result = _request(directory, method, params, **request_options)

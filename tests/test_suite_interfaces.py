@@ -394,8 +394,10 @@ main()
                         self.assertTrue(again['duplicate'])
                         self.assertEqual(again['suite_id'], suite['suite_id'])
                         (root/'release').write_text('continue', encoding='utf-8')
+                        # The bench harness detaches after the suite completes; until it has let go (not stopping),
+                        # its suite.harness_detached event can still follow the page read below.
                         await asyncio.to_thread(wait_suite, call, suite['suite_id'], root,
-                            lambda state: state['status'] == 'completed')
+                            lambda state: state['status'] == 'completed' and not state['stopping'])
                         events = await invoke(session, 'events', suite_id=suite['suite_id'])
                         self.assertNotIn('suite.recovered', [event['kind'] for event in events['events']])
                         self.assertIn('trial.finished', [event['kind'] for event in events['events']])

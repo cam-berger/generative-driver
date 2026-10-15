@@ -450,7 +450,9 @@ def run_trial(trial_dir, request, *, call=None, launch=None, heartbeat=None, sto
     requests (`call`), `launch(params)`, which starts and attaches the child through its suite, a `heartbeat()` while
     the run runs and a `stop` event that ends the wait. A suite child's start that got no answer is sent again (see
     `_start_child`), so a lost reply never has the device stopped under the child it started; trial.json records that the
-    start was sent (`start_sent`) before it is."""
+    start was sent (`start_sent`) before it is. The harness holds a lock file in `trial_dir` for as long as it runs, by
+    which others tell that it still runs (its process id alone may come to name another process)."""
+    from ..client import hold_process_lock
     trial_dir = Path(trial_dir)
     trial_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     request = dict(request)
@@ -462,6 +464,8 @@ def run_trial(trial_dir, request, *, call=None, launch=None, heartbeat=None, sto
     request_id = (start or {}).get('request_id') or request.get('request_id') or request['trial_id']
     record = {'schema': TRIAL, 'trial_id': request['trial_id'], 'request_id': request_id, 'case': request['case'],
               'home': str(home), 'status': 'admitting', 'run_id': None, 'pid': os.getpid(), 'created': time.time()}
+    # Held before the record names this process, and let go of only once it says the harness finished.
+    lock = hold_process_lock(trial_dir / HARNESS_LOCK)
     _private(trial_dir / 'trial.json', record)
     held, server = {'provider': None}, None
     try:
@@ -501,7 +505,11 @@ def run_trial(trial_dir, request, *, call=None, launch=None, heartbeat=None, sto
     except Exception as error:
         record.update(status='failed', reason=type(error).__name__ + ': ' + str(error))
     finally:
-        _release_trial(trial_dir, record, held, server)
+        try:
+            _release_trial(trial_dir, record, held, server)
+        finally:
+            if lock is not None:
+                lock.close()
     return record
 
 
@@ -585,7 +593,9 @@ def reattach(trial_dir, *, password_file, renode=None, call=None, heartbeat=None
     password the trial ran with unlocks its token: under any other nothing starts. An approved budget extension
     (`budget_seconds`, `budget_reason`) reaches the run's resume; a suite's harness resumes its child through the suite
     (`resume_run(params)`). From the moment a device may run, the trial record names it with an unconfirmed stop, so a
-    harness lost meanwhile leaves a device to reconcile, never the earlier confirmed stop."""
+    harness lost meanwhile leaves a device to reconcile, never the earlier confirmed stop. It holds the trial's
+    evaluation lock throughout, which every resume, reattachment or adoption of the trial takes before it asks whether
+    the trial's harness still runs: the process id the record names from then on is a diagnostic."""
     trial_dir = Path(trial_dir)
     if read_trial(trial_dir) is None:
         raise ValueError('No trial with a run to continue: ' + str(trial_dir))
@@ -593,7 +603,7 @@ def reattach(trial_dir, *, password_file, renode=None, call=None, heartbeat=None
         record = read_trial(trial_dir)
         if not isinstance(record, dict) or not record.get('run_id') or not record.get('home'):
             raise ValueError('No trial with a run to continue: ' + str(trial_dir))
-        if not _harness_exited(None, record):
+        if not _harness_exited(None, record, trial_dir):
             raise ValueError('The trial\'s bench harness is still running')
         if (record.get('device_stop') or {}).get('confirmed') is not True:
             raise ValueError('The trial\'s device stop was not confirmed; reconcile its device before continuing the run')
@@ -682,7 +692,7 @@ def resume(trial_dir, *, password_file, renode=None, call=None):
         record = read_trial(trial_dir)
         if not isinstance(record, dict) or not record.get('run_id') or not record.get('home'):
             raise ValueError('No trial with a run to evaluate: ' + str(trial_dir))
-        if not _harness_exited(None, record):
+        if not _harness_exited(None, record, trial_dir):
             raise ValueError('The trial\'s bench harness is still running')
         if (record.get('device_stop') or {}).get('confirmed') is not True:
             raise ValueError('The trial\'s device stop was not confirmed; reconcile its device before evaluating')
@@ -725,6 +735,8 @@ def _settle(record, done):
 
 
 LOCK = 'evaluation.lock'
+# The lock file a trial's or a suite's harness holds in its directory for as long as it runs (see `_harness_exited`).
+HARNESS_LOCK = 'harness.lock'
 # The byte of the lock file that the evaluation lock locks on Windows, far past the text the file holds: Windows forbids
 # every other open file to read or write a locked byte, and the text names the holder to whoever finds the lock held. On
 # POSIX the lock covers the whole file and forbids nothing.
@@ -999,16 +1011,24 @@ def _claim(bench, request_id, held_id, identity, kind='trial'):
     return None
 
 
-def _harness_exited(process, record):
-    """Whether the trial's harness has ended: by its process handle when this caller started it, otherwise by its
-    record or its recorded process id."""
+def _harness_exited(process, record, directory=None):
+    """Whether the harness of the trial or suite in `directory` has ended: by its process handle when this caller
+    started it, otherwise by its record or by the lock it holds there for as long as it runs, which ends with its
+    process however that ends; its recorded process id may by then name another process, or one this user may not
+    signal. The id is read only where no such lock tells: a harness from before harnesses held one, or a file system
+    without such locks. (A harness that continues a suite's trial holds the trial's evaluation lock instead: see
+    `reattach`.)"""
     if process is not None:
         return process.poll() is not None
     if record.get('finished') is not None:
         return True
     if type(record.get('pid')) is not int or record['pid'] <= 0:
         return False
-    from ..client import _wait_for_exit
+    from ..client import _wait_for_exit, process_lock_held
+    lock = None if directory is None else Path(directory) / HARNESS_LOCK
+    held = process_lock_held(lock) if lock is not None and lock.exists() else None
+    if held is not None:
+        return not held
     try:
         return _wait_for_exit(record['pid'], 0)
     except OSError:
@@ -1028,7 +1048,7 @@ def _follow(trial_dir, process, wait, timeout, *, duplicate):
     deadline = time.monotonic() + timeout
     while True:
         record = read_trial(trial_dir) or {}
-        exited = _harness_exited(process, record)
+        exited = _harness_exited(process, record, trial_dir)
         if record.get('run_id') and (not wait or exited or record.get('status') in FINISHED):
             return {'ok': True, 'trial_id': trial_dir.name, 'run_id': record['run_id'], 'trial_dir': str(trial_dir),
                     'duplicate': duplicate,
@@ -1093,7 +1113,7 @@ def _adopt(trial_dir, run_id, completed):
             return
         if record.get('run_id') is not None or not record.get('start_sent'):
             raise ValueError('The trial in ' + str(trial_dir) + ' did not start child ' + run_id)
-        if not _harness_exited(None, record):
+        if not _harness_exited(None, record, trial_dir):
             raise ValueError('The trial\'s bench harness is still running')
         record.update(run_id=run_id, start_failed=record.pop('reason', None), adopted=time.time())
         if completed and (record.get('device_stop') or {}).get('confirmed') is True:

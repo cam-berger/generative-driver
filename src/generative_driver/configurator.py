@@ -146,6 +146,31 @@ def case_options(spec):
         'operator_observations':spec.get('_operator_observations',[]),'configured_effects':spec['effects']}
 
 
+def _replay_config(params, config):
+    """A replay replays a saved candidate on an emulated benchmark case only: never a generic run, which has no case to
+    replay, nor a physical device. Its configuration names the candidate and the hash of its files."""
+    from .replay import candidate_config
+    case = params.get('case')
+    case_id = case.get('id') if isinstance(case, dict) else case
+    if not case_id:
+        raise ValueError('The replay executor runs emulated benchmark cases only; this start names no case')
+    from .benchmark_support.registry import resolve_case
+    if resolve_case(case_id).execution != 'actual-agent-emulation':
+        raise ValueError('The replay executor runs emulated benchmark cases only, never ' + str(case_id))
+    return candidate_config(config)
+
+
+def _verify_candidate(config):
+    """Every replay stage runs the candidate whose hash the run recorded: a changed or unreadable one stops for
+    integrity before any worker uses it."""
+    try:
+        current = digest(Path(config['candidate']))
+    except (OSError, ValueError):
+        current = None
+    if current != config['candidate_sha256']:
+        raise IntegrityError('The replay candidate changed since the run recorded its hash: ' + config['candidate'])
+
+
 def _refuse_secrets(spec):
     """The configurator never holds a password, a password file or the emulator executable, for any case: the bench
     harness does. The request itself is checked too, since the run keeps all of it as its spec."""
@@ -1971,8 +1996,8 @@ class Controller:
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError('start requires a nonempty goal')
         executor = configured_executor(params.get('executor'), self.home)
-        if executor not in ('codex', 'goose'):
-            raise ValueError('executor must be codex or goose')
+        if executor not in ('codex', 'goose', 'replay'):
+            raise ValueError('executor must be codex, goose or replay')
         budget = params.get('budget_seconds', 10800)
         if type(budget) not in (int, float) or not 0 < budget <= 7 * 86400:
             raise ValueError('budget_seconds must be positive and no more than seven days')
@@ -1988,6 +2013,8 @@ class Controller:
         else:
             config = self._configured_executors().get(executor, {})
         config = {**config, **params.get('executor_config', {}), 'runtime': executor}
+        if executor == 'replay':
+            config = _replay_config(params, config)
         spec = {**params, 'executor': executor, 'executor_config': config, 'budget_seconds': budget, 'effects': effects,
                 '_submitted_intent': params}
         case=spec.get('case')
@@ -2036,7 +2063,7 @@ class Controller:
                     elif 'evaluation_token_sha256' in spec and not (isinstance(spec['evaluation_token_sha256'], str) and
                             re.fullmatch('[0-9a-f]{64}', spec['evaluation_token_sha256'])):
                         raise ValueError('evaluation_token_sha256 must be the sha256 of the bench harness evaluation token')
-                if not config.get('command'):
+                if executor != 'replay' and not config.get('command'):
                     # Never fall back to whatever program of that name is on PATH: it may be something else entirely.
                     raise ValueError(f'{executor} is not configured; run `generative-driver configure {executor} <command>` '
                                      'with the runtime this configurator should launch')
@@ -2139,6 +2166,8 @@ class Controller:
                     continue
                 workspace = Path(prepared.get('work_dir', workspace)).resolve()
                 workspace.mkdir(parents=True, exist_ok=True)
+                if spec['executor'] == 'replay':
+                    _verify_candidate(spec['executor_config'])
                 input_hashes = {str(Path(p).resolve()): digest(p) for p in prepared.get('inputs', [])}
                 assignment = {'id': attempt, 'stage': stage, 'workspace': str(workspace), 'inputs': input_hashes,
                               'allowed_tools': prepared.get('allowed_tools', []), 'report_required': prepared.get('report_required', True),

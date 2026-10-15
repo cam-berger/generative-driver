@@ -97,8 +97,26 @@ def validate_report(value):
     return check(value,REPORT_SCHEMA)
 
 
+def _replay_launch(request, config):
+    """The replay runtime: the installed replay worker of this package, given the candidate and the stage gateway on its
+    command line and the prompt on stdin, as Codex is. It runs no model, names no configured command and receives no
+    provider credentials."""
+    work = Path(request.workspace).resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    package = str(Path(__file__).resolve().parents[1])
+    command = [sys.executable, '-c', 'import sys; sys.path.insert(0,' + repr(package) + '); '
+               'from generative_driver.replay import main; main()',
+               '--candidate', config['candidate'], '--candidate-sha256', config['candidate_sha256'], '--stage', request.stage]
+    if request.gateway:
+        command += ['--gateway', json.dumps({'command': request.gateway['command'], 'args': request.gateway.get('args', [])})]
+    env = {k: v for k, v in _environment(config).items() if k not in ('CODEX_HOME', 'OPENAI_API_KEY', 'CODEX_API_KEY')}
+    return command, env, request.prompt
+
+
 def _launch(request, config):
     runtime = config.get('runtime', 'codex')
+    if runtime == 'replay':
+        return _replay_launch(request, config)
     command = config['command']
     if isinstance(command, str):
         command = [command]
@@ -199,7 +217,7 @@ def execute(request, config, cancel_event=None, on_event=None):
 
     A result that is not completed names its `cause`: runtime_unavailable, run_budget, cancelled,
     exit_error, output_limit, no_report or invalid_report."""
-    if not config.get('command'):
+    if config.get('runtime') != 'replay' and not config.get('command'):
         # Never look the runtime up on PATH: whatever has that name there may be another program.
         runtime = config.get('runtime', 'codex')
         return {'runtime': runtime, 'model': config.get('model'), 'provider': config.get('provider'), 'report': None,
@@ -215,6 +233,9 @@ def execute(request, config, cancel_event=None, on_event=None):
               'settings': {k: config[k] for k in ('reasoning_effort', 'max_turns') if k in config},
               'report': None, 'usage': None, 'transcript': str(transcript), 'stderr': str(stderr_path),
               'boundary': 'fresh session; explicit workspace and configured tools; filesystem read and direct-device isolation unverified'}
+    if runtime == 'replay':
+        result.update(candidate_sha256=config['candidate_sha256'], boundary='replay of a saved candidate through the '
+                      'assigned stage gateway; no language model; filesystem read and direct-device isolation unverified')
     started = time.monotonic()
     if os.name == 'nt':
         command = [sys.executable,str(Path(__file__).with_name('_windows_worker.py')),*command]

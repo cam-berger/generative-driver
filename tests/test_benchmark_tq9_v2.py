@@ -16,6 +16,10 @@ def grade_keys(value):
     return {k for item in value for k in grade_keys(item)} if isinstance(value, list) else set()
 
 
+# Wall-clock bound of each scripted controller run, as its budget and as the test's wait for it to settle.
+SCRIPTED_RUN_SECONDS = 300
+
+
 class TQ9V2Tests(unittest.TestCase):
     def test_new_acquisition_contains_only_supplied_binary_evidence(self):
         # Catches adapter absence and leaking evaluator options into assignments.
@@ -707,11 +711,13 @@ class TQ9V2Tests(unittest.TestCase):
                                 return original_run_release(*args,**kwargs)
                             controller._release=run_release
                         endpoint=harness.DeviceServer(provider,root/'endpoint');descriptor=endpoint.descriptor
-                        run=controller.start({'goal':'scripted-contract-fixture','case':'tq9-v2','budget_seconds':60,
+                        run=controller.start({'goal':'scripted-contract-fixture','case':'tq9-v2','budget_seconds':SCRIPTED_RUN_SECONDS,
                             'effects':['write','actuate'],'max_revisions':0 if mode in ('recover-budget','recover-reuse','unwired-budget') else 2,'case_options':{'scenario_id':'original'},
                             'device':descriptor,'admission':admission,'evaluation_token_sha256':hashlib.sha256(b'scripted harness token').hexdigest(),
                             'executor_config':{'command':[sys.executable,str(script)]}})
-                        deadline=time.monotonic()+60
+                        # The run's budget and this wait share one bound: generous enough for a loaded Windows runner,
+                        # where every stage starts worker and gateway processes, and still short of a real stall.
+                        deadline=time.monotonic()+SCRIPTED_RUN_SECONDS
                         while True:
                             status=controller.call('status',run)
                             if status['status'] in ('completed','failed','blocked','cancelled') and not status['stopping']:break

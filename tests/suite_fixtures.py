@@ -245,6 +245,18 @@ def drive_suite(owner, bench, request, *, wait=True, calls=None, stop=None, inte
     return record
 
 
+
+def close_owner(owner, timeout=30):
+    """Close an in-process owner, then wait for the bench harness threads `drive_suite` started for it. A harness that
+    has let go of its suite still writes its record and closes its lock file, and Windows will not remove a test's
+    temporary directory while that file is open. Waiting never raises, so a test's own failure is the one reported."""
+    try:
+        owner.close()
+    finally:
+        for thread in getattr(owner, '_test_harness_threads', []):
+            thread.join(timeout)
+
+
 def shutdown_owner(home):
     """Cancel test suites, await their detached harness processes, then stop the owner.
 

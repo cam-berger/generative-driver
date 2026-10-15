@@ -42,6 +42,16 @@ def process_alive(pid):
 
 
 class ServiceLifecycleTests(unittest.TestCase):
+    def ended(self, home, **changes):
+        """A configurator that ran from `home` and ended, its service.json changed by `changes`: the pid it ran as."""
+        import json
+        from generative_driver.client import call
+        pid = call('ping', {}, home)['pid']
+        self.assertTrue(call('shutdown', {}, home)['stopped'])
+        record = home / 'service.json'
+        record.write_text(json.dumps({**json.loads(record.read_text(encoding='utf-8')), **changes}), encoding='utf-8')
+        return pid
+
     def test_burst_of_clients_reconnects_to_one_owner_without_dropped_connections(self):
         from concurrent.futures import ThreadPoolExecutor
         from generative_driver.client import call
@@ -213,6 +223,41 @@ class ServiceLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'other generative-driver code'):
                 daemon.serve(home)
             self.assertFalse((home / 'runs.sqlite3').exists())
+
+    def test_a_configurator_that_ended_is_started_again_even_when_its_process_id_was_reused(self):
+        # Catches the configurator read as running from the bare process id service.json names: once it ended without
+        # a shutdown (killed, or its machine restarted), that id may name another running process (as the system
+        # reuses ids) or one this user may not signal, and no client could start the configurator again.
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            try:
+                # This test's parent process stands in for an unrelated process that took over the ended one's id.
+                ended = self.ended(home, pid=os.getppid())
+                started = call('ping', {}, home)
+                self.assertTrue(started['ok'], started)
+                self.assertNotIn(started['pid'], (ended, os.getppid()))
+            finally:
+                call('shutdown', {}, home)
+
+    def test_a_configurator_holds_its_home_from_before_its_record_names_it(self):
+        # Catches a record that names a starting configurator whose lock is not held yet: a client that read it
+        # meanwhile would take the configurator for one that ended.
+        import json
+        from generative_driver import client
+        real, published = Path.write_text, []
+        def write_text(path, data, *args, **kwargs):
+            if path.name == 'service.json':
+                published.append((json.loads(data).get('lock'), client.process_lock_held(path.parent / 'service.lock')))
+            return real(path, data, *args, **kwargs)
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            try:
+                with patch.object(Path, 'write_text', write_text):
+                    self.assertTrue(client.call('ping', {}, home)['ok'])
+                self.assertEqual(published, [('service.lock', True)])
+            finally:
+                client.call('shutdown', {}, home)
 
     def test_a_configurator_never_starts_from_a_home_another_configurator_runs_from(self):
         # Catches a second configurator started on the home a running one serves (by hand, or by a client that took the

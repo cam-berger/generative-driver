@@ -107,6 +107,36 @@ def process_lock_held(path):
         os.close(descriptor)
 
 
+def _service_running(home, endpoint):
+    """Whether the configurator `endpoint` (its service.json) names still runs: True or False, or None when nothing tells.
+    A configurator holds a lock on its home for as long as it runs, which ends with it however it ends; its process id
+    may by then name another process, or one this client may not signal. So the id is read only of a configurator that
+    was started without the lock (before configurators held one, or on a file system without such locks). An OSError
+    when that id cannot be checked."""
+    held = process_lock_held(Path(home) / SERVICE_LOCK)
+    if held or (held is False and endpoint.get('lock') == SERVICE_LOCK):
+        return held
+    pid = endpoint.get('pid')
+    if type(pid) is not int or pid <= 0:
+        return None
+    return not _wait_for_exit(pid, 0)
+
+
+def _service_locked(home, process, deadline):
+    """Wait until the starting configurator `process` holds its home's lock, which it takes before it waits for
+    publication: True, or None on a file system without such locks. Its exit, or the deadline, ends the startup."""
+    while True:
+        if process.poll() is not None:
+            raise RuntimeError(f'Configurator exited during startup (exit {process.returncode}); inspect '
+                               + str(home / 'daemon.log'))
+        held = process_lock_held(home / SERVICE_LOCK)
+        if held is not False:
+            return held
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Configurator failed to start; inspect ' + str(home / 'daemon.log'))
+        time.sleep(.01)
+
+
 def _confirmed_shutdown(pid, timeout=10):
     if type(pid) is not int or pid <= 0:
         return {'ok': False, 'stopped': False, 'reason': 'Daemon exit cannot be confirmed without its process identity'}
@@ -211,8 +241,7 @@ def _start(home, timeout=30):
                 recorded = json.loads((home / 'service.json').read_text(encoding='utf-8'))
             except (OSError, ValueError):
                 recorded = {}
-            pid = recorded.get('pid')
-            if type(pid) is not int or pid <= 0 or _wait_for_exit(pid, 0):
+            if not _service_running(home, recorded):
                 break
             # A refused connection is not proof of process exit. Replacing this
             # endpoint would orphan its live workers and recover its database
@@ -239,9 +268,14 @@ def _start(home, timeout=30):
                              cwd=home, env=env, stdin=subprocess.PIPE, stdout=log, stderr=log, **options)
         threading.Thread(target=process.wait, daemon=True).start()
         try:
+            # The record names a configurator whose lock is held from the moment it exists: the child takes the lock
+            # before it waits for publication, and refuses a home another configurator holds.
+            locked = _service_locked(home, process, deadline)
             # Publish once, with the child PID already known. The child waits
             # until this writer closes; it never renames a file readers hold.
             endpoint['pid'] = process.pid
+            if locked:
+                endpoint['lock'] = SERVICE_LOCK
             path.write_text(json.dumps(endpoint), encoding='utf-8')
             if os.name != 'nt':
                 path.chmod(0o600)

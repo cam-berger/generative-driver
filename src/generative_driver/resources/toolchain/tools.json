@@ -381,7 +381,7 @@
     },
     {
       "name": "acquire_classify",
-      "description": "Stage 1. Walk the acquisition ladder and return the device class, the description artifact, and the\nlog of every rung tried. A selected `port` requires `flash_backend=\"esp32\"`; a failed port attempt\ncannot fall through to the an unselected FTDI bus. `part_hint` offers a part marking to look up.\n`transports` (e.g. [\"usb\"]) with the operator's `address` (vid:pid) and optional `serial_number` selects\na self-describing device; a miss then ends the walk and no bus is scanned.\n",
+      "description": "Stage 1. Walk the acquisition ladder and return the device class, the description artifact, and the\nlog of every rung tried. A selected `port` requires `flash_backend=\"esp32\"`; a failed port attempt\ncannot fall through to an unselected FTDI bus. `part_hint` offers a part marking to look up.\n`transports` (e.g. [\"usb\"]) selects a self-describing device by the operator's `address` (vid:pid) and optional\n`serial_number`, which a managed run takes from the bound device; a miss then ends the walk and no bus is scanned.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -587,7 +587,7 @@
     },
     {
       "name": "acquire_selfdescription",
-      "description": "Stage 1, rung 3. Read one explicitly selected USB device's standard descriptors into descriptor.json,\nraw and parsed, with ENDPOINT.md beside it for the interpreter. transport is \"usb\"; address is the\noperator's vid:pid in hex; serial_number picks one of several matches. Only descriptor reads (and the\nvendor read its own BOS advertises) are sent: nothing is claimed or configured, no data is transferred.\n",
+      "description": "Stage 1, rung 3. Read one explicitly selected USB device's standard descriptors into descriptor.json,\nraw and parsed, with ENDPOINT.md beside it for the interpreter. transport is \"usb\"; address is the\noperator's vid:pid in hex and serial_number picks one of several matches; a managed run takes both\nfrom the bound device. Only descriptor reads (and the\nvendor read its own BOS advertises) are sent: nothing is claimed or configured, no data is transferred.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {

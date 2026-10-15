@@ -39,6 +39,9 @@ STAGE_TOOLS = {
     'emit': ['emit_package','emit_check'],
     'reuse': ['interface_describe','interface_execute','emit_check','emit_test_live'],
 }
+# Tools whose `address` and `serial_number` select a USB device (vid:pid and serial). The configurator owns that
+# selection as it owns the serial port: a worker names a transport, and only the operator's bound identity is read.
+USB_SELECTING = ('acquire_classify', 'acquire_selfdescription')
 GROUND_OBJECTIVE = ('Test the meanings the interpreted model gives the device: units, scaling and the effects of its '
                     'operations. Run the model on the device with probe_run and interface_execute through the '
                     'configurator-owned connection, compare the outputs with the probe records and with operator '
@@ -3285,7 +3288,10 @@ class Controller:
             contracts.append(copy.deepcopy(BENCHMARK_PACKAGE_EXECUTE))
         for contract in contracts:
             schema = contract['inputSchema']
-            for bound in ('run_dir','binding','allow_effects','bus_url','port','allow_reset'):
+            owned = ('run_dir','binding','allow_effects','bus_url','port','allow_reset')
+            if contract['name'] in USB_SELECTING:
+                owned += ('address', 'serial_number')
+            for bound in owned:
                 schema.get('properties', {}).pop(bound, None)
                 if bound in schema.get('required', []):
                     schema['required'].remove(bound)
@@ -3297,6 +3303,8 @@ class Controller:
         arguments = dict(params.get('arguments', {}))
         if {'run_dir','binding','allow_effects','bus_url','allow_reset','port'} & arguments.keys():
             raise ValueError('Connection, output directory and effect grants are configurator-owned')
+        if name in USB_SELECTING and {'address', 'serial_number'} & arguments.keys():
+            raise ValueError('USB device selection is configurator-owned: a worker names a transport, never a device')
         workspace = Path(assignment['workspace'])
         from .toolkit import _PATH_ARGUMENTS
         for key in _PATH_ARGUMENTS & arguments.keys():
@@ -3310,6 +3318,14 @@ class Controller:
             if not isinstance(arguments['inputs'],dict) or any(not isinstance(p,str) or not Path(p).is_absolute() or not Path(p).resolve().is_relative_to(workspace) for p in arguments['inputs'].values()):
                 raise ValueError('Every tool input must be inside this stage workspace')
         binding = assignment.get('binding') or {}
+        if name == 'acquire_selfdescription' or (name == 'acquire_classify' and arguments.get('transports') is not None):
+            # A USB transport reads only the device the operator bound, by its vendor/product identity.
+            if not (type(binding.get('vendor_id')) is int and type(binding.get('product_id')) is int):
+                raise ValueError('No operator-owned USB device identity is bound to this stage; a USB transport reads '
+                                 'only the bound device')
+            arguments['address'] = '%04x:%04x' % (binding['vendor_id'], binding['product_id'])
+            if isinstance(binding.get('serial_number'), str) and binding['serial_number']:
+                arguments['serial_number'] = binding['serial_number']
         serial_binding = _is_serial_binding(binding)
         serial_tool = name in ('acquire_serial_listen','acquire_flash') or (name == 'acquire_classify' and serial_binding)
         model_tool = name in ('probe_run','interface_execute','emit_test_live') and not arguments.get('replay')

@@ -17,14 +17,13 @@ The most important fixes below are done; the assessment that follows is kept as 
 - **Verified.**
   - The source suite and the CI-equivalent run pass: an installed wheel in a clean venv whose path has spaces, without the hardware extras, outside the checkout, with the archive gates and the setup smoke.
   - An independent review of the pass was addressed.
-- **Replay executor (G2-4), 2026-10-15.** `benchmark run --executor replay` replays a saved candidate through every stage without a model; scripted contract tests only. Suites refuse it.
+- **Replay executor (G2-4), 2026-10-15.** `benchmark run --executor replay` replays a saved candidate through every stage without a model, and `benchmark suite start --executor replay` replays one per case; scripted contract tests only.
 - **Still open, needing the operator.**
   - Recalibrate the three emulated families natively with the evaluator password.
   - Run one replay trial per emulated family from saved candidates the operator chooses.
   - Authorize the nine-trial end test.
 - **Not done (lower priority).**
   - Reset-on-open as a real stop (G1-4) and Goose adapter parity (G1-5).
-  - Replay suites.
   - Report and comparison improvements (G2-5 to G2-15).
   - The simplification candidates below.
 

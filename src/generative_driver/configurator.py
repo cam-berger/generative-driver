@@ -162,6 +162,20 @@ def _replay_config(params, config, home):
     return candidate_config(config, bench=bench_home(home))
 
 
+def _replay_suite_config(manifest, options, home):
+    """A replay suite's configuration: one saved candidate per case of its manifest (options.replay_candidates), all
+    checked first, then each stored by its hash in the configurator home, from which every child of that case takes its
+    copy."""
+    from .replay import stored_candidate, suite_candidates
+    from .benchmark_support.harness import bench_home
+    checked = suite_candidates({entry['case'] for entry in manifest['entries']},
+                               options.get('replay_candidates') if isinstance(options, dict) else None,
+                               bench=bench_home(home))
+    stored = {case: stored_candidate(config, Path(home) / 'replay-candidates') for case, config in checked.items()}
+    return {'runtime': 'replay', 'candidates': {case: {key: config[key] for key in ('candidate', 'candidate_sha256')}
+                                                for case, config in stored.items()}}
+
+
 def _copy_candidate(config, run_dir):
     """The run's own copy of the replay candidate, taken at start in its run directory: every stage replays these bytes,
     whatever happens to the saved candidate since."""
@@ -1491,6 +1505,8 @@ class Controller:
             if saved is None:
                 if self._closing:raise ValueError('Configurator is stopping')
                 config={**self._configured_executors().get(executor,{}),'runtime':executor}
+                if executor=='replay':
+                    config=_replay_suite_config(manifest,options,self.home)
                 frozen=freeze_suite(manifest,executor,config,options,execution_provenance(config),harness_token_sha256=token)
                 saved=self._suites.create(frozen,params.get('request_id'),harness_pid=pid,harness_lock=lock)
                 if not saved['duplicate']:
@@ -1967,6 +1983,9 @@ class Controller:
                     (value[key] is None or type(value[key]) in (str,int,float,bool))}
         dimensions=scalars(config,('model','provider','version','reasoning_effort','max_turns'))
         dimensions.update(runtime=frozen['executor'],**scalars(provenance,('skills_revision','toolchain_revision')))
+        if frozen['executor']=='replay':
+            # The candidates a replay suite replays, by case, as a model suite names its model.
+            dimensions['replay_candidates']={case:entry['candidate_sha256'] for case,entry in config['candidates'].items()}
         policy={key:manifest[key] for key in ('child_budget_seconds','suite_budget_seconds')}
         snapshots=[];overrides=[]
         for trial in suite['trials']:

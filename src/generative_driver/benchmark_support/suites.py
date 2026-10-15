@@ -102,11 +102,25 @@ def start_suite(manifest: dict, executor: str | None = None, options: dict | Non
     from .harness import launch_suite
     normalized = normalize_manifest(manifest)
     directory, selected, passwords, renode = _launch_options(options, home)
+    from ..setup import configured_executor
+    executor = configured_executor(executor, directory)
+    if executor != 'replay' and 'replay_candidates' in selected:
+        raise ValueError('Only a replay suite takes replay_candidates')
+    if executor == 'replay':
+        # Relative paths name directories from the caller's directory; checked before any harness starts, and again by
+        # the configurator as it freezes the suite.
+        from pathlib import Path
+        from ..replay import suite_candidates
+        from .harness import bench_home
+        candidates = selected.get('replay_candidates')
+        if isinstance(candidates, dict) and all(isinstance(path, str) and path.strip() for path in candidates.values()):
+            selected['replay_candidates'] = candidates = {case: str(Path(path).expanduser().resolve())
+                                                          for case, path in candidates.items()}
+        suite_candidates({entry['case'] for entry in normalized['entries']}, candidates, bench=bench_home(directory))
     if not call('ping', {}, directory, autostart=False).get('ok'):
         # Refuse an invalid selection before a configurator exists; a running one checks it again as it freezes.
         preflight_selection(normalized)
-    from ..setup import configured_executor
-    return launch_suite({'manifest': normalized, 'executor': configured_executor(executor, directory), 'options': selected,
+    return launch_suite({'manifest': normalized, 'executor': executor, 'options': selected,
                          'request_id': request_id},
                         home=directory, password_files=passwords, renode=renode, autostart=autostart, via_owner=via_owner)
 
@@ -172,14 +186,19 @@ def freeze_suite(manifest: dict, executor: str, executor_config: dict,
     from ..configurator import validate_scoped_approval
     normalized = normalize_manifest(manifest)
     refuse_secrets(options)
-    if set(options) - {'ghidra_home', 'java_home', 'scoped_tool_approval'}:
+    # A replay suite's candidates belong to its executor configuration: its children's options never carry them.
+    child_options = {key: value for key, value in options.items() if key != 'replay_candidates'}
+    if set(child_options) - {'ghidra_home', 'java_home', 'scoped_tool_approval'}:
         raise ValueError('Unknown suite options')
     if not isinstance(harness_token_sha256, str) or not re.fullmatch('[0-9a-f]{64}', harness_token_sha256):
         raise ValueError('A suite is frozen for the bench harness that drives it: the sha256 of its token is required')
+    if executor != 'replay' and 'replay_candidates' in options:
+        raise ValueError('Only a replay suite takes replay_candidates')
     if executor == 'replay':
-        raise ValueError('Suites run Codex or Goose; replay a saved candidate one case at a time with '
-                         '`benchmark run --executor replay`')
-    if (executor not in ('codex', 'goose') or not isinstance(executor_config, dict)
+        if not _replay_candidates(executor_config, normalized):
+            raise ValueError('A replay suite takes one saved candidate per case: options.replay_candidates '
+                             '{case: directory}')
+    elif (executor not in ('codex', 'goose') or not isinstance(executor_config, dict)
             or not isinstance(executor_config.get('command'), list) or not executor_config['command']
             or any(not isinstance(arg, str) or not arg.strip() for arg in executor_config['command'])):
         raise ValueError('Configure a worker runtime command before starting a suite')
@@ -192,7 +211,7 @@ def freeze_suite(manifest: dict, executor: str, executor_config: dict,
     encoded = json.dumps(normalized, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
     frozen = copy.deepcopy({'manifest': normalized, 'manifest_sha256': hashlib.sha256(encoded).hexdigest(),
         'request': {'manifest': normalized, 'executor': executor, 'options': options},
-        'executor': executor, 'executor_config': executor_config, 'options': options,
+        'executor': executor, 'executor_config': executor_config, 'options': child_options,
         'scope': 'full-workflow', 'entry_pins': pins,
         'entry_effects': [list(case.default_effects) for case in definitions],
         'provenance': provenance, 'trials': expand_trials(normalized),
@@ -200,6 +219,15 @@ def freeze_suite(manifest: dict, executor: str, executor_config: dict,
     for trial in frozen['trials']:
         validate_scoped_approval(child_request(frozen, dict(trial, child_request_id='freeze-' + trial['trial_key'])))
     return frozen
+
+
+def _replay_candidates(executor_config, manifest):
+    """Whether a replay suite's configuration names exactly one stored candidate per case of its manifest."""
+    candidates = executor_config.get('candidates') if isinstance(executor_config, dict) else None
+    return (isinstance(candidates, dict) and set(executor_config) == {'runtime', 'candidates'}
+            and executor_config['runtime'] == 'replay' and set(candidates) == {entry['case'] for entry in manifest['entries']}
+            and all(isinstance(entry, dict) and set(entry) == {'candidate', 'candidate_sha256'}
+                    and all(isinstance(value, str) and value for value in entry.values()) for entry in candidates.values()))
 
 
 def child_request(frozen: dict, trial: dict) -> dict:
@@ -220,9 +248,13 @@ def child_request(frozen: dict, trial: dict) -> dict:
     approval = options.pop('scoped_tool_approval', None)
     pin = copy.deepcopy(frozen['entry_pins'][trial['entry_index']])
     options.update(scenario_id=pin['scenario_id'], case_seed=pin['case_seed'])
+    executor_config = copy.deepcopy(frozen['executor_config'])
+    if frozen['executor'] == 'replay':
+        # Each child replays its own case's candidate.
+        executor_config = {'runtime': 'replay', **executor_config['candidates'][trial['case']]}
     return {'goal': 'Execute one registered benchmark trial with checked evidence.',
             'case': trial['case'], 'case_pin': pin, 'executor': frozen['executor'],
-            'executor_config': copy.deepcopy(frozen['executor_config']), 'case_options': options,
+            'executor_config': executor_config, 'case_options': options,
             'request_id': trial['child_request_id'],
             'effects': list(frozen['entry_effects'][trial['entry_index']]),
             'scoped_tool_approval': approval, 'budget_seconds': frozen['manifest']['child_budget_seconds']}

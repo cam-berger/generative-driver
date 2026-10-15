@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 RUNTIME = 'replay'
@@ -112,6 +113,40 @@ def candidate_config(config, *, bench=None):
     if config.get('candidate_sha256') not in (None, sha256):
         raise ValueError('The replay candidate changed since its hash was recorded: ' + str(root))
     return {'runtime': RUNTIME, 'candidate': str(root.resolve()), 'candidate_sha256': sha256}
+
+
+def suite_candidates(cases, candidates, *, bench=None):
+    """The checked configuration of each case's candidate of a replay suite (options.replay_candidates): exactly one
+    saved candidate per case of its manifest."""
+    if not isinstance(candidates, dict) or set(candidates) != set(cases):
+        raise ValueError('A replay suite takes one saved candidate per case: options.replay_candidates '
+                         '{case: directory} for ' + ', '.join(sorted(cases)))
+    return {case: candidate_config({'candidate': candidates[case]}, bench=bench) for case in sorted(cases)}
+
+
+def stored_candidate(config, store):
+    """The candidate of `config`, stored under `store` by its sha256, where a suite keeps the candidates it froze: the
+    stored copy's configuration. Every child of the suite replays those bytes, whatever happens to the saved candidate."""
+    from .configurator import digest
+    store = Path(store)
+    target = store / config['candidate_sha256']
+    if not target.is_dir():
+        store.mkdir(parents=True, exist_ok=True)
+        temporary = Path(tempfile.mkdtemp(prefix='.candidate-', dir=store))
+        try:
+            shutil.copytree(config['candidate'], temporary / 'copy')
+            if digest(temporary / 'copy') != config['candidate_sha256']:
+                raise ValueError('The replay candidate changed while it was stored: ' + config['candidate'])
+            try:
+                os.rename(temporary / 'copy', target)
+            except OSError:
+                if not target.is_dir():
+                    raise
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
+    if digest(target) != config['candidate_sha256']:
+        raise ValueError('The stored replay candidate changed: ' + str(target))
+    return {'runtime': RUNTIME, 'candidate': str(target), 'candidate_sha256': config['candidate_sha256']}
 
 
 def execution_label(case_execution, runtime):

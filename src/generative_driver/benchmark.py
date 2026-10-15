@@ -56,7 +56,8 @@ def main(argv=None):
     suites = commands.add_parser('suite').add_subparsers(dest='action', required=True)
     starting = suites.add_parser('start')
     starting.add_argument('--manifest', required=True)
-    starting.add_argument('--executor', choices=['codex', 'goose'], help='Default: the one configured runtime')
+    starting.add_argument('--executor', choices=['codex', 'goose', 'replay'],
+                          help='Default: the one configured runtime; replay runs options.replay_candidates without a model')
     starting.add_argument('--options')
     starting.add_argument('--request-id')
     for action in ('status', 'events', 'result', 'cancel', 'resume'):

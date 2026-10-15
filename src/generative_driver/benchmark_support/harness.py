@@ -18,6 +18,7 @@ above, and has the configurator settle the slot from what the configurator reads
 harness, which continues a stopped trial on a device it provides anew (`reattach`) or grades an unscored one once."""
 import argparse
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -724,6 +725,10 @@ def _settle(record, done):
 
 
 LOCK = 'evaluation.lock'
+# The byte of the lock file that the evaluation lock locks on Windows, far past the text the file holds: Windows forbids
+# every other open file to read or write a locked byte, and the text names the holder to whoever finds the lock held. On
+# POSIX the lock covers the whole file and forbids nothing.
+LOCKED_BYTE = 1 << 30
 
 
 def _lock_text(path):
@@ -737,14 +742,15 @@ def _lock_text(path):
 
 
 def _lock_holder(text):
-    """The process id a lock names, or None when it names none (a lock that cannot be read or is still being written)."""
+    """The process id a lock names, or None when it names none (a lock that cannot be read or is still being written).
+    It is a diagnostic: once the process that took the lock ended, its id may name another."""
     parts = (text or '').split()
     return int(parts[0]) if parts and parts[0].isdigit() and int(parts[0]) > 0 else None
 
 
 def _put(source, target):
-    """Move `source` to `target`, which must not exist (FileExistsError): a lock so placed names its holder from the
-    moment it exists."""
+    """Move `source` to `target`, which must not exist (FileExistsError): a file so placed is whole from the moment it
+    exists."""
     if os.name == 'nt':
         os.rename(source, target)  # Windows refuses to rename onto an existing file.
         return
@@ -753,58 +759,98 @@ def _put(source, target):
     except FileExistsError:
         raise
     except OSError:
-        # A filesystem without hard links: create the lock exclusively, then write it. Until it is written, the lock
-        # reads as held, never as stale.
+        # A filesystem without hard links: create the file exclusively, then write it.
         descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, 'wb') as stream:
             stream.write(Path(source).read_bytes())
     os.unlink(source)
 
 
+def _take(descriptor):
+    """Take the evaluation lock of an open lock file without waiting: True once taken, False while another open file
+    holds it, in another process or in this one. An OSError when the file system can neither take nor test it."""
+    if os.name == 'nt':
+        import msvcrt
+        os.lseek(descriptor, LOCKED_BYTE, os.SEEK_SET)
+        try:
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        except OSError as error:
+            if error.errno in (errno.EACCES, errno.EDEADLOCK):
+                return False
+            raise
+        return True
+    import fcntl
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def _let_go(descriptor):
+    """Let go of the evaluation lock and close its file. Windows unlocks first: a lock left to the close may outlast it."""
+    try:
+        if os.name == 'nt':
+            import msvcrt
+            os.lseek(descriptor, LOCKED_BYTE, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+    finally:
+        os.close(descriptor)
+
+
+def _names(path, descriptor):
+    """Whether `path` names the file open as `descriptor`."""
+    try:
+        return os.path.samestat(os.fstat(descriptor), os.stat(path))
+    except FileNotFoundError:
+        return False
+
+
 @contextlib.contextmanager
 def _exclusive(trial_dir):
-    """One evaluation of a trial at a time: a lock file that names its process and a nonce from the moment it exists. A
-    lock that cannot be read is held. A lock whose process ended is moved aside and removed only if it is still the one
-    found ended; an evaluation lets go only of its own lock."""
+    """One evaluation of a trial at a time: each holds an operating-system lock on the trial's lock file for the whole
+    evaluation, which the system lets go of when its process ends, however it ends. The file names the process and a
+    nonce, for diagnostics only: once that process ended, its id may name another process, or one this user may not
+    signal. A lock that cannot be taken or tested is held. An evaluation removes only its own lock."""
     path = Path(trial_dir) / LOCK
     mine = str(os.getpid()) + ' ' + uuid.uuid4().hex
-    temporary = path.with_name('.' + LOCK + '.' + uuid.uuid4().hex)
-    temporary.write_text(mine, encoding='utf-8')
+    for _ in range(3):
+        descriptor = None
+        try:
+            descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, 'O_BINARY', 0), 0o600)
+            taken = _take(descriptor)
+            # A lock let go of and removed after this open locks a file the path no longer names. Windows removes no
+            # open file.
+            current = taken and (os.name == 'nt' or _names(path, descriptor))
+        except OSError as error:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise ValueError('Another evaluation of this trial may be running: its lock cannot be taken ('
+                             + type(error).__name__ + ': ' + (error.strerror or str(error)) + '): ' + str(path)) from None
+        if current:
+            break
+        os.close(descriptor)
+        if not taken:
+            holder = _lock_holder(_lock_text(path))
+            raise ValueError('Another evaluation of this trial is running (it holds the lock ' + str(path)
+                             + (', which names process ' + str(holder) if holder else '') + ')')
+    else:
+        raise ValueError('Cannot take the evaluation lock of ' + str(trial_dir))
     try:
-        for _ in range(3):
-            try:
-                _put(temporary, path)
-                break
-            except FileExistsError:
-                pass
-            found = _lock_text(path)
-            if found is None:
-                continue  # Let go of meanwhile: try again.
-            holder = _lock_holder(found)
-            if holder is None or not _harness_exited(None, {'pid': holder}):
-                raise ValueError('Another evaluation of this trial is running ('
-                                 + ('process ' + str(holder) if holder else 'its lock is unreadable or being written: '
-                                    + str(path)) + ')')
-            aside = path.with_name('.' + LOCK + '.ended.' + uuid.uuid4().hex)
-            try:
-                os.rename(path, aside)
-            except FileNotFoundError:
-                continue
-            if _lock_text(aside) != found:
-                # Another evaluation took the lock meanwhile: it stays that evaluation's.
-                with contextlib.suppress(OSError):
-                    _put(aside, path)
-                raise ValueError('Another evaluation of this trial is running')
-            aside.unlink(missing_ok=True)
-        else:
-            raise ValueError('Cannot take the evaluation lock of ' + str(trial_dir))
-    finally:
-        temporary.unlink(missing_ok=True)
-    try:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        os.ftruncate(descriptor, 0)
+        os.write(descriptor, mine.encode('utf-8'))
         yield
     finally:
-        if _lock_text(path) == mine:
+        # Removed while still held, so that no other evaluation holds the file removed; Windows removes no file another
+        # has open, so there it is removed once let go of, unless another evaluation opened it meanwhile.
+        own = _lock_text(path) == mine
+        if own and os.name != 'nt':
             path.unlink(missing_ok=True)
+        _let_go(descriptor)
+        if own and os.name == 'nt':
+            with contextlib.suppress(OSError):
+                path.unlink()
 
 
 def launch(case, output_dir=None, executor=None, options=None, approval=None, *, effects=(), autostart=True, wait=False,

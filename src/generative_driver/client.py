@@ -148,6 +148,23 @@ def _confirmed_shutdown(pid, timeout=10):
             **({} if stopped else {'reason': 'Daemon exit was not confirmed before the shutdown deadline'})}
 
 
+def _confirmed_stopped(home, endpoint, timeout):
+    """Once a shutdown request got no reply: whether the configurator service.json names has ended, waiting up to
+    `timeout` seconds, by the lock it holds on its home or, where none tells, its process id (see `_service_running`)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            running = _service_running(home, endpoint)
+        except OSError as exc:
+            return {'ok': False, 'stopped': False, 'reason': 'Daemon exit verification failed: ' + str(exc)}
+        if running is None:
+            return {'ok': False, 'stopped': False, 'reason': 'Daemon exit cannot be confirmed without its process identity'}
+        if not running or time.monotonic() >= deadline:
+            return {'ok': not running, 'stopped': not running, 'pid': endpoint.get('pid'),
+                    **({'reason': 'Daemon exit was not confirmed before the shutdown deadline'} if running else {})}
+        time.sleep(.01)
+
+
 def _sources_digest():
     digest, root = hashlib.sha256(), Path(__file__).resolve().parents[1]
     for package in ('generative_driver', 'interface_runtime'):
@@ -329,7 +346,7 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
                 return {'ok': True, 'stopped': True}
             except (OSError, ValueError) as exc:
                 return {'ok': False, 'stopped': False, 'reason': 'Cannot confirm daemon identity: ' + str(exc)}
-            return _confirmed_shutdown(endpoint.get('pid'), timeout=10 if isinstance(error, _RequestInterrupted) else 0)
+            return _confirmed_stopped(directory, endpoint, timeout=10 if isinstance(error, _RequestInterrupted) else 0)
         # Never silently replay a tool or state-changing request whose reply was
         # lost. The owner may already have performed it; reconnect to its state.
         if isinstance(error, _RequestInterrupted):

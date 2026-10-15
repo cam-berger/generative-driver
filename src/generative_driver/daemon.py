@@ -120,7 +120,7 @@ def main():
     parser.add_argument('--home', required=True)
     parser.add_argument('--wait-for-startup', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
-    lock = _hold_home(args.home)  # Never let go of: the system does when this process ends, however it ends.
+    lock = _hold_home(args.home)  # Held while this process serves; it goes as the process ends, however that ends.
     if args.wait_for_startup and sys.stdin.buffer.read(1) != b'1':
         parser.exit(1, 'Startup cancelled before endpoint publication\n')
     serve(args.home)

@@ -258,6 +258,21 @@ class ServiceLifecycleTests(unittest.TestCase):
             finally:
                 call('shutdown', {}, home)
 
+    def test_a_configurator_that_ended_is_reported_stopped_even_when_its_process_id_was_reused(self):
+        # Catches a stop that confirmed a configurator's exit from the bare process id its record names: once it ended
+        # without a shutdown, that id may name another running process (as the system reuses ids) or one this user may
+        # not signal, and every stop reported that its exit was not confirmed.
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            try:
+                # This test's parent process stands in for an unrelated process that took over the ended one's id.
+                self.ended(home, pid=os.getppid())
+                stopped = call('shutdown', {}, home)
+                self.assertEqual((stopped['ok'], stopped['stopped']), (True, True), stopped)
+            finally:
+                call('shutdown', {}, home)
+
     def test_a_configurator_holds_its_home_from_before_its_record_names_it(self):
         # Catches a record that names a starting configurator whose lock is not held yet: a client that read it
         # meanwhile would take the configurator for one that ended.

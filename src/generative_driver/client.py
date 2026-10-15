@@ -52,6 +52,10 @@ def _wait_for_exit(pid, timeout=10):
         time.sleep(min(.01, remaining))
 
 
+# The lock a configurator holds on its home for as long as it runs (see `daemon.main`).
+SERVICE_LOCK = 'service.lock'
+
+
 def hold_process_lock(path):
     """Lock the file at `path` for as long as this process keeps the returned stream open; the operating system lets
     go of it when the process ends, however it ends. None when the file system offers no such lock."""

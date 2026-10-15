@@ -214,6 +214,29 @@ class ServiceLifecycleTests(unittest.TestCase):
                 daemon.serve(home)
             self.assertFalse((home / 'runs.sqlite3').exists())
 
+    def test_a_configurator_never_starts_from_a_home_another_configurator_runs_from(self):
+        # Catches a second configurator started on the home a running one serves (by hand, or by a client that took the
+        # running one for ended): its startup recovery blocked the running one's runs as though it had restarted, before
+        # it failed to listen where the running one listens, or, on Windows, listened beside it.
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            try:
+                run = call('start', {'goal': 'Scripted run another configurator must leave alone', 'executor_config': {
+                    'command': [sys.executable, '-c', 'import time; time.sleep(30)']}}, home)
+                deadline = time.monotonic() + 5
+                while call('status', run, home)['status'] != 'running':
+                    self.assertLess(time.monotonic(), deadline, call('result', run, home))
+                    time.sleep(.01)
+                second = subprocess.run([sys.executable, '-m', 'generative_driver.daemon', '--home', str(home)],
+                                        capture_output=True, text=True, timeout=30)
+                status = call('status', run, home)
+                self.assertEqual((status['status'], status['reason']), ('running', None), status)
+                self.assertNotEqual(second.returncode, 0, second)
+                self.assertIn(str(home / 'service.lock'), second.stderr)
+            finally:
+                call('shutdown', {}, home)
+
     def test_shutdown_drains_an_accepted_tool_before_confirming_exit(self):
         from generative_driver.client import call
         entered, release = threading.Event(), threading.Event()

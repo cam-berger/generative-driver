@@ -9,8 +9,24 @@ from pathlib import Path
 import threading
 import time
 
-from .client import code_identity
+from .client import SERVICE_LOCK, code_identity, hold_process_lock, process_lock_held
 from .configurator import Controller
+
+
+def _hold_home(home):
+    """The lock this configurator holds on its home for as long as it runs, taken before the starting client publishes
+    service.json: by it clients tell that the configurator still runs, which its process id cannot tell once it ended.
+    None on a file system without such locks. A home another running configurator holds is refused before anything of
+    it is read: starting there would recover that configurator's runs as though it had stopped."""
+    path = Path(home).resolve() / SERVICE_LOCK
+    deadline = time.monotonic() + 2
+    while True:
+        lock = hold_process_lock(path)
+        if lock is not None or process_lock_held(path) is None:
+            return lock
+        if time.monotonic() >= deadline:
+            raise SystemExit('Another configurator runs from this home: it holds ' + str(path))
+        time.sleep(.01)  # A client may be testing the lock just now; a running configurator holds it for good.
 
 
 def serve(home):
@@ -104,6 +120,7 @@ def main():
     parser.add_argument('--home', required=True)
     parser.add_argument('--wait-for-startup', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
+    lock = _hold_home(args.home)  # Never let go of: the system does when this process ends, however it ends.
     if args.wait_for_startup and sys.stdin.buffer.read(1) != b'1':
         parser.exit(1, 'Startup cancelled before endpoint publication\n')
     serve(args.home)

@@ -9,8 +9,10 @@ hand-typed analyzeHeadless invocation can go wrong (rejected loader selectors, `
 
 `ok` is true only when analyzeHeadless exited 0, its log says "Import succeeded", and the exporter's
 functions.tsv (at least one row, at least one decompiled), disassembly.txt (nonempty) and function_*.c
-files verify on disk. The Log4j "Could not determine local host name" block is reported in
-`hostname_diagnostic`; every other stderr line stays in `stderr_other`.
+files verify on disk, with the navigation tables (references.tsv, strings.tsv, switches.tsv) matching
+navigation.json. A table truncated at its byte bound is listed in `exports.truncated`, not failed. The Log4j
+"Could not determine local host name" block is reported in `hostname_diagnostic`; every other stderr line
+stays in `stderr_other`.
 """
 import importlib.util
 import os

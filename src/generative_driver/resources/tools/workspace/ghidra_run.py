@@ -47,6 +47,9 @@ raw image as "Raw Binary" with exit 0; `ghidra.app.util.opinion.BinaryLoader`, `
 
 The exporter (ExportDecomp.java in the interpret-firmware-binary skill) writes functions.tsv with the
 header address/name/decompilation_complete, one function_<address>.c per function, and disassembly.txt.
+It also writes the static navigation tables in NAVIGATION_TABLES (references, strings, switch cases), each
+bounded in bytes, and navigation.json, which records each table's bound, rows written, rows found and
+truncation. A truncated table verifies and is reported in exports.truncated.
 """
 import argparse
 import datetime
@@ -315,36 +318,37 @@ def verify_navigation(export_dir, max_bytes=None):
             problems.append(f"{NAVIGATION_MANIFEST} records no rows, rows_found and truncated for {name}")
             continue
         path = os.path.join(export_dir, name)
+        rows, defect = 0, None
         try:
-            with open(path, "rb") as fh:
-                data = fh.read()
+            with open(path, "rb") as fh:  # a line at a time: a requested bound may be a gigabyte
+                size = os.fstat(fh.fileno()).st_size
+                header = fh.readline().rstrip(b"\n")
+                for rows, line in enumerate(fh, 1):
+                    if defect is None:
+                        try:
+                            fields = len(line.rstrip(b"\n").decode("utf-8").split("\t"))
+                        except UnicodeDecodeError:
+                            defect = f"{name} row {rows} is not UTF-8"
+                        else:
+                            if fields != len(columns):
+                                defect = f"{name} row {rows} has {fields} fields, not {len(columns)}"
         except OSError:
             problems.append(f"{name} missing")
             continue
-        lines = data.split(b"\n")
-        if lines[-1] == b"":
-            lines.pop()
-        if not lines or lines[0] != "\t".join(columns).encode("utf-8"):
+        if header != "\t".join(columns).encode("utf-8"):
             problems.append(f"{name} header is not {'/'.join(columns)}")
             continue
-        rows = lines[1:]
-        for number, row in enumerate(rows, 1):
-            try:
-                fields = row.decode("utf-8").split("\t")
-            except UnicodeDecodeError:
-                problems.append(f"{name} row {number} is not UTF-8")
-                break
-            if len(fields) != len(columns):
-                problems.append(f"{name} row {number} has {len(fields)} fields, not {len(columns)}")
-                break
-        if len(rows) != recorded["rows"]:
-            problems.append(f"{name} has {len(rows)} rows; {NAVIGATION_MANIFEST} records {recorded['rows']}")
-        if recorded["truncated"] != (recorded["rows_found"] > recorded["rows"]) or recorded["rows_found"] < recorded["rows"]:
+        if defect:
+            problems.append(defect)
+        if rows != recorded["rows"]:
+            problems.append(f"{name} has {rows} rows; {NAVIGATION_MANIFEST} records {recorded['rows']}")
+        found, kept = recorded["rows_found"], recorded["rows"]
+        if recorded["truncated"] != (found > kept) or found < kept:
             problems.append(f"{name}: truncated in {NAVIGATION_MANIFEST} disagrees with its rows and rows_found")
-        if len(data) > bound:
-            problems.append(f"{name} is {len(data)} bytes, over its {bound}-byte bound")
-        summary["tables"][name] = {"path": path, "rows": len(rows), "rows_found": recorded["rows_found"],
-                                   "bytes": len(data), "truncated": recorded["truncated"]}
+        if size > bound:
+            problems.append(f"{name} is {size} bytes, over its {bound}-byte bound")
+        summary["tables"][name] = {"path": path, "rows": rows, "rows_found": recorded["rows_found"],
+                                   "bytes": size, "truncated": recorded["truncated"]}
     return summary, problems
 
 

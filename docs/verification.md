@@ -2,6 +2,14 @@
 
 All workflows end at acquire, interpret, probe, ground, emit, reuse. Scripted tests, installation replay, native reference qualification, model execution and physical observations retain separate labels.
 
+## Ghidra navigation export — 2026-10-15
+
+`ExportDecomp.java` also writes `references.tsv`, `strings.tsv` and `switches.tsv`, each bounded at 16 MiB unless `navigation_max_bytes` sets another bound, and `navigation.json`, which records each table's rows written, rows found and truncation. `ghidra_run` verifies them and lists truncated tables in `exports.truncated`. `functions.tsv`, `function_*.c` and `disassembly.txt` are written as before. The tables are static facts; they do not show that code runs or is reachable.
+
+- **Scripted contract tests** (`tests/test_ghidra_exports.py`, part of the 789-test unit suite that passed from source with 3 archive-gate skips): a Python stand-in for `analyzeHeadless` writes the exports. They establish `ghidra_run`'s verification, truncation reporting, hashing and bound handling, and nothing about Ghidra.
+- **Native observations** on macOS with Ghidra 12.1.3 and OpenJDK 21.0.12.1, using self-built fixtures only (no benchmark source, answer key, case firmware or banner-node firmware): the explicit gate `tests/native_ghidra_exports.py` passed its five tests on a hand-assembled Cortex-M3 raw image and on an Xtensa ELF compiled from its own source with ESP GCC 14.2.0, which Ghidra's ELF loader imported as `Xtensa:LE:32:default`. For the Cortex-M3 image the previous and the new exporter wrote byte-identical `functions.tsv`, `function_*.c` and `disassembly.txt`. A larger self-written Xtensa program, with a switch with holes, UTF-16 and escaped strings and a struct table of command names, also exported and verified. Windows Ghidra execution remains unqualified.
+- **Calibration**: `ghidra_run.py` and `ExportDecomp.java` belong to `calibration_identity()`, whose digest changed from `25e824a0…` to `7228dcf7…`; the grading closure is unchanged. No calibration, model trial or device operation ran, and the fresh native calibration required below still precedes the nine-trial end test.
+
 ## Assistive protocol — 2026-10-08
 
 New runs follow `assistive/1` ([design amendment](design.md#assistive-protocol-amendment--2026-10-07)): stages hand off with notes, only safety, integrity, operator and host faults stop a run, device differences drive repair and each run records one equivalence verdict. For benchmarks a bench harness holds the evaluator password, owns the emulator and grades the frozen driver once after the run; the configurator holds no password, recipe or truth. Workers see instrument readings of the emulated device as device evidence. Workers are not read-isolated until a real sandbox exists; separation from the answer keys is password-based.

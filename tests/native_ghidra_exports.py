@@ -1,11 +1,14 @@
-"""Explicit native gate for ExportDecomp.java: real headless Ghidra on a hand-assembled Cortex-M3 image.
+"""Explicit native gate for ExportDecomp.java: real headless Ghidra on a hand-assembled Cortex-M3 raw image and on
+an Xtensa ELF compiled here.
 
-Select it with `python -m unittest discover -s tests -p native_ghidra_exports.py` and set GD_NATIVE_GHIDRA_HOME and
-GD_NATIVE_JAVA_HOME. No configuration means failure, never a skip. The image is built here from the listing below; it
-derives from no benchmark source, answer key or device firmware.
+Select it with `python -m unittest discover -s tests -p native_ghidra_exports.py` and set GD_NATIVE_GHIDRA_HOME,
+GD_NATIVE_JAVA_HOME and GD_NATIVE_XTENSA_GCC (an Xtensa GCC such as xtensa-esp32s3-elf-gcc). No configuration means
+failure, never a skip. Both images are built here from the listing and source below; they derive from no benchmark
+source, answer key or device firmware.
 """
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -100,17 +103,52 @@ def cortex_m_image():
     return bytes(code)
 
 
-def analyze(**arguments):
+XTENSA_SOURCE = r"""/* Xtensa fixture: a dense switch, strings and a table of pointers to command names. */
+static const char *const names[] = {"read-status", "write-config", "reset-device", "identify-unit"};
+volatile int sink;
+
+__attribute__((noinline)) const char *lookup(unsigned index)
+{
+    return index < 4 ? names[index] : "unknown-command";
+}
+
+__attribute__((noinline)) int dispatch(unsigned command)
+{
+    switch (command) {
+    case 0: sink = 0x11; return 1;
+    case 1: sink = 0x22; return 2;
+    case 2: sink = 0x33; return 3;
+    case 3: sink = 0x44; return 4;
+    case 4: sink = 0x55; return 5;
+    case 5: sink = 0x66; return 6;
+    case 6: sink = 0x77; return 7;
+    default: return -1;
+    }
+}
+
+void entry(void)
+{
+    for (unsigned i = 0;; i++) {
+        sink = dispatch(i & 7);
+        sink = (int)(long)lookup(i & 3);
+    }
+}
+"""
+
+
+def analyze(image, **arguments):
+    """ghidra_run through the toolchain facade on `image` in a fresh directory, imported as the Cortex-M3 raw image
+    unless `arguments` say otherwise; returns the result and the directory."""
     from generative_driver.toolkit import call_tool
     for name in ("GD_NATIVE_GHIDRA_HOME", "GD_NATIVE_JAVA_HOME"):
         assert name in os.environ, "Native gate requires explicit " + name
     root = Path(tempfile.mkdtemp(prefix="gd-ghidra-exports-")).resolve()
-    image = root / "image.bin"
-    image.write_bytes(cortex_m_image())
+    (root / "image").write_bytes(image)
     result = call_tool("ghidra_run", {"run_dir": str(root / "run"), "workspace": str(root / "analysis"),
-        "image": str(image), "base_address": "08000000", "processor": "ARM:LE:32:Cortex",
-        "ghidra_path": os.environ["GD_NATIVE_GHIDRA_HOME"], "java_home": os.environ["GD_NATIVE_JAVA_HOME"],
-        "export_dir": str(root / "exports"), "prescripts": ["SeedCortexM.java"], "timeout_s": 300, **arguments})
+        "image": str(root / "image"), "base_address": "08000000", "processor": "ARM:LE:32:Cortex",
+        "prescripts": ["SeedCortexM.java"], "ghidra_path": os.environ["GD_NATIVE_GHIDRA_HOME"],
+        "java_home": os.environ["GD_NATIVE_JAVA_HOME"], "export_dir": str(root / "exports"), "timeout_s": 300,
+        **arguments})
     return result, root
 
 
@@ -122,7 +160,7 @@ def rows(root, name):
 class NativeGhidraExportTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.result, cls.root = analyze()
+        cls.result, cls.root = analyze(cortex_m_image())
 
     @classmethod
     def tearDownClass(cls):
@@ -163,7 +201,7 @@ class NativeGhidraExportTests(unittest.TestCase):
             ("08000080", "08000084", "0x3", "08000094")])
 
     def test_a_small_bound_keeps_the_leading_rows_of_each_table_and_reports_the_rest(self):
-        result, root = analyze(navigation_max_bytes=1024)
+        result, root = analyze(cortex_m_image(), navigation_max_bytes=1024)
         self.addCleanup(shutil.rmtree, root, True)
         self.assertTrue(result["ok"], result.get("reasons"))
         self.assertEqual(result["exports"]["truncated"], ["references.tsv", "strings.tsv"])
@@ -174,6 +212,45 @@ class NativeGhidraExportTests(unittest.TestCase):
                 self.assertEqual(kept, complete[:len(kept)])
                 self.assertEqual((table["rows"], table["rows_found"]), (len(kept), len(complete)))
                 self.assertEqual(table["truncated"], len(kept) < len(complete))
+
+
+class NativeXtensaElfExportTests(unittest.TestCase):
+    """XTENSA_SOURCE compiled here by the Xtensa GCC that GD_NATIVE_XTENSA_GCC names, imported as an ELF."""
+
+    @classmethod
+    def setUpClass(cls):
+        assert "GD_NATIVE_XTENSA_GCC" in os.environ, "Native gate requires explicit GD_NATIVE_XTENSA_GCC"
+        build = Path(tempfile.mkdtemp(prefix="gd-xtensa-fixture-")).resolve()
+        try:
+            (build / "fixture.c").write_text(XTENSA_SOURCE, encoding="utf-8")
+            subprocess.run([os.environ["GD_NATIVE_XTENSA_GCC"], "-O2", "-ffreestanding", "-nostdlib",
+                            "-Wl,-e,entry", "-o", str(build / "fixture.elf"), str(build / "fixture.c")],
+                           check=True, capture_output=True, timeout=120)
+            elf = (build / "fixture.elf").read_bytes()
+        finally:
+            shutil.rmtree(build, True)
+        # Ghidra selects its ELF loader, which takes addresses from the file and skips the base address.
+        cls.result, cls.root = analyze(elf, processor="Xtensa:LE:32:default", loader=None, prescripts=None,
+                                       base_address="0")
+        cls.entries = {row[1]: row[0] for row in rows(cls.root, "functions.tsv")}
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, True)
+
+    def test_an_xtensa_elf_exports_its_calls_strings_and_switch(self):
+        self.assertTrue(self.result["ok"], self.result.get("reasons"))
+        self.assertTrue(self.result["loader_used"].startswith("Executable and Linking Format"))
+        entry, dispatch, lookup = (self.entries[name] for name in ("entry", "dispatch", "lookup"))
+        calls = {(row[1], row[3]) for row in rows(self.root, "references.tsv") if row[4] == "UNCONDITIONAL_CALL"}
+        self.assertLessEqual({(entry, dispatch), (entry, lookup)}, calls)
+        strings = {row[6]: row for row in rows(self.root, "strings.tsv")}
+        self.assertIn(lookup, strings["unknown-command"][4].split(","))
+        cases = rows(self.root, "switches.tsv")
+        self.assertEqual({row[0] for row in cases}, {dispatch})
+        self.assertEqual(sorted(row[2] for row in cases),
+                         ["0x0", "0x1", "0x2", "0x3", "0x4", "0x5", "0x6", "unknown"])
+        self.assertEqual(len({row[3] for row in cases}), 8)
 
 
 if __name__ == "__main__":

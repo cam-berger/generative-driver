@@ -35,18 +35,21 @@ MARKERS = impl.MARKERS
 
 @core.tool("ghidra_run")
 def ghidra_run(run_dir, workspace, image, base_address, processor, ghidra_path, java_home, export_dir,
-               loader="BinaryLoader", prescripts=None, script_path=None, timeout_s=1800, noanalysis=False):
+               loader="BinaryLoader", prescripts=None, script_path=None, timeout_s=1800, noanalysis=False,
+               navigation_max_bytes=None):
     """Import one raw image into a workspace-local Ghidra project, analyse it, export with
     ExportDecomp.java, and verify the exports. `script_path` None means the interpret-firmware-binary
-    skill directory, which holds the exporter. Exit 0 only for the full verdict; 1 otherwise, with the
-    reasons listed."""
+    skill directory, which holds the exporter. `navigation_max_bytes` replaces the exporter's byte bound
+    for each navigation table. Exit 0 only for the full verdict; 1 otherwise, with the reasons listed."""
     out = impl.run(workspace=workspace, image=image, base_address=base_address, processor=processor,
                    ghidra_path=ghidra_path, java_home=java_home, export_dir=export_dir, loader=loader,
                    prescripts=prescripts, script_path=script_path or SKILL, timeout_s=timeout_s,
-                   noanalysis=noanalysis)
+                   noanalysis=noanalysis, navigation_max_bytes=navigation_max_bytes)
     files = {}
     exports = out.get("exports") or {}
-    for path in (out.get("image"), exports.get("functions_tsv"), exports.get("disassembly_txt"),
+    navigation = [os.path.join(exports["dir"], name) for name in (impl.NAVIGATION_MANIFEST, *impl.NAVIGATION_TABLES)
+                  ] if exports.get("dir") else []
+    for path in (out.get("image"), exports.get("functions_tsv"), exports.get("disassembly_txt"), *navigation,
                  out.get("stdout_path"), out.get("stderr_path"), out.get("log_path")):
         if path and os.path.isfile(path):
             files[path] = core.sha256(path)

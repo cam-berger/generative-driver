@@ -286,6 +286,7 @@ def _execution_identity(report, payload):
            ('evaluator_revision', 'toolchain_revision', 'skills_revision')})
     if any(key in report and report[key] != value for key, value in expected_aliases.items()):
         raise ValueError('Conflicting public execution identity')
+    return expected_aliases
 
 
 def _installed_evaluator(snapshot):
@@ -351,7 +352,9 @@ def regrade_v3(report: dict, evidence_path: Path, password_file: Path) -> dict:
     payload = unlock(evidence_path, Path(password_file).read_text(encoding='utf-8').strip(), recorded['evidence_sha256'])
     _validate_payload_v2(payload)
     _installed_evaluator(payload['execution_snapshot'])
-    _execution_identity(report, payload)
+    # The regraded report says how the run executed as the sealed snapshot does, whether or not the report said so.
+    aliases = _execution_identity(report, payload)
+    report = {**report, **{key: aliases[key] for key in ('execution', 'model_benchmark')}}
     if report.get('run_id') != payload['run_id']:
         raise ValueError('Report and sealed run identity mismatch')
     sealed, final = public_equivalence(payload.get('equivalence')), payload.get('final')

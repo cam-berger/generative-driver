@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -30,6 +31,32 @@ CALL_TIMEOUT = 600
 RESULT_PATHS = ('artifact', 'provenance', 'probe', 'package_dir')
 
 
+def _inside(path, root):
+    """Whether `path` lies in the directory `root`, by file identity: no spelling of a path (letter case on a
+    case-insensitive file system, a firmlink) hides that it does."""
+    try:
+        target = os.stat(root)
+    except OSError:
+        return False
+    for parent in (path, *path.parents):
+        try:
+            if os.path.samestat(os.stat(parent), target):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _placeholders(value):
+    """Whether every `$context` and `$result` placeholder in a step's arguments names one key as a nonempty string."""
+    if isinstance(value, dict):
+        if len(value) == 1 and next(iter(value)) in ('$context', '$result'):
+            key = next(iter(value.values()))
+            return isinstance(key, str) and bool(key)
+        return all(_placeholders(item) for item in value.values())
+    return all(_placeholders(item) for item in value) if isinstance(value, list) else True
+
+
 def load_candidate(directory):
     """The checked replay.json of the candidate directory: a script a replay can follow, naming files of the candidate
     only. Raises ValueError otherwise."""
@@ -37,7 +64,7 @@ def load_candidate(directory):
     root = Path(directory)
     if not root.is_absolute() or root.is_symlink() or not root.is_dir():
         raise ValueError('A replay candidate is an absolute directory path: ' + str(directory))
-    if root.resolve().is_relative_to(resources_root().resolve()):
+    if _inside(root.resolve(), resources_root()):
         raise ValueError('A replay candidate is saved worker output, never the installed case sources or groundtruth')
     script = root / SCRIPT
     if script.is_symlink() or not script.is_file():
@@ -63,6 +90,8 @@ def load_candidate(directory):
             elif not (isinstance(step, dict) and set(step) == {'call', 'arguments'} and isinstance(step['call'], str)
                       and step['call'] and isinstance(step['arguments'], dict)):
                 raise ValueError('A replay step is {"write": name} or {"call": tool, "arguments": {...}}: ' + repr(step))
+            elif not _placeholders(step['arguments']):
+                raise ValueError('A $context or $result placeholder names one key as a nonempty string: ' + repr(step))
     return value
 
 
@@ -76,7 +105,7 @@ def candidate_config(config, *, bench=None):
     if not isinstance(config.get('candidate'), str) or not config['candidate']:
         raise ValueError('The replay executor needs a saved candidate: executor_config {"candidate": <directory>}')
     root = Path(config['candidate'])
-    if bench is not None and root.is_absolute() and root.resolve().is_relative_to(Path(bench).resolve()):
+    if bench is not None and root.is_absolute() and _inside(root.resolve(), bench):
         raise ValueError('A replay candidate never lies in the bench home, which holds evaluator records: ' + str(root))
     load_candidate(root)
     sha256 = digest(root)
@@ -203,7 +232,8 @@ def main(argv=None):
     parser.add_argument('--stage', required=True, choices=STAGES)
     parser.add_argument('--gateway', help='JSON {"command", "args"} of the stage gateway')
     args = parser.parse_args(argv)
-    report = replay_stage(args.candidate, args.candidate_sha256, args.stage, sys.stdin.read(),
+    # The configurator writes the prompt as UTF-8; a pipe's platform encoding (Windows' ANSI code page) is unreliable.
+    report = replay_stage(args.candidate, args.candidate_sha256, args.stage, sys.stdin.buffer.read().decode('utf-8'),
                           json.loads(args.gateway) if args.gateway else None, Path.cwd())
     # The event Codex prints for its final message, which the configurator reads for every runtime.
     print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': json.dumps(report)}}), flush=True)

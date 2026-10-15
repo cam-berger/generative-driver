@@ -68,9 +68,9 @@ class ReplayExecutionTests(unittest.TestCase):
         self.home = self.root / 'home'
         self.call = serve(self, self.home)
 
-    def start(self, candidate, **changes):
+    def start(self, candidate, *, device=None, **changes):
         from test_harness import Device
-        self.device = Device(self, self.root / 'resources/cases/tq9-v2/firmware.bin', self.root)
+        self.device = Device(self, self.root / 'resources/cases/tq9-v2/firmware.bin', device or self.root)
         return self.call('start', {
             'goal': 'Execute one registered benchmark trial with checked evidence.', 'case': 'tq9-v2',
             'executor': 'replay', 'executor_config': {'candidate': str(candidate)}, 'effects': ['write', 'actuate'],
@@ -141,28 +141,63 @@ class ReplayExecutionTests(unittest.TestCase):
                           for e in live}, {('instrument', 'instrument')})
         mission = next(c for c in result['accepted_handoffs'][5]['checks'] if c['name'] == 'fresh_worker_mission')
         self.assertIs(mission['passed'], True, mission)
-        # The run's execution snapshot names the replayed candidate by its hash, beside the replay runtime.
-        executed = read_snapshot(self.home / 'runs' / started['run_id'])['executed']['runtime_configuration']
-        self.assertEqual(executed, {'runtime': 'replay', 'candidate': str(candidate), 'candidate_sha256': digest(candidate)})
+        # The run's execution snapshot names the copy it replays, taken into its run directory at start, by the saved
+        # candidate's hash.
+        run_dir = self.home / 'runs' / started['run_id']
+        executed = read_snapshot(run_dir)['executed']['runtime_configuration']
+        self.assertEqual(executed, {'runtime': 'replay', 'candidate': str(run_dir / 'replay-candidate'),
+                                    'candidate_sha256': digest(candidate)})
 
-    def test_a_candidate_changed_after_the_run_recorded_it_stops_the_run_for_integrity(self):
+    def test_a_run_replays_the_copy_of_the_candidate_it_took_at_start(self):
         from generative_driver.configurator import Controller
-        original = Controller._prepare
+        original, saved = Controller._prepare, (self.candidate / 'model.json').read_bytes()
 
         def prepare(controller, spec, stage, *args, **kwargs):
             if stage == 'interpret':
-                # Between acquire's handoff and interpretation, the saved interpretation is replaced.
+                # Between acquire's handoff and interpretation, the saved candidate's interpretation is replaced.
                 (self.candidate / 'model.json').write_text('{"schema": "another model"}')
             return original(controller, spec, stage, *args, **kwargs)
         with patch.object(Controller, '_prepare', prepare):
             started = self.start(self.candidate)
             result = self.finished(started['run_id'])
-        self.assertEqual((result['status'], result['outcome_category'], result['progress']['next_stage']),
-                         ('blocked', 'integrity', 'interpret'), result)
-        self.assertIn('replay candidate changed', result['reason'])
-        # No worker ran from the changed candidate.
-        self.assertEqual([w['stage'] for w in result['worker_reports']], ['acquire'])
-        self.assertEqual([h['stage'] for h in result['accepted_handoffs']], ['acquire'])
+        self.assertEqual((result['status'], result['progress']['equivalence']), ('completed', 'pending'), result)
+        # Interpretation handed on the bytes the run recorded at start, not the saved candidate as it is now.
+        interpret = next(h for h in result['accepted_handoffs'] if h['stage'] == 'interpret')
+        model = next(a for a in interpret['artifacts'] if a['path'].endswith('model.json'))
+        self.assertEqual(model['sha256'], hashlib.sha256(saved).hexdigest())
+
+    def test_a_change_to_the_runs_copy_of_the_candidate_stops_the_run_for_integrity(self):
+        from generative_driver import configurator
+        from generative_driver.configurator import Controller
+        prepare, execute = Controller._prepare, configurator.execute
+
+        def changing(when):
+            def change(spec):
+                (Path(spec['executor_config']['candidate']) / 'model.json').write_text('{"schema": "another model"}')
+            def prepared(controller, spec, stage, *args, **kwargs):
+                if when == 'before interpret' and stage == 'interpret':
+                    change(spec)
+                return prepare(controller, spec, stage, *args, **kwargs)
+            def executed(request, config, *args, **kwargs):
+                result = execute(request, config, *args, **kwargs)
+                if when == 'during reuse' and request.stage == 'reuse':
+                    change({'executor_config': config})
+                return result
+            return prepared, executed
+        for when, stopped, ran, handed in (('before interpret', 'interpret', ['acquire'], ['acquire']),
+                                           ('during reuse', 'reuse', STAGES, STAGES[:-1])):
+            with self.subTest(when=when):
+                prepared, executed = changing(when)
+                with patch.object(Controller, '_prepare', prepared), patch.object(configurator, 'execute', executed):
+                    started = self.start(self.candidate, device=self.root / when.replace(' ', '-'))
+                    result = self.finished(started['run_id'])
+                self.assertEqual((result['status'], result['outcome_category'], result['progress']['next_stage']),
+                                 ('blocked', 'integrity', stopped), result)
+                self.assertIn('replay candidate changed', result['reason'])
+                # The stage that saw the change hands nothing on: no worker starts from a changed copy, and one whose
+                # copy changed while it ran is never committed.
+                self.assertEqual([w['stage'] for w in result['worker_reports']], ran)
+                self.assertEqual([h['stage'] for h in result['accepted_handoffs']], handed)
 
     def test_failed_steps_are_notes_and_a_replay_never_replaces_a_workspace_file_or_calls_an_unlisted_tool(self):
         script = json.loads((self.candidate / 'replay.json').read_text())
@@ -239,6 +274,8 @@ class ReplayStartTests(unittest.TestCase):
              'file of the candidate'),
             ({'executor_config': {'candidate': self.variant('no-arguments', {'probe': [{'call': 'probe_run'}]})}},
              'replay step is'),
+            ({'executor_config': {'candidate': self.variant('placeholder', {'probe': [
+                {'call': 'probe_run', 'arguments': {'model_dir': {'$context': ['model_dir']}}}]})}}, 'placeholder'),
             # Only interpretation and probe write their own outputs: every other stage acts through its tools, so a
             # replay never places a package or a handoff behind the gateway.
             ({'executor_config': {'candidate': self.variant('emit-write', {'emit': [{'write': 'model.json'}]})}},
@@ -333,6 +370,10 @@ class ReplayTrialTests(unittest.TestCase):
         relabelled = {**report, 'execution': 'actual-agent-emulation', 'model_benchmark': True}
         with self.assertRaisesRegex(ValueError, 'execution identity'):
             score(relabelled, str(password), evidence_path=evidence)
+        unlabelled = {key: value for key, value in report.items() if key not in ('execution', 'model_benchmark')}
+        regraded = score(unlabelled, str(password), evidence_path=evidence)
+        self.assertEqual((regraded['verdict'], regraded['execution'], regraded['model_benchmark']),
+                         ('equivalent', 'replay-emulation', False))
         # A replay and a model run are separate series: never compared, while two replays compare as usual.
         model_run = {**relabelled, 'executed': {**report['executed'], 'runtime_configuration': {'runtime': 'codex'}}}
         for before, after in ((report, model_run), (model_run, report)):
@@ -342,12 +383,68 @@ class ReplayTrialTests(unittest.TestCase):
         self.assertEqual((compare(report, report)['compatible'], compare(report, report)['comparison_kind']), (True, 'repeat'))
 
 
+# Tests only: a stage gateway that lists probe_run and records the arguments of every call.
+RECORDING_GATEWAY = '''
+import asyncio, json, sys
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
+async def tools(context, params):
+    return ListToolsResult(tools=[Tool(name='probe_run', description='Records its arguments', inputSchema={'type': 'object'})])
+async def invoke(context, params):
+    with open(sys.argv[1], 'a', encoding='utf-8') as stream:
+        stream.write(json.dumps({'name': params.name, 'arguments': params.arguments}, ensure_ascii=False) + '\\n')
+    return CallToolResult(content=[TextContent(type='text', text=json.dumps({'ok': True}))])
+server = Server('recording-stage', on_list_tools=tools, on_call_tool=invoke)
+async def run():
+    async with stdio_server() as streams:
+        await server.run(*streams, server.create_initialization_options())
+asyncio.run(run())
+'''
+
+
+class ReplayWorkerTests(unittest.TestCase):
+    def test_the_worker_reads_its_prompt_as_utf8_whatever_the_stdin_encoding(self):
+        import subprocess
+        from generative_driver.configurator import digest
+        from package_env import package_env
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            candidate, workspace = root / 'candidate', root / 'workspace'
+            candidate.mkdir()
+            workspace.mkdir()
+            (candidate / 'replay.json').write_text(json.dumps({'schema': 'replay-candidate/1', 'stages': {'probe': [
+                {'call': 'probe_run', 'arguments': {'model_dir': {'$context': 'model_dir'}}}]}}))
+            (root / 'gateway.py').write_text(RECORDING_GATEWAY)
+            # A context path with non-ASCII characters, as under a Windows profile named Zoë Ålund. The configurator
+            # writes the prompt as UTF-8; Windows decodes a pipe with its ANSI code page, for which latin-1 stands in.
+            model_dir = str(workspace / 'Zoë Ålund' / 'model')
+            prompt = 'Execute exactly the assigned stage.\n' + json.dumps({'stage': 'probe', 'context': {'model_dir': model_dir}},
+                                                                          ensure_ascii=False)
+            completed = subprocess.run(
+                [sys.executable, '-m', 'generative_driver.replay', '--candidate', str(candidate),
+                 '--candidate-sha256', digest(candidate), '--stage', 'probe',
+                 '--gateway', json.dumps({'command': sys.executable, 'args': [str(root / 'gateway.py'), str(root / 'calls.jsonl')]})],
+                input=prompt.encode('utf-8'), cwd=workspace, capture_output=True, timeout=120,
+                env={**os.environ, **package_env(PYTHONIOENCODING='latin-1')})
+            self.assertEqual(completed.returncode, 0, completed.stderr.decode(errors='replace'))
+            # Split on newlines only: misdecoded text may hold other line separators (U+0085).
+            calls = [json.loads(line) for line in (root / 'calls.jsonl').read_text(encoding='utf-8').split('\n') if line]
+            self.assertEqual(calls, [{'name': 'probe_run', 'arguments': {'model_dir': model_dir}}])
+
+
 class ReplayCommandTests(unittest.TestCase):
     def test_only_the_replay_executor_takes_a_saved_candidate_and_only_for_an_emulated_case(self):
         import contextlib
         import io
         from generative_driver.benchmark import main
         from tq9_workflow_fixture import replay_candidate
+        # A refusal that does not happen fails here instead of starting a real bench harness and configurator.
+        for name in ('_spawn', '_spawn_via_owner'):
+            guard = patch('generative_driver.benchmark_support.harness.' + name,
+                          side_effect=AssertionError('a bench harness started'))
+            guard.start()
+            self.addCleanup(guard.stop)
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
             candidate = str(replay_candidate(root / 'candidate'))
@@ -375,6 +472,15 @@ class ReplayCommandTests(unittest.TestCase):
             self.assertEqual(code, 1, printed.getvalue())
             self.assertIn('evaluator records', json.loads(printed.getvalue())['error'])
             self.assertEqual(sorted(path.name for path in (root / 'home-bench').iterdir()), ['candidate'])
+            # On a case-insensitive file system another spelling names the same bench home, and is refused as it is.
+            spelled = root / 'HOME-BENCH' / 'candidate'
+            if spelled.is_dir():
+                printed = io.StringIO()
+                with contextlib.redirect_stdout(printed):
+                    code = main(['run', '--home', str(root / 'home'), '--case', 'tq9-v2', '--executor', 'replay',
+                                 '--replay-candidate', str(spelled)])
+                self.assertEqual(code, 1, printed.getvalue())
+                self.assertIn('evaluator records', json.loads(printed.getvalue())['error'])
 
 
 if __name__ == '__main__':

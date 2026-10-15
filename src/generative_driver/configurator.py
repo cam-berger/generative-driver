@@ -162,9 +162,20 @@ def _replay_config(params, config, home):
     return candidate_config(config, bench=bench_home(home))
 
 
+def _copy_candidate(config, run_dir):
+    """The run's own copy of the replay candidate, taken at start in its run directory: every stage replays these bytes,
+    whatever happens to the saved candidate since."""
+    target = Path(run_dir) / 'replay-candidate'
+    shutil.copytree(config['candidate'], target)
+    if digest(target) != config['candidate_sha256']:
+        shutil.rmtree(target, ignore_errors=True)
+        raise ValueError('The replay candidate changed while the run copied it: ' + config['candidate'])
+    return {**config, 'candidate': str(target)}
+
+
 def _verify_candidate(config):
-    """Every replay stage runs the candidate whose hash the run recorded: a changed or unreadable one stops for
-    integrity before any worker uses it."""
+    """Every replay stage runs the run's copy of the candidate, whose hash the run recorded: a copy that changed or
+    cannot be read, before the stage's worker starts or by the time it returns, stops the run for integrity."""
     try:
         current = digest(Path(config['candidate']))
     except (OSError, ValueError):
@@ -2070,6 +2081,8 @@ class Controller:
                     raise ValueError(f'{executor} is not configured; run `generative-driver configure {executor} <command>` '
                                      'with the runtime this configurator should launch')
                 if case:
+                    if executor == 'replay':
+                        config = spec['executor_config'] = _copy_candidate(config, self.home / 'runs' / run_id)
                     spec['_case_pin'] = pin
                     saved = snapshot_case(self.home / 'runs' / run_id, pin, execution_provenance(config))
                     spec['_snapshot_sha256'] = saved['snapshot_sha256']
@@ -2229,6 +2242,8 @@ class Controller:
                 try:
                     if _runtime_stop(result) is None:
                         self._verify_inputs(input_hashes)
+                        if spec['executor'] == 'replay':
+                            _verify_candidate(spec['executor_config'])
                         with _integrity_checked():
                             if self._row(run_id)['uncertain']:
                                 from .device_recovery import reconcile

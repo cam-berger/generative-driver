@@ -21,6 +21,9 @@ RUNTIME = 'replay'
 SCHEMA = 'replay-candidate/1'
 SCRIPT = 'replay.json'
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
+# The stages whose workers write their outputs themselves (a model and replies, a capability mapping). Every other stage
+# acts through its tools, so a replay never places a package or a handoff behind the gateway.
+WRITING = ('interpret', 'probe')
 # A gateway call may take as long as a Codex worker's stage tool may.
 CALL_TIMEOUT = 600
 # Result paths a tool hands back, which the report names as artifacts.
@@ -51,6 +54,8 @@ def load_candidate(directory):
             raise ValueError('The steps of ' + stage + ' are a list')
         for step in steps:
             if isinstance(step, dict) and set(step) == {'write'}:
+                if stage not in WRITING:
+                    raise ValueError('Only interpret and probe write files in a replay; ' + stage + ' acts through its tools')
                 name = step['write']
                 if (not isinstance(name, str) or name in ('', '.', '..', SCRIPT) or Path(name).name != name
                         or (root / name).is_symlink() or not (root / name).is_file()):
@@ -61,15 +66,18 @@ def load_candidate(directory):
     return value
 
 
-def candidate_config(config):
+def candidate_config(config, *, bench=None):
     """The replay runtime's configuration: the candidate's absolute path and the sha256 of its files, checked against
-    one recorded before. It names no command: the installed replay worker runs every replay."""
+    one recorded before. It names no command: the installed replay worker runs every replay. A candidate never lies in
+    the bench home `bench`, which holds evaluator records."""
     from .configurator import digest
     if not isinstance(config, dict) or set(config) - {'runtime', 'candidate', 'candidate_sha256'}:
         raise ValueError('The replay executor takes only its saved candidate: executor_config {"candidate": <directory>}')
     if not isinstance(config.get('candidate'), str) or not config['candidate']:
         raise ValueError('The replay executor needs a saved candidate: executor_config {"candidate": <directory>}')
     root = Path(config['candidate'])
+    if bench is not None and root.is_absolute() and root.resolve().is_relative_to(Path(bench).resolve()):
+        raise ValueError('A replay candidate never lies in the bench home, which holds evaluator records: ' + str(root))
     load_candidate(root)
     sha256 = digest(root)
     if config.get('candidate_sha256') not in (None, sha256):

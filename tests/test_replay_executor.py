@@ -238,7 +238,15 @@ class ReplayStartTests(unittest.TestCase):
             ({'executor_config': {'candidate': self.variant('missing', {'interpret': [{'write': 'absent.json'}]})}},
              'file of the candidate'),
             ({'executor_config': {'candidate': self.variant('no-arguments', {'probe': [{'call': 'probe_run'}]})}},
-             'replay step is')]
+             'replay step is'),
+            # Only interpretation and probe write their own outputs: every other stage acts through its tools, so a
+            # replay never places a package or a handoff behind the gateway.
+            ({'executor_config': {'candidate': self.variant('emit-write', {'emit': [{'write': 'model.json'}]})}},
+             'interpret and probe'),
+            ({'executor_config': {'candidate': self.variant('reuse-write', {'reuse': [{'write': 'capabilities.json'}]})}},
+             'interpret and probe'),
+            # The bench home beside the configurator home holds evaluator records, never a candidate.
+            ({'executor_config': {'candidate': self.variant('home-bench/candidate', {})}}, 'evaluator records')]
         for changes, message in refused:
             with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, message):
                 self.controller.start({key: value for key, value in {**good, **changes}.items() if value is not None})
@@ -358,6 +366,15 @@ class ReplayCommandTests(unittest.TestCase):
                     self.assertIn(message, json.loads(printed.getvalue())['error'])
             # Each was refused before any bench harness, trial or configurator started.
             self.assertEqual(sorted(path.name for path in root.iterdir()), ['candidate'])
+            # So is a candidate in the bench home, where the harness keeps evaluator records: no trial starts.
+            inside = replay_candidate(root / 'home-bench/candidate')
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                code = main(['run', '--home', str(root / 'home'), '--case', 'tq9-v2', '--executor', 'replay',
+                             '--replay-candidate', str(inside)])
+            self.assertEqual(code, 1, printed.getvalue())
+            self.assertIn('evaluator records', json.loads(printed.getvalue())['error'])
+            self.assertEqual(sorted(path.name for path in (root / 'home-bench').iterdir()), ['candidate'])
 
 
 if __name__ == '__main__':

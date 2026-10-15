@@ -844,7 +844,7 @@ def launch(case, output_dir=None, executor=None, options=None, approval=None, *,
     if candidate is not None:
         # The candidate's path and the hash of its files, which the configurator checks again before every stage.
         from ..replay import candidate_config
-        request['executor_config'] = candidate_config({'candidate': str(Path(candidate).expanduser().resolve())})
+        request['executor_config'] = candidate_config({'candidate': str(Path(candidate).expanduser().resolve())}, bench=bench)
     if request_id is not None:
         identity = {key: request[key] for key in IDENTITY}
         if 'executor_config' in request:

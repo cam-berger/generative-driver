@@ -146,10 +146,12 @@ def case_options(spec):
         'operator_observations':spec.get('_operator_observations',[]),'configured_effects':spec['effects']}
 
 
-def _replay_config(params, config):
+def _replay_config(params, config, home):
     """A replay replays a saved candidate on an emulated benchmark case only: never a generic run, which has no case to
-    replay, nor a physical device. Its configuration names the candidate and the hash of its files."""
+    replay, nor a physical device. Its configuration names the candidate and the hash of its files; the candidate lies
+    outside the bench home beside `home`, which holds evaluator records."""
     from .replay import candidate_config
+    from .benchmark_support.harness import bench_home
     case = params.get('case')
     case_id = case.get('id') if isinstance(case, dict) else case
     if not case_id:
@@ -157,7 +159,7 @@ def _replay_config(params, config):
     from .benchmark_support.registry import resolve_case
     if resolve_case(case_id).execution != 'actual-agent-emulation':
         raise ValueError('The replay executor runs emulated benchmark cases only, never ' + str(case_id))
-    return candidate_config(config)
+    return candidate_config(config, bench=bench_home(home))
 
 
 def _verify_candidate(config):
@@ -2014,7 +2016,7 @@ class Controller:
             config = self._configured_executors().get(executor, {})
         config = {**config, **params.get('executor_config', {}), 'runtime': executor}
         if executor == 'replay':
-            config = _replay_config(params, config)
+            config = _replay_config(params, config, self.home)
         spec = {**params, 'executor': executor, 'executor_config': config, 'budget_seconds': budget, 'effects': effects,
                 '_submitted_intent': params}
         case=spec.get('case')

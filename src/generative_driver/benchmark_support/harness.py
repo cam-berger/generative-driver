@@ -1011,7 +1011,7 @@ def _claim(bench, request_id, held_id, identity, kind='trial'):
     return None
 
 
-def _harness_exited(process, record, directory=None):
+def _harness_exited(process, record, directory):
     """Whether the harness of the trial or suite in `directory` has ended: by its process handle when this caller
     started it, otherwise by its record or by the lock it holds there for as long as it runs, which ends with its
     process however that ends; its recorded process id may by then name another process, or one this user may not
@@ -1025,8 +1025,8 @@ def _harness_exited(process, record, directory=None):
     if type(record.get('pid')) is not int or record['pid'] <= 0:
         return False
     from ..client import _wait_for_exit, process_lock_held
-    lock = None if directory is None else Path(directory) / HARNESS_LOCK
-    held = process_lock_held(lock) if lock is not None and lock.exists() else None
+    lock = Path(directory) / HARNESS_LOCK
+    held = process_lock_held(lock) if lock.exists() else None
     if held is not None:
         return not held
     try:
@@ -1147,7 +1147,7 @@ def _refused(suite_dir):
     Either way a launch with the same inputs may start afresh: the configurator finds a suite frozen under the
     request_id and reports it, attached to no new harness, so the operator learns its suite_id and can resume it."""
     record = read_suite(suite_dir)
-    return isinstance(record, dict) and record.get('accepted') is False and _harness_exited(None, record)
+    return isinstance(record, dict) and record.get('accepted') is False and _harness_exited(None, record, suite_dir)
 
 
 def run_suite(suite_dir, request, *, call=None, stop=None):
@@ -1161,8 +1161,8 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
     suite.json (written for this user only, in the bench home) quotes the error met, which may name either path. The
     configurator learns of a failure only which trial failed and where this record is. An approved child budget
     extension in `request` goes to the stopped child this run continues, and to no other. The harness holds a lock file
-    in `suite_dir` for as long as it runs, by which the configurator tells that it still runs (its process id alone may
-    come to name another process)."""
+    in `suite_dir` for as long as it runs, by which the configurator and other launches tell that it still runs (its
+    process id alone may come to name another process)."""
     from ..client import hold_process_lock
     suite_dir = Path(suite_dir)
     suite_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1174,15 +1174,16 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
     token = secrets.token_hex(32)
     record = {'schema': SUITE, 'home': str(home), 'suite_id': request.get('suite_id'), 'request_id': request.get('request_id'),
               'status': 'starting', 'accepted': False, 'pid': os.getpid(), 'created': time.time(), 'settled': []}
+    # Held before the record names this process, as a trial's harness holds its own.
+    lock = hold_process_lock(suite_dir / HARNESS_LOCK)
     _private(suite_dir / 'suite.json', record)
-    lock = hold_process_lock(suite_dir / 'harness.lock')
     attached, failure, current = False, None, None
     try:
         reachable = configurator('ping', {})
         if not reachable.get('ok'):
             raise ValueError(reachable.get('reason') or 'The configurator is not reachable')
         identity = {'harness_token_sha256': hashlib.sha256(token.encode()).hexdigest(), 'harness_pid': os.getpid(),
-                    **({'harness_lock': str((suite_dir / 'harness.lock').resolve())} if lock else {})}
+                    **({'harness_lock': str((suite_dir / HARNESS_LOCK).resolve())} if lock else {})}
         if record['suite_id']:
             reply = configurator('suite_resume', {'suite_id': record['suite_id'], **identity,
                                                   **{key: request[key] for key in ('suite_budget_seconds', 'budget_reason')
@@ -1353,7 +1354,7 @@ def _follow_suite(suite_dir, process, timeout, *, duplicate):
     deadline = time.monotonic() + timeout
     while True:
         record = read_suite(suite_dir) or {}
-        exited = _harness_exited(process, record)
+        exited = _harness_exited(process, record, suite_dir)
         if exited:
             record = read_suite(suite_dir) or {}
         if record.get('accepted'):

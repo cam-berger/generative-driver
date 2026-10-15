@@ -1050,6 +1050,70 @@ class SuiteStartTests(HarnessSuiteFixture):
         status = self.controller.call('suite_status', {'suite_id': frozen[0]['suite_id']})
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 1, 1))
 
+    def test_a_request_whose_harness_ended_before_it_recorded_the_reply_starts_afresh_even_when_its_process_id_was_reused(self):
+        # Catches the suite's harness read as running from the bare process id its record names: once the harness that
+        # claimed the request_id ended before it wrote the configurator's reply down, that id may name another running
+        # process (as the system reuses ids), and every later start with that request_id waited on it until it timed out.
+        import os
+        from types import SimpleNamespace
+        from generative_driver.benchmark_support import harness
+        frozen, spawned = [], []
+        def configurator(method, params=None):
+            if method == 'ping':
+                return {'ok': True}
+            try:
+                return self.controller.call(method, params or {})
+            except Exception as error:
+                return {'ok': False, 'error': type(error).__name__, 'reason': str(error)}
+        def spawn(directory, arguments, payload):
+            spawned.append(directory)
+            if len(spawned) == 1:
+                # The first harness held its lock, the configurator froze its suite, and the harness ended before it heard
+                # the reply. This test's parent process stands in for an unrelated process that took over its id.
+                lock = Path(directory) / 'harness.lock'
+                lock.touch()
+                harness._private(Path(directory) / 'suite.json', {
+                    'schema': harness.SUITE, 'home': payload['home'], 'suite_id': None, 'request_id': payload['request_id'],
+                    'status': 'starting', 'accepted': False, 'pid': os.getppid(), 'created': time.time(), 'settled': []})
+                frozen.append(configurator('suite_start', {
+                    **{key: payload[key] for key in ('manifest', 'executor', 'options', 'request_id')},
+                    'harness_token_sha256': hashlib.sha256(b'ended harness').hexdigest(), 'harness_pid': os.getppid(),
+                    'harness_lock': str(lock.resolve())}))
+                return SimpleNamespace(poll=lambda: 0)
+            thread = threading.Thread(target=harness.run_suite, args=(directory, payload), kwargs={'call': configurator},
+                                      daemon=True)
+            thread.start()
+            return SimpleNamespace(poll=lambda: None if thread.is_alive() else 0)
+        request = {'manifest': manifest(1), 'executor': 'codex', 'options': {}, 'request_id': 'harness-id-reused'}
+        launched = []
+        with patch.object(harness, '_spawn', side_effect=spawn):
+            for _ in range(2):
+                launched.append(harness.launch_suite(dict(request), home=self.home, timeout=10,
+                                                     password_files={'tq9-v2': str(self.password)}, renode=EMULATOR))
+        self.assertEqual(frozen[0]['ok'], True, frozen)
+        self.assertEqual(launched[0]['ok'], False, launched)
+        self.assertEqual((launched[1]['ok'], launched[1]['suite_id'], launched[1]['duplicate']),
+                         (True, frozen[0]['suite_id'], True), launched)
+        until = time.monotonic() + 10
+        while harness.read_suite(spawned[1]).get('finished') is None:
+            self.assertLess(time.monotonic(), until); time.sleep(.02)
+
+    def test_a_harness_holds_its_lock_before_its_record_names_its_process(self):
+        # Catches a record that names a running harness whose lock is not held yet: whoever read it meanwhile (a launch
+        # following the suite, or one sent again under its request_id) would take the harness for ended.
+        from generative_driver import client
+        real, named = client.hold_process_lock, []
+        def hold(path):
+            directory = Path(path).parent
+            named.append((directory.name, (directory / 'suite.json').exists() or (directory / 'trial.json').exists()))
+            return real(path)
+        with self.harness(PASS), patch('generative_driver.client.hold_process_lock', side_effect=hold):
+            record = self.drive(manifest=manifest(1), executor='codex', options={})
+        self.assertEqual(record['status'], 'finished', record)
+        # The suite's harness and the harness of its one trial each took a lock, before any record named them.
+        self.assertEqual(len(named), 2, named)
+        self.assertEqual([name for name, recorded in named if recorded], [])
+
     def test_a_suite_frozen_before_the_harness_drove_suites_is_read_only(self):
         # Catches resuming a suite whose frozen options hold evaluator password files, or that no harness drives: its
         # children would carry the password through the configurator.

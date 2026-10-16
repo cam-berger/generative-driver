@@ -3447,6 +3447,10 @@ class Controller:
                 if name != 'acquire_serial_listen':
                     arguments['allow_reset'] = granted
         arguments['run_dir'] = str(workspace / 'tools')
+        if name == 'acquire_classify' and isinstance(binding.get('url'), str) and binding['url'].lower().startswith('ftdi://'):
+            # The operator's bridge is the only bus a worker's acquisition walks, as the bound port is the only serial
+            # endpoint: a worker's own bus_url is refused above.
+            arguments['bus_url'] = binding['url']
         connected = name in ('probe_run','interface_execute','emit_test_live','benchmark_package_execute') and not arguments.get('replay')
         if connected:
             if not assignment.get('binding'):

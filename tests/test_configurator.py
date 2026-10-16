@@ -3748,6 +3748,40 @@ class ConfiguratorTests(unittest.TestCase):
                 finally:
                     controller.close()
 
+    def test_classify_scans_only_the_bound_ftdi_bus(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        for binding, expected in (({'url': 'ftdi://ftdi:232h/1'}, 'ftdi://ftdi:232h/1'), (None, None)):
+            captured = {}
+            def fake_call_tool(name, arguments):
+                captured[name] = dict(arguments)
+                return {'available': True, '_exit': 0, 'artifacts': []}
+            with self.subTest(binding=binding), tempfile.TemporaryDirectory() as directory, \
+                 patch('generative_driver.toolkit.call_tool', fake_call_tool):
+                controller = Controller(Path(directory))
+                try:
+                    start = {'goal': 'Bus rung', 'executor_config': {'command': [sys.executable, '-c', 'import time; time.sleep(20)']}}
+                    if binding:
+                        start['binding'] = binding
+                    run = controller.call('start', start)
+                    until = time.monotonic() + 3
+                    assignment = None
+                    while time.monotonic() < until:
+                        assignment = next((e['data'] for e in controller.call('events', run)['events'] if e['kind'] == 'stage.assigned'), None)
+                        if assignment and controller.call('status', run)['status'] == 'running':
+                            break
+                        time.sleep(.02)
+                    request = {**run, 'assignment_id': assignment['id'], 'name': 'acquire_classify'}
+                    controller.call('tool', {**request, 'arguments': {}})
+                    # The operator's bridge is the only bus a worker's acquisition walks; it names none itself.
+                    self.assertEqual(captured['acquire_classify'].get('bus_url'), expected)
+                    self.assertNotIn('port', captured['acquire_classify'])
+                    with self.assertRaisesRegex(ValueError, 'configurator-owned'):
+                        controller.call('tool', {**request, 'arguments': {'bus_url': 'ftdi://ftdi:232h/2'}})
+                    controller.call('cancel', run)
+                finally:
+                    controller.close()
+
     def test_identity_binding_with_a_non_uart_model_still_needs_the_reset_grant(self):
         from unittest.mock import patch
         from generative_driver.configurator import Controller

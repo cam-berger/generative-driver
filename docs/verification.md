@@ -2,6 +2,14 @@
 
 All workflows end at acquire, interpret, probe, ground, emit, reuse. Scripted tests, installation replay, native reference qualification, model execution and physical observations retain separate labels.
 
+## Consolidated firmware pipeline
+
+[PR #16](https://github.com/cam-berger/generative-driver/pull/16) consolidates PRs #6–15. Its regressions exercise real USB/FTDI acquisition through the configurator, retention of observed evidence, the shared sealed firmware-analysis kit, tamper rejection during repair, and the intersection of independent equivalence with successful fresh reuse. The native package matrix enables both wheel and source-archive gates.
+
+The real Ghidra lane [passed on macOS 26 and Windows Server 2025](https://github.com/cam-berger/generative-driver/actions/runs/38845379254) for implementation `e26d865`. This qualifies the lane's Cortex-M3 and Xtensa fixtures and process cleanup on those CI hosts. The earlier unrun status below describes the lane before this consolidated run. It establishes neither Windows Renode behavior nor model performance.
+
+The [Codex acceptance lane](codex-acceptance.md) regrades sealed evidence from a completed native model suite and requires equivalent drivers plus successful fresh reuse in every planned trial. It remains unrun for this integration: fresh evaluator calibration and operator-owned passwords are prerequisites. Current scripted regressions and replay do not supply that model evidence.
+
 ## Ghidra navigation export — 2026-10-15
 
 `ExportDecomp.java` also writes `references.tsv`, `strings.tsv` and `switches.tsv`, each bounded at 16 MiB unless `navigation_max_bytes` sets another bound, and `navigation.json`, which records each table's rows written, rows found and truncation. `ghidra_run` verifies them and lists truncated tables in `exports.truncated`. `functions.tsv`, `function_*.c` and `disassembly.txt` are written as before. The tables are static facts; they do not show that code runs or is reachable.

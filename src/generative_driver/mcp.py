@@ -96,6 +96,8 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = No
     emulated case (tq9, tq9-v2 and the v2 families) the harness provides the emulator; bme280 runs on the operator's
     bound device (options.binding), which the harness never touches. They return trial_id and run_id; the
     same options.request_id with the same inputs returns that trial again and starts no second emulator.
+    executor "replay" runs an emulated case without a model from options.replay_candidate, a saved candidate directory;
+    its results are labelled replay-emulation and never count as model runs.
     For real-agent profiles, options.home must resolve to this MCP connection's configured home.
     """
     from .benchmark import run
@@ -124,13 +126,15 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = No
 
 
 @server.tool()
-def driver_benchmark_suite_start(manifest: dict, executor: Literal['codex', 'goose'] | None = None,
+def driver_benchmark_suite_start(manifest: dict, executor: Literal['codex', 'goose', 'replay'] | None = None,
                                  options: dict | None = None, request_id: str | None = None) -> str:
     """Start a durable emulated suite; save suite_id to reconnect from either client.
 
     A detached bench harness drives the suite: it receives options.evaluator_password_files and options.renode (FILE
     paths, never a password) on its stdin, provides each child's device and grades each frozen driver after its run.
     The suite tables never hold those paths and no child's run receives them. Use the configured MCP home.
+    executor "replay" replays options.replay_candidates, one saved candidate directory per case, without a model; its
+    results are labelled replay-emulation and never compared with model suites.
     Emulator tool approval and inference budgets require explicit user authorization.
     Windows requires an independently started configurator.
     """

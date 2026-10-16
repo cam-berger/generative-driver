@@ -37,7 +37,7 @@ def _executed(value):
     result = _scalars(value, ('toolchain_revision', 'skills_revision', 'evaluator_revision'))
     result['environment'] = _scalars(value.get('environment', {}), ('system', 'release', 'architecture', 'python'))
     result['runtime_configuration'] = _scalars(value.get('runtime_configuration', {}),
-        ('runtime', 'model', 'provider', 'version', 'reasoning_effort', 'max_turns'))
+        ('runtime', 'model', 'provider', 'version', 'reasoning_effort', 'max_turns', 'candidate_sha256'))
     return result
 
 
@@ -276,13 +276,17 @@ def _execution_identity(report, payload):
         raise ValueError('Report and sealed execution identity mismatch')
     expected_aliases = {key: payload['case_pin'].get(key) for key in
                         ('case_version', 'evaluator_version', 'scenario_id', 'case_seed')}
-    execution = payload['case_pin'].get('execution', 'unclassified')
+    # A replayed candidate's label comes from the sealed snapshot's runtime, so a relabelled replay never matches it.
+    from ..replay import execution_label
+    execution = execution_label(payload['case_pin'].get('execution', 'unclassified'),
+                                (snapshot['executed'].get('runtime_configuration') or {}).get('runtime'))
     expected_aliases.update(case=payload['case_pin']['case_id'], execution=execution,
         model_benchmark=execution in ('actual-agent-emulation', 'actual-agent-physical'),
         **{key: snapshot['executed'][key] for key in
            ('evaluator_revision', 'toolchain_revision', 'skills_revision')})
     if any(key in report and report[key] != value for key, value in expected_aliases.items()):
         raise ValueError('Conflicting public execution identity')
+    return expected_aliases
 
 
 def _installed_evaluator(snapshot):
@@ -348,7 +352,9 @@ def regrade_v3(report: dict, evidence_path: Path, password_file: Path) -> dict:
     payload = unlock(evidence_path, Path(password_file).read_text(encoding='utf-8').strip(), recorded['evidence_sha256'])
     _validate_payload_v2(payload)
     _installed_evaluator(payload['execution_snapshot'])
-    _execution_identity(report, payload)
+    # The regraded report says how the run executed as the sealed snapshot does, whether or not the report said so.
+    aliases = _execution_identity(report, payload)
+    report = {**report, **{key: aliases[key] for key in ('execution', 'model_benchmark')}}
     if report.get('run_id') != payload['run_id']:
         raise ValueError('Report and sealed run identity mismatch')
     sealed, final = public_equivalence(payload.get('equivalence')), payload.get('final')

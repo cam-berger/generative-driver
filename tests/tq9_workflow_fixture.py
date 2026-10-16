@@ -39,6 +39,33 @@ def replies():
         name:{'steps':[[reply]]} for name,reply in [('identify','DEMO-42'),('measure','T:20'),('arm','OK'),('set_duty','OK'),('disarm','OK')]}}
 
 
+def replay_candidate(directory):
+    """A saved candidate for the replay executor: the model and replies an interpret worker wrote, the capability mapping
+    a probe worker wrote, and the tool calls of every stage, in the public tool schemas. Scripted, never a model run."""
+    root = Path(directory)
+    root.mkdir(parents=True, exist_ok=True)
+    for name, value in (('model.json', model()), ('replies.json', replies()), ('capabilities.json', capabilities())):
+        (root/name).write_text(json.dumps(value), encoding='utf-8')
+    context = lambda key: {'$context': key}
+    script = {'schema': 'replay-candidate/1', 'description': 'Scripted tq9 contract fixture; never a model run',
+        'stages': {
+            'acquire': [{'call': 'acquire_firmware_artifact',
+                         'arguments': {key: context(key) for key in ('source_path', 'expected_sha256', 'origin')}}],
+            'interpret': [{'write': 'model.json'}, {'write': 'replies.json'}],
+            'probe': [{'call': 'interface_execute', 'arguments': {'model_dir': context('model_dir'), 'operation': 'measure',
+                                                                   'parameters': {}}},
+                      {'call': 'probe_run', 'arguments': {'model_dir': context('model_dir'), 'operation': 'measure',
+                                                           'parameters': {}, 'n': 1}},
+                      {'write': 'capabilities.json'}],
+            'emit': [{'call': 'emit_package', 'arguments': {'model_dir': context('model_dir'), 'probe_json': context('probe')}},
+                     {'call': 'emit_check', 'arguments': {'package_dir': {'$result': 'package_dir'}}}],
+            'reuse': [{'call': 'benchmark_package_execute', 'arguments': {'package_dir': context('package_dir'),
+                                                                           'operation': operation, 'parameters': parameters}}
+                      for operation, parameters in (('measure', {}), ('arm', {}), ('set_duty', {'duty': 370}), ('disarm', {}))]}}
+    (root/'replay.json').write_text(json.dumps(script, indent=1), encoding='utf-8')
+    return root
+
+
 # Toy register addresses of the legacy tq9 PWM timer, as a toy legacy truth names them (`legacy_truth`).
 REGISTERS = {0x40000034: 'compare', 0x4000002c: 'reload'}
 

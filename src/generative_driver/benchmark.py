@@ -56,7 +56,8 @@ def main(argv=None):
     suites = commands.add_parser('suite').add_subparsers(dest='action', required=True)
     starting = suites.add_parser('start')
     starting.add_argument('--manifest', required=True)
-    starting.add_argument('--executor', choices=['codex', 'goose'], help='Default: the one configured runtime')
+    starting.add_argument('--executor', choices=['codex', 'goose', 'replay'],
+                          help='Default: the one configured runtime; replay runs options.replay_candidates without a model')
     starting.add_argument('--options')
     starting.add_argument('--request-id')
     for action in ('status', 'events', 'result', 'cancel', 'resume'):
@@ -86,7 +87,10 @@ def main(argv=None):
     running.add_argument('--scenario')
     running.add_argument('--case-seed', type=int, default=0)
     running.add_argument('--output')
-    running.add_argument('--executor', choices=['codex', 'goose'], help='Default: the one configured runtime')
+    running.add_argument('--executor', choices=['codex', 'goose', 'replay'],
+                         help='Default: the one configured runtime; replay runs --replay-candidate without a model')
+    running.add_argument('--replay-candidate', help='Saved candidate directory for --executor replay: replay.json and '
+                         'the worker outputs it names')
     running.add_argument('--budget-seconds', type=int, default=10800)
     running.add_argument('--password-file')
     running.add_argument('--renode')
@@ -162,7 +166,7 @@ def main(argv=None):
                          {k: v for k, v in {'budget_seconds': args.budget_seconds,
                           'evaluator_password_file': args.password_file, 'renode': args.renode,
                           'ghidra_home': args.ghidra_home, 'java_home': args.java_home,
-                          'home': args.home, 'request_id': args.request_id,
+                          'home': args.home, 'request_id': args.request_id, 'replay_candidate': args.replay_candidate,
                           'scenario_id': args.scenario, 'case_seed': args.case_seed,
                           'binding': json.loads(args.binding_json) if args.binding_json else None,
                           'scoped_tool_approval': 'bound-device' if args.approve_bound_device_tools else 'emulator' if args.approve_emulator_tools else None}.items() if v is not None},
@@ -200,6 +204,8 @@ def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, aut
     from .benchmark_support.registry import resolve_case, pin_case
     options = dict(options or {})
     definition = resolve_case(case)
+    if executor == 'replay' and definition.execution != 'actual-agent-emulation':
+        raise ValueError('The replay executor runs emulated benchmark cases only; ' + case + ' is ' + definition.execution)
     pin_case(case, options.get('scenario_id'), options.get('case_seed', 0))
     approval = options.pop('scoped_tool_approval', None)
     if approval == 'emulator' and not (definition.execution == 'actual-agent-emulation' and definition.approval_scope == 'emulator'):
@@ -275,12 +281,25 @@ def _protocol(report):
     return report.get('protocol') or (progress.get('protocol') if isinstance(progress, dict) else None)
 
 
+def _replayed(report):
+    """Whether a report is a replayed candidate's: by its execution label or the runtime it records."""
+    executed = report.get('executed') if isinstance(report.get('executed'), dict) else {}
+    configuration = executed.get('runtime_configuration') if isinstance(executed.get('runtime_configuration'), dict) else {}
+    agent = report.get('agent') if isinstance(report.get('agent'), dict) else {}
+    return str(report.get('execution') or '').startswith('replay') or 'replay' in (configuration.get('runtime'),
+                                                                                    agent.get('runtime'))
+
+
 def compare(before, after):
     before, after = _read(before), _read(after)
     if _protocol(before) != _protocol(after):
         # Results of different protocols are separate series: nothing of one is set beside the other.
         return {'schema': 'benchmark-comparison/1', 'compatible': False, 'incompatible_fields': ['protocol'],
                 'reason': 'Reports of different protocols are separate series and are never compared'}
+    if _replayed(before) != _replayed(after):
+        # No model ran a replayed candidate: replays are a series of their own, never set beside model runs.
+        return {'schema': 'benchmark-comparison/1', 'compatible': False, 'incompatible_fields': ['execution'],
+                'reason': 'Replay results and model runs are separate series and are never compared'}
     required = ('case', 'case_version', 'evaluator_version', 'seed', 'execution')
     if 'benchmark-report/3' in (before.get('schema'), after.get('schema')):
         required = ('schema', 'case', 'case_version', 'evaluator_version', 'scenario_id', 'case_seed', 'execution')

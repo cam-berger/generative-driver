@@ -102,7 +102,8 @@ def _experiment(value):
     for key in ('max_model_repairs',):
         if type(policy[key]) is not int or policy[key]<0:raise ValueError('Invalid intervention limit')
     dimensions=value['dimensions']
-    dimension_fields=('runtime','model','provider','version','reasoning_effort','max_turns','skills_revision','toolchain_revision')
+    dimension_fields=('runtime','model','provider','version','reasoning_effort','max_turns','skills_revision','toolchain_revision',
+                      'replay_candidates')
     if not isinstance(dimensions,dict) or set(dimensions)-set(dimension_fields):raise ValueError('Unknown dimensions')
     for key,item in dimensions.items():
         if item is None:continue
@@ -110,7 +111,13 @@ def _experiment(value):
             if type(item) is not int or item<0:raise ValueError('Invalid turn limit')
         elif key in ('skills_revision','toolchain_revision'):
             if not _sha(item):raise ValueError('Invalid dimension digest')
+        elif key=='replay_candidates':
+            # A replay suite's candidate hash for each case of its manifest.
+            if (not isinstance(item,dict) or set(item)!={entry['case'] for entry in manifest['entries']}
+                    or not all(_sha(sha) for sha in item.values())):raise ValueError('Invalid replay candidates')
         elif not isinstance(item,str) or not item.strip():raise ValueError('Invalid runtime dimension')
+    if (dimensions.get('runtime')=='replay')!=isinstance(dimensions.get('replay_candidates'),dict):
+        raise ValueError('Replay candidates belong to a replay suite, which names them')
     if not isinstance(value['execution_snapshots'],list) or len(value['execution_snapshots'])!=len(slots):raise ValueError('Incomplete snapshot coverage')
     for slot,snapshot in zip(slots,value['execution_snapshots']):
         _exact(snapshot,('trial_key','snapshot_sha256'))
@@ -125,7 +132,7 @@ def _experiment(value):
             'effective':{**{key:effective[key] for key in ('child_budget_seconds','suite_budget_seconds')},
                 'child_budget_overrides':[{'trial_key':row['trial_key'],'budget_seconds':row['budget_seconds']} for row in effective['child_budget_overrides']]}},
         'intervention_policy':{key:policy[key] for key in ('scoped_tool_approval','max_model_repairs')}},
-        'dimensions':{key:dimensions[key] for key in dimension_fields if key in dimensions},
+        'dimensions':{key:copy.deepcopy(dimensions[key]) for key in dimension_fields if key in dimensions},
         'execution_snapshots':[{'trial_key':row['trial_key'],'snapshot_sha256':row['snapshot_sha256']} for row in value['execution_snapshots']]}
 
 def _counts_ok(value):
@@ -270,6 +277,11 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
             'success':{'passed':len(passed),'denominator':len(trials),'rate':len(passed)/len(trials)},
             'provisional':len(finished)!=len(trials),'family_success':rates,'family_macro_success':sum(rates.values())/len(rates),**resources}
 
+    if experiment['dimensions'].get('runtime')=='replay':
+        # No model ran a replay suite's children: its results are never model performance.
+        from ..replay import execution_label
+        result.update(execution=execution_label(experiment['comparison_identity']['execution'],'replay'),model_benchmark=False)
+
     def rates_by(key):
         return {value:{win:sum(t[key]==value for t in passed),'denominator':sum(t[key]==value for t in trials),
             'rate':sum(t[key]==value for t in passed)/sum(t[key]==value for t in trials)} for value in sorted({t[key] for t in trials})}
@@ -344,6 +356,10 @@ def compare_suites(before,after):
     if protocol!=after.get('protocol'):
         # Results of different protocols are separate series: neither count is set beside the other.
         return {**result,'reason':'Protocols differ: results of different protocols are separate series and are never compared'}
+    replayed=lambda report:report['experiment']['dimensions'].get('runtime')=='replay'
+    if replayed(before)!=replayed(after):
+        # No model ran a replay suite's children: replay suites are a series of their own, never set beside model suites.
+        return {**result,'reason':'Replay results and model runs are separate series and are never compared'}
     key='equivalence' if protocol else 'success'
     result.update({'before_'+key:before[key],'after_'+key:after[key]})
     if before['experiment']['comparison_identity']!=after['experiment']['comparison_identity']:
@@ -514,7 +530,11 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
                 raise ValueError('Executed evaluator differs from frozen experiment')
             dimensions=experiment['dimensions'];runtime=executed.get('runtime_configuration',{})
             for key,value in dimensions.items():
-                actual=executed.get(key) if key in ('skills_revision','toolchain_revision') else runtime.get(key)
+                if key=='replay_candidates':
+                    # Each child replays its own case's candidate.
+                    actual,value=runtime.get('candidate_sha256'),value.get(trial['case'])
+                else:
+                    actual=executed.get(key) if key in ('skills_revision','toolchain_revision') else runtime.get(key)
                 if actual!=value:raise ValueError('Executed dimensions differ from frozen experiment')
             settled=owner.get('status')=='completed' and owner.get('outcome_category')=='completed' and owner.get('stopping') is False and owner.get('uncertain_effect') is False
             if regrading and protocol:
@@ -555,6 +575,8 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
             unscored=', '.join(row['trial_key'] for row in result['unscored'])
             summary=(f"Equivalent drivers: {result['equivalence']['equivalent']}/{result['equivalence']['denominator']}. "
                      f"Protocol: {protocol}, a series never compared with earlier gated results. Qualification: {qualification}.\n\n"
+                     +(f"Execution: {result['execution']}: saved candidates replayed without a model, never model "
+                       "performance or a series compared with model suites.\n\n" if result.get('execution') else '')
                      +(f"Unscored: {unscored}.\n\n" if unscored else ''))
         else:
             summary=f"Success: {result['success']['passed']}/{result['success']['denominator']}. Qualification: {qualification}.\n\n"

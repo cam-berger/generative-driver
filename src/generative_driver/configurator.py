@@ -146,6 +146,58 @@ def case_options(spec):
         'operator_observations':spec.get('_operator_observations',[]),'configured_effects':spec['effects']}
 
 
+def _replay_config(params, config, home):
+    """A replay replays a saved candidate on an emulated benchmark case only: never a generic run, which has no case to
+    replay, nor a physical device. Its configuration names the candidate and the hash of its files; the candidate lies
+    outside the bench home beside `home`, which holds evaluator records."""
+    from .replay import candidate_config
+    from .benchmark_support.harness import bench_home
+    case = params.get('case')
+    case_id = case.get('id') if isinstance(case, dict) else case
+    if not case_id:
+        raise ValueError('The replay executor runs emulated benchmark cases only; this start names no case')
+    from .benchmark_support.registry import resolve_case
+    if resolve_case(case_id).execution != 'actual-agent-emulation':
+        raise ValueError('The replay executor runs emulated benchmark cases only, never ' + str(case_id))
+    return candidate_config(config, bench=bench_home(home))
+
+
+def _replay_suite_config(manifest, options, home):
+    """A replay suite's configuration: one saved candidate per case of its manifest (options.replay_candidates), all
+    checked first, then each stored by its hash in the configurator home, from which every child of that case takes its
+    copy."""
+    from .replay import stored_candidate, suite_candidates
+    from .benchmark_support.harness import bench_home
+    checked = suite_candidates({entry['case'] for entry in manifest['entries']},
+                               options.get('replay_candidates') if isinstance(options, dict) else None,
+                               bench=bench_home(home))
+    stored = {case: stored_candidate(config, Path(home) / 'replay-candidates') for case, config in checked.items()}
+    return {'runtime': 'replay', 'candidates': {case: {key: config[key] for key in ('candidate', 'candidate_sha256')}
+                                                for case, config in stored.items()}}
+
+
+def _copy_candidate(config, run_dir):
+    """The run's own copy of the replay candidate, taken at start in its run directory: every stage replays these bytes,
+    whatever happens to the saved candidate since."""
+    target = Path(run_dir) / 'replay-candidate'
+    shutil.copytree(config['candidate'], target)
+    if digest(target) != config['candidate_sha256']:
+        shutil.rmtree(target, ignore_errors=True)
+        raise ValueError('The replay candidate changed while the run copied it: ' + config['candidate'])
+    return {**config, 'candidate': str(target)}
+
+
+def _verify_candidate(config):
+    """Every replay stage runs the run's copy of the candidate, whose hash the run recorded: a copy that changed or
+    cannot be read, before the stage's worker starts or by the time it returns, stops the run for integrity."""
+    try:
+        current = digest(Path(config['candidate']))
+    except (OSError, ValueError):
+        current = None
+    if current != config['candidate_sha256']:
+        raise IntegrityError('The replay candidate changed since the run recorded its hash: ' + config['candidate'])
+
+
 def _refuse_secrets(spec):
     """The configurator never holds a password, a password file or the emulator executable, for any case: the bench
     harness does. The request itself is checked too, since the run keeps all of it as its spec."""
@@ -1453,6 +1505,8 @@ class Controller:
             if saved is None:
                 if self._closing:raise ValueError('Configurator is stopping')
                 config={**self._configured_executors().get(executor,{}),'runtime':executor}
+                if executor=='replay':
+                    config=_replay_suite_config(manifest,options,self.home)
                 frozen=freeze_suite(manifest,executor,config,options,execution_provenance(config),harness_token_sha256=token)
                 saved=self._suites.create(frozen,params.get('request_id'),harness_pid=pid,harness_lock=lock)
                 if not saved['duplicate']:
@@ -1929,6 +1983,9 @@ class Controller:
                     (value[key] is None or type(value[key]) in (str,int,float,bool))}
         dimensions=scalars(config,('model','provider','version','reasoning_effort','max_turns'))
         dimensions.update(runtime=frozen['executor'],**scalars(provenance,('skills_revision','toolchain_revision')))
+        if frozen['executor']=='replay':
+            # The candidates a replay suite replays, by case, as a model suite names its model.
+            dimensions['replay_candidates']={case:entry['candidate_sha256'] for case,entry in config['candidates'].items()}
         policy={key:manifest[key] for key in ('child_budget_seconds','suite_budget_seconds')}
         snapshots=[];overrides=[]
         for trial in suite['trials']:
@@ -1971,8 +2028,8 @@ class Controller:
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError('start requires a nonempty goal')
         executor = configured_executor(params.get('executor'), self.home)
-        if executor not in ('codex', 'goose'):
-            raise ValueError('executor must be codex or goose')
+        if executor not in ('codex', 'goose', 'replay'):
+            raise ValueError('executor must be codex, goose or replay')
         budget = params.get('budget_seconds', 10800)
         if type(budget) not in (int, float) or not 0 < budget <= 7 * 86400:
             raise ValueError('budget_seconds must be positive and no more than seven days')
@@ -1988,6 +2045,8 @@ class Controller:
         else:
             config = self._configured_executors().get(executor, {})
         config = {**config, **params.get('executor_config', {}), 'runtime': executor}
+        if executor == 'replay':
+            config = _replay_config(params, config, self.home)
         spec = {**params, 'executor': executor, 'executor_config': config, 'budget_seconds': budget, 'effects': effects,
                 '_submitted_intent': params}
         case=spec.get('case')
@@ -2036,11 +2095,13 @@ class Controller:
                     elif 'evaluation_token_sha256' in spec and not (isinstance(spec['evaluation_token_sha256'], str) and
                             re.fullmatch('[0-9a-f]{64}', spec['evaluation_token_sha256'])):
                         raise ValueError('evaluation_token_sha256 must be the sha256 of the bench harness evaluation token')
-                if not config.get('command'):
+                if executor != 'replay' and not config.get('command'):
                     # Never fall back to whatever program of that name is on PATH: it may be something else entirely.
                     raise ValueError(f'{executor} is not configured; run `generative-driver configure {executor} <command>` '
                                      'with the runtime this configurator should launch')
                 if case:
+                    if executor == 'replay':
+                        config = spec['executor_config'] = _copy_candidate(config, self.home / 'runs' / run_id)
                     spec['_case_pin'] = pin
                     saved = snapshot_case(self.home / 'runs' / run_id, pin, execution_provenance(config))
                     spec['_snapshot_sha256'] = saved['snapshot_sha256']
@@ -2139,6 +2200,8 @@ class Controller:
                     continue
                 workspace = Path(prepared.get('work_dir', workspace)).resolve()
                 workspace.mkdir(parents=True, exist_ok=True)
+                if spec['executor'] == 'replay':
+                    _verify_candidate(spec['executor_config'])
                 input_hashes = {str(Path(p).resolve()): digest(p) for p in prepared.get('inputs', [])}
                 assignment = {'id': attempt, 'stage': stage, 'workspace': str(workspace), 'inputs': input_hashes,
                               'allowed_tools': prepared.get('allowed_tools', []), 'report_required': prepared.get('report_required', True),
@@ -2198,6 +2261,8 @@ class Controller:
                 try:
                     if _runtime_stop(result) is None:
                         self._verify_inputs(input_hashes)
+                        if spec['executor'] == 'replay':
+                            _verify_candidate(spec['executor_config'])
                         with _integrity_checked():
                             if self._row(run_id)['uncertain']:
                                 from .device_recovery import reconcile

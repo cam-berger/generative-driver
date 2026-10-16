@@ -6,7 +6,7 @@ import tempfile
 import time
 import unittest
 
-from suite_fixtures import shutdown_owner, drive_suite, legacy_devices, legacy_manifest, options, settled_suite, wait_owner_suite
+from suite_fixtures import shutdown_owner, close_owner, drive_suite, legacy_devices, legacy_manifest, options, settled_suite, wait_owner_suite
 
 
 def owner_home(temporary):
@@ -235,7 +235,7 @@ class SummaryTests(unittest.TestCase):
                 self.assertNotIn('PRIVATE',json.dumps(result['benchmark_summary']))
                 path.unlink()
                 self.assertEqual(owner.call('result',run)['benchmark_summary'],{'accepted_gates':[],'evaluations':[],'final_evaluation':{}})
-            finally:owner.close()
+            finally:close_owner(owner)
 
 
 
@@ -318,7 +318,7 @@ class BudgetTests(unittest.TestCase):
                 after=owner.call('suite_status',suite)
                 self.assertEqual(after['created'],before['created'])
                 self.assertEqual(after['status'],'blocked')
-            finally:owner.close()
+            finally:close_owner(owner)
 
 
 class RecoveryTests(unittest.TestCase):
@@ -356,7 +356,7 @@ class RecoveryTests(unittest.TestCase):
             owner=Controller(home)
             suite={'suite_id':drive_suite(owner,bench,{'manifest':legacy_manifest(2),**secrets},wait=False)['suite_id']}
             blocked=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
-            child=blocked['active_child_id'];owner.close()
+            child=blocked['active_child_id'];close_owner(owner)
             # Durable public toy final-verdict fixture and a lost attachment, not evaluation.
             with owner._db() as db:
                 verdict={'stage':'reuse','assignment_id':'fixture-final','final_evaluation':True,'fault':'model','verdict':'failed','passed':0,'total':1}
@@ -381,7 +381,7 @@ class RecoveryTests(unittest.TestCase):
                 self.assertFalse(any(e['kind']=='run.resumed' for e in owner.call('events',{'run_id':child})['events']))
                 kinds=[e['kind'] for e in owner.call('suite_events',suite)['events']]
                 self.assertIn('terminal_child_settled',kinds)
-            finally:owner.close()
+            finally:close_owner(owner)
 
     def test_real_owner_process_loss_recovers_without_dispatch_and_requires_reconciliation(self):
         import os
@@ -445,7 +445,7 @@ class InterventionTests(unittest.TestCase):
                 row=page['trials'][0]
                 self.assertEqual(row.get('interventions'),[{'event_id':event['id'],'kind':'operator.response','time':event['time'],'effect_resolution':None,'has_observation':True}])
                 self.assertNotIn('PRIVATE',json.dumps(page))
-            finally:owner.close()
+            finally:close_owner(owner)
 
 
 class DelayedOperationTests(unittest.TestCase):
@@ -505,7 +505,7 @@ class DelayedOperationTests(unittest.TestCase):
             finally:
                 release.set()
                 if worker:worker.join(5)
-                owner.close()
+                close_owner(owner)
 
 
 class CleanupFailureTests(unittest.TestCase):
@@ -537,7 +537,7 @@ class CleanupFailureTests(unittest.TestCase):
                 self.assertFalse(status['stopping'])
                 from generative_driver.benchmark_support.suites import child_disposition
                 self.assertEqual(child_disposition(status),'block')
-            finally:owner.close()
+            finally:close_owner(owner)
 
     def _stopped_suite_at_completion(self, home):
         """Public durable queue fixture; exercises the release of what a run holds, not six-stage grading. The suite's
@@ -592,7 +592,7 @@ class CleanupFailureTests(unittest.TestCase):
                     verdict={'stage':'reuse','assignment_id':'cleanup-final','final_evaluation':True,
                              'fault':'model','verdict':'failed','passed':0,'total':1}
                     db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)',('cleanup-final',child,'reuse',json.dumps(verdict),time.time()))
-                owner.close();owner=Controller(owner.home)
+                close_owner(owner);owner=Controller(owner.home)
                 with self.assertRaises(ValueError):owner.call('suite_resume',suite)
                 with self.assertRaisesRegex(ValueError,'uncertain'):drive_suite(owner,self.bench,{**suite,**self.secrets})
                 still=owner.call('suite_result',suite)
@@ -601,7 +601,7 @@ class CleanupFailureTests(unittest.TestCase):
                 self.assertNotIn('terminal_child_settled',[e['kind'] for e in owner.call('suite_events',suite)['events']])
                 self.assertTrue(owner.call('status',{'run_id':child})['uncertain_effect'])
                 self._assert_retained_lease(owner,child)
-            finally:owner.close()
+            finally:close_owner(owner)
 
     def test_cleanup_failure_preserves_cancellation_and_unresolved_ownership(self):
         import threading
@@ -649,7 +649,7 @@ class CleanupFailureTests(unittest.TestCase):
             finally:
                 release.set()
                 if cancellation:cancellation.join(5)
-                owner.close()
+                close_owner(owner)
 
 class FreshReuseCategorySchedulingTests(unittest.TestCase):
     _stopped_suite_at_completion = CleanupFailureTests._stopped_suite_at_completion
@@ -707,4 +707,4 @@ class FreshReuseCategorySchedulingTests(unittest.TestCase):
                     kinds=[e['kind'] for e in owner.call('suite_events',suite)['events']]
                     self.assertLess(kinds.index('trial.finished'),max(i for i,k in enumerate(kinds) if k=='trial.started'))
             finally:
-                release.set();owner.close()
+                release.set();close_owner(owner)

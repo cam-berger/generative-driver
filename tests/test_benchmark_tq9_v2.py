@@ -316,6 +316,11 @@ class TQ9V2Tests(unittest.TestCase):
         # lose the configurator's model_contract diff that sends the model back for repair.
         self._scripted_controller_modes(('invalid-model',))
 
+    def test_emit_hands_off_only_a_package_emit_package_built_in_its_assignment(self):
+        # Catches benchmark emit handing on, and the harness then grading, a package the emit worker changed after
+        # emit_package returned or wrote itself, resealed so that it passes every emit_check gate.
+        self._scripted_controller_modes(('edited-package','own-package'))
+
     def test_a_changed_interpretation_at_probe_preparation_leaves_no_uncertain_effect(self):
         # Catches preparation that reaches no device (hash checks, model wiring) running inside the emulator start's
         # effect wrapper, which would leave a resumable stop uncertain although nothing was dispatched.
@@ -545,6 +550,22 @@ class TQ9V2Tests(unittest.TestCase):
                         "        assert not failed['ok'] and failed['error']['fault']=='model',failed\n"
                         "        status='needs_revision'\n"
                         "elif stage=='emit':")
+                if mode in ('edited-package','own-package'):
+                    # The emit worker rewrites REFERENCE.md, the package's guide for fresh reuse, in the package
+                    # emit_package built or in its own copy of it, and reseals the manifest: the package still passes
+                    # every emit_check gate. It checks the package through the configurator (whose hash of those bytes
+                    # would let a generic emit hand them off) and the report names that package.
+                    source = source.replace("    result=call('emit_package',task['context']);assert result['ok'];artifacts=[result['package_dir']]",
+                        "    result=call('emit_package',task['context']);assert result['ok']\n"
+                        "    import shutil\n    from interface_runtime.package import digest as file_digest,package_files\n"
+                        "    package=pathlib.Path(result['package_dir'])\n"
+                        + ("    shutil.copytree(package,'own');package=pathlib.Path('own').resolve()\n" if mode=='own-package' else '') +
+                        "    (package/'REFERENCE.md').write_text((package/'REFERENCE.md').read_text()+'\\nA worker note.\\n')\n"
+                        "    manifest=json.loads((package/'manifest.json').read_text());manifest['files']=package_files(package)\n"
+                        "    (package/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\\n')\n"
+                        "    (package/'manifest.sha256').write_text(file_digest(package/'manifest.json')+'\\n')\n"
+                        "    assert call('emit_check',{'package_dir':str(package)})['ok']\n"
+                        "    artifacts=[str(package)]")
                 if mode == 'final-bounds':
                     source = source.replace("pathlib.Path('model.json').write_text(json.dumps(model()))",
                         "candidate=model();candidate['operations']['set_duty']['parameters']['duty']['maximum']=800\n"
@@ -967,6 +988,28 @@ class TQ9V2Tests(unittest.TestCase):
                                 self.assertFalse([h for h in handoffs if h.get('route')])
                                 self.assertEqual(notes['outcome'],{'kind':'advance','reason':'Repair budget exhausted; continuing with best revision'})
                                 self.assertEqual(len(peers),1);self.assertEqual(peers[0].device_commands,[])
+                            continue
+                        if mode in ('edited-package','own-package'):
+                            # The configurator never saw emit_package build the named package's bytes in the
+                            # assignment, so emit hands on no driver and says why; reuse is skipped and the run completes
+                            # with no driver, which no evaluator grades.
+                            handoffs=result['accepted_handoffs']
+                            self.assertEqual(status['status'],'completed',result)
+                            self.assertEqual([h['stage'] for h in handoffs],['acquire','interpret','probe','ground','emit','reuse'])
+                            self.assertEqual([a['stage'] for a in assignments],['acquire','interpret','probe','ground','emit'])
+                            emitted=next(h for h in handoffs if h['stage']=='emit')
+                            self.assertEqual(emitted['artifacts'],[])
+                            why=('changed after emit_package returned' if mode=='edited-package' else
+                                 'not built by emit_package in this assignment')
+                            check=next(c for c in emitted['checks'] if c['name']=='package_integrity_and_replay')
+                            self.assertFalse(check['passed'])
+                            self.assertEqual([row['reason'] for row in check['not_handed_off']],[why])
+                            # Rejected before the configurator's emit_check, never by it.
+                            self.assertNotIn('rejected',check)
+                            dropped=emitted['notes']['inline']['configurator']['dropped_artifacts']
+                            self.assertEqual([row['reason'] for row in dropped],['Package not handed off: '+why])
+                            self.assertEqual((equivalence['status'],equivalence['equivalent']),('no-driver',False))
+                            self.assertFalse(graded);self.assertFalse(graders)
                             continue
                         # Every stage hands off, worker reports and the reuse mission are notes, and the frozen driver
                         # awaits independent grading after the run: no stage graded it against the truth.
@@ -1671,16 +1714,19 @@ class ObservationTests(unittest.TestCase):
 
     def test_emit_failures_are_notes_and_only_a_host_fault_stops(self):
         from generative_driver.benchmark_support import emulated
+        from generative_driver.configurator import digest
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temporary:
-            root=Path(temporary);(root/'manifest.json').write_text('{}')
+            root=Path(temporary).resolve();(root/'manifest.json').write_text('{}')
+            # The configurator's record that an emit_package of the assignment built this package, so emit_check runs.
+            built={'emit_builds':{str(root):digest(root)}}
             outcomes=[{'ok':False,'integrity_ok':False},
                 {'ok':False,'integrity_ok':True,'runtime_current':True,'replay_status':'failed'},
                 {'ok':False,'fault':'operator'},{'ok':False}]
             for result in outcomes:
                 with self.subTest(result=result),patch.object(emulated,'_inputs',return_value=(root,{})), \
                      patch('generative_driver.toolkit.call_tool',return_value=result):
-                    checked=emulated.observe_stage('tq9-v2','emit',root,root,{'status':'completed'})
+                    checked=emulated.observe_stage('tq9-v2','emit',root,root,{'status':'completed'},options=built)
                     for key in ('ok','fault','stop'):self.assertNotIn(key,checked)
                     self.assertEqual(checked['artifacts'],[])
                     check=next(c for c in checked['checks'] if c['name']=='package_integrity_and_replay')
@@ -1690,7 +1736,7 @@ class ObservationTests(unittest.TestCase):
                 with self.subTest(result=result),patch.object(emulated,'_inputs',return_value=(root,{})), \
                      patch('generative_driver.toolkit.call_tool',return_value=result):
                     with self.assertRaisesRegex(RuntimeError,'could not run on this host'):
-                        emulated.observe_stage('tq9-v2','emit',root,root,{'status':'completed'})
+                        emulated.observe_stage('tq9-v2','emit',root,root,{'status':'completed'},options=built)
 
     def test_unreadable_acquisition_is_a_note_never_a_candidate_failure(self):
         from generative_driver.benchmark_support import emulated

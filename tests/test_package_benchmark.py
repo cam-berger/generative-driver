@@ -68,7 +68,11 @@ class BenchmarkPackageGateTests(unittest.TestCase):
 
     def test_emit_uses_accepted_bytes_and_requires_matching_current_executable_package(self):
         from generative_driver.benchmark import run, prepare_stage, observe_stage
+        from generative_driver.configurator import digest
         from generative_driver.toolkit import call_tool
+        # The configurator's record that an emit_package of the assignment built these package bytes, so the package
+        # reaches the emit_check gate this test is about.
+        built = lambda package: {'emit_builds': {str(package.resolve()): digest(package)}}
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             smoke = run('setup-smoke', root/'smoke')
@@ -85,11 +89,11 @@ class BenchmarkPackageGateTests(unittest.TestCase):
             self.assertEqual((ws/'probe.json').read_bytes(), probe.read_bytes())
             package = ws/'package'
             shutil.copytree(smoke['package'], package)
-            checked = observe_stage('tq9','emit',root/'run',ws,{'status':'completed'},accepted=handoffs)
+            checked = observe_stage('tq9','emit',root/'run',ws,{'status':'completed'},accepted=handoffs,options=built(package))
             self.assertEqual([Path(a).name for a in checked['artifacts']],['package'],checked)
             self.assertEqual([(c['name'],c['passed']) for c in checked['checks']],[('package_integrity_and_replay',True)])
-            # A valid, current package for different model bytes cannot replace the
-            # model accepted by the preceding stage, even if its replay passes.
+            # A valid, current package for different model bytes (emit_package run on another model) cannot replace
+            # the model accepted by the preceding stage, even if its replay passes: emit_check rejects it.
             other = root/'other-model'; other.mkdir()
             changed = json.loads(model.read_text(encoding='utf-8'))
             changed['device']['name'] = 'different source model'
@@ -99,8 +103,9 @@ class BenchmarkPackageGateTests(unittest.TestCase):
             self.assertTrue(result['ok'],result)
             emitted = call_tool('emit_package',{'run_dir':str(root/'other'),'model_dir':str(other),'probe':result['probe']})
             shutil.rmtree(package); shutil.copytree(emitted['package_dir'],package)
-            rejected = observe_stage('tq9','emit',root/'run',ws,{'status':'completed'},accepted=handoffs)
+            rejected = observe_stage('tq9','emit',root/'run',ws,{'status':'completed'},accepted=handoffs,options=built(package))
             self.assertEqual((rejected['artifacts'],rejected['checks'][0]['passed']),([],False),rejected)
+            self.assertEqual(len(rejected['checks'][0]['rejected']),1,rejected)
             # Historical runtimes may have valid integrity but cannot satisfy the
             # benchmark's executed-replay gate.
             shutil.rmtree(package); shutil.copytree(smoke['package'],package)
@@ -113,5 +118,6 @@ class BenchmarkPackageGateTests(unittest.TestCase):
             integrity = call_tool('emit_check',{'run_dir':str(root/'historical-check'),'package_dir':str(package)})
             self.assertTrue(integrity['ok'],integrity)
             self.assertFalse(integrity['runtime_current'],integrity)
-            rejected = observe_stage('tq9','emit',root/'run',ws,{'status':'completed'},accepted=handoffs)
+            rejected = observe_stage('tq9','emit',root/'run',ws,{'status':'completed'},accepted=handoffs,options=built(package))
             self.assertEqual((rejected['artifacts'],rejected['checks'][0]['passed']),([],False),rejected)
+            self.assertEqual(len(rejected['checks'][0]['rejected']),1,rejected)

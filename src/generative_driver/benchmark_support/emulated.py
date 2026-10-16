@@ -384,11 +384,34 @@ def _host(result):
     return _host_fault(result) or isinstance(error, dict) and error.get('fault') == 'host'
 
 
+def _emitted(ws, report, options):
+    """The packages an emit may hand on, as generic emit decides: bytes the configurator observed, here only a package
+    an emit_package of this assignment built, by the hash it recorded when the tool returned (`options['emit_builds']`).
+    The report may name which package, never its hash. A package the worker wrote or changed is not handed on, so it is
+    never graded. Returns (packages, not_handed_off, dropped)."""
+    from ..configurator import _observed_packages
+    builds, named, dropped = options.get('emit_builds') or {}, [], []
+    artifacts = report.get('artifacts') if isinstance(report, dict) else None
+    for artifact in artifacts if isinstance(artifacts, list) else []:
+        raw = artifact.get('path') if isinstance(artifact, dict) else None
+        if not isinstance(raw, str):
+            continue
+        path = (Path(raw) if Path(raw).is_absolute() else ws/raw).resolve()
+        if path.is_relative_to(ws.resolve()):
+            named.append(path)
+        else:
+            dropped.append({'path': raw, 'reason': 'Reported artifact is outside the assigned workspace'})
+    packages, not_handed_off, gone = _observed_packages(named, builds, set(builds.values()),
+                                                        'not built by emit_package in this assignment')
+    return packages, not_handed_off, dropped + gone
+
+
 def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, options=None):
     """Observe a stage without truth: what it hands on and its checks as notes. No evaluator runs here, nothing is
     graded and no stage verdict is recorded. Only a changed sealed input or recorded hash stops (integrity); emit_check
     the host could not run raises (a resumable host stop). Probe and ground device evidence (the worker's probe records
-    and the device diff) is the configurator's own; `options['observed_records']` names the records it hands on."""
+    and the device diff) is the configurator's own; `options['observed_records']` names the records it hands on, and
+    emit hands on only a package `options['emit_builds']` records an emit_package of the assignment building (`_emitted`)."""
     options = options or {}
     ws = Path(workspace)
     _, manifest = _inputs(case_id, run_dir)
@@ -500,9 +523,10 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
     if stage == 'emit':
         from ..toolkit import call_tool
         from ..configurator import digest, _emit_check_failure
-        rejected = []
-        for manifest_path in sorted(ws.rglob('manifest.json')):
-            package = manifest_path.parent
+        packages, not_handed_off, dropped = _emitted(ws, report, options)
+        rejected, noted = [], {'not_handed_off': not_handed_off} if not_handed_off else {}
+        for package in packages:
+            manifest_path = package/'manifest.json'
             result = call_tool('emit_check', {'run_dir': str(Path(run_dir)/'benchmark/package-checks'),
                 'package_dir': str(package), 'model_dir': str(ws/'model')})
             if _host(result):
@@ -513,11 +537,12 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
                 state.update(package_sha256=digest(package), package_manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest())
                 _write(path, state)
                 return _observed([package], [{'name': 'package_integrity_and_replay', 'passed': True,
-                                              **({'rejected': rejected} if rejected else {})}])
+                                              **({'rejected': rejected} if rejected else {}), **noted}], dropped)
             rejected.append({'package': package.name, 'reason': _emit_check_failure(result)})
         return _observed([], [{'name': 'package_integrity_and_replay', 'passed': False,
-                               'reason': 'No package passed integrity and replay', **({'rejected': rejected} if rejected else {})}],
-                         [{'path': row['package'], 'reason': 'emit_check did not pass: ' + row['reason']} for row in rejected])
+                               'reason': 'No package emit_package built in this assignment passed integrity and replay',
+                               **({'rejected': rejected} if rejected else {}), **noted}],
+                         dropped + [{'path': row['package'], 'reason': 'emit_check did not pass: ' + row['reason']} for row in rejected])
     if stage == 'reuse':
         _, state = _state(run_dir)
         events_path = Path(run_dir)/'benchmark/package-events.jsonl'

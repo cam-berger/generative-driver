@@ -371,6 +371,123 @@ def test_model_cannot_select_delay_implementation(model):
     assert not boundary.opened
 
 
+def test_uart_boot_and_reset_declarations_validate(model):
+    model["channel"].update(boot={"line_prefix": "@ boot", "timeout_ms": 5000}, resets_on_open=True)
+    assert validate_model(model)["ok"], validate_model(model)
+    for bad in ({"line_prefix": "", "timeout_ms": 5000}, {"line_prefix": "x", "timeout_ms": 0},
+                {"line_prefix": "x", "timeout_ms": 60001}, {"line_prefix": "x"}):
+        broken = copy.deepcopy(model); broken["channel"]["boot"] = bad
+        assert not validate_model(broken)["ok"], bad
+    broken = copy.deepcopy(model); broken["channel"]["resets_on_open"] = "yes"
+    assert not validate_model(broken)["ok"]
+
+
+def test_resetting_channel_requires_reset_grant_before_open(model):
+    model["channel"]["resets_on_open"] = True
+    boundary = Boundary([])
+    result = run(model, boundary)
+    assert not result["ok"] and result["error"]["code"] == "effect"
+    assert result["error"]["fault"] == "operator" and not boundary.opened
+    assert result["transport_open_attempted"] is False
+    boundary = Boundary([(b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:21.5\n")])
+    assert run(model, boundary, allow_effects=("reset",))["ok"]
+
+
+def test_session_runs_operations_over_one_open_with_identity_each_time(model):
+    from interface_runtime.engine import Session
+    opens = []
+    boundary = Boundary([(b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:21.5\n"),
+                         (b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:22.0\n")])
+    def factory(channel, binding):
+        opens.append(1); return boundary.factory(channel, binding)
+    with Session(model, binding={}, transport_factory=factory) as session:
+        first, second = session.execute("measure"), session.execute("measure")
+    assert first["outputs"] == {"temperature": 21.5} and second["outputs"] == {"temperature": 22.0}
+    assert len(opens) == 1 and boundary.closed and not boundary.script
+
+
+def test_session_waits_for_boot_line_and_reports_discarded_bytes(model):
+    from interface_runtime.engine import Session
+    model["channel"].update(boot={"line_prefix": "@ boot", "timeout_ms": 2000})
+    boundary = Boundary([(b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:21.5\n")])
+    waits = []
+    boundary.wait_boot = lambda prefix, timeout_ms: waits.append((prefix, timeout_ms)) or 37
+    with Session(model, binding={}, transport_factory=boundary.factory) as session:
+        result = session.execute("measure")
+    assert waits == [("@ boot", 2000)] and result["transport_notes"] == {"drained_bytes": 37}
+
+
+def test_boot_timeout_fails_and_closes(model):
+    from interface_runtime.transports import TransportError
+    model["channel"].update(boot={"line_prefix": "@ boot", "timeout_ms": 50})
+    boundary = Boundary([])
+    def never(prefix, timeout_ms):
+        raise TransportError("boot_timeout", "no boot line after 50 ms; discarded 12 bytes")
+    boundary.wait_boot = never
+    result = run(model, boundary)
+    assert not result["ok"] and result["error"]["code"] == "boot_timeout" and boundary.closed
+
+
+def test_session_validation_failure_never_opens(model):
+    from interface_runtime.engine import Session
+    boundary = Boundary([])
+    with Session(model, binding={}, transport_factory=boundary.factory) as session:
+        result = session.execute("missing")
+    assert not result["ok"] and result["transport_open_attempted"] is False and not boundary.opened
+
+
+def test_session_reports_open_drain_only_on_first_result(model):
+    from interface_runtime.engine import Session
+    boundary = Boundary([(b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:21.5\n"),
+                         (b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:22.0\n")])
+    boundary.drained_bytes = 5
+    with Session(model, binding={}, transport_factory=boundary.factory) as session:
+        first, second = session.execute("measure"), session.execute("measure")
+    assert first["transport_notes"] == {"drained_bytes": 5} and "transport_notes" not in second
+
+
+def test_session_validation_refusal_leaves_open_transport_open(model):
+    from interface_runtime.engine import Session
+    opens = []
+    boundary = Boundary([(b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:21.5\n"),
+                         (b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:22.0\n")])
+    def factory(channel, binding):
+        opens.append(1); return boundary.factory(channel, binding)
+    with Session(model, binding={}, transport_factory=factory) as session:
+        assert session.execute("measure")["ok"]
+        refused = session.execute("missing")
+        assert not refused["ok"] and not boundary.closed
+        assert session.execute("measure")["outputs"] == {"temperature": 22.0}
+    assert len(opens) == 1 and boundary.closed
+
+
+def test_resetting_channel_samples_share_one_session(model):
+    from interface_runtime.evidence import run_samples
+    model["channel"]["resets_on_open"] = True
+    opens = []
+    boundary = Boundary([(b"ID?\n", b"DEMO-42\n"), (bytes.fromhex("540a"), b"T:21.5\n")] * 3)
+    def factory(channel, binding):
+        opens.append(1); return boundary.factory(channel, binding)
+    with patch("interface_runtime.evidence.open_transport", factory):
+        evidence = run_samples(model, "measure", n=3, binding={}, allow_effects=("reset",))
+    assert evidence["ok"] and evidence["session"] == "single" and len(opens) == 1
+
+
+def test_resetting_channel_replay_opens_once(model):
+    from interface_runtime.evidence import run_samples, ReplayFactory
+    model["channel"]["resets_on_open"] = True
+    fixture = {"schema": "interface-replay/1", "transactions": [
+        {"tx_hex": tx, "rx_hex": rx, "rx": {"mode": "until", "delimiter_hex": "0a", "max_bytes": 128}, "timeout_ms": 1000}
+        for tx, rx in [("49443f0a", b"DEMO-42\n".hex()), ("540a", b"T:21.5\n".hex())] * 3]}
+    calls = []
+    original = ReplayFactory.__call__
+    def counting(self, channel, binding):
+        calls.append(1); return original(self, channel, binding)
+    with patch.object(ReplayFactory, "__call__", counting):
+        evidence = run_samples(model, "measure", n=3, binding={}, allow_effects=("reset",), replay=fixture)
+    assert evidence["ok"] and evidence["session"] == "single" and len(calls) == 1
+
+
 class EngineTests(unittest.TestCase):
     pass
 

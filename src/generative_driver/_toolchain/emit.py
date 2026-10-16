@@ -359,6 +359,13 @@ def _register_snapshot(pkg, temporary, checked):
     return str(snapshot)
 
 
+# What only the host can make fail. The checks read the package's and the model's bytes inside their own handlers
+# and refuse what they cannot read, and a register check runs the candidate's converter inside its own handler and
+# fails the package on whatever it raises, so an OSError or ImportError that reaches emit_check came from the host's
+# side of the check.
+HOST_FAULTS = (OSError, ImportError, subprocess.TimeoutExpired, MemoryError)
+
+
 @core.tool("emit_check")
 def emit_check(package_dir, model_dir=None, seeds=20, seed=0, tol_rel=1e-9, expected_manifest_sha256=None, **_):
     """Does the package do what its model says, and nothing else?
@@ -366,8 +373,22 @@ def emit_check(package_dir, model_dir=None, seeds=20, seed=0, tol_rel=1e-9, expe
     Runs the package against register files drawn from the model's own read ranges, under a stand-in for
     the bus, and requires its numbers to equal the model's conversion on the same bytes and the set of
     registers it touches to equal the set the model touches. No ground truth and no device knowledge, so
-    this check works for any register device.
+    this check works for any register device. An interface package replays its recorded exchanges instead.
+
+    A package or argument the check refuses is a failed check (exit 1), whatever the package bytes made fail,
+    including bytes it cannot read or parse and a register converter that will not load. Only a failure outside the
+    package bytes is the host's: a file or process failure around the check (its temporary folder, reading back its
+    own snapshot copy, starting the replay or a replay process that ends without a result), an import, a timeout or
+    memory exhaustion. That result is fault host with exit 4: it says nothing about the package.
     """
+    try:
+        return _emit_check(package_dir, model_dir, seeds, seed, tol_rel, expected_manifest_sha256)
+    except HOST_FAULTS as exc:
+        return {"ok": False, "fault": "host", "error": f"{type(exc).__name__}: {exc}", "replay_status": "not_run",
+                "_exit": 4}
+
+
+def _emit_check(package_dir, model_dir, seeds, seed, tol_rel, expected_manifest_sha256):
     pkg = package_dir if os.path.isabs(package_dir) else os.path.join(core.BENCH, package_dir)
     from . import interface
     if model_dir is None:
@@ -376,14 +397,20 @@ def emit_check(package_dir, model_dir=None, seeds=20, seed=0, tol_rel=1e-9, expe
         return {'ok': False, 'defects': [{'where': 'model_dir',
                 'what': 'a register package requires an explicit model_dir'}], '_exit': 1}
     md = model_dir if os.path.isabs(model_dir) else os.path.join(core.BENCH, model_dir)
-    loaded, _sha = interface.load(md)
+    if not os.path.isfile(os.path.join(md, "model.json")):
+        return {'ok': False, 'defects': [{'where': 'model_dir', 'what': 'model.json is missing or its folder cannot be searched'}], '_exit': 1}
+    try:
+        loaded, _sha = interface.load(md)
+    except (OSError, RecursionError) as exc:
+        return {'ok': False, 'defects': [{'where': 'model_dir', 'what': f'model.json is unreadable: {type(exc).__name__}: {exc}'}],
+                'replay_status': 'not_run', '_exit': 1}
     schema = loaded.get("schema")
     if schema in interface.SCHEMAS:
         return interface.emit_check(pkg, md, expected_manifest_sha256)
     checked = _register_integrity(pkg, md, expected_manifest_sha256)
     if not checked["ok"]:
         return checked
-    with tempfile.TemporaryDirectory() as temporary:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
         snapshot = _register_snapshot(pkg, temporary, checked)
         verified = _register_integrity(snapshot, md, checked["manifest_sha256"])
         if not verified["ok"]:
@@ -394,7 +421,14 @@ def emit_check(package_dir, model_dir=None, seeds=20, seed=0, tol_rel=1e-9, expe
 
 
 def _check_register_snapshot(pkg, md, seeds, seed, tol_rel):
-    model, convert = runner.load_model(md)
+    try:
+        # Loading imports the candidate's converter (driver/convert.py, pinned to the model's, whose model.json the check
+        # has already read): whatever it raises, an ImportError or OSError included, is the package's defect, never
+        # the host's. Its conversions run on register files below, where an error marks bytes out of its domain.
+        model, convert = runner.load_model(md)
+    except Exception as exc:
+        return {"ok": False, "seeds_run": 0, "_exit": 1,
+                "defects": [{"where": "driver/convert.py", "what": f"will not load: {type(exc).__name__}: {exc}"}]}
     want_reads = runner.read_ranges(model)
     want_writes = runner.write_set(model, convert)
     rng = random.Random(seed)
@@ -463,28 +497,33 @@ def emit_test_live(package_dir, run_dir=None, binding=None, operations=None, par
         return interface.emit_test_live(run_dir, pkg, binding, operations=operations, parameters=parameters,
                                         allow_effects=allow_effects, model_dir=model_dir,
                                         expected_manifest_sha256=expected_manifest_sha256)
+    # Every refusal before the suite runs says so: no transport was opened, so nothing reached the device.
+    before_contact = {"transport_open_attempted": False}
     if (not isinstance(binding, dict) or set(binding) != {"url"} or
             not isinstance(binding["url"], str) or not binding["url"].startswith("ftdi://")):
-        return {"ok": False, "fault": "operator", "reason": "Provide an explicit register binding with url", "_exit": 4}
+        return {"ok": False, "fault": "operator", "reason": "Provide an explicit register binding with url",
+                **before_contact, "_exit": 4}
     with open(os.path.join(pkg, "driver", "model.json"), encoding="utf-8") as stream:
         model = json.load(stream)
     ops = model.get("operations", {})
     steps = sum((ops.get(key, []) for key in ("init", "identify", "measure")), []) + model.get("state", [])
     allow_write = "write" in (allow_effects or [])
     if not allow_write and any(step.get("op") in ("reg_write", "raw_write") for step in steps):
-        return {"ok": False, "fault": "operator", "reason": "Explicit write effect grant required", "_exit": 4}
+        return {"ok": False, "fault": "operator", "reason": "Explicit write effect grant required", **before_contact, "_exit": 4}
     env = dict(os.environ, GD_REGISTER_URL=binding["url"], GD_REGISTER_ALLOW_WRITE="1" if allow_write else "0")
     checked = _register_integrity(pkg, model_dir, expected_manifest_sha256)
     if not checked["ok"]:
-        return checked
-    with tempfile.TemporaryDirectory() as temporary:
+        return {**checked, **before_contact}
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
         snapshot = _register_snapshot(pkg, temporary, checked)
         verified = _register_integrity(snapshot, model_dir, checked["manifest_sha256"])
         if not verified["ok"]:
-            return verified
+            return {**verified, **before_contact}
         rc, out, err = core.sh([core.VENV_PY, "-I", "-B", os.path.join(snapshot, "tests", "test_live.py")],
                                cwd=snapshot, env=env, timeout=300)
     lines = [l for l in out.splitlines() if l.strip()]
+    # The manifest digest names the snapshot that ran.
     return {"ok": rc == 0, "passed": sum(1 for l in lines if l.startswith("PASS")),
             "failed": sum(1 for l in lines if l.startswith("FAIL")), "output": lines[-8:],
+            "manifest_sha256": verified["manifest_sha256"],
             "_exit": 0 if rc == 0 else 1, "_notes": ([err[-300:]] if rc != 0 and err else [])}

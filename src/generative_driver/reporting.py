@@ -109,7 +109,9 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
     if not compatible:
         verdict = "incompatible"
         reason = "Unsupported historical stage inventory; this report cannot be scored as a fresh reuse workflow"
-    execution = case_manifest.get("execution", "unclassified")
+    from .replay import execution_label
+    execution = execution_label(case_manifest.get("execution", "unclassified"),
+                                ((provenance or {}).get("agent") or {}).get("runtime"))
     evidence = {"stage_verdicts": verdicts,
                 "probe_evaluation": {"observations": case_state.get("probe_evaluation", {}).get("observations", {})}}
     if "physical_grounding" in case_state:
@@ -123,6 +125,8 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
             "execution": execution,
             "model_benchmark": execution in ("actual-agent-emulation", "actual-agent-physical"),
             "workflow_status": status, "verdict": verdict,
+            # The run's final equivalence verdict and its basis; self-evidence is not the independent verdict above.
+            "protocol": (result.get("progress") or {}).get("protocol"), "equivalence": result.get("equivalence"),
             "reason": reason, "stages": stages, "workflow_stages": list(STAGES),
             "case_state": evidence,
             "elapsed_seconds": max(0, result["updated"] - result["created"]),
@@ -178,13 +182,27 @@ def _public(value, home):
 def markdown(report):
     def show(value):
         return "unknown" if value is None else f"{value:.2f}" if isinstance(value, float) else str(value)
+    from .configurator import PROTOCOL
+    # Nothing grades an assistive run's stages, and only a benchmark run's evaluator grades its driver
+    # (benchmark-report/3): a generic assistive run has neither a stage evaluator column nor an independent verdict.
+    assistive = report.get("protocol") == PROTOCOL
+    independent = not assistive or report.get("schema") == "benchmark-report/3"
     lines = ["# Generative Driver benchmark", "",
              f"Run: `{report['run_id']}`. Execution: `{report['execution']}`.", "",
-             f"Workflow: **{report['workflow_status']}**. Independent verdict: **{report['verdict']}**.", "",
-             "| Stage | Workflow | Evaluator | Attempts | Worker seconds | Tool seconds | Tokens |",
-             "|---|---|---|---:|---:|---:|---:|"]
+             f"Workflow: **{report['workflow_status']}**." +
+             (f" Independent verdict: **{report['verdict']}**." if independent else ""), ""]
+    final = report.get("equivalence")
+    if isinstance(final, dict):
+        from .configurator import equivalence_label
+        diff = "; ".join(str(d.get("reason")) for d in final.get("diff") or [] if isinstance(d, dict))
+        lines += [f"Equivalence ({final.get('basis', 'unknown basis')}): **{equivalence_label(final)}**. "
+                  f"Protocol: `{report.get('protocol')}`." + (f" Differences: {diff}." if diff else ""), ""]
+    graded = not assistive and all("evaluator_status" in row for row in report["stages"].values())
+    lines += ["| Stage | Workflow |" + (" Evaluator |" if graded else "") + " Attempts | Worker seconds | Tool seconds | Tokens |",
+              "|---|---|" + ("---|" if graded else "") + "---:|---:|---:|---:|"]
     for name, row in report["stages"].items():
-        lines.append(f"| {name} | {row['workflow_status']} | {row['evaluator_status']} | {row['attempt_count']} | "
+        lines.append(f"| {name} | {row['workflow_status']} |" + (f" {row['evaluator_status']} |" if graded else "") +
+                     f" {row['attempt_count']} | "
                      f"{show(row['worker_seconds'])} | {show(row['tool_seconds'])} | {show(row['usage']['total_tokens'])} |")
     lines += ["", f"Overall wall time: {show(report['elapsed_seconds'])} seconds. "
               f"Reported tokens: {show(report['usage']['total_tokens'])}; "
@@ -214,6 +232,25 @@ def markdown(report):
     if report.get("limitations"):
         lines += ["", "## Limits", "", *["- " + item for item in report["limitations"]]]
     return "\n".join(lines) + "\n"
+
+
+def _awaiting(result, events):
+    """A completed run that awaits its independent grade: 'unscored' once the harness posted an unscored evaluation,
+    'pending' before; None for a run with a recorded verdict or one that stopped before any grade."""
+    if (result.get("equivalence") is not None or result.get("status") != "completed"
+            or (result.get("progress") or {}).get("equivalence") != "pending"):
+        return None
+    return "unscored" if any(event["kind"] == "evaluation.unscored" for event in events) else "pending"
+
+
+def _why(result, events):
+    """Why an assistive benchmark run stands as it does: the reasons of its latest unscored grade while it awaits one,
+    else the run's own reason (its stop, its verdict, or that its driver awaits the evaluator)."""
+    if _awaiting(result, events) == "unscored":
+        latest = [event["data"] for event in events if event["kind"] == "evaluation.unscored"][-1]
+        reasons = [str(d.get("reason")) for d in latest.get("diff") or [] if isinstance(d, dict)]
+        return "Unscored: " + ("; ".join(reasons) or "no reason recorded")
+    return result.get("reason")
 
 
 def report_run(run_id, home=None, output=None, *, autostart=True):
@@ -288,7 +325,16 @@ def report_run(run_id, home=None, output=None, *, autostart=True):
             'agent': 'Effective runtime configuration captured before execution; individual worker records retain reported identity.',
             'case_metadata': 'Case manifest and input hashes captured before execution.'}
     report["evaluator_verdicts"] = result.get("evaluator_verdicts", [])
-    if snapshot and manifest.get('schema') == 'benchmark-case/2':
+    from .configurator import PROTOCOL
+    if snapshot and (result.get('progress') or {}).get('protocol') == PROTOCOL:
+        # An assistive benchmark run, of any case, is graded once, after it: its report is its recorded verdict, and no
+        # stage evaluation exists.
+        from .benchmark_support.evidence import public_v3_report
+        report.update(progress=result['progress'], outcome_category=result.get('outcome_category'),
+                      equivalence_status=_awaiting(result, events), reason=_public(_why(result, events), root),
+                      stopped_stage=result.get('stage') if result.get('status') in ('blocked', 'failed', 'cancelled') else None)
+        report = public_v3_report(report)
+    elif snapshot and manifest.get('schema') == 'benchmark-case/2':
         from .benchmark_support.evidence import public_v2_report
         report.update({key: state[key] for key in ('evaluations', 'accepted_gates', 'final_evaluation') if key in state})
         report['progress'] = result.get('progress', {})

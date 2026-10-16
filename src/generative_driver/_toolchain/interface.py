@@ -11,7 +11,8 @@ from . import core
 
 import interface_runtime
 from interface_runtime.engine import SCHEMAS, validate_model
-from interface_runtime.evidence import read_json, read_json_hashed, run_samples, check_probe, MAX_EVIDENCE_BYTES, probe_coverage, COVERAGE_SCOPE
+from interface_runtime.evidence import (read_json, read_json_hashed, run_samples, check_probe, MAX_EVIDENCE_BYTES,
+                                        probe_coverage, COVERAGE_SCOPE, ReplayFactory, _evidence_bound)
 from interface_runtime.package import digest, package_files, verify_package, inspect_package
 from interface_runtime.faults import classify_failure, LEGACY_TRANSPORT_CODES as TRANSPORT_CODES
 from interface_runtime.transports import TransportError, capabilities, validate_binding
@@ -62,12 +63,49 @@ def interface_describe(model_dir, **_):
             'capabilities':capabilities()}
 
 
+def before_contact(error, **extra):
+    """A tool's refusal before it contacted the device: no transport was opened, so nothing reached the device."""
+    return {'ok':False,'error':error,**extra,'transport_open_attempted':False,'_exit':1}
+
+
+def host_before_contact(exc):
+    """A host failure before a tool contacted the device (its temporary folder, a snapshot copy it cannot read back):
+    nothing reached the device, and it says nothing about the tool's input. Fault host, exit 4."""
+    return {'ok':False,'fault':'host','error':f'{type(exc).__name__}: {exc}','transport_open_attempted':False,'_exit':4}
+
+
+def _preflight(model, operation, parameters, allow_effects, replay, n=1):
+    """The checks run_samples makes before it opens a transport, made here so that each refusal can be declared:
+    the evidence bound of a validated model for `n` samples (which also names an unknown operation) and the replay
+    fixture."""
+    if _evidence_bound(model, operation, parameters, allow_effects, n) > MAX_EVIDENCE_BYTES:
+        raise ValueError('requested probe exceeds evidence bound; reduce samples, steps or output expansion')
+    if replay is not None:
+        ReplayFactory(replay)
+
+
 @core.tool('interface_execute')
 def interface_execute(model_dir, operation, parameters=None, binding=None, allow_effects=None, replay=None, **_):
-    model, sha = load(model_dir)
-    execution = run_samples(model, operation, parameters, binding=binding,
-                            allow_effects=() if allow_effects is None else allow_effects,
-                            replay=read_json(path(replay)) if replay is not None else None)
+    """Execute one operation of a model once. Every refusal before the transport opens (a model.json that is missing,
+    unreadable or not strict bounded JSON, an invalid model, an unknown operation, an evidence bound the operation
+    exceeds, a replay fixture) is returned with transport_open_attempted false and exit 1."""
+    grants = () if allow_effects is None else allow_effects
+    try:
+        if not (path(model_dir)/'model.json').is_file():
+            raise ValueError('model_dir holds no model.json')
+        model, sha = load(model_dir)
+    except (OSError, ValueError, TypeError, LookupError, RecursionError) as exc:
+        return before_contact(f'{type(exc).__name__}: {exc}')
+    checked = validate_model(model)
+    if not checked['ok']:
+        # The runtime refuses this model before it opens any transport; say so, in the runtime's words.
+        return before_contact('ValueError: invalid model: ' + str(checked['defects']), model_sha256=sha)
+    try:
+        fixture = read_json(path(replay)) if replay is not None else None
+        _preflight(model, operation, parameters, grants, fixture)
+    except (OSError, ValueError, TypeError, LookupError, RecursionError) as exc:
+        return before_contact(f'{type(exc).__name__}: {exc}', model_sha256=sha)
+    execution = run_samples(model, operation, parameters, binding=binding, allow_effects=grants, replay=fixture)
     result = execution['results'][0]
     return {**result,'evidence_kind':execution['evidence_kind'],'timing_policy':execution['timing_policy'],
             'model_sha256':sha,
@@ -75,12 +113,30 @@ def interface_execute(model_dir, operation, parameters=None, binding=None, allow
 
 
 def probe_run(run_dir, model_dir, n=1, operation=None, parameters=None, binding=None, allow_effects=None, replay=None):
-    model, sha = load(model_dir)
-    if operation is None:
-        raise ValueError('schema 3 probe requires an explicit operation name')
+    """Run one operation of a model `n` times and record the evidence. Every refusal before the transport opens (a
+    model.json that is missing, unreadable or not strict bounded JSON, an invalid model, a missing or unknown operation,
+    a sample count outside 1..100, an evidence bound the samples exceed, a replay fixture) is returned with
+    transport_open_attempted false and exit 1, and writes no record."""
     grants = [] if allow_effects is None else allow_effects
-    result = run_samples(model, operation, parameters, n=n, binding=binding, allow_effects=grants,
-                         replay=read_json(path(replay)) if replay is not None else None)
+    try:
+        if not (path(model_dir)/'model.json').is_file():
+            raise ValueError('model_dir holds no model.json')
+        model, sha = load(model_dir)
+    except (OSError, ValueError, TypeError, LookupError, RecursionError) as exc:
+        return before_contact(f'{type(exc).__name__}: {exc}')
+    try:
+        if operation is None:
+            raise ValueError('schema 3 probe requires an explicit operation name')
+        if type(n) is not int or not 1 <= n <= 100:
+            raise ValueError('sample count must be integer 1..100')
+        checked = validate_model(model)
+        if not checked['ok']:
+            raise ValueError('invalid model: ' + str(checked['defects']))
+        fixture = read_json(path(replay)) if replay is not None else None
+        _preflight(model, operation, parameters, grants, fixture, n)
+    except (OSError, ValueError, TypeError, LookupError, RecursionError) as exc:
+        return before_contact(f'{type(exc).__name__}: {exc}', model_sha256=sha)
+    result = run_samples(model, operation, parameters, n=n, binding=binding, allow_effects=grants, replay=fixture)
     envelope = {'schema':'interface-probe/1','model_sha256':sha,'operation':operation,
                 'parameters':{} if parameters is None else parameters,'allow_effects':grants,**result}
     folder = Path(core.resolve_run(run_dir))/'probe'; folder.mkdir(parents=True, exist_ok=True)
@@ -167,13 +223,16 @@ def binding_reference(model):
         effects.setdefault(operation['effect'], []).append(name)
     grants = ' '.join(f'Operations that need `--allow-effect {effect}`: {", ".join(effects[effect])}.'
                       for effect in ('write', 'actuate') if effect in effects) or 'Every operation is a read.'
+    reset = (' This channel resets the device when it opens, so every connection needs `--allow-effect reset`; '
+             'use `python -m driver sequence` to run several operations over one connection.'
+             if model['channel'].get('resets_on_open') else '')
     return (f'The channel is {kind}. Supply its trusted physical binding as JSON:\n\n'
             f"```sh\npython -m driver execute {model['identity']['operation']} --binding '{form}'\n```\n\n"
             f'{note} The binding is the operator\'s choice; models cannot select host paths, devices or network '
             'destinations.\n\n'
             'Read effects are allowed by default; write and actuate each require an explicit grant, '
             '`--allow-effect write` or `--allow-effect actuate`, repeated once per effect. '
-            f'{grants} These are grants to declarations, not proof arbitrary bytes are safe.\n\n')
+            f'{grants}{reset} These are grants to declarations, not proof arbitrary bytes are safe.\n\n')
 
 
 def coverage_reference(model, evidence):
@@ -238,6 +297,13 @@ def _trusted_python():
     return trusted
 
 
+def _read_back(snapshot):
+    """Read every file of a snapshot copy, raising the host's OSError."""
+    package_files(snapshot)
+    for name in ('manifest.json','manifest.sha256'):
+        digest(snapshot/name)
+
+
 def _snapshot(pkg, sha, expected_manifest_sha256, temporary):
     """Copy a verified package's allowlisted files into `temporary` and verify the copy, whose Python must equal
     the trusted runtime and template. Returns (snapshot, manifest, None) or (None, None, refusal)."""
@@ -257,8 +323,14 @@ def _snapshot(pkg, sha, expected_manifest_sha256, temporary):
     for name in sorted(allowlist | {'manifest.json','manifest.sha256'}):
         target = snapshot/name; target.parent.mkdir(parents=True,exist_ok=True)
         shutil.copyfile(pkg/name, target, follow_symlinks=False)
+    # The copy holds bytes that just passed inspection at the source, so a copy the host cannot read back (a lock an
+    # antivirus or indexer holds, an I/O error) is the host's failure around the check, never the package's defect.
+    # The runtime's verification reports any read error as a defect, so the copy is read here first, and again after a
+    # failed verification, letting the host's OSError propagate.
+    _read_back(snapshot)
     verified = verify_package(snapshot, sha, expected_manifest_sha256)
     if not verified['ok']:
+        _read_back(snapshot)
         return None, None, {**verified,'_exit':1}
     if trusted != {k:v for k,v in verified['manifest']['files'].items() if k.endswith('.py')}:
         return None, None, {'ok':False,'defects':[{'where':'runtime','what':'bundled Python differs from trusted runtime/templates'}],'_exit':1}
@@ -267,7 +339,20 @@ def _snapshot(pkg, sha, expected_manifest_sha256, temporary):
 
 def emit_check(package_dir, model_dir=None, expected_manifest_sha256=None):
     pkg = path(package_dir)
-    model, sha = load(pkg/'driver' if model_dir is None else model_dir)
+    source = pkg/'driver' if model_dir is None else path(model_dir)
+    # os.path.isfile is false on any OSError, such as a folder the worker left unsearchable, where Path.is_file raises.
+    if not os.path.isfile(source/'model.json'):
+        # A package without its driver model, or a model directory without one, is refused; it is no host fault.
+        return {'ok':False,'integrity_ok':False,'replay_status':'not_run','_exit':1,
+                'defects':[{'where':'driver/model.json' if model_dir is None else 'model_dir',
+                            'what':'model.json is missing or its folder cannot be searched'}]}
+    try:
+        model, sha = load(source)
+    except (OSError, RecursionError) as exc:
+        # Model bytes that cannot be read or parsed are the package's (or model directory's) defect, not the host's.
+        return {'ok':False,'integrity_ok':False,'replay_status':'not_run','_exit':1,
+                'defects':[{'where':'driver/model.json' if model_dir is None else 'model_dir',
+                            'what':f'model.json is unreadable: {type(exc).__name__}: {exc}'}]}
     inspected = inspect_package(pkg, _trusted_python(), sha, expected_manifest_sha256)
     if not inspected['ok']:
         return {**inspected,'replay_status':'not_run','_exit':1}
@@ -276,23 +361,28 @@ def emit_check(package_dir, model_dir=None, expected_manifest_sha256=None):
                 'manifest_pin_verified':expected_manifest_sha256 is not None,
                 'replay_status':'not_run','replay_reason':'bundled Python differs from current trusted runtime/templates; integrity only',
                 'source_evidence_kind':inspected['manifest']['source_evidence_kind'],'_exit':0}
-    with tempfile.TemporaryDirectory() as temporary:
+    # A folder the host cannot remove at once (a file an indexer or antivirus holds open on Windows) is left behind;
+    # it never discards a check that ran.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
         snapshot, manifest, refused = _snapshot(pkg, sha, expected_manifest_sha256, temporary)
         if refused is not None:
             return refused
         result = _check_snapshot(snapshot, model, sha, manifest, expected_manifest_sha256)
-        return {**result,'integrity_ok':True,'runtime_current':True,
-                'replay_status':'passed' if result['ok'] else 'failed'}
+        return {'integrity_ok':True,'runtime_current':True,
+                'replay_status':'passed' if result['ok'] else 'failed',**result}
 
 
 def _check_snapshot(pkg, model, sha, manifest, expected_manifest_sha256):
-    evidence = read_json(pkg/'probe.json')
+    try:
+        evidence = read_json(pkg/'probe.json')
+    except (ValueError, RecursionError) as exc:
+        return {'ok':False,'defects':[{'where':'probe','what':f'{type(exc).__name__}: {exc}'}],'_exit':1}
     compared = check_probe(model, evidence, sha)
-    if manifest['source_evidence_kind'] != evidence.get('evidence_kind'):
+    if manifest['source_evidence_kind'] != (evidence.get('evidence_kind') if type(evidence) is dict else None):
         compared = {'ok':False,'defects':[{'where':'evidence_kind','what':'manifest and probe disagree'}]}
     if not compared['ok']:
         return {**compared,'_exit':1}
-    with tempfile.TemporaryDirectory() as cwd:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as cwd:
         result = subprocess.run([sys.executable,'-I','-B','-c',BOOT,
             str(pkg.resolve()),'replay'], cwd=cwd, env={**os.environ,'PYTHONPATH':''},
             capture_output=True,text=True,timeout=260)
@@ -300,6 +390,19 @@ def _check_snapshot(pkg, model, sha, manifest, expected_manifest_sha256):
         actual = json.loads(result.stdout)
     except ValueError:
         actual = None
+    # The trusted package reports what it could not read in the snapshot (an OSError, ValueError, TypeError or KeyError)
+    # as its package_error.
+    unread = type(actual) is dict and type(actual.get('error')) is dict and actual['error'].get('code') == 'package_error'
+    if type(actual) is not dict or (actual == compared and result.returncode != 0) or unread:
+        # The process runs the trusted runtime on bytes whose replay just passed in this process. One that printed no
+        # result (the host killed it, it ran out of memory, it crashed at start), failed after printing that same
+        # result, or could not read the verified snapshot those same bytes are in (a lock or I/O error the host took
+        # after this process read the copy back) failed around the check: the host's fault, which says nothing about
+        # the package.
+        return {'ok':False,'fault':'host','replay_status':'not_run','_exit':4,
+                'error':('replay process could not read the verified snapshot: ' + str(actual['error'].get('message'))
+                         if unread else f'replay process exited {result.returncode} without a replay result'),
+                'stderr':result.stderr[-2000:],'source_evidence_kind':evidence['evidence_kind']}
     ok = result.returncode == 0 and actual == compared
     return {'ok':ok,'defects':[] if ok else [{'where':'package replay','what':'standalone replay differs'}],
             'evidence_kind':'replay','source_evidence_kind':evidence['evidence_kind'],
@@ -315,17 +418,18 @@ def is_interface_package(package_dir):
 
 
 def _live_call(operation, command):
-    """One package command-line call; the verdict needs exit 0, ok true and a verified identity."""
-    with tempfile.TemporaryDirectory() as cwd:
-        try:
+    """One package command-line call; the verdict needs exit 0, ok true and a verified identity. A host failure
+    around the call (its working folder, starting the process, a timeout) is this call's host fault."""
+    try:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as cwd:
             done = subprocess.run(command, cwd=cwd, env={**os.environ,'PYTHONPATH':''},
                                   capture_output=True, text=True, timeout=300)
-        except subprocess.TimeoutExpired:
-            return {'operation':operation,'command':command,'returncode':None,'stdout_json':None,'stderr':'',
-                    'ok':False,'error_code':'timeout','error_message':'package call exceeded 300 s','fault':'host'}
-        except OSError as exc:
-            return {'operation':operation,'command':command,'returncode':None,'stdout_json':None,'stderr':'',
-                    'ok':False,'error_code':'open','error_message':str(exc),'fault':'host'}
+    except subprocess.TimeoutExpired:
+        return {'operation':operation,'command':command,'returncode':None,'stdout_json':None,'stderr':'',
+                'ok':False,'error_code':'timeout','error_message':'package call exceeded 300 s','fault':'host'}
+    except OSError as exc:
+        return {'operation':operation,'command':command,'returncode':None,'stdout_json':None,'stderr':'',
+                'ok':False,'error_code':'open','error_message':str(exc),'fault':'host'}
     try:
         result = json.loads(done.stdout)
     except ValueError:
@@ -354,48 +458,76 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
 
     The package runs from a freshly verified allowlisted snapshot whose Python equals the trusted runtime and
     template, under the bench interpreter in isolated mode, so a pass is evidence about these package bytes and
-    this binding. The binding is the operator's and is passed through unchanged; it is checked against the
-    model's channel, and every named operation's effect against the grants, before any call, so an operator
-    error is refused (exit 1) with no live record instead of being recorded as a package failure. The plan
-    stops at the first operator or host fault (exit 4, inconclusive). Every call is recorded append-only in
-    emit/live-N.json."""
-    if type(binding) is not dict:
-        raise ValueError('an interface package live test requires a binding object')
-    grants = [] if allow_effects is None else allow_effects
-    if type(grants) is not list or any(g not in ('read','write','actuate') for g in grants):
-        raise ValueError('allow_effects must be a list of read, write or actuate')
-    arguments = {} if parameters is None else parameters
-    if type(arguments) is not dict or any(type(v) is not dict for v in arguments.values()):
-        raise ValueError('parameters must map operation names to argument objects')
-    sha = load(model_dir)[1] if model_dir is not None else None
+    this binding; the result's manifest_sha256 names the snapshot that ran. The binding is the operator's and is
+    passed through unchanged; it is checked against the model's channel, and every named operation's effect against
+    the grants, before any call. Every refusal before the first call (arguments, binding, grants, a package that fails
+    its snapshot check) is returned with transport_open_attempted false and exit 1, with no live record, instead of
+    being recorded as a package failure. A host failure before the first call (its temporary folder, a snapshot copy
+    it cannot read back) is no refusal of the package: it is returned as fault host with exit 4, also with
+    transport_open_attempted false, since nothing reached the device. The plan stops at the first operator or host
+    fault (exit 4, inconclusive).
+    Every call is recorded append-only in emit/live-N.json; when the host cannot write that record, the results are
+    still returned, as a host fault with exit 4, since the device was contacted."""
+    try:
+        if type(binding) is not dict:
+            raise ValueError('an interface package live test requires a binding object')
+        grants = [] if allow_effects is None else allow_effects
+        if type(grants) is not list or any(g not in ('read','write','actuate','reset') for g in grants):
+            raise ValueError('allow_effects must be a list of read, write, actuate or reset')
+        arguments = {} if parameters is None else parameters
+        if type(arguments) is not dict or any(type(v) is not dict for v in arguments.values()):
+            raise ValueError('parameters must map operation names to argument objects')
+        json.dumps([binding, arguments], allow_nan=False)
+        if model_dir is not None and not (path(model_dir)/'model.json').is_file():
+            raise ValueError('model_dir holds no model.json')
+        sha = load(model_dir)[1] if model_dir is not None else None
+    except (OSError, ValueError, TypeError, RecursionError) as exc:
+        return before_contact(f'{type(exc).__name__}: {exc}')
     pkg = path(package_dir)
     started = core.now()
-    with tempfile.TemporaryDirectory() as temporary:
-        snapshot, manifest, refused = _snapshot(pkg, sha, expected_manifest_sha256, temporary)
-        if refused is not None:
-            return refused
-        manifest_sha = digest(snapshot/'manifest.json')
-        model = read_json(snapshot/'driver/model.json', 1048576)
-        names = [model['identity']['operation']] if operations is None else operations
-        if (type(names) is not list or not names
-                or any(type(n) is not str or n not in model['operations'] for n in names)):
-            raise ValueError("operations must be a nonempty list of the model's operation names")
-        if set(arguments) - set(names):
-            raise ValueError('parameters name an operation that is not tested')
+    try:
+        folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    except OSError as exc:
+        return host_before_contact(exc)
+    with folder as temporary:
         try:
-            validate_binding(model['channel'], binding)
-        except TransportError as exc:
-            raise ValueError(f'binding refused before any call: {exc}') from None
-        ungranted = [n for n in names if model['operations'][n]['effect'] not in ['read', *grants]]
-        if ungranted:
-            raise ValueError('operations need an effect grant that allow_effects does not give: '
-                             + ', '.join(f"{n} ({model['operations'][n]['effect']})" for n in ungranted))
+            snapshot, manifest, refusal = _snapshot(pkg, sha, expected_manifest_sha256, temporary)
+            if refusal is not None:
+                return {**refusal, 'transport_open_attempted':False}
+            manifest_sha = digest(snapshot/'manifest.json')
+            model = read_json(snapshot/'driver/model.json', 1048576)
+            names = [model['identity']['operation']] if operations is None else operations
+            if (type(names) is not list or not names
+                    or any(type(n) is not str or n not in model['operations'] for n in names)):
+                raise ValueError("operations must be a nonempty list of the model's operation names")
+            if set(arguments) - set(names):
+                raise ValueError('parameters name an operation that is not tested')
+            try:
+                validate_binding(model['channel'], binding)
+            except TransportError as exc:
+                raise ValueError(f'binding refused before any call: {exc}') from None
+            ungranted = [n for n in names if model['operations'][n]['effect'] not in ['read', *grants]]
+            if ungranted:
+                raise ValueError('operations need an effect grant that allow_effects does not give: '
+                                 + ', '.join(f"{n} ({model['operations'][n]['effect']})" for n in ungranted))
+        except OSError as exc:
+            # The snapshot holds bytes that passed inspection; a host that cannot copy or read them back failed before
+            # any call.
+            return host_before_contact(exc)
+        except (ValueError, TypeError, LookupError, RecursionError) as exc:
+            return before_contact(f'{type(exc).__name__}: {exc}')
         flags = [flag for g in grants if g != 'read' for flag in ('--allow-effect', g)]
         results = []
         for name in names:
-            results.append(_live_call(name, [core.VENV_PY,'-I','-B','-c',BOOT,str(snapshot),'execute',name,
-                '--parameters',json.dumps(arguments.get(name,{}),allow_nan=False),
-                '--binding',json.dumps(binding,allow_nan=False),*flags]))
+            try:
+                results.append(_live_call(name, [core.VENV_PY,'-I','-B','-c',BOOT,str(snapshot),'execute',name,
+                    '--parameters',json.dumps(arguments.get(name,{}),allow_nan=False),
+                    '--binding',json.dumps(binding,allow_nan=False),*flags]))
+            except Exception as exc:
+                # The host failed around the call, which may already have reached the device.
+                results.append({'operation':name,'command':None,'returncode':None,'stdout_json':None,'stderr':'',
+                                'ok':False,'error_code':'host','error_message':f'{type(exc).__name__}: {exc}',
+                                'fault':'host'})
             if results[-1]['fault'] in ('operator','host'):
                 break
     passed = sum(1 for r in results if r['ok'])
@@ -403,25 +535,36 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
     ok = passed == len(names)
     transport = any(r['fault'] in ('operator','host') for r in results)
     verdict = 'pass' if ok else 'inconclusive' if transport else 'fail'
-    record = {'schema':'interface-live-test/1','package_dir':str(pkg),'manifest_sha256':manifest_sha,
-              'model_sha256':manifest['model_sha256'],'interpreter':core.VENV_PY,'binding':binding,
-              'operations':names,'parameters':arguments,'allow_effects':grants,'started':started,
-              'finished':core.now(),'results':results,'passed':passed,'failed':len(results)-passed,
-              'not_run':not_run,'ok':ok,'verdict':verdict}
-    folder = Path(core.resolve_run(run_dir or 'scratch'))/'emit'; folder.mkdir(parents=True, exist_ok=True)
-    index = 1
-    while (folder/f'live-{index}.json').exists():
-        index += 1
-    target = folder/f'live-{index}.json'
-    with target.open('x', encoding="utf-8") as stream:
-        stream.write(json.dumps(record, indent=2, allow_nan=False))
+    # The runtime says whether it tried to open the transport, so a refusal of the caller's parameters before any
+    # device contact stays distinguishable from a call that reached the device.
     summary = [{'operation':r['operation'],'ok':r['ok'],'returncode':r['returncode'],'error_code':r['error_code'],
                 'error_message':r['error_message'],'fault':r['fault'],
                 **{k:r['stdout_json'].get(k) for k in ('identity_verified','outputs','units')
-                   if type(r['stdout_json']) is dict}} for r in results]
-    return {'ok':ok,'passed':passed,'failed':len(results)-passed,'not_run':not_run,'verdict':verdict,
-            'results':summary,'live_record':str(target),'manifest_sha256':manifest_sha,
-            '_exit':0 if ok else 4 if transport else 1,'_files':{str(target):digest(target)}}
+                   if type(r['stdout_json']) is dict},
+                **{k:r['stdout_json'][k] for k in ('transport_open_attempted',)
+                   if type(r['stdout_json']) is dict and type(r['stdout_json'].get(k)) is bool}} for r in results]
+    out = {'ok':ok,'passed':passed,'failed':len(results)-passed,'not_run':not_run,'verdict':verdict,
+           'results':summary,'manifest_sha256':manifest_sha}
+    try:
+        record = json.dumps({'schema':'interface-live-test/1','package_dir':str(pkg),'manifest_sha256':manifest_sha,
+                             'model_sha256':manifest['model_sha256'],'interpreter':core.VENV_PY,'binding':binding,
+                             'operations':names,'parameters':arguments,'allow_effects':grants,'started':started,
+                             'finished':core.now(),'results':results,'passed':passed,'failed':len(results)-passed,
+                             'not_run':not_run,'ok':ok,'verdict':verdict}, indent=2, allow_nan=False)
+        folder = Path(core.resolve_run(run_dir or 'scratch'))/'emit'; folder.mkdir(parents=True, exist_ok=True)
+        index = 1
+        while (folder/f'live-{index}.json').exists():
+            index += 1
+        target = folder/f'live-{index}.json'
+        with target.open('x', encoding="utf-8") as stream:
+            stream.write(record)
+        files = {str(target):digest(target)}
+    except Exception as exc:
+        # The device was contacted: keep what it did. Without its record the test is inconclusive for the host,
+        # unless the package already failed on the device.
+        return {**out, 'ok':False, 'verdict':'fail' if verdict == 'fail' else 'inconclusive', 'fault':'host',
+                'error':f'live record not written: {type(exc).__name__}: {exc}', 'live_record':None, '_exit':4}
+    return {**out, 'live_record':str(target), '_exit':0 if ok else 4 if transport else 1, '_files':files}
 
 
 def model_qualify(run_dir, model_dir, replies, **_):

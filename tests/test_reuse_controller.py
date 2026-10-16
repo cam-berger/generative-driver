@@ -23,7 +23,7 @@ class FreshReuseControllerTests(unittest.TestCase):
             time.sleep(.01)
         self.fail(controller.call('result', run))
 
-    def run_scripted(self, root, *, failed_reuse=False, legacy_events=None):
+    def run_scripted(self, root, *, failed_reuse=False):
         """Exercise real external workers and durable acceptance through scripted gates.
 
         The gates validate only fixture artifacts; they make no benchmark claim.
@@ -44,20 +44,9 @@ class FreshReuseControllerTests(unittest.TestCase):
 
         def check(spec, stage, run_dir, workspace, report, accepted, assignment):
             self.assertTrue((workspace / 'model.json').is_file())
-            if stage == 'reuse' and legacy_events is not None:
-                from generative_driver.benchmark_support.cases import check_stage, _write
-                _write(run_dir / 'benchmark/state.json', {
-                    'package_attempts': {'reuse': 'toy-attempt'}, 'revision': 0,
-                    'probe_evaluation': {'capabilities': {'temperature': {'operation': 'read', 'output': 't'}}}})
-                rows = [dict(event, stage='reuse', revision=0, attempt_id='toy-attempt') for event in legacy_events]
-                (run_dir / 'benchmark/package-events.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
-                truth = {'reuse_goal': {'fraction': .5, 'final_fraction': 0, 'tolerance': .01},
-                         'checks': [{'id': 'temperature', 'expected': 20, 'absolute_tolerance': 1}]}
-                with patch('generative_driver.benchmark_support.cases._load_case', return_value=(None, None, truth)):
-                    return check_stage('tq9', stage, run_dir, workspace, report)
             if stage == 'reuse' and failed_reuse:
-
-                return {'ok': False, 'fault': 'model', 'final_evaluation': True,
+                # A stage check in the earlier protocol's terminal-final shape: ok False, fault model, final_evaluation.
+                return {'ok': False, 'fault': 'model', 'final_evaluation': True, 'evaluator': {'verdict': 'failed'},
                         'reason': 'Scripted fresh mission failed'}
             if stage == 'emit':
                 package = workspace / 'package'
@@ -85,7 +74,12 @@ class FreshReuseControllerTests(unittest.TestCase):
                                if e['kind'] == 'stage.assigned']
                 self.assertEqual(tuple(a['stage'] for a in assignments), SIX_STAGES)
                 self.assertEqual(result['status'], 'completed', result)
-                self.assertEqual(result['reason'], 'Fresh reuse accepted')
+                # The scripted checks claim no emit_check replay and reuse ran nothing live: the self-evidence
+                # verdict records the package as not equivalent, and the run is still complete.
+                self.assertTrue(result['reason'].startswith('Final verdict: not equivalent: '), result['reason'])
+                self.assertEqual((result['equivalence']['equivalent'], result['equivalence']['basis']), (False, 'self-evidence'))
+                self.assertEqual([d['id'] for d in result['equivalence']['diff']],
+                                 ['emitted_package_replay', 'fresh_reuse_live_operations'])
                 self.assertEqual(tuple(h['stage'] for h in result['accepted_handoffs']), SIX_STAGES)
                 self.assertIsNone(result['progress']['next_stage'])
                 self.assertNotIn('maintenance_cycles', result['progress'])
@@ -100,17 +94,21 @@ class FreshReuseControllerTests(unittest.TestCase):
             finally:
                 controller.close()
 
-    def test_failed_fresh_reuse_never_completes_or_dispatches_another_stage(self):
-        # Catches accepting a failed fresh mission or routing final failure to repair.
+    def test_a_stage_check_in_the_gated_final_shape_is_no_verdict_and_never_dispatches_another_stage(self):
+        # Catches a stage observation that grades: an adapter's failed final (ok False, fault model, final_evaluation)
+        # stopping the run, routing it to repair, or recording a stage verdict. Fresh reuse hands off as any stage does and
+        # the run ends with its one final verdict, after which no stage is dispatched.
         with tempfile.TemporaryDirectory() as directory:
             controller, run, result = self.run_scripted(Path(directory), failed_reuse=True)
             try:
-                self.assertEqual(result['status'], 'failed', result)
-                self.assertEqual(result['stage'], 'reuse')
-                self.assertEqual(result['outcome_category'], 'model')
-                self.assertEqual(tuple(h['stage'] for h in result['accepted_handoffs']), SIX_STAGES[:-1])
-                self.assertTrue(result['progress']['terminal_final_failure'])
-                with self.assertRaisesRegex(ValueError, 'terminal'):
+                self.assertEqual((result['status'], result['outcome_category']), ('completed', 'completed'), result)
+                self.assertTrue(result['reason'].startswith('Final verdict: '), result['reason'])
+                self.assertEqual(tuple(h['stage'] for h in result['accepted_handoffs']), SIX_STAGES)
+                self.assertNotIn('terminal_final_failure', result['progress'])
+                self.assertEqual(result['evaluator_verdicts'], [])
+                assigned = [e['data']['stage'] for e in controller.call('events', run)['events'] if e['kind'] == 'stage.assigned']
+                self.assertEqual(tuple(assigned), SIX_STAGES)
+                with self.assertRaisesRegex(ValueError, 'Only a stopped incomplete run can resume'):
                     controller.call('resume', run)
             finally:
                 controller.close()
@@ -150,8 +148,11 @@ class FreshReuseControllerTests(unittest.TestCase):
             try:
                 image = root / 'discovery.bin'; image.write_bytes(b'PRIVATE DISCOVERY')
                 spec = {'goal': 'Manipulate desired functions', 'inputs': {'image': str(image)}}
+                # Without a package fresh reuse is skipped with a note; discovery inputs never stand in.
                 prepared = controller._prepare(spec, 'reuse', root, root / 'fresh', [])
-                self.assertIn('blocked', prepared)
+                self.assertIn('emitted package', prepared['skip'])
+                self.assertNotIn('inputs', prepared)
+                self.assertNotIn('PRIVATE', json.dumps(prepared))
                 package = root / 'package'; package.mkdir()
                 (package / 'manifest.json').write_text('{}')
                 evidence = root / 'private-evidence.json'; evidence.write_text('{}')
@@ -191,69 +192,3 @@ class FreshReuseControllerTests(unittest.TestCase):
                     reopened.call('resume', run)
             finally:
                 reopened.close()
-
-    def test_actual_legacy_final_contradiction_is_terminal_across_restart(self):
-        # A later unavailable call cannot erase an already observed contradiction.
-        import itertools
-        for (temperature, final_duty), later_fault, error_position in itertools.product(
-                ((999, 0), (20, .5), (999, None), (None, .5)),
-                ('no_failed_event', 'host', 'operator', None), ('before', 'after')):
-            with self.subTest(temperature=temperature, final_duty=final_duty, later_fault=later_fault, error_position=error_position), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                events = [{'ok': True, 'operation': 'read', 'result': {'ok': True, 'outputs': {'t': temperature}},
-                           'observation': {'duty': .5}},
-                          {'ok': True, 'operation': 'disarm', 'result': {'ok': True}, 'observation': {'duty': final_duty}}]
-                if final_duty is None:
-                    events = [dict(events[0], observation=None)]
-                elif temperature is None:
-                    events = [events[1]]
-                if later_fault != 'no_failed_event':
-                    failed = {'ok': False, 'operation': 'read',
-                              'result': {'ok': False, 'error': {'fault': later_fault, 'message': 'Unrelated call unavailable'}}}
-                    events.insert(0 if error_position == 'before' else len(events), failed)
-                controller, run, result = self.run_scripted(root, legacy_events=events)
-                try:
-                    self.assertEqual((result['status'], result['outcome_category']), ('failed', 'model'))
-                    self.assertTrue(result['progress']['terminal_final_failure'])
-                    self.assertEqual(tuple(h['stage'] for h in result['accepted_handoffs']), SIX_STAGES[:-1])
-                    self.assertEqual(result['evaluator_verdicts'][-1]['verdict'], 'failed')
-                    saved = root / 'home/runs' / run['run_id'] / 'benchmark/package-events.jsonl'
-                    if later_fault != 'no_failed_event':
-                        saved_failures = [json.loads(line)['result'] for line in saved.read_text().splitlines()
-                                          if not json.loads(line)['ok']]
-                        self.assertEqual(saved_failures, [failed['result']])
-                    with self.assertRaisesRegex(ValueError, 'terminal'):
-                        controller.call('resume', run)
-                finally:
-                    controller.close()
-                reopened = Controller(root / 'home')
-                try:
-                    self.assertTrue(reopened.call('result', run)['progress']['terminal_final_failure'])
-                    with self.assertRaisesRegex(ValueError, 'terminal'):
-                        reopened.call('resume', run)
-                finally:
-                    reopened.close()
-
-    def test_legacy_unavailable_observation_preserves_recovery(self):
-        import itertools
-        for fault, available in itertools.product(('host', 'operator', None), ('none', 'temperature', 'disarm')):
-            with self.subTest(fault=fault, available=available), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                events = []
-                if available == 'temperature':
-                    events.append({'ok': True, 'operation': 'read', 'result': {'ok': True, 'outputs': {'t': 20}}})
-                elif available == 'disarm':
-                    events.append({'ok': True, 'operation': 'disarm', 'result': {'ok': True}, 'observation': {'duty': 0}})
-                events.append({'ok': False, 'operation': 'read', 'result': {'ok': False, 'error': {'fault': fault}}})
-                controller, run, result = self.run_scripted(root, legacy_events=events)
-                try:
-                    self.assertEqual((result['status'], result['outcome_category']), ('blocked', fault or 'unknown'))
-                    self.assertFalse(result['progress'].get('terminal_final_failure'))
-                finally:
-                    controller.close()
-                reopened = Controller(root / 'home')
-                try:
-                    with patch.object(reopened, '_spawn'):
-                        self.assertTrue(reopened.call('resume', run)['ok'])
-                finally:
-                    reopened.close()

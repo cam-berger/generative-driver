@@ -28,15 +28,16 @@ REPORT_SCHEMA = {
 }
 
 STAGE_BOUNDARY = ('Use only the assigned workspace, supplied inputs, and assigned tool gateway. '
-    'Supplied diagnostic feedback, independent observations and sealed previous candidates from this same run '
-    'are authorized task evidence. Use them for requested repairs and grounding; worker reports remain claims '
-    'to check against the measurements. Do not discard supplied diagnostics as hidden evaluator data. '
+    'Supplied device observations, instrument readings, repair feedback and sealed previous candidates from this '
+    'same run are authorized task evidence: readings of a device are device evidence, as a real device\'s readings '
+    'would be, never a grade. Use them for requested repairs and grounding; worker reports remain claims to check '
+    'against the observations. '
     'Do not read personal skills, home-directory instructions, other repositories, other runs, evaluator '
     'passwords, plaintext oracle files or hidden final answers. '
     'Do not search outside the assigned workspace for task evidence or examples. '
     'Installed runtime libraries and explicitly supplied analysis executables may run normally. '
     'Use the assigned gateway for all device or emulator interactions; never bypass a denied tool through the shell. '
-    'If a required input or capability is absent, report the blocker.')
+    'If a required input or capability is absent, report it; your report is kept as notes and the run continues.')
 
 
 @dataclass
@@ -96,9 +97,27 @@ def validate_report(value):
     return check(value,REPORT_SCHEMA)
 
 
+def _replay_launch(request, config):
+    """The replay runtime: the installed replay worker of this package, given the candidate and the stage gateway on its
+    command line and the prompt on stdin, as Codex is. It runs no model, names no configured command and receives no
+    provider credentials."""
+    work = Path(request.workspace).resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    package = str(Path(__file__).resolve().parents[1])
+    command = [sys.executable, '-c', 'import sys; sys.path.insert(0,' + repr(package) + '); '
+               'from generative_driver.replay import main; main()',
+               '--candidate', config['candidate'], '--candidate-sha256', config['candidate_sha256'], '--stage', request.stage]
+    if request.gateway:
+        command += ['--gateway', json.dumps({'command': request.gateway['command'], 'args': request.gateway.get('args', [])})]
+    env = {k: v for k, v in _environment(config).items() if k not in ('CODEX_HOME', 'OPENAI_API_KEY', 'CODEX_API_KEY')}
+    return command, env, request.prompt
+
+
 def _launch(request, config):
     runtime = config.get('runtime', 'codex')
-    command = config.get('command') or [runtime]
+    if runtime == 'replay':
+        return _replay_launch(request, config)
+    command = config['command']
     if isinstance(command, str):
         command = [command]
     if not isinstance(command, list) or not command or not all(isinstance(v, str) and v for v in command):
@@ -160,7 +179,9 @@ def _launch(request, config):
                                          'available_tools': request.allowed_tools})
         recipe_path = work / '_stage_recipe.json'
         recipe_path.write_text(json.dumps(recipe), encoding='utf-8')
-        command += ['run', '--no-profile', '--no-session', '--recipe', str(recipe_path), '--output-format', 'stream-json']
+        # Goose 1.53 --no-profile also drops recipe extensions; recipe
+        # extensions already replace the profile's extension selection.
+        command += ['run', '--no-session', '--recipe', str(recipe_path), '--output-format', 'stream-json']
         env['GOOSE_DISABLE_SESSION_NAMING'] = 'true'
         env['CONTEXT_FILE_NAMES'] = '[]'
         stdin = ''
@@ -192,7 +213,16 @@ def _terminate(proc):
 
 
 def execute(request, config, cancel_event=None, on_event=None):
-    """Execute exactly one fresh external session and retain its actual output."""
+    """Execute exactly one fresh external session and retain its actual output.
+
+    A result that is not completed names its `cause`: runtime_unavailable, run_budget, cancelled,
+    exit_error, output_limit, no_report or invalid_report."""
+    if config.get('runtime') != 'replay' and not config.get('command'):
+        # Never look the runtime up on PATH: whatever has that name there may be another program.
+        runtime = config.get('runtime', 'codex')
+        return {'runtime': runtime, 'model': config.get('model'), 'provider': config.get('provider'), 'report': None,
+                'usage': None, 'status': 'blocked', 'cause': 'runtime_unavailable', 'elapsed_seconds': 0,
+                'reason': f'No {runtime} command is configured; run `generative-driver configure {runtime} <command>`'}
     command, env, prompt = _launch(request, config)
     work = Path(request.workspace).resolve()
     transcript = work / '_agent_events.jsonl'
@@ -203,6 +233,9 @@ def execute(request, config, cancel_event=None, on_event=None):
               'settings': {k: config[k] for k in ('reasoning_effort', 'max_turns') if k in config},
               'report': None, 'usage': None, 'transcript': str(transcript), 'stderr': str(stderr_path),
               'boundary': 'fresh session; explicit workspace and configured tools; filesystem read and direct-device isolation unverified'}
+    if runtime == 'replay':
+        result.update(candidate_sha256=config['candidate_sha256'], boundary='replay of a saved candidate through the '
+                      'assigned stage gateway; no language model; filesystem read and direct-device isolation unverified')
     started = time.monotonic()
     if os.name == 'nt':
         command = [sys.executable,str(Path(__file__).with_name('_windows_worker.py')),*command]
@@ -211,7 +244,8 @@ def execute(request, config, cancel_event=None, on_event=None):
         proc = subprocess.Popen(command, cwd=work, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', **launch_options)
     except OSError as exc:
-        return {**result, 'status': 'blocked', 'reason': 'Cannot start configured runtime: ' + str(exc), 'elapsed_seconds': 0}
+        return {**result, 'status': 'blocked', 'cause': 'runtime_unavailable',
+                'reason': 'Cannot start configured runtime: ' + str(exc), 'elapsed_seconds': 0}
     messages = queue.Queue()
     def reader(stream, channel):
         for line in stream:
@@ -232,10 +266,10 @@ def execute(request, config, cancel_event=None, on_event=None):
     with transcript.open('w', encoding='utf-8') as transcript_file, stderr_path.open('w', encoding='utf-8') as stderr_file:
         while len(done) < 2 or proc.poll() is None:
             if cancel_event and cancel_event.is_set():
-                outcome = ('cancelled', 'Run cancelled; external worker stopped')
+                outcome = ('cancelled', 'Run cancelled; external worker stopped', 'cancelled')
                 _terminate(proc)
             elif time.monotonic() - started > request.budget_seconds:
-                outcome = ('blocked', 'Stage exhausted the remaining run time budget')
+                outcome = ('blocked', 'Stage exhausted the remaining run time budget', 'run_budget')
                 _terminate(proc)
             try:
                 channel, line = messages.get(timeout=0.1)
@@ -246,7 +280,7 @@ def execute(request, config, cancel_event=None, on_event=None):
                 continue
             size += len(line)
             if size > 32 * 1024 * 1024:
-                outcome = ('failed', 'External worker output exceeded 32 MiB')
+                outcome = ('failed', 'External worker output exceeded 32 MiB', 'output_limit')
                 _terminate(proc)
                 continue
             if channel == 'err':
@@ -293,9 +327,9 @@ def execute(request, config, cancel_event=None, on_event=None):
     proc.stdout.close()
     proc.stderr.close()
     if outcome:
-        return {**result, 'status': outcome[0], 'reason': outcome[1]}
+        return {**result, 'status': outcome[0], 'reason': outcome[1], 'cause': outcome[2]}
     if launch_error is not None:
-        return {**result, 'status': 'blocked', 'reason': 'Cannot start configured runtime: ' + launch_error}
+        return {**result, 'status': 'blocked', 'cause': 'runtime_unavailable', 'reason': 'Cannot start configured runtime: ' + launch_error}
     for text in reversed(text_parts):
         try:
             candidate = json.loads(text)
@@ -306,9 +340,9 @@ def execute(request, config, cancel_event=None, on_event=None):
             pass
     result['final_text'] = text_parts[-1] if text_parts else ''
     if result['exit_code']:
-        return {**result, 'status': 'failed', 'reason': 'Configured runtime exited with an error; inspect retained stderr'}
+        return {**result, 'status': 'failed', 'cause': 'exit_error', 'reason': 'Configured runtime exited with an error; inspect retained stderr'}
     if request.report_required and result['report'] is None:
-        return {**result, 'status': 'failed', 'reason': 'Runtime did not produce a structured stage report'}
+        return {**result, 'status': 'failed', 'cause': 'no_report', 'reason': 'Runtime did not produce a structured stage report'}
     if request.report_required and not validate_report(result['report']):
-        return {**result, 'status':'failed','reason':'Runtime report does not match the stage report schema'}
+        return {**result, 'status':'failed','cause':'invalid_report','reason':'Runtime report does not match the stage report schema'}
     return {**result, 'status': 'completed'}

@@ -1,6 +1,6 @@
 import argparse
 import json
-from . import describe, execute, replay_probe
+from . import describe, execute, replay_probe, sequence
 
 
 def main():
@@ -12,14 +12,20 @@ def main():
     call.add_argument('operation')
     call.add_argument('--parameters', type=json.loads, default={})
     call.add_argument('--binding', type=json.loads, default={})
-    call.add_argument('--allow-effect', action='append', choices=['write','actuate'], default=[])
+    call.add_argument('--allow-effect', action='append', choices=['write','actuate','reset'], default=[])
     call.add_argument('--replay', help='path to an explicit interface-replay/1 fixture')
+    steps = commands.add_parser('sequence', help='several operations over one connection')
+    steps.add_argument('--steps', type=json.loads, required=True)
+    steps.add_argument('--binding', type=json.loads, default={})
+    steps.add_argument('--allow-effect', action='append', choices=['write','actuate','reset'], default=[])
     args = parser.parse_args()
     try:
         if args.command == 'describe':
             result = describe()
         elif args.command == 'replay':
             result = replay_probe()
+        elif args.command == 'sequence':
+            result = sequence(args.steps, binding=args.binding, allow_effects=args.allow_effect)
         else:
             from interface_runtime.evidence import read_json
             fixture = read_json(args.replay) if args.replay else None

@@ -22,22 +22,27 @@ def _call(method, **params):
 
 
 @server.tool()
-def driver_start(goal: str, executor: str = "codex", inputs: dict | None = None,
+def driver_start(goal: str, executor: Literal["codex", "goose"] | None = None, inputs: dict | None = None,
                  binding: dict | None = None, effects: list[str] | None = None,
                  budget_seconds: int = 10800, request_id: str | None = None,
-                 scoped_tool_approval: Literal["bound-device"] | None = None) -> str:
+                 scoped_tool_approval: Literal["bound-device"] | None = None,
+                 ghidra_home: str | None = None, java_home: str | None = None) -> str:
     """Start a durable six-stage run using a configured runtime. Save the returned run_id.
+    executor defaults to the one runtime configured with `generative-driver configure`; an unconfigured one is refused.
     Supply explicit inputs and operator binding; effects default to read. request_id deduplicates starts.
+    Effects are read, write, actuate and reset; grant reset only for devices that restart when their port opens.
+    ghidra_home and java_home optionally select native analysis installations for the sealed firmware worker.
     Set bound-device approval only with the user's explicit consent to assigned tools for that binding/effect scope.
     """
     return _call("start", goal=goal, executor=executor, inputs=inputs or {}, binding=binding,
                  effects=effects if effects is not None else ["read"], budget_seconds=budget_seconds,
-                 request_id=request_id, scoped_tool_approval=scoped_tool_approval)
+                 request_id=request_id, scoped_tool_approval=scoped_tool_approval,
+                 ghidra_home=ghidra_home, java_home=java_home)
 
 
 @server.tool()
 def driver_status(run_id: str) -> str:
-    """Reconnect to the current stage, status, blockers and uncertain effects of a durable run."""
+    """Reconnect to the current stage, status, blockers, uncertain effects, latest stage notes and final verdict of a durable run."""
     return _call("status", run_id=run_id)
 
 
@@ -55,7 +60,7 @@ def driver_cancel(run_id: str) -> str:
 
 @server.tool()
 def driver_result(run_id: str) -> str:
-    """Read worker reports, accepted evidence and independent evaluator verdicts separately."""
+    """Read worker reports, accepted evidence with its notes, evaluator verdicts and the final equivalence verdict separately."""
     return _call("result", run_id=run_id)
 
 
@@ -63,7 +68,7 @@ def driver_result(run_id: str) -> str:
 def driver_resume(run_id: str, scoped_tool_approval: Literal["emulator", "bound-device"] | None = None,
                   budget_seconds: float | None = None, budget_reason: str | None = None) -> str:
     """Resume after correcting a blocker; recheck accepted evidence.
-    Set scoped_tool_approval only after explicit user approval. emulator covers assigned TQ9 tools;
+    Set scoped_tool_approval only after explicit user approval. emulator covers an emulated case's assigned tools;
     bound-device requires the saved explicit device binding and allowed effects. Neither permits unrelated tools.
     Set budget_seconds only after explicit user approval to increase the total wall-clock budget from the original
     start. Supply a nonblank budget_reason; the increase is recorded without resetting time or prior attempts.
@@ -89,6 +94,13 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = No
     """Run installation replay or start a configured real-agent benchmark.
     setup-smoke uses no inference. tq9 and bme280 require explicit runtime and documented options.
     Supply evaluator password FILE paths through options, never the password itself.
+    Every real-agent case starts a bench harness that holds the password file path, admits the case and, after the
+    run, grades the frozen driver once and posts the run's verdict; the configurator never receives the path. For an
+    emulated case (tq9, tq9-v2 and the v2 families) the harness provides the emulator; bme280 runs on the operator's
+    bound device (options.binding), which the harness never touches. They return trial_id and run_id; the
+    same options.request_id with the same inputs returns that trial again and starts no second emulator.
+    executor "replay" runs an emulated case without a model from options.replay_candidate, a saved candidate directory;
+    its results are labelled replay-emulation and never count as model runs.
     For real-agent profiles, options.home must resolve to this MCP connection's configured home.
     """
     from .benchmark import run
@@ -111,24 +123,28 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = No
                 return json.dumps(owner, default=str)
     try:
         return json.dumps(run(case=profile, output_dir=output_dir, executor=executor, options=options,
-                              autostart=autostart), default=str)
+                              autostart=autostart, via_owner=not autostart), default=str)
     except ValueError as error:
         return json.dumps({'ok': False, 'reason': str(error)})
 
 
 @server.tool()
-def driver_benchmark_suite_start(manifest: dict, executor: str = 'codex',
+def driver_benchmark_suite_start(manifest: dict, executor: Literal['codex', 'goose', 'replay'] | None = None,
                                  options: dict | None = None, request_id: str | None = None) -> str:
     """Start a durable emulated suite; save suite_id to reconnect from either client.
 
-    Use the configured MCP home; password file handles stay evaluator-only.
+    A detached bench harness drives the suite: it receives options.evaluator_password_files and options.renode (FILE
+    paths, never a password) on its stdin, provides each child's device and grades each frozen driver after its run.
+    The suite tables never hold those paths and no child's run receives them. Use the configured MCP home.
+    executor "replay" replays options.replay_candidates, one saved candidate directory per case, without a model; its
+    results are labelled replay-emulation and never compared with model suites.
     Emulator tool approval and inference budgets require explicit user authorization.
     Windows requires an independently started configurator.
     """
     from .benchmark_support.suites import start_suite
     try:
         return json.dumps(start_suite(manifest, executor, options, request_id,
-            autostart=platform.system() != 'Windows'), allow_nan=False)
+            autostart=platform.system() != 'Windows', via_owner=platform.system() == 'Windows'), allow_nan=False)
     except (OSError, ValueError, RuntimeError) as error:
         return json.dumps({'ok': False, 'reason': str(error)})
 
@@ -159,16 +175,27 @@ def driver_benchmark_suite_cancel(suite_id: str) -> str:
 
 @server.tool()
 def driver_benchmark_suite_resume(suite_id: str, suite_budget_seconds: float | None = None,
-                                  budget_reason: str | None = None) -> str:
-    """Resume a stopped incomplete suite after correcting its blocker.
+                                  budget_reason: str | None = None, options: dict | None = None,
+                                  child_budget_seconds: float | None = None,
+                                  child_budget_reason: str | None = None) -> str:
+    """Resume a stopped incomplete suite after correcting its blocker; a newly launched bench harness takes it over.
 
-    A user-approved extension increases the total suite wall-clock budget from
-    original start and requires a reason; it does not extend a child's budget.
+    options holds only evaluator_password_files and renode (FILE paths) for that harness; emulated suites need them.
+    A user-approved extension increases the total suite wall-clock budget from original start and requires a reason.
+    A separate user-approved child extension (child_budget_seconds, child_budget_reason) increases the total budget of
+    the stopped child the resume continues, and of no other child.
     """
-    params = {'suite_id': suite_id}
-    if suite_budget_seconds is not None:
-        params.update(suite_budget_seconds=suite_budget_seconds, budget_reason=budget_reason)
-    return _call('suite_resume', **params)
+    from .benchmark_support.suites import resume_suite
+    try:
+        return json.dumps(resume_suite(suite_id, options, autostart=platform.system() != 'Windows',
+                                       via_owner=platform.system() == 'Windows',
+                                       suite_budget_seconds=suite_budget_seconds,
+                                       budget_reason=budget_reason if suite_budget_seconds is not None else None,
+                                       child_budget_seconds=child_budget_seconds,
+                                       child_budget_reason=child_budget_reason),
+                          allow_nan=False, default=str)
+    except (OSError, ValueError, RuntimeError) as error:
+        return json.dumps({'ok': False, 'reason': str(error)})
 
 
 def main():

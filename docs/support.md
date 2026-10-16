@@ -4,7 +4,7 @@ The core targets native macOS and Windows 11 or newer. The development machine i
 
 | Component | Implemented behavior | Dependency / limit |
 |---|---|---|
-| Configurator | Detached owner, durable run IDs and checked stage handoffs | Python; native socket or Windows named pipe; Windows MCP requires an independently started owner |
+| Configurator | Detached owner, durable run IDs and stage handoffs with notes | Python; native socket or Windows named pipe; Windows MCP requires an independently started owner |
 | Benchmark suites | CLI/MCP reconnect to that owner; sequential children, checked export and offline saved comparison | Registered emulated full workflows with matching authenticated reference calibration |
 | Codex integration | MCP, plugin, configured command-line workers | Separately installed and authenticated Codex |
 | Goose integration | MCP, recipe, configured command-line workers | Goose live execution requires its installed version; contract test alone is not a live pass |
@@ -16,15 +16,17 @@ The core targets native macOS and Windows 11 or newer. The development machine i
 | Model schema 1 | Register model with conversion code | I2C live; SPI recorded capture |
 | Model schema 2 | Experimental command evidence from firmware | Static collection/validation; not directly executable |
 | Model schemas 3–6 | Executable operations, frames and typed decoding | Capability depends on selected schema and transport |
-| UART / TCP | Serial transport / socket transport | pyserial / Python standard library |
+| UART / TCP | Serial transport (identity binding; reset-on-open devices need the `reset` grant) / socket transport | pyserial / Python standard library |
 | USB execution | Control, bulk and interrupt transfers | PyUSB/libusb; device-specific qualification still required |
 | I2C / SPI execution | Bridge-backed transfers for executable models | PyFtdi/libusb |
-| Ground / reuse | Case-specific independent gates; fresh reuse is the endpoint | Generic runs block when the required evidence adapter is unavailable |
+| Ground / reuse | A ground worker tests the model's meanings against the device, with operator observations where given; fresh reuse is the endpoint, followed by one equivalence verdict | A generic verdict is self-evidence, not an independent grade; benchmarks are graded by the evaluator after the run |
 
 BLE and SCPI discovery are not implemented. An adapter being present does not qualify arbitrary hardware. In particular, transport framing checks do not establish decoder correctness, physical meaning or safe protocol state sequencing.
 
+The generic managed interpreter currently requires a single firmware binary. USB descriptors, datasheet pages and FTDI scans can be acquired and retained as evidence, but automatic selection of their non-firmware interpret front ends is not implemented. Acquisition success alone does not mean that a complete driver was generated.
+
 The registered benchmark cases are documented in [bench/README.md](../bench/README.md). Reports distinguish installation replay, actual model execution, emulated observations and physical observations. Local test and baseline evidence is recorded in [verification](verification.md).
 
-TQ9 v2 requires authenticated calibration for the installed evaluator implementation. Its native macOS reference gate uses GCC/Renode/Ghidra/Java; Controller fixtures use scripted external workers and are labelled accordingly. Neither establishes model success, physical-device behavior or native Windows emulator qualification. Windows CI configuration is not an observed Windows native result. Native process ownership is retained in the running configurator; ownership lost on restart fails closed for operator reconciliation.
+TQ9 v2 requires authenticated calibration for the installed evaluator implementation. Its native macOS reference gate uses GCC/Renode/Ghidra/Java; Controller fixtures use scripted external workers and are labelled accordingly. Neither establishes model success, physical-device behavior or native Windows emulator qualification. Windows CI configuration is not an observed Windows native result. A bench harness owns the emulator and holds the evaluator password; the configurator reaches the emulator only through the harness's control endpoint, and a stopped run resumes only on a device that answers with the session it recorded.
 
 Suite CLI and real stdio MCP boundaries have local macOS scripted contract coverage, including same-owner reconnection, missing-owner Windows policy, a disappearing owner, strict pagination, public exports and offline comparison. Simulating `platform.system()` in a macOS MCP process checks policy only. The historical CI run above predates this refactor. Current observations and remaining qualification are recorded in [verification](verification.md); local macOS observations do not qualify a new Windows branch, Windows 11 workstation or native Windows emulator run.

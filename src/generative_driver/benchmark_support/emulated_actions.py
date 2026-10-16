@@ -1,7 +1,36 @@
 """Private evaluator action execution; no service, worker gateway or process owner."""
 from .behavior import _check_rejection_evidence
 from .cases import _write
-from .emulated import run_call
+
+
+# A package call runs the identity operation, then the requested one (each up to the 120 s a valid model may declare),
+# after a 5 s connect and the process start. A call that outlasts this is the host's, never the driver's.
+PACKAGE_CALL_SECONDS = 300
+
+
+def _device_healthy(session):
+    """Whether the evaluator's own emulator still runs, answers its monitor and accepts a connection on the channel the
+    driver uses. Firmware that stops answering on a working channel after the driver's call is the driver's doing."""
+    import socket
+    process = getattr(session, 'process', None)
+    if process is not None and process.poll() is not None:
+        return False
+    try:
+        session.observe()
+        binding = session.binding
+        socket.create_connection((binding['host'], binding['port']), timeout=2).close()
+    except Exception:
+        return False
+    return True
+
+
+def run_call(session, invoke, request):
+    """One evaluator call inside the device's window: the emulator runs only for the call, paused between calls."""
+    session.set_running(True)
+    try:
+        return invoke(request['operation'], request['parameters'])
+    finally:
+        session.set_running(False)
 
 
 def _binding_failure(task, error):
@@ -10,12 +39,15 @@ def _binding_failure(task, error):
             'outputs': {}, 'units': {}, 'transcript': [], 'transport_open_attempted': False}
 
 
-def execute_plan(session, invoke, plan, contract, evidence_path, observations, settle_seconds=0):
+def execute_plan(session, invoke, plan, contract, evidence_path, observations, settle_seconds=0, *,
+                 healthy_device_failures=False):
     """Invoke canonical tasks; persist raw responses and IDs before returning records.
 
     invoke(task, inputs, grants) returns canonical outputs and measured runtime units.
     observations(raw, result, inputs) returns check suffix -> value. Monitor units
     are supplied by that measurement function's optional ``monitor_units`` map.
+    With ``healthy_device_failures`` (grading a candidate's frozen package, never calibration), a call the runtime
+    reports as a host fault on a device that is still healthy is graded as the driver's failure.
     """
     # Validate evaluator-owned witnesses before any device access. Candidate receive
     # completion and reject prefixes are diagnostic claims, not protocol truth.
@@ -45,9 +77,19 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
                                   {'operation': action['task'], 'parameters': inputs})
                 needs_settle = False
                 event['result'] = result
-                if result.get('error', {}).get('fault') == 'host':
-                    raw_events.append(event)
-                    raise RuntimeError('Host execution failed; behavioral grading is unavailable')
+                error = result.get('error', {})
+                if error.get('fault') == 'host':
+                    # The device was verified healthy before the episode and only this call touched it. If it still runs,
+                    # answers its monitor and accepts a connection, the call failed on a healthy device: the driver's
+                    # failure, graded. A package process that hung or printed nothing is the host's, and so is any host
+                    # fault while calibrating, where an outage must never pass for a mutant's rejection.
+                    if healthy_device_failures and error.get('source') != 'package-process':
+                        event['device_healthy'] = _device_healthy(session)
+                    if not event.get('device_healthy'):
+                        raw_events.append(event)
+                        raise RuntimeError('Host execution failed; behavioral grading is unavailable')
+                    result = event['result'] = {**result, 'error': {**error, 'fault': 'model', 'reported_fault': 'host',
+                                                                     'classified': 'healthy-device'}}
             elif kind == 'observe':
                 raw = session.observe()
                 event['raw'] = raw
@@ -141,12 +183,19 @@ def package_invoker(package, binding, grants):
         for effect in grants:
             if effect != 'read':
                 command.extend(['--allow-effect', effect])
-        completed = subprocess.run(command, cwd=Path(package).parent, capture_output=True, text=True, timeout=30)
+        failed = lambda code, message: {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [],
+                                        'error': {'fault': 'host', 'source': 'package-process', 'code': code,
+                                                  'message': message}}
+        try:
+            completed = subprocess.run(command, cwd=Path(package).parent, capture_output=True, text=True,
+                                       timeout=PACKAGE_CALL_SECONDS)
+        except subprocess.TimeoutExpired:
+            return failed('timeout', f'The package call did not finish within {PACKAGE_CALL_SECONDS} s')
         try:
             result = json.loads(completed.stdout)
-        except ValueError as error:
-            raise RuntimeError('Package did not return a runtime result') from error
-        return result
+        except ValueError:
+            return failed('no_result', 'The package returned no runtime result (exit %d)' % completed.returncode)
+        return result if isinstance(result, dict) else failed('no_result', 'The package result is not an object')
     return invoke
 
 

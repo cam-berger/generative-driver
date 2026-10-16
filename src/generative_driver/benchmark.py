@@ -21,19 +21,28 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
     return adapter_for(case_id).prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
 
 
-def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, options=None):
+def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, options=None):
+    """Truth-free stage observation: the checked contract of the configurator's stage loop (artifacts, checks as
+    notes, optional stop). It runs no evaluator, grades nothing and records no stage verdict."""
     from .benchmark_support.registry import adapter_for
-    result = adapter_for(case_id).check_stage(case_id, stage, run_dir, workspace, report, accepted, options)
-    from .benchmark_support.cases import _state, _write
-    state_path, state = _state(run_dir)
-    state.setdefault('stage_verdicts', {})[stage] = {'status': 'passed' if result.get('ok') else 'failed',
-        'checks': result.get('checks', []), 'revision': state.get('revision', 0), 'reason': result.get('reason')}
-    _write(state_path, state)
-    return result
+    return adapter_for(case_id).observe_stage(case_id, stage, run_dir, workspace, report, accepted, options)
+
+
+def package_call(case_id, run_dir, stage, arguments):
+    """A provided device's package call, checked before anything is dispatched; returns the call to run."""
+    from .benchmark_support.registry import adapter_for
+    return adapter_for(case_id).package_call(case_id, run_dir, stage, arguments)
+
+
+def record_call(case_id, run_dir, stage, name, arguments, result, before, after, options=None):
+    """Journal one live call on a provided device with the instrument readings around it."""
+    from .benchmark_support.registry import adapter_for
+    return adapter_for(case_id).record_call(case_id, run_dir, stage, name, arguments, result, before, after, options)
 
 
 def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=None,
                     binding=None, allow_effects=None, options=None):
+    """A package call on the operator's bound device (bme280), which the configurator dispatches itself."""
     from .benchmark_support.registry import adapter_for
     return adapter_for(case_id).package_execute(case_id, run_dir, stage, package_dir,
         operation, parameters, binding, allow_effects, options)
@@ -47,7 +56,8 @@ def main(argv=None):
     suites = commands.add_parser('suite').add_subparsers(dest='action', required=True)
     starting = suites.add_parser('start')
     starting.add_argument('--manifest', required=True)
-    starting.add_argument('--executor', choices=['codex', 'goose'], default='codex')
+    starting.add_argument('--executor', choices=['codex', 'goose', 'replay'],
+                          help='Default: the one configured runtime; replay runs options.replay_candidates without a model')
     starting.add_argument('--options')
     starting.add_argument('--request-id')
     for action in ('status', 'events', 'result', 'cancel', 'resume'):
@@ -61,6 +71,11 @@ def main(argv=None):
         elif action == 'resume':
             lifecycle.add_argument('--suite-budget-seconds', type=float)
             lifecycle.add_argument('--budget-reason')
+            lifecycle.add_argument('--child-budget-seconds', type=float,
+                                   help='Approved new total budget of the stopped child the resume continues')
+            lifecycle.add_argument('--child-budget-reason')
+            lifecycle.add_argument('--options', help='JSON file with the evaluator password files and emulator executable '
+                                   'for the bench harness that resumes the suite')
     exporting = suites.add_parser('report')
     exporting.add_argument('suite_id')
     exporting.add_argument('--output', required=True)
@@ -72,7 +87,10 @@ def main(argv=None):
     running.add_argument('--scenario')
     running.add_argument('--case-seed', type=int, default=0)
     running.add_argument('--output')
-    running.add_argument('--executor', choices=['codex', 'goose'], default='codex')
+    running.add_argument('--executor', choices=['codex', 'goose', 'replay'],
+                         help='Default: the one configured runtime; replay runs --replay-candidate without a model')
+    running.add_argument('--replay-candidate', help='Saved candidate directory for --executor replay: replay.json and '
+                         'the worker outputs it names')
     running.add_argument('--budget-seconds', type=int, default=10800)
     running.add_argument('--password-file')
     running.add_argument('--renode')
@@ -84,6 +102,13 @@ def main(argv=None):
     approval_flags.add_argument('--approve-bound-device-tools', action='store_true', help='Explicitly authorize assigned BME280 tools for the selected physical binding and effects')
     approval_flags.add_argument('--approve-emulator-tools', action='store_true', help='Explicitly authorize scoped tq9 emulator MCP tools; no physical device approval')
     running.add_argument('--binding-json', help='Operator-owned binding JSON, e.g. {"url":"ftdi://selected/1"}')
+    running.add_argument('--wait', action='store_true', help='Follow a trial until its bench harness has finished')
+    resuming = commands.add_parser('trial-resume', help='Complete the evaluation of a trial whose harness has finished: '
+                                   'grade it if it is unscored (never a final already graded), or a bound-device trial '
+                                   'whose run completed after its harness stopped following it, and post the verdict')
+    resuming.add_argument('trial_dir')
+    resuming.add_argument('--password-file', required=True)
+    resuming.add_argument('--renode', help='Emulator executable; required when the trial\'s frozen driver still needs grading')
     comparing = commands.add_parser('compare')
     comparing.add_argument('before')
     comparing.add_argument('after')
@@ -118,10 +143,17 @@ def main(argv=None):
                     'options': json.loads(Path(args.options).read_text(encoding='utf-8')) if args.options else {},
                     'request_id': args.request_id}
                 result = start_suite(**params)
+            elif args.action == 'resume':
+                # A newly launched bench harness takes the suite over; password files and the emulator go to it on stdin.
+                from .benchmark_support.suites import resume_suite
+                result = resume_suite(args.suite_id, json.loads(Path(args.options).read_text(encoding='utf-8')) if args.options else None,
+                                      suite_budget_seconds=args.suite_budget_seconds, budget_reason=args.budget_reason,
+                                      child_budget_seconds=args.child_budget_seconds,
+                                      child_budget_reason=args.child_budget_reason)
             else:
                 from .client import call
                 params = {'suite_id': args.suite_id}
-                for key in ('after', 'offset', 'limit', 'suite_budget_seconds', 'budget_reason'):
+                for key in ('after', 'offset', 'limit'):
                     if hasattr(args, key) and getattr(args, key) is not None:
                         params[key] = getattr(args, key)
                 result = call('suite_' + args.action, params)
@@ -134,20 +166,26 @@ def main(argv=None):
                          {k: v for k, v in {'budget_seconds': args.budget_seconds,
                           'evaluator_password_file': args.password_file, 'renode': args.renode,
                           'ghidra_home': args.ghidra_home, 'java_home': args.java_home,
-                          'home': args.home, 'request_id': args.request_id,
+                          'home': args.home, 'request_id': args.request_id, 'replay_candidate': args.replay_candidate,
                           'scenario_id': args.scenario, 'case_seed': args.case_seed,
                           'binding': json.loads(args.binding_json) if args.binding_json else None,
-                          'scoped_tool_approval': 'bound-device' if args.approve_bound_device_tools else 'emulator' if args.approve_emulator_tools else None}.items() if v is not None})
+                          'scoped_tool_approval': 'bound-device' if args.approve_bound_device_tools else 'emulator' if args.approve_emulator_tools else None}.items() if v is not None},
+                         wait=args.wait)
         elif args.command == 'truth':
             from .benchmark_support.evaluator_cli import manage
             result = manage(args.action,args.case,args.password_file,args.output,args.new_password_file,args.compiler,args.authoring_dir,
                             renode=args.renode,ghidra_home=args.ghidra_home,java_home=args.java_home)
+        elif args.command == 'trial-resume':
+            from .benchmark_support.harness import resume
+            result = resume(args.trial_dir, password_file=args.password_file, renode=args.renode)
         elif args.command == 'compare':
             result = compare(args.before, args.after)
         else:
             result = score(args.report, args.password_file, evidence_path=args.evidence)
         print(json.dumps(result, indent=2, allow_nan=False))
-        return 0 if not isinstance(result, dict) or result.get('verdict') != 'failed' else 1
+        failed = isinstance(result, dict) and (result.get('verdict') in ('failed', 'not equivalent')
+                                               or args.command == 'truth' and result.get('ok') is False)
+        return 1 if failed else 0
     except (OSError, ValueError, RuntimeError) as error:
         print(json.dumps({'ok': False, 'error': str(error)}))
         return 1
@@ -157,14 +195,18 @@ def case_root():
     return Path(__file__).resolve().parent / 'resources' / 'bench'
 
 
-def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, autostart=True):
+def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, autostart=True, wait=False, via_owner=False):
+    """Run the installation replay, or start an actual-agent trial. Every actual-agent case starts a detached bench
+    harness, which admits the case, holds the evaluator password file and grades the frozen driver once after the run;
+    it provides the emulator of an emulated case (v2 or legacy tq9) and leaves the operator's bound device (bme280)
+    alone. The configurator never receives the password file. That returns {trial_id, run_id}; `wait` follows the
+    trial until the harness has finished with it."""
     from .benchmark_support.registry import resolve_case, pin_case
     options = dict(options or {})
     definition = resolve_case(case)
-    pin = pin_case(case, options.get('scenario_id'), options.get('case_seed', 0))
-    if definition.manifest.get('schema') == 'benchmark-case/2':
-        from .benchmark_support.registry import require_calibration
-        require_calibration(pin, options)
+    if executor == 'replay' and definition.execution != 'actual-agent-emulation':
+        raise ValueError('The replay executor runs emulated benchmark cases only; ' + case + ' is ' + definition.execution)
+    pin_case(case, options.get('scenario_id'), options.get('case_seed', 0))
     approval = options.pop('scoped_tool_approval', None)
     if approval == 'emulator' and not (definition.execution == 'actual-agent-emulation' and definition.approval_scope == 'emulator'):
         raise ValueError('Scoped approval requires tq9/emulator or bme280/bound-device')
@@ -175,23 +217,15 @@ def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, aut
     if approval == 'bound-device' and (not isinstance(options.get('binding'),dict) or not options['binding']):
         raise ValueError('Bound-device approval requires an explicit operator binding')
     if definition.execution.startswith('actual-agent-'):
-        from .client import call
-        options = dict(options or {})
-        home, request_id = options.pop('home', None), options.pop('request_id', None)
-        budget = options.pop('budget_seconds', 10800)
-        effects = options.pop('effects', list(definition.default_effects))
-        args = {'goal': 'Recover, check, package and freshly reuse the benchmark device interface for the desired functions.',
-                'case': case, 'executor': executor or 'codex', 'budget_seconds': budget,
-                'effects': effects, 'case_options': options}
-        if options.get('binding') is not None:
-            args['binding'] = options['binding']
-        if approval is not None:
-            args['scoped_tool_approval'] = approval
-        if request_id:
-            args['request_id'] = request_id
-        if output_dir:
-            args['output_dir'] = str(Path(output_dir).resolve())
-        return call('start', args, home=home, autostart=autostart)
+        from .benchmark_support.harness import launch
+        if not autostart:
+            # A configurator that must already run (Windows) is asked before any harness or device starts.
+            from .client import call, default_home
+            reachable = call('ping', {}, home=Path(options.get('home') or default_home()).expanduser(), autostart=False)
+            if not reachable.get('ok'):
+                return reachable
+        return launch(case, output_dir, executor, options, approval, effects=definition.default_effects,
+                      autostart=autostart, wait=wait, via_owner=via_owner)
     from .toolkit import call_tool
     started = time.monotonic()
     output = Path(output_dir or tempfile.mkdtemp(prefix='generative-driver-smoke-')).resolve()
@@ -241,9 +275,34 @@ def _read(value):
     return json.loads(Path(value).read_text()) if isinstance(value, (str, Path)) else value
 
 
+def _protocol(report):
+    """The protocol a run report was produced under; None for an earlier one."""
+    progress = report.get('progress')
+    return report.get('protocol') or (progress.get('protocol') if isinstance(progress, dict) else None)
+
+
+def _replayed(report):
+    """Whether a report is a replayed candidate's: by its execution label or the runtime it records."""
+    executed = report.get('executed') if isinstance(report.get('executed'), dict) else {}
+    configuration = executed.get('runtime_configuration') if isinstance(executed.get('runtime_configuration'), dict) else {}
+    agent = report.get('agent') if isinstance(report.get('agent'), dict) else {}
+    return str(report.get('execution') or '').startswith('replay') or 'replay' in (configuration.get('runtime'),
+                                                                                    agent.get('runtime'))
+
+
 def compare(before, after):
     before, after = _read(before), _read(after)
+    if _protocol(before) != _protocol(after):
+        # Results of different protocols are separate series: nothing of one is set beside the other.
+        return {'schema': 'benchmark-comparison/1', 'compatible': False, 'incompatible_fields': ['protocol'],
+                'reason': 'Reports of different protocols are separate series and are never compared'}
+    if _replayed(before) != _replayed(after):
+        # No model ran a replayed candidate: replays are a series of their own, never set beside model runs.
+        return {'schema': 'benchmark-comparison/1', 'compatible': False, 'incompatible_fields': ['execution'],
+                'reason': 'Replay results and model runs are separate series and are never compared'}
     required = ('case', 'case_version', 'evaluator_version', 'seed', 'execution')
+    if 'benchmark-report/3' in (before.get('schema'), after.get('schema')):
+        required = ('schema', 'case', 'case_version', 'evaluator_version', 'scenario_id', 'case_seed', 'execution')
     incompatible = [k for k in required if k not in before or k not in after or before[k] != after[k]]
     changed = [k for k in ('agent', 'toolchain_revision', 'skills_revision', 'budget_seconds', 'environment', 'time_policy')
                if before.get(k) != after.get(k)]
@@ -293,13 +352,19 @@ def score_observations(truth, observations):
 
 
 def cleanup(case_id, run_dir, options=None):
+    """No stage adapter owns a device. An emulated case's device belongs to the bench harness, which alone stops it, and
+    a bound device is the operator's: nothing here may stop or forget it, whatever a run state records."""
     from .benchmark_support.registry import adapter_for
-    return adapter_for(case_id).cleanup(case_id, run_dir, options)
+    adapter_for(case_id)
+    raise RuntimeError('The bench harness owns this case\'s device; the configurator holds no ownership to clean up')
 
 
 def score(report, password_file=None, *, evidence_path=None):
     from .benchmark_support.registry import adapter_for
     data = _read(report)
+    if data.get('schema') == 'benchmark-report/3':
+        from .benchmark_support.evidence import regrade_v3
+        return regrade_v3(data, evidence_path, password_file)
     if data.get('schema') == 'benchmark-report/2':
         from .benchmark_support.evidence import regrade_v2
         return regrade_v2(data, evidence_path, password_file)
@@ -310,30 +375,3 @@ def score(report, password_file=None, *, evidence_path=None):
     return adapter_for(case_id).score(data, password_file)
 
 
-def evaluation_fault(evaluation):
-    """Assign an independently observed failure; expected refusal is not a defect."""
-    if evaluation.get('score',{}).get('verdict')=='passed':
-        return None
-    calls=evaluation.get('calls',[])
-    if not calls:
-        return 'host'
-    faults=[]
-    for call in calls:
-        result=call.get('result',{})
-        if result.get('ok'):
-            continue
-        fault=result.get('fault')
-        if call.get('capability')=='set_duty' and call.get('grants')==[] and fault=='operator':
-            continue
-        faults.append(fault or 'host')
-    return 'operator' if 'operator' in faults else 'host' if 'host' in faults else 'model'
-
-
-def recover_emulator(case_id, run_dir, workspace, accepted, report, feedback, options, cancelled):
-    """Internal adapter seam: owned pre-final emulation only."""
-    from .benchmark_support.registry import adapter_for
-    adapter = adapter_for(case_id)
-    hook = getattr(adapter, 'recover_emulator', None)
-    if hook is None:
-        raise ValueError('Binding has no trusted owned-emulator recovery adapter')
-    return hook(case_id, run_dir, workspace, accepted, report, feedback, options, cancelled)

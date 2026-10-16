@@ -37,7 +37,7 @@ def _executed(value):
     result = _scalars(value, ('toolchain_revision', 'skills_revision', 'evaluator_revision'))
     result['environment'] = _scalars(value.get('environment', {}), ('system', 'release', 'architecture', 'python'))
     result['runtime_configuration'] = _scalars(value.get('runtime_configuration', {}),
-        ('runtime', 'model', 'provider', 'version', 'reasoning_effort', 'max_turns'))
+        ('runtime', 'model', 'provider', 'version', 'reasoning_effort', 'max_turns', 'candidate_sha256'))
     return result
 
 
@@ -56,7 +56,7 @@ def public_v2_report(payload: dict) -> dict:
                                 for row in payload.get('accepted_gates', [])]
     result['evaluator_verdicts'] = [_scalars(row, ('stage', 'assignment_id', 'revision', 'fault', 'final_evaluation', *COUNTS))
                                     for row in payload.get('evaluator_verdicts', [])]
-    result['progress'] = _scalars(payload.get('progress', {}), ('revision', 'repairs', 'terminal_final_failure'))
+    result['progress'] = _scalars(payload.get('progress', {}), ('revision', 'repairs', 'terminal_final_failure', 'protocol', 'equivalence'))
     result['attempt_limits'] = _scalars(payload.get('attempt_limits', {}), ('max_model_repairs',))
     result['usage'] = _scalars(payload.get('usage', {}), USAGE)
     result['executed'] = _executed(payload.get('executed', {}))
@@ -80,20 +80,51 @@ def public_v2_report(payload: dict) -> dict:
     return result
 
 
+# The public fields of an equivalence/1 record beside its checks, differences and mission.
+EQUIVALENCE = ('schema', 'status', 'equivalent', 'basis', 'method', 'passed', 'total', 'frozen_artifact_sha256',
+               'capabilities_sha256', 'evidence_sha256', 'protocol')
+# What a recorded verdict's sealed evidence must agree with in the report before anything is regraded.
+VERDICT_IDENTITY = ('schema', 'status', 'basis', 'method', 'protocol', 'frozen_artifact_sha256', 'capabilities_sha256')
+
+
+def public_equivalence(value):
+    """The public equivalence/1 record: check ids with passed flags, the failing ids with a reason and the mission check.
+    Expected values, tolerances, witnesses and raw records never cross this boundary. None when there is no record."""
+    if not isinstance(value, dict):
+        return None
+    rows = lambda key, fields: [_scalars(row, fields) for row in value.get(key) or [] if isinstance(row, dict)]
+    mission = value.get('mission')
+    return {**_scalars(value, EQUIVALENCE), 'checks': rows('checks', ('id', 'passed')), 'diff': rows('diff', ('id', 'reason')),
+            'mission': _scalars(mission, ('name', 'passed', 'reason', 'fault')) if isinstance(mission, dict) else None}
+
+
+def public_v3_report(payload: dict) -> dict:
+    """An assistive run's public report, benchmark-report/3: its success is the one equivalence verdict the evaluator
+    recorded after the run. Nothing graded its stages, so it carries no gates, stage evaluations or stage verdicts. Its
+    verdict reads the record (equivalent, not equivalent, or unscored while there is none: awaiting its grade, unscored
+    or stopped); a report found unqualified keeps that word. Its reason says why (a stop, the verdict or the unscored
+    grade's reasons, with paths already scrubbed by its exporter) and `stopped_stage` names where a stopped run stopped.
+    Unknown fields never cross this boundary."""
+    from ..configurator import PROTOCOL, equivalence_label
+    result = public_v2_report(payload)
+    for key in ('accepted_gates', 'evaluations', 'final_evaluation', 'evaluator_verdicts'):
+        result.pop(key)
+    for row in result['stages'].values():
+        row.pop('evaluator_status', None)
+    equivalence = public_equivalence(payload.get('equivalence'))
+    awaiting = payload.get('equivalence_status')
+    result.update(schema='benchmark-report/3', protocol=PROTOCOL, equivalence=equivalence,
+                  equivalence_status=equivalence.get('status') if equivalence else awaiting if awaiting in ('pending', 'unscored') else None,
+                  verdict='unqualified' if payload.get('verdict') == 'unqualified' else equivalence_label(equivalence),
+                  **_scalars(payload, ('outcome_category', 'reason', 'stopped_stage')))
+    return result
+
+
 def _validate_payload(payload):
-    from .snapshots import canonical_digest
     from .behavior import validate_records, _sha
     if payload.get('schema') != 'benchmark-run-evidence/1':
         raise ValueError('Unsupported run evidence schema')
-    snapshot = payload['execution_snapshot']
-    if (snapshot.get('schema') != 'benchmark-execution-snapshot/1' or
-            canonical_digest({k: v for k, v in snapshot.items() if k != 'snapshot_sha256'}) != snapshot.get('snapshot_sha256') or
-            snapshot['case_pin'] != payload['case_pin']):
-        raise ValueError('Execution snapshot identity mismatch')
-    if payload['case_pin']['manifest'].get('schema') != 'benchmark-case/2':
-        raise ValueError('Run evidence requires a v2 case')
-    from .registry import validate_pinned_workflow
-    validate_pinned_workflow(payload['case_pin'])
+    _snapshot_identity(payload)
     seen = set()
     for evaluation in payload['evaluations']:
         key = (evaluation['phase'], evaluation['revision'])
@@ -113,6 +144,78 @@ def _validate_payload(payload):
                     if row.get('stage') == 'emit' and row.get('revision') == key[1]]
             if emit and not any(row.get('sha256') == digest for row in emit):
                 raise ValueError('Frozen final artifact differs from accepted emit package')
+
+
+def _snapshot_identity(payload, v2=True):
+    """The sealed snapshot is the run's, for its pinned case: a v2 case for benchmark-run-evidence/1 (`v2`), any
+    registered workflow case, legacy ones included, for an assistive run's evidence."""
+    from .snapshots import canonical_digest
+    snapshot = payload['execution_snapshot']
+    if (snapshot.get('schema') != 'benchmark-execution-snapshot/1' or
+            canonical_digest({k: v for k, v in snapshot.items() if k != 'snapshot_sha256'}) != snapshot.get('snapshot_sha256') or
+            snapshot['case_pin'] != payload['case_pin']):
+        raise ValueError('Execution snapshot identity mismatch')
+    if v2 and payload['case_pin']['manifest'].get('schema') != 'benchmark-case/2':
+        raise ValueError('Run evidence requires a v2 case')
+    from .registry import validate_pinned_workflow
+    validate_pinned_workflow(payload['case_pin'])
+
+
+def _validate_payload_v2(payload):
+    """An assistive run's evidence: its snapshot identity, every accepted artifact and notes hash, and at most one final,
+    which grades the run's accepted emitted driver: the first artifact of its latest emit handoff that handed one on.
+    A final graded from the run's recorded fresh reuse (`recorded-reuse`) has the same contract and records."""
+    from ..benchmark import STAGES
+    from ..configurator import PROTOCOL
+    from .behavior import validate_records, _sha
+    if payload.get('schema') != 'benchmark-run-evidence/2' or payload.get('protocol') != PROTOCOL:
+        raise ValueError('Unsupported run evidence schema or protocol')
+    _snapshot_identity(payload, v2=False)
+    rows = payload['accepted_artifacts']
+    for row in rows:
+        if (row.get('stage') not in STAGES or type(row.get('revision')) is not int or row['revision'] < 0
+                or not isinstance(row.get('assignment_id'), str) or row.get('kind') not in ('artifact', 'notes')
+                or not _sha(row.get('sha256'))):
+            raise ValueError('Accepted artifact identity mismatch')
+    emits = [row for row in rows if row['stage'] == 'emit' and row['kind'] == 'artifact']
+    accepted = next((row['sha256'] for row in emits if row['assignment_id'] == emits[-1]['assignment_id']), None) if emits else None
+    final = payload.get('final')
+    if final is not None:
+        digest, revision = final.get('frozen_artifact_sha256'), final.get('revision')
+        if (final.get('phase') != 'final' or final.get('run_id') != payload.get('run_id') or type(revision) is not int
+                or revision < 0 or not _sha(digest) or final['contract'].get('artifact_sha256') != digest):
+            raise ValueError('Evaluation artifact or revision identity mismatch')
+        if any(check.get('revision') != revision for check in final['contract']['checks']):
+            raise ValueError('Contract revision mismatch')
+        for record in final['records']:
+            if record.get('artifact_sha256') != digest or record.get('revision') != revision:
+                raise ValueError('Record artifact or revision mismatch')
+        validate_records(final['contract'], final['records'])
+        if digest != accepted:
+            raise ValueError('Frozen final artifact differs from the accepted emit package')
+    equivalence = payload.get('equivalence')
+    if equivalence is not None and equivalence.get('frozen_artifact_sha256') != accepted:
+        raise ValueError('Evaluated artifact differs from the accepted emit package')
+
+
+def seal_run_evidence_v2(payload: dict, path: Path, password_file: Path) -> dict:
+    """Seal benchmark-run-evidence/2 after re-hashing every accepted artifact it names. An identity that does not hold or
+    an accepted record whose bytes changed raises IntegrityError: no retry seals it."""
+    from .truth import seal
+    from ..configurator import IntegrityError, digest as artifact_digest
+    try:
+        _validate_payload_v2(payload)
+    except ValueError as error:
+        raise IntegrityError(str(error)) from None
+    for row in payload['accepted_artifacts']:
+        try:
+            observed = artifact_digest(Path(row['path']))
+        except (OSError, ValueError):
+            observed = None
+        if observed != row['sha256']:
+            raise IntegrityError('Accepted artifact bytes changed before sealing: ' + Path(row['path']).name)
+    digest = seal(payload, path, Path(password_file).read_text(encoding='utf-8').strip())
+    return {'path': Path(path).name, 'sha256': digest}
 
 
 def seal_run_evidence(payload: dict, path: Path, password_file: Path) -> dict:
@@ -166,31 +269,51 @@ def _gate_results(payload, evaluations):
     return rows, bool(inventory_ok and all(row['verdict'] == 'passed' for row in rows))
 
 
-def regrade_v2(report: dict, evidence_path: Path, password_file: Path) -> dict:
-    from .truth import unlock
-    from .behavior import validate_records
-    from ..reporting import _tree_hash
-    if not evidence_path or not password_file:
-        raise ValueError('V2 scoring requires evidence and password-file paths')
-    payload = unlock(evidence_path, Path(password_file).read_text(encoding='utf-8').strip(),
-                     report['final_evaluation']['evidence_sha256'])
-    _validate_payload(payload)
+def _execution_identity(report, payload):
+    """The report names the sealed run's case pin, execution snapshot and executed identity, and no other."""
     snapshot = payload['execution_snapshot']
-    if snapshot['executed']['evaluator_revision'] != _tree_hash(Path(__file__).parent):
-        raise ValueError('Installed evaluator implementation hash mismatch')
-    if (report.get('schema') != 'benchmark-report/2' or report.get('case_pin') != public_pin(payload['case_pin']) or
+    if (report.get('case_pin') != public_pin(payload['case_pin']) or
             report.get('snapshot_sha256') != snapshot['snapshot_sha256'] or
             report.get('executed') != _executed(snapshot['executed'])):
         raise ValueError('Report and sealed execution identity mismatch')
     expected_aliases = {key: payload['case_pin'].get(key) for key in
                         ('case_version', 'evaluator_version', 'scenario_id', 'case_seed')}
-    execution = payload['case_pin'].get('execution', 'unclassified')
+    # A replayed candidate's label comes from the sealed snapshot's runtime, so a relabelled replay never matches it.
+    from ..replay import execution_label
+    execution = execution_label(payload['case_pin'].get('execution', 'unclassified'),
+                                (snapshot['executed'].get('runtime_configuration') or {}).get('runtime'))
     expected_aliases.update(case=payload['case_pin']['case_id'], execution=execution,
         model_benchmark=execution in ('actual-agent-emulation', 'actual-agent-physical'),
         **{key: snapshot['executed'][key] for key in
            ('evaluator_revision', 'toolchain_revision', 'skills_revision')})
     if any(key in report and report[key] != value for key, value in expected_aliases.items()):
         raise ValueError('Conflicting public execution identity')
+    return expected_aliases
+
+
+def _installed_evaluator(snapshot):
+    from ..reporting import _tree_hash
+    if snapshot['executed']['evaluator_revision'] != _tree_hash(Path(__file__).parent):
+        raise ValueError('Installed evaluator implementation hash mismatch')
+
+
+def regrade_v2(report: dict, evidence_path: Path, password_file: Path) -> dict:
+    """Regrade an earlier-protocol report (benchmark-report/2) from its sealed benchmark-run-evidence/1 by its gates and
+    final evaluations. An assistive run's report is benchmark-report/3 and is never scored here."""
+    from .truth import unlock
+    from .behavior import validate_records
+    from ..configurator import PROTOCOL
+    if (report.get('progress') or {}).get('protocol') == PROTOCOL:
+        raise ValueError('An assistive/1 run is reported and scored as benchmark-report/3; reports never mix protocols')
+    if not evidence_path or not password_file:
+        raise ValueError('V2 scoring requires evidence and password-file paths')
+    payload = unlock(evidence_path, Path(password_file).read_text(encoding='utf-8').strip(),
+                     report['final_evaluation']['evidence_sha256'])
+    _validate_payload(payload)
+    _installed_evaluator(payload['execution_snapshot'])
+    if report.get('schema') != 'benchmark-report/2':
+        raise ValueError('Report and sealed execution identity mismatch')
+    _execution_identity(report, payload)
     identity_fields = ('phase', 'revision', 'frozen_artifact_sha256')
     if ([_scalars(row, identity_fields) for row in report.get('evaluations', [])] !=
             [_scalars(row, identity_fields) for row in payload['evaluations']]):
@@ -201,10 +324,58 @@ def regrade_v2(report: dict, evidence_path: Path, password_file: Path) -> dict:
     finals = [row for row in evaluations if row['phase'] == 'final']
     passed, total = sum(row['passed'] for row in finals), sum(row['total'] for row in finals)
     ok = bool(finals) and all(row['verdict'] == 'passed' for row in finals) and gates_ok
-    return public_v2_report({**report, 'evaluations': evaluations, 'accepted_gates': gates,
-        'verdict': 'passed' if ok else 'failed',
-        'final_evaluation': {'verdict': 'passed' if finals and passed == total else 'failed',
-            'passed': passed, 'total': total, 'evidence_sha256': report['final_evaluation']['evidence_sha256']}})
+    verdict, final = ('passed' if ok else 'failed'), ('passed' if finals and passed == total else 'failed')
+    return public_v2_report({**report, 'evaluations': evaluations, 'accepted_gates': gates, 'verdict': verdict,
+        'final_evaluation': {'verdict': final, 'passed': passed, 'total': total,
+                             'evidence_sha256': report['final_evaluation']['evidence_sha256']}})
+
+
+def regrade_v3(report: dict, evidence_path: Path, password_file: Path) -> dict:
+    """Regrade an assistive run's report (benchmark-report/3) from the benchmark-run-evidence/2 its recorded verdict
+    names, sealed by the evaluator in the trial directory. The evidence must hold the report's run, case pin, snapshot
+    and executed identity, an installed evaluator of the snapshot's revision, and the run's single final evaluation of
+    its accepted emitted driver, the package and mapping the verdict names. The final's records are graded again:
+    equivalent only when every check passes. A verdict sealed without a final (no driver emitted, no capability
+    mapping, an invalid model) is not equivalent. A report with no recorded verdict (awaiting its grade, unscored or
+    stopped) names no evidence: it stays unscored and nothing is unlocked."""
+    from .truth import unlock
+    from .evaluator import final_record
+    from ..configurator import PROTOCOL
+    from .behavior import _sha
+    if report.get('schema') != 'benchmark-report/3' or report.get('protocol') != PROTOCOL:
+        raise ValueError('Unsupported assistive report schema or protocol')
+    recorded = public_equivalence(report.get('equivalence'))
+    if recorded is None:
+        return public_v3_report({**report, 'verdict': None})
+    if not evidence_path or not password_file:
+        raise ValueError('Assistive scoring requires evidence and password-file paths')
+    if not _sha(recorded.get('evidence_sha256')):
+        raise ValueError('The recorded verdict names no sealed evidence')
+    payload = unlock(evidence_path, Path(password_file).read_text(encoding='utf-8').strip(), recorded['evidence_sha256'])
+    _validate_payload_v2(payload)
+    _installed_evaluator(payload['execution_snapshot'])
+    # The regraded report says how the run executed as the sealed snapshot does, whether or not the report said so.
+    aliases = _execution_identity(report, payload)
+    report = {**report, **{key: aliases[key] for key in ('execution', 'model_benchmark')}}
+    if report.get('run_id') != payload['run_id']:
+        raise ValueError('Report and sealed run identity mismatch')
+    sealed, final = public_equivalence(payload.get('equivalence')), payload.get('final')
+    ids = lambda record: [row.get('id') for row in record['checks']]
+    if (sealed is None or sealed.get('status') not in ('graded', 'no-driver') or ids(recorded) != ids(sealed)
+            or any(recorded.get(key) != sealed.get(key) for key in VERDICT_IDENTITY)):
+        raise ValueError('Report and sealed verdict identity mismatch')
+    if final is None:
+        if sealed.get('equivalent') is not False:
+            raise ValueError('A verdict sealed without a final evaluation is never equivalent')
+        regraded = sealed
+    else:
+        regraded = final_record(final, sealed['capabilities_sha256'], sealed['mission'])
+        if (sealed['status'] != 'graded' or final.get('capabilities_sha256') != sealed['capabilities_sha256']
+                or ids(regraded) != ids(sealed)):
+            raise ValueError('Sealed verdict differs from its final evaluation')
+    from ..configurator import _verdict_reason
+    return public_v3_report({**report, 'verdict': None, 'equivalence_status': None, 'reason': _verdict_reason(regraded),
+                             'equivalence': {**regraded, 'evidence_sha256': recorded['evidence_sha256']}})
 
 
 def frozen_final_decision(contract: dict, records: list[dict]) -> dict:

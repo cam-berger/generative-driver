@@ -13,3 +13,4 @@ build/
 bench/runs/
 bench/groundtruth/plaintext/
 
+.local-runs/

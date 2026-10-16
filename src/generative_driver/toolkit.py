@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 _MODULE_TOOLS = {
-    "acquire": ("acquire_firmware_artifact", "acquire_flash", "acquire_datasheet",
+    "acquire": ("acquire_firmware_artifact", "acquire_flash", "acquire_serial_listen", "acquire_datasheet",
                 "acquire_selfdescription", "acquire_protocol_spec", "acquire_classify",
                 "acquire_bus_scan", "acquire_register_sweep"),
     "bench": ("bus_prepare",),

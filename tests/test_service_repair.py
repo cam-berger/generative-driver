@@ -13,6 +13,8 @@ class RepairServiceTests(unittest.TestCase):
         from generative_driver.client import call
         with tempfile.TemporaryDirectory() as home:
             from suite_fixtures import write_scripted_case_worker
+            # The first interpretation is one the emulator binding cannot carry: probe skips, and the configurator's
+            # model diff starts a new revision with no device.
             command=write_scripted_case_worker(home,hold_on_repair=True)
             script=Path(command[1])
             try:

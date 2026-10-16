@@ -1,5 +1,6 @@
-"""Suite selection, frozen inputs and a thin client of the existing owner."""
+"""Suite selection, frozen inputs and the clients that launch the bench harness which drives a suite."""
 import copy
+import json
 import math
 
 
@@ -73,12 +74,11 @@ def preflight_selection(manifest: dict) -> tuple[dict, list, list[dict]]:
     return normalized, definitions, pins
 
 
-def start_suite(manifest: dict, executor: str = 'codex', options: dict | None = None,
-                request_id: str | None = None, *, home=None, autostart=True) -> dict:
-    """Reconnect before mutable preflight; never become an execution owner."""
+def _launch_options(options, home):
+    """Split suite options: evaluator password files and the emulator executable go to the bench harness on its stdin,
+    never into the frozen suite; the rest is frozen with the suite."""
     from pathlib import Path
-    from ..client import call, default_home
-    normalized = normalize_manifest(manifest)
+    from ..client import default_home
     if options is not None and not isinstance(options, dict):
         raise ValueError('Suite options must be an object')
     selected = dict(options or {})
@@ -89,58 +89,150 @@ def start_suite(manifest: dict, executor: str = 'codex', options: dict | None = 
             raise ValueError('Suite options.home must be a nonblank path')
         if Path(selected_home).expanduser().resolve() != directory:
             raise ValueError('Suite options.home must match the configured owner home')
-    params = {'manifest': normalized, 'executor': executor, 'options': selected, 'request_id': request_id}
-    if call('ping', {}, directory, autostart=False).get('ok'):
-        # Saved-request dedup precedes asset reads in the owner. If it disappears
-        # after this ping, preserve that failure instead of creating another owner.
-        return call('suite_start', params, directory, autostart=False)
-    preflight_selection(normalized)
-    return call('suite_start', params, directory, autostart=autostart)
+    return directory, selected, selected.pop('evaluator_password_files', None), selected.pop('renode', None)
+
+
+def start_suite(manifest: dict, executor: str | None = None, options: dict | None = None,
+                request_id: str | None = None, *, home=None, autostart=True, via_owner=False) -> dict:
+    """Start a suite through a detached bench harness, which drives it; the configurator only freezes and stores it.
+    Password files and the emulator executable in `options` go to the harness on its stdin, never into the suite tables
+    or a child's run. A selection is checked before any configurator starts; a repeated request_id with the
+    same inputs follows the suite it started."""
+    from ..client import call
+    from .harness import launch_suite
+    normalized = normalize_manifest(manifest)
+    directory, selected, passwords, renode = _launch_options(options, home)
+    from ..setup import configured_executor
+    executor = configured_executor(executor, directory)
+    if executor != 'replay' and 'replay_candidates' in selected:
+        raise ValueError('Only a replay suite takes replay_candidates')
+    if executor == 'replay':
+        # Relative paths name directories from the caller's directory; checked before any harness starts, and again by
+        # the configurator as it freezes the suite.
+        from pathlib import Path
+        from ..replay import suite_candidates
+        from .harness import bench_home
+        candidates = selected.get('replay_candidates')
+        if isinstance(candidates, dict) and all(isinstance(path, str) and path.strip() for path in candidates.values()):
+            selected['replay_candidates'] = candidates = {case: str(Path(path).expanduser().resolve())
+                                                          for case, path in candidates.items()}
+        suite_candidates({entry['case'] for entry in normalized['entries']}, candidates, bench=bench_home(directory))
+    if not call('ping', {}, directory, autostart=False).get('ok'):
+        # Refuse an invalid selection before a configurator exists; a running one checks it again as it freezes.
+        preflight_selection(normalized)
+    return launch_suite({'manifest': normalized, 'executor': executor, 'options': selected,
+                         'request_id': request_id},
+                        home=directory, password_files=passwords, renode=renode, autostart=autostart, via_owner=via_owner)
+
+
+def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autostart=True, via_owner=False,
+                 suite_budget_seconds=None, budget_reason=None, child_budget_seconds=None,
+                 child_budget_reason=None) -> dict:
+    """Resume a stopped suite through a newly launched bench harness, which takes over its scheduling. Only the password
+    files and the emulator executable are read from `options`, and they go to that harness as at the start: the suite
+    keeps the options it was frozen with. An approved suite budget extension raises the suite's total; an approved child budget
+    extension raises the total of the stopped child the resume continues (an emulated child once its device is
+    attached anew), and no other child's."""
+    from .harness import launch_suite
+    if not isinstance(suite_id, str) or not suite_id.strip():
+        raise ValueError('suite_id must be a nonblank string')
+    if child_budget_seconds is not None and (
+            type(child_budget_seconds) not in (int, float) or not math.isfinite(child_budget_seconds)
+            or not 0 < child_budget_seconds <= 604800 or not isinstance(child_budget_reason, str)
+            or not child_budget_reason.strip()):
+        raise ValueError('A child budget extension requires a finite positive total of at most seven days and a '
+                         'nonblank child_budget_reason')
+    directory, _, passwords, renode = _launch_options(options, home)
+    request = {'suite_id': suite_id, **{key: value for key, value in (
+        ('suite_budget_seconds', suite_budget_seconds), ('budget_reason', budget_reason),
+        ('child_budget_seconds', child_budget_seconds),
+        ('child_budget_reason', child_budget_reason if child_budget_seconds is not None else None)) if value is not None}}
+    return launch_suite(request, home=directory, password_files=passwords, renode=renode, autostart=autostart, via_owner=via_owner)
+
+
+SCHEDULER = 'harness/1'
+# Suite option keys that would carry a credential or the emulator executable; they belong to the bench harness.
+SECRET = ('password', 'renode')
+
+
+def refuse_secrets(options) -> None:
+    """Suite options never carry an evaluator password file or the emulator executable: the bench harness holds them."""
+    if not isinstance(options, dict):
+        raise ValueError('Unknown suite options')
+    if any(any(word in str(key).lower() for word in SECRET) for key in options):
+        raise ValueError('Evaluator password files and the emulator executable belong to the bench harness, which takes '
+                         'them on its stdin; a suite never holds them')
+
+
+def harness_driven(frozen: dict) -> bool:
+    """Whether a frozen suite is one the bench harness drives; one frozen before it (with evaluator password files, or
+    no scheduler) is read-only."""
+    options = frozen.get('options') if isinstance(frozen.get('options'), dict) else {}
+    return frozen.get('scheduler') == SCHEDULER and not any(
+        any(word in str(key).lower() for word in SECRET) for key in options)
 
 
 def freeze_suite(manifest: dict, executor: str, executor_config: dict,
-                 options: dict, provenance: dict) -> dict:
+                 options: dict, provenance: dict, *, harness_token_sha256: str) -> dict:
     """Pin inputs without creating an owner, run, snapshot or native process.
 
-    This private frozen object is not a public result. The child owner separately
-    authenticates v2 calibration at admission before starting any operation.
+    This private frozen object is not a public result. The bench harness that drives the suite holds evaluator password
+    files and the emulator executable; the frozen suite holds only the sha256 of that harness's token. The child owner
+    separately compares the harness's admission of each v2 child with its public pin before starting any operation.
     """
     import hashlib
     import json
+    import re
     from ..configurator import validate_scoped_approval
     normalized = normalize_manifest(manifest)
-    allowed = {'renode', 'ghidra_home', 'java_home', 'evaluator_password_files', 'scoped_tool_approval'}
-    if not isinstance(options, dict) or set(options) - allowed:
+    refuse_secrets(options)
+    # A replay suite's candidates belong to its executor configuration: its children's options never carry them.
+    child_options = {key: value for key, value in options.items() if key != 'replay_candidates'}
+    if set(child_options) - {'ghidra_home', 'java_home', 'scoped_tool_approval'}:
         raise ValueError('Unknown suite options')
-    if (executor not in ('codex', 'goose') or not isinstance(executor_config, dict)
+    if not isinstance(harness_token_sha256, str) or not re.fullmatch('[0-9a-f]{64}', harness_token_sha256):
+        raise ValueError('A suite is frozen for the bench harness that drives it: the sha256 of its token is required')
+    if executor != 'replay' and 'replay_candidates' in options:
+        raise ValueError('Only a replay suite takes replay_candidates')
+    if executor == 'replay':
+        if not _replay_candidates(executor_config, normalized):
+            raise ValueError('A replay suite takes one saved candidate per case: options.replay_candidates '
+                             '{case: directory}')
+    elif (executor not in ('codex', 'goose') or not isinstance(executor_config, dict)
             or not isinstance(executor_config.get('command'), list) or not executor_config['command']
             or any(not isinstance(arg, str) or not arg.strip() for arg in executor_config['command'])):
         raise ValueError('Configure a worker runtime command before starting a suite')
     if options.get('scoped_tool_approval') not in (None, 'emulator'):
         raise ValueError('Suites permit only explicit emulator approval')
-    for key in ('renode', 'ghidra_home', 'java_home'):
+    for key in ('ghidra_home', 'java_home'):
         if key in options and (not isinstance(options[key], str) or not options[key].strip()):
             raise ValueError('Suite tool paths must be nonblank strings')
-    selected = {entry['case'] for entry in normalized['entries']}
-    handles = options.get('evaluator_password_files', {})
-    if (not isinstance(handles, dict) or set(handles) - selected
-            or any(not isinstance(value, str) or not value.strip() for value in handles.values())):
-        raise ValueError('Evaluator handles must name selected cases and file paths')
     normalized, definitions, pins = preflight_selection(normalized)
     encoded = json.dumps(normalized, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
     frozen = copy.deepcopy({'manifest': normalized, 'manifest_sha256': hashlib.sha256(encoded).hexdigest(),
         'request': {'manifest': normalized, 'executor': executor, 'options': options},
-        'executor': executor, 'executor_config': executor_config, 'options': options,
+        'executor': executor, 'executor_config': executor_config, 'options': child_options,
         'scope': 'full-workflow', 'entry_pins': pins,
         'entry_effects': [list(case.default_effects) for case in definitions],
-        'provenance': provenance, 'trials': expand_trials(normalized)})
+        'provenance': provenance, 'trials': expand_trials(normalized),
+        'scheduler': SCHEDULER, 'harness_token_sha256': harness_token_sha256})
     for trial in frozen['trials']:
         validate_scoped_approval(child_request(frozen, dict(trial, child_request_id='freeze-' + trial['trial_key'])))
     return frozen
 
 
+def _replay_candidates(executor_config, manifest):
+    """Whether a replay suite's configuration names exactly one stored candidate per case of its manifest."""
+    candidates = executor_config.get('candidates') if isinstance(executor_config, dict) else None
+    return (isinstance(candidates, dict) and set(executor_config) == {'runtime', 'candidates'}
+            and executor_config['runtime'] == 'replay' and set(candidates) == {entry['case'] for entry in manifest['entries']}
+            and all(isinstance(entry, dict) and set(entry) == {'candidate', 'candidate_sha256'}
+                    and all(isinstance(value, str) and value for value in entry.values()) for entry in candidates.values()))
+
+
 def child_request(frozen: dict, trial: dict) -> dict:
-    """Project only this reserved slot's evaluator inputs into a child request."""
+    """Project this reserved slot into a child request. It names no password file or emulator executable: the bench
+    harness adds the device, its admission (a v2 case's) and the evaluation token hash."""
     if not isinstance(trial, dict) or type(trial.get('ordinal')) is not int:
         raise ValueError('Child requires a frozen trial slot')
     ordinal = trial['ordinal']
@@ -153,29 +245,51 @@ def child_request(frozen: dict, trial: dict) -> dict:
     if not isinstance(trial.get('child_request_id'), str) or not trial['child_request_id'].strip():
         raise ValueError('Child trial requires a reserved request ID')
     options = copy.deepcopy(frozen['options'])
-    handles = options.pop('evaluator_password_files', {})
     approval = options.pop('scoped_tool_approval', None)
-    if trial['case'] in handles:
-        options['evaluator_password_file'] = handles[trial['case']]
     pin = copy.deepcopy(frozen['entry_pins'][trial['entry_index']])
     options.update(scenario_id=pin['scenario_id'], case_seed=pin['case_seed'])
+    executor_config = copy.deepcopy(frozen['executor_config'])
+    if frozen['executor'] == 'replay':
+        # Each child replays its own case's candidate.
+        executor_config = {'runtime': 'replay', **executor_config['candidates'][trial['case']]}
     return {'goal': 'Execute one registered benchmark trial with checked evidence.',
             'case': trial['case'], 'case_pin': pin, 'executor': frozen['executor'],
-            'executor_config': copy.deepcopy(frozen['executor_config']), 'case_options': options,
+            'executor_config': executor_config, 'case_options': options,
             'request_id': trial['child_request_id'],
             'effects': list(frozen['entry_effects'][trial['entry_index']]),
             'scoped_tool_approval': approval, 'budget_seconds': frozen['manifest']['child_budget_seconds']}
 
 
+# What the bench harness adds to a frozen child request: the child's device, its admission and the evaluation token hash.
+HARNESS_KEYS = ('device', 'admission', 'evaluation_token_sha256')
+
+
+def child_identity_differs(frozen: dict, trial: dict, submitted) -> str | None:
+    """Why a child request (as submitted, or as a run recorded it) is not the frozen slot's own, or None when it is:
+    the slot's `child_request` plus only what the bench harness adds."""
+    if not isinstance(submitted, dict):
+        return 'Frozen suite child identity mismatch: trial ' + str(trial.get('trial_key')) + ' has no submitted request'
+    request = copy.deepcopy(submitted)
+    for key in HARNESS_KEYS:
+        request.pop(key, None)
+    canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
+    expected = child_request(frozen, trial)
+    if canonical(request) == canonical(expected):
+        return None
+    differing = sorted(key for key in set(request) | set(expected)
+                       if canonical(request.get(key)) != canonical(expected.get(key)))
+    return ('Frozen suite child identity mismatch: trial ' + trial['trial_key'] + "'s child request differs from the "
+            'frozen slot in ' + ', '.join(differing))
+
+
 def child_disposition(result: dict) -> str:
-    """Only an explicitly settled successful or model-failed child may advance."""
+    """Whether a suite's active child lets the suite advance. Every child is graded once after its run by the bench
+    harness: it advances only once it completed with a graded or no-driver evaluation recorded. An unscored or still
+    pending evaluation, and every safety, integrity, operator, host or other stop, blocks the suite."""
     if result.get('stopping') or result.get('status') in ('queued', 'running'):
         return 'wait'
     if result.get('stopping') is not False or result.get('uncertain_effect') is not False:
         return 'block'
-    category = result.get('outcome_category', 'unknown')
-    if category == 'completed' and result.get('status') == 'completed':
-        return 'advance'
-    if category == 'model' and result.get('status') in ('failed', 'blocked'):
-        return 'advance'
-    return 'block'
+    completed = result.get('outcome_category', 'unknown') == 'completed' and result.get('status') == 'completed'
+    equivalence = result.get('equivalence') if isinstance(result.get('equivalence'), dict) else {}
+    return 'advance' if completed and equivalence.get('status') in ('graded', 'no-driver') else 'block'

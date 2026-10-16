@@ -223,29 +223,32 @@ class SealedEvidenceTests(SealedEvidenceFixture, unittest.TestCase):
 
 
 class EvidenceBoundaryTests(unittest.TestCase):
-    def test_ground_projects_only_accepted_diagnostics(self):
+    def test_ground_receives_device_evidence_and_never_diagnostic_records(self):
         import hashlib
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.ground import prepare
+        from generative_driver.benchmark_support.ground import device_evidence
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             model = root / 'model.json'
             model.write_text('{}')
             digest = hashlib.sha256(model.read_bytes()).hexdigest()
+            probe = root / 'probe-1.json'
+            probe.write_text(json.dumps({'schema': 'interface-probe/1', 'model_sha256': digest, 'operation': 'visible',
+                'ok': True, 'results': [{'ok': True, 'outputs': {'value': 7}, 'units': {'value': 'V'}}]}))
             observed = root / 'observations.json'
             observed.write_text(json.dumps({'schema': 'benchmark-observations/2', 'model_sha256': digest,
-                'diagnostics': [{'phase': 'diagnostic', 'records': [{'task_id': 'visible', 'value': 7,
+                'diagnostics': [{'phase': 'diagnostic', 'records': [{'task_id': 'graded', 'value': 7,
                     'unit': 'V', 'expected': 'FINAL SECRET'}]},
                     {'phase': 'final', 'records': [{'task_id': 'hidden', 'value': 'FINAL SECRET'}]}],
                 'records': [{'value': 'FINAL SECRET'}]}))
             accepted = [{'stage': 'probe', 'artifacts': [{'path': str(path),
-                'sha256': hashlib.sha256(path.read_bytes()).hexdigest()} for path in (model, observed)]}]
-            result = prepare(accepted, root / 'worker')
-            text = json.dumps(result) + ''.join(Path(path).read_text() for path in result['inputs'])
+                'sha256': hashlib.sha256(path.read_bytes()).hexdigest()} for path in (model, probe, observed)]}]
+            result = device_evidence(accepted, root / 'worker')
+            text = json.dumps(result) + ''.join(Path(path).read_text() for path in result['inputs'] if Path(path).is_file())
             self.assertIn('visible', text)
-            self.assertNotIn('FINAL SECRET', text)
-            self.assertNotIn('hidden', text)
+            for forbidden in ('FINAL SECRET', 'hidden', 'graded', 'expected'):
+                self.assertNotIn(forbidden, text)
 
     def test_cli_accepts_evidence_and_requires_it_for_v2(self):
         import contextlib
@@ -262,7 +265,10 @@ class EvidenceBoundaryTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn('error', json.loads(output.getvalue()))
 
-    def test_cancel_during_final_return_persists_terminal_and_old_verdict_blocks_resume(self):
+    def test_a_frozen_final_decision_a_stage_check_returns_is_no_verdict_even_during_cancellation(self):
+        # Catches a stage observation that grades: a frozen final decision returned by reuse's check, while the run is
+        # being cancelled, recording a stage verdict or the gated protocol's terminal flag. Nothing is graded inside a
+        # run; the cancellation stands and the run may resume.
         import hashlib
         import tempfile
         import threading
@@ -270,82 +276,17 @@ class EvidenceBoundaryTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from generative_driver.configurator import Controller
-        for simulate_old_marker_gap in ('none', 'cancelled', 'running'):
-            with self.subTest(old_marker_gap=simulate_old_marker_gap), tempfile.TemporaryDirectory() as temp:
-                root = Path(temp)
-                controller = Controller(root)
-                check_started, cancel_committed = threading.Event(), threading.Event()
-                assigned = []
-                real_state = controller._state
-                def state(run_id, status, reason=None, stage=None, **metadata):
-                    result = real_state(run_id, status, reason, stage, **metadata)
-                    if status == 'cancelled':
-                        cancel_committed.set()
-                    return result
-                def execute(request, config, cancel):
-                    assigned.append(request.stage)
-                    target = request.workspace / 'artifact.json'
-                    target.write_text('{}')
-                    return {'runtime': 'scripted-contract-fixture', 'status': 'completed', 'elapsed_seconds': 0,
-                        'usage': None, 'report': {'status': 'completed', 'summary': 'scripted-contract-fixture',
-                        'artifacts': [{'path': target.name, 'kind': 'evidence', 'sha256': hashlib.sha256(target.read_bytes()).hexdigest()}],
-                        'checks': [], 'unresolved': []}}
-                def check(spec, stage, run_dir, workspace, report, accepted, assignment):
-                    if stage != 'reuse':
-                        return {'ok': True, 'artifacts': [str(workspace / 'artifact.json')], 'checks': []}
-                    contract = {'schema': 'benchmark-behavior/1', 'artifact_sha256': 'a'*64, 'checks': [{
-                        'id': 'hidden/value', 'revision': 0, 'kind': 'number', 'expected': 9,
-                        'absolute_tolerance': 0, 'unit': 'V', 'channel': 'independent-monitor'}]}
-                    decision = evidence.frozen_final_decision(contract, [])
-                    check_started.set()
-                    if not cancel_committed.wait(5):
-                        raise AssertionError('External cancellation did not commit')
-                    return decision
-                try:
-                    with patch.object(Controller, '_prepare', return_value={'objective': 'fixture', 'inputs': [], 'allowed_tools': []}), \
-                         patch.object(Controller, '_check', side_effect=check), \
-                         patch('generative_driver.configurator.execute', side_effect=execute):
-                        with patch.object(controller, '_state', side_effect=state), ThreadPoolExecutor(max_workers=1) as pool:
-                            run = controller.start({'goal': 'scripted-contract-fixture', 'budget_seconds': 30})
-                            self.assertTrue(check_started.wait(5), 'Final check never ran')
-                            cancelled = pool.submit(controller.call, 'cancel', run).result(timeout=5)
-                            self.assertFalse(cancelled['stopping'])
-                        result = controller.call('result', run)
-                        self.assertEqual(result['evaluator_verdicts'][-1]['verdict'], 'failed')
-                        self.assertEqual(result['outcome_category'], 'cancelled')
-                        if simulate_old_marker_gap != 'none':
-                            # Model records saved before terminal marker persistence was atomic.
-                            with controller._db() as db:
-                                progress = result['progress']
-                                progress.pop('terminal_final_failure', None)
-                                db.execute('UPDATE progress SET payload=? WHERE run_id=?', (json.dumps(progress), run['run_id']))
-                        else:
-                            self.assertTrue(result['progress'].get('terminal_final_failure'))
-                        controller.close()
-                        if simulate_old_marker_gap == 'running':
-                            with controller._db() as db:
-                                db.execute("UPDATE runs SET status='running' WHERE id=?", (run['run_id'],))
-                        controller = Controller(root)
-                        if simulate_old_marker_gap == 'running':
-                            self.assertEqual(controller.call('status', run)['status'], 'failed')
-                        with self.assertRaisesRegex(ValueError, 'final'):
-                            controller.call('resume', run)
-                        self.assertEqual(assigned, ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse'])
-                finally:
-                    cancel_committed.set()
-                    controller.close()
-
-    def test_frozen_final_failure_is_terminal_even_after_reopening_controller(self):
-        import hashlib
-        import tempfile
-        import time
-        from pathlib import Path
-        from unittest.mock import patch
-        from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             controller = Controller(root)
+            check_started, cancel_committed = threading.Event(), threading.Event()
             assigned = []
+            real_state = controller._state
+            def state(run_id, status, reason=None, stage=None, **metadata):
+                result = real_state(run_id, status, reason, stage, **metadata)
+                if status == 'cancelled':
+                    cancel_committed.set()
+                return result
             def execute(request, config, cancel):
                 assigned.append(request.stage)
                 target = request.workspace / 'artifact.json'
@@ -360,33 +301,76 @@ class EvidenceBoundaryTests(unittest.TestCase):
                 contract = {'schema': 'benchmark-behavior/1', 'artifact_sha256': 'a'*64, 'checks': [{
                     'id': 'hidden/value', 'revision': 0, 'kind': 'number', 'expected': 9,
                     'absolute_tolerance': 0, 'unit': 'V', 'channel': 'independent-monitor'}]}
-                return evidence.frozen_final_decision(contract, [{'id': 'hidden/value', 'revision': 0,
-                    'artifact_sha256': 'a'*64, 'value': 1, 'unit': 'V', 'channel': 'independent-monitor'}])
+                decision = evidence.frozen_final_decision(contract, [])
+                check_started.set()
+                if not cancel_committed.wait(60):
+                    raise AssertionError('External cancellation did not commit')
+                return decision
             try:
-                with patch.object(controller, '_prepare', return_value={'objective': 'fixture', 'inputs': [], 'allowed_tools': []}), \
-                     patch.object(controller, '_check', side_effect=check), \
+                with patch.object(Controller, '_prepare', return_value={'objective': 'fixture', 'inputs': [], 'allowed_tools': []}), \
+                     patch.object(Controller, '_check', side_effect=check), \
                      patch('generative_driver.configurator.execute', side_effect=execute):
-                    run = controller.start({'goal': 'scripted-contract-fixture', 'budget_seconds': 30})
-                    deadline = time.monotonic() + 5
-                    while time.monotonic() < deadline:
-                        status = controller.call('status', run)
-                        if status['status'] in ('failed', 'blocked', 'completed') and not status['stopping']:
-                            break
-                        time.sleep(.01)
+                    with patch.object(controller, '_state', side_effect=state), ThreadPoolExecutor(max_workers=1) as pool:
+                        run = controller.start({'goal': 'scripted-contract-fixture', 'budget_seconds': 120,
+                                                 'executor_config': {'command': ['scripted-runtime']}})
+                        # Six persisted stages precede this barrier. Test the
+                        # cancellation ordering without requiring their file/DB
+                        # work to fit a five-second startup allowance.
+                        if not check_started.wait(60):
+                            self.fail('Final check never ran: ' + str(controller.call('result', run)))
+                        cancelled = pool.submit(controller.call, 'cancel', run).result(timeout=60)
+                        self.assertFalse(cancelled['stopping'])
                     result = controller.call('result', run)
-                    self.assertEqual(result['status'], 'failed')
-                    self.assertTrue(result['progress'].get('terminal_final_failure'))
-                    self.assertEqual(result['evaluator_verdicts'][-1]['fault'], 'model')
-                    self.assertNotIn('route', result['evaluator_verdicts'][-1])
-                    with self.assertRaisesRegex(ValueError, 'final'):
-                        controller.call('resume', run)
+                    self.assertEqual((result['status'], result['outcome_category']), ('cancelled', 'cancelled'))
+                    self.assertEqual(result['evaluator_verdicts'], [])
+                    self.assertIsNone(result['equivalence'])
+                    self.assertNotIn('terminal_final_failure', result['progress'])
                     self.assertEqual(assigned, ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse'])
                 controller.close()
                 controller = Controller(root)
-                with self.assertRaisesRegex(ValueError, 'final'):
-                    controller.call('resume', run)
+                with patch.object(controller, '_spawn'):
+                    self.assertTrue(controller.call('resume', run)['ok'])
             finally:
+                cancel_committed.set()
                 controller.close()
+
+    def test_a_run_recorded_with_the_gated_terminal_final_failure_stays_terminal_after_reopening(self):
+        # The gated protocol's terminal shapes, which runs recorded before keep: the progress flag, or a failed frozen
+        # final verdict saved by versions that could lose the flag, also by a process that stopped while running.
+        import tempfile
+        import time
+        from pathlib import Path
+        from generative_driver.configurator import Controller
+        from test_configurator import wait_stopped
+        for gap in ('none', 'verdict', 'running'):
+            with self.subTest(old_marker_gap=gap), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                controller = Controller(root)
+                try:
+                    run = controller.start({'goal': 'scripted-contract-fixture', 'executor_config': {'command': ['missing-runtime']}})
+                    wait_stopped(controller, run)
+                    before = [e for e in controller.call('events', run)['events'] if e['kind'] == 'stage.assigned']
+                    with controller._db() as db:
+                        progress = json.loads(db.execute('SELECT payload FROM progress WHERE run_id=?', (run['run_id'],)).fetchone()['payload'])
+                        if gap == 'none':
+                            db.execute('UPDATE progress SET payload=? WHERE run_id=?', (json.dumps({**progress, 'terminal_final_failure': True}), run['run_id']))
+                        else:
+                            verdict = {'stage': 'reuse', 'assignment_id': 'old-final', 'final_evaluation': True, 'fault': 'model',
+                                       'verdict': 'failed', 'passed': 0, 'total': 1}
+                            db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)', ('old-final', run['run_id'], 'reuse', json.dumps(verdict), time.time()))
+                        db.execute("UPDATE runs SET status=?,outcome_category='model' WHERE id=?",
+                                   ('running' if gap == 'running' else 'failed', run['run_id']))
+                finally:
+                    controller.close()
+                controller = Controller(root)
+                try:
+                    if gap == 'running':
+                        self.assertEqual(controller.call('status', run)['status'], 'failed')
+                    with self.assertRaisesRegex(ValueError, 'final'):
+                        controller.call('resume', run)
+                    self.assertEqual([e for e in controller.call('events', run)['events'] if e['kind'] == 'stage.assigned'], before)
+                finally:
+                    controller.close()
 
 
 class ReportV2Tests(unittest.TestCase):

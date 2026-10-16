@@ -5,7 +5,7 @@ can be read, a documented part, a device that describes itself, and nothing at a
 walks it and stops at the first rung that yields a description. Every rung it tries is logged with the
 reason it was taken or skipped, so the class is a finding rather than a setting.
 """
-import array, hashlib, json, os, re, shutil, urllib.request, uuid
+import array, hashlib, json, os, re, shutil, time, urllib.request, uuid
 
 from . import core, runner
 
@@ -68,9 +68,37 @@ def acquire_firmware_artifact(run_dir, source_path, origin, expected_sha256,
 
 # ---------------------------------------------------------------- rung 1: a controller we can read
 
+def _carve_app(flash, app):
+    """Write the app partition named by the ESP partition table at 0x8000 of the dump to `app`.
+
+    Only in-range, non-empty type-0 entries count; the factory one (subtype 0) is preferred, else the first. Returns
+    whether an app image was written."""
+    with open(flash, "rb") as fh:
+        data = fh.read()
+    usable = []
+    for i in range(0x8000, len(data) - 31, 32):
+        entry = data[i:i + 32]
+        if entry[:2] != b"\xaa\x50":
+            break
+        offset, size = int.from_bytes(entry[4:8], "little"), int.from_bytes(entry[8:12], "little")
+        if entry[2] == 0 and size > 0 and offset + size <= len(data):
+            usable.append((entry[3], offset, size))
+    if not usable:
+        return False
+    chosen = next((u for u in usable if u[0] == 0), usable[0])
+    with open(app, "wb") as fh:
+        fh.write(data[chosen[1]:chosen[1] + chosen[2]])
+    return True
+
+
 @core.tool("acquire_flash")
-def acquire_flash(run_dir, port, chunked=False, strip_app_desc=False, backend=None, **_):
-    """Read an explicitly selected ESP32 controller; a serial port alone is not an ESP identity."""
+def acquire_flash(run_dir, port, chunked=False, strip_app_desc=False, backend=None, allow_reset=False, **_):
+    """Read an explicitly selected ESP32 controller; a serial port alone is not an ESP identity.
+
+    Without `allow_reset` the chip is never reset: every call uses no-reset and the dump runs at the
+    default baud. With it, calls use default-reset and the chip is returned to its application on every
+    exit after first contact.
+    """
     if backend != "esp32":
         return {"available": False, "reason": "Flash acquisition requires explicit backend='esp32'; "
                 "other serial devices are unsupported. Use acquire_firmware_artifact for a local binary.",
@@ -81,44 +109,139 @@ def acquire_flash(run_dir, port, chunked=False, strip_app_desc=False, backend=No
     out = _mkdir(run, "acquire")
     esptool = [core.VENV_PY, "-m", "esptool"]
     espefuse = [core.VENV_PY, "-m", "espefuse"]
-    rc, o, e = core.sh([*esptool, "-p", port, "--before", "no-reset", "--after", "no-reset", "chip-id"])
-    if rc != 0:
-        return {"available": False, "reason": f"no controller answered on {port}", "_exit": 1}
-    chip = next((l.split("Detecting chip type...")[-1].strip() for l in o.splitlines() if "Chip is" in l), None) \
-        or next((l.strip() for l in o.splitlines() if "Chip is" in l), "unknown")
-    mac = next((l.split()[-1] for l in o.splitlines() if l.startswith("MAC:")), None)
-    rc2, fo, fe = core.sh([*espefuse, "-p", port, "--before", "no-reset", "summary"])
-    if rc2 != 0:
-        return {"available": False, "reason": "Fuse read failed; flash protection state is unknown, so no dump was attempted",
-                "chip": chip, "mac": mac, "stderr": fe[-300:], "_exit": 1}
-    locked = any(("SPI_BOOT_CRYPT_CNT" in l and "Disable" not in l and "disabled" not in l) or
-                 ("SECURE_BOOT_EN" in l and "True" in l) for l in fo.splitlines())
-    if locked:
-        return {"available": False, "reason": "flash encryption or secure boot is set; class 1 unavailable",
-                "chip": chip, "mac": mac, "_exit": 0}
-    flash = os.path.join(out, "flash.bin")
-    if chunked:
-        rc3, do, de = core.sh([core.VENV_PY, os.path.join(core.BENCH, "tools", "read_flash_chunked.py"),
-                               port, "8", flash], timeout=1800)
-    else:
-        rc3, do, de = core.sh([*esptool, "-p", port, "-b", "921600", "--before", "no-reset", "--after",
-                               "no-reset", "read-flash", "0", "ALL", flash], timeout=1800)
-    if rc3 != 0 or not os.path.exists(flash):
-        return {"available": False, "reason": "dump failed", "stderr": de[-300:], "_exit": 1}
-    app = os.path.join(out, "app.bin")
-    elf = os.path.join(out, "app.elf")
-    args = [core.VENV_PY, os.path.join(core.BENCH, "tools", "esp_image_to_elf.py"), app, elf]
-    if strip_app_desc:
-        args.append("--strip-app-desc")
-    rc4, _, ce = core.sh(args)
-    if rc4 != 0 or not os.path.isfile(elf):
-        return {"available": False, "reason": "Flash dump was retained, but app extraction/conversion did not produce an ELF; "
-                "automatic app carving is not implemented", "raw_flash": os.path.abspath(flash),
-                "stderr": ce[-300:], "_exit": 1,
-                "_files": {os.path.abspath(flash): core.sha256(flash)}}
-    files = {core.label(p): core.sha256(p) for p in (flash, app, elf) if os.path.exists(p)}
-    return {"available": True, "rung": "flash", "chip": chip, "mac": mac, "artifact": core.label(elf),
-            "_files": files}
+    before = ["--before", "default-reset" if allow_reset else "no-reset"]
+    stay = ["--after", "no-reset"]
+    dump_baud = "921600" if allow_reset else "115200"  # no-reset leaves the stub at the dump baud
+    returned = []  # set once a command has already ended with a hard reset
+
+    def leave():
+        """Best-effort return to the application on any exit, only under the reset grant.
+
+        Returns None when nothing ran, otherwise whether the chip is back in its application. A failed
+        dump can leave the stub running, which only a reset can get out of, hence default-reset.
+        """
+        if not allow_reset:
+            return None
+        if returned:
+            return True
+        try:
+            rc, _, _ = core.sh([*esptool, "-p", port, "--before", "default-reset", "--after", "hard-reset", "chip-id"])
+            return rc == 0
+        except Exception:
+            return False
+
+    def attempt():
+        rc, o, e = core.sh([*esptool, "-p", port, *before, *stay, "chip-id"])
+        if rc != 0:
+            return ({"available": False, "reason": f"no controller answered on {port}", "_exit": 1})
+        chip = next((l.split("Detecting chip type...")[-1].strip() for l in o.splitlines() if "Chip is" in l), None) \
+            or next((l.strip() for l in o.splitlines() if "Chip is" in l), "unknown")
+        mac = next((l.split()[-1] for l in o.splitlines() if l.startswith("MAC:")), None)
+        rc2, fo, fe = core.sh([*espefuse, "-p", port, *before, "summary"])
+        if rc2 != 0:
+            return ({"available": False, "reason": "Fuse read failed; flash protection state is unknown, so no dump was attempted",
+                          "chip": chip, "mac": mac, "stderr": fe[-300:], "_exit": 1})
+        efuse = os.path.join(out, "efuse.txt")
+        with open(efuse, "w", encoding="utf-8") as fh:
+            fh.write(fo)
+        locked = any(("SPI_BOOT_CRYPT_CNT" in l and "Disable" not in l and "disabled" not in l) or
+                     ("SECURE_BOOT_EN" in l and "True" in l) for l in fo.splitlines())
+        if locked:
+            return ({"available": False, "reason": "flash encryption or secure boot is set; class 1 unavailable",
+                          "chip": chip, "mac": mac, "_exit": 0})
+        flash = os.path.join(out, "flash.bin")
+        if chunked:
+            rc3, do, de = core.sh([core.VENV_PY, os.path.join(core.BENCH, "tools", "read_flash_chunked.py"),
+                                   port, "8", flash], timeout=1800)
+        else:
+            after = "hard-reset" if allow_reset else "no-reset"
+            rc3, do, de = core.sh([*esptool, "-p", port, "-b", dump_baud, *before, "--after", after,
+                                   "read-flash", "0", "ALL", flash], timeout=1800)
+            if rc3 == 0 and allow_reset:
+                returned.append(True)
+        if rc3 != 0 or not os.path.exists(flash):
+            return ({"available": False, "reason": "dump failed", "stderr": de[-300:], "_exit": 1})
+        app = os.path.join(out, "app.bin")
+        elf = os.path.join(out, "app.elf")
+        retained = {"raw_flash": os.path.abspath(flash), "_files": {os.path.abspath(flash): core.sha256(flash)}}
+        if not _carve_app(flash, app):
+            return ({"available": False, "reason": "Flash dump was retained, but its partition table names no app "
+                          "partition to carve", "_exit": 1, **retained})
+        args = [core.VENV_PY, os.path.join(core.BENCH, "tools", "esp_image_to_elf.py"), app, elf]
+        if strip_app_desc:
+            args.append("--strip-app-desc")
+        rc4, _, ce = core.sh(args)
+        chosen = elf if rc4 == 0 and os.path.isfile(elf) else (app if os.path.isfile(app) else None)
+        if chosen is None:
+            return ({"available": False, "reason": "Flash dump was retained, but app extraction/conversion did not produce an ELF",
+                          "stderr": ce[-300:], "_exit": 1, **retained})
+        handoff = os.path.join(out, "interpret-input" + os.path.splitext(chosen)[1])
+        shutil.copyfile(chosen, handoff)
+        paths = [os.path.abspath(p) for p in (flash, app, elf, efuse, handoff) if os.path.exists(p)]
+        return ({"available": True, "rung": "flash", "chip": chip, "mac": mac, "artifact": os.path.abspath(handoff),
+                      "artifacts": paths, "interpret_input": os.path.abspath(handoff),
+                      "_files": {p: core.sha256(p) for p in paths}})
+
+    try:
+        result = attempt()
+    except BaseException:
+        leave()
+        raise
+    back = leave()
+    if back is not None:
+        result["returned_to_application"] = back
+    return result
+
+
+@core.tool("acquire_serial_listen")
+def acquire_serial_listen(run_dir, port, baudrate=115200, seconds=8, **_):
+    """Record what a serial device sends with control lines released and nothing transmitted. A missing port is the
+    operator's (fault operator); the caller's own seconds or baudrate are refused without a fault."""
+    if not isinstance(port, str) or not port.strip():
+        return {"available": False, "reason": "No bound serial port", "fault": "operator", "_exit": 1}
+    if type(seconds) not in (int, float) or not 0 < seconds <= 30:
+        return {"available": False, "reason": "seconds must be in (0, 30]", "_exit": 1}
+    if type(baudrate) is not int or not 1 <= baudrate <= 12000000:
+        return {"available": False, "reason": "baudrate must be an integer 1..12000000", "_exit": 1}
+    try:
+        import serial  # optional hardware dependency, imported only when listening
+    except ImportError:
+        return {"available": False, "fault": "host", "_exit": 4,
+                "reason": 'pyserial is not installed on this host; install "generative-driver[hardware]"'}
+    run = core.resolve_run(run_dir)
+    out = _mkdir(run, "acquire")
+    handle = serial.Serial()
+    handle.port, handle.baudrate, handle.timeout = port, baudrate, 0.05
+    handle.dtr = False
+    handle.rts = False
+    started = time.monotonic()
+    handle.open()
+    data, first = b"", None
+    try:
+        while time.monotonic() - started < seconds:
+            chunk = handle.read(4096)
+            if chunk:
+                first = first if first is not None else int((time.monotonic() - started) * 1000)
+                data += chunk
+    finally:
+        handle.close()
+    unsolicited = first is not None and first <= 500
+    # Append-only names: earlier captures are recorded evidence and must never change. The raw capture
+    # is not named .bin so it can never be mistaken for a firmware image.
+    n = 1
+    while any(os.path.exists(os.path.join(out, f"listen-{n}{ext}")) for ext in (".raw", ".json")):
+        n += 1
+    raw = os.path.join(out, f"listen-{n}.raw")
+    meta = os.path.join(out, f"listen-{n}.json")
+    with open(raw, "wb") as f:
+        f.write(data)
+    with open(meta, "w", encoding="utf-8") as f:
+        json.dump({"schema": "serial-listen/1", "baudrate": baudrate, "seconds": seconds, "bytes": len(data),
+                   "first_byte_ms": first, "unsolicited_output": unsolicited,
+                   "text": data.decode("utf-8", "backslashreplace")}, f, indent=1)
+    raw, meta = os.path.abspath(raw), os.path.abspath(meta)
+    return {"available": True, "unsolicited_output": unsolicited, "bytes": len(data), "first_byte_ms": first,
+            "artifact": meta, "artifacts": [raw, meta], "_files": {raw: core.sha256(raw), meta: core.sha256(meta)}}
 
 
 # ---------------------------------------------------------------- rung 2: a documented part
@@ -131,7 +254,8 @@ def acquire_datasheet(run_dir, part_hint=None, url=None, expected_sha256=None, *
     has no url returns needs_search, which is what the find-datasheet skill is for.
     """
     run = core.resolve_run(run_dir)
-    reg = json.load(open(os.path.join(core.BENCH, "toolchain", "datasheets.json"), encoding="utf-8"))
+    with open(os.path.join(core.BENCH, "toolchain", "datasheets.json"), encoding="utf-8") as registry:
+        reg = json.load(registry)
     key = (part_hint or "").strip().lower()
     entry = reg["parts"].get(key)
     if not entry and not url:
@@ -665,7 +789,7 @@ def acquire_register_sweep(run_dir, address, bus_url=None, speed_hz=100000,
 @core.tool("acquire_classify")
 def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
                      transports=None, allow_register_sweep=False, flash_backend=None, address=None,
-                     serial_number=None, **_):
+                     serial_number=None, allow_reset=False, **_):
     """Walk the ladder and stop at the first rung that yields a description of the device.
 
     Returns the class (1 readable controller, 2 documented part, 3 self-describing, 4 black box), the
@@ -690,12 +814,16 @@ def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
         return {"device_class": None, "unsupported": True, "reason": reason,
                 "rungs": [{"rung": 1, "name": "flash", "tried": False, "result": reason}], "_exit": 1}
     if port is not None:
-        r = acquire_flash(run_dir=run_dir, port=port, backend=flash_backend)
+        r = acquire_flash(run_dir=run_dir, port=port, backend=flash_backend, allow_reset=allow_reset)
         rungs.append({"rung": 1, "name": "flash", "tried": True, "result": r.get("reason") or "dumped",
                       "event": r.get("_event")})
         if r.get("available"):
-            return {"device_class": 1, "front_end": "interpret-firmware", "artifact": r["artifact"],
-                    "rungs": rungs, "inputs_for_interpret": {"elf": r["artifact"]}}
+            is_elf = r["interpret_input"].endswith(".elf")
+            return {"device_class": 1,
+                    "front_end": "interpret-firmware" if is_elf else "interpret-firmware-binary",
+                    "artifact": r["artifact"], "rungs": rungs,
+                    "inputs_for_interpret": {"elf": r["artifact"]} if is_elf else {"image.bin": r["interpret_input"]},
+                    "available": True, "artifacts": r["artifacts"], "interpret_input": r["interpret_input"]}
         if not part_hint and transports is None:
             return {"device_class": None, "rungs": rungs,
                     "reason": "Firmware acquisition on the selected serial endpoint failed; no other bus was scanned. "
@@ -714,8 +842,8 @@ def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
                       "result": ("obtained rev %s" % r.get("revision")) if r.get("available") else r.get("reason"),
                       "event": r.get("_event")})
         if r.get("available"):
-            return {"device_class": 2, "front_end": "interpret-datasheet", "artifact": r["artifact"],
-                    "rungs": rungs,
+            return {"available": True, "device_class": 2, "front_end": "interpret-datasheet", "artifact": r["artifact"],
+                    "rungs": rungs, "artifacts": [r["artifact"], r["pages_dir"]],
                     "inputs_for_interpret": {"datasheet.pdf": r["artifact"], "pages": r["pages_dir"]}}
         if port is not None and transports is None:
             return {"device_class": None, "rungs": rungs,
@@ -732,7 +860,8 @@ def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
                           "result": "described" if r.get("available") else r.get("reason") or r.get("error"),
                           "event": r.get("_event")})
             if r.get("available"):
-                return {"device_class": 3, "front_end": r["front_end"], "artifact": r["artifact"], "rungs": rungs,
+                return {"available": True, "device_class": 3, "front_end": r["front_end"], "artifact": r["artifact"], "rungs": rungs,
+                        "artifacts": list(r["inputs_for_interpret"].values()),
                         "identity": r["identity"], "named_protocols": r["named_protocols"],
                         "next_tool": r["next_tool"], "inputs_for_interpret": r["inputs_for_interpret"]}
             code = max(code, 4 if r.get("_exit") == 4 else 1)
@@ -746,7 +875,8 @@ def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
     rungs.append({"rung": 3, "name": "selfdescription", "tried": True, "result": r.get("reason"),
                   "event": r.get("_event")})
     if r.get("available"):
-        return {"device_class": 3, "front_end": "interpret-selfdescribing", "artifact": r["artifact"], "rungs": rungs}
+        return {"available": True, "device_class": 3, "front_end": "interpret-selfdescribing", "artifact": r["artifact"],
+                "artifacts": list(r.get("inputs_for_interpret", {}).values()), "rungs": rungs}
 
     scan = acquire_bus_scan(run_dir=run_dir, bus_url=bus_url)
     rungs.append({"rung": 4, "name": "blackbox", "tried": True,
@@ -757,5 +887,5 @@ def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
     if allow_register_sweep:
         sw = acquire_register_sweep(run_dir=run_dir, address=scan["acks"][0], bus_url=bus_url)
         inputs["sweep"] = sw.get("sweep")
-    return {"device_class": 4, "front_end": "interpret-blackbox", "artifact": scan["scan"],
-            "rungs": rungs, "inputs_for_interpret": inputs}
+    return {"available": True, "device_class": 4, "front_end": "interpret-blackbox", "artifact": scan["scan"],
+            "rungs": rungs, "inputs_for_interpret": inputs, "artifacts": [p for p in inputs.values() if p]}

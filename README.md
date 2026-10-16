@@ -49,9 +49,9 @@ Agent execution uses your separately configured Codex or Goose runtime and its s
 
 ## What a run records
 
-Each run has a durable ID, immutable accepted artifacts, worker reports, stage checks, tool events and evaluator verdicts. These records distinguish what an agent claimed, what the configurator accepted, and what independent evidence established. Device binding and allowed effects are explicit. Fresh reuse starts a new agent context. Interrupted writes remain uncertain until checked.
+Each run has a durable ID, immutable accepted artifacts with each stage's notes, worker reports, tool events and one final equivalence verdict: the evaluator's grade after a benchmark run, labelled self-evidence otherwise. A worker's report never stops a run; only safety, integrity, operator and host faults do. These records distinguish what an agent claimed, what the configurator accepted, and what independent evidence established. Device binding and allowed effects are explicit. Fresh reuse starts a new agent context. Interrupted writes remain uncertain until checked.
 
-Benchmarks measure functional compatibility: expected outputs and effects for specified inputs. Generated source code does not have to resemble reference code. Password-encrypted groundtruth and hashes keep evaluator evidence separate from candidate input and record provenance. Password separation is not an operating-system sandbox.
+Benchmarks measure functional compatibility: expected outputs and effects for specified inputs. Generated source code does not have to resemble reference code. Password-encrypted groundtruth and hashes keep evaluator evidence separate from candidate input and record provenance. This separation is password-based, not an operating-system sandbox: workers are not read-isolated. New runs follow protocol `assistive/1`, whose benchmark results are a new series.
 
 ## Watch a run
 

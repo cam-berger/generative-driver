@@ -52,6 +52,91 @@ def _wait_for_exit(pid, timeout=10):
         time.sleep(min(.01, remaining))
 
 
+# The lock a configurator holds on its home for as long as it runs (see `daemon.main`).
+SERVICE_LOCK = 'service.lock'
+
+
+def hold_process_lock(path):
+    """Lock the file at `path` for as long as this process keeps the returned stream open; the operating system lets
+    go of it when the process ends, however it ends. None when the file system offers no such lock."""
+    stream = open(path, 'a+b')
+    try:
+        if os.name == 'nt':
+            import msvcrt
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        stream.close()
+        return None
+    return stream
+
+
+def process_lock_held(path):
+    """Whether a running process holds the lock `hold_process_lock` takes on `path`: unlike a process id, which another
+    process may take over once its holder ended, a lock ends with its holder. True or False; None when it cannot be
+    told (the caller then decides by other means)."""
+    import errno
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_BINARY', 0))
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    try:
+        if os.name == 'nt':
+            import msvcrt
+            try:
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            except OSError as error:
+                return True if error.errno in (errno.EACCES, errno.EDEADLOCK) else None
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            return False
+        import fcntl
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        except OSError:
+            return None
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(descriptor)
+
+
+def _service_running(home, endpoint):
+    """Whether the configurator `endpoint` (its service.json) names still runs: True or False, or None when nothing tells.
+    A configurator holds a lock on its home for as long as it runs, which ends with it however it ends; its process id
+    may by then name another process, or one this client may not signal. So the id is read only of a configurator that
+    was started without the lock (before configurators held one, or on a file system without such locks). An OSError
+    when that id cannot be checked."""
+    held = process_lock_held(Path(home) / SERVICE_LOCK)
+    if held or (held is False and endpoint.get('lock') == SERVICE_LOCK):
+        return held
+    pid = endpoint.get('pid')
+    if type(pid) is not int or pid <= 0:
+        return None
+    return not _wait_for_exit(pid, 0)
+
+
+def _service_locked(home, process, deadline):
+    """Wait until the starting configurator `process` holds its home's lock, which it takes before it waits for
+    publication: True, or None on a file system without such locks. Its exit, or the deadline, ends the startup."""
+    while True:
+        if process.poll() is not None:
+            raise RuntimeError(f'Configurator exited during startup (exit {process.returncode}); inspect '
+                               + str(home / 'daemon.log'))
+        held = process_lock_held(home / SERVICE_LOCK)
+        if held is not False:
+            return held
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Configurator failed to start; inspect ' + str(home / 'daemon.log'))
+        time.sleep(.01)
+
+
 def _confirmed_shutdown(pid, timeout=10):
     if type(pid) is not int or pid <= 0:
         return {'ok': False, 'stopped': False, 'reason': 'Daemon exit cannot be confirmed without its process identity'}
@@ -61,6 +146,58 @@ def _confirmed_shutdown(pid, timeout=10):
         return {'ok': False, 'stopped': False, 'reason': 'Daemon exit verification failed: ' + str(exc)}
     return {'ok': stopped, 'stopped': stopped, 'pid': pid,
             **({} if stopped else {'reason': 'Daemon exit was not confirmed before the shutdown deadline'})}
+
+
+def _confirmed_stopped(home, endpoint, timeout):
+    """Once a shutdown request got no reply: whether the configurator service.json names has ended, waiting up to
+    `timeout` seconds, by the lock it holds on its home or, where none tells, its process id (see `_service_running`)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            running = _service_running(home, endpoint)
+        except OSError as exc:
+            return {'ok': False, 'stopped': False, 'reason': 'Daemon exit verification failed: ' + str(exc)}
+        if running is None:
+            return {'ok': False, 'stopped': False, 'reason': 'Daemon exit cannot be confirmed without its process identity'}
+        if not running or time.monotonic() >= deadline:
+            return {'ok': not running, 'stopped': not running, 'pid': endpoint.get('pid'),
+                    **({'reason': 'Daemon exit was not confirmed before the shutdown deadline'} if running else {})}
+        time.sleep(.01)
+
+
+def _sources_digest():
+    digest, root = hashlib.sha256(), Path(__file__).resolve().parents[1]
+    for package in ('generative_driver', 'interface_runtime'):
+        for path in sorted((root / package).rglob('*.py')):
+            digest.update(path.relative_to(root).as_posix().encode() + b'\0' + path.read_bytes() + b'\0')
+    return digest.hexdigest()
+
+
+# Taken when this process loads the package: the code it runs, not the files on disk at some later call.
+_CODE = _sources_digest()
+
+
+def code_identity():
+    """Digest of the Python sources this process loaded. A client never drives a configurator running other code: an
+    older installation, another checkout, or this one before an edit, whatever version number they share."""
+    return _CODE
+
+
+def _runs_other_code(endpoint, home):
+    """Whether service.json names a live configurator started from other code. Decided without IPC: a live one is never
+    sent the request, and a dead one is replaced by the ordinary start."""
+    if endpoint.get('code') == code_identity():
+        return False
+    try:
+        return bool(_service_running(home, endpoint))
+    except OSError:
+        return True  # It exists, owned by someone this client may not signal.
+
+
+def _incompatible(endpoint):
+    return ('The running configurator (pid {}) runs other generative-driver code than this client. Stop it with '
+            '`generative-driver service stop`, then start it with `generative-driver service start`.'
+            .format(endpoint.get('pid')))
 
 
 def default_home():
@@ -73,19 +210,27 @@ def default_home():
     return Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'generative-driver'
 
 
+class _RequestInterrupted(OSError):
+    """Dispatch was attempted; a lost reply cannot authorize repeating an operation."""
+
+
 def _request(home, method, params, *, reply_timeout=None):
     endpoint = json.loads((home / 'service.json').read_text(encoding='utf-8'))
     with Client(endpoint['address'], family=endpoint['family'], authkey=bytes.fromhex(endpoint['authkey'])) as conn:
-        conn.send_bytes(json.dumps({'method': method, 'params': params}).encode('utf-8'))
-        timeout = reply_timeout if reply_timeout is not None else (620 if method == 'tool' else 30)
-        if not conn.poll(timeout):
-            raise TimeoutError('Configurator request timed out')
-        return json.loads(conn.recv_bytes(4 * 1024 * 1024))
+        message = json.dumps({'method': method, 'params': params}).encode('utf-8')
+        try:
+            conn.send_bytes(message)
+            timeout = reply_timeout if reply_timeout is not None else (620 if method == 'tool' else 30)
+            if not conn.poll(timeout):
+                raise TimeoutError('Configurator request timed out')
+            return json.loads(conn.recv_bytes(4 * 1024 * 1024))
+        except (OSError, EOFError, ValueError) as error:
+            raise _RequestInterrupted('Configurator request interrupted after dispatch: ' + str(error)) from error
 
 
-def _start(home):
+def _start(home, timeout=30):
     lock = home / 'startup.lock'
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + timeout
     while True:
         try:
             lock.mkdir()
@@ -103,11 +248,24 @@ def _start(home):
                 raise TimeoutError('Another client is starting the configurator')
             time.sleep(.1)
     try:
-        try:
-            if _request(home, 'ping', {}).get('ok'):
-                return
-        except (OSError, EOFError, ValueError):
-            pass
+        while True:
+            try:
+                if _request(home, 'ping', {}).get('ok'):
+                    return
+            except (OSError, EOFError, ValueError):
+                pass
+            try:
+                recorded = json.loads((home / 'service.json').read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                recorded = {}
+            if not _service_running(home, recorded):
+                break
+            # A refused connection is not proof of process exit. Replacing this
+            # endpoint would orphan its live workers and recover its database
+            # under a second owner. Retry only the read-only readiness probe.
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Configurator is still running but not reachable; reconnect to the existing owner')
+            time.sleep(min(.05, max(0, deadline - time.monotonic())))
         identity = hashlib.sha256(str(home).encode()).hexdigest()[:20]
         if os.name == 'nt':
             family, address = 'AF_PIPE', r'\\.\pipe\generative-driver-' + identity
@@ -117,7 +275,7 @@ def _start(home):
             ipc_dir.mkdir(mode=0o700, exist_ok=True)
             address = str(ipc_dir / 'owner.sock')
             Path(address).unlink(missing_ok=True)
-        endpoint = {'family': family, 'address': address, 'authkey': secrets.token_hex(32)}
+        endpoint = {'family': family, 'address': address, 'authkey': secrets.token_hex(32), 'code': code_identity()}
         path = home / 'service.json'
         env = os.environ.copy()
         env['PYTHONPATH'] = str(Path(__file__).resolve().parents[1])
@@ -127,9 +285,14 @@ def _start(home):
                              cwd=home, env=env, stdin=subprocess.PIPE, stdout=log, stderr=log, **options)
         threading.Thread(target=process.wait, daemon=True).start()
         try:
+            # The record names a configurator whose lock is held from the moment it exists: the child takes the lock
+            # before it waits for publication, and refuses a home another configurator holds.
+            locked = _service_locked(home, process, deadline)
             # Publish once, with the child PID already known. The child waits
             # until this writer closes; it never renames a file readers hold.
             endpoint['pid'] = process.pid
+            if locked:
+                endpoint['lock'] = SERVICE_LOCK
             path.write_text(json.dumps(endpoint), encoding='utf-8')
             if os.name != 'nt':
                 path.chmod(0o600)
@@ -165,9 +328,17 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
     directory = Path(home or default_home()).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     params = params or {}
+    # A worker gateway (tools, tool) is the configurator's own machinery for an assignment it authenticates.
+    if method not in ('ping', 'shutdown', 'tools', 'tool'):
+        try:
+            endpoint = json.loads((directory / 'service.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            endpoint = None
+        if endpoint is not None and _runs_other_code(endpoint, directory):
+            return {'ok': False, 'reason': _incompatible(endpoint)}
     try:
         result = _request(directory, method, params, **request_options)
-    except (OSError, EOFError, ValueError):
+    except (OSError, EOFError, ValueError) as error:
         if method == 'shutdown':
             try:
                 endpoint = json.loads((directory / 'service.json').read_text(encoding='utf-8'))
@@ -175,11 +346,27 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
                 return {'ok': True, 'stopped': True}
             except (OSError, ValueError) as exc:
                 return {'ok': False, 'stopped': False, 'reason': 'Cannot confirm daemon identity: ' + str(exc)}
-            return _confirmed_shutdown(endpoint.get('pid'), timeout=0)
+            return _confirmed_stopped(directory, endpoint, timeout=10 if isinstance(error, _RequestInterrupted) else 0)
+        # Never silently replay a tool or state-changing request whose reply was
+        # lost. The owner may already have performed it; reconnect to its state.
+        if isinstance(error, _RequestInterrupted):
+            return {'ok':False, 'reason':str(error)}
         if not autostart:
             return {'ok': False, 'reason': 'Configurator is not reachable. Run generative-driver service start from an operator terminal, then reconnect this UI.'}
         _start(directory)
-        return _request(directory, method, params, **request_options)
+        try:
+            result = _request(directory, method, params, **request_options)
+        except _RequestInterrupted as error:
+            return {'ok':False, 'reason':str(error)}
     if method == 'shutdown' and result.get('stopped'):
         return _confirmed_shutdown(result.get('pid'))
+    if method == 'ping' and result.get('ok'):
+        try:
+            recorded = json.loads((directory / 'service.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            recorded = {}
+        compatible = recorded.get('code') == code_identity() and result.get('code') == code_identity()
+        # Every preflight asks ping before it admits a case or starts a device: one running other code is no owner.
+        result = {**result, 'compatible': compatible,
+                  **({} if compatible else {'ok': False, 'reason': _incompatible(recorded)})}
     return result

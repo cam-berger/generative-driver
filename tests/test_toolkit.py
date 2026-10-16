@@ -76,6 +76,218 @@ print(json.dumps({'_exit': 0}))
                 ["-p", "fixture-port", "--before", "no-reset", "--after", "no-reset", "chip-id"])
             self.assertFalse(json.loads(result.stdout)["available"])
 
+    @staticmethod
+    def _esp_flash_image(entries):
+        import struct
+        image = bytearray(b"\xff" * 0x30000)
+        for i, (kind, sub, offset, size, label) in enumerate(entries):
+            image[0x8000 + 32 * i:0x8000 + 32 * (i + 1)] = (
+                b"\xaa\x50" + struct.pack("<BBII", kind, sub, offset, size) + label.ljust(16, b"\0") + b"\0" * 4)
+            image[offset] = 0xE9
+            image[offset + 1:offset + size] = bytes([i + 1]) * (size - 1)
+        return bytes(image)
+
+    def _esp_fake_sh(self, commands, image, app_seen=None, fuses=(0, "SPI_BOOT_CRYPT_CNT = Disable\nSECURE_BOOT_EN = False\n"), convert_ok=True):
+        def fake_sh(cmd, cwd=None, env=None, timeout=900):
+            commands.append(cmd)
+            if "chip-id" in cmd:
+                return 0, "Chip is ESP32-S3 (QFN56)\nMAC: 80:45:6b:2d:2f:6c\n", ""
+            if "summary" in cmd:
+                return fuses[0], fuses[1], "fuse stderr"
+            if "read-flash" in cmd:
+                Path(cmd[-1]).write_bytes(image)
+                return 0, "", ""
+            if any(str(c).endswith("esp_image_to_elf.py") for c in cmd):
+                if app_seen is not None:
+                    app_seen.append(Path(cmd[-2]).read_bytes())
+                if not convert_ok:
+                    return 1, "", "conversion failed"
+                Path(cmd[-1]).write_bytes(b"\x7fELF")
+                return 0, "", ""
+            return 0, "", ""
+        return fake_sh
+
+    def test_esp_flash_uses_auto_reset_only_with_grant_and_names_interpret_input(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        commands = []
+        image = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
+        with tempfile.TemporaryDirectory() as temp, patch.object(core, "sh", self._esp_fake_sh(commands, image)):
+            granted = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake", "backend": "esp32", "allow_reset": True})
+            self.assertTrue(granted["available"], granted)
+            self.assertTrue(granted["interpret_input"].endswith("interpret-input.elf"))
+            self.assertTrue(Path(granted["interpret_input"]).is_file())
+            self.assertIn("SECURE_BOOT_EN", (Path(temp) / "acquire" / "efuse.txt").read_text(encoding="utf-8"))
+            self.assertTrue(any(p.endswith("efuse.txt") for p in granted["artifacts"]), granted["artifacts"])
+            esp = [c for c in commands if "-p" in c]
+            self.assertTrue(all("default-reset" in c for c in esp))
+            self.assertIn("hard-reset", esp[-1])
+            commands.clear()
+            call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake", "backend": "esp32"})
+            esp = [c for c in commands if "-p" in c]
+            self.assertTrue(all("no-reset" in c and "default-reset" not in c for c in esp))
+            self.assertFalse(any("hard-reset" in c for c in commands))
+            dump = next(c for c in esp if "read-flash" in c)
+            self.assertEqual(dump[dump.index("-b") + 1], "115200")
+
+    def test_esp_flash_carves_the_factory_app_partition_from_the_table(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        image = self._esp_flash_image([(1, 0x02, 0x9000, 0x100, b"nvs"), (0, 0x10, 0x20000, 0x80, b"ota_0"),
+                                       (0, 0x00, 0x10000, 0x100, b"factory")])
+        seen = []
+        with tempfile.TemporaryDirectory() as temp, patch.object(core, "sh", self._esp_fake_sh([], image, seen)):
+            result = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake", "backend": "esp32"})
+            self.assertTrue(result["available"], result)
+            self.assertEqual(seen, [image[0x10000:0x10100]])
+            self.assertEqual((Path(temp) / "acquire" / "app.bin").read_bytes(), image[0x10000:0x10100])
+
+    def test_esp_flash_returns_the_chip_to_the_application_on_every_failed_exit_with_a_grant(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        good = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
+        cases = {"fuse failure": (good, (1, "")), "locked": (good, (0, "SECURE_BOOT_EN = True\n")),
+                 "no partition table": (b"\xff" * 0x20000, (0, "SECURE_BOOT_EN = False\n"))}
+        for name, (image, fuses) in cases.items():
+            for grant in (True, False):
+                with self.subTest(name, grant=grant):
+                    commands = []
+                    with tempfile.TemporaryDirectory() as temp, \
+                            patch.object(core, "sh", self._esp_fake_sh(commands, image, fuses=fuses)):
+                        result = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake",
+                                                             "backend": "esp32", "allow_reset": grant})
+                        self.assertFalse(result["available"], result)
+                    if grant:
+                        self.assertIn("hard-reset", commands[-1])
+                        if name == "no partition table":  # the dump itself already ended with the hard reset
+                            self.assertIn("read-flash", commands[-1])
+                            self.assertEqual(sum("hard-reset" in c for c in commands), 1)
+                        else:
+                            self.assertIn("chip-id", commands[-1])
+                            self.assertEqual(commands[-1][commands[-1].index("--before") + 1], "default-reset")
+                            self.assertIs(result["returned_to_application"], True)
+                    else:
+                        self.assertFalse(any("hard-reset" in c for c in commands))
+                        self.assertNotIn("returned_to_application", result)
+
+    def test_esp_flash_leave_failure_never_masks_the_original_result(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        good = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
+        for how in ("exit", "raise"):
+            with self.subTest(how):
+                commands = []
+                inner = self._esp_fake_sh(commands, good, fuses=(1, ""))
+                def fake(cmd, **kw):
+                    if "hard-reset" in cmd and "chip-id" in cmd:
+                        commands.append(cmd)
+                        if how == "raise":
+                            raise OSError("port vanished")
+                        return 1, "", "no sync"
+                    return inner(cmd, **kw)
+                with tempfile.TemporaryDirectory() as temp, patch.object(core, "sh", fake):
+                    result = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake",
+                                                         "backend": "esp32", "allow_reset": True})
+                self.assertIn("Fuse read failed", result["reason"], result)
+                self.assertIs(result["returned_to_application"], False)
+
+    @staticmethod
+    def _raw_table_image(entries, size=0x30000):
+        """Dump with a partition table at 0x8000; entries are (type, subtype, offset, size), taken as given."""
+        import struct
+        image = bytearray(b"\xff" * size)
+        for i, (kind, sub, offset, length) in enumerate(entries):
+            at = 0x8000 + 32 * i
+            image[at:at + 32] = b"\xaa\x50" + struct.pack("<BBII", kind, sub, offset, length) + b"x".ljust(16, b"\0") + b"\0" * 4
+        for kind, sub, offset, length in entries:
+            if kind == 0 and 0 < length and offset + length <= size:
+                image[offset:offset + length] = bytes([sub + 1]) * length
+        return bytes(image)
+
+    def test_esp_flash_carving_bounds_and_selection(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        cases = {
+            "entry beyond the dump": (self._raw_table_image([(0, 0x00, 0x2FF00, 0x1000)]), None),
+            "dump shorter than the table": (b"\xff" * 0x8010, None),
+            "zero-size entry skipped": (self._raw_table_image([(0, 0x00, 0x10000, 0), (0, 0x10, 0x20000, 0x40)]), (0x20000, 0x40)),
+            "only an ota entry": (self._raw_table_image([(1, 0x02, 0x9000, 0x100), (0, 0x10, 0x20000, 0x80)]), (0x20000, 0x80)),
+            "bad factory, valid ota_0": (self._raw_table_image([(0, 0x00, 0x2FF00, 0x1000), (0, 0x10, 0x20000, 0x80)]), (0x20000, 0x80)),
+        }
+        for name, (image, want) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temp:
+                seen = []
+                with patch.object(core, "sh", self._esp_fake_sh([], image, seen)):
+                    result = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake", "backend": "esp32"})
+                acquire = Path(temp) / "acquire"
+                if want is None:
+                    self.assertFalse(result["available"], result)
+                    self.assertEqual(result["_exit"], 1)
+                    self.assertEqual((acquire / "flash.bin").read_bytes(), image)
+                    self.assertEqual(result["raw_flash"], str((acquire / "flash.bin").resolve()))
+                    self.assertEqual(seen, [])
+                else:
+                    self.assertTrue(result["available"], result)
+                    self.assertEqual(seen, [image[want[0]:want[0] + want[1]]])
+
+    def test_esp_flash_resets_even_when_a_local_write_fails_after_contact(self):
+        import builtins
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        real_open = builtins.open
+        def failing_open(path, *args, **kwargs):
+            if str(path).endswith("efuse.txt"):
+                raise OSError("disk full")
+            return real_open(path, *args, **kwargs)
+        commands = []
+        image = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
+        with tempfile.TemporaryDirectory() as temp, patch.object(core, "sh", self._esp_fake_sh(commands, image)), \
+                patch("builtins.open", failing_open):
+            result = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake", "backend": "esp32", "allow_reset": True})
+        self.assertFalse(result.get("available"), result)
+        self.assertIn("hard-reset", commands[-1])
+        self.assertIn("chip-id", commands[-1])
+
+    def test_esp_flash_binary_fallback_is_named_as_a_binary_not_an_elf(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        image = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(core, "sh", self._esp_fake_sh([], image, convert_ok=False)):
+                flash = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake", "backend": "esp32"})
+                self.assertTrue(flash["available"], flash)
+                self.assertTrue(flash["interpret_input"].endswith("interpret-input.bin"))
+                self.assertEqual(Path(flash["interpret_input"]).read_bytes(), image[0x10000:0x10100])
+            with tempfile.TemporaryDirectory() as other, patch.object(core, "sh", self._esp_fake_sh([], image, convert_ok=False)):
+                result = call_tool("acquire_classify", {"run_dir": other, "port": "/dev/cu.fake", "flash_backend": "esp32"})
+                self.assertEqual(result["device_class"], 1, result)
+                self.assertTrue(result["interpret_input"].endswith("interpret-input.bin"))
+                self.assertNotIn("elf", result["inputs_for_interpret"])
+                self.assertEqual(result["inputs_for_interpret"], {"image.bin": result["interpret_input"]})
+                self.assertEqual(result["front_end"], "interpret-firmware-binary")
+
+    def test_classify_forwards_the_grant_and_reports_the_interpret_input(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        commands = []
+        image = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
+        with tempfile.TemporaryDirectory() as temp, patch.object(core, "sh", self._esp_fake_sh(commands, image)):
+            result = call_tool("acquire_classify", {"run_dir": temp, "port": "/dev/cu.fake",
+                                                    "flash_backend": "esp32", "allow_reset": True})
+            self.assertEqual(result["device_class"], 1, result)
+            self.assertTrue(result["available"])
+            self.assertTrue(result["interpret_input"].endswith("interpret-input.elf"))
+            self.assertTrue(result["artifacts"])
+            self.assertTrue(any("default-reset" in c for c in commands))
+
     def test_bus_discovery_never_selects_a_default_adapter(self):
         from generative_driver.toolkit import call_tool
         with tempfile.TemporaryDirectory() as temp:
@@ -225,6 +437,80 @@ print(json.dumps(call_tool('usage_record',json.loads(sys.argv[1]))))
             self.assertEqual((Path(collected["first_pass"]) / "exports/handler.txt").read_text(),
                              "00000010: accepts 51; emits 52\n")
             self.assertFalse(call_tool("firmware_collect", {"run_dir": str(run)})["ok"])
+
+    def test_serial_listen_records_capture_without_transmitting(self):
+        import sys, types
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        writes = []
+        class Port:
+            def __init__(self): self.chunks = [b"ESP-ROM:esp32s3\r\n", b"waiting for download\r\n"]
+            def open(self): pass
+            def reset_input_buffer(self): pass
+            def read(self, size=1): return self.chunks.pop(0) if self.chunks else b""
+            def write(self, data): writes.append(data)
+            def close(self): pass
+        module = types.ModuleType("serial"); module.Serial = Port
+        with tempfile.TemporaryDirectory() as temp, patch.dict(sys.modules, {"serial": module}):
+            result = call_tool("acquire_serial_listen", {"run_dir": temp, "port": "/dev/cu.fake", "seconds": 0.3})
+            self.assertTrue(result["available"], result)
+            self.assertTrue(result["unsolicited_output"])
+            self.assertEqual(writes, [])
+            capture = json.loads(Path(result["artifact"]).read_text())
+            self.assertIn("waiting for download", capture["text"])
+            self.assertEqual(Path(result["artifacts"][0]).read_bytes(), b"ESP-ROM:esp32s3\r\nwaiting for download\r\n")
+            refused = call_tool("acquire_serial_listen", {"run_dir": temp, "port": "/dev/cu.fake", "seconds": 31})
+            self.assertFalse(refused["available"])
+
+    def test_serial_listens_never_overwrite_and_never_look_like_an_image(self):
+        import sys, types
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        class Quiet:
+            def open(self): pass
+            def read(self, size=1): return b""
+            def close(self): pass
+        module = types.ModuleType("serial"); module.Serial = Quiet
+        with tempfile.TemporaryDirectory() as temp, patch.dict(sys.modules, {"serial": module}):
+            first = call_tool("acquire_serial_listen", {"run_dir": temp, "port": "/dev/cu.fake", "seconds": 0.1})
+            before = {p: core.sha256(p) for p in first["artifacts"]}
+            second = call_tool("acquire_serial_listen", {"run_dir": temp, "port": "/dev/cu.fake", "seconds": 0.1})
+            paths = first["artifacts"] + second["artifacts"]
+            self.assertEqual(len(set(paths)), 4, paths)
+            self.assertEqual(before, {p: core.sha256(p) for p in first["artifacts"]})
+            self.assertTrue(all(Path(p).is_file() for p in paths))
+            self.assertFalse(any(Path(p).suffix.lower() in (".bin", ".elf") for p in paths), paths)
+
+    def test_serial_listen_without_pyserial_names_the_extra_as_a_host_fault(self):
+        import sys
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        with tempfile.TemporaryDirectory() as temp, patch.dict(sys.modules, {"serial": None}):
+            result = call_tool("acquire_serial_listen", {"run_dir": temp, "port": "/dev/cu.fake", "seconds": 0.1})
+        self.assertFalse(result["available"], result)
+        self.assertEqual(result["fault"], "host")
+        self.assertIn("generative-driver[hardware]", result["reason"])
+
+    def test_coverage_scope_does_not_claim_a_connection_per_call(self):
+        from interface_runtime.evidence import COVERAGE_SCOPE
+        self.assertNotIn("separate connection", COVERAGE_SCOPE)
+        self.assertIn("resets_on_open", COVERAGE_SCOPE)
+
+    def test_serial_listen_on_a_quiet_device_is_evidence_without_reset(self):
+        import sys, types
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        class Quiet:
+            def open(self): pass
+            def read(self, size=1): return b""
+            def close(self): pass
+        module = types.ModuleType("serial"); module.Serial = Quiet
+        with tempfile.TemporaryDirectory() as temp, patch.dict(sys.modules, {"serial": module}):
+            result = call_tool("acquire_serial_listen", {"run_dir": temp, "port": "/dev/cu.fake", "seconds": 0.2})
+        self.assertTrue(result["available"])
+        self.assertFalse(result["unsolicited_output"])
+        self.assertEqual((result["bytes"], result["first_byte_ms"]), (0, None))
 
     def test_installed_catalog_exposes_generic_tools_and_resources(self):
         from generative_driver.toolkit import list_tools, resources_root

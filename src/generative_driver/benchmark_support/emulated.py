@@ -1,23 +1,23 @@
-"""Evaluator-owned native benchmark stages, called by the configurator."""
+"""Native benchmark stages, observed without truth. The bench harness provides the emulator and the configurator reaches it
+through its device handle; this adapter starts, holds and stops no device, and unlocks no truth for the stages. Legacy
+tq9 (`cases.py`) shares its stages but interpretation and the probe's task mapping."""
 import hashlib
+import re
 import shutil
 import tempfile
 import json
 from pathlib import Path
 
 from .cases import _state, _write
+from .instruments import family_for
 from .registry import resolve_case
 from .snapshots import read_snapshot
-from .emulated_evidence import _private, _diagnose, _final
 
-
-def family_for(case_id):
-    from . import tq9_v2, sampled_sensor, parameter_store
-    families = {'tq9-v2': tq9_v2, 'sampled-sensor-v1': sampled_sensor,
-                'parameter-store-v1': parameter_store}
-    if case_id not in families:
-        raise ValueError('Unknown native family')
-    return families[case_id]
+# Instrument readings are device evidence, as a real device's readings would be; workers see them, nothing grades them.
+INSTRUMENT = ('Live interface_execute and probe_run results carry before_observation and observation: instrument '
+              'readings of the emulated device with units. They are device evidence, as a real device\'s readings would '
+              'be, never a grade. The provided emulator runs only inside each live call and is paused between calls, so '
+              'device time advances during a call and not while you work between calls. ')
 
 
 def _required_tasks(case_id):
@@ -78,6 +78,98 @@ def _inputs(case_id, run_dir):
     return case.root, case.manifest
 
 
+def _named(path, name):
+    prefix, separator, original = Path(path).name.partition('-')
+    return Path(path).name == name or bool(separator) and prefix.isdigit() and original == name
+
+
+def _artifact(handoff, name, sha256=None):
+    """(path, recorded sha256) of `name` in one accepted handoff (with that hash, when given), or None."""
+    for artifact in (handoff or {}).get('artifacts', []):
+        if _named(artifact['path'], name) and sha256 in (None, artifact['sha256']):
+            return Path(artifact['path']), artifact['sha256']
+    return None
+
+
+def _handoff_with(accepted, stages, name, sha256=None):
+    """The latest accepted handoff of these stages that carries `name` (with that hash, when given), or None. A
+    handoff is chosen first and its files after, so files of different candidates are never paired."""
+    return next((h for h in reversed(accepted or []) if h.get('stage') in stages and _artifact(h, name, sha256)), None)
+
+
+def _latest(accepted, stages, name):
+    """(path, recorded sha256) of `name` in the latest accepted handoff of these stages that carries it, or None."""
+    return _artifact(_handoff_with(accepted, stages, name), name)
+
+
+def _verified(found, what):
+    """The bytes of an accepted artifact, checked against the hash recorded when it was accepted."""
+    from ..configurator import IntegrityError
+    path, expected = found
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != expected:
+        raise IntegrityError('Accepted ' + what + ' bytes changed: ' + path.name)
+    return content
+
+
+def _observed(artifacts, checks, dropped=(), scope='Truth-free stage evidence; nothing here is graded'):
+    """The configurator's checked contract: what the stage hands on, with its checks as notes."""
+    artifacts = [str(path) for path in dict.fromkeys(artifacts)]
+    return {'artifacts': artifacts, 'checks': checks, 'validation_scope': scope,
+            'notes': {'checks': checks, 'dropped_artifacts': list(dropped)}}
+
+
+def _candidate_files(accepted, model_sha=None):
+    """The interpreted candidate's own replies and notes, hash-verified, from one interpret handoff only: the one whose
+    model.json is `model_sha` (the model probed), else the latest that carries a model.json."""
+    handoff, files = _handoff_with(accepted, ('interpret',), 'model.json', model_sha), {}
+    for name in ('replies.json', 'NOTES.md'):
+        found = _artifact(handoff, name)
+        if found is not None:
+            _verified(found, 'interpretation')
+            files[name] = found[0]
+    return files
+
+
+def _emitted_mapping(accepted):
+    """(path, recorded sha256) of the capability mapping in the probe handoff whose model emit packaged (the latest
+    probe handoff that carries a model.json), or None when that handoff has none: never another model's mapping."""
+    return _artifact(_handoff_with(accepted, ('probe',), 'model.json'), 'capabilities.json')
+
+
+def adapt(run_dir, ws, accepted, options):
+    """Probe's model: the latest interpreted model, hash-verified and wired to the emulator binding in `ws/model`, which
+    the run state records; {'binding'} of the provided device, or a stop for the operator without one. With no model, or
+    one the emulator binding cannot carry, the probe skips and no device is used: the candidate is kept for the repair
+    its configurator diff drives."""
+    from .evaluate import adapt_model
+    found = _latest(accepted, ('interpret',), 'model.json')
+    if found is None:
+        return {'skip': 'Probe skipped: no interpreted model available'}
+    from ..configurator import IntegrityError
+    _verified(found, 'interpretation')
+    try:
+        adaptation = adapt_model(found[0], ws/'model')
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        # A model the emulator cannot carry is the candidate's, never a stop, and no emulator starts for it. The
+        # configurator validates it and that diff drives repair, so the candidate is kept for the repair.
+        from .candidate_context import remember
+        remember(run_dir, 'probe', {'model.json': found[0], **_candidate_files(accepted, found[1])}, workspace=ws)
+        reason = ('The emulator binding (a UART byte stream over TCP) cannot carry this model: '
+                  + type(error).__name__ + ': ' + str(error))
+        return {'skip': 'Probe skipped: the interpreted model cannot be wired to the emulator: ' + str(error),
+                'unwired_model': {'path': str(found[0]), 'sha256': found[1], 'reason': reason}}
+    if adaptation['original_model_sha256'] != found[1]:
+        raise IntegrityError('Accepted interpretation bytes changed while adapting the model')
+    binding = _binding(options)
+    if binding is None:
+        return {'blocked': NO_DEVICE}
+    path, state = _state(run_dir)
+    state.update(adaptation=adaptation, adapted_model_dir=str(ws/'model'), revision=int(options.get('revision', state.get('revision', 0))))
+    _write(path, state)
+    return {'binding': binding}
+
+
 def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=None):
     options = options or {}
     if options.get('scenario_id') not in (None, 'original'):
@@ -95,21 +187,11 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                 'inputs': [str(target)], 'allowed_tools': ['acquire_firmware_artifact'],
                 'context': {'source_path': str(target), 'expected_sha256': manifest['images']['firmware.bin'],
                             'origin': 'provided_binary'}, 'boundary': 'provided artifact import'}
-    if stage == 'probe' and not any(h.get('stage') == 'interpret' for h in accepted or []):
-        raise ValueError('Probe requires an accepted interpret handoff')
     if stage == 'probe':
-        from .cases import _accepted_file
-        from .evaluate import adapt_model
-        from ..configurator import digest
-        original = _accepted_file(accepted, 'interpret', 'model.json', ws/'missing')
-        handoff = next(h for h in reversed(accepted) if h['stage'] == 'interpret')
-        if not any(a['path'] == str(original) and a['sha256'] == digest(original) for a in handoff['artifacts']):
-            raise ValueError('Accepted interpretation bytes changed')
-        adaptation = adapt_model(original, ws/'model')
-        session = _session(case_id, run_dir, options)
-        path, state = _state(run_dir)
-        state.update(adaptation=adaptation, adapted_model_dir=str(ws/'model'), revision=int(options.get('revision', state.get('revision', 0))))
-        _write(path, state)
+        adapted = adapt(run_dir, ws, accepted, options)
+        if adapted.get('skip') or adapted.get('blocked'):
+            return adapted
+        binding = adapted['binding']
         guidance = _capability_guidance(ws, case_id)
         from .candidate_context import task_contract
         _write(ws/'TASKS.json', task_contract(case_id, options.get('configured_effects', [])))
@@ -121,79 +203,97 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
             objective = 'Test the supplied model over the emulator binding. Write benchmark-capabilities/2 tasks read, update, stage, commit and abort. Read takes bank and slot and maps value (configuration-unit). Update and stage take bank, slot and value; commit and abort have no inputs. Every task declares operation, constants, inputs and outputs.'
         objective += (' Read TASKS.json for required task semantics, outputs and effect grants. '
             'Read CAPABILITY_FORMAT.md and run validate_capabilities.py with the supplied model directory '
-            'and your capabilities.json. Correct mapping errors before submission. '
-            'Live interface_execute and probe_run results include before_observation and observation '
-            'from an independent monitor, with units. Compare those measured references and effects with your '
-            'decoded outputs. Preserve capabilities.json even when incomplete; report needs_revision and the '
-            'observed discrepancy if the immutable model needs repair. Do not invent unsupported units or '
-            'change the model here. The configurator checks diagnostics and sends feedback to a new interpret agent.')
+            'and your capabilities.json. Correct mapping errors before submission. ' + INSTRUMENT +
+            'Compare those readings and the observed effects with your decoded outputs. Preserve capabilities.json even '
+            'when incomplete; report needs_revision and the observed discrepancy if the immutable model needs repair. '
+            'Do not invent unsupported units or change the model here. Your observed probe records, capabilities.json and '
+            'notes are handed on; where the model fails on the device, that difference goes back to interpretation.')
         return {'objective': objective,
-                'inputs': [str(ws/'model/model.json'), str(ws/'model/adaptation.json'), *guidance],
+                'inputs': [str(ws/'model'), *guidance],
                 'context': {'model_dir': str(ws/'model'), 'capabilities_output': str(ws/'capabilities.json')},
-                'allowed_tools': ['interface_describe', 'interface_execute', 'probe_run', 'probe_diff', 'model_validate'],
-                'binding': session.binding, 'effects': ['write', 'actuate']}
+                'allowed_tools': ['interface_describe', 'interface_execute', 'probe_run', 'probe_diff'],
+                'binding': binding, 'effects': ['write', 'actuate']}
     if stage == 'ground':
-        from .ground import prepare
-        return prepare(accepted, ws)
+        from .ground import device_evidence
+        prepared = device_evidence(accepted, ws)
+        if prepared.get('skip'):
+            return prepared
+        if _binding(options) is None:
+            return {'blocked': NO_DEVICE}
+        return {**prepared, 'allowed_tools': ['interface_execute', 'probe_run', 'probe_diff'],
+                'binding': _binding(options)}
     if stage == 'emit':
-        from .cases import _accepted_file
-        source = _accepted_file(accepted, 'probe', 'model.json', ws/'missing')
+        found = _latest(accepted, ('probe',), 'model.json')
+        if found is None:
+            return {'skip': 'Emit skipped: no interpreted model available'}
+        content = _verified(found, 'probe')
         (ws/'model').mkdir(exist_ok=True)
-        shutil.copyfile(source, ws/'model/model.json')
-        handoff = next(h for h in reversed(accepted or []) if h['stage'] == 'probe')
-        for artifact in handoff['artifacts']:
-            candidate = Path(artifact['path'])
-            if candidate.suffix != '.json':
+        (ws/'model/model.json').write_bytes(content)
+        model_sha = hashlib.sha256(content).hexdigest()
+        # The latest successful probe record a worker made of this model, from probe or ground.
+        for handoff in reversed(accepted or []):
+            if handoff.get('stage') not in ('probe', 'ground'):
                 continue
-            probe = json.loads(candidate.read_text())
-            if probe.get('schema') == 'interface-probe/1' and probe.get('ok'):
-                if hashlib.sha256(candidate.read_bytes()).hexdigest() != artifact['sha256']:
-                    raise ValueError('Accepted probe bytes changed')
-                shutil.copyfile(candidate, ws/'probe.json')
-                return {'objective': 'Use emit_package with the supplied immutable model and successful probe, then emit_check. Report the complete package directory.',
-                        'inputs': [str(ws/'model/model.json'), str(ws/'probe.json')],
-                        'context': {'model_dir': str(ws/'model'), 'probe': str(ws/'probe.json')},
-                        'allowed_tools': ['emit_package', 'emit_check']}
-        raise ValueError('No accepted successful executable probe')
+            for artifact in handoff.get('artifacts', []):
+                candidate = Path(artifact['path'])
+                if candidate.suffix != '.json' or not candidate.is_file():
+                    continue
+                raw = _verified((candidate, artifact['sha256']), handoff['stage'])
+                try:
+                    probe = json.loads(raw)
+                except ValueError:
+                    continue
+                if (isinstance(probe, dict) and probe.get('schema') == 'interface-probe/1' and probe.get('ok') is True
+                        and probe.get('model_sha256') == model_sha):
+                    (ws/'probe.json').write_bytes(raw)
+                    return {'objective': 'Use emit_package with the supplied immutable model and successful probe, then emit_check. Report the complete package directory.',
+                            'inputs': [str(ws/'model/model.json'), str(ws/'probe.json')],
+                            'context': {'model_dir': str(ws/'model'), 'probe': str(ws/'probe.json')},
+                            'allowed_tools': ['emit_package', 'emit_check']}
+        missing = 'No successful probe record of the model available'
+        return {'objective': 'Use emit_package with the supplied immutable model, then emit_check. ' + missing +
+                    '; emit_package needs one, so report what is missing.',
+                'inputs': [str(ws/'model/model.json')], 'context': {'model_dir': str(ws/'model'), 'input_notes': [missing]},
+                'allowed_tools': ['emit_package', 'emit_check'], 'input_notes': [missing]}
     if stage == 'reuse':
-        from .cases import _accepted_package, _accepted_file
-        from ..configurator import digest
+        from ..configurator import digest, IntegrityError
         import uuid
-        source = _accepted_package(accepted, ws/'missing')
+        source = next(((Path(a['path']), a['sha256']) for h in reversed(accepted or []) if h.get('stage') == 'emit'
+                       for a in h.get('artifacts', []) if (Path(a['path'])/'manifest.json').is_file()), None)
+        if source is None:
+            return {'skip': 'Fresh reuse skipped: no accepted emitted package to reuse'}
         package = ws/'package'
-        shutil.copytree(source, package)
+        shutil.copytree(source[0], package)
         path, state = _state(run_dir)
-        if digest(package) != state['package_sha256']:
-            raise ValueError('Accepted package identity changed')
+        copied = digest(package)
+        if copied != source[1] or copied != state.get('package_sha256'):
+            raise IntegrityError('Accepted package identity changed')
+        binding = _binding(options)
+        if binding is None:
+            return {'blocked': NO_DEVICE}
         state.setdefault('package_copies', {})[stage] = str(package)
         state.setdefault('package_attempts', {})[stage] = uuid.uuid4().hex
-        state['capabilities_path'] = str(_accepted_file(accepted, 'probe', 'capabilities.json', ws/'missing'))
+        capabilities = _emitted_mapping(accepted)
+        if capabilities is not None:
+            _verified(capabilities, 'probe')
+        state['capabilities_path'] = str(capabilities[0]) if capabilities else None
         _write(path, state)
-        session = _session(case_id, run_dir, options)
         mission = 'Read temperature, enable the device, request 37 percent output, then disarm.'
         if case_id == 'sampled-sensor-v1':
             mission = 'Acquire and read two fresh temperature samples. Report their measured sequence numbers.'
         elif case_id == 'parameter-store-v1':
             mission = 'Commit bank B slot 1 to -7. Stage bank B slot 1 to 9, abort that transaction, then read bank B slot 1. Report observations and whether other cells changed.'
-        return {'objective': 'Use only the emitted package and this objective: ' + mission + ' Use benchmark_package_execute for each operation. Find names and arguments in the package reference. Report actual observations and limitations.',
+        return {'objective': 'Use only the emitted package and this objective: ' + mission + ' Use benchmark_package_execute for each operation. Find names and arguments in the package reference. Each result also carries an instrument reading of the emulated device after the call. Report actual observations and limitations.',
                 'inputs': [str(package)], 'allowed_tools': ['benchmark_package_execute'],
-                'context': {'package_dir': str(package)}, 'binding': session.binding,
+                'context': {'package_dir': str(package)}, 'binding': binding,
                 'boundary': 'fresh package-only mission'}
     if stage == 'interpret':
-        from ..toolkit import call_tool, resources_root
+        from ..toolkit import call_tool
+        from ..analysis import firmware_analysis_inputs
         state_path, state = _state(run_dir)
         state['revision'] = int(options.get('revision', state.get('revision', 0)))
         image = inputs/'firmware.bin'
-        sources = {'image.bin': str(image),
-                   'ghidra_run.py': str(resources_root()/'tools/workspace/ghidra_run.py'),
-                   'ExportDecomp.java': str(resources_root()/'toolchain/skills/interpret-firmware-binary/ExportDecomp.java'),
-                   'SeedCortexM.java': str(resources_root()/'toolchain/skills/interpret-firmware-binary/SeedCortexM.java')}
-        config = ws/'ANALYSIS_TOOLS.json'
-        _write(config, {**{k: str(options[k]) for k in ('ghidra_home', 'java_home') if options.get(k)},
-            'optional_cortex_m_prescript': {
-                'when': 'Use only when image evidence establishes a Cortex-M vector table at the start of the imported mapping and a Thumb reset entry inside executable bytes. This generic helper does not identify the architecture or infer a load map.',
-                'usage': 'After independently establishing loader, processor and mapping, add --prescript SeedCortexM.java --script-path <absolute-workspace> to the supplied ghidra_run.py command. Keep the reasoning and native logs in this workspace.'}})
-        sources['ANALYSIS_TOOLS.json'] = str(config)
+        sources = {'image.bin': str(image), **firmware_analysis_inputs(ws, options)}
         wiring = ws/'BINDING_CONTEXT.json'
         _write(wiring, {'schema': 'interpret-binding-context/1',
             'runtime_channel': {'type': 'tcp'}, 'physical_channel': {'type': 'uart'},
@@ -223,145 +323,105 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
     raise ValueError('Native stage is not implemented: ' + stage)
 
 
-def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, options=None):
-    import json
-    _, manifest = _inputs(case_id, run_dir)
-    if stage == 'acquire':
-        matches, unreadable = [], False
-        for provenance in Path(workspace).rglob('provenance.json'):
-            try:
-                record = json.loads(provenance.read_text())
-                for binary in provenance.parent.glob('*.bin'):
-                    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-                    if digest == manifest['images']['firmware.bin']:
-                        matches.extend([str(binary), str(provenance)])
-            except ValueError:
-                continue
-            except OSError:
-                unreadable = True
-        ok = bool(matches)
-        return {'ok': ok, 'fault': None if ok else 'host' if unreadable else 'model', 'checks': [{'name': 'imported_firmware_hash', 'passed': ok}],
-                'artifacts': matches, 'reason': None if ok else 'No matching imported firmware'}
-    if stage == 'probe':
-        ws = Path(workspace)
-        capabilities = ws/'capabilities.json'
-        from .candidate_context import require_evidence_path
-        require_evidence_path(capabilities, [ws])
-        def finish(result, probes=()):
-            from .candidate_context import remember
-            files = {'capabilities.json': capabilities}
-            _, current = _state(run_dir)
-            if current.get('adapted_model_dir'):
-                files['model.json'] = Path(current['adapted_model_dir'])/'model.json'
-            files['live-observations.jsonl'] = Path(run_dir)/'benchmark'/f'live-observations-{current.get("revision", 0)}.jsonl'
-            for handoff in reversed(accepted or []):
-                if handoff.get('stage') != 'interpret':
-                    continue
-                for artifact in handoff.get('artifacts', []):
-                    candidate = Path(artifact['path'])
-                    for name in ('replies.json', 'NOTES.md'):
-                        if candidate.name == name or candidate.name.endswith('-'+name):
-                            if hashlib.sha256(candidate.read_bytes()).hexdigest() != artifact['sha256']:
-                                raise ValueError('Accepted interpretation bytes changed')
-                            files[name] = candidate
-                break
-            files.update({f'probe-{i}.json': p for i, p in enumerate(probes, 1)})
-            remember(run_dir, 'probe', files, result.get('feedback', {}), report, workspace=ws)
-            return result
-        if not capabilities.is_file():
-            return finish({'ok': False, 'fault': 'model', 'route': 'interpret', 'checks': [], 'artifacts': [],
-                    'reason': 'Missing capability mapping',
-                    'feedback': {'missing': ['capabilities.json'], 'unresolved': (report or {}).get('unresolved', [])}})
-        _, state = _state(run_dir)
-        model = Path(state['adapted_model_dir'])/'model.json'
-        if hashlib.sha256(model.read_bytes()).hexdigest() != state['adaptation']['adapted_model_sha256']:
-            raise ValueError('Probe changed the accepted model')
-        try:
-            mapping = json.loads(capabilities.read_text(encoding='utf-8'))
-        except (ValueError, UnicodeError):
-            return finish({'ok': False, 'fault': 'model', 'route': 'interpret', 'checks': [], 'artifacts': [],
-                    'reason': 'Invalid capability JSON',
-                    'feedback': {'missing': ['valid capabilities.json'], 'unresolved': (report or {}).get('unresolved', [])}})
-        from .behavior import validate_capabilities
-        validation = validate_capabilities(mapping, json.loads(model.read_text(encoding='utf-8')), _required_tasks(case_id))
-        if not validation['ok']:
-            return finish({'ok': False, 'fault': 'model', 'route': 'interpret', 'checks': [], 'artifacts': [],
-                    'reason': 'Invalid capability mapping',
-                    'feedback': {'capability_errors': validation['errors']}})
-        grade, records, probes, observed = _diagnose(case_id, run_dir, model.parent, mapping, options or {})
-        from .behavior import project_feedback
-        ok = grade['verdict'] == 'passed'
-        live = Path(run_dir)/'benchmark'/f'live-observations-{state.get("revision", 0)}.jsonl'
-        live_artifacts = [str(live)] if live.is_file() else []
-        return finish({'ok': ok, 'fault': None if ok else 'model', 'route': None if ok else 'interpret',
-                'reason': None if ok else 'Independent diagnostic behavior failed', 'feedback': project_feedback(records, grade),
-                'checks': [{'name': c['id'], 'passed': c['passed']} for c in grade['checks']],
-                'artifacts': [str(model), str(capabilities), str(observed), *probes, *live_artifacts], 'evaluator': grade}, probes)
-    if stage == 'ground':
-        _, state = _state(run_dir)
-        diagnostic = state.get('diagnostic', {}).get('passed')
-        ok = bool(diagnostic and (report or {}).get('status') == 'completed')
-        repair = not ok and type(diagnostic) is bool
-        from .candidate_context import worker_claim
-        claim = worker_claim(report)
-        return {'ok': ok, 'fault': 'model' if repair else None,
-                'route': 'interpret' if repair else None,
-                'reason': 'Ground evidence requires model revision' if repair else None,
-                'feedback': {'worker_claim': claim} if repair else {},
-                'checks': [{'name': 'independent_diagnostic_grounding', 'passed': ok}],
-                'artifacts': [str(Path(workspace)/'ground-evidence')]}
-    if stage == 'emit':
-        from ..toolkit import call_tool
-        from ..configurator import digest
-        failures = []
-        for manifest_path in Path(workspace).rglob('manifest.json'):
-            package = manifest_path.parent
-            result = call_tool('emit_check', {'run_dir': str(Path(run_dir)/'benchmark/package-checks'),
-                'package_dir': str(package), 'model_dir': str(Path(workspace)/'model')})
-            failures.append(result)
-            if (result.get('ok') and result.get('integrity_ok') and result.get('runtime_current')
-                    and result.get('replay_status') == 'passed'):
-                path, state = _state(run_dir)
-                state.update(package_sha256=digest(package), package_manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest())
-                _write(path, state)
-                return {'ok': True, 'checks': [{'name': 'package_integrity_and_replay', 'passed': True}],
-                        'artifacts': [str(package)], 'evaluator': {'verdict': 'passed'}}
-        faults = [r.get('fault') or (r.get('error', {}).get('fault')
-                  if isinstance(r.get('error'), dict) else None) for r in failures]
-        fault = next((f for f in faults if f in ('host', 'operator')), None)
-        if fault is None and (not failures or all(r.get('integrity_ok') is False
-                or r.get('runtime_current') is False or r.get('replay_status') == 'failed' for r in failures)):
-            fault = 'model'
-        return {'ok': False, 'fault': fault, 'checks': [], 'artifacts': [], 'reason': 'No package passed integrity and replay'}
-    if stage == 'reuse':
-        _, state = _state(run_dir)
-        events_path = Path(run_dir)/'benchmark/package-events.jsonl'
-        events = [json.loads(line) for line in events_path.read_text().splitlines()] if events_path.exists() else []
-        events = [e for e in events if e['actor'] == 'worker' and e['stage'] == stage
-                  and e['attempt_id'] == state['package_attempts'][stage] and e['revision'] == state.get('revision', 0)]
-        capabilities = json.loads(Path(state['capabilities_path']).read_text())
+def _mission(case_id, events, capabilities):
+    """Whether the fresh worker's package calls did the public mission, judged from their outputs and the instrument
+    readings of the emulated device: a note on the reuse stage, never a grade. Failed calls are attributed only on
+    trusted evidence: untyped or mixed failures blame nobody."""
+    try:
         if case_id in ('sampled-sensor-v1', 'parameter-store-v1'):
-            fresh = family_for(case_id).reuse_passed(events, capabilities)
+            done = family_for(case_id).reuse_passed(events, capabilities)
+        elif case_id == 'tq9':
+            from .cases import mission_done
+            done = mission_done(events, capabilities)
         else:
             duties = [e['observation']['duty'] for e in events if e['result'].get('ok')]
-            mapping = json.loads(Path(state['capabilities_path']).read_text())['tasks']['temperature']
+            mapping = capabilities['tasks']['temperature']
             output = mapping['outputs']['temperature']['output']
             read = any(e.get('operation') == mapping['operation'] and e['result'].get('ok')
                        and type(e['result'].get('outputs', {}).get(output)) in (int, float) for e in events)
-            fresh = read and any(abs(value - 370) <= 2 for value in duties) and bool(duties) and duties[-1] == 0
-        if not fresh:
-            failed = [e['result'] for e in events if e['result'].get('ok') is not True]
-            faults = [r['error'].get('fault') if isinstance(r.get('error'), dict) else None for r in failed]
-            # Untyped package errors can include host failures; mixed evidence is
-            # not enough to attribute this incomplete mission to the candidate.
-            default = None if any(f != 'model' for f in faults) else 'model'
-            fault = next((f for f in faults if f in ('host', 'operator')), default)
-            return {'ok': False, 'fault': fault, 'checks': [], 'artifacts': [], 'reason': 'Fresh worker mission lacks observed reading, requested effect or disarm'}
-        package = Path(state['package_copies'][stage])
-        decision = _final(case_id, run_dir, package, json.loads(Path(state['capabilities_path']).read_text()), options or {})
-        return {**decision, 'checks': [{'name': 'fresh_worker_mission', 'passed': True},
-                                     {'name': 'frozen_final_behavior', 'passed': decision['ok']}],
-                'artifacts': [str(package)]}
+            done = read and any(abs(value - 370) <= 2 for value in duties) and bool(duties) and duties[-1] == 0
+    except (KeyError, TypeError, ValueError, AttributeError, IndexError) as error:
+        return {'name': 'fresh_worker_mission', 'passed': None,
+                'reason': 'The capability mapping cannot judge the mission: ' + type(error).__name__ + ': ' + str(error)}
+    if done:
+        return {'name': 'fresh_worker_mission', 'passed': True}
+    failed = [e['result'] for e in events if e['result'].get('ok') is not True]
+    faults = [r['error'].get('fault') if isinstance(r.get('error'), dict) else None for r in failed]
+    default = None if any(f != 'model' for f in faults) else 'model'
+    fault = next((f for f in faults if f in ('host', 'operator')), default)
+    return {'name': 'fresh_worker_mission', 'passed': False,
+            'reason': 'Fresh worker mission lacks observed reading, requested effect or disarm', **({'fault': fault} if fault else {})}
+
+
+def _mapping_errors(case_id, mapping, model):
+    """The structural check of a probe's capability mapping against its model: {ok, errors}. Legacy tq9 maps its
+    tasks in the legacy form (`cases.mapping_errors`)."""
+    if case_id == 'tq9':
+        from .cases import mapping_errors
+        errors = mapping_errors(mapping, model)
+        return {'ok': not errors, 'errors': errors}
+    from .behavior import validate_capabilities
+    return validate_capabilities(mapping, model, _required_tasks(case_id))
+
+
+# Cases graded after the run from the fresh reuse the run recorded: their reuse hands on that record.
+RECORDED = ('tq9',)
+REUSE_EVENTS = 'reuse-events.jsonl'
+
+
+def _host(result):
+    """emit_check could not run on this host: the configurator's positive list, or an error that declares a host fault."""
+    from ..configurator import _host_fault
+    error = result.get('error')
+    return _host_fault(result) or isinstance(error, dict) and error.get('fault') == 'host'
+
+
+def _emitted(ws, report, options):
+    """The packages an emit may hand on, as generic emit decides: bytes the configurator observed, here only a package
+    an emit_package of this assignment built, by the hash it recorded when the tool returned (`options['emit_builds']`).
+    The report may name which package, never its hash. A package the worker wrote or changed is not handed on, so it is
+    never graded. Returns (packages, not_handed_off, dropped)."""
+    from ..configurator import _observed_packages
+    builds, named, dropped = options.get('emit_builds') or {}, [], []
+    artifacts = report.get('artifacts') if isinstance(report, dict) else None
+    for artifact in artifacts if isinstance(artifacts, list) else []:
+        raw = artifact.get('path') if isinstance(artifact, dict) else None
+        if not isinstance(raw, str):
+            continue
+        path = (Path(raw) if Path(raw).is_absolute() else ws/raw).resolve()
+        if path.is_relative_to(ws.resolve()):
+            named.append(path)
+        else:
+            dropped.append({'path': raw, 'reason': 'Reported artifact is outside the assigned workspace'})
+    packages, not_handed_off, gone = _observed_packages(named, builds, set(builds.values()),
+                                                        'not built by emit_package in this assignment')
+    return packages, not_handed_off, dropped + gone
+
+
+def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, options=None):
+    """Observe a stage without truth: what it hands on and its checks as notes. No evaluator runs here, nothing is
+    graded and no stage verdict is recorded. Only a changed sealed input or recorded hash stops (integrity); emit_check
+    the host could not run raises (a resumable host stop). Probe and ground device evidence (the worker's probe records
+    and the device diff) is the configurator's own; `options['observed_records']` names the records it hands on, and
+    emit hands on only a package `options['emit_builds']` records an emit_package of the assignment building (`_emitted`)."""
+    options = options or {}
+    ws = Path(workspace)
+    _, manifest = _inputs(case_id, run_dir)
+    if stage == 'acquire':
+        matches, unreadable = [], []
+        for provenance in sorted(ws.rglob('provenance.json')):
+            try:
+                json.loads(provenance.read_text())
+                for binary in sorted(provenance.parent.glob('*.bin')):
+                    if hashlib.sha256(binary.read_bytes()).hexdigest() == manifest['images']['firmware.bin']:
+                        matches.extend([binary, provenance])
+            except ValueError:
+                continue
+            except OSError as error:
+                unreadable.append({'path': str(provenance.parent), 'reason': 'Unreadable acquisition output: ' + type(error).__name__})
+        reason = 'Unreadable acquisition output' if unreadable and not matches else 'No matching imported firmware'
+        return _observed(matches, [{'name': 'imported_firmware_hash', 'passed': bool(matches),
+                                    **({} if matches else {'reason': reason})}], unreadable)
     if stage == 'interpret':
         from ..toolkit import call_tool
         state_path, state = _state(run_dir)
@@ -369,237 +429,181 @@ def check_stage(case_id, stage, run_dir, workspace, report, accepted=None, optio
         tools = str(Path(run_dir).resolve()/'benchmark/tools')
         result = call_tool('interpret_collect', {'run_dir': tools, 'attempt': state['interpret_attempt'],
             'expected_seal_sha256': prepared['seal_sha256'], 'seal_kind': 'instruction'})
+        reason = result.get('reason') or result.get('error')
+        if result.get('sealed_inputs_unchanged') is False or (not result.get('ok') and re.search(r'(?i)seal|changed|differ', str(result.get('reason') or ''))):
+            return {'stop': {'category': 'integrity', 'reason': 'Sealed interpretation inputs changed or are unverifiable: ' + str(reason)}}
         out = Path(prepared['model_dir'])
-        intact = result.get('sealed_inputs_unchanged') is True and result.get('frozen_copy') is True
-        validation = call_tool('model_validate', {'run_dir': tools, 'model_dir': str(out)}) if result.get('ok') or intact else {'ok': False}
-        qualification = result.get('qualification', {})
+        intact = bool(result.get('ok') or result.get('sealed_inputs_unchanged') is True and result.get('frozen_copy') is True)
+        present = intact and (out/'model.json').is_file()
+        validation = call_tool('model_validate', {'run_dir': tools, 'model_dir': str(out)}) if present else {}
+        qualification = result.get('qualification') or {}
         qualified = qualification.get('status') == 'qualified' and not qualification.get('uncovered')
-        ok = bool(result.get('ok') and validation.get('ok') and qualified)
         state.update(model_dir=str(out), interpret_collect=result)
         _write(state_path, state)
-        model_failure = not ok and (result.get('ok') is True
-            or result.get('sealed_inputs_unchanged') is False
-            or result.get('sealed_inputs_unchanged') is True and result.get('frozen_copy') is True)
-        feedback = {'structural_defects': validation.get('defects', []), 'qualification': qualification}
-        repair = not ok and (result.get('ok') is True or intact)
-        if repair:
-            from .candidate_context import remember
-            remember(run_dir, 'interpret', {name: out/name for name in ('model.json', 'NOTES.md', 'replies.json')}, feedback)
-        return {'ok': ok, 'route': 'interpret' if repair else None,
-                'fault': 'model' if model_failure else None,
-                'feedback': feedback,
-                'checks': [{'name': 'sealed_inputs', 'passed': bool(result.get('ok'))},
-                           {'name': 'executable_model', 'passed': bool(validation.get('ok'))},
-                           {'name': 'predicted_reply_qualification', 'passed': bool(qualified)}],
-                'artifacts': [str(p) for p in out.glob('*') if p.is_file() and p.name in ('model.json', 'NOTES.md', 'replies.json')]}
+        # A model behind an intact seal is handed on whether or not it validates or qualifies: both are notes.
+        checks = [{'name': 'sealed_inputs', 'passed': bool(result.get('ok')), **({} if result.get('ok') else {'reason': str(reason)})},
+                  {'name': 'executable_model', 'passed': bool(validation.get('ok')),
+                   **({'defects': validation['defects']} if validation.get('defects') else {}),
+                   **({} if present else {'reason': 'No model.json behind an intact seal'})},
+                  {'name': 'predicted_reply_qualification', 'passed': bool(qualified),
+                   **{key: qualification[key] for key in ('status', 'uncovered') if key in qualification}}]
+        kept = [p for p in sorted(out.glob('*')) if intact and p.is_file() and p.name in ('model.json', 'NOTES.md', 'replies.json')]
+        return _observed(kept, checks, scope='Sealed-input integrity, executable model contract and the candidate\'s '
+                         'own predicted-reply qualification; meaning rests on the device')
+    if stage in ('probe', 'ground'):
+        from .candidate_context import remember
+        from ..configurator import IntegrityError
+        _, state = _state(run_dir)
+        artifacts, checks, dropped, files, original = [], [], [], {}, None
+        if state.get('adapted_model_dir') and stage == 'probe':
+            model = Path(state['adapted_model_dir'])/'model.json'
+            if hashlib.sha256(model.read_bytes()).hexdigest() != state['adaptation']['adapted_model_sha256']:
+                raise IntegrityError('Probe changed the accepted model')
+            artifacts += [path for path in (model, model.parent/'adaptation.json') if path.is_file()]
+            files['model.json'], original = model, state['adaptation'].get('original_model_sha256')
+        elif stage == 'ground' and (ws/'model/model.json').is_file():
+            files['model.json'] = ws/'model/model.json'
+            try:
+                original = json.loads((ws/'model/adaptation.json').read_text(encoding='utf-8')).get('original_model_sha256')
+            except (OSError, ValueError, AttributeError):
+                original = None
+        if stage == 'probe':
+            capabilities, parsed, errors, reason = ws/'capabilities.json', False, None, None
+            if capabilities.is_symlink() or capabilities.exists() and not capabilities.resolve().is_relative_to(ws.resolve()):
+                reason = 'capabilities.json is a link or outside the workspace; it was not followed'
+                dropped.append({'path': str(capabilities), 'reason': reason})
+            elif not capabilities.is_file():
+                reason = 'Missing capability mapping'
+            else:
+                try:
+                    raw = capabilities.read_bytes()
+                except OSError as error:
+                    reason = 'capabilities.json is unreadable: ' + type(error).__name__
+                    dropped.append({'path': str(capabilities), 'reason': reason})
+                else:
+                    artifacts.append(capabilities)
+                    files['capabilities.json'] = capabilities
+                    try:
+                        mapping, parsed = json.loads(raw.decode('utf-8')), True
+                    except (ValueError, UnicodeError):
+                        reason = 'Capability file must contain valid UTF-8 JSON'
+            if parsed and files.get('model.json'):
+                try:
+                    validation = _mapping_errors(case_id, mapping, json.loads(files['model.json'].read_text(encoding='utf-8')))
+                except (KeyError, TypeError, AttributeError, IndexError, ValueError) as error:
+                    # The mapping check reads the model as a valid one; a model that fails validation still reaches
+                    # probe when the emulator can carry it, and its defects are the configurator's model_contract diff.
+                    reason = 'The mapping cannot be checked against this model: ' + type(error).__name__ + ': ' + str(error)
+                else:
+                    errors = validation['errors'] if not validation['ok'] else None
+                    reason = 'Invalid capability mapping' if errors else None
+            elif parsed:
+                reason = 'No adapted model to check the mapping against'
+            checks.append({'name': 'capability_mapping', 'passed': reason is None,
+                           **({'reason': reason} if reason else {}), **({'errors': errors} if errors else {})})
+        live = Path(run_dir)/'benchmark'/f'live-observations-{state.get("revision", 0)}.jsonl'
+        if live.is_file():
+            artifacts.append(live)
+            files['live-observations.jsonl'] = live
+        # The replies and notes of the candidate whose model this stage ran, never of another revision.
+        files.update(_candidate_files(accepted, original))
+        files.update({f'probe-{i}.json': Path(p) for i, p in enumerate(options.get('observed_records', []), 1)})
+        # The candidate's own files and the device evidence of its runs, kept for a later repair; nothing graded.
+        remember(run_dir, stage, files, report, workspace=ws)
+        return _observed(artifacts, checks, dropped, scope='The worker\'s mapping, the adapted model and the live '
+                         'journal with instrument readings: device evidence, not a grade')
+    if stage == 'emit':
+        from ..toolkit import call_tool
+        from ..configurator import digest, _emit_check_failure
+        packages, not_handed_off, dropped = _emitted(ws, report, options)
+        rejected, noted = [], {'not_handed_off': not_handed_off} if not_handed_off else {}
+        for package in packages:
+            manifest_path = package/'manifest.json'
+            result = call_tool('emit_check', {'run_dir': str(Path(run_dir)/'benchmark/package-checks'),
+                'package_dir': str(package), 'model_dir': str(ws/'model')})
+            if _host(result):
+                raise RuntimeError('emit_check could not run on this host for ' + package.name + ': ' + str(result.get('error')))
+            if (result.get('ok') and result.get('integrity_ok') and result.get('runtime_current')
+                    and result.get('replay_status') == 'passed'):
+                path, state = _state(run_dir)
+                state.update(package_sha256=digest(package), package_manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest())
+                _write(path, state)
+                return _observed([package], [{'name': 'package_integrity_and_replay', 'passed': True,
+                                              **({'rejected': rejected} if rejected else {}), **noted}], dropped)
+            rejected.append({'package': package.name, 'reason': _emit_check_failure(result)})
+        return _observed([], [{'name': 'package_integrity_and_replay', 'passed': False,
+                               'reason': 'No package emit_package built in this assignment passed integrity and replay',
+                               **({'rejected': rejected} if rejected else {}), **noted}],
+                         dropped + [{'path': row['package'], 'reason': 'emit_check did not pass: ' + row['reason']} for row in rejected])
+    if stage == 'reuse':
+        _, state = _state(run_dir)
+        events_path = Path(run_dir)/'benchmark/package-events.jsonl'
+        events = [json.loads(line) for line in events_path.read_text().splitlines()] if events_path.exists() else []
+        events = [e for e in events if e['actor'] == 'worker' and e['stage'] == stage
+                  and e['attempt_id'] == state.get('package_attempts', {}).get(stage) and e['revision'] == state.get('revision', 0)]
+        try:
+            mapping = json.loads(Path(state['capabilities_path']).read_text(encoding='utf-8')) if state.get('capabilities_path') else None
+        except (OSError, ValueError) as error:
+            mapping = error
+        if not isinstance(mapping, dict):
+            mission = {'name': 'fresh_worker_mission', 'passed': None, 'reason': 'No readable capability mapping was handed on'
+                       + (': ' + type(mapping).__name__ if isinstance(mapping, Exception) else '')}
+        else:
+            mission = _mission(case_id, events, mapping)
+        package = Path(state.get('package_copies', {}).get(stage) or ws/'missing')
+        handed = [package] if package.is_dir() else []
+        if case_id in RECORDED:
+            # This assignment's package calls with the instrument readings after them, as the configurator recorded them:
+            # the evaluator grades the frozen driver from this record after the run.
+            record = Path(run_dir)/'benchmark/reuse'/str(options.get('assignment_id'))/REUSE_EVENTS
+            record.parent.mkdir(parents=True, exist_ok=True)
+            record.write_text(''.join(json.dumps(e, allow_nan=False) + '\n' for e in events
+                                      if e.get('assignment_id') == options.get('assignment_id')), encoding='utf-8')
+            handed.append(record)
+        return _observed(handed, [mission],
+                         scope='The fresh worker\'s package calls and the instrument readings after them; a note, not a grade')
     raise ValueError('Native stage is not implemented: ' + stage)
 
 
-def run_call(session, invoke, request):
-    session.set_running(True)
-    try:
-        return invoke(request['operation'], request['parameters'])
-    finally:
-        session.set_running(False)
+# A device stage of an emulated run without the device its bench harness provides waits for the operator.
+NO_DEVICE = ('An emulated case runs only on the device its bench harness provides, and this run has none: start it with '
+             '`benchmark run`, whose bench harness provides the device and grades the driver after the run')
 
 
-def reference_execute(pin, truth, model, capabilities, *, renode, image, output_dir,
-                      phase='final', package=None, expected_package_sha256=None, package_final=True):
-    """Measured evaluator-only seam using normal models and frozen packages."""
-    if pin.get('scenario_id') != 'original':
-        raise ValueError('Unknown case scenario')
-    if phase not in ('diagnostic', 'final'):
-        raise ValueError('Unknown behavior phase')
-    from .native import NativeSession
-    from .emulated_actions import execute_plan, model_invoker, canonical_package_invoker
-    from .behavior import validate_records
-    from .snapshots import canonical_digest
-    from ..configurator import digest
-    from ..toolkit import call_tool
-    from interface_runtime.engine import validate_model
-    candidate = {**model, 'channel': {'type': 'tcp'}}
-    if not validate_model(candidate)['ok']:
-        raise ValueError('Reference candidates must be structurally valid before native calibration')
-    if package is not None and (not expected_package_sha256 or digest(package) != expected_package_sha256):
-        raise ValueError('Frozen package changed before reference execution')
-    family = family_for(pin.get('case_id', 'tq9-v2'))
-    output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True, mode=0o700)
-    model_dir = output/'model'
-    from .calibration import reference_model_bytes
-    model_dir.mkdir(parents=True, exist_ok=True)
-    (model_dir/'model.json').write_bytes(reference_model_bytes(candidate))
-    model_hash = hashlib.sha256((model_dir/'model.json').read_bytes()).hexdigest()
-    probes = []
-    session = NativeSession.start(renode=renode, image=image, recipe=truth['recipe'])
-    try:
-        frozen = None
-        if phase == 'final' and package_final:
-            if package is None:
-                probed = run_call(session, lambda operation, parameters: call_tool('probe_run', {
-                    'run_dir': str(output/'tools'), 'model_dir': str(model_dir), 'operation': operation,
-                    'parameters': {}, 'binding': session.binding, 'n': 1}),
-                    {'operation': candidate['identity']['operation'], 'parameters': {}})
-                if not probed.get('ok') or not probed.get('probe'):
-                    raise ValueError('Reference identity probe could not support package emission')
-                probes.append(probed['probe'])
-                emitted = call_tool('emit_package', {'run_dir': str(output/'tools'),
-                    'model_dir': str(model_dir), 'probe': probed['probe']})
-                if not emitted.get('ok'):raise ValueError('Reference package emission failed')
-                package = Path(emitted['package_dir'])
-                expected_package_sha256 = digest(package)
-            checked = call_tool('emit_check', {'run_dir': str(output/'tools'),
-                'model_dir': str(model_dir), 'package_dir': str(package)})
-            if not all(checked.get(k) for k in ('ok', 'integrity_ok', 'runtime_current')):
-                raise ValueError('Reference package integrity failed')
-            frozen = digest(package)
-            if frozen != expected_package_sha256:
-                raise ValueError('Frozen package changed before final episode')
-            invoke = canonical_package_invoker(package, capabilities, session.binding)
-            runtime_root = Path(package)/'interface_runtime'
-        else:
-            invoke = model_invoker(model_dir, capabilities, session.binding, output/'tools', probes)
-            import interface_runtime
-            runtime_root = Path(interface_runtime.__file__).parent
-        runtime_hash = canonical_digest({p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-                                         for p in sorted(runtime_root.glob('*.py'))})
-        local = {**truth, 'artifact_sha256': frozen or model_hash}
-        contract = family.contract(pin, local, phase)
-        records = execute_plan(session, invoke, family.build_plan(pin, local, phase), contract,
-            output/'raw.json', family.observations, truth['contracts']['time_policy']['sample_settle_seconds'])
-        if frozen and digest(package) != frozen:
-            raise ValueError('Frozen package changed during final episode')
-        result = {'execution': 'reference-calibration', 'backend': 'native-renode',
-            'native_process_observed': session.process is not None and session.process.poll() is None,
-            'process': session.info, 'contract': contract, 'records': records,
-            'grade': validate_records(contract, records), 'probes': probes,
-            'model_sha256': model_hash, 'capabilities_sha256': canonical_digest(capabilities), 'package_sha256': frozen,
-            'artifact_execution': 'emitted-package' if frozen else 'model-runtime',
-            'package_dir': str(package) if package is not None else None, 'runtime_sha256': runtime_hash}
-        _write(output/'evaluation.json', result)
-        return result
-    finally:
-        session.stop()
+def _binding(options):
+    """The binding of the device the bench harness provides, as the configurator's durable record holds it now (a
+    recovery changes it), or None: the configurator holds no emulator of its own, so a stage without one has no device."""
+    device = options.get('device')
+    if not isinstance(device, dict) or not isinstance(device.get('binding'), dict) or not device['binding']:
+        return None
+    return dict(device['binding'])
 
 
-_OWNERS = {}
-
-
-def _truth(case_id, run_dir, options):
-    from ..benchmark import case_root
-    from .emulator import truth_for_case
-    _, manifest = _inputs(case_id, run_dir)
-    truth = truth_for_case(case_root(), manifest, options)
-    if case_id in ('sampled-sensor-v1', 'parameter-store-v1'):
-        from .calibration import hydrate_truth
-        return hydrate_truth(truth)
-    return truth
-
-
-def _session(case_id, run_dir, options):
-    from .native import NativeSession
-    key = str(Path(run_dir).resolve())
-    path, state = _state(run_dir)
-    if key in _OWNERS:
-        return _OWNERS[key]
-    if state.get('session'):
-        raise RuntimeError('Native process ownership was lost; operator reconciliation is required')
-    inputs, _ = _inputs(case_id, run_dir)
-    session = NativeSession.start(renode=options.get('renode'),
-        image=inputs/'firmware.bin', recipe=_truth(case_id, run_dir, options)['recipe'])
-    import uuid
-    session.info['session_id'] = uuid.uuid4().hex
-    _OWNERS[key] = session
-    state['session'] = session.info
-    _write(path, state)
-    from .emulated_recovery import observed_values
-    try:
-        observation = observed_values(session)
-    except BaseException as failure:
-        try:
-            cleanup(case_id, run_dir, options)
-        except BaseException as stop_error:
-            raise RuntimeError(str(failure)+'; emulator cleanup unverified: '+str(stop_error)) from failure
-        raise
-    state['startup_observation'] = observation
-    _write(path, state)
-    return session
-
-
-def cleanup(case_id, run_dir, options=None):
-    key = str(Path(run_dir).resolve())
-    path, state = _state(run_dir)
-    session = _OWNERS.get(key)
-    if session is None and state.get('session'):
-        raise RuntimeError('Native process ownership was lost; operator reconciliation is required')
-    if session is not None:
-        session.stop()
-        if session.process is not None and session.process.poll() is None:
-            raise RuntimeError('Owned emulator stop was not confirmed')
-        _OWNERS.pop(key, None)
-        state['previous_session'] = state.pop('session', session.info)
-        _write(path, state)
-    return {'ok': True}
-
-
-def public_observation(case_id, raw, result, parameters):
-    """Measured diagnostic values only, without monitor access or grading keys."""
-    family = family_for(case_id)
-    observed = family.observations(raw, result, parameters)
-    if case_id == 'tq9-v2':
-        return {'duty': observed['duty'], 'unit': 'permille',
-                'temperature_reference': raw['values']['temperature'], 'temperature_unit': 'degC',
-                'phase': 'diagnostic'}
-    return {**{key: observed[key] for key in family.observations.monitor_units},
-            'units': dict(family.observations.monitor_units), 'phase': 'diagnostic'}
-
-
-def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=None,
-                    binding=None, allow_effects=None, options=None):
+def package_call(case_id, run_dir, stage, arguments):
+    """Check, before anything is dispatched, that the call runs the unchanged stage-assigned package copy, and return
+    the call: it runs the package's own CLI over the assigned binding with the assigned grants."""
     from ..configurator import digest
     from .emulated_actions import package_invoker
-    family = family_for(case_id)
-    path, state = _state(run_dir)
-    package = Path(package_dir).resolve()
-    if str(package) != state.get('package_copies', {}).get(stage) or digest(package) != state['package_sha256']:
-        raise ValueError('Only the unchanged stage-assigned package may execute')
-    session = _session(case_id, run_dir, options or {})
-    if binding != session.binding:
-        raise ValueError('Package binding differs from the evaluator-owned emulator')
-    before = public_observation(case_id, session.observe(), {}, parameters or {}) if case_id != 'tq9-v2' else {}
-    result = run_call(session, package_invoker(package, binding, allow_effects or []),
-                      {'operation': operation, 'parameters': parameters or {}})
-    public = public_observation(case_id, session.observe(), result, parameters or {})
-    events = Path(run_dir)/'benchmark/package-events.jsonl'
-    row = {'actor': 'worker', 'stage': stage, 'operation': operation, 'revision': state.get('revision', 0),
-           'attempt_id': state['package_attempts'][stage], 'assignment_id': (options or {}).get('assignment_id'),
-           'package_sha256': state['package_sha256'], 'result': result, 'observation': public,
-           'before_observation': before}
-    with events.open('a') as stream:
-        stream.write(json.dumps(row, allow_nan=False)+'\n')
-    return {**result, 'observation': public}
-
-
-def score(report, password_file=None, *, evidence_path=None):
-    """Offline regrade requires an explicit evaluator sidecar; never guesses paths."""
-    from .evidence import regrade_v2
-    return regrade_v2(report, evidence_path, password_file)
-
-
-def worker_tool(case_id, run_dir, name, arguments, options):
-    """Execute a gateway-approved live call with the existing native owner."""
-    from ..toolkit import call_tool
-    if name not in ('interface_execute', 'probe_run'):
-        raise ValueError('Unsupported native worker tool')
-    session = _session(case_id, run_dir, options)
-    if arguments.get('binding') != session.binding:
-        raise ValueError('Worker binding differs from evaluator-owned emulator')
-    parameters = arguments.get('parameters', {})
-    before = public_observation(case_id, session.observe(), {}, parameters)
-    result = run_call(session, lambda operation, parameters: call_tool(name, arguments),
-                      {'operation': arguments.get('operation'), 'parameters': parameters})
-    observed = public_observation(case_id, session.observe(), result, parameters)
     _, state = _state(run_dir)
+    package = Path(arguments['package_dir']).resolve()
+    if str(package) != state.get('package_copies', {}).get(stage) or digest(package) != state.get('package_sha256'):
+        raise ValueError('Only the unchanged stage-assigned package may execute')
+    invoke = package_invoker(package, arguments['binding'], arguments.get('allow_effects') or [])
+    return lambda: invoke(arguments['operation'], arguments.get('parameters') or {})
+
+
+def record_call(case_id, run_dir, stage, name, arguments, result, before, after, options=None):
+    """Journal one live call with the instrument readings around it: a package call for fresh reuse's mission note, a
+    model call in the live journal probe and ground hand on. Readings are device evidence; nothing here grades them."""
+    path, state = _state(run_dir)
+    if name == 'benchmark_package_execute':
+        row = {'actor': 'worker', 'stage': stage, 'operation': arguments.get('operation'), 'revision': state.get('revision', 0),
+               'attempt_id': state['package_attempts'][stage], 'assignment_id': (options or {}).get('assignment_id'),
+               'package_sha256': state['package_sha256'], 'result': result, 'observation': after,
+               'before_observation': before}
+        with (Path(run_dir)/'benchmark/package-events.jsonl').open('a') as stream:
+            stream.write(json.dumps(row, allow_nan=False)+'\n')
+        return
     def measured(value):
         kept = {key: value[key] for key in ('ok', 'outputs', 'units', 'transcript', 'error', 'transport_open_attempted')
                 if key in value}
@@ -609,12 +613,11 @@ def worker_tool(case_id, run_dir, name, arguments, options):
     journal = Path(run_dir)/'benchmark'/f'live-observations-{state.get("revision", 0)}.jsonl'
     journal.parent.mkdir(parents=True, exist_ok=True)
     with journal.open('a', encoding='utf-8') as stream:
-        stream.write(json.dumps({'operation': arguments.get('operation'), 'parameters': parameters,
-            'result': measured(result), 'before_observation': before, 'observation': observed}, allow_nan=False)+'\n')
-    return {**result, 'before_observation': before, 'observation': observed}
+        stream.write(json.dumps({'operation': arguments.get('operation'), 'parameters': arguments.get('parameters', {}),
+            'result': measured(result), 'before_observation': before, 'observation': after}, allow_nan=False)+'\n')
 
 
-def recover_emulator(case_id, run_dir, workspace, accepted, report, feedback, options, cancelled):
-    from .emulated_recovery import preserve_failure, replace_owned
-    preserve_failure(run_dir, workspace, accepted, report, feedback)
-    return replace_owned(case_id, run_dir, options, cancelled)
+def score(report, password_file=None, *, evidence_path=None):
+    """Offline regrade requires an explicit evaluator sidecar; never guesses paths."""
+    from .evidence import regrade_v2
+    return regrade_v2(report, evidence_path, password_file)

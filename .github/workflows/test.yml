@@ -42,5 +42,6 @@ jobs:
               env = dict(os.environ)
               env.pop('PYTHONPATH', None)
               env['GD_TEST_WHEEL'] = str(Path(glob.glob('dist/*.whl')[0]).resolve())
+              env['GD_TEST_SDIST'] = str(Path(glob.glob('dist/*.tar.gz')[0]).resolve())
               subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(repo / 'tests'), '-v'], cwd=work, env=env, check=True)
               subprocess.run([sys.executable, '-m', 'generative_driver', 'benchmark', 'run', '--case', 'setup-smoke', '--output', str(Path(work) / 'smoke')], cwd=work, env=env, check=True)

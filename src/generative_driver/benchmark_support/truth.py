@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 
 from cryptography.exceptions import InvalidTag
@@ -29,8 +30,25 @@ def seal(evidence, path, password):
                 for k, v in {'salt': salt, 'nonce': nonce, 'ciphertext': encrypted}.items()}}
     data = (json.dumps(envelope, sort_keys=True) + '\n').encode()
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_bytes(data)
+    _replace(Path(path), data)
     return hashlib.sha256(data).hexdigest()
+
+
+def _replace(path, data):
+    """Write `data` beside `path`, then move it into place in one step: a write cut short (a killed process, a full disk)
+    leaves the previous file whole."""
+    temporary = path.with_name('.' + path.name + '.' + os.urandom(8).hex())
+    try:
+        temporary.write_bytes(data)
+        for attempt in range(50):
+            try:
+                return os.replace(temporary, path)
+            except PermissionError:  # Windows refuses to replace a file a reader holds open; the reader closes it soon.
+                if attempt == 49:
+                    raise
+                time.sleep(.05)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def unlock(path, password, expected_sha256):

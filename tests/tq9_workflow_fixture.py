@@ -39,6 +39,54 @@ def replies():
         name:{'steps':[[reply]]} for name,reply in [('identify','DEMO-42'),('measure','T:20'),('arm','OK'),('set_duty','OK'),('disarm','OK')]}}
 
 
+def replay_candidate(directory):
+    """A saved candidate for the replay executor: the model and replies an interpret worker wrote, the capability mapping
+    a probe worker wrote, and the tool calls of every stage, in the public tool schemas. Scripted, never a model run."""
+    root = Path(directory)
+    root.mkdir(parents=True, exist_ok=True)
+    for name, value in (('model.json', model()), ('replies.json', replies()), ('capabilities.json', capabilities())):
+        (root/name).write_text(json.dumps(value), encoding='utf-8')
+    context = lambda key: {'$context': key}
+    script = {'schema': 'replay-candidate/1', 'description': 'Scripted tq9 contract fixture; never a model run',
+        'stages': {
+            'acquire': [{'call': 'acquire_firmware_artifact',
+                         'arguments': {key: context(key) for key in ('source_path', 'expected_sha256', 'origin')}}],
+            'interpret': [{'write': 'model.json'}, {'write': 'replies.json'}],
+            'probe': [{'call': 'interface_execute', 'arguments': {'model_dir': context('model_dir'), 'operation': 'measure',
+                                                                   'parameters': {}}},
+                      {'call': 'probe_run', 'arguments': {'model_dir': context('model_dir'), 'operation': 'measure',
+                                                           'parameters': {}, 'n': 1}},
+                      {'write': 'capabilities.json'}],
+            'emit': [{'call': 'emit_package', 'arguments': {'model_dir': context('model_dir'), 'probe_json': context('probe')}},
+                     {'call': 'emit_check', 'arguments': {'package_dir': {'$result': 'package_dir'}}}],
+            'reuse': [{'call': 'benchmark_package_execute', 'arguments': {'package_dir': context('package_dir'),
+                                                                           'operation': operation, 'parameters': parameters}}
+                      for operation, parameters in (('measure', {}), ('arm', {}), ('set_duty', {'duty': 370}), ('disarm', {}))]}}
+    (root/'replay.json').write_text(json.dumps(script, indent=1), encoding='utf-8')
+    return root
+
+
+# Toy register addresses of the legacy tq9 PWM timer, as a toy legacy truth names them (`legacy_truth`).
+REGISTERS = {0x40000034: 'compare', 0x4000002c: 'reload'}
+
+
+def legacy_truth(**changes):
+    """A toy legacy tq9 truth: emulator sources, the monitor's register map, the reuse goal and the temperature check.
+    Its sentinel never belongs in anything a stage, worker or configurator record holds."""
+    return {'source_files': {'BME280Bench.cs': '// toy sensor model'}, 'renode_setup': '# toy setup',
+            'monitor': {'pwm_compare': 0x40000034, 'pwm_reload': 0x4000002c},
+            'reuse_goal': {'fraction': .37, 'final_fraction': 0, 'tolerance': .005},
+            'checks': [{'id': 'temperature', 'expected': 20, 'absolute_tolerance': .5}],
+            'private_sentinel': 'LEGACY EVALUATOR SENTINEL', **changes}
+
+
+def legacy_capabilities():
+    """A legacy tq9 capability mapping of model(): each task names its operation, parameters and output."""
+    return {'temperature': {'operation': 'measure', 'parameters': {}, 'output': 'temperature'},
+            'arm': {'operation': 'arm', 'parameters': {}}, 'set_duty': {'operation': 'set_duty', 'parameters': {'duty': 650}},
+            'disarm': {'operation': 'disarm', 'parameters': {}}}
+
+
 class Silicon:
     def __init__(self, image):
         self.temperature, self.duty, self.armed = 20, 0, False
@@ -56,6 +104,10 @@ class Silicon:
                     if not owner.running:
                         owner.paused_requests.append(command)
                         return
+                    gate=getattr(owner,'gate',None)
+                    if command=='T' and gate:
+                        # A test holds the reply: (entered, release) events.
+                        gate[0].set();gate[1].wait(5)
                     if command=='ID?': reply='DEMO-42'
                     elif command=='T' and getattr(owner,'broken_measure',False):reply='BROKEN'
                     elif command=='T': reply='T:'+str(42 if getattr(owner,'wrong_hidden',False) and owner.temperature == -7 else owner.temperature)
@@ -76,6 +128,10 @@ class Silicon:
                 if line=='reset': owner.duty=0;owner.armed=False
                 if line.startswith('temp '): owner.temperature=int(line.split()[1])
                 value=getattr(owner,'monitor_error',None) or {'compare':owner.duty,'reload':999,'temperature':owner.temperature}.get(line,'')
+                if line.startswith('sysbus ReadDoubleWord ') and not getattr(owner,'monitor_error',None):
+                    # The legacy recipe reads the PWM timer's registers by address, as Renode's monitor does.
+                    register=REGISTERS.get(int(line.split()[-1],16))
+                    value=hex({'compare':owner.duty,'reload':999}[register]) if register else ''
                 self.wfile.write((line+'\r\n'+str(value)+'\r\n(device) ').encode());self.wfile.flush()
         class Server(socketserver.ThreadingTCPServer):
             allow_reuse_address=True

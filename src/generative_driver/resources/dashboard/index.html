@@ -16,13 +16,14 @@
       <div><span class="label">Elapsed</span><strong id="elapsed">—</strong></div>
       <div><span class="label">Accepted stages</span><strong id="accepted">— / 6</strong></div>
       <div><span class="label">Model repairs</span><strong id="repairs">—</strong></div>
+      <div><span class="label">Final verdict</span><strong id="equivalence" title="">—</strong></div>
     </section>
     <ol id="stages" aria-label="Workflow stages"></ol>
     <div class="panels">
       <section class="panel"><div class="panel-heading"><h2>Agent activity</h2><span id="activity-age">Waiting</span></div><div id="activity" aria-live="polite">No current worker activity.</div></section>
       <section class="panel"><div class="panel-heading"><h2>Run log</h2><label><input id="follow" type="checkbox" checked> Follow</label></div><div id="logs" role="log" aria-label="Run events" tabindex="0"><p class="empty">Waiting for events…</p></div></section>
     </div>
-    <footer>Status and accepted stages are reported by the configurator. Updates every second.</footer>
+    <footer>Status, accepted stages, stage notes and the final verdict are reported by the configurator. A generic run's verdict is self-evidence, not an independent grade. Updates every second.</footer>
   </main>
 </body>
 </html>

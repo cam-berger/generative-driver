@@ -1,72 +1,9 @@
-"""Historical benchmark package execution, cleanup, and scoring."""
+"""Offline regrade of reports recorded under the earlier protocol, whose legacy stages were graded inside the run."""
 import json
 import math
-import subprocess
-import sys
-import time
 from pathlib import Path
 
 from ..benchmark import _read, case_root, score_observations
-
-
-def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=None,
-                    binding=None, allow_effects=None, options=None):
-    from .cases import _state, _load_case
-    from .emulator import RenodeSession
-    from ..toolkit import call_tool
-    _, state = _state(run_dir)
-    package = Path(package_dir).resolve()
-    expected = Path(state.get('package_copies', {}).get(stage, '')).resolve()
-    if package != expected:
-        return {'ok': False, 'error': {'code': 'package', 'message': 'Only the stage-assigned package may execute'}}
-    checked = call_tool('emit_check', {'run_dir': str(Path(run_dir).resolve()/'benchmark/package-checks'),
-                                      'package_dir': str(package),
-                                      'expected_manifest_sha256': state['package_sha256']})
-    if not (checked.get('ok') and checked.get('integrity_ok') and checked.get('runtime_current')
-            and checked.get('replay_status') == 'passed'):
-        return {'ok': False, 'error': {'code': 'package', 'message': 'Package integrity/current-runtime check failed'}}
-    session = state['session']
-    if binding != session['binding']:
-        return {'ok': False, 'error': {'code': 'binding', 'message': 'Package binding differs from evaluator-selected emulator'}}
-    command = [sys.executable, '-I', '-S', '-B', '-c',
-        'import runpy,sys;sys.path.insert(0,sys.argv.pop(1));runpy.run_module("driver",run_name="__main__")',
-        str(package), 'execute', operation, '--parameters', json.dumps(parameters or {}),
-        '--binding', json.dumps(binding)]
-    for effect in allow_effects or []:
-        # Reads are implicit in the emitted CLI; only side effects need a flag.
-        if effect != 'read':
-            command.extend(['--allow-effect', effect])
-    emulator = RenodeSession(session)
-    emulator.monitor('start')
-    try:
-        completed = subprocess.run(command, cwd=package.parent, capture_output=True, text=True, timeout=30)
-    finally:
-        emulator.monitor('pause')
-    try:
-        result = json.loads(completed.stdout)
-    except ValueError:
-        result = {'ok': False, 'error': {'code': 'package', 'message': completed.stderr[-1000:]}}
-    _, _, truth = _load_case(options or {})
-    observed = emulator.observe(truth)
-    row = {'stage': stage, 'revision': state.get('revision', 0), 'attempt_id': state['package_attempts'][stage], 'operation': operation,
-           'parameters': parameters or {}, 'ok': completed.returncode == 0 and result.get('ok') is True,
-           'result': result, 'observation': observed, 'time': time.time(), 'package_sha256': state['package_sha256'], 'time_policy': 'emulation paused between package calls'}
-    path = Path(run_dir)/'benchmark/package-events.jsonl'
-    with path.open('a') as stream:
-        stream.write(json.dumps(row, allow_nan=False)+'\n')
-    return {**result, 'observation': observed, 'evidence': str(path)}
-
-
-def cleanup(case_id, run_dir, options=None):
-    """Stop only the evaluator-owned emulator; preserve evidence for diagnosis."""
-    from .cases import _state, _write
-    from .emulator import RenodeSession
-    path, state = _state(run_dir)
-    if state.get('session'):
-        RenodeSession(state['session']).stop()
-        state['previous_session'] = state.pop('session')
-        _write(path, state)
-    return {'ok': True}
 
 
 def score(report, password_file=None, *, evidence_path=None):
@@ -117,7 +54,7 @@ def score(report, password_file=None, *, evidence_path=None):
                 or not math.isfinite(measured) or not math.isfinite(observed_at)
                 or abs(measured-observed_at)>truth['max_reference_age_seconds']):
             raise ValueError('Recorded final measurement lacks a current independent reference')
-        from .physical import grade_physical_reference
+        from .evaluator import grade_physical_reference
         saved_reference=dict(final.get('reference',{}))
         if evidence_path is not None:
             # The caller owns this resolution handle; the recorded digest, values

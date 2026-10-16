@@ -111,6 +111,9 @@ class RecordingFactory:
                 return data
             def close(self):
                 handle.close()
+            def wait_boot(self, line_prefix, timeout_ms):
+                wait = getattr(handle, 'wait_boot', None)
+                return wait(line_prefix, timeout_ms) if wait else 0
             # Bytes the adapter drained on open reach the engine, which reports them as transport_notes.
             drained_bytes = property(lambda self: getattr(handle, 'drained_bytes', 0))
         return Recorder()
@@ -163,18 +166,31 @@ def run_samples(model, operation, parameters=None, *, n=1, binding=None, allow_e
         raise ValueError('requested probe exceeds evidence bound; reduce samples, steps or output expansion')
     player = ReplayFactory(replay) if replay is not None else None
     recorder = RecordingFactory(player if player is not None else open_transport)
+    # A device that resets on open would be restarted by every sample; one connection keeps them comparable.
+    single = bool(model['channel'].get('resets_on_open'))
     results = []
-    for _ in range(n):
-        result = execute(model, operation, parameters, binding=binding,
-                         allow_effects=allow_effects, transport_factory=recorder,
-                         delay_fn=(lambda seconds: None) if player is not None else None)
-        results.append(result)
-        if not result['ok']:
-            break
+    if single:
+        from .engine import Session
+        with Session(model, binding=binding, allow_effects=allow_effects, transport_factory=recorder,
+                     delay_fn=(lambda seconds: None) if player is not None else None) as session:
+            for _ in range(n):
+                result = session.execute(operation, parameters)
+                results.append(result)
+                if not result['ok']:
+                    break
+    else:
+        for _ in range(n):
+            result = execute(model, operation, parameters, binding=binding,
+                             allow_effects=allow_effects, transport_factory=recorder,
+                             delay_fn=(lambda seconds: None) if player is not None else None)
+            results.append(result)
+            if not result['ok']:
+                break
     if player is not None and all(r['ok'] for r in results) and not player.exhausted():
         _error(results[-1], 'replay_mismatch','unused extra replay transactions')
     return {'ok':all(r['ok'] for r in results), 'evidence_kind':'replay' if player else 'live',
             'timing_policy':'skip_delays' if player else 'real',
+            **({'session':'single'} if single else {}),
             'results':results,'transactions':recorder.transactions}
 
 
@@ -200,8 +216,10 @@ def check_probe(model, probe, model_sha256):
     try:
         required = {'schema','model_sha256','evidence_kind','timing_policy','operation','parameters','allow_effects',
                     'results','transactions','ok'}
-        if type(probe) is not dict or set(probe) != required or probe['schema'] != 'interface-probe/1':
+        if type(probe) is not dict or set(probe) - {'session'} != required or probe['schema'] != 'interface-probe/1':
             raise ValueError('invalid probe envelope')
+        if 'session' in probe and probe['session'] != 'single':
+            raise ValueError('invalid probe session marker')
         if probe['model_sha256'] != model_sha256:
             raise ValueError('probe belongs to different model bytes')
         if probe['evidence_kind'] not in ('live','replay') or probe['ok'] is not True:
@@ -224,7 +242,7 @@ def check_probe(model, probe, model_sha256):
 COVERAGE_SCOPE = ('Coverage refers only to the samples in the bundled probe, with the listed parameters. '
                   'Untested means no bundled execution evidence, not absence of testing elsewhere. '
                   'Live means recorded device execution; replay means supplied transactions, not a new device observation. '
-                  'Each call opens and closes a separate connection. Sequence safety and physical semantics are not established.')
+                  'Connections follow the model: one per call, or one for all samples when the channel declares resets_on_open. Sequence safety and physical semantics are not established.')
 
 
 def probe_coverage(model, probe):

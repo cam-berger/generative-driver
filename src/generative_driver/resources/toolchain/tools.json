@@ -26,7 +26,7 @@
     },
     {
       "name": "interface_execute",
-      "description": "Execute one typed schema 3-6 operation after identity verification. Bindings are explicit host choices.\nOnly read effects by default; write/actuate require grants. Explicit replay is offline evidence.\n",
+      "description": "Execute one typed schema 3-6 operation after identity verification. Bindings are explicit host choices.\nOnly read effects by default; write/actuate require grants. Explicit replay is offline evidence. Every refusal\nbefore the transport opens (model bytes, validation, operation, evidence bound, replay fixture) returns\ntransport_open_attempted false (exit 1).\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -381,7 +381,7 @@
     },
     {
       "name": "acquire_classify",
-      "description": "Stage 1. Walk the acquisition ladder and return the device class, the description artifact, and the\nlog of every rung tried. A selected `port` requires `flash_backend=\"esp32\"`; a failed port attempt\ncannot fall through to the an unselected FTDI bus. `part_hint` offers a part marking to look up.\n`transports` (e.g. [\"usb\"]) with the operator's `address` (vid:pid) and optional `serial_number` selects\na self-describing device; a miss then ends the walk and no bus is scanned.\n",
+      "description": "Stage 1. Walk the acquisition ladder and return the device class, the description artifact, and the\nlog of every rung tried. A selected `port` requires `flash_backend=\"esp32\"`; a failed port attempt\ncannot fall through to an unselected FTDI bus. `part_hint` offers a part marking to look up.\n`transports` (e.g. [\"usb\"]) selects a self-describing device by the operator's `address` (vid:pid) and optional\n`serial_number`, which a managed run takes from the bound device; a miss then ends the walk and no bus is scanned.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -522,6 +522,33 @@
       }
     },
     {
+      "name": "acquire_serial_listen",
+      "description": "Stage 1. Record what the bound serial device sends for up to 30 seconds with DTR/RTS released and nothing transmitted. Output within 500 ms of opening is recorded as unsolicited and marks the binding as resetting on open; every later connection then requires the operator's reset grant. The configurator supplies the port.",
+      "inputSchema": {
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "baudrate": {
+            "type": "integer",
+            "default": 115200,
+            "description": "Serial port baud rate (1..12000000)."
+          },
+          "seconds": {
+            "type": "number",
+            "default": 8,
+            "description": "Listen duration in seconds (0..30]."
+          }
+        },
+        "required": [
+          "run_dir"
+        ],
+        "type": "object",
+        "title": "acquire_serial_listenArguments"
+      }
+    },
+    {
       "name": "acquire_datasheet",
       "description": "Fetch a registered part_hint or an explicit URL, verify expected_sha256 when supplied, and extract datasheet pages.",
       "inputSchema": {
@@ -560,7 +587,7 @@
     },
     {
       "name": "acquire_selfdescription",
-      "description": "Stage 1, rung 3. Read one explicitly selected USB device's standard descriptors into descriptor.json,\nraw and parsed, with ENDPOINT.md beside it for the interpreter. transport is \"usb\"; address is the\noperator's vid:pid in hex; serial_number picks one of several matches. Only descriptor reads (and the\nvendor read its own BOS advertises) are sent: nothing is claimed or configured, no data is transferred.\n",
+      "description": "Stage 1, rung 3. Read one explicitly selected USB device's standard descriptors into descriptor.json,\nraw and parsed, with ENDPOINT.md beside it for the interpreter. transport is \"usb\"; address is the\noperator's vid:pid in hex and serial_number picks one of several matches; a managed run takes both\nfrom the bound device. Only descriptor reads (and the\nvendor read its own BOS advertises) are sent: nothing is claimed or configured, no data is transferred.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -849,7 +876,7 @@
     },
     {
       "name": "ghidra_run",
-      "description": "Stage 2. Run headless Ghidra without a shell pipeline, with workspace-local JVM settings, the true exit\nstatus, success markers, verified export files and the local-host-name warning classified separately.\nok is true only when the exit is 0, the import succeeded and the exports verify.\n Native Windows uses support/analyzeHeadless.bat; other hosts use support/analyzeHeadless. Select an explicit Ghidra installation and JDK. The writable analysis workspace must contain no whitespace.",
+      "description": "Stage 2. Run headless Ghidra without a shell pipeline, with workspace-local JVM settings, the true exit\nstatus, success markers, verified export files and the local-host-name warning classified separately.\nok is true only when the exit is 0, the import succeeded and the exports verify.\n The exports include references.tsv, strings.tsv and switches.tsv: static navigation tables, each bounded by navigation_max_bytes (16 MiB unless given); exports.truncated names any table cut at its bound. Native Windows uses support/analyzeHeadless.bat; other hosts use support/analyzeHeadless. Select an explicit Ghidra installation and JDK. The writable analysis workspace must contain no whitespace.",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -925,6 +952,20 @@
             "default": false,
             "title": "Noanalysis",
             "type": "boolean"
+          },
+          "navigation_max_bytes": {
+            "anyOf": [
+              {
+                "maximum": 1073741824,
+                "minimum": 1024,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Navigation Max Bytes"
           }
         },
         "required": [
@@ -943,7 +984,7 @@
     },
     {
       "name": "probe_run",
-      "description": "Probe without repairing the model. Schema 1 supports live I2C; schemas 3-6 require an explicit\noperation and trusted binding or replay trace. Evidence kind and model hash are recorded.\nA failed probe returns error_code; exit 4 is a transport fault (inconclusive), exit 1 a model failure.\n",
+      "description": "Probe without repairing the model. Schema 1 supports live I2C; schemas 3-6 require an explicit\noperation and trusted binding or replay trace. Evidence kind and model hash are recorded.\nA failed probe returns error_code; exit 4 is a transport fault (inconclusive), exit 1 a model failure.\nEvery refusal before the device is contacted returns transport_open_attempted false and writes no record:\nmodel bytes the strict reader refuses, an invalid model, the operation, a sample count outside 1..100, the\nevidence bound or a replay fixture (exit 1), a register model's binding or write grant (fault operator, exit 4),\nand a register model the register runtime cannot load (plain UTF-8 JSON, its converter) or drive (exit 1).\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -1138,7 +1179,7 @@
     },
     {
       "name": "emit_check",
-      "description": "Check generated package consistency offline. Schema 1 uses register fixtures; schemas 3-6 verify\nmanifest integrity and runtime currency separately. Current trusted packages run standalone wire replay;\nintact archived runtimes remain verifiable without executing their code. An external manifest pin\nestablishes artifact identity. Executable packages use their bundled model when model_dir is omitted;\nregister packages require it. This is not physical validation or sequence-safety evidence.\n",
+      "description": "Check generated package consistency offline. Schema 1 uses register fixtures; schemas 3-6 verify\nmanifest integrity and runtime currency separately. Current trusted packages run standalone wire replay;\nintact archived runtimes remain verifiable without executing their code. An external manifest pin\nestablishes artifact identity. Executable packages use their bundled model when model_dir is omitted;\nregister packages require it. A package it cannot read or parse, or a register converter that will not load,\nis refused (exit 1). Only a failure outside the package bytes (its temporary folder, reading back its own\nsnapshot copy, starting the replay, or a replay process that ends without a result or cannot read the verified\nsnapshot, an import, memory or a timeout) is fault host with exit 4, which says nothing about the package. This is not physical validation or sequence-safety evidence.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -1199,7 +1240,7 @@
     },
     {
       "name": "emit_test_live",
-      "description": "Stage 5. Run the emitted package live. A register package runs its own regression suite on the bus. An\ninterface package runs each of `operations` (default: identity) once through its own command line with\nthe operator's trusted `binding`, the `parameters` given per operation and the `allow_effects` grants,\nafter the same verified snapshot as emit_check; each run lands in emit/live-N.json. A malformed binding or a\nmissing grant is refused before any call. Exit 4 is a transport fault, inconclusive.\n",
+      "description": "Stage 5. Run the emitted package live. A register package runs its own regression suite on the bus. An\ninterface package runs each of `operations` (default: identity) once through its own command line with\nthe operator's trusted `binding`, the `parameters` given per operation and the `allow_effects` grants,\nafter the same verified snapshot as emit_check; each run lands in emit/live-N.json. A malformed binding or a\nmissing grant is refused before any call, as is a package that fails its snapshot check: every such refusal\nreturns transport_open_attempted false, with exit 1, except a register package's binding or grant refusal,\nwhich is fault operator with exit 4. A host failure before the first call (reading back the snapshot) is no\nrefusal: fault host with exit 4, also with transport_open_attempted false. A\npackage whose channel resets the device on open needs the reset grant: without it every operation is refused\nbefore the port opens. The identity operation alone verifies the device but exercises\nnone of its functions, nor does an operation that only waits or repeats identity's requests; name the\noperations to test. The result's manifest_sha256 names the snapshot that ran.\nExit 4 is a transport or host fault, inconclusive; when the host cannot write the live record the results are\nstill returned, with fault host.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {

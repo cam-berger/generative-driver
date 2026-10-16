@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -41,6 +42,85 @@ def process_alive(pid):
 
 
 class ServiceLifecycleTests(unittest.TestCase):
+    def ended(self, home, **changes):
+        """A configurator that ran from `home` and ended, its service.json changed by `changes`: the pid it ran as."""
+        import json
+        from generative_driver.client import call
+        pid = call('ping', {}, home)['pid']
+        self.assertTrue(call('shutdown', {}, home)['stopped'])
+        record = home / 'service.json'
+        record.write_text(json.dumps({**json.loads(record.read_text(encoding='utf-8')), **changes}), encoding='utf-8')
+        return pid
+
+    def test_burst_of_clients_reconnects_to_one_owner_without_dropped_connections(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            started = call('ping', {}, home)
+            try:
+                with ThreadPoolExecutor(max_workers=32) as clients:
+                    replies = list(clients.map(lambda _:call('ping', {}, home, autostart=False), range(32)))
+                self.assertTrue(all(reply.get('ok') for reply in replies), replies)
+                self.assertEqual({reply['pid'] for reply in replies}, {started['pid']})
+            finally:
+                call('shutdown', {}, home)
+
+    def test_transient_ipc_errors_never_replace_a_live_owner(self):
+        from generative_driver import client
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            started = client.call('ping', {}, home)
+            original, failures = client._request, []
+            def interrupted(*args, **kwargs):
+                if len(failures) < 2:
+                    failures.append(True)
+                    raise ConnectionRefusedError('transient connection refusal')
+                return original(*args, **kwargs)
+            try:
+                with patch.object(client, '_request', side_effect=interrupted), \
+                     patch('subprocess.Popen', side_effect=AssertionError('A live owner must not be replaced')):
+                    reconnected = client.call('ping', {}, home)
+                self.assertEqual(reconnected['pid'], started['pid'])
+                self.assertTrue(process_alive(started['pid']))
+            finally:
+                client.call('shutdown', {}, home)
+
+    def test_unreachable_live_owner_preserves_its_endpoint(self):
+        from generative_driver import client
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            client.call('ping', {}, home)
+            endpoint = (home/'service.json').read_bytes()
+            try:
+                with patch.object(client, '_request', side_effect=ConnectionRefusedError('unreachable')), \
+                     patch('subprocess.Popen', side_effect=AssertionError('A live owner must not be replaced')):
+                    with self.assertRaisesRegex(TimeoutError, 'still running'):
+                        client._start(home, timeout=.01)
+                self.assertEqual((home/'service.json').read_bytes(), endpoint)
+            finally:
+                client.call('shutdown', {}, home)
+
+    def test_lost_tool_reply_is_reported_without_dispatching_the_operation_again(self):
+        import json
+        from generative_driver import client
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            (home/'service.json').write_text(json.dumps({'address':'fixture', 'family':'AF_PIPE', 'authkey':'aa'}))
+            class Connection:
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+                def send_bytes(self, data): sent.append(json.loads(data))
+                def poll(self, timeout): return True
+                def recv_bytes(self, limit): raise EOFError('reply lost after dispatch')
+            sent = []
+            with patch.object(client, 'Client', return_value=Connection()), \
+                 patch.object(client, '_start', side_effect=AssertionError('Do not replay an interrupted write')):
+                result = client.call('tool', {'name':'interface_execute'}, home)
+            self.assertFalse(result['ok'])
+            self.assertIn('interrupted', result['reason'])
+            self.assertEqual([item['method'] for item in sent], ['tool'])
+
     def test_unpublished_daemon_exits_when_starting_client_disconnects(self):
         with tempfile.TemporaryDirectory() as temporary:
             child = subprocess.run([sys.executable, '-m', 'generative_driver.daemon',
@@ -95,6 +175,143 @@ class ServiceLifecycleTests(unittest.TestCase):
                 owner = call('ping', {}, home)
                 connected = call('ping', {}, home, autostart=False)
                 self.assertEqual(connected['pid'], owner['pid'])
+            finally:
+                call('shutdown', {}, home)
+
+    def test_a_client_never_drives_a_configurator_running_other_code(self):
+        import json
+        from generative_driver.client import call, code_identity
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / 'service'
+            try:
+                owner = call('ping', {}, home)
+                self.assertEqual((owner['code'], owner['compatible']), (code_identity(), True), owner)
+                # The running configurator was started by another installation, or before this code was edited.
+                record = home / 'service.json'
+                record.write_text(json.dumps({**json.loads(record.read_text(encoding='utf-8')), 'code': 'other'}),
+                                  encoding='utf-8')
+                refused = call('start', {'goal': 'Must not reach older code'}, home)
+                self.assertFalse(refused['ok'], refused)
+                self.assertIn('service stop', refused['reason'])
+                self.assertFalse((home / 'runs').exists() and list((home / 'runs').iterdir()))
+                pinged = call('ping', {}, home)
+                self.assertEqual((pinged['ok'], pinged['pid'], pinged['compatible']), (False, owner['pid'], False), pinged)
+                self.assertIn('service stop', pinged['reason'])
+                # A worker gateway is the configurator's own machinery, launched from its tree for one assignment it
+                # authenticates: a host change during a run must never cut a stage off from its tools.
+                gateway = call('tools', {'run_id': 'run-absent', 'assignment_id': 'absent'}, home, autostart=False)
+                self.assertNotIn('service stop', gateway.get('reason', ''), gateway)
+            finally:
+                self.assertTrue(call('shutdown', {}, home)['stopped'])
+            # With the incompatible configurator gone, the next call starts one running this code.
+            try:
+                restarted = call('ping', {}, home)
+                self.assertNotEqual(restarted['pid'], owner['pid'])
+                self.assertTrue(restarted['compatible'], restarted)
+            finally:
+                call('shutdown', {}, home)
+
+    def test_a_configurator_never_serves_under_another_installations_record(self):
+        import json
+        from generative_driver import daemon
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            (home / 'service.json').write_text(json.dumps({'family': 'AF_UNIX', 'address': str(home / 'owner.sock'),
+                                                            'authkey': '00' * 32, 'code': 'other'}), encoding='utf-8')
+            # Started by a client that loaded other code than this configurator imports: it fails at startup, loudly,
+            # instead of serving clients that record a digest it does not run.
+            with self.assertRaisesRegex(RuntimeError, 'other generative-driver code'):
+                daemon.serve(home)
+            self.assertFalse((home / 'runs.sqlite3').exists())
+
+    def test_a_configurator_that_ended_is_started_again_even_when_its_process_id_was_reused(self):
+        # Catches the configurator read as running from the bare process id service.json names: once it ended without
+        # a shutdown (killed, or its machine restarted), that id may name another running process (as the system
+        # reuses ids) or one this user may not signal, and no client could start the configurator again.
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            try:
+                # This test's parent process stands in for an unrelated process that took over the ended one's id.
+                ended = self.ended(home, pid=os.getppid())
+                started = call('ping', {}, home)
+                self.assertTrue(started['ok'], started)
+                self.assertNotIn(started['pid'], (ended, os.getppid()))
+            finally:
+                call('shutdown', {}, home)
+
+    def test_a_record_of_other_code_whose_configurator_ended_refuses_no_client_even_when_its_process_id_was_reused(self):
+        # Catches a client refused as though a configurator running other code still ran, from the bare process id its
+        # record names: once that configurator ended, the id may name another running process (as the system reuses
+        # ids), and every request was refused, with advice to stop a configurator that no longer runs.
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            try:
+                # Another installation's configurator ran here and ended; this test's parent process stands in for an
+                # unrelated process that took over its id.
+                self.ended(home, code='other', pid=os.getppid())
+                # A configurator running this code is started and answers.
+                reply = call('status', {'run_id': 'run-absent'}, home)
+                self.assertEqual((reply['ok'], reply.get('reason')), (False, 'Unknown run_id'), reply)
+                self.assertTrue(call('ping', {}, home, autostart=False)['compatible'])
+            finally:
+                call('shutdown', {}, home)
+
+    def test_a_configurator_that_ended_is_reported_stopped_even_when_its_process_id_was_reused(self):
+        # Catches a stop that confirmed a configurator's exit from the bare process id its record names: once it ended
+        # without a shutdown, that id may name another running process (as the system reuses ids) or one this user may
+        # not signal, and every stop reported that its exit was not confirmed.
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            try:
+                # This test's parent process stands in for an unrelated process that took over the ended one's id.
+                self.ended(home, pid=os.getppid())
+                stopped = call('shutdown', {}, home)
+                self.assertEqual((stopped['ok'], stopped['stopped']), (True, True), stopped)
+            finally:
+                call('shutdown', {}, home)
+
+    def test_a_configurator_holds_its_home_from_before_its_record_names_it(self):
+        # Catches a record that names a starting configurator whose lock is not held yet: a client that read it
+        # meanwhile would take the configurator for one that ended.
+        import json
+        from generative_driver import client
+        real, published = Path.write_text, []
+        def write_text(path, data, *args, **kwargs):
+            if path.name == 'service.json':
+                published.append((json.loads(data).get('lock'), client.process_lock_held(path.parent / 'service.lock')))
+            return real(path, data, *args, **kwargs)
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            try:
+                with patch.object(Path, 'write_text', write_text):
+                    self.assertTrue(client.call('ping', {}, home)['ok'])
+                self.assertEqual(published, [('service.lock', True)])
+            finally:
+                client.call('shutdown', {}, home)
+
+    def test_a_configurator_never_starts_from_a_home_another_configurator_runs_from(self):
+        # Catches a second configurator started on the home a running one serves (by hand, or by a client that took the
+        # running one for ended): its startup recovery blocked the running one's runs as though it had restarted, before
+        # it failed to listen where the running one listens, or, on Windows, listened beside it.
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            try:
+                run = call('start', {'goal': 'Scripted run another configurator must leave alone', 'executor_config': {
+                    'command': [sys.executable, '-c', 'import time; time.sleep(30)']}}, home)
+                deadline = time.monotonic() + 5
+                while call('status', run, home)['status'] != 'running':
+                    self.assertLess(time.monotonic(), deadline, call('result', run, home))
+                    time.sleep(.01)
+                second = subprocess.run([sys.executable, '-m', 'generative_driver.daemon', '--home', str(home)],
+                                        capture_output=True, text=True, timeout=30)
+                status = call('status', run, home)
+                self.assertEqual((status['status'], status['reason']), ('running', None), status)
+                self.assertNotEqual(second.returncode, 0, second)
+                self.assertIn(str(home / 'service.lock'), second.stderr)
             finally:
                 call('shutdown', {}, home)
 

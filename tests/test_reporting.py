@@ -68,6 +68,29 @@ class ReportTests(unittest.TestCase):
         manifest = {"required_stages": stages, "execution": "actual-agent-emulation"}
         self.assertEqual(summarize(result, [], case_manifest=manifest, case_state=state)["verdict"], "unscored")
 
+    def test_generic_report_counts_self_evidence_equivalence_apart_from_the_independent_verdict(self):
+        from generative_driver.reporting import summarize, markdown
+        equivalence = {"equivalent": True, "basis": "self-evidence", "diff": [],
+                       "checks": [{"id": "emitted_package_replay", "passed": True},
+                                  {"id": "fresh_reuse_live_operations", "passed": True}]}
+        result = {"run_id": "example", "status": "completed", "reason": "Final verdict: equivalent", "created": 0,
+                  "updated": 1, "worker_reports": [], "accepted_handoffs": [], "evaluator_verdicts": [],
+                  "progress": {"protocol": "assistive/1", "next_stage": None}, "equivalence": equivalence}
+        report = summarize(result, [])
+        self.assertEqual((report["protocol"], report["equivalence"]), ("assistive/1", equivalence))
+        # Self-evidence is not an independent grade.
+        self.assertEqual(report["verdict"], "unscored")
+        text = markdown(report)
+        self.assertIn("Equivalence (self-evidence): **equivalent**", text)
+        # Nothing graded an assistive run's stages and no evaluator grades a generic run: its Markdown shows neither an
+        # independent verdict nor a stage evaluator column, which would read as ungraded beside its self-evidence.
+        self.assertNotIn("Independent verdict", text)
+        self.assertNotIn("Evaluator |", text)
+        earlier = summarize({**result, "progress": {}, "equivalence": None}, [])
+        self.assertIsNone(earlier["equivalence"])
+        self.assertIsNone(earlier["protocol"])
+        self.assertNotIn("Equivalence", markdown(earlier))
+
     def test_report_keeps_missing_usage_and_unrun_stages_visible(self):
         from generative_driver.reporting import summarize
         result = {"run_id": "example", "status": "blocked", "stage": "interpret",
@@ -141,7 +164,7 @@ class ReportTests(unittest.TestCase):
                 controller = Controller(root / 'home')
                 try:
                     run = controller.start({'goal': 'report pinned execution', 'case': 'tq9',
-                        'executor_config': {'model': 'original'}})
+                        'executor_config': {'model': 'original', 'command': ['scripted-codex']}})
                     until = time.monotonic() + 5
                     while time.monotonic() < until:
                         status = controller.call('status', run)
@@ -161,10 +184,15 @@ class ReportTests(unittest.TestCase):
                     self.assertEqual(report['snapshot_sha256'], saved['snapshot_sha256'])
                     self.assertEqual(report['toolchain_revision'], saved['executed']['toolchain_revision'])
                     self.assertEqual(report['evaluator_revision'], saved['executed']['evaluator_revision'])
-                    self.assertEqual(report['case_pin'], saved['case_pin'])
+                    # An assistive legacy run's report is benchmark-report/3: its pin is the snapshot's, public fields only.
+                    from generative_driver.benchmark_support.evidence import public_pin
+                    self.assertEqual((report['schema'], report['protocol']), ('benchmark-report/3', 'assistive/1'))
+                    self.assertEqual(report['case_pin'], public_pin(saved['case_pin']))
                     self.assertEqual(report['scenario_id'], 'original')
                     self.assertEqual(report['case_seed'], 0)
-                    self.assertNotIn('exporting installation', report['provenance_meaning']['toolchain_revision'])
+                    # Its executed identity is the snapshot's, never the exporting installation's.
+                    self.assertEqual(report['executed']['toolchain_revision'], saved['executed']['toolchain_revision'])
+                    self.assertNotIn('provenance_meaning', report)
                 finally:
                     controller.close()
 

@@ -15,7 +15,7 @@ projects, caches and logs here. If `BINDING_CONTEXT.json` is supplied, use its `
 executable model and record inferred or unresolved physical settings in NOTES. A TCP byte stream does
 not verify physical UART baud, framing or pins. Never invent physical settings to satisfy validation.
 
-Read `TASKS.json` when supplied: it describes required observable behaviors, outputs, units and effect grants, not device command bytes. Implement the operations needed for those tasks, including multiple exchanges when a task requires a transaction. If `REPAIR_CONTEXT.json` is supplied, read it and `DEFECTS.json` first. The listed prior model, capabilities, replies, worker claims and measured diagnostic observations belong to this run and are authorized repair evidence. Use independent observations to correct the candidate; they are not hidden final answers. Start from the latest candidate, preserve sealed prior inputs, and write the revised model and replies at the workspace root. Explain each correction and its supporting evidence in `NOTES.md`. Reports are claims; reconcile them with captures and measurements. Keep physical uncertainty explicit.
+Read `TASKS.json` when supplied: it describes required observable behaviors, outputs, units and effect grants, not device command bytes. Implement the operations needed for those tasks, including multiple exchanges when a task requires a transaction. If `REPAIR_CONTEXT.json` is supplied, read it and the feedback file it names (for example `DEFECTS.json`, `repair/DEFECTS.json` or `defects.json`) first: what the device did that the previous candidate did not predict, and defects the configurator's own validation found in the candidate (entries with source `model_contract`); it is evidence, never a grade. If only `defects.json` is supplied, read it as that feedback. The listed prior model, capabilities, replies, worker claims, probe records and live journals belong to this run and are authorized repair evidence; instrument readings in them are device evidence, never a grade. Use these observations to correct the candidate; they are not hidden final answers. Start from the latest candidate, preserve sealed prior inputs, and write the revised model and replies at the workspace root. Explain each correction and its supporting evidence in `NOTES.md`. Reports are claims; reconcile them with captures and measurements. Keep physical uncertainty explicit.
 
 Run Python commands with the configured Python 3.11+ interpreter. The `python3` examples below stand
 for that interpreter; on Windows use its full path rather than assuming a `python3` command exists.
@@ -35,6 +35,10 @@ output in NOTES. A structurally valid incidental peripheral model does not estab
 
 Record the original artifact hash, analysis architecture/base assumptions, commands and output files in
 NOTES. Confirm exporter artifacts actually exist; an exit code alone does not establish decompilation.
+Beside the decompilations the exporter writes `references.tsv`, `strings.tsv` and `switches.tsv`, each
+bounded at 16 MiB unless the helper's `--navigation-max-bytes` sets another bound; `navigation.json` and the
+helper's `exports.truncated` report a table that reached its bound. They help find a dispatcher through its
+callers, strings and cases; they are static facts, not evidence that code runs.
 Use exact transaction boundaries and evidence-backed limits. The host supplies physical bindings later;
 do not put serial device paths, network destinations or FTDI URLs in the model.
 

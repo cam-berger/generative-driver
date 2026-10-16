@@ -109,13 +109,3 @@ class StageComparisonTests(unittest.TestCase):
         self.assertEqual(stage['attempt_count_delta'],-1)
         self.assertIsNone(stage['tokens_delta'])
         self.assertEqual(stage['after_evaluator_status'],'passed')
-
-
-class FaultOwnershipTests(unittest.TestCase):
-    def test_expected_permission_refusal_does_not_hide_granted_transport_failure(self):
-        from generative_driver.benchmark import evaluation_fault
-        refused={'capability':'set_duty','grants':[],'result':{'ok':False,'fault':'operator'}}
-        failed={'capability':'set_duty','grants':['write','actuate'],'result':{'ok':False,'fault':'host'}}
-        self.assertEqual(evaluation_fault({'score':{'verdict':'failed'},'calls':[refused,failed]}),'host')
-        self.assertEqual(evaluation_fault({'score':{'verdict':'failed'},'calls':[refused,
-            {'capability':'temperature','grants':['write','actuate'],'result':{'ok':True}}]}),'model')

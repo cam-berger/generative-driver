@@ -117,9 +117,15 @@ class RegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._v2_case(root, calibration={'status': 'passed'})
+            home = root / 'owner'
+            # A public 'passed' label admits nothing by itself: without a running configurator, a start that may not
+            # create one is refused before any harness, device or owner exists (admission is the harness's, later).
             with patch('generative_driver.benchmark.case_root', return_value=root):
-                with self.assertRaisesRegex(ValueError, 'calibration'):
-                    run('tq9-v2', options={'scenario_id': 'original'}, autostart=False)
+                refused = run('tq9-v2', options={'scenario_id': 'original', 'home': str(home)}, autostart=False)
+            self.assertFalse(refused['ok'], refused)
+            self.assertIn('service start', refused['reason'])
+            self.assertFalse((home / 'service.json').exists())
+            self.assertFalse(any(path.name.endswith('-bench') for path in root.iterdir()))
 
     def test_registered_emulated_v2_uses_registry_approval_scope(self):
         import tempfile
@@ -248,14 +254,16 @@ class RegistryTests(unittest.TestCase):
                     pin_case('tq9-v2', 'original', 0)
 
     def test_extracted_legacy_package_checks_assignment_before_execution(self):
+        # A legacy tq9 package call runs on the device its bench harness provides, and only the stage-assigned copy:
+        # anything else is refused before the call exists to dispatch.
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark import package_execute
+        from generative_driver.benchmark import package_call
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            result = package_execute('tq9', root, 'reuse', root / 'unassigned', 'read')
-            self.assertFalse(result['ok'])
-            self.assertEqual(result['error']['code'], 'package')
+            with self.assertRaisesRegex(ValueError, 'stage-assigned package'):
+                package_call('tq9', root, 'reuse', {'package_dir': str(root / 'unassigned'), 'operation': 'read',
+                                                    'binding': {'host': '127.0.0.1', 'port': 1}, 'allow_effects': []})
 
     def test_v2_effect_defaults_must_be_a_grant_list(self):
         import json

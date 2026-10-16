@@ -9,6 +9,8 @@ import time
 import unittest
 from pathlib import Path
 
+from package_env import package_env
+
 
 class CliTests(unittest.TestCase):
     def test_setup_connections_keep_the_explicit_state_home(self):
@@ -20,8 +22,8 @@ class CliTests(unittest.TestCase):
             inherited = root / "different inherited state"
             async def doctor(connection, command_key, environment_key):
                 params = StdioServerParameters(command=connection[command_key], args=connection['args'],
-                    cwd=str(root), env={'GENERATIVE_DRIVER_HOME': str(inherited),
-                                       **connection.get(environment_key, {})})
+                    cwd=str(root), env=package_env(**{'GENERATIVE_DRIVER_HOME': str(inherited),
+                                                      **connection.get(environment_key, {})}))
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
                         await session.initialize()
@@ -244,6 +246,55 @@ class CliTests(unittest.TestCase):
             self.assertEqual(report["dependencies"]["goose"]["required_for"], "Goose workers")
             self.assertTrue(Path(report["home"]).is_absolute())
             self.assertEqual(list(Path(temp).iterdir()), [])
+
+    def test_doctor_lists_serial_ports_by_usb_identity(self):
+        import types
+        from unittest.mock import patch
+        from generative_driver.setup import doctor
+        listing = types.ModuleType("serial.tools.list_ports")
+        listing.comports = lambda: [types.SimpleNamespace(device="/dev/cu.usbserial-11140", vid=0x10C4, pid=0xEA60,
+                                                          serial_number="abc", description="CP2102N")]
+        tools = types.ModuleType("serial.tools"); tools.list_ports = listing
+        serial = types.ModuleType("serial"); serial.tools = tools
+        with tempfile.TemporaryDirectory() as home, \
+             patch.dict(sys.modules, {"serial": serial, "serial.tools": tools, "serial.tools.list_ports": listing}):
+            report = doctor(home)
+        self.assertEqual(report["serial_ports"], [{"device": "/dev/cu.usbserial-11140", "vendor_id": 0x10C4,
+            "product_id": 0xEA60, "serial_number": "abc", "description": "CP2102N"}])
+        self.assertTrue(report["serial_ports_available"])
+
+    def test_doctor_without_pyserial_reports_no_ports(self):
+        from unittest.mock import patch
+        from generative_driver.setup import doctor
+        with tempfile.TemporaryDirectory() as home, \
+             patch.dict(sys.modules, {"serial": None, "serial.tools": None, "serial.tools.list_ports": None}):
+            report = doctor(home)
+        self.assertEqual(report["serial_ports"], [])
+        self.assertFalse(report["serial_ports_available"])
+
+    def test_doctor_filters_ports_without_usb_identity(self):
+        import types
+        from unittest.mock import patch
+        from generative_driver.setup import doctor
+        listing = types.ModuleType("serial.tools.list_ports")
+        listing.comports = lambda: [types.SimpleNamespace(device="/dev/ttyS0", vid=None, pid=None,
+                                                          serial_number=None, description="n/a")]
+        tools = types.ModuleType("serial.tools"); tools.list_ports = listing
+        serial = types.ModuleType("serial"); serial.tools = tools
+        with tempfile.TemporaryDirectory() as home, \
+             patch.dict(sys.modules, {"serial": serial, "serial.tools": tools, "serial.tools.list_ports": listing}):
+            report = doctor(home)
+        self.assertEqual(report["serial_ports"], [])
+        self.assertTrue(report["serial_ports_available"])
+
+    def test_skill_text_is_identical_in_resource_plugins_and_goose_recipe(self):
+        root = Path(__file__).resolve().parents[1]
+        text = (root / "src/generative_driver/resources/client/skills/generative-driver/SKILL.md").read_text(encoding="utf-8")
+        for plugin in ("generative-driver", "goose"):
+            self.assertEqual((root / "plugins" / plugin / "skills/generative-driver/SKILL.md").read_text(encoding="utf-8"), text)
+        recipe = json.loads((root / "plugins/goose/generative-driver.json").read_text(encoding="utf-8"))
+        self.assertEqual(recipe["instructions"], text)
+        self.assertNotIn("authorizes it.  ", text)
 
 
 if __name__ == "__main__":

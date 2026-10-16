@@ -105,25 +105,25 @@ def case_descriptors() -> list[dict]:
 
 
 def _legacy_emulator():
-    from . import cases, legacy
-    return SimpleNamespace(prepare_stage=cases.prepare_stage, check_stage=cases.check_stage,
-                           package_execute=legacy.package_execute, cleanup=legacy.cleanup,
-                           score=legacy.score)
+    """Legacy tq9: stages observed without truth on the emulator the bench harness provides, as the v2 cases'."""
+    from . import cases, emulated, legacy
+    return SimpleNamespace(prepare_stage=cases.prepare_stage, observe_stage=cases.observe_stage,
+                           package_call=emulated.package_call, record_call=emulated.record_call, score=legacy.score)
 
 
 def _legacy_physical():
+    """bme280: stages observed without truth on the operator's bound device, which the configurator reaches itself."""
     from . import physical, legacy
-    return SimpleNamespace(prepare_stage=physical.prepare_stage, check_stage=physical.check_stage,
-                           package_execute=physical.package_execute, cleanup=legacy.cleanup,
-                           score=legacy.score)
+    return SimpleNamespace(prepare_stage=physical.prepare_stage, observe_stage=physical.observe_stage,
+                           package_execute=physical.package_execute, score=legacy.score)
 
 
 def _smoke():
     from . import legacy
     def unsupported(*args, **kwargs):
         raise ValueError('Setup smoke has no agent stages')
-    return SimpleNamespace(prepare_stage=unsupported, check_stage=unsupported,
-                           package_execute=unsupported, cleanup=unsupported, score=legacy.score)
+    return SimpleNamespace(prepare_stage=unsupported, observe_stage=unsupported,
+                           package_execute=unsupported, score=legacy.score)
 
 
 def _emulated():
@@ -346,7 +346,7 @@ def require_calibration(pin: dict, options: dict) -> dict:
                      and {r['id']: r['model_sha256'] for r in record['references']} ==
                          {name: canonical_digest(ref['model']) for name, ref in truth['references'].items()}
                      and validate_calibration(manifest, record)['ok'])
-            from .emulated import family_for
+            from .instruments import family_for
             family=family_for(pin['case_id'])
             runs={r['id']:r for r in record['runs']}
             for reference in record['references']:

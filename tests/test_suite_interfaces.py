@@ -10,7 +10,18 @@ from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from suite_fixtures import legacy_manifest, wait_suite, write_scripted_case_worker
+from suite_fixtures import shutdown_owner, legacy_devices, legacy_manifest, options, wait_suite, write_scripted_case_worker
+
+
+def server_env(root):
+    """The MCP server's environment: the configured home, and the package under test (an MCP client passes no
+    PYTHONPATH of its own, so the server would otherwise import whatever installation the interpreter finds), and the
+    test's bench harness fixture, which the harness the server launches loads to provide legacy devices."""
+    import os
+    import generative_driver
+    fixture = os.environ.get('GD_TEST_HARNESS_FIXTURE')
+    return {'GENERATIVE_DRIVER_HOME': str(root), 'PYTHONPATH': str(Path(generative_driver.__file__).resolve().parents[1]),
+            **({'GD_TEST_HARNESS_FIXTURE': fixture} if fixture else {})}
 
 
 def invoke_cli(root, *args):
@@ -48,7 +59,7 @@ raise SystemExit(main())
                 self.assertFalse((home/'runs.sqlite3').exists())
             finally:
                 if (home/'service.json').exists():
-                    call('shutdown', {}, home)
+                    shutdown_owner(home)
 
     def test_saved_comparison_is_offline_and_incompatibility_sets_exit_status(self):
         from test_suite_reporting import comparison_fixture
@@ -72,17 +83,19 @@ raise SystemExit(main())
         from generative_driver.client import call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite CLI export ') as temporary:
-            root = Path(temporary)
-            absent = root/'absent owner'
+            # The bench home lies beside the configurator home, inside the test directory.
+            root = Path(temporary)/'owner'
+            absent = Path(temporary)/'absent owner'
             missing = invoke_cli(absent, 'report', 'unknown-suite')
             self.assertEqual(missing.returncode, 2, missing.stderr + missing.stdout)
             self.assertIn('--output', missing.stderr)
             self.assertFalse(absent.exists())
             configure('codex', ['missing-scripted-runtime'], home=root)
-            manifest = root/'manifest.json'
+            manifest, secrets = root/'manifest.json', root/'options.json'
             manifest.write_text(json.dumps(legacy_manifest()), encoding='utf-8')
+            secrets.write_text(json.dumps(options(legacy_devices(self, Path(temporary)/'fixture'))), encoding='utf-8')
             try:
-                started = invoke_cli(root, 'start', '--manifest', str(manifest))
+                started = invoke_cli(root, 'start', '--manifest', str(manifest), '--options', str(secrets))
                 self.assertEqual(started.returncode, 0, started.stderr + started.stdout)
                 suite_id = json.loads(started.stdout)['suite_id']
                 wait_suite(call, suite_id, root, lambda state: state['status'] == 'blocked')
@@ -93,10 +106,12 @@ raise SystemExit(main())
                 self.assertTrue((root/'export/report.md').is_file())
                 report = json.loads((root/'export/suite.json').read_text(encoding='utf-8'))
                 self.assertTrue(report['provisional'])
-                self.assertEqual(report['success']['passed'], 0)
+                # Its harness grades every child after its run: the report counts equivalent drivers of the protocol.
+                self.assertEqual((report['schema'], report['protocol']), ('benchmark-suite-report/2', 'assistive/1'))
+                self.assertEqual(report['equivalence']['equivalent'], 0)
                 self.assertEqual(call('ping', {}, root, autostart=False)['pid'], owner_pid)
             finally:
-                call('shutdown', {}, root)
+                shutdown_owner(root)
             no_owner = invoke_cli(root, 'report', suite_id, '--output', str(root/'refused'))
             self.assertEqual(no_owner.returncode, 1, no_owner.stderr + no_owner.stdout)
             self.assertFalse((root/'refused').exists())
@@ -125,13 +140,13 @@ raise SystemExit(main())
                         self.assertFalse((home / 'runs.sqlite3').exists())
                     finally:
                         if (home / 'service.json').exists():
-                            call('shutdown', {}, home)
+                            shutdown_owner(home)
 
     def test_duplicate_reconnect_does_not_repin_current_registry_assets(self):
         from generative_driver.client import call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite CLI duplicate ') as temporary:
-            root = Path(temporary)
+            root = Path(temporary)/'owner'
             configure('codex', ['missing-scripted-runtime'], home=root)
             path = root / 'manifest.json'
             path.write_text(json.dumps(legacy_manifest()), encoding='utf-8')
@@ -154,46 +169,46 @@ raise SystemExit(main())
                 self.assertEqual(json.loads(done.stdout)['suite_id'], suite['suite_id'])
                 self.assertTrue(json.loads(done.stdout)['duplicate'])
             finally:
-                call('shutdown', {}, root)
+                shutdown_owner(root)
 
     def test_separate_cli_processes_reconnect_to_the_same_suite(self):
         from generative_driver.client import call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite CLI ') as temporary:
-            root = Path(temporary)
+            root = Path(temporary)/'owner'
             configure('codex', ['missing-scripted-runtime'], home=root)
-            manifest, options = root/'manifest.json', root/'options.json'
+            manifest, secrets = root/'manifest.json', root/'options.json'
             manifest.write_text(json.dumps(legacy_manifest()), encoding='utf-8')
-            options.write_text(json.dumps({'evaluator_password_files': {'tq9': 'PRIVATE_HANDLE'}}), encoding='utf-8')
+            secrets.write_text(json.dumps(options(legacy_devices(self, Path(temporary)/'PRIVATE_HANDLE'))), encoding='utf-8')
             def invoke(*args):
                 done = invoke_cli(root, *args)
                 self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
                 return json.loads(done.stdout)
             try:
                 first = invoke('start', '--manifest', str(manifest), '--executor', 'codex',
-                    '--options', str(options), '--request-id', 'cli-once')
+                    '--options', str(secrets), '--request-id', 'cli-once')
                 self.assertTrue(first['ok'])
                 wait_suite(call, first['suite_id'], root, lambda state: state['status'] == 'blocked')
-                again = invoke('start', '--manifest', str(manifest), '--options', str(options),
+                again = invoke('start', '--manifest', str(manifest), '--options', str(secrets),
                     '--request-id', 'cli-once')
                 self.assertEqual(first['suite_id'], again['suite_id'])
                 self.assertTrue(again['duplicate'])
                 self.assertEqual(invoke('status', first['suite_id'])['status'], 'blocked')
                 page = invoke('result', first['suite_id'], '--offset', '0', '--limit', '1')
-                self.assertEqual(page['trials'][0]['outcome_category'], 'host')
+                self.assertEqual(page['trials'][0]['outcome_category'], 'operator')
                 self.assertNotIn('PRIVATE_HANDLE', json.dumps(page))
                 self.assertNotIn('evaluator_password', json.dumps(page))
                 events = invoke('events', first['suite_id'], '--after', '0')
                 self.assertGreater(events['cursor'], 0)
                 self.assertEqual(invoke('cancel', first['suite_id'])['status'], 'cancelled')
                 resumed = invoke('resume', first['suite_id'], '--suite-budget-seconds', '240',
-                    '--budget-reason', 'scripted contract continuation')
+                    '--budget-reason', 'scripted contract continuation', '--options', str(secrets))
                 self.assertEqual(resumed['suite_id'], first['suite_id'])
                 wait_suite(call, first['suite_id'], root, lambda state: state['status'] == 'blocked')
                 experiment = invoke('result', first['suite_id'])['experiment']
                 self.assertEqual(experiment['comparison_identity']['budgets']['effective']['suite_budget_seconds'], 240)
             finally:
-                call('shutdown', {}, root)
+                shutdown_owner(root)
 
 
 class SuiteMcpTests(unittest.TestCase):
@@ -204,7 +219,7 @@ class SuiteMcpTests(unittest.TestCase):
         from generative_driver.client import call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite MCP disappearing owner ') as temporary:
-            root = Path(temporary)
+            root = Path(temporary)/'owner'
             configure('codex', ['missing-scripted-runtime'], home=root)
             call('ping', {}, root)
             # Control only the external connection boundary: stop the real owner
@@ -223,7 +238,7 @@ from generative_driver.mcp import main
 main()
 """
             params = StdioServerParameters(command=sys.executable, args=['-c', code],
-                env={'GENERATIVE_DRIVER_HOME': str(root)}, cwd=str(root))
+                env=server_env(root), cwd=str(root))
             try:
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
@@ -235,7 +250,7 @@ main()
                         self.assertIn('service start', refused['reason'])
                 self.assertFalse(call('ping', {}, root, autostart=False)['ok'])
             finally:
-                call('shutdown', {}, root)
+                shutdown_owner(root)
 
     def test_cancel_and_resume_use_the_same_durable_owner_and_child(self):
         asyncio.run(self.cancel_and_resume())
@@ -244,11 +259,12 @@ main()
         from generative_driver.client import call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite MCP control ') as temporary:
-            root = Path(temporary)
+            root = Path(temporary)/'owner'
+            secrets = options(legacy_devices(self, Path(temporary)/'fixture'))
             configure('codex', ['missing-scripted-runtime'], home=root)
             owner_pid = call('ping', {}, root)['pid']
             params = StdioServerParameters(command=sys.executable, args=['-m', 'generative_driver.mcp'],
-                env={'GENERATIVE_DRIVER_HOME': str(root)}, cwd=str(root))
+                env=server_env(root), cwd=str(root))
             async def invoke(session, action, **arguments):
                 reply = await session.call_tool('driver_benchmark_suite_' + action, arguments)
                 self.assertFalse(reply.is_error, reply)
@@ -259,14 +275,15 @@ main()
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
                         await session.initialize()
-                        suite = await invoke(session, 'start', manifest=legacy_manifest(2))
+                        suite = await invoke(session, 'start', manifest=legacy_manifest(2), options=secrets)
                         stopped = await asyncio.to_thread(wait_suite, call, suite['suite_id'], root,
                             lambda state: state['status'] == 'blocked' and not state['stopping'])
                         child_id = stopped['active_child_id']
+                        self.assertIsNotNone(child_id)
                         cancelled = await invoke(session, 'cancel', suite_id=suite['suite_id'])
                         self.assertEqual(cancelled['status'], 'cancelled')
                         await invoke(session, 'resume', suite_id=suite['suite_id'], suite_budget_seconds=240,
-                            budget_reason='explicit scripted test extension')
+                            budget_reason='explicit scripted test extension', options=secrets)
                         stopped = await asyncio.to_thread(wait_suite, call, suite['suite_id'], root,
                             lambda state: state['status'] == 'blocked' and not state['stopping'])
                         self.assertEqual(stopped['active_child_id'], child_id)
@@ -275,7 +292,7 @@ main()
                         self.assertEqual(page['experiment']['comparison_identity']['budgets']['effective']['suite_budget_seconds'], 240)
                 self.assertEqual(call('ping', {}, root, autostart=False)['pid'], owner_pid)
             finally:
-                call('shutdown', {}, root)
+                shutdown_owner(root)
 
     def test_home_selection_resolves_and_pagination_rejects_invalid_numbers(self):
         asyncio.run(self.home_and_pagination())
@@ -284,11 +301,11 @@ main()
         from generative_driver.client import call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite MCP public parameters ') as temporary:
-            root, other = Path(temporary), Path(temporary)/'other owner'
+            root, other = Path(temporary)/'owner', Path(temporary)/'other owner'
             configure('codex', ['missing-scripted-runtime'], home=root)
             call('ping', {}, root)
             params = StdioServerParameters(command=sys.executable, args=['-m', 'generative_driver.mcp'],
-                env={'GENERATIVE_DRIVER_HOME': str(root)}, cwd=str(root))
+                env=server_env(root), cwd=str(root))
             expected_error_log = tempfile.TemporaryFile(mode='w+t')
             try:
                 async with stdio_client(params, errlog=expected_error_log) as (reader, writer):
@@ -324,7 +341,7 @@ main()
                 self.assertFalse(other.exists())
             finally:
                 expected_error_log.close()
-                call('shutdown', {}, root)
+                shutdown_owner(root)
 
     def test_suite_reconnects_with_running_child_and_paginates_every_slot(self):
         asyncio.run(self.reconnect_running_child())
@@ -333,7 +350,9 @@ main()
         from generative_driver.client import call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite MCP reconnect ') as temporary:
-            root = Path(temporary)
+            root = Path(temporary)/'owner'
+            root.mkdir()
+            secrets = options(legacy_devices(self, Path(temporary)/'fixture'))
             command = write_scripted_case_worker(root)
             script = Path(command[1])
             source = script.read_text(encoding='utf-8')
@@ -345,8 +364,11 @@ main()
             script.write_text(source, encoding='utf-8')
             configure('codex', command, home=root)
             owner_pid = call('ping', {}, root)['pid']
-            params = StdioServerParameters(command=sys.executable, args=['-m', 'generative_driver.mcp'],
-                env={'GENERATIVE_DRIVER_HOME': str(root)}, cwd=str(root))
+            # Exercise the owner-launched Windows path on every host, as well as
+            # under the SDK's real kill-on-close Job Object on Windows CI.
+            params = StdioServerParameters(command=sys.executable,
+                args=['-c', "import platform; platform.system=lambda:'Windows'; from generative_driver.mcp import main; main()"],
+                env=server_env(root), cwd=str(root))
             async def invoke(session, action, **arguments):
                 reply = await session.call_tool('driver_benchmark_suite_' + action, arguments)
                 self.assertFalse(reply.is_error, reply)
@@ -357,7 +379,7 @@ main()
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
                         await session.initialize()
-                        suite = await invoke(session, 'start', manifest=legacy_manifest(2), request_id='mcp-once')
+                        suite = await invoke(session, 'start', manifest=legacy_manifest(2), request_id='mcp-once', options=secrets)
                         deadline = time.monotonic() + 10
                         while not (root/'started').exists() and time.monotonic() < deadline:
                             await asyncio.sleep(.02)
@@ -368,12 +390,14 @@ main()
                         await session.initialize()
                         status = await invoke(session, 'status', suite_id=suite['suite_id'])
                         self.assertEqual(status['status'], 'running')
-                        again = await invoke(session, 'start', manifest=legacy_manifest(2), request_id='mcp-once')
+                        again = await invoke(session, 'start', manifest=legacy_manifest(2), request_id='mcp-once', options=secrets)
                         self.assertTrue(again['duplicate'])
                         self.assertEqual(again['suite_id'], suite['suite_id'])
                         (root/'release').write_text('continue', encoding='utf-8')
+                        # The bench harness detaches after the suite completes; until it has let go (not stopping),
+                        # its suite.harness_detached event can still follow the page read below.
                         await asyncio.to_thread(wait_suite, call, suite['suite_id'], root,
-                            lambda state: state['status'] == 'completed')
+                            lambda state: state['status'] == 'completed' and not state['stopping'])
                         events = await invoke(session, 'events', suite_id=suite['suite_id'])
                         self.assertNotIn('suite.recovered', [event['kind'] for event in events['events']])
                         self.assertIn('trial.finished', [event['kind'] for event in events['events']])
@@ -392,7 +416,7 @@ main()
                 self.assertEqual(call('ping', {}, root, autostart=False)['pid'], owner_pid)
             finally:
                 (root/'release').write_text('cleanup', encoding='utf-8')
-                call('shutdown', {}, root)
+                shutdown_owner(root)
 
     def test_windows_suite_does_not_create_an_owner(self):
         asyncio.run(self.absent_owner())
@@ -400,10 +424,11 @@ main()
     async def absent_owner(self):
         from generative_driver.client import call
         with tempfile.TemporaryDirectory(prefix='suite MCP Windows policy ') as temporary:
-            root = Path(temporary)
+            root = Path(temporary)/'owner'
+            root.mkdir()
             params = StdioServerParameters(command=sys.executable,
                 args=['-c', "import platform; platform.system=lambda:'Windows'; from generative_driver.mcp import main; main()"],
-                env={'GENERATIVE_DRIVER_HOME': str(root)}, cwd=str(root))
+                env=server_env(root), cwd=str(root))
             try:
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
@@ -418,4 +443,4 @@ main()
                 self.assertFalse((root/'runs.sqlite3').exists())
             finally:
                 if (root/'service.json').exists():
-                    call('shutdown', {}, root)
+                    shutdown_owner(root)

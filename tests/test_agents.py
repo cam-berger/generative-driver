@@ -8,6 +8,19 @@ import time
 
 
 class AgentAdapterTests(unittest.TestCase):
+    def test_a_runtime_without_a_configured_command_is_never_looked_up_on_path(self):
+        # Whatever has the runtime's name on PATH may be another program: with no configured command the stage stops
+        # for the operator and nothing is launched.
+        from unittest.mock import patch
+        from generative_driver.agents import StageRequest, execute
+        with tempfile.TemporaryDirectory(prefix='unconfigured runtime ') as directory, \
+                patch('subprocess.Popen', side_effect=AssertionError('a runtime was launched')):
+            for runtime in ('codex', 'goose'):
+                blocked = execute(StageRequest(stage='acquire', workspace=Path(directory)/runtime, prompt='fixture'),
+                                  {'runtime': runtime})
+                self.assertEqual((blocked['status'], blocked['cause']), ('blocked', 'runtime_unavailable'), blocked)
+                self.assertIn('configure', blocked['reason'])
+
     def test_launcher_failure_is_a_blocker_while_runtime_exit_remains_a_failure(self):
         from generative_driver.agents import StageRequest, execute
         with tempfile.TemporaryDirectory(prefix='runtime launch contract ') as directory:
@@ -21,15 +34,21 @@ sys.exit(1)
 ''', encoding='utf-8')
             blocked = execute(StageRequest(stage='acquire', workspace=root/'blocked', prompt='fixture'),
                               {'runtime':'codex', 'command':[sys.executable,str(launcher)]})
-            self.assertEqual(blocked['status'], 'blocked', blocked)
+            self.assertEqual((blocked['status'], blocked['cause']), ('blocked', 'runtime_unavailable'), blocked)
             self.assertIn('Cannot start configured runtime', blocked['reason'])
             self.assertIn('unavailable', blocked['reason'])
             self.assertIsNone(blocked['usage'])
             self.assertIsNone(blocked['report'])
             failed = execute(StageRequest(stage='acquire', workspace=root/'failed', prompt='fixture'),
                              {'runtime':'codex', 'command':[sys.executable,'-c','raise SystemExit(7)']})
-            self.assertEqual(failed['status'], 'failed', failed)
+            self.assertEqual((failed['status'], failed['cause']), ('failed', 'exit_error'), failed)
             self.assertEqual(failed['exit_code'], 7)
+            missing = execute(StageRequest(stage='acquire', workspace=root/'missing', prompt='fixture'),
+                              {'runtime':'codex', 'command':['missing-contract-runtime']})
+            self.assertEqual((missing['status'], missing['cause']), ('blocked', 'runtime_unavailable'))
+            silent = execute(StageRequest(stage='acquire', workspace=root/'silent', prompt='fixture'),
+                             {'runtime':'codex', 'command':[sys.executable,'-c','import sys; sys.stdin.read()']})
+            self.assertEqual((silent['status'], silent['cause']), ('failed', 'no_report'))
             self.assertIn('Configured runtime exited', failed['reason'])
 
     def test_codex_scoped_approval_is_explicit_and_only_for_assigned_tools(self):
@@ -102,8 +121,10 @@ print(json.dumps({'type':'complete','total_tokens':150,'input_tokens':100,'outpu
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             fake = root / 'goose_contract.py'
+            # Goose 1.53 --no-profile also drops recipe extensions, leaving the
+            # worker without its developer tools and stage gateway.
             fake.write_text('''import json,sys,pathlib
-assert '--no-profile' in sys.argv
+assert '--no-profile' not in sys.argv
 assert '--no-session' in sys.argv
 r=json.loads(pathlib.Path(sys.argv[sys.argv.index('--recipe')+1]).read_text())
 assert [e['name'] for e in r['extensions']]==['developer']
@@ -131,7 +152,7 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
 ''')
             result = execute(StageRequest(stage='emit',workspace=root/'work',prompt='contract test'),
                              {'runtime':'codex','command':[sys.executable,str(fake)]})
-            self.assertEqual(result['status'],'failed')
+            self.assertEqual((result['status'],result['cause']),('failed','invalid_report'))
             self.assertIn('schema',result['reason'])
 
     def test_codex_adapter_returns_structured_report_and_reported_usage(self):

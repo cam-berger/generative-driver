@@ -214,7 +214,7 @@ class ReferenceExecutionTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from benchmark_family_fixtures import toy_sample_model,toy_sensor_phase,sample_reply
-        from generative_driver.benchmark_support.emulated import reference_execute
+        from generative_driver.benchmark_support.evaluator import reference_execute
         from generative_driver.configurator import digest
         class Device(socketserver.StreamRequestHandler):
             def handle(self):
@@ -267,6 +267,26 @@ class ReferenceExecutionTests(unittest.TestCase):
                 self.assertNotIn(b'\r\n',(Path(temp)/'modeled/model/model.json').read_bytes())
                 self.assertIsNone(modeled['package_sha256'])
                 self.assertEqual(modeled['contract']['artifact_sha256'],modeled['model_sha256'])
+                # A frozen package whose model bytes a Windows host wrote with CRLF line endings is graded by its own
+                # bytes: its integrity holds against its own manifest, never against reference-normalised model bytes.
+                from generative_driver.toolkit import call_tool
+                from generative_driver.benchmark_support.calibration import reference_model_bytes
+                crlf=Path(temp)/'crlf';(crlf/'model').mkdir(parents=True)
+                (crlf/'model/model.json').write_bytes(reference_model_bytes(toy_sample_model()).replace(b'\n',b'\r\n'))
+                probed=call_tool('probe_run',{'run_dir':str(crlf/'tools'),'model_dir':str(crlf/'model'),
+                    'operation':toy_sample_model()['identity']['operation'],'parameters':{},'binding':Session.binding,'n':1})
+                self.assertTrue(probed.get('ok'),probed)
+                emitted=call_tool('emit_package',{'run_dir':str(crlf/'tools'),'model_dir':str(crlf/'model'),'probe':probed['probe']})
+                self.assertTrue(emitted.get('ok'),emitted)
+                windows=Path(emitted['package_dir'])
+                self.assertIn(b'\r\n',(windows/'driver/model.json').read_bytes())
+                with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()) as native:
+                    graded=reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
+                        output_dir=crlf/'final',package=windows,expected_package_sha256=digest(windows),private_dir=crlf/'native')
+                self.assertEqual(graded['grade']['verdict'],'passed')
+                # The grading session keeps its own files where the caller's cleanup reaches them.
+                self.assertEqual(native.call_args.kwargs['private_dir'],crlf/'native')
+                self.assertEqual((graded['package_sha256'],graded['artifact_execution']),(digest(windows),'emitted-package'))
                 package=Path(result['package_dir']);frozen=result['package_sha256']
                 self.assertEqual(digest(package),frozen)
                 self.assertEqual(result['contract']['artifact_sha256'],frozen)
@@ -353,11 +373,11 @@ class FamilyAdmissionBoundaryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'Calibration'):require_calibration(pin,{})
 
 class ReuseBoundaryTests(unittest.TestCase):
-    def test_sample_reuse_requires_two_new_measured_acquisitions(self):
+    def test_sample_reuse_mission_note_requires_two_new_measured_acquisitions(self):
         import tempfile,json
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated import check_stage
+        from generative_driver.benchmark_support.emulated import observe_stage
         from generative_driver.benchmark_support.cases import _write
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);caps=root/'caps.json'
@@ -369,10 +389,12 @@ class ReuseBoundaryTests(unittest.TestCase):
                 return [{'actor':'worker','stage':'reuse','attempt_id':'new','revision':0,'operation':'sample',
                     'result':{'ok':True,'outputs':{'t':-5,'n':n}},'observation':{
                         'reference_temperature':-5,'monitor_sequence':n}} for n in sequence]
-            with patch('generative_driver.benchmark_support.emulated._final',return_value={'ok':True}):
+            with patch('generative_driver.benchmark_support.evaluator.grade',side_effect=AssertionError('final in the stage loop')):
                 for sequence,passed in (([3],False),([3,3],False),([3,4],True)):
                     (root/'benchmark/package-events.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events(sequence)))
-                    self.assertEqual(check_stage('sampled-sensor-v1','reuse',root,root,{'status':'completed'})['ok'],passed)
+                    checked=observe_stage('sampled-sensor-v1','reuse',root,root,{'status':'completed'})
+                    self.assertNotIn('stop',checked);self.assertNotIn('ok',checked)
+                    self.assertIs(next(c for c in checked['checks'] if c['name']=='fresh_worker_mission')['passed'],passed)
 
 class StoreReuseTests(unittest.TestCase):
     def test_commit_read_and_abort_require_observed_state_and_bank_isolation(self):
@@ -423,7 +445,7 @@ class InterpretationHelperTests(unittest.TestCase):
     def test_family_preparation_supplies_and_seals_reachable_generic_prescript(self):
         import json,subprocess,sys,tempfile
         from pathlib import Path
-        from generative_driver.benchmark import prepare_stage,check_stage
+        from generative_driver.benchmark import prepare_stage,observe_stage
         from generative_driver.toolkit import resources_root
         packaged=resources_root()/'toolchain/skills/interpret-firmware-binary/SeedCortexM.java'
         for case in ('sampled-sensor-v1','parameter-store-v1'):
@@ -443,60 +465,59 @@ class InterpretationHelperTests(unittest.TestCase):
                 self.assertEqual(helper.returncode,0)
                 self.assertIn('--prescript',helper.stdout)
                 seed.write_bytes(seed.read_bytes()+b'\n// modified')
-                checked=check_stage(case,'interpret',root/'run',workspace,{})
-                self.assertFalse(next(c for c in checked['checks'] if c['name']=='sealed_inputs')['passed'])
+                checked=observe_stage(case,'interpret',root/'run',workspace,{})
+                self.assertEqual(checked['stop']['category'],'integrity')
 
 class StageDispatchTests(unittest.TestCase):
-    def test_diagnostic_stage_uses_family_contract_and_monitor_units(self):
+    def test_diagnostic_phase_uses_family_contract_and_monitor_units(self):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from benchmark_family_fixtures import toy_sensor_phase
-        from generative_driver.benchmark_support.emulated_evidence import _diagnose
-        from generative_driver.benchmark_support.cases import _write
+        from benchmark_family_fixtures import toy_sensor_phase,toy_sample_model
+        from generative_driver.benchmark_support.evaluator import reference_execute
         pin,truth=toy_sensor_phase();pin.update(case_id='sampled-sensor-v1',revision=0)
         phase=truth['phases']['diagnostic'];phase['actions']=[{'kind':'reset','values':{}},
             {'kind':'call','task':'measure','inputs':{},'grants':['write']},
             {'kind':'observe','checks':[c['id'] for c in phase['contract']['checks']]}]
-        truth['contracts']={'time_policy':{'sample_settle_seconds':0}}
+        truth['contracts']={'time_policy':{'sample_settle_seconds':0}};truth['recipe']={}
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp);password=root/'password';password.write_text('unrelated-toy-test')
-            _write(root/'model/model.json',{'toy':True})
+            root=Path(temp)
             class Session:
-                info={'private_dir':str(root/'private')};binding={}
+                process=None;info={'fixture':True};binding={}
                 def reset(self,values):return {}
                 def set_running(self,value):pass
                 def observe(self):return {'values':{'latched_q4':65456,'acquisition_counter':3}}
+                def stop(self):pass
             def invoke(*args):return {'ok':True,'outputs':{'temperature':-5,'sequence':3},'units':{'temperature':'degC','sequence':'count'}}
-            with patch('generative_driver.benchmark_support.emulated._session',return_value=Session()),patch(
-                'generative_driver.benchmark_support.emulated._truth',return_value=truth),patch(
-                'generative_driver.benchmark_support.emulated_evidence.read_snapshot',return_value={'case_pin':pin}),patch(
+            # The evaluator's own fresh emulator and truth: neither comes from the stage adapter.
+            with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()),patch(
                 'generative_driver.benchmark_support.emulated_actions.model_invoker',return_value=invoke):
-                grade,records,_,_=_diagnose('sampled-sensor-v1',root,root/'model',{}, {'evaluator_password_file':str(password)})
-            self.assertEqual(grade['verdict'],'passed')
-            self.assertEqual({r['unit'] for r in records},{'degC','count','boolean'})
+                result=reference_execute(pin,truth,toy_sample_model(),{},renode=Path('/toy'),image=Path('/toy'),
+                                         output_dir=root/'diagnostic',phase='diagnostic',package_final=False)
+            self.assertEqual(result['grade']['verdict'],'passed')
+            self.assertEqual({r['unit'] for r in result['records']},{'degC','count','boolean'})
 
     def test_changed_frozen_final_package_is_refused_before_session_access(self):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated_evidence import _final,_private
-        from generative_driver.benchmark_support.cases import _write
+        from benchmark_family_fixtures import toy_sample_model
+        from generative_driver.benchmark_support.evaluator import reference_execute
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp);password=root/'password';password.write_text('toy-secret')
-            opts={'evaluator_password_file':str(password)}
+            root=Path(temp)
             package=root/'package';package.mkdir();(package/'model').write_text('changed')
-            _write(root/'benchmark/state.json',{'package_sha256':'a'*64})
-            _private(root,opts,{'evaluations':[]})
-            with patch('generative_driver.benchmark_support.emulated._session',side_effect=AssertionError('Native access')):
-                with self.assertRaisesRegex(ValueError,'Frozen package'):_final('sampled-sensor-v1',root,package,{},opts)
+            with patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=AssertionError('Native access')):
+                with self.assertRaisesRegex(ValueError,'Frozen package'):
+                    reference_execute({'case_id':'sampled-sensor-v1','scenario_id':'original','revision':0},{'recipe':{}},
+                                      toy_sample_model(),{},renode=Path('/toy'),image=Path('/toy'),output_dir=root/'final',
+                                      package=package,expected_package_sha256='a'*64)
 
 class TruthBoundaryTests(unittest.TestCase):
     def test_authenticated_but_nonexecutable_family_inventory_is_refused(self):
         import tempfile
         from pathlib import Path
         from generative_driver.benchmark_support.truth import seal
-        from generative_driver.benchmark_support.emulated import _truth
+        from generative_driver.benchmark_support.evaluator import case_truth
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);password=root/'password';password.write_text('toy')
@@ -505,30 +526,43 @@ class TruthBoundaryTests(unittest.TestCase):
             with patch('generative_driver.benchmark_support.emulated._inputs',return_value=(root,manifest)),patch(
                     'generative_driver.benchmark.case_root',return_value=root):
                 with self.assertRaises((ValueError,KeyError)):
-                    _truth('sampled-sensor-v1',root,{'evaluator_password_file':str(password)})
+                    case_truth('sampled-sensor-v1',root,{'evaluator_password_file':str(password)})
 
 class PublicObservationTests(unittest.TestCase):
     def test_public_package_feedback_uses_selected_family_monitor(self):
         import tempfile,json
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated import package_execute
+        from generative_driver.benchmark_support.emulated import package_call
+        from generative_driver.benchmark_support.device_provider import DeviceProvider
         from generative_driver.benchmark_support.cases import _write
-        from generative_driver.configurator import digest
+        from generative_driver.configurator import Controller, digest
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp).resolve();package=root/'package';package.mkdir();(package/'toy').write_text('toy')
-            _write(root/'benchmark/state.json',{'package_copies':{'reuse':str(package)},'package_sha256':digest(package),
+            run_dir=root/'home/runs/run-fixture'
+            _write(run_dir/'benchmark/state.json',{'package_copies':{'reuse':str(package)},'package_sha256':digest(package),
                 'package_attempts':{'reuse':'toy'}})
+            values={'latched_q4':65456,'acquisition_counter':3}
             class Session:
-                binding={'host':'toy'}
+                recipe={'observations':{name:{'command':name,'width':32,'count':1} for name in values}}
+                info={'binding':{'host':'toy'}};binding=info['binding'];process=None
                 def set_running(self,value):pass
-                def observe(self):return {'values':{'latched_q4':65456,'acquisition_counter':3}}
-            with patch('generative_driver.benchmark_support.emulated._session',return_value=Session()),patch(
-                'generative_driver.benchmark_support.emulated_actions.package_invoker',return_value=lambda *args:{'ok':True,'outputs':{}}):
-                result=package_execute('sampled-sensor-v1',root,'reuse',package,'toy',binding={'host':'toy'})
+                def observe(self):return {'values':dict(values),'reads':[{'name':k,'value':v,'response':str(v)} for k,v in values.items()]}
+                def stop(self):pass
+            (root/'firmware.bin').write_bytes(b'toy')
+            device=DeviceProvider('sampled-sensor-v1',root/'firmware.bin',Session.recipe,None,root/'device',start=lambda **kwargs:Session())
+            device.start()
+            # The configurator's live package call on the provided device: the stage-assigned copy, inside the window,
+            # between instrument readings of the selected family.
+            controller=Controller(root/'home');self.addCleanup(controller.close)
+            arguments={'package_dir':str(package),'operation':'toy','parameters':{},'binding':{'host':'toy'},'allow_effects':[]}
+            with patch('generative_driver.benchmark_support.emulated_actions.package_invoker',return_value=lambda *args:{'ok':True,'outputs':{}}):
+                invoke=package_call('sampled-sensor-v1',run_dir,'reuse',arguments)
+                result=controller._device_call({'id':'run-fixture','spec':json.dumps({'_case_pin':{'case_id':'sampled-sensor-v1'}})},
+                                               {'id':'reuse-attempt','stage':'reuse'},'benchmark_package_execute',arguments,device,invoke)
             self.assertEqual(result['observation']['reference_temperature'],-5)
             self.assertEqual(result['observation']['monitor_sequence'],3)
-            row=json.loads((root/'benchmark/package-events.jsonl').read_text())
+            row=json.loads((run_dir/'benchmark/package-events.jsonl').read_text())
             self.assertEqual(row['before_observation']['monitor_sequence'],3)
 
 class WrapperTests(unittest.TestCase):
@@ -540,6 +574,36 @@ class WrapperTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 calibrate('sampled-sensor-v1',authoring_root=Path('/absent-authoring'),renode=Path('relative'),
                     ghidra_home=Path('/absent-ghidra'),java_home=Path('/absent-java'),output_dir=Path('/absent-output'))
+
+    def test_the_truth_calibrate_command_routes_a_family_to_its_authoring_calibration(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.evaluator_cli import manage
+        with self.assertRaisesRegex(ValueError, '--authoring-dir'):
+            manage('calibrate', 'parameter-store-v1', None, '/absent-output')
+        record = {'ok': True, 'case': 'sampled-sensor-v1', 'execution': 'reference-calibration', 'backend': 'native-renode',
+                  'status': 'passed', 'references': [1], 'mutants': [1, 2], 'private': 'evaluator-only evidence'}
+        with patch('generative_driver.benchmark_support.calibration.calibrate', return_value=record) as family:
+            summary = manage('calibrate', 'sampled-sensor-v1', None, '/private/out', compiler='/opt/arm/bin/arm-none-eabi-gcc',
+                             authoring_dir='/private/sampled-sensor-v1-authoring', renode='/opt/renode',
+                             ghidra_home='/opt/ghidra', java_home='/opt/java')
+        family.assert_called_once_with('sampled-sensor-v1', authoring_root=Path('/private/sampled-sensor-v1-authoring'),
+            renode=Path('/opt/renode'), ghidra_home=Path('/opt/ghidra'), java_home=Path('/opt/java'),
+            output_dir=Path('/private/out'), compiler=Path('/opt/arm/bin/arm-none-eabi-gcc'))
+        self.assertTrue(summary['ok'])
+        self.assertNotIn('private', summary)
+        with self.assertRaisesRegex(ValueError, 'password'):
+            manage('calibrate', 'sampled-sensor-v1', '/elsewhere/other.password', '/private/out',
+                   authoring_dir='/private/sampled-sensor-v1-authoring')
+        # The command exits 1 when the calibration did not pass, as the family's own CLI does.
+        import io, contextlib
+        from generative_driver.benchmark import main
+        with patch('generative_driver.benchmark_support.calibration.calibrate', return_value={**record, 'ok': False}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            code = main(['truth', 'calibrate', '--case', 'sampled-sensor-v1', '--output', '/private/out',
+                         '--authoring-dir', '/private/sampled-sensor-v1-authoring', '--renode', '/opt/renode',
+                         '--ghidra-home', '/opt/ghidra', '--java-home', '/opt/java'])
+        self.assertEqual(code, 1)
 
 class SeedEpisodeTests(unittest.TestCase):
     def test_seed_rotates_only_whole_reset_delimited_episodes(self):

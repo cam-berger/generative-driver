@@ -11,8 +11,40 @@ from pathlib import Path
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from package_env import package_env
+
 
 class McpTests(unittest.TestCase):
+    def test_analysis_configuration_is_part_of_the_durable_mcp_start(self):
+        asyncio.run(self.start_with_analysis_tools())
+
+    async def start_with_analysis_tools(self):
+        from generative_driver.client import call
+        from generative_driver.setup import configure
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            configure('codex', ['no-such-agent-runtime'], home=root)
+            call('ping', {}, home=root)
+            params = StdioServerParameters(command=sys.executable, args=['-m', 'generative_driver.mcp'],
+                cwd=root, env=package_env(GENERATIVE_DRIVER_HOME=str(root)))
+            try:
+                async with stdio_client(params) as (reader, writer):
+                    async with ClientSession(reader, writer) as session:
+                        await session.initialize()
+                        catalog = {t.name: t for t in (await session.list_tools()).tools}
+                        self.assertTrue({'ghidra_home', 'java_home'} <= catalog['driver_start'].input_schema['properties'].keys())
+                        spec = {'goal': 'Interpret supplied firmware', 'request_id': 'analysis-tools',
+                                'ghidra_home': str(root / 'ghidra'), 'java_home': str(root / 'jdk')}
+                        reply = await session.call_tool('driver_start', spec)
+                        self.assertFalse(reply.is_error, reply)
+                        self.assertTrue(json.loads(reply.content[0].text)['ok'])
+                        reply = await session.call_tool('driver_start', spec)
+                        self.assertTrue(json.loads(reply.content[0].text)['duplicate'])
+                        reply = await session.call_tool('driver_start', {**spec, 'java_home': str(root / 'another-jdk')})
+                        self.assertIn('different inputs', reply.content[0].text)
+            finally:
+                call('shutdown', {}, home=root)
+
     def test_registered_emulator_fixture_obeys_home_and_windows_owner_boundaries(self):
         asyncio.run(self.refuse_fixture_owner_mismatch())
 
@@ -45,7 +77,7 @@ class McpTests(unittest.TestCase):
                        f"b.case_root=lambda:Path({str(resources)!r}); "
                        "from generative_driver.mcp import main; main()")
             params = StdioServerParameters(command=sys.executable, args=['-c', program],
-                                           cwd=root, env={'GENERATIVE_DRIVER_HOME': str(owner)})
+                                           cwd=root, env=package_env(GENERATIVE_DRIVER_HOME=str(owner)))
             async with stdio_client(params) as (reader, writer):
                 async with ClientSession(reader, writer) as session:
                     await session.initialize()
@@ -64,7 +96,7 @@ class McpTests(unittest.TestCase):
     async def refuse_unknown_benchmark_profile(self):
         with tempfile.TemporaryDirectory(prefix='MCP unknown benchmark ') as temp:
             params = StdioServerParameters(command=sys.executable, args=['-m', 'generative_driver.mcp'],
-                                           cwd=temp, env={'GENERATIVE_DRIVER_HOME':temp})
+                                           cwd=temp, env=package_env(GENERATIVE_DRIVER_HOME=temp))
             async with stdio_client(params) as (reader, writer):
                 async with ClientSession(reader, writer) as session:
                     await session.initialize()
@@ -88,7 +120,7 @@ class McpTests(unittest.TestCase):
                 configure('codex', ['no-such-agent-runtime'], home=home)
                 call('ping', {}, home=home)
             params = StdioServerParameters(command=sys.executable, args=['-m','generative_driver.mcp'],
-                                           cwd=root, env={'GENERATIVE_DRIVER_HOME':str(owner)})
+                                           cwd=root, env=package_env(GENERATIVE_DRIVER_HOME=str(owner)))
             try:
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
@@ -109,16 +141,17 @@ class McpTests(unittest.TestCase):
                         self.assertFalse(refused.get('ok'), refused)
                         self.assertIn('binding', refused.get('reason', ''))
                         self.assertFalse(list((owner/'runs').glob('*')))
+                        # The connected home, however it is spelled, passes the home check and reaches the
+                        # harness, which authenticates the evaluator password before any run exists.
                         for same_home in (str(owner), 'owner/.'):
                             reply = await session.call_tool('driver_benchmark_run', {
                                 'profile':'bme280', 'options':{'home':same_home}})
                             self.assertFalse(reply.is_error, reply)
-                            started = json.loads(reply.content[0].text)
-                            self.assertTrue(started.get('ok'), started)
-                            reply = await session.call_tool('driver_status', {'run_id':started['run_id']})
-                            visible = json.loads(reply.content[0].text)
-                            self.assertTrue(visible.get('ok'), visible)
-                            self.assertEqual(visible['run_id'], started['run_id'])
+                            refused = json.loads(reply.content[0].text)
+                            self.assertFalse(refused.get('ok'), refused)
+                            self.assertNotIn('configured MCP home', refused.get('reason', ''))
+                            self.assertIn('password file is required', refused.get('reason', ''))
+                            self.assertFalse(list((owner/'runs').glob('*')))
             finally:
                 for home in (owner, other):
                     call('shutdown', {}, home=home)
@@ -134,7 +167,7 @@ class McpTests(unittest.TestCase):
             expected_error_log = tempfile.TemporaryFile(mode='w+t')
             params = StdioServerParameters(command=sys.executable,
                 args=['-m', 'generative_driver.worker_tools', '--home', temp,
-                      '--run', 'absent-run', '--assignment', 'absent-assignment'], cwd=temp)
+                      '--run', 'absent-run', '--assignment', 'absent-assignment'], cwd=temp, env=package_env())
             try:
                 async with stdio_client(params, errlog=expected_error_log) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
@@ -170,7 +203,7 @@ class McpTests(unittest.TestCase):
             # and client IPC on every host without skipping this Windows rule.
             program = "import platform; platform.system=lambda:'Windows'; from generative_driver.mcp import main; main()"
             params = StdioServerParameters(command=sys.executable, args=['-c', program],
-                                           cwd=temp, env={'GENERATIVE_DRIVER_HOME':temp})
+                                           cwd=temp, env=package_env(GENERATIVE_DRIVER_HOME=temp))
             try:
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
@@ -195,7 +228,7 @@ class McpTests(unittest.TestCase):
             configure('codex', ['no-such-agent-runtime'], home=temp)
             program = "import platform; platform.system=lambda:'Windows'; from generative_driver.mcp import main; main()"
             params = StdioServerParameters(command=sys.executable, args=['-c', program],
-                                           cwd=temp, env={'GENERATIVE_DRIVER_HOME':temp})
+                                           cwd=temp, env=package_env(GENERATIVE_DRIVER_HOME=temp))
             try:
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
@@ -233,7 +266,7 @@ class McpTests(unittest.TestCase):
             run=call('start',{'goal':'MCP budget contract','budget_seconds':60,
                 'executor_config':{'command':['no-such-agent-runtime']}},temp)
             params=StdioServerParameters(command=sys.executable,args=['-m','generative_driver.mcp'],cwd=temp,
-                env={'GENERATIVE_DRIVER_HOME':temp})
+                env=package_env(GENERATIVE_DRIVER_HOME=temp))
             try:
                 async with stdio_client(params) as (reader,writer):
                     async with ClientSession(reader,writer) as session:
@@ -286,7 +319,7 @@ class McpTests(unittest.TestCase):
                 "command": ["no-such-agent-runtime"]}}, temp)
             call("cancel", run, temp)
             params = StdioServerParameters(command=sys.executable, args=["-m", "generative_driver.mcp"],
-                                            cwd=temp, env={"GENERATIVE_DRIVER_HOME": temp})
+                                            cwd=temp, env=package_env(GENERATIVE_DRIVER_HOME=temp))
             try:
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
@@ -338,7 +371,8 @@ class McpTests(unittest.TestCase):
                 self.assertEqual((state.get("status"), state.get("stage")), ("running", "acquire"), state)
                 params = StdioServerParameters(command=sys.executable,
                     args=["-m", "generative_driver.worker_tools", "--home", temp,
-                          "--run", started["run_id"], "--assignment", assignment["id"]], cwd=temp)
+                          "--run", started["run_id"], "--assignment", assignment["id"]], cwd=temp,
+                    env=package_env())
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
                         await session.initialize()
@@ -364,7 +398,7 @@ class McpTests(unittest.TestCase):
     async def run_smoke(self):
         with tempfile.TemporaryDirectory(prefix="MCP benchmark ") as temp:
             params = StdioServerParameters(command=sys.executable,
-                                           args=["-m", "generative_driver.mcp"], cwd=temp)
+                                           args=["-m", "generative_driver.mcp"], cwd=temp, env=package_env())
             async with stdio_client(params) as (reader, writer):
                 async with ClientSession(reader, writer) as session:
                     await session.initialize()
@@ -385,7 +419,7 @@ class McpTests(unittest.TestCase):
             configure("codex", ["no-such-agent-runtime"], home=temp)
             owner = call('ping', {}, home=temp)
             params = StdioServerParameters(command=sys.executable,
-                args=["-m", "generative_driver.mcp"], env={"GENERATIVE_DRIVER_HOME": temp}, cwd=temp)
+                args=["-m", "generative_driver.mcp"], env=package_env(GENERATIVE_DRIVER_HOME=temp), cwd=temp)
             try:
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
@@ -422,7 +456,7 @@ class McpTests(unittest.TestCase):
     async def check_installation(self):
         with tempfile.TemporaryDirectory(prefix="MCP user space ") as temp:
             params = StdioServerParameters(command=sys.executable,
-                                           args=["-m", "generative_driver.mcp"], cwd=temp)
+                                           args=["-m", "generative_driver.mcp"], cwd=temp, env=package_env())
             async with stdio_client(params) as (reader, writer):
                 async with ClientSession(reader, writer) as session:
                     await session.initialize()

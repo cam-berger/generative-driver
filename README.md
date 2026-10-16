@@ -1,79 +1,56 @@
 # Generative Driver
 
-Attach a supported device, state an objective, and generate a portable driver with evidence of what it can do.
+Turn a supported device’s firmware or documentation into a portable driver, with evidence that it works. Use Codex, Goose or the command line.
 
-Generative Driver distills a research toolchain into an installable Python package. A local configurator owns six stages: **acquire → interpret → probe → ground → emit → reuse**. The final stage gives a new agent the emitted driver and an objective, then checks that it can use the desired device functions. Codex, Goose and the command line connect to the same background process. Closing the interface leaves the run and its evidence available for reconnection.
+The workflow reads the input, infers commands, tests the device, checks independent observations, builds a package, and asks a fresh agent to use it. This is an experimental tool; see [supported paths](docs/support.md).
 
-This is an experimental developer tool. Supported paths and their verification status are recorded in [support](docs/support.md). A successful model validation is not proof that a driver describes the device correctly; independent observations provide that evidence.
+## Install and try it
 
-## Start here
-
-Use Python 3.11 or newer. Clone the repository, then choose your platform's installation commands:
+Requires Python 3.11+. Clone the repository:
 
 ```sh
 git clone https://github.com/cam-berger/generative-driver.git
 cd generative-driver
 ```
 
-### macOS
+macOS:
 
 ```sh
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
 .venv/bin/python -m generative_driver doctor
-.venv/bin/python -m generative_driver benchmark run --case setup-smoke --output /tmp/generative-driver-smoke
+.venv/bin/python -m generative_driver benchmark run --case setup-smoke --output "smoke output"
 ```
 
-### Windows 11 or newer
+Windows 11+, in a standalone PowerShell window:
 
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 .\.venv\Scripts\python.exe -m generative_driver doctor
-.\.venv\Scripts\python.exe -m generative_driver benchmark run --case setup-smoke --output "$env:TEMP\generative-driver-smoke"
+.\.venv\Scripts\python.exe -m generative_driver benchmark run --case setup-smoke --output "smoke output"
 .\.venv\Scripts\python.exe -m generative_driver service start
 ```
 
-Run the Windows commands in a standalone PowerShell window opened separately from Goose or Codex. Windows MCP clients connect to that independently started configurator so closing the interface leaves its run alive. See [service management](docs/setup.md#start-the-configurator).
+Use a new output directory each time. Smoke tests installation and recorded replay; it needs no AI account or hardware and measures no model performance.
 
-Choose a new output directory on each run. The smoke check validates a model, replays recorded responses, emits a package, moves it, and exercises its standalone interface. It needs no agent account, hardware or container. Its report is explicitly labelled `scripted-replay` and does not count as model performance.
+## Next
 
-## Connect your interface
+| Task | Guide |
+|---|---|
+| Connect a client | [Codex](docs/codex.md) · [Goose](docs/goose.md) |
+| Configure AI or hardware | [Setup and recovery](docs/setup.md) |
+| Evaluate a run | [Benchmarks](bench/README.md) · [Recorded results](docs/verification.md) |
+| Contribute | [Development](CONTRIBUTING.md) · [Design](docs/design.md) |
 
-- [Codex app, CLI or code extension](docs/codex.md)
-- [Goose Desktop or CLI](docs/goose.md)
-- [Runtime configuration and hardware](docs/setup.md)
-- [Benchmark setup, run, score and compare](bench/README.md)
-
-Agent execution uses your separately configured Codex or Goose runtime and its supported authentication. The configurator does not implement another provider API loop. Original code is [Apache-2.0](LICENSE); included third-party material retains its [notices](NOTICE).
-
-## What a run records
-
-Each run has a durable ID, immutable accepted artifacts with each stage's notes, worker reports, tool events and one final equivalence verdict: the evaluator's grade after a benchmark run, labelled self-evidence otherwise. A worker's report never stops a run; only safety, integrity, operator and host faults do. These records distinguish what an agent claimed, what the configurator accepted, and what independent evidence established. Device binding and allowed effects are explicit. Fresh reuse starts a new agent context. Interrupted writes remain uncertain until checked.
-
-Benchmarks measure functional compatibility: expected outputs and effects for specified inputs. Generated source code does not have to resemble reference code. Password-encrypted groundtruth and hashes keep evaluator evidence separate from candidate input and record provenance. This separation is password-based, not an operating-system sandbox: workers are not read-isolated. New runs follow protocol `assistive/1`, whose benchmark results are a new series.
+The background configurator keeps runs, stage notes and evidence after the client closes. Save your run ID. Under `assistive/1`, the final equivalence verdict is an evaluator grade for benchmarks and self-evidence otherwise. Results form a new series. Workers are not read-isolated; answer-key separation is password-based, not a sandbox.
 
 ## Watch a run
-
-Open the local dashboard using the ID returned when you start a run:
 
 ```sh
 python -m generative_driver dashboard RUN_ID
 ```
 
-The page refreshes each second with accepted stages, status, repairs and recent activity. Use the same Python environment and `--home` as the run. Closing the page or dashboard terminal leaves the configurator running. See [dashboard usage](docs/dashboard.md) for connection and browser options.
+Use the run’s Python environment and `--home`. The page refreshes each second; closing it leaves the run active. See [dashboard options](docs/dashboard.md). Browser checks need Node.js 22+, no npm packages: `node tests/dashboard-client.test.js`.
 
-## Development
-
-```sh
-python -m unittest discover -s tests -v
-python -m build
-```
-
-Dashboard browser behavior checks use Node.js 22 or newer, with no npm packages:
-
-```sh
-node tests/dashboard-client.test.js
-```
-
-Run these with the environment used for installation. CI builds a wheel and tests its installed behavior on macOS and Windows. The approved test seams and design decisions are in [the design](docs/design.md); the red-to-green implementation records are in [docs/implementation](docs/implementation).
+Original code: [Apache-2.0](LICENSE). Included material: [third-party notices](NOTICE).

@@ -3,21 +3,14 @@ name: find-datasheet
 description: Locates the vendor datasheet for a part marking or name and returns its URL for acquire_datasheet to fetch and hash. Use when acquire_datasheet returned needs_search because the part is not in the registry.
 ---
 
-# Find a datasheet
+# Find the vendor datasheet
 
-`acquire_datasheet` did not know this part. Find the vendor's own datasheet for it and hand back the URL. You do not read the datasheet; the interpret skill does that, from a hashed copy.
+Use when `acquire_datasheet` returns `needs_search`. Read the part marking/name and origin in `part.json`. Search the vendor first; use a distributor only if the vendor hosts no copy, and disclose that fallback.
 
-## Inputs
+Write `datasheet.json`:
 
-- `part.json`: the part marking or name, and where it came from (a person, a string in a flash dump, an identity register).
+```json
+{"part":"...","vendor":"...","url":"...","revision":"if visible","why":"one line linking this part to this vendor document"}
+```
 
-## Output
-
-- `datasheet.json`: `{"part": "...", "vendor": "...", "url": "...", "revision": "if visible on the vendor page", "why": "one line: how you know this is the vendor's datasheet for this part"}`.
-
-## Rules
-
-- The vendor's site first. A distributor's copy only when the vendor does not host one, and say so.
-- Return the datasheet, not an application note, a driver, a library or example code.
-- Do not open the datasheet beyond its title page and revision. Do not summarize it.
-- One part per call. If the marking matches several parts, return them all and stop; `acquire_classify` reports the ambiguity rather than guessing.
+Return the datasheet URL for hashed acquisition. Inspect only title/revision; do not summarize it or substitute a driver, library, example or application note. One part per call. If several parts match, return all candidates and stop; `acquire_classify` handles ambiguity.

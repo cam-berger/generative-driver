@@ -1,16 +1,10 @@
-# Interface model, schema 1
+# Register interface model, schema 1
 
-This is the historical register-model contract. New executable multi-transport models use
-[schema 3](INTERFACE_MODEL_V3.md) and, from 2026-09-18, its superset [schema 4](INTERFACE_MODEL_V4.md) with completion-aware line replies, and `interpret-interface`. Schema 1 retains register-file scoring,
-live I2C and SPI capture observation. Its live runner does not implement SPI and now refuses that path
-explicitly. Schema-2 experimental firmware evidence remains a separate evidence format.
+Historical register contract: live I2C, register-file scoring and SPI capture. Live SPI is refused. Schemas 3–6 support executable command interfaces; schema 2 is separate static firmware evidence. Front-ends produce the same shape regardless of evidence source.
 
-The original shared data shape for register front-ends and back-half stages. The example below is a made-up device; nothing in it describes any real part. A front-end (firmware reader,
-datasheet reader, self-description reader, probe-only) owns the operation types it needs. The runner
-(`tools/model_exec.py`) implements each operation type per channel type. Nothing downstream of the front-end
-knows where the model came from.
+## Model
 
-## model.json
+Invented example; no values describe a real part:
 
 ```json
 {
@@ -34,21 +28,22 @@ knows where the model came from.
 }
 ```
 
-Order of execution by the runner: `operations.init`, then every `state` read (kept for the life of the
-session), then `operations.identify` checked against `identity.expect`, then `operations.measure` repeated
-every `measure_period_ms` after an optional `measure_wait_ms` for the first sample. Any other operation
-under `operations` is exposed by name and may take `args`.
+Runner order: init → state reads retained for the session → identify checked against `identity.expect` → repeated measure every `measure_period_ms`, with optional initial `measure_wait_ms`. Other named operations may take `args`.
 
-Operation types in schema 1: `reg_write` (reg, bytes), `reg_read` (reg, len, as), `raw_write` (bytes),
-`raw_read` (len, as), `delay_ms` (ms), `probe` (address acknowledge only). Channel types in schema 1:
-`i2c` and `spi`. Reserved names for later front-ends: `uart_cmd` (request and response strings), `usb`, `tcp`.
+| Operation | Fields |
+|---|---|
+| `reg_write` | reg, bytes |
+| `reg_read` | reg, len, as |
+| `raw_write` | bytes |
+| `raw_read` | len, as |
+| `delay_ms` | ms |
+| `probe` | Address acknowledgment only |
 
-## The spi channel (added 2026-09-14 for the first non-I2C device)
+Channels: I2C and SPI. `uart_cmd`, `usb`, `tcp` are reserved here, not executable schema-1 transports. `tools/model_exec.py` implements operations by channel; downstream stages do not infer the evidence source.
 
-SPI has no addresses. A device is selected by its chip-select line, and a register access is a frame of
-bytes whose first byte the device decodes as a command. Because that encoding differs from part to part,
-the channel carries it and the operations stay the same: `reg_read` and `reg_write` mean what they mean on
-any register device, and `framing` says how the runner turns one into bytes on the wire.
+## SPI capture framing
+
+SPI selects a chip-select line, not an address. Register framing is device-specific:
 
 ```json
 "channel": {
@@ -65,21 +60,8 @@ any register device, and `framing` says how the runner turns one into bytes on t
 }
 ```
 
-The command byte for an access to register R is `prefix | ((R & address_mask) << address_shift)`, with
-`read_prefix` for a `reg_read` of one byte, `burst_prefix` for a `reg_read` of more than one where the
-device has a separate burst opcode, and `write_prefix` for a `reg_write`. A device that uses the same
-prefix for single and burst reads sets them equal. `read_dummy_bytes` is for parts that need idle bytes
-between the command and the data. A part whose framing this cannot express should say so in `framing.note`
-and describe the access in the provenance rather than forcing it.
+Command byte: `prefix | ((R & address_mask) << address_shift)`. Use `read_prefix` for one-byte reads, `burst_prefix` for longer reads with a separate opcode, and `write_prefix` for writes. Equalize read/burst prefixes when the device does. `read_dummy_bytes` inserts required idle bytes. Record unrepresentable framing in `framing.note` and provenance; do not force it. State, identity, conversion, safety and register-file scoring retain their I2C meanings.
 
-Nothing else changes. `state`, `identity`, `conversion`, `safety` and `provenance` mean exactly what they
-mean for an I2C device, and a model of an SPI part executes against a register file for scoring in the
-same way, because a register read is a register read whatever carried it.
+## Conversion
 
-## convert.py
-
-`def convert(inputs: dict) -> dict`. `inputs` maps each byte string the model reads, keyed by its start
-register as a lower-case hex string (for example `"0x20"`), to a `bytes` object; every `state` read and
-every `measure` read appears. The result maps the keys of `conversion.outputs` to floats in the stated units.
-Standard library only. The arithmetic must be the device's own (the firmware's or the datasheet's), not a
-textbook approximation.
+`convert.py` defines `convert(inputs: dict) -> dict`, standard library only. Inputs contain state/measurement `bytes` keyed by start register as lowercase hex, e.g. `"0x20"`. Return floats keyed by `conversion.outputs` in declared units. Preserve the firmware/datasheet arithmetic and rounding; do not substitute an approximation.

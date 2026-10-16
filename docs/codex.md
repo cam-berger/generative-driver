@@ -1,64 +1,47 @@
 # Use from Codex
 
-Install the Python package and [configure a worker runtime](setup.md). The developer-facing Codex and the worker runtime may use different models; record the worker model explicitly.
-
-On Windows, [start the independent configurator](setup.md#start-the-configurator) from a standalone PowerShell window before connecting the plugin or MCP server. A terminal inside Codex is still owned by Codex's process lifetime.
+Install the package and [configure its worker runtime](setup.md). The chat and worker may use different models. On Windows, [start the configurator](setup.md#start-the-configurator) in standalone PowerShell first; a terminal inside Codex shares the client’s lifetime.
 
 ## Verify the OpenAI CLI
-
-Before running the registration commands below, check which program your terminal selects:
 
 ```sh
 codex --version
 ```
 
-The output must begin with `codex-cli`. An unrelated Python application is also named Codex; comic-library, archive or Django server output identifies that application. Press Ctrl+C if it starts a server. If the name resolves incorrectly, use the absolute path to your OpenAI CLI for every `codex` command below and for the worker runtime's `--command`. Verify that executable with `--version` first. In PowerShell, invoke a quoted executable path with `&`.
+Output must start with `codex-cli`. Comic-library, archive or Django output belongs to an unrelated application; stop it with Ctrl+C. If names collide, use the verified OpenAI executable’s absolute path for registration and worker configuration. PowerShell invokes quoted paths with `&`.
 
-### macOS bundled executable, when present
-
-Some desktop installations include the CLI at the following path. This installation-specific example verifies it before registering the marketplace; use your installed OpenAI CLI's actual path if this file is absent:
+Some macOS installations bundle it here; check the actual file before use:
 
 ```sh
 CODEX_CLI="/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
 "$CODEX_CLI" --version
 ```
 
-After generating `codex-install` below, register it with `"$CODEX_CLI" plugin marketplace add ./codex-install` when using this bundled executable.
-
 ## Generate the plugin
 
-Use the Python executable from the environment where you installed Generative Driver:
+Use the Python environment containing Generative Driver:
 
 ```sh
 python -m generative_driver setup --host codex --output ./codex-install
-```
-
-This creates `codex-install/plugins/generative-driver` and a local marketplace, with an MCP connection pinned to that Python executable and state directory, plus the workflow skill. Use a leading `--home DIRECTORY` to select the same custom directory as your configurator. Keep the environment at its existing path, or regenerate into a new directory after moving it.
-
-Register the generated marketplace using the OpenAI CLI verified above:
-
-```sh
 codex plugin marketplace add ./codex-install
 ```
 
-Restart the desktop app, open its Plugins Directory, select **Generative Driver**, and install the plugin. Start a new conversation to pick up its tools and skill. The [official local plugin instructions](https://developers.openai.com/plugins/build/plugins) cover marketplace registration and refresh. The checked-in `plugins/generative-driver` variant uses `generative-driver-mcp` on PATH; generated assets avoid depending on the desktop application's PATH.
+For the bundled executable, use `"$CODEX_CLI" plugin marketplace add ./codex-install`. Restart Codex, open Plugins Directory, install **Generative Driver**, then start a new chat. See [official plugin instructions](https://developers.openai.com/plugins/build/plugins).
+
+Generated assets pin Python and the state directory. Supply a leading `--home DIRECTORY` for a custom location; regenerate into a new directory after moving the Python environment. The checked-in plugin instead expects `generative-driver-mcp` on PATH.
 
 ## MCP-only setup
-
-For Codex CLI or its code extension, register the installation directly:
 
 ```sh
 codex mcp add generative-driver -- /absolute/path/to/python -m generative_driver.mcp
 ```
 
-Use the Windows Python executable path on Windows. In the app, an equivalent local MCP server uses that executable as its command and `-m`, `generative_driver.mcp` as separate arguments. For a custom state directory, set `GENERATIVE_DRIVER_HOME` in that server's environment; the generated plugin's `.mcp.json` shows the complete settings. See [official MCP setup](https://learn.chatgpt.com/docs/extend/mcp?surface=cli). Copy `codex-install/plugins/generative-driver/skills/generative-driver` into your project's `.agents/skills/` if using MCP without the plugin.
+Use the Windows Python path on Windows. App configuration uses that executable plus separate `-m` and `generative_driver.mcp` arguments. Set `GENERATIVE_DRIVER_HOME` for a custom state directory. Copy the generated `skills/generative-driver` folder into the project’s `.agents/skills/`. See [official MCP setup](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
 
 ## First conversation
 
-> Use Generative Driver to check my installation. Help me select a benchmark or attach a supported device. Start the workflow with my configured runtime, save its run ID, and show the accepted evidence when it finishes.
+> Use Generative Driver to check my installation, help me select a benchmark or supported device, and start a run. Save its run ID and show the accepted evidence when it finishes.
 
-The front-end calls the configurator's tools. The configurator launches fresh workers and scopes their tool access. Reopening Codex and asking for the saved run ID retrieves the same progress. Use the [benchmark guide](../bench/README.md) for the initial replay check and paid agent baseline.
+The configurator launches workers and retains progress after disconnect. [Benchmark instructions](../bench/README.md) cover replay, calibrated agent trials and private evaluator inputs. Plugin installation does not install optional native tools. The plugin format and stdio connection have automated checks; UI labels may vary.
 
-The plugin format is validated and the stdio connection is integration-tested. UI menu labels may vary by Codex version. A plugin installation alone does not install the optional native hardware or analysis dependencies.
-
-For TQ9 v2, select the registered `tq9-v2` case and the original scenario and an explicit seed through `driver_benchmark_run`. Pass the evaluator password as a file path in its options. A bench harness holds that path, provides the emulator and grades the frozen driver once after the run; the configurator never receives the password or its path, and neither do its workers. The case needs a current native calibration, and the recorded one predates this protocol, so the password holder recalibrates first. Workers see instrument readings of the emulated device as device evidence and repair from the device's differences with the model, never from grades. Each stage hands off with notes, and the run ends with one equivalence verdict. These `assistive/1` results are a new series. Workers are not read-isolated: separation from the answer keys is password-based. The [benchmark guide](../bench/README.md#run-an-agent-benchmark) covers case selection and offline scoring from the trial's sealed evidence.
+For emulated benchmarks, `driver_benchmark_run` sends the evaluator password file path to a bench harness. The configurator never receives the password or its path. The harness provides the device and grades once after the run; workers see instrument readings, not grades. Current `assistive/1` results form a new series. Workers are not read-isolated; answer-key separation is password-based, not a sandbox. Fresh native calibration is required because the recorded calibration predates this protocol. See [trial commands and scoring](../bench/README.md#run-an-agent-benchmark).

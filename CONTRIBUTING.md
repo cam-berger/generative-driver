@@ -1,26 +1,28 @@
 # Contributing
 
-Read [CONTEXT.md](CONTEXT.md) and the [accepted design](docs/design.md). Keep interfaces small: the CLI/MCP delegates to the configurator, the configurator owns external workers, and the benchmark owns independent scoring. A worker report never becomes groundtruth by being well formatted.
+Read [CONTEXT.md](CONTEXT.md) and the [design](docs/design.md). Work through the public CLI/MCP, configurator/workers, runtime/package or benchmark interface.
 
-## Make a change
+## Change and check
 
-1. Pick an approved public seam: installed CLI/MCP, configurator/worker execution, runtime/package, or benchmark run/score/compare.
-2. Add one behavior test with an independent expected result and observe it fail.
-3. Implement the smallest working change and observe that test pass. Repeat for the next behavior.
-4. Build the wheel and run relevant tests against that installed wheel from outside the checkout. Run the native CI matrix before claiming a Windows pass.
+1. Write one behavior test with an independent expected result; observe it fail.
+2. Implement the change; observe it pass. Repeat for the next behavior.
+3. Build and test the installed wheel outside the checkout. Native CI must pass before claiming Windows support.
 
-The runtime tests use synthetic device replies and scripted workers. Their results establish contract behavior, not model capability or hardware qualification. Actual inference runs are selected explicitly and retain failures, usage, runtime/model configuration, limits and evidence hashes.
+```sh
+python -m unittest discover -s tests -v
+python -m build
+```
 
-## Extend device support
+Scripted workers and device replies test contracts. Model runs require explicit selection and retain configuration, budgets, usage, failures and evidence hashes.
 
-Add a generic operation to the toolkit facade and its packaged manifest, or extend an existing runtime transport. Keep target-specific facts in input evidence and benchmark truth. Optional native dependencies load at use time. Use argument arrays for processes, explicit operator bindings for hardware, and absolute caller-owned output directories. Installed resources are read-only inputs.
+## Add device support
 
-An acquisition adapter must state what was actually acquired. An interpreter emits the applicable model schema and evidence. Probe and ground have distinct obligations: receiving a well-framed reply does not establish the decoder's meaning. A new benchmark case must define independent accepted and rejected observations, versioned inputs, and every applicable stage gate. Keep its password outside candidate inputs and commit its evidence hashes.
+Extend the toolkit facade and packaged manifest, or an existing transport. Keep device facts in supplied evidence and evaluator-owned truth. Load optional dependencies at use time, launch processes with argument arrays, require explicit bindings, and write only to caller-owned output directories.
 
-## Compare performance
+State what acquisition actually captured. Separate reply framing from physical meaning. Each benchmark needs versioned inputs, independent accepted/rejected observations and one final evaluator verdict after stage handoffs. Keep evaluator passwords outside candidate inputs.
 
-Change one recorded dimension when practical. Keep case, evaluator, seed, runtime, model, settings, toolchain, skills and budget in reports. Use three or more fresh runs for a performance claim; one run is a development baseline. Report success counts and time/usage distributions alongside stage failures. Unknown usage is unknown, not zero.
+## Compare and publish
 
-## Publication
+For performance claims, use at least three fresh runs per configuration. Record case, evaluator, seed, runtime, provider/model/settings, toolchain, skills and budget. Report success counts, stage failures and time/usage distributions; missing usage stays unknown. Label comparisons that change several dimensions.
 
-Include original or redistributable assets and preserve third-party notices. Keep device recordings, credentials, local paths and personal run history outside published source archives. Inspect the actual wheel and source distribution, not only the Git diff.
+Inspect the built wheel and source archive before publishing. Include only original or redistributable assets, preserve third-party notices, and exclude credentials, recordings, local paths and personal run history.

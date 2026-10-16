@@ -1,27 +1,13 @@
 # Fresh reuse endpoint
 
-## Intent
+Every run ends at acquire → interpret → probe → ground → emit → reuse. The background configurator owns it. A fresh worker receives only the emitted package, objective and permitted operating inputs. Success requires its mission and independent final behavior, not its completion claim. Preserve bounded repairs, effect grants, uncertain-write handling, cancellation and reconnect.
 
-Every driver run ends at fresh reuse. Another agent receives the emitted driver and the user's objective, then manipulates the device through the desired functions. Successful reuse is the final workflow acceptance gate.
+Each case uses one original image. Changed manifests/evaluators get new versions; V2 pins require `original` and six gates. Case seeds vary independent episodes. Default suite: three families × three repetitions; smoke and physical results remain separate.
 
-## Workflow
+Diagnostics may inform bounded repair. Frozen final checks follow emission/fresh use; final failure is terminal. References and meaningful mutants qualify evaluators. Changed code/encrypted inputs invalidate calibration; admission must match current bytes before startup.
 
-The stage inventory is exactly `acquire`, `interpret`, `probe`, `ground`, `emit`, `reuse`. The background configurator remains the owner. A new reuse worker receives the package without discovery history, private evaluator answers, or the discovery workspace. Its actions must establish the declared mission and independently graded final behavior. Existing bounded interpretation/probe repairs, explicit device grants, uncertain-effect recovery, cancellation and reconnection remain required.
+Reports, offline scoring and suites require all six gates plus mission/final success. Unsupported saved stages stop explicitly. Historical measurements stay recoverable under their original versions, never silently become current successes.
 
-## Benchmark contracts
+CLI, MCP, skills and docs must describe the same endpoint. Ship only required assets; keep private passwords, answers and authoring source outside candidate inputs/public archives.
 
-Each firmware case tests one stable original image. Registered case IDs remain discoverable, but changed public manifests receive new versions and evaluator versions. New v2 case pins declare only the `original` scenario and the six required stages. A case seed varies the independent check episodes. The default suite contains the three firmware families, three fresh repetitions each: nine model trials. Installation replay and the optional physical sensor profile remain separate.
-
-Diagnostic feedback may support bounded repair. Frozen final checks run after package emission and fresh worker use; a failed final check is terminal. Positive references and behavioral mutants qualify each evaluator. Changed code and encrypted inputs invalidate old calibration; qualifying records must match the new bytes and identity before live trial admission.
-
-## Reports and saved data
-
-Reports, offline grades and suite aggregation accept success only when all six gates, the fresh worker mission and final behavior pass. Stage inventory and pinned case/evaluator versions distinguish new results from earlier measurements. Historical saved runs with unsupported progress stop explicitly instead of launching an obsolete assignment or being silently counted as new successes. Removed public records remain recoverable from Git; measured historical records are never rewritten as new observations.
-
-## Public surface
-
-CLI, MCP, client skills, installation text, README, setup, design, benchmark and groundtruth instructions describe the same six-stage endpoint. Superseded planning and verification documents are replaced by current concise records. Distribution assets contain only the cases and evaluator evidence required by this workflow. No private passwords, answer keys or authoring source enter candidate inputs or public archives.
-
-## Verification
-
-Tests must prove actual completion immediately after accepted fresh reuse, bounded pre-final repairs, independent final failure, report/offline scoring agreement, nine-trial suite expansion and safe rejection of incompatible saved state. Run the source and installed-wheel suites, installation replay, public document/resource audits and native evaluator qualification on this machine. These checks are scripted or native reference checks, never model-performance or physical observations.
+Verify completion after reuse, bounded repair, terminal final failure, scoring agreement, nine suite slots and incompatible-state refusal through source/installed tests, replay, resource audits and native qualification. These are software/reference checks, not model or physical results.

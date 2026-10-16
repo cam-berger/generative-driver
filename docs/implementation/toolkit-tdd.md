@@ -1,5 +1,3 @@
-# Toolkit and package verification
+# Toolkit verification
 
-Current regression tests exercise the installed tool catalog, acquisition/interpretation handoffs, binding/effect checks, package validation, emission, relocation and standalone replay through the approved public interfaces. Scripted workers and replay remain contract evidence; they do not measure model or physical performance.
-
-The six-stage endpoint and final acceptance requirements are defined in [the design](../design.md). Current source, installed-package and native evaluator results are recorded in [verification](../verification.md) and its [index](benchmark-final-verification.json). Original development observations remain recoverable from Git at their original revisions.
+Installed tools, acquisition/interpretation handoffs, bindings, effect grants, package validation, relocation and replay are tested through the [public seams](../design.md#public-test-seams). Scripted workers and replay establish contracts, not model or physical performance. See [verification](../verification.md) and the [historical index](benchmark-final-verification.json); earlier observations remain in Git at their measured revisions.

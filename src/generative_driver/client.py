@@ -52,6 +52,10 @@ def _wait_for_exit(pid, timeout=10):
         time.sleep(min(.01, remaining))
 
 
+# The lock a configurator holds on its home for as long as it runs (see `daemon.main`).
+SERVICE_LOCK = 'service.lock'
+
+
 def hold_process_lock(path):
     """Lock the file at `path` for as long as this process keeps the returned stream open; the operating system lets
     go of it when the process ends, however it ends. None when the file system offers no such lock."""
@@ -103,6 +107,36 @@ def process_lock_held(path):
         os.close(descriptor)
 
 
+def _service_running(home, endpoint):
+    """Whether the configurator `endpoint` (its service.json) names still runs: True or False, or None when nothing tells.
+    A configurator holds a lock on its home for as long as it runs, which ends with it however it ends; its process id
+    may by then name another process, or one this client may not signal. So the id is read only of a configurator that
+    was started without the lock (before configurators held one, or on a file system without such locks). An OSError
+    when that id cannot be checked."""
+    held = process_lock_held(Path(home) / SERVICE_LOCK)
+    if held or (held is False and endpoint.get('lock') == SERVICE_LOCK):
+        return held
+    pid = endpoint.get('pid')
+    if type(pid) is not int or pid <= 0:
+        return None
+    return not _wait_for_exit(pid, 0)
+
+
+def _service_locked(home, process, deadline):
+    """Wait until the starting configurator `process` holds its home's lock, which it takes before it waits for
+    publication: True, or None on a file system without such locks. Its exit, or the deadline, ends the startup."""
+    while True:
+        if process.poll() is not None:
+            raise RuntimeError(f'Configurator exited during startup (exit {process.returncode}); inspect '
+                               + str(home / 'daemon.log'))
+        held = process_lock_held(home / SERVICE_LOCK)
+        if held is not False:
+            return held
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Configurator failed to start; inspect ' + str(home / 'daemon.log'))
+        time.sleep(.01)
+
+
 def _confirmed_shutdown(pid, timeout=10):
     if type(pid) is not int or pid <= 0:
         return {'ok': False, 'stopped': False, 'reason': 'Daemon exit cannot be confirmed without its process identity'}
@@ -112,6 +146,23 @@ def _confirmed_shutdown(pid, timeout=10):
         return {'ok': False, 'stopped': False, 'reason': 'Daemon exit verification failed: ' + str(exc)}
     return {'ok': stopped, 'stopped': stopped, 'pid': pid,
             **({} if stopped else {'reason': 'Daemon exit was not confirmed before the shutdown deadline'})}
+
+
+def _confirmed_stopped(home, endpoint, timeout):
+    """Once a shutdown request got no reply: whether the configurator service.json names has ended, waiting up to
+    `timeout` seconds, by the lock it holds on its home or, where none tells, its process id (see `_service_running`)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            running = _service_running(home, endpoint)
+        except OSError as exc:
+            return {'ok': False, 'stopped': False, 'reason': 'Daemon exit verification failed: ' + str(exc)}
+        if running is None:
+            return {'ok': False, 'stopped': False, 'reason': 'Daemon exit cannot be confirmed without its process identity'}
+        if not running or time.monotonic() >= deadline:
+            return {'ok': not running, 'stopped': not running, 'pid': endpoint.get('pid'),
+                    **({'reason': 'Daemon exit was not confirmed before the shutdown deadline'} if running else {})}
+        time.sleep(.01)
 
 
 def _sources_digest():
@@ -132,13 +183,13 @@ def code_identity():
     return _CODE
 
 
-def _runs_other_code(endpoint):
+def _runs_other_code(endpoint, home):
     """Whether service.json names a live configurator started from other code. Decided without IPC: a live one is never
     sent the request, and a dead one is replaced by the ordinary start."""
-    if endpoint.get('code') == code_identity() or type(endpoint.get('pid')) is not int or endpoint['pid'] <= 0:
+    if endpoint.get('code') == code_identity():
         return False
     try:
-        return not _wait_for_exit(endpoint['pid'], 0)
+        return bool(_service_running(home, endpoint))
     except OSError:
         return True  # It exists, owned by someone this client may not signal.
 
@@ -207,8 +258,7 @@ def _start(home, timeout=30):
                 recorded = json.loads((home / 'service.json').read_text(encoding='utf-8'))
             except (OSError, ValueError):
                 recorded = {}
-            pid = recorded.get('pid')
-            if type(pid) is not int or pid <= 0 or _wait_for_exit(pid, 0):
+            if not _service_running(home, recorded):
                 break
             # A refused connection is not proof of process exit. Replacing this
             # endpoint would orphan its live workers and recover its database
@@ -235,9 +285,14 @@ def _start(home, timeout=30):
                              cwd=home, env=env, stdin=subprocess.PIPE, stdout=log, stderr=log, **options)
         threading.Thread(target=process.wait, daemon=True).start()
         try:
+            # The record names a configurator whose lock is held from the moment it exists: the child takes the lock
+            # before it waits for publication, and refuses a home another configurator holds.
+            locked = _service_locked(home, process, deadline)
             # Publish once, with the child PID already known. The child waits
             # until this writer closes; it never renames a file readers hold.
             endpoint['pid'] = process.pid
+            if locked:
+                endpoint['lock'] = SERVICE_LOCK
             path.write_text(json.dumps(endpoint), encoding='utf-8')
             if os.name != 'nt':
                 path.chmod(0o600)
@@ -279,7 +334,7 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
             endpoint = json.loads((directory / 'service.json').read_text(encoding='utf-8'))
         except (OSError, ValueError):
             endpoint = None
-        if endpoint is not None and _runs_other_code(endpoint):
+        if endpoint is not None and _runs_other_code(endpoint, directory):
             return {'ok': False, 'reason': _incompatible(endpoint)}
     try:
         result = _request(directory, method, params, **request_options)
@@ -291,7 +346,7 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
                 return {'ok': True, 'stopped': True}
             except (OSError, ValueError) as exc:
                 return {'ok': False, 'stopped': False, 'reason': 'Cannot confirm daemon identity: ' + str(exc)}
-            return _confirmed_shutdown(endpoint.get('pid'), timeout=10 if isinstance(error, _RequestInterrupted) else 0)
+            return _confirmed_stopped(directory, endpoint, timeout=10 if isinstance(error, _RequestInterrupted) else 0)
         # Never silently replay a tool or state-changing request whose reply was
         # lost. The owner may already have performed it; reconnect to its state.
         if isinstance(error, _RequestInterrupted):

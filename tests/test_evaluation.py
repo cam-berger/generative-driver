@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -640,37 +641,60 @@ class HarnessGradingTests(PendingRunFixture):
     def test_resume_refuses_a_trial_it_may_not_evaluate_and_evaluates_under_its_own_lock(self):
         # Catches a resume that grades, seals, posts or unlocks the truth for a trial whose harness still runs, whose
         # device stop was not confirmed or that awaits no evaluation, two resumes evaluating at once (a lock that is
-        # held, or still being written), and a lock left by an evaluation that ended blocking every later one.
+        # held, or whose holder cannot be established), and a lock left by an evaluation that ended blocking every
+        # later one.
         from generative_driver.benchmark_support import evaluator, harness
+        from generative_driver.client import hold_process_lock
         with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
                 patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
             trial, record = self.trial()
         self.assertEqual(record['status'], 'awaiting-evaluation')
         lock = trial / 'evaluation.lock'
-        for case, change, held, message in (
-                ('harness running', {'finished': None, 'pid': os.getpid()}, None, 'still running'),
-                ('stop unconfirmed', {'device_stop': {'stopped': False, 'confirmed': False}}, None, 'not confirmed'),
-                ('not resumable', {'status': 'failed'}, None, 'awaits no evaluation'),
-                ('lock held', {}, str(os.getpid()) + ' ' + 'a' * 32, 'Another evaluation'),
-                ('lock being written', {}, '', 'Another evaluation')):
+        @contextlib.contextmanager
+        def unestablished():
+            # A lock no evaluation can take or test (a directory in its place): its holder cannot be established.
+            lock.mkdir()
+            try:
+                yield
+            finally:
+                lock.rmdir()
+        @contextlib.contextmanager
+        def lockless():
+            # A harness from before harnesses held a lock left none: only its process id tells whether it runs.
+            aside = trial / 'harness.lock.aside'
+            (trial / 'harness.lock').rename(aside)
+            try:
+                yield
+            finally:
+                aside.rename(trial / 'harness.lock')
+        for case, change, holding, message in (
+                # The trial's harness runs, and holds its lock as it does for as long as it runs.
+                ('harness running', {'finished': None, 'pid': os.getpid()},
+                 lambda: hold_process_lock(trial / 'harness.lock'), 'still running'),
+                ('lockless harness running', {'finished': None, 'pid': os.getpid()}, lockless, 'still running'),
+                ('stop unconfirmed', {'device_stop': {'stopped': False, 'confirmed': False}}, contextlib.nullcontext,
+                 'not confirmed'),
+                ('not resumable', {'status': 'failed'}, contextlib.nullcontext, 'awaits no evaluation'),
+                ('lock held', {}, lambda: harness._exclusive(trial), 'Another evaluation'),
+                ('lock not established', {}, unestablished, 'Another evaluation.*' + re.escape(str(lock)))):
             with self.subTest(case=case):
                 changed = {**record, **change}
                 harness._private(trial / 'trial.json', changed)
-                if held is not None:
-                    lock.write_text(held)
                 self.calls = []
-                with patch.object(evaluator, 'grade', side_effect=AssertionError('graded')) as grading, \
-                        patch.object(evaluator, 'seal', side_effect=AssertionError('sealed')) as sealing, \
-                        patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')) as unlocking, \
-                        self.assertRaisesRegex(ValueError, message):
-                    self.resume(trial, renode='scripted-emulator')
+                with holding():
+                    found = lock.read_bytes() if lock.is_file() else None
+                    with patch.object(evaluator, 'grade', side_effect=AssertionError('graded')) as grading, \
+                            patch.object(evaluator, 'seal', side_effect=AssertionError('sealed')) as sealing, \
+                            patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')) as unlocking, \
+                            self.assertRaisesRegex(ValueError, message):
+                        self.resume(trial, renode='scripted-emulator')
+                    # A refused resume leaves the lock it found as it found it.
+                    self.assertEqual(lock.read_bytes() if lock.is_file() else None, found)
                 grading.assert_not_called(); sealing.assert_not_called(); unlocking.assert_not_called()
                 self.assertEqual(self.calls, [])
                 self.assertEqual(harness.read_trial(trial), changed)
-                if held is not None:
-                    self.assertEqual(lock.read_text(), held)
-                    lock.unlink()
+                self.assertFalse(lock.exists())
         self.assertFalse(self.verdicts({'run_id': record['run_id']}))
         # A lock whose process ended is taken over, and the evaluation completes and lets go of it.
         ended = subprocess.Popen([sys.executable, '-c', 'pass'])
@@ -682,7 +706,47 @@ class HarnessGradingTests(PendingRunFixture):
             resumed = self.resume(trial)
         self.assertEqual((resumed['status'], resumed['sealed']), ('evaluated', True))
         self.assertFalse(lock.exists())
-        self.assertEqual(sorted(p.name for p in trial.iterdir() if 'lock' in p.name), [])
+        self.assertEqual(sorted(p.name for p in trial.iterdir() if 'evaluation.lock' in p.name), [])
+        self.assertEqual(len(self.verdicts({'run_id': record['run_id']})), 1)
+
+    def test_a_lock_left_by_an_ended_evaluation_is_taken_over_even_when_its_process_id_was_reused(self):
+        # Catches an evaluation lock read from the bare process id it names: once the evaluation that took it ended
+        # without letting go (killed, say), that id may name another running process (as the system reuses ids) or one
+        # this user may not signal, and every later evaluation of the trial was refused until that process ended.
+        from generative_driver.benchmark_support import evaluator, harness
+        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
+                patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
+            trial, record = self.trial()
+        self.assertEqual(record['status'], 'awaiting-evaluation')
+        lock = trial / 'evaluation.lock'
+        # This test's parent process stands in for an unrelated process that took over the ended evaluation's id: it
+        # runs, and holds no lock of the trial.
+        lock.write_text(str(os.getppid()) + ' ' + 'd' * 32)
+        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+                patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
+            resumed = self.resume(trial)
+        self.assertEqual((resumed['status'], resumed['sealed']), ('evaluated', True))
+        self.assertFalse(lock.exists())
+        self.assertEqual(len(self.verdicts({'run_id': record['run_id']})), 1)
+
+    def test_a_trial_whose_harness_ended_unfinished_is_evaluated_even_when_its_process_id_was_reused(self):
+        # Catches the trial's harness read as running from the bare process id its record names: once the harness was
+        # killed after its device stop, before it recorded that it finished, that id may name another running process
+        # (as the system reuses ids) or one this user may not signal, and every resume was refused until it ended.
+        from generative_driver.benchmark_support import evaluator, harness
+        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
+                patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
+            trial, record = self.trial()
+        # What a harness killed while it evaluated leaves; this test's parent process stands in for an unrelated
+        # process that took over its id.
+        killed = {key: value for key, value in record.items() if key != 'finished'}
+        harness._private(trial / 'trial.json', {**killed, 'status': 'evaluating', 'pid': os.getppid()})
+        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+                patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
+            resumed = self.resume(trial)
+        self.assertEqual((resumed['status'], resumed['sealed']), ('evaluated', True))
         self.assertEqual(len(self.verdicts({'run_id': record['run_id']})), 1)
 
     def test_a_trial_recorded_stopped_whose_run_completed_since_awaiting_its_grade_is_graded_by_resume(self):

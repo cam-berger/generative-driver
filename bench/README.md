@@ -96,6 +96,8 @@ UART-over-TCP does not establish physical baud or pin correctness. Independent e
 
 ## Run a repeated suite
 
+For firmware-to-driver acceptance centered on Codex, use the [Codex acceptance gate](../docs/codex-acceptance.md). The export's `equivalent_and_mission` counts trials where independent equivalence and successful fresh package reuse both hold; a missing mission result is no success. It accompanies the separate equivalence and mission counts and is included in saved comparisons.
+
 The installed `development-pilot.json` plans **nine fresh trials: three firmware families × three repetitions**, one child at a time. Each child has 10,800 wall-clock seconds; the suite has 108,000 seconds. Review these conditions and select the authenticated runtime/model before invoking inference. For a three-trial development run, change the copied manifest's `repetitions` to `1`.
 
 ```sh

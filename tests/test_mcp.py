@@ -15,6 +15,36 @@ from package_env import package_env
 
 
 class McpTests(unittest.TestCase):
+    def test_analysis_configuration_is_part_of_the_durable_mcp_start(self):
+        asyncio.run(self.start_with_analysis_tools())
+
+    async def start_with_analysis_tools(self):
+        from generative_driver.client import call
+        from generative_driver.setup import configure
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            configure('codex', ['no-such-agent-runtime'], home=root)
+            call('ping', {}, home=root)
+            params = StdioServerParameters(command=sys.executable, args=['-m', 'generative_driver.mcp'],
+                cwd=root, env=package_env(GENERATIVE_DRIVER_HOME=str(root)))
+            try:
+                async with stdio_client(params) as (reader, writer):
+                    async with ClientSession(reader, writer) as session:
+                        await session.initialize()
+                        catalog = {t.name: t for t in (await session.list_tools()).tools}
+                        self.assertTrue({'ghidra_home', 'java_home'} <= catalog['driver_start'].input_schema['properties'].keys())
+                        spec = {'goal': 'Interpret supplied firmware', 'request_id': 'analysis-tools',
+                                'ghidra_home': str(root / 'ghidra'), 'java_home': str(root / 'jdk')}
+                        reply = await session.call_tool('driver_start', spec)
+                        self.assertFalse(reply.is_error, reply)
+                        self.assertTrue(json.loads(reply.content[0].text)['ok'])
+                        reply = await session.call_tool('driver_start', spec)
+                        self.assertTrue(json.loads(reply.content[0].text)['duplicate'])
+                        reply = await session.call_tool('driver_start', {**spec, 'java_home': str(root / 'another-jdk')})
+                        self.assertIn('different inputs', reply.content[0].text)
+            finally:
+                call('shutdown', {}, home=root)
+
     def test_registered_emulator_fixture_obeys_home_and_windows_owner_boundaries(self):
         asyncio.run(self.refuse_fixture_owner_mismatch())
 

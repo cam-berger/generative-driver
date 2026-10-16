@@ -350,6 +350,42 @@ def assistive_owner(report):
 
 
 class SuiteAggregateTests(unittest.TestCase):
+    def test_end_to_end_success_requires_equivalence_and_successful_fresh_reuse(self):
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        for mission in (True, False, None):
+            with self.subTest(mission=mission):
+                suite, trials, reports, experiment = assistive_fixture()
+                reports['r0']['equivalence']['mission']['passed'] = mission
+                # Successful use of a defective driver cannot satisfy the joint criterion either.
+                reports['r1']['equivalence']['mission']['passed'] = True
+                result = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+                expected = int(mission is True)
+                self.assertEqual(result['equivalence']['equivalent'], 1)
+                self.assertEqual(result['equivalent_and_mission'], {'passed': expected, 'denominator': 9, 'rate': expected / 9})
+                self.assertEqual([row['equivalent_and_mission'] for row in result['trials']], [mission is True] + [False] * 8)
+
+    def test_comparison_recounts_joint_success_from_fresh_mission_evidence(self):
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite, compare_suites
+        suite, trials, reports, experiment = assistive_fixture()
+        before = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+        reports['r0']['equivalence']['mission']['passed'] = False
+        after = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+        result = compare_suites(before, after)
+        self.assertTrue(result['compatible'], result)
+        self.assertEqual(result['equivalence_delta'], 0)
+        self.assertEqual(result['equivalent_and_mission_delta'], -1 / 9)
+        self.assertEqual(result['before_equivalent_and_mission']['passed'], 1)
+        self.assertEqual(result['after_equivalent_and_mission']['passed'], 0)
+        # Older exports are recounted, never treated as successful merely for being equivalent.
+        older = copy.deepcopy(after)
+        older.pop('equivalent_and_mission')
+        for row in older['trials']:
+            row.pop('equivalent_and_mission')
+        self.assertEqual(compare_suites(before, older)['equivalent_and_mission_delta'], -1 / 9)
+        forged = copy.deepcopy(after)
+        forged['equivalent_and_mission'] = before['equivalent_and_mission']
+        self.assertFalse(compare_suites(before, forged)['compatible'])
+
     def test_an_assistive_suite_counts_equivalent_drivers_out_of_planned_and_lists_the_unscored(self):
         # Catches an assistive suite counted by the gated success rule, unscored or stopped trials hidden or counted as
         # failed drivers, a denominator that drops a planned slot, and unknown report fields in the export.
@@ -541,6 +577,8 @@ class SuiteExportTests(AssistiveFixture):
         with self.owner():
             result = report_suite(record['suite_id'], home=self.home, output=self.root / 'export')
         text = (self.root / 'export/report.md').read_text()
+        joint = result['equivalent_and_mission']
+        self.assertIn(f"Equivalent drivers with successful fresh reuse: {joint['passed']}/{joint['denominator']}", text)
         self.assertEqual(result['reason'], 'Trial entry-000-repeat-002 is unscored: evaluator host fault: RuntimeError')
         self.assertIn('Suite status: blocked: ' + result['reason'], text)
         self.assertIn('runtime `codex`', text)

@@ -276,11 +276,13 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
         counts,unscored=_outcomes(trials,reports,passed)
         missions=[public_equivalence((reports.get(t.get('run_id')) or {}).get('equivalence')) or {} for t in trials]
         mission=sum((m.get('mission') or {}).get('passed') is True for m in missions)
+        reused=[t for t in passed if (reports[t['run_id']]['equivalence'].get('mission') or {}).get('passed') is True]
         result={'schema':'benchmark-suite-report/2','protocol':protocol,'qualification':qualification,'counts':counts,
             'equivalence':{'equivalent':len(passed),'denominator':len(trials),'rate':len(passed)/len(trials)},'unscored':unscored,
             'provisional':len(finished)!=len(trials),'family_equivalence':rates,'family_macro_equivalence':sum(rates.values())/len(rates),
             # Secondary: whether fresh reuse did the public mission with the frozen package; never the verdict.
-            'fresh_mission':{'passed':mission,'denominator':len(trials),'rate':mission/len(trials)},**resources}
+            'fresh_mission':{'passed':mission,'denominator':len(trials),'rate':mission/len(trials)},
+            'equivalent_and_mission':{'passed':len(reused),'denominator':len(trials),'rate':len(reused)/len(trials)},**resources}
     else:
         result={'schema':'benchmark-suite-report/1','qualification':qualification,
             'counts':{'planned':len(trials),'started':len(started),'finished':len(finished),
@@ -313,7 +315,8 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
             # Why the trial stands as it does: its outcome as its count holds it, the reason its report gives (paths
             # scrubbed by `report_run`), the stage where it stopped and the repairs it used.
             outcome=_outcome(trial,report,passed);repairs=(safe.get('progress') or {}).get('repairs')
-            row.update(outcome=outcome,reason=UNQUALIFIED if outcome=='unqualified' else safe.get('reason'),
+            row.update(equivalent_and_mission=trial in reused,
+                       outcome=outcome,reason=UNQUALIFIED if outcome=='unqualified' else safe.get('reason'),
                        stopped_stage=safe.get('stopped_stage'),repairs=repairs if type(repairs) is int else None)
         row['report_sha256']=_digest(_public_report(report)) if report else None
         row['interventions']=[{key:item[key] for key in ('event_id','kind','time','effect_resolution','scoped_tool_approval','old_budget_seconds','new_budget_seconds','extension_seconds','old_deadline','new_deadline','stage','uncertain_effect','has_observation')
@@ -359,6 +362,14 @@ def _saved_report(value):
         raise ValueError('Invalid '+key+' denominator')
     if success[win]!=sum(t.get('verdict')==win and t.get('status')=='finished' and t.get('outcome_category')=='completed' for t in report['trials']):
         raise ValueError('Saved '+key+' count differs from trial coverage')
+    if protocol:
+        joint=sum(t.get('status')=='finished' and t.get('outcome_category')=='completed'
+                  and _report_equivalent({**t,'schema':'benchmark-report/3','protocol':protocol,'workflow_status':'completed'})
+                  and ((t.get('equivalence') or {}).get('mission') or {}).get('passed') is True for t in report['trials'])
+        metric={'passed':joint,'denominator':planned,'rate':joint/planned}
+        if 'equivalent_and_mission' in report and report['equivalent_and_mission']!=metric:
+            raise ValueError('Saved joint success count differs from trial evidence')
+        report['equivalent_and_mission']=metric
     _number(report.get('usage',{}).get('total_tokens'),True)
     _number(report.get('latency',{}).get('median'))
     return report
@@ -381,6 +392,9 @@ def compare_suites(before,after):
         return {**result,'reason':'Replay results and model runs are separate series and are never compared'}
     key='equivalence' if protocol else 'success'
     result.update({'before_'+key:before[key],'after_'+key:after[key]})
+    if protocol:
+        result.update(before_equivalent_and_mission=before['equivalent_and_mission'],
+                      after_equivalent_and_mission=after['equivalent_and_mission'])
     if before['experiment']['comparison_identity']!=after['experiment']['comparison_identity']:
         return {**result,'reason':'Frozen experiment identities differ'}
     if before['qualification']!=after['qualification']:
@@ -391,6 +405,8 @@ def compare_suites(before,after):
     return {**result,'compatible':True,'changed_dimensions':changed,
         'change_scope':'combined-system' if len(changed)>1 else 'single-dimension' if changed else 'unchanged',
         key+'_delta':after[key]['rate']-before[key]['rate'],
+        **({'equivalent_and_mission_delta':after['equivalent_and_mission']['rate']-before['equivalent_and_mission']['rate']}
+           if protocol else {}),
         'latency_median_delta':delta(before.get('latency',{}).get('median'),after.get('latency',{}).get('median')),
         'tokens_delta':delta(before.get('usage',{}).get('total_tokens'),after.get('usage',{}).get('total_tokens'))}
 
@@ -503,6 +519,7 @@ def _summary(result):
     dimensions, each trial's outcome with its reason, stop stage, repairs, time and tokens, and the check ids that failed
     most often. Expected values and tolerances are in none of these fields."""
     equivalence,rows,counts=result['equivalence'],result['trials'],result['counts']
+    joint=result['equivalent_and_mission']
     dimensions=', '.join(f'{key} `{value}`' for key,value in result['experiment']['dimensions'].items() if value is not None)
     tallied={}
     for row in rows:tallied[row['outcome']]=tallied.get(row['outcome'],0)+1
@@ -516,6 +533,8 @@ def _summary(result):
     unscored=', '.join(row['trial_key'] for row in result['unscored'])
     lines=[f"Equivalent drivers: {equivalence['equivalent']}/{equivalence['denominator']}. Protocol: {result['protocol']}, "
            f"a series never compared with earlier gated results. Qualification: {result['qualification']}.",'',
+           f"Equivalent drivers with successful fresh reuse: {joint['passed']}/{joint['denominator']}. "
+           'Both conditions must hold for the same trial; missing mission evidence is no success.','',
            'Suite status: '+str(result['status'])+(': '+_cell(result['reason']) if result.get('reason') else '')+'.','',
            'Dimensions: '+(dimensions or 'none recorded')+'.','',
            'Outcomes: '+', '.join(f'{count} {outcome}'+(f' ({detail[outcome]})' if detail.get(outcome) else '')

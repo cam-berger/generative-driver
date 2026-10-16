@@ -2076,6 +2076,10 @@ class Controller:
         goal = params.get('goal')
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError('start requires a nonempty goal')
+        for key in ('ghidra_home', 'java_home'):
+            value = params.get(key)
+            if value is not None and (not isinstance(value, str) or not Path(value).is_absolute()):
+                raise ValueError(key + ' must be an absolute path to the selected installation')
         executor = configured_executor(params.get('executor'), self.home)
         if executor not in ('codex', 'goose', 'replay'):
             raise ValueError('executor must be codex, goose or replay')
@@ -2643,7 +2647,9 @@ class Controller:
             if len(images) != 1:
                 return {'skip':'Interpretation skipped: no single acquired binary to interpret (' + str(len(images)) + ' candidates)'}
             # A repair keeps the sealed workspace and adds the device diff and the candidate it contradicts.
-            inputs = {'image.bin':str(images[0])}
+            from .analysis import firmware_analysis_inputs
+            inputs = {'image.bin':str(images[0]),
+                      **firmware_analysis_inputs(run_dir / 'preparation' / workspace.name / 'context', spec)}
             # A successful passive listen records transport settings and boot/reset evidence.
             # Keep that observed acquisition evidence in the sealed interpretation inputs.
             for artifact in artifacts:
@@ -3416,7 +3422,8 @@ class Controller:
             if not isinstance(arguments['inputs'],dict) or any(not isinstance(p,str) or not Path(p).is_absolute() or not Path(p).resolve().is_relative_to(workspace) for p in arguments['inputs'].values()):
                 raise ValueError('Every tool input must be inside this stage workspace')
         binding = assignment.get('binding') or {}
-        if name == 'acquire_selfdescription' or (name == 'acquire_classify' and arguments.get('transports') is not None):
+        selfdescribing = name == 'acquire_selfdescription' or (name == 'acquire_classify' and arguments.get('transports') is not None)
+        if selfdescribing:
             # A USB transport reads only the device the operator bound, by its vendor/product identity.
             if not (type(binding.get('vendor_id')) is int and type(binding.get('product_id')) is int):
                 raise ValueError('No operator-owned USB device identity is bound to this stage; a USB transport reads '
@@ -3425,7 +3432,8 @@ class Controller:
             if isinstance(binding.get('serial_number'), str) and binding['serial_number']:
                 arguments['serial_number'] = binding['serial_number']
         serial_binding = _is_serial_binding(binding)
-        serial_tool = name in ('acquire_serial_listen','acquire_flash') or (name == 'acquire_classify' and serial_binding)
+        # A USB identity can also identify a serial adapter, but an explicit descriptor request never opens its port.
+        serial_tool = name in ('acquire_serial_listen','acquire_flash') or (name == 'acquire_classify' and serial_binding and not selfdescribing)
         model_tool = name in ('probe_run','interface_execute','emit_test_live') and not arguments.get('replay')
         if name in ('acquire_serial_listen','acquire_flash') and not serial_binding:
             raise ValueError('No operator-owned serial binding for this stage')

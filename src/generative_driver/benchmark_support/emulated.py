@@ -288,20 +288,12 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                 'context': {'package_dir': str(package)}, 'binding': binding,
                 'boundary': 'fresh package-only mission'}
     if stage == 'interpret':
-        from ..toolkit import call_tool, resources_root
+        from ..toolkit import call_tool
+        from ..analysis import firmware_analysis_inputs
         state_path, state = _state(run_dir)
         state['revision'] = int(options.get('revision', state.get('revision', 0)))
         image = inputs/'firmware.bin'
-        sources = {'image.bin': str(image),
-                   'ghidra_run.py': str(resources_root()/'tools/workspace/ghidra_run.py'),
-                   'ExportDecomp.java': str(resources_root()/'toolchain/skills/interpret-firmware-binary/ExportDecomp.java'),
-                   'SeedCortexM.java': str(resources_root()/'toolchain/skills/interpret-firmware-binary/SeedCortexM.java')}
-        config = ws/'ANALYSIS_TOOLS.json'
-        _write(config, {**{k: str(options[k]) for k in ('ghidra_home', 'java_home') if options.get(k)},
-            'optional_cortex_m_prescript': {
-                'when': 'Use only when image evidence establishes a Cortex-M vector table at the start of the imported mapping and a Thumb reset entry inside executable bytes. This generic helper does not identify the architecture or infer a load map.',
-                'usage': 'After independently establishing loader, processor and mapping, add --prescript SeedCortexM.java --script-path <absolute-workspace> to the supplied ghidra_run.py command. Keep the reasoning and native logs in this workspace.'}})
-        sources['ANALYSIS_TOOLS.json'] = str(config)
+        sources = {'image.bin': str(image), **firmware_analysis_inputs(ws, options)}
         wiring = ws/'BINDING_CONTEXT.json'
         _write(wiring, {'schema': 'interpret-binding-context/1',
             'runtime_channel': {'type': 'tcp'}, 'physical_channel': {'type': 'uart'},

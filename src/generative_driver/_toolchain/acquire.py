@@ -254,7 +254,8 @@ def acquire_datasheet(run_dir, part_hint=None, url=None, expected_sha256=None, *
     has no url returns needs_search, which is what the find-datasheet skill is for.
     """
     run = core.resolve_run(run_dir)
-    reg = json.load(open(os.path.join(core.BENCH, "toolchain", "datasheets.json"), encoding="utf-8"))
+    with open(os.path.join(core.BENCH, "toolchain", "datasheets.json"), encoding="utf-8") as registry:
+        reg = json.load(registry)
     key = (part_hint or "").strip().lower()
     entry = reg["parts"].get(key)
     if not entry and not url:
@@ -841,8 +842,8 @@ def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
                       "result": ("obtained rev %s" % r.get("revision")) if r.get("available") else r.get("reason"),
                       "event": r.get("_event")})
         if r.get("available"):
-            return {"device_class": 2, "front_end": "interpret-datasheet", "artifact": r["artifact"],
-                    "rungs": rungs,
+            return {"available": True, "device_class": 2, "front_end": "interpret-datasheet", "artifact": r["artifact"],
+                    "rungs": rungs, "artifacts": [r["artifact"], r["pages_dir"]],
                     "inputs_for_interpret": {"datasheet.pdf": r["artifact"], "pages": r["pages_dir"]}}
         if port is not None and transports is None:
             return {"device_class": None, "rungs": rungs,
@@ -859,7 +860,8 @@ def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
                           "result": "described" if r.get("available") else r.get("reason") or r.get("error"),
                           "event": r.get("_event")})
             if r.get("available"):
-                return {"device_class": 3, "front_end": r["front_end"], "artifact": r["artifact"], "rungs": rungs,
+                return {"available": True, "device_class": 3, "front_end": r["front_end"], "artifact": r["artifact"], "rungs": rungs,
+                        "artifacts": list(r["inputs_for_interpret"].values()),
                         "identity": r["identity"], "named_protocols": r["named_protocols"],
                         "next_tool": r["next_tool"], "inputs_for_interpret": r["inputs_for_interpret"]}
             code = max(code, 4 if r.get("_exit") == 4 else 1)
@@ -873,7 +875,8 @@ def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
     rungs.append({"rung": 3, "name": "selfdescription", "tried": True, "result": r.get("reason"),
                   "event": r.get("_event")})
     if r.get("available"):
-        return {"device_class": 3, "front_end": "interpret-selfdescribing", "artifact": r["artifact"], "rungs": rungs}
+        return {"available": True, "device_class": 3, "front_end": "interpret-selfdescribing", "artifact": r["artifact"],
+                "artifacts": list(r.get("inputs_for_interpret", {}).values()), "rungs": rungs}
 
     scan = acquire_bus_scan(run_dir=run_dir, bus_url=bus_url)
     rungs.append({"rung": 4, "name": "blackbox", "tried": True,
@@ -884,5 +887,5 @@ def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
     if allow_register_sweep:
         sw = acquire_register_sweep(run_dir=run_dir, address=scan["acks"][0], bus_url=bus_url)
         inputs["sweep"] = sw.get("sweep")
-    return {"device_class": 4, "front_end": "interpret-blackbox", "artifact": scan["scan"],
-            "rungs": rungs, "inputs_for_interpret": inputs}
+    return {"available": True, "device_class": 4, "front_end": "interpret-blackbox", "artifact": scan["scan"],
+            "rungs": rungs, "inputs_for_interpret": inputs, "artifacts": [p for p in inputs.values() if p]}

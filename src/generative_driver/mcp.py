@@ -25,16 +25,19 @@ def _call(method, **params):
 def driver_start(goal: str, executor: Literal["codex", "goose"] | None = None, inputs: dict | None = None,
                  binding: dict | None = None, effects: list[str] | None = None,
                  budget_seconds: int = 10800, request_id: str | None = None,
-                 scoped_tool_approval: Literal["bound-device"] | None = None) -> str:
+                 scoped_tool_approval: Literal["bound-device"] | None = None,
+                 ghidra_home: str | None = None, java_home: str | None = None) -> str:
     """Start a durable six-stage run using a configured runtime. Save the returned run_id.
     executor defaults to the one runtime configured with `generative-driver configure`; an unconfigured one is refused.
     Supply explicit inputs and operator binding; effects default to read. request_id deduplicates starts.
     Effects are read, write, actuate and reset; grant reset only for devices that restart when their port opens.
+    ghidra_home and java_home optionally select native analysis installations for the sealed firmware worker.
     Set bound-device approval only with the user's explicit consent to assigned tools for that binding/effect scope.
     """
     return _call("start", goal=goal, executor=executor, inputs=inputs or {}, binding=binding,
                  effects=effects if effects is not None else ["read"], budget_seconds=budget_seconds,
-                 request_id=request_id, scoped_tool_approval=scoped_tool_approval)
+                 request_id=request_id, scoped_tool_approval=scoped_tool_approval,
+                 ghidra_home=ghidra_home, java_home=java_home)
 
 
 @server.tool()

@@ -71,6 +71,8 @@ Benchmark suites use this same configurator. Save the `suite_id` from `benchmark
 
 Start a managed run with `run --spec run.json`. The JSON contains `goal`, `executor`, `inputs`, `binding`, `effects`, and `budget_seconds`; `request_id` makes a retried start idempotent. Follow it with `status RUN_ID`, `events RUN_ID --after CURSOR`, `result RUN_ID`, `cancel RUN_ID`, or `resume RUN_ID`. Use `respond RUN_ID --observation observation.json` for a requested independently sourced observation. `--home DIRECTORY` precedes the command when selecting a separate state directory.
 
+Firmware runs also accept optional `ghidra_home` and `java_home` absolute installation paths, both in the JSON specification and `driver_start` over MCP. The interpreter receives the same sealed `ghidra_run.py`, Java exporter, optional Cortex-M seeding helper and `ANALYSIS_TOOLS.json` as benchmark workers. The helpers do not select an architecture or mapping; the worker must derive those from the image. Native analysis remains optional and its absence must be reported.
+
 ## Optional containers
 
 The core, runtime and configurator execute natively. Containers may host analysis tools or an emulator as long as the selected adapter exposes its required files and connection endpoint. Container-specific USB forwarding is outside the native core contract. The initial benchmark uses native tools and does not require Docker.

@@ -35,6 +35,10 @@ output in NOTES. A structurally valid incidental peripheral model does not estab
 
 Record the original artifact hash, analysis architecture/base assumptions, commands and output files in
 NOTES. Confirm exporter artifacts actually exist; an exit code alone does not establish decompilation.
+Beside the decompilations the exporter writes `references.tsv`, `strings.tsv` and `switches.tsv`, each
+bounded at 16 MiB unless the helper's `--navigation-max-bytes` sets another bound; `navigation.json` and the
+helper's `exports.truncated` report a table that reached its bound. They help find a dispatcher through its
+callers, strings and cases; they are static facts, not evidence that code runs.
 Use exact transaction boundaries and evidence-backed limits. The host supplies physical bindings later;
 do not put serial device paths, network destinations or FTDI URLs in the model.
 

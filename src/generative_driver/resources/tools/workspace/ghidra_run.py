@@ -47,6 +47,9 @@ raw image as "Raw Binary" with exit 0; `ghidra.app.util.opinion.BinaryLoader`, `
 
 The exporter (ExportDecomp.java in the interpret-firmware-binary skill) writes functions.tsv with the
 header address/name/decompilation_complete, one function_<address>.c per function, and disassembly.txt.
+It also writes the static navigation tables in NAVIGATION_TABLES (references, strings, switch cases), each
+bounded in bytes, and navigation.json, which records each table's bound, rows written, rows found and
+truncation. A truncated table verifies and is reported in exports.truncated.
 """
 import argparse
 import datetime
@@ -61,6 +64,17 @@ import time
 POSTSCRIPT = "ExportDecomp.java"
 PROJECT_NAME = "analysis"
 WORKSPACE_DIRS = ("settings", "cache", "tmp", "home", "projects", "logs")
+
+# The exporter's static navigation tables, each with its header columns, and the manifest that records each
+# table's byte bound, rows written, rows found and whether it was truncated.
+NAVIGATION_MANIFEST = "navigation.json"
+NAVIGATION_SCHEMA = "ghidra-navigation/1"
+NAVIGATION_BOUNDS = (1024, 1 << 30)  # a requested byte bound per table; the exporter has its own default
+NAVIGATION_TABLES = {
+    "references.tsv": ("from_address", "from_function", "to_address", "to_function", "type"),
+    "strings.tsv": ("address", "encoding", "length", "clipped", "functions", "refs_outside_functions", "value"),
+    "switches.tsv": ("function", "switch_address", "case_value", "target"),
+}
 
 # Which `-loader` spellings the installed headless analyzer accepts, measured on the local installation
 # by importing a synthetic Thumb image with -noanalysis (bench/toolchain/tests/test_ghidra.py repeats the
@@ -124,7 +138,7 @@ def format_base_address(number):
 
 
 def build_command(ghidra_path, workspace, image, base_address, processor, loader, prescripts,
-                  script_path, export_dir, noanalysis, project_name=PROJECT_NAME):
+                  script_path, export_dir, noanalysis, project_name=PROJECT_NAME, navigation_max_bytes=None):
     """The analyzeHeadless argument vector, every path absolute. No shell is involved anywhere."""
     logs = os.path.join(workspace, "logs")
     argv = [os.path.join(ghidra_path, "support", "analyzeHeadless.bat" if os.name == "nt" else "analyzeHeadless"),
@@ -143,6 +157,8 @@ def build_command(ghidra_path, workspace, image, base_address, processor, loader
         argv += ["-preScript", *[str(p) for p in parts]]
     if script_path:
         argv += ["-postScript", POSTSCRIPT, export_dir]
+        if navigation_max_bytes is not None:
+            argv.append(str(navigation_max_bytes))
     argv += ["-log", os.path.join(logs, "application.log"),
              "-scriptlog", os.path.join(logs, "script.log")]
     return argv
@@ -222,14 +238,15 @@ def split_stderr(text):
     return version, hostname, other
 
 
-def verify_exports(export_dir, expected):
-    """What ExportDecomp.java should have left behind, checked on disk rather than inferred from a marker."""
+def verify_exports(export_dir, expected, max_bytes=None):
+    """What ExportDecomp.java should have left behind, checked on disk rather than inferred from a marker.
+    `max_bytes` is the navigation table bound the exporter was asked for, if any."""
     tsv = os.path.join(export_dir, "functions.tsv")
     asm = os.path.join(export_dir, "disassembly.txt")
     out = {"dir": export_dir, "expected": expected, "functions_tsv": tsv, "disassembly_txt": asm,
            "functions": 0, "decompiled": 0, "not_decompiled": 0, "header_ok": False,
            "disassembly_bytes": 0, "disassembly_lines": 0, "c_files": 0,
-           "address_range": None, "problems": [], "verified": False}
+           "address_range": None, "navigation": None, "truncated": [], "problems": [], "verified": False}
     if not expected:
         out["problems"].append("no post-script was run, so nothing was exported")
         return out
@@ -264,12 +281,83 @@ def verify_exports(export_dir, expected):
                 out["disassembly_lines"] = sum(1 for _ in fh)
     else:
         out["problems"].append("disassembly.txt missing")
+    out["navigation"], problems = verify_navigation(export_dir, max_bytes)
+    out["truncated"] = [name for name, table in out["navigation"]["tables"].items() if table["truncated"]]
+    out["problems"] += problems
     out["verified"] = not out["problems"]
     return out
 
 
-def preflight(workspace, image, ghidra_path, java_home, export_dir, script_path, prescripts, timeout_s):
+def _count(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def verify_navigation(export_dir, max_bytes=None):
+    """The navigation tables against the exporter's manifest: each table's header, the field count of every
+    row, the rows and truncation the manifest records, and the byte bound, which must be `max_bytes` when one
+    was requested. A truncated table verifies; the summary reports it."""
+    summary = {"manifest": os.path.join(export_dir, NAVIGATION_MANIFEST), "max_bytes": None, "tables": {}}
+    try:
+        with open(summary["manifest"], encoding="utf-8") as fh:
+            manifest = json.load(fh)
+    except OSError:
+        return summary, [f"{NAVIGATION_MANIFEST} missing"]
+    except ValueError:
+        return summary, [f"{NAVIGATION_MANIFEST} is not JSON"]
+    if (not isinstance(manifest, dict) or manifest.get("schema") != NAVIGATION_SCHEMA
+            or not isinstance(manifest.get("tables"), dict) or not _count(manifest.get("max_bytes"))):
+        return summary, [f"{NAVIGATION_MANIFEST} is not {NAVIGATION_SCHEMA} with max_bytes and tables"]
+    summary["max_bytes"] = bound = manifest["max_bytes"]
     problems = []
+    if max_bytes is not None and bound != max_bytes:
+        problems.append(f"{NAVIGATION_MANIFEST} records a {bound}-byte bound, not the requested {max_bytes}")
+    for name, columns in NAVIGATION_TABLES.items():
+        recorded = manifest["tables"].get(name)
+        if (not isinstance(recorded, dict) or not _count(recorded.get("rows"))
+                or not _count(recorded.get("rows_found")) or not isinstance(recorded.get("truncated"), bool)):
+            problems.append(f"{NAVIGATION_MANIFEST} records no rows, rows_found and truncated for {name}")
+            continue
+        path = os.path.join(export_dir, name)
+        rows, defect = 0, None
+        try:
+            with open(path, "rb") as fh:  # a line at a time: a requested bound may be a gigabyte
+                size = os.fstat(fh.fileno()).st_size
+                header = fh.readline().rstrip(b"\n")
+                for rows, line in enumerate(fh, 1):
+                    if defect is None:
+                        try:
+                            fields = len(line.rstrip(b"\n").decode("utf-8").split("\t"))
+                        except UnicodeDecodeError:
+                            defect = f"{name} row {rows} is not UTF-8"
+                        else:
+                            if fields != len(columns):
+                                defect = f"{name} row {rows} has {fields} fields, not {len(columns)}"
+        except OSError:
+            problems.append(f"{name} missing")
+            continue
+        if header != "\t".join(columns).encode("utf-8"):
+            problems.append(f"{name} header is not {'/'.join(columns)}")
+            continue
+        if defect:
+            problems.append(defect)
+        if rows != recorded["rows"]:
+            problems.append(f"{name} has {rows} rows; {NAVIGATION_MANIFEST} records {recorded['rows']}")
+        found, kept = recorded["rows_found"], recorded["rows"]
+        if recorded["truncated"] != (found > kept) or found < kept:
+            problems.append(f"{name}: truncated in {NAVIGATION_MANIFEST} disagrees with its rows and rows_found")
+        if size > bound:
+            problems.append(f"{name} is {size} bytes, over its {bound}-byte bound")
+        summary["tables"][name] = {"path": path, "rows": rows, "rows_found": recorded["rows_found"],
+                                   "bytes": size, "truncated": recorded["truncated"]}
+    return summary, problems
+
+
+def preflight(workspace, image, ghidra_path, java_home, export_dir, script_path, prescripts, timeout_s,
+              navigation_max_bytes=None):
+    problems = []
+    if navigation_max_bytes is not None and not (_count(navigation_max_bytes) and
+                                                 NAVIGATION_BOUNDS[0] <= navigation_max_bytes <= NAVIGATION_BOUNDS[1]):
+        problems.append("navigation_max_bytes must be an integer from %d to %d" % NAVIGATION_BOUNDS)
     if re.search(r"\s", workspace):
         problems.append("workspace path contains whitespace, which the Ghidra launcher does not support in JVM options")
     if not os.path.isfile(image):
@@ -299,11 +387,12 @@ def preflight(workspace, image, ghidra_path, java_home, export_dir, script_path,
 
 def run(workspace, image, base_address, processor, ghidra_path, java_home, export_dir,
         loader="BinaryLoader", prescripts=None, script_path=None, timeout_s=1800, noanalysis=False,
-        project_name=PROJECT_NAME):
+        project_name=PROJECT_NAME, navigation_max_bytes=None):
     """Import `image` at `base_address` with `processor`, analyse unless `noanalysis`, run
     ExportDecomp.java from `script_path` into `export_dir`, and return one dict. `loader` None omits
     -loader so Ghidra chooses. `script_path` None runs no scripts, so nothing is exported and `ok` stays
-    false; the import verdict is then in `import_ok`."""
+    false; the import verdict is then in `import_ok`. `navigation_max_bytes` replaces the exporter's byte
+    bound for each navigation table."""
     workspace, image, ghidra_path, java_home, export_dir = (_abs(p) for p in
         (workspace, image, ghidra_path, java_home, export_dir))
     script_path = _abs(script_path) if script_path else None
@@ -316,7 +405,8 @@ def run(workspace, image, base_address, processor, ghidra_path, java_home, expor
         result["reasons"].append(str(e))
         return result
     result["base_address"] = "0x%08x" % base
-    problems = preflight(workspace, image, ghidra_path, java_home, export_dir, script_path, prescripts, timeout_s)
+    problems = preflight(workspace, image, ghidra_path, java_home, export_dir, script_path, prescripts, timeout_s,
+                         navigation_max_bytes)
     if problems:
         result["reasons"] = problems
         return result
@@ -326,7 +416,7 @@ def run(workspace, image, base_address, processor, ghidra_path, java_home, expor
     os.makedirs(export_dir, exist_ok=True)
     logs = os.path.join(workspace, "logs")
     argv = build_command(ghidra_path, workspace, image, base, processor, loader, prescripts,
-                         script_path, export_dir, noanalysis, project_name)
+                         script_path, export_dir, noanalysis, project_name, navigation_max_bytes)
     # The upstream Windows entry point is a batch launcher. It expands its arguments
     # again, so refuse command metacharacters instead of constructing a shell string.
     if os.name == "nt" and any(re.search(r'[&|<>^%!"\r\n]', value) for value in [*argv, workspace, java_home]):
@@ -405,7 +495,7 @@ def run(workspace, image, base_address, processor, ghidra_path, java_home, expor
         "stderr_other": other[:STDERR_CAP], "stderr_other_count": len(other),
         "stdout_bytes": len(stdout.encode("utf-8", "replace")),
     })
-    result["exports"] = verify_exports(export_dir, expected=bool(script_path))
+    result["exports"] = verify_exports(export_dir, expected=bool(script_path), max_bytes=navigation_max_bytes)
     result["import_ok"] = exit_code == 0 and not timed_out and markers["import_succeeded"]
 
     reasons = []
@@ -445,12 +535,14 @@ def main(argv=None):
     ap.add_argument("--timeout-s", type=float, default=1800)
     ap.add_argument("--noanalysis", action="store_true")
     ap.add_argument("--project-name", default=PROJECT_NAME)
+    ap.add_argument("--navigation-max-bytes", type=int, default=None,
+                    help="byte bound for each navigation table; omitted means the exporter's default")
     args = ap.parse_args(argv)
     result = run(workspace=args.workspace, image=args.image, base_address=args.base_address,
                  processor=args.processor, ghidra_path=args.ghidra_path, java_home=args.java_home,
                  export_dir=args.export_dir, loader=args.loader or None, prescripts=args.prescript,
                  script_path=args.script_path, timeout_s=args.timeout_s, noanalysis=args.noanalysis,
-                 project_name=args.project_name)
+                 project_name=args.project_name, navigation_max_bytes=args.navigation_max_bytes)
     json.dump(result, sys.stdout, indent=1, default=str)
     sys.stdout.write("\n")
     return int(result["_exit"])

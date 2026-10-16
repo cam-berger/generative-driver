@@ -876,7 +876,7 @@
     },
     {
       "name": "ghidra_run",
-      "description": "Stage 2. Run headless Ghidra without a shell pipeline, with workspace-local JVM settings, the true exit\nstatus, success markers, verified export files and the local-host-name warning classified separately.\nok is true only when the exit is 0, the import succeeded and the exports verify.\n Native Windows uses support/analyzeHeadless.bat; other hosts use support/analyzeHeadless. Select an explicit Ghidra installation and JDK. The writable analysis workspace must contain no whitespace.",
+      "description": "Stage 2. Run headless Ghidra without a shell pipeline, with workspace-local JVM settings, the true exit\nstatus, success markers, verified export files and the local-host-name warning classified separately.\nok is true only when the exit is 0, the import succeeded and the exports verify.\n The exports include references.tsv, strings.tsv and switches.tsv: static navigation tables, each bounded by navigation_max_bytes (16 MiB unless given); exports.truncated names any table cut at its bound. Native Windows uses support/analyzeHeadless.bat; other hosts use support/analyzeHeadless. Select an explicit Ghidra installation and JDK. The writable analysis workspace must contain no whitespace.",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -952,6 +952,20 @@
             "default": false,
             "title": "Noanalysis",
             "type": "boolean"
+          },
+          "navigation_max_bytes": {
+            "anyOf": [
+              {
+                "maximum": 1073741824,
+                "minimum": 1024,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Navigation Max Bytes"
           }
         },
         "required": [

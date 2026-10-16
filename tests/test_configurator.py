@@ -3788,6 +3788,95 @@ class ConfiguratorTests(unittest.TestCase):
             finally:
                 controller.close()
 
+    def _acquire_run(self, controller, binding=None):
+        start = {'goal': 'Scripted acquire contract', 'executor_config': {'command': [sys.executable, '-c', 'import time; time.sleep(20)']}}
+        if binding:
+            start['binding'] = binding
+        run = controller.call('start', start)
+        until = time.monotonic() + 3
+        while time.monotonic() < until:
+            assignment = next((e['data'] for e in controller.call('events', run)['events'] if e['kind'] == 'stage.assigned'), None)
+            if assignment and controller.call('status', run)['status'] == 'running':
+                return run, assignment
+            time.sleep(.02)
+        self.fail('no running acquire assignment')
+
+    def test_classify_refuses_a_usb_device_the_worker_selects(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        def fake_call_tool(name, arguments):
+            return {'available': True, 'unsolicited_output': False, '_exit': 0, 'artifacts': []}
+        identity = {'vendor_id': 0x10C4, 'product_id': 0xEA60, 'serial_number': 'abc'}
+        with tempfile.TemporaryDirectory() as directory, patch('generative_driver.toolkit.call_tool', fake_call_tool), \
+             patch('interface_runtime.transports.resolve_serial_port', lambda binding, ports=None: '/dev/cu.x'):
+            controller = Controller(Path(directory))
+            try:
+                run, assignment = self._serial_run(controller, binding=identity)
+                request = {**run, 'assignment_id': assignment['id'], 'name': 'acquire_classify'}
+                controller.call('tool', {**request, 'name': 'acquire_serial_listen', 'arguments': {}})
+                # Another attached device, or one another run leases, is never the worker's to name.
+                for chosen in ({'transports': ['usb'], 'address': '05ac:1234'}, {'transports': ['usb'], 'serial_number': 'other'}):
+                    with self.assertRaisesRegex(ValueError, 'configurator-owned'):
+                        controller.call('tool', {**request, 'arguments': chosen})
+                controller.call('cancel', run)
+            finally:
+                controller.close()
+
+    def test_classify_reads_the_bound_usb_identity(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        captured = {}
+        def fake_call_tool(name, arguments):
+            captured[name] = dict(arguments)
+            return {'available': True, 'unsolicited_output': False, '_exit': 0, 'artifacts': []}
+        identity = {'vendor_id': 0x10C4, 'product_id': 0xEA60, 'serial_number': 'abc'}
+        with tempfile.TemporaryDirectory() as directory, patch('generative_driver.toolkit.call_tool', fake_call_tool), \
+             patch('interface_runtime.transports.resolve_serial_port', lambda binding, ports=None: '/dev/cu.x'):
+            controller = Controller(Path(directory))
+            try:
+                run, assignment = self._serial_run(controller, binding=identity)
+                request = {**run, 'assignment_id': assignment['id']}
+                controller.call('tool', {**request, 'name': 'acquire_serial_listen', 'arguments': {}})
+                controller.call('tool', {**request, 'name': 'acquire_classify', 'arguments': {'transports': ['usb']}})
+                self.assertEqual(captured['acquire_classify']['address'], '10c4:ea60')
+                self.assertEqual(captured['acquire_classify']['serial_number'], 'abc')
+                controller.call('cancel', run)
+            finally:
+                controller.close()
+
+    def test_classify_refuses_usb_selection_without_a_bound_usb_identity(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        def fake_call_tool(name, arguments):
+            return {'available': True, '_exit': 0, 'artifacts': []}
+        for binding in (None, {'port': '/dev/cu.contract'}, {'url': 'ftdi://x/1'}):
+            with self.subTest(binding=binding), tempfile.TemporaryDirectory() as directory, \
+                 patch('generative_driver.toolkit.call_tool', fake_call_tool):
+                controller = Controller(Path(directory))
+                try:
+                    run, assignment = self._acquire_run(controller, binding)
+                    request = {**run, 'assignment_id': assignment['id'], 'name': 'acquire_classify'}
+                    with self.assertRaisesRegex(ValueError, 'USB'):
+                        controller.call('tool', {**request, 'arguments': {'transports': ['usb']}})
+                    controller.call('cancel', run)
+                finally:
+                    controller.close()
+
+    def test_classify_hides_usb_device_selectors_from_workers(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory))
+            try:
+                run, assignment = self._acquire_run(controller)
+                tools = controller.call('tools', {**run, 'assignment_id': assignment['id']})['tools']
+                properties = next(t for t in tools if t['name'] == 'acquire_classify')['inputSchema'].get('properties', {})
+                self.assertIn('transports', properties)
+                self.assertNotIn('address', properties)
+                self.assertNotIn('serial_number', properties)
+                controller.call('cancel', run)
+            finally:
+                controller.close()
+
     def test_generic_worker_receives_operator_observations_without_the_connection(self):
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as directory:

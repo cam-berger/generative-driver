@@ -101,7 +101,8 @@ class StoreTests(unittest.TestCase):
                                                      'outcome_category','equivalent','equivalence_status'})
             for value in [-1,True,1.5,'0']:
                 with self.subTest(after=value),self.assertRaises(ValueError):store.events(sid,after=value)
-            for index in range(501):store.set_state(sid,'blocked','PRIVATE-REASON')
+            reason='Trial entry-000-repeat-000 stopped: scripted'
+            for index in range(501):store.set_state(sid,'blocked',reason)
             events=store.events(sid)
             self.assertEqual(len(events['events']),500)
             self.assertEqual(events['events'][0]['kind'],'suite.started')
@@ -109,6 +110,8 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(len(rest['events']),2)
             self.assertGreater(rest['events'][0]['id'],events['cursor'])
             self.assertEqual(store.events(sid,after=rest['cursor'])['cursor'],rest['cursor'])
+            # Why the suite stopped is public, as its status says it; the frozen executor configuration never is.
+            self.assertEqual([e['data'] for e in events['events'][1:]+rest['events']],[{'reason':reason}]*501)
             self.assertNotIn('PRIVATE',str(events)+str(rest)+str(page))
 
     def test_settlement_requires_matching_settled_child_and_is_idempotent(self):
@@ -227,8 +230,11 @@ class ControllerStorageTests(unittest.TestCase):
             finally:controller.close()
             recovered=Controller(home)
             try:
-                self.assertEqual(recovered.call('suite_status',{'suite_id':sid})['status'],'blocked')
-                self.assertEqual(recovered.call('suite_events',{'suite_id':sid})['events'][-1]['kind'],'suite.recovered')
+                # The status and the event say why the suite stopped: the restart.
+                stopped=recovered.call('suite_status',{'suite_id':sid})
+                self.assertEqual((stopped['status'],stopped['reason']),('blocked','Configurator restarted; explicit resume required'))
+                last=recovered.call('suite_events',{'suite_id':sid})['events'][-1]
+                self.assertEqual((last['kind'],last['data']),('suite.recovered',{'reason':stopped['reason']}))
                 page=recovered.call('suite_result',{'suite_id':sid,'limit':1})
                 self.assertEqual(page['trials'][0]['status'],'blocked')
                 self.assertEqual(page['next_offset'],1)

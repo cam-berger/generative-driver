@@ -243,6 +243,16 @@ def _awaiting(result, events):
     return "unscored" if any(event["kind"] == "evaluation.unscored" for event in events) else "pending"
 
 
+def _why(result, events):
+    """Why an assistive benchmark run stands as it does: the reasons of its latest unscored grade while it awaits one,
+    else the run's own reason (its stop, its verdict, or that its driver awaits the evaluator)."""
+    if _awaiting(result, events) == "unscored":
+        latest = [event["data"] for event in events if event["kind"] == "evaluation.unscored"][-1]
+        reasons = [str(d.get("reason")) for d in latest.get("diff") or [] if isinstance(d, dict)]
+        return "Unscored: " + ("; ".join(reasons) or "no reason recorded")
+    return result.get("reason")
+
+
 def report_run(run_id, home=None, output=None, *, autostart=True):
     """Export a saved run to portable JSON and a human-readable Markdown sibling."""
     from .client import call, default_home
@@ -321,7 +331,8 @@ def report_run(run_id, home=None, output=None, *, autostart=True):
         # stage evaluation exists.
         from .benchmark_support.evidence import public_v3_report
         report.update(progress=result['progress'], outcome_category=result.get('outcome_category'),
-                      equivalence_status=_awaiting(result, events))
+                      equivalence_status=_awaiting(result, events), reason=_public(_why(result, events), root),
+                      stopped_stage=result.get('stage') if result.get('status') in ('blocked', 'failed', 'cancelled') else None)
         report = public_v3_report(report)
     elif snapshot and manifest.get('schema') == 'benchmark-case/2':
         from .benchmark_support.evidence import public_v2_report

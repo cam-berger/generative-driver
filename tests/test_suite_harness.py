@@ -252,6 +252,23 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         self.assertTrue(all(peer.closed for peer in self.peers))
 
 
+    def test_a_blocked_suite_says_why_in_its_status_and_events(self):
+        # Catches a suite status that hides why the suite stopped, and suite events that do not say which child stopped
+        # it or why that child is unscored.
+        with self.harness(PASS, FAIL, RuntimeError('evaluator host stopped')):
+            graded = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
+                                request_id='three-children')
+        with self.harness(runtime=self.stopping_probe()):
+            stopped = self.drive(manifest=manifest(1), executor='codex', options={}, request_id='stopped-child')
+        for record, reason in ((graded, 'Trial entry-000-repeat-002 is unscored: evaluator host fault: RuntimeError'),
+                               (stopped, 'Trial entry-000-repeat-000 stopped: Cannot start configured runtime: scripted')):
+            sid = record['suite_id']
+            with self.subTest(suite=sid):
+                status = self.controller.call('suite_status', {'suite_id': sid})
+                self.assertEqual((status['status'], status['reason']), ('blocked', reason))
+                events = self.controller.call('suite_events', {'suite_id': sid})['events']
+                self.assertEqual([e['data'] for e in events if e['kind'] == 'suite.blocked'], [{'reason': reason}])
+
     def test_a_harness_that_cannot_provide_a_device_leaves_the_suite_blocked_and_its_slot_reserved(self):
         # Catches a suite left running with no harness driving it, a second child started for the slot, and a slot
         # lost when its trial could not start.
@@ -266,9 +283,16 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         status = self.controller.call('suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['stopping'], status['active_child_id'], status['completed']),
                          ('blocked', False, None, 0))
-        self.assertEqual(status['reason'], 'Explicit suite resolution required')
         # The harness's failure text, which names the emulator executable it was handed, stays in its own record: the
-        # suite tables say only which trial failed and where that record is.
+        # suite tables, and the status that says why the suite stopped, say only which trial failed and where that
+        # record is.
+        self.assertIn('entry-000-repeat-000', status['reason'])
+        self.assertNotIn(EMULATOR, status['reason'])
+        self.assertIn(str(self.root), self.controller._suites.get(sid)['reason'])
+        self.assertNotIn(str(self.root), status['reason'])
+        blocked = [e['data']['reason'] for e in self.controller.call('suite_events', {'suite_id': sid})['events']
+                   if e['kind'] == 'suite.blocked']
+        self.assertEqual(blocked, [status['reason']])
         self.assertNotIn(EMULATOR, json.dumps(self.suite_rows()))
         self.assertIn('entry-000-repeat-000', self.controller._suites.get(sid)['reason'])
         self.assertIn('suite.json', self.controller._suites.get(sid)['reason'])

@@ -1,12 +1,14 @@
-# Local analysis environment
+# Local analysis tools
 
-Use only already installed local tools. Installation paths, when supplied below, identify generic tools and permit reading documentation inside those installations. They do not identify the artifact or authorize reading neighboring directories. If a required tool is unavailable, record that limitation; do not download replacements.
+Use installed tools and their own local docs only. Tool paths authorize neither neighboring directories nor image evidence. Record missing tools; do not download replacements.
 
-Use the supplied `ghidra_run.py` helper with explicit Ghidra and compatible JDK directories. It selects `support/analyzeHeadless.bat` and `bin/java.exe` on Windows, or `support/analyzeHeadless` and `bin/java` on macOS. Confirm Java compatibility from that installation's documentation. The analysis workspace must have no whitespace because the launcher expands JVM options; on Windows its arguments must also avoid shell metacharacters. Keep inputs, outputs and logs in that workspace. The helper records the native process policy and terminates the analyzer process tree on timeout. Windows analyzer execution still needs qualification on an actual Windows Ghidra installation.
+## Workspace and launch
 
-Before the first launch, create workspace-local directories for settings, cache, temporary files, scripts and projects. Configure the installed Ghidra version's settings/cache overrides; commonly these are the JVM properties `application.settingsdir` and `application.cachedir`. Also direct `user.home` and `java.io.tmpdir` to workspace-local directories using explicit JVM options, through the helper's `GHIDRA_HEADLESS_JAVA_OPTIONS`. Use the installation's local documentation to confirm these overrides. Preserve launch logs and verify reported settings/cache locations; if they are outside the workspace, stop and correct them before analysis continues. These controls reduce accidental reads; they are not an OS sandbox.
+Use supplied `ghidra_run.py` with explicit Ghidra/compatible JDK directories. It selects Windows `support/analyzeHeadless.bat` / `bin/java.exe` or macOS `support/analyzeHeadless` / `bin/java`, records process policy and kills the process tree on timeout. Native Windows Ghidra remains unqualified.
 
-Use absolute paths for the image, project directory, `-scriptPath`, pre/post scripts and export destination. Derive the workspace's absolute path from the current directory rather than reading parent directories. For example, after setting the tool paths and local JVM options, the command shape is:
+The workspace must have no whitespace; Windows arguments must also avoid shell metacharacters. Create local settings/cache/temp/scripts/projects directories. Confirm installed-version JVM overrides in local docs: commonly `application.settingsdir`, `application.cachedir`, plus `user.home` and `java.io.tmpdir`, passed through `GHIDRA_HEADLESS_JAVA_OPTIONS`. Check logged paths; stop and correct any outside-workspace location. This is not a sandbox.
+
+Derive absolute paths from the current directory, without reading parents. Pass arguments as a list through the helper; this illustration uses POSIX continuations:
 
 ```text
 <absolute-ghidra>/support/analyzeHeadless <absolute-workspace>/projects analysis \
@@ -16,34 +18,49 @@ Use absolute paths for the image, project directory, `-scriptPath`, pre/post scr
   -postScript ExportDecomp.java <absolute-workspace>/exports
 ```
 
-The illustration uses POSIX continuation characters; pass the arguments as a list through the helper on either operating system. Determine loader, language, endianness, compiler specification, image offsets and load addresses from image evidence. The helper assumes the program is already imported correctly; it does not infer architecture, repair memory layout or seed callbacks. If a container, relocation, copied data region or indirect entry point needs additional treatment, write image-supported scripts here and retain the reasoning and logs. Check critical decompiler claims against disassembly and the original bytes.
+Infer loader, architecture, endianness, compiler, offsets and addresses from image evidence. The helper does not infer/repair maps or seed callbacks. Retain justified scripts/logs for containers, relocations, copied data and indirect entries. Cross-check critical decompilation against disassembly/bytes.
 
-`ExportDecomp.java` exports the function inventory, instruction listing and one decompilation file per recovered function, plus three navigation tables. Its first argument is an absolute export directory inside this workspace; an optional second argument replaces the 16 MiB byte bound on each navigation table (1024 to 1073741824 bytes; `ghidra_run.py --navigation-max-bytes`). Empty or failed decompilations do not establish behavior.
+`ExportDecomp.java` takes an absolute workspace export directory and optional per-table byte bound: default 16 MiB, range 1024–1073741824 (`ghidra_run.py --navigation-max-bytes`). Require nonempty `functions.tsv` (address/name/completion), `function_<address>.c` and `disassembly.txt`; zero exit status alone proves nothing.
 
-`ExportDecomp.java` writes `functions.tsv` (address, name, whether decompilation completed), one `function_<address>.c` per function and `disassembly.txt`. Confirm those files exist and are nonempty before citing them; an analyzer that exits zero can still leave an empty export directory.
+## Navigation tables
 
-The navigation tables are tab-separated, with a header line, addresses written as in `functions.tsv`, and each function named by its entry address (empty when no function contains the address):
+Headered TSV addresses match `functions.tsv`; functions use entry addresses, empty outside a function.
 
-- `references.tsv`: `from_address`, `from_function`, `to_address`, `to_function` and `type` for every memory reference Ghidra recorded (calls, jumps, computed jumps, reads, writes, data pointers). Stack, register and external references are left out.
-- `strings.tsv`: `address`, `encoding`, `length` (decoded characters), `clipped`, `functions` (those containing a reference to the string), `refs_outside_functions` (reference sources outside every function, such as pointer tables; follow them in `references.tsv`) and `value`. A value longer than 4096 characters is clipped. Backslash, tab, newline and carriage return are escaped as `\\`, `\t`, `\n` and `\r`, other control characters as `\u` and four hexadecimal digits.
-- `switches.tsv`: `function`, `switch_address`, `case_value` (hexadecimal) and `target` for each jump table the decompiler recovered. A target the decompiler gave no value, such as a bounds check's default, stays in the table with `case_value` `unknown`. A function whose decompilation failed contributes no rows.
+| Table | Fields / limits |
+|---|---|
+| `references.tsv` | `from_address`, `from_function`, `to_address`, `to_function`, `type`; memory references only, excluding stack/register/external |
+| `strings.tsv` | `address`, `encoding`, decoded-character `length`, `clipped`, referencing `functions`, `refs_outside_functions`, `value`; values clipped after 4096 characters |
+| `switches.tsv` | `function`, `switch_address`, hexadecimal `case_value`, `target`; unassigned cases stay `unknown`, failed decompilations add no rows |
 
-`navigation.json` records the bound and, for each table, `rows`, `rows_found` and `truncated`. A table that reaches its bound keeps its leading rows, in address order, and leaves out the rest, so a fact missing from a truncated table is not evidence of its absence; `ghidra_run.py` lists truncated tables in `exports.truncated`. The tables are static analysis facts. A reference, a string use or a switch case does not show that the code runs or is reachable at run time, and Ghidra records no reference it could not resolve, such as a computed address. Confirm a dispatch path in the decompilation, the disassembly and the bytes before citing it.
+String escapes: `\\`, `\t`, `\n`, `\r`, or `\u` plus four hex digits for other controls. Follow outside-function string references in `references.tsv`. `navigation.json` records bound, `rows`, `rows_found`, `truncated`; the helper reports `exports.truncated`. Check tables against that manifest. Truncation preserves leading address-ordered rows; missing rows prove no absence. These are static facts, not reachability. Unresolved computed references may be missing; confirm dispatch in code/disassembly/bytes.
 
-## Mapping consistency
+## Load mapping
 
-A plausible vector table is not a load map. A valid initial stack pointer and a Thumb reset vector at some file offset are consistent with several combinations of load base and file prefix, and a raw image can carry an outer container prefix in front of a mapped header that is itself in front of the table. An earlier run took the table's file offset as the image start and placed every function a header's length too low. Settle the relation load address = base + (file offset - header) with the checker's literal-pointer coherence and confirm it by resolving a pointer that must land on a string. Under a wrong map the reset vector resolved to the middle of an unrelated function and the identity handler's literal pointers resolved to unrelated text, and neither was noticed because the vector table alone looked right.
+Run `python image_map_check.py image.bin` with configured Python 3.11+ before choosing a base. A plausible vector table supports several base/prefix combinations. Establish `address = base + (file offset - header)` from all three:
 
-Before choosing a base, run the supplied checker, `python image_map_check.py image.bin` (using the configured Python 3.11+ interpreter), and read its best mapping and the evidence it prints. Then require three things to agree under one mapping before importing: the reset vector resolves to code that reads as a startup routine (initialised-data copy, BSS zeroing, calls into initialisation), the absolute literal pointers that code loads (the words in literal pools that fall inside the flash range) resolve to strings and tables that make sense for the code using them, and the image header or container fields (sizes, offsets, a checksum over the mapped payload) describe the same payload the mapping selects. One absolute pointer that resolves to the identity string under a candidate mapping, and to something unrelated under the alternatives, is the decisive check. Record the mapping, the pointers checked and their targets in `NOTES.md`, and state every provenance address under that mapping with the original file offset beside it. Carry the mapping into the import rather than into a mental correction afterwards: either import the carved payload at its base, or give the loader the base and file offset explicitly.
+- Reset vector resolves to startup code: data copy, BSS clearing, initialization.
+- Absolute literal pointers resolve to strings/tables used by that code; compare alternative mappings.
+- Header sizes/offsets/checksum identify the same mapped payload.
 
-## Ghidra invocation
+Record best mapping, checked pointers/targets and disagreements in `NOTES.md`; pair every provenance address with its original offset. Apply the map during import by carving or explicit base/file offset, never by later mental correction.
 
-A helper, `ghidra_run.py`, will be supplied for headless import and export; it records the analyzer's exact exit status first, then inventories the export directory and reports both. Prefer it. When invoking `analyzeHeadless` directly, the following are confirmed against the installed Ghidra 12.1.3's own `support/analyzeHeadlessREADME.md` (read that file under the supplied installation before relying on any of it). `-loader <desired loader name>` forces a specific loader, and the README states that full Java package loader paths are no longer recognised; the raw-binary loader is listed there as `-loader BinaryLoader`, with `-loader-baseAddr <base address>` written as `[space:]offset` with a hexadecimal offset and no leading `0x`, and `-loader-fileOffset` and `-loader-length` taking hexadecimal with a leading `0x`. Do not pass the display name Ghidra prints after an automatic selection (`Using Loader: Raw Binary`) or the Java class name as the `-loader` argument: in the trial both spellings and the class name were rejected with `Invalid loader name specified` and produced zero exports. If you omit `-loader`, record the loader Ghidra reports selecting and the image evidence that makes the selection credible. `-processor <languageID>` must match the `id` attribute in the processor's `.ldefs` file exactly, including case. `-preScript` and `-postScript` take the script file name only, never a path, with `-scriptPath` naming the directory; `-log` sets the analysis log file.
+## Ghidra 12.1.3 details
 
-The README documents no exit-status contract for a failed import or script, so treat the exit code as one signal among several. Never wrap the analyzer in `|| true`: the trial's failed loader selections all returned shell exit zero for that reason, and the decisive evidence was the exception in the log and an export count of zero. Success is the analyzer's own exit status, its `Analysis succeeded` / `Import succeeded` markers in the log, and the presence and size of `functions.tsv`, the `function_*.c` files and `disassembly.txt`, with the navigation tables matching `navigation.json`, checked together. Log4j may print `Could not determine local host name` with a `java.io.UnknownHostException` at logging start-up inside the offline worker; in the examined runs the warning itself was nonfatal: complete imports and exports followed it, and in one run a separate `invalid filename specified` failure sat beside it. Classify it as its own allow-listed diagnostic and keep reading the rest of stderr. Do not declare stderr harmless as a whole, and do not add undocumented JVM flags to silence the warning.
+Read installed `support/analyzeHeadlessREADME.md` before relying on these options:
 
-## Shell hygiene
+| Option | Required form |
+|---|---|
+| `-loader` | `BinaryLoader` for raw images; neither display name `Raw Binary` nor Java class/package path |
+| `-loader-baseAddr` | `[space:]offset`, hex without `0x` |
+| `-loader-fileOffset`, `-loader-length` | Hex with `0x` |
+| `-processor` | Exact case-sensitive `.ldefs` language `id` |
+| `-preScript`, `-postScript` | Filename only; directory via `-scriptPath` |
+| `-log` | Analysis log path |
 
-Stage large producer output to a file in the workspace and preview the file, rather than piping the producer into a previewer. Under `set -o pipefail`, a consumer that closes early, such as `head`, sends the producer SIGPIPE and the pipeline's status becomes 141; with `set -e` the rest of the compound command then does not run. In the trial one such preview ended a string-extraction step before its later sections executed, and another made a Ghidra run that had already succeeded and exported 1,765 files look failed at the command boundary. Run `strings image.bin > strings.txt` once and read `strings.txt` with a bounded reader; inventory an export directory with a script that counts and sizes files rather than with `ls | head`.
+If auto-selecting a loader, record its name and supporting image evidence. Judge success jointly from analyzer status, `Analysis succeeded` / `Import succeeded`, and nonempty exports. Invalid loaders have produced zero exports; `|| true` hid their failures.
 
-`grep` exits 1 when nothing matches, and a search with no hits is a finding, not a failure; distinguish it from a producer error before acting on the status. Never let a preview's, search's or listing's status stand for the status of the analysis step that preceded it: capture the analysis command's exit code in its own variable or file, then preview, then report both separately. A blanket `|| true` hides the producer failure together with the preview noise and is never the fix.
+Log4j's `Could not determine local host name` / `UnknownHostException` was nonfatal in examined runs, but may accompany another real error. Allow-list that diagnostic only; inspect remaining stderr and avoid undocumented suppression flags.
+
+## Shell output
+
+Write producer output to workspace files before previewing (`strings image.bin > strings.txt`). Early-closing readers such as `head` can cause SIGPIPE/status 141 under `pipefail`, hiding later steps. Inventory exports with a counting/sizing script. Search exit 1 means no matches; distinguish it from a producer error. Capture analysis status separately from preview/search status. Never hide both with blanket `|| true`.

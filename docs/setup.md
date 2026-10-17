@@ -1,78 +1,75 @@
 # Installation and runtime setup
 
-Install the base package using the [README](../README.md). Use the Python executable from the environment containing Generative Driver in every command below (`.venv/bin/python` on macOS, `.venv\Scripts\python.exe` on Windows). The `python` examples stand for that executable; this is separate from the installed Codex or Goose executable. Paths containing spaces remain one quoted argument. No shell activation is required.
+[Install first](../README.md). Below, `python` means your installation’s executable: `.venv/bin/python` on macOS or `.venv\Scripts\python.exe` on Windows. Quote paths containing spaces. No activation is required.
 
-For a Windows source installation upgraded from a checkout without `.gitattributes`, build from a fresh clone. Existing files may retain converted line endings after an update, changing the bytes pinned by benchmark hashes. The repository's checkout policy preserves these bytes; keep integrity checks enabled.
+For an older Windows checkout created before `.gitattributes`, use a fresh clone: converted line endings can invalidate benchmark hashes.
 
 ## Select an agent runtime
 
-Install and authenticate Codex or Goose through its own supported setup. For Codex, run the selected executable with `--version` and confirm the output starts with `codex-cli`; an unrelated Python application shares the `codex` command name. Use a verified absolute OpenAI CLI path if there is a collision; see the [Codex identity check and macOS example](codex.md#verify-the-openai-cli). Then record the runtime's executable and model:
+Install and authenticate Codex or Goose separately. [Verify the OpenAI CLI](codex.md#verify-the-openai-cli) before selecting a command named `codex`.
 
 ```sh
 python -m generative_driver configure --executor codex --command "/absolute/path/to/codex" --model YOUR_MODEL
 python -m generative_driver configure --executor goose --command "/absolute/path/to/goose" --model YOUR_MODEL --provider YOUR_PROVIDER
 ```
 
-The configurator launches only a configured runtime: a start naming an unconfigured one is refused instead of running whatever has that name on `PATH`, and a start that names none uses the single configured runtime (Codex when both are configured). On Windows supply the installed `.exe` path. A runtime command is stored as an argument array, not a shell command. Additional wrapper arguments use repeated `--argument` options. Configuration contains runtime selection; authentication remains with the runtime. Configure the model explicitly so comparisons record the intended selection. Codex also accepts `--reasoning-effort` using a value supported by the selected model; Goose reasoning controls remain in its provider setup.
+Only configured runtimes may launch. Without an executor selection, use the single configured runtime, or Codex if both exist. Use the installed `.exe` path on Windows. Wrapper arguments use repeated `--argument`; commands are stored as argument arrays. Credentials stay with the runtime. Select the model explicitly; Codex also accepts supported `--reasoning-effort` values. Goose reasoning settings stay in its provider setup.
 
-Run state defaults to the native user data directory: `~/Library/Application Support/GenerativeDriver` on macOS and `%LOCALAPPDATA%\GenerativeDriver` on Windows. Set `GENERATIVE_DRIVER_HOME` or the CLI's leading `--home` option for a separate installation. Configure and connect both interfaces to the same directory to share runs.
+State defaults to `~/Library/Application Support/GenerativeDriver` on macOS and `%LOCALAPPDATA%\GenerativeDriver` on Windows. Use a leading `--home DIRECTORY` or `GENERATIVE_DRIVER_HOME` for another location. Configure all clients against the same location.
 
 ## Start the configurator
 
-On Windows, open a standalone PowerShell window separately from Goose or Codex and start the owner before connecting either interface:
+On Windows, run this in a standalone PowerShell window opened separately from Codex or Goose:
 
 ```powershell
 python -m generative_driver service start
 python -m generative_driver service status
 ```
 
-Use your installation environment's Python executable. `start` returns the background owner's process ID; `status` inspects it without starting another process. If you selected a custom state directory, use the same leading `--home DIRECTORY` for `configure`, `service start` and `setup`. Generated plugins and recipes pin that directory in their MCP environment. For a manually registered MCP connection, set `GENERATIVE_DRIVER_HOME` in its server environment to that same directory.
+Windows clients require this independent owner because closing a client can terminate its child processes. macOS clients can start it automatically. Generated integrations pin the state directory; manual MCP connections must set matching `GENERATIVE_DRIVER_HOME`.
 
-Windows MCP hosts can terminate their entire child-process tree when a session closes. Windows MCP connections therefore require an existing independent owner and return setup instructions if it is absent. They do not create a background owner inside that process tree. macOS clients can start the owner automatically; these explicit commands work there too.
-
-Start the service again after a reboot or sign-out. After work finishes, stop it explicitly with `python -m generative_driver service stop`. Closing a Goose/Codex conversation does not send that shutdown command.
-
-After upgrading or editing the installation, restart the service. A client refuses to drive a configurator that runs other code than its own, and `service status` then reports `"compatible": false`; run `service stop` and `service start`.
+Restart after upgrades or installation edits too: `service status` reports `"compatible": false` when client/owner code differs; run `service stop`, then `service start`. Restart after reboot or sign-out. Stop explicitly with `python -m generative_driver service stop`; closing a chat does not stop it. Keep the computer awake during runs.
 
 ## Add optional hardware tools
+
+From the checkout:
 
 ```sh
 python -m pip install -e ".[hardware,docs]"
 python -m generative_driver doctor
 ```
 
-Optional Python packages support serial ports, USB, FTDI bridges, ESP acquisition and document extraction. Native USB drivers, device permissions, Ghidra, Java and Renode remain separate installations. Consult the selected backend's vendor documentation before changing a USB driver. Hardware support depends on the device, adapter and firmware; see [support](support.md).
+USB drivers, permissions, Ghidra, Java and Renode are separate installations. Follow vendor instructions and check [supported paths](support.md). Containers may host optional tools; native core operation does not require Docker or provide container USB forwarding.
 
-Supply a concrete operator binding and effect grants with the objective. Use an explicit serial endpoint, USB identity or FTDI adapter URL; automatic discovery alone does not establish which device is authorized. Read access is the default. Generated packages preserve operation effects and validate their declared interface before execution.
+Supply the objective, exact serial/USB/FTDI binding and allowed effects. Reads are the default; discovery does not authorize a device. For approved noninteractive tools, set `scoped_tool_approval` to `"bound-device"` or `"emulator"`. The configurator enforces assigned tools, binding and effects without changing global Codex settings. Resume with `--approve-bound-device-tools` or `--approve-emulator-tools` when authorization is already established.
 
-Bind a UART by USB identity, copied from `serial_ports` in `doctor`: `{"vendor_id": 4292, "product_id": 60000, "serial_number": "..."}`. It resolves to the current port at each run; no match, or several matches without a `serial_number`, is an operator fault. Effect grants are `read`, `write`, `actuate` and `reset`. Some boards restart when the port opens (ESP32 on common USB bridges): acquisition listens first, and unsolicited output within 500 ms marks the binding as resetting on open. Such a binding requires the `reset` grant before any connection, and ESP flash acquisition resets the chip only with it.
+UART can bind by USB identity from doctor’s `serial_ports`: `{"vendor_id":4292,"product_id":60000,"serial_number":"..."}`. Resolve it each run; missing/ambiguous matches are operator faults. Grants are `read`, `write`, `actuate`, `reset`. Acquisition listens for 500 ms; unsolicited output marks reset-on-open. Such a binding needs `reset` before connecting; ESP flash resets only with that grant.
 
-For noninteractive Codex workers, explicitly approve the assigned runtime tools for that run. A device run uses `scoped_tool_approval: "bound-device"` alongside its selected `binding` and `effects`; the TQ9 benchmark uses `"emulator"`. The configurator permits only the assigned tool names and enforces the saved binding and effects. Without approval, the runtime can stop before invoking a tool. Resume an already selected device run with `resume RUN_ID --approve-bound-device-tools`, or an emulator run with `--approve-emulator-tools`. The equivalent `driver_resume` input is `scoped_tool_approval`. These settings do not alter the developer's global Codex configuration.
+Firmware runs accept optional absolute `ghidra_home`/`java_home` in run JSON or `driver_start`. The interpreter gets the sealed analysis kit and `ANALYSIS_TOOLS.json`; workers infer architecture/mapping. Missing optional analysis is reported.
 
 ## Recovery
 
-Save the run ID returned by `driver_start`. Read `driver_status` or `driver_result` from either UI to reconnect. Closing an MCP connection does not cancel a run. Cancellation is an explicit action. Resume rechecks saved evidence; uncertain physical operations require an observation before further action.
+Save the run ID. Reconnect with `driver_status` or `driver_result`; provide independent observations with `driver_respond`. Cancel explicitly. Resume after resolving the reported cause and checking uncertain physical effects.
 
-Keep the machine awake during long runs. Background persistence survives a client disconnect, not a powered-off computer. The configurator records interrupted runs for checked recovery after a crash.
-
-The budget measures wall-clock seconds from the original start, including stopped time. Ordinary resume retains that deadline. After the user explicitly approves more time, resume with an increased total and its reason:
+Budgets count wall time from the original start, including stopped time. With explicit approval, extend the total:
 
 ```sh
 python -m generative_driver resume RUN_ID --budget-seconds 21600 --budget-reason "User-approved continuation after pause"
 ```
 
-This example sets a six-hour total measured from the original start. `driver_resume` accepts the equivalent `budget_seconds` and `budget_reason` fields from Goose or Codex. The total can increase up to seven days; repeating the same total adds no further time. A durable `run.budget_extended` event records the previous and new totals/deadlines, added seconds and reason. Start time, prior attempts and accepted evidence remain intact, and recovery checks still apply.
+This sets six hours total, not six additional hours. The maximum is seven days; repeating a total adds nothing. MCP uses `budget_seconds` and `budget_reason`. Extensions retain start time, attempts and evidence and record a `run.budget_extended` event.
 
-Benchmark suites use this same configurator. Save the `suite_id` from `benchmark suite start` or `driver_benchmark_suite_start`, and reconnect with suite status/events/result from either interface. Keep the leading CLI `--home` and MCP `GENERATIVE_DRIVER_HOME` consistent; another `options.home` is refused. Windows suite MCP tools require the independent owner described above. A detached bench harness drives each suite; suite resume relaunches it and preserves the current child. Suite and child wall-clock budgets are separate and include stopped time; increasing one does not increase the other. [Suite commands and authorization gates](../bench/README.md#run-a-repeated-suite) cover manifest copying, private evaluator options, pagination, export and offline comparison.
+A detached bench harness drives suites; resume relaunches it and retains the current child. Suites use the same owner. Save `suite_id` and use suite status/events/result/cancel/resume. Suite and child budgets are separate; extend each explicitly. Keep CLI `--home` and MCP `GENERATIVE_DRIVER_HOME` consistent; conflicting `options.home` is refused. See [suite commands](../bench/README.md#run-a-repeated-suite).
 
 ## Developer command line
 
-`python -m generative_driver tools` lists the installed tool catalog. Use `tool NAME --arguments arguments.json` to execute one tool with explicit paths and bindings. These direct developer calls are separate from a managed workflow; use the configurator when ownership and durable stage handoffs with notes are required.
+| Action | Command after `python -m generative_driver` |
+|---|---|
+| List tools | `tools` |
+| Direct tool call | `tool NAME --arguments arguments.json` |
+| Start managed run | `run --spec run.json` |
+| Inspect | `status RUN_ID`, `events RUN_ID --after CURSOR`, `result RUN_ID` |
+| Control | `cancel RUN_ID`, `resume RUN_ID` |
+| Supply observation | `respond RUN_ID --observation observation.json` |
 
-Start a managed run with `run --spec run.json`. The JSON contains `goal`, `executor`, `inputs`, `binding`, `effects`, and `budget_seconds`; `request_id` makes a retried start idempotent. Follow it with `status RUN_ID`, `events RUN_ID --after CURSOR`, `result RUN_ID`, `cancel RUN_ID`, or `resume RUN_ID`. Use `respond RUN_ID --observation observation.json` for a requested independently sourced observation. `--home DIRECTORY` precedes the command when selecting a separate state directory.
-
-Firmware runs also accept optional `ghidra_home` and `java_home` absolute installation paths, both in the JSON specification and `driver_start` over MCP. The interpreter receives the same sealed `ghidra_run.py`, Java exporter, optional Cortex-M seeding helper and `ANALYSIS_TOOLS.json` as benchmark workers. The helpers do not select an architecture or mapping; the worker must derive those from the image. Native analysis remains optional and its absence must be reported.
-
-## Optional containers
-
-The core, runtime and configurator execute natively. Containers may host analysis tools or an emulator as long as the selected adapter exposes its required files and connection endpoint. Container-specific USB forwarding is outside the native core contract. The initial benchmark uses native tools and does not require Docker.
+The run JSON contains `goal`, `executor`, `inputs`, `binding`, `effects` and `budget_seconds`; a stable `request_id` makes retries idempotent. Put `--home DIRECTORY` before the command. Direct tool calls bypass managed ownership and stage progression.

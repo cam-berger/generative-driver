@@ -1,15 +1,11 @@
 # Generative Driver
 
-Build the public distribution from the accepted design in `docs/design.md`. Keep the source research checkout unchanged. Work through public interfaces with one failing test and its implementation per slice; the user approved four seams: installed CLI/MCP, configurator/worker execution, runtime/emitted package, and benchmark run/score/compare.
+Before implementation, read [CONTEXT.md](CONTEXT.md) and the [accepted design](docs/design.md). Keep the source research checkout unchanged.
 
-Read `CONTEXT.md` before implementation. Preserve independent groundtruth and distinguish worker reports, accepted handoffs, and evaluator verdicts. Functional compatibility is the benchmark criterion: compare outputs and effects for specified inputs, never candidate source-code equality. Artifact hashes establish provenance and integrity.
-
-Core Python must run on native macOS and Windows 11+. Hardware libraries and analysis tools are optional. No hardcoded user paths, Unix-only unconditional imports, shell-dependent process launch, or writing into installed resources.
-
-Goose/Codex are clients of the background configurator. The configurator owns configured agent runtimes, stages, durable runs and device access. One stage runs at a time. A disconnected UI may reconnect to the same run. Never silently retry an uncertain device write.
-
-All runs have six stages: acquire, interpret, probe, ground, emit, reuse. Fresh reuse is the endpoint: another agent receives the emitted driver and an objective, uses the desired device functions, and supplies evidence for independent acceptance. Diagnostic repair is bounded before frozen final grading.
-
-Only the evaluator receives groundtruth passwords. Candidate workers receive neither password nor plaintext answer keys. Report this password-based separation accurately; do not call hashes a sandbox. Actual model runs, scripted contract tests, replay, emulation and physical observations must remain distinguishable.
-
-Keep public documentation concise and executable. Preserve third-party notices. Do not publish or push private research artifacts. Do not launch actual model baselines or touch physical devices unless assigned explicitly by the primary agent.
+- Develop through four public seams: CLI/MCP, configurator/workers, runtime/package, benchmark run/score/compare. For each code change, observe one behavior test fail, implement it, then observe it pass.
+- Support native macOS and Windows 11+. Load optional hardware/analysis dependencies at use time. Use portable imports and argument-array process launches; keep outputs outside installed resources and avoid hardcoded user paths.
+- The configurator owns workers, durable runs and exclusive device access. Clients reconnect to the same run. Run six stages in order: acquire, interpret, probe, ground, emit, reuse. One stage is active at a time.
+- Fresh reuse receives only the package and objective. Under `assistive/1`, stages hand off with notes; device differences drive bounded repairs, then continue with the best revision. Record one final equivalence verdict: evaluator grade after a benchmark run, self-evidence otherwise. Never silently retry an uncertain write.
+- Keep worker claims, accepted handoffs and evaluator verdicts separate. Score observable outputs/effects, not candidate source-code equality. Hashes establish provenance and integrity.
+- The bench harness holds evaluator passwords; the configurator and workers receive neither passwords nor their paths or plaintext answers. Describe password separation accurately; hashes are not a sandbox. Distinguish model runs, scripted tests, replay, emulation and physical evidence.
+- Keep docs concise, concrete and executable. Define terms on first use; remove repeated explanations. Preserve notices and private research artifacts. Launch model baselines or physical operations only when explicitly assigned by the primary agent.

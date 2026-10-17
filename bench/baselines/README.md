@@ -1,5 +1,5 @@
-# Model-performance baselines
+# Model baselines
 
-A current baseline records a complete six-stage run ending in fresh use of the emitted package. Preserve individual trial reports, execution snapshots, case/evaluator identities, budgets, failures, interventions and usage coverage. Publish selected measurements with their scope; keep raw private transcripts, oracle expectations, credentials and user paths evaluator-side.
+Preserve each six-stage trial's report, snapshot, case/evaluator identities, budgets, failures, interventions and usage coverage. Publish scoped measurements; keep private transcripts, oracle data, credentials and user paths evaluator-side.
 
-Native reference qualification and installation replay are separate from model performance. Follow [the benchmark guide](../README.md) to select a runtime/model, execute repeated fresh trials, export reports and compare compatible results. The current workflow has no measured model-performance baseline yet. Earlier development measurements remain available in Git history under their original case and source identities.
+Follow the [benchmark guide](../README.md) for fresh repetitions and compatible comparisons. [Development results](../../docs/verification.md) are separate from a repeated model study, installation replay and native reference qualification. No repeated model-performance baseline is recorded yet.

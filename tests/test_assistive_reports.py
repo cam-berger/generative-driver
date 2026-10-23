@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -240,6 +241,8 @@ class ProtocolSeparationTests(unittest.TestCase):
         frozen = 'a' * 64
         return {'schema': 'benchmark-report/3', 'protocol': 'assistive/1', 'run_id': 'r', 'case': 'tq9-v2',
                 'case_version': '5', 'evaluator_version': '5', 'scenario_id': 'original', 'case_seed': 0,
+                'evaluator_revision': 'b' * 64,
+                'case_pin': {'manifest_sha256': 'c' * 64, 'truth_sha256': 'd' * 64, 'pin_sha256': 'e' * 64},
                 'execution': 'actual-agent-emulation', 'workflow_status': 'completed', 'verdict': verdict,
                 'equivalence': evaluation(frozen, verdict == 'equivalent'), 'equivalence_status': 'graded',
                 'elapsed_seconds': 5, 'stages': {}, 'usage': {'total_tokens': None}}
@@ -265,6 +268,82 @@ class ProtocolSeparationTests(unittest.TestCase):
         self.assertEqual((result['before_verdict'], result['after_verdict'], result['elapsed_seconds_delta']),
                          ('equivalent', 'not equivalent', 3))
         self.assertFalse(compare(self.assistive(), {**self.assistive(), 'case_seed': 1})['compatible'])
+
+    def test_exported_run_comparison_requires_matching_evaluator_and_case_hashes(self):
+        from generative_driver.benchmark import compare
+        from generative_driver.benchmark_support.evidence import public_v3_report
+        before = public_v3_report(self.assistive())
+        self.assertTrue(compare(before, copy.deepcopy(before))['compatible'])
+        for field in ('evaluator_revision', 'case_pin.manifest_sha256', 'case_pin.truth_sha256', 'case_pin.pin_sha256'):
+            for value in ('f' * 64, None):
+                with self.subTest(field=field, value=value):
+                    after = copy.deepcopy(before)
+                    container, key = (after['case_pin'], field.split('.')[1]) if '.' in field else (after, field)
+                    container[key] = value
+                    result = compare(before, after)
+                    self.assertFalse(result['compatible'], result)
+                    self.assertEqual(result['incompatible_fields'], [field])
+                    # Two reports with the same missing identity do not establish compatibility either.
+                    if value is None:
+                        del container[key]
+                        self.assertFalse(compare(after, copy.deepcopy(after))['compatible'])
+
+    def test_exported_run_comparison_reports_executed_dimensions_and_budgets(self):
+        from generative_driver.benchmark import compare, main
+        from generative_driver.benchmark_support.evidence import public_v3_report
+        payload = {**self.assistive(), 'original_budget_seconds': 60, 'effective_budget_seconds': 60,
+                   'toolchain_revision': '1' * 64, 'skills_revision': '2' * 64,
+                   'executed': {'runtime_configuration': {'runtime': 'codex', 'model': 'model-a', 'provider': 'openai',
+                       'version': '1', 'reasoning_effort': 'low', 'max_turns': 10},
+                       'environment': {'system': 'Darwin', 'architecture': 'arm64', 'python': '3.13'}}}
+        before = public_v3_report(payload)
+        self.assertTrue({'agent', 'environment', 'budget_seconds'}.isdisjoint(before))
+        repeat = compare(before, copy.deepcopy(before))
+        self.assertEqual((repeat['compatible'], repeat['changed_dimensions'], repeat['comparison_kind']),
+                         (True, [], 'repeat'))
+        for dimension, value in (('runtime', 'goose'), ('model', 'model-b'), ('provider', 'another-provider'),
+                                 ('version', '2'), ('reasoning_effort', 'high'), ('max_turns', 20),
+                                 ('environment', {'system': 'Windows', 'architecture': 'AMD64', 'python': '3.13'}),
+                                 ('original_budget_seconds', 90), ('effective_budget_seconds', 90),
+                                 ('toolchain_revision', '3' * 64), ('skills_revision', '4' * 64)):
+            with self.subTest(dimension=dimension):
+                after = copy.deepcopy(payload)
+                if dimension in after['executed']['runtime_configuration']:
+                    after['executed']['runtime_configuration'][dimension] = value
+                elif dimension == 'environment':
+                    after['executed']['environment'] = value
+                else:
+                    after[dimension] = value
+                result = compare(before, public_v3_report(after))
+                self.assertEqual((result['compatible'], result['changed_dimensions'], result['comparison_kind']),
+                                 (True, [dimension], dimension))
+        # Saved public reports are sufficient; the old top-level agent alias is absent after export.
+        after = copy.deepcopy(payload)
+        after['executed']['runtime_configuration'].update(runtime='goose', model='model-b')
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory) / name for name in ('before.json', 'after.json')]
+            for path, report in zip(paths, (before, public_v3_report(after))):
+                path.write_text(json.dumps(report), encoding='utf-8')
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = main(['compare', *map(str, paths)])
+            result = json.loads(output.getvalue())
+            self.assertEqual((code, result['compatible'], result['comparison_kind']), (0, True, 'combined-system'))
+            self.assertEqual(set(result['changed_dimensions']), {'runtime', 'model'})
+
+    def test_exported_replay_candidates_are_distinct_and_separate_from_model_runs(self):
+        from generative_driver.benchmark import compare
+        from generative_driver.benchmark_support.evidence import public_v3_report
+        payload = {**self.assistive(), 'execution': 'replay-emulation',
+                   'executed': {'runtime_configuration': {'runtime': 'replay', 'candidate_sha256': '1' * 64}}}
+        before = public_v3_report(payload)
+        payload['executed']['runtime_configuration']['candidate_sha256'] = '2' * 64
+        result = compare(before, public_v3_report(payload))
+        self.assertEqual((result['compatible'], result['changed_dimensions'], result['comparison_kind']),
+                         (True, ['candidate_sha256'], 'candidate_sha256'))
+        result = compare(before, public_v3_report(self.assistive()))
+        self.assertEqual((result['compatible'], result['incompatible_fields']), (False, ['execution']))
+        self.assertNotIn('elapsed_seconds_delta', result)
 
     def test_an_earlier_protocol_report_keeps_its_gate_logic_and_an_assistive_one_is_never_scored_by_it(self):
         # Catches the gated regrade changed for earlier reports, or an assistive run scored as a gated one.

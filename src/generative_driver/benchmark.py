@@ -290,6 +290,12 @@ def _replayed(report):
                                                                                     agent.get('runtime'))
 
 
+def _report_field(report, path):
+    for key in path.split('.'):
+        report = report.get(key) if isinstance(report, dict) else None
+    return report
+
+
 def compare(before, after):
     before, after = _read(before), _read(after)
     if _protocol(before) != _protocol(after):
@@ -300,12 +306,24 @@ def compare(before, after):
         # No model ran a replayed candidate: replays are a series of their own, never set beside model runs.
         return {'schema': 'benchmark-comparison/1', 'compatible': False, 'incompatible_fields': ['execution'],
                 'reason': 'Replay results and model runs are separate series and are never compared'}
+    v3 = 'benchmark-report/3' in (before.get('schema'), after.get('schema'))
     required = ('case', 'case_version', 'evaluator_version', 'seed', 'execution')
-    if 'benchmark-report/3' in (before.get('schema'), after.get('schema')):
+    dimensions = {key: key for key in ('agent', 'toolchain_revision', 'skills_revision', 'budget_seconds',
+                                      'environment', 'time_policy')}
+    if v3:
         required = ('schema', 'case', 'case_version', 'evaluator_version', 'scenario_id', 'case_seed', 'execution')
+        # Public v3 exports retain the executed configuration, not the old agent/environment aliases.
+        dimensions = {key: 'executed.runtime_configuration.' + key
+                      for key in ('runtime', 'model', 'provider', 'version', 'reasoning_effort', 'max_turns', 'candidate_sha256')}
+        dimensions.update(environment='executed.environment', toolchain_revision='toolchain_revision',
+                          skills_revision='skills_revision', original_budget_seconds='original_budget_seconds',
+                          effective_budget_seconds='effective_budget_seconds')
     incompatible = [k for k in required if k not in before or k not in after or before[k] != after[k]]
-    changed = [k for k in ('agent', 'toolchain_revision', 'skills_revision', 'budget_seconds', 'environment', 'time_policy')
-               if before.get(k) != after.get(k)]
+    if v3:
+        identities = ('evaluator_revision', 'case_pin.manifest_sha256', 'case_pin.truth_sha256', 'case_pin.pin_sha256')
+        incompatible.extend(key for key in identities if _report_field(before, key) is None
+                            or _report_field(before, key) != _report_field(after, key))
+    changed = [key for key, path in dimensions.items() if _report_field(before, path) != _report_field(after, path)]
     def delta(key):
         a, b = before.get(key), after.get(key)
         return b - a if type(a) in (int, float) and type(b) in (int, float) else None

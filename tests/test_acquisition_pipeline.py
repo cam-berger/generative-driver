@@ -29,23 +29,24 @@ def eventually(read, seconds=10):
 
 
 @contextmanager
-def acquisition(binding, effects=None, **options):
+def acquisition(binding, effects=None, *, stage='acquire', **options):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory).resolve()
         release = root / 'release'
         report = {'status': 'completed', 'summary': 'Scripted worker; no model',
                   'artifacts': [], 'checks': [], 'unresolved': []}
         program = ("import json,pathlib,sys,time\n"
-                   "while not pathlib.Path(sys.argv[1]).exists(): time.sleep(.02)\n"
+                   "task = json.loads(sys.stdin.read().split('\\n', 1)[1])\n"
+                   "while task['stage'] == sys.argv[3] and not pathlib.Path(sys.argv[1]).exists(): time.sleep(.02)\n"
                    "print(json.dumps({'type':'item.completed','item':"
                    "{'type':'agent_message','text':sys.argv[2]}}))\n")
         controller = Controller(root / 'state')
         try:
             run = controller.call('start', {'goal': 'Recover the interface from acquired evidence',
                 'binding': binding, 'effects': effects or ['read'], **options,
-                'executor_config': {'command': [sys.executable, '-c', program, str(release), json.dumps(report)]}})
+                'executor_config': {'command': [sys.executable, '-c', program, str(release), json.dumps(report), stage]}})
             assignment = eventually(lambda: next((e['data'] for e in controller.call('events', run)['events']
-                if e['kind'] == 'stage.assigned'), None)
+                if e['kind'] == 'stage.assigned' and e['data']['stage'] == stage), None)
                 if controller.call('status', run)['status'] == 'running' else None)
             yield controller, run, assignment, release
         finally:
@@ -58,6 +59,14 @@ def usb_device():
     descriptor = bytes.fromhex('120100020000004034127856000100000000')
 
     class Device:
+        def get_active_configuration(self):
+            class Interface(list):
+                bInterfaceNumber = bAlternateSetting = 0
+            return [Interface()]
+
+        def is_kernel_driver_active(self, interface):
+            return False
+
         def ctrl_transfer(self, kind, request, value, index, length, timeout):
             if (kind, request, value, index) != (0x80, 6, 0x0100, 0):
                 raise AssertionError('Unexpected USB request')
@@ -77,6 +86,7 @@ def usb_device():
         return [types.SimpleNamespace(vid=0x1234, pid=0x5678, serial_number=None, device='synthetic-port')]
 
     usb.core.find = find
+    usb.util.claim_interface = usb.util.release_interface = lambda device, interface: None
     usb.util.dispose_resources = lambda device: None
     from interface_runtime import transports
     dependency = transports._dependency
@@ -143,6 +153,30 @@ class AcquisitionPipelineTests(unittest.TestCase):
                 self.assertEqual(result['device_class'], 3)
                 self.assertEqual(calls['serial'], [])
                 self.assertEqual(calls['usb'], [{'find_all': True, 'idVendor': 0x1234, 'idProduct': 0x5678}])
+
+    def test_native_usb_reads_need_no_serial_listen_or_reset_grant(self):
+        descriptor = '120100020000004034127856000100000000'
+        model = {'schema': 'interface-model/3', 'device': {'name': 'Synthetic USB device'},
+                 'channel': {'type': 'usb'}, 'identity': {'operation': 'identify'},
+                 'operations': {'identify': {'effect': 'read', 'parameters': {}, 'steps': [{
+                     'op': 'usb_control', 'setup': {'request_type': 0x80, 'request': 6, 'value': 0x100, 'index': 0},
+                     'tx': [], 'rx': {'mode': 'exact', 'length': 18}, 'timeout_ms': 1000,
+                     'capture': 'descriptor', 'expect': {'equals_hex': descriptor}}],
+                     'outputs': {'descriptor': {'from': 'descriptor', 'kind': 'hex'}}}},
+                 'provenance': [{'item': 'operations.identify', 'source': 'Synthetic USB descriptor fixture'}]}
+        with usb_device() as calls, acquisition({'vendor_id': 0x1234, 'product_id': 0x5678}, stage='probe') as active:
+            controller, run, assignment, _ = active
+            model_dir = Path(assignment['workspace']) / 'model'
+            model_dir.mkdir()
+            (model_dir / 'model.json').write_text(json.dumps(model), encoding='utf-8')
+            for name in ('interface_execute', 'probe_run'):
+                with self.subTest(tool=name):
+                    result = controller.call('tool', {**run, 'assignment_id': assignment['id'], 'name': name,
+                        'arguments': {'model_dir': str(model_dir), 'operation': 'identify'}})
+                    self.assertTrue(result['ok'], result)
+                    execution = result['results'][0] if name == 'probe_run' else result
+                    self.assertEqual(execution['outputs'], {'descriptor': descriptor})
+            self.assertEqual(calls['serial'], [])
 
     def test_ftdi_scan_is_retained_in_the_acquisition_handoff(self):
         connections = []

@@ -3441,7 +3441,11 @@ class Controller:
             model_channel = _model_channel(name, arguments) if model_tool else None
             granted = 'reset' in assignment['effects']
             state = self._binding_state(run['id'])
-            if name != 'acquire_serial_listen' and not state['listened'] and not granted:
+            # A USB identity may name a native USB device whose transport never opens a serial port.
+            # Keep any reset already observed on this binding subject to the grant checks below.
+            usb_connection = (isinstance(model_channel, dict) and model_channel.get('type') == 'usb'
+                              and 'port' not in binding)
+            if name != 'acquire_serial_listen' and not usb_connection and not state['listened'] and not granted:
                 raise ValueError('Listen to the bound serial device first, or supply a reset grant')
             if state['resets_on_open'] and not granted:
                 raise ValueError('The bound device resets when opened; this connection requires a reset grant')

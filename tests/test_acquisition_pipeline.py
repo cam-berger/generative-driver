@@ -48,6 +48,8 @@ def acquisition(binding, effects=None, *, stage='acquire', **options):
             assignment = eventually(lambda: next((e['data'] for e in controller.call('events', run)['events']
                 if e['kind'] == 'stage.assigned' and e['data']['stage'] == stage), None)
                 if controller.call('status', run)['status'] == 'running' else None)
+            # The assignment event commits before the run's stage update makes its gateway usable.
+            eventually(lambda: controller.call('status', run)['stage'] == stage)
             yield controller, run, assignment, release
         finally:
             controller.close()

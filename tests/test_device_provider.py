@@ -453,6 +453,7 @@ class HarnessDelegationTests(ProviderFixture):
         self.assertTrue(result['ok'], result)
         for reading in (result['observation'], result['before_observation']):
             self.assertEqual(reading, {'duty': 0.0, 'temperature_reference': 20.0, 'source': 'instrument',
+                                       'session_id': descriptor['session_id'],
                                        'units': {'duty': 'permille', 'temperature_reference': 'degC'}})
         self.assertFalse(self.peers[0].running); self.assertFalse(self.peers[0].paused_requests)
         self.assertEqual(self.peers[0].commands.count('start'), 1)

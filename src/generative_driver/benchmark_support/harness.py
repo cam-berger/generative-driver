@@ -42,7 +42,7 @@ GOAL = 'Recover, check, package and freshly reuse the benchmark device interface
 FINISHED = ('evaluated', 'unscored', 'awaiting-evaluation', 'run-stopped', 'stop-unconfirmed', 'failed')
 # What a resume may still complete: the device stopped, confirmed, and the run's verdict not yet recorded.
 RESUMABLE = ('evaluating', 'awaiting-evaluation', 'unscored', 'evaluated')
-CONTROL = ('status', 'observe', 'set_running', 'replace', 'release')
+CONTROL = ('status', 'observe', 'set_running', 'select_condition', 'replace', 'release')
 OWNER = (*CONTROL, 'stop', 'shutdown')
 TERMINAL = ('completed', 'failed', 'cancelled', 'blocked')
 
@@ -119,6 +119,8 @@ class DeviceServer:
                 return provider.status()
             if method == 'observe':
                 return provider.observe()
+            if method == 'select_condition':
+                return provider.select_condition(params.get('condition_id'), params.get('expected_session_id'))
             if method == 'set_running':
                 if type(params.get('running')) is not bool:
                     raise ValueError('set_running takes a boolean')

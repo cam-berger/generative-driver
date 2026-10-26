@@ -34,6 +34,14 @@ def task_contract(case_id, effects):
             'commit': task('Apply an existing pending transaction, advance generation once and close it. Requires a pending transaction.'),
             'abort': task('Discard an existing pending transaction, preserve committed values and generation, and close it. Requires a pending transaction.')},
     }
+    if case_id == 'sampled-sensor-v1':
+        # Public development comparisons. The tiny temperature allowance absorbs floating-point evaluation noise;
+        # it does not specify or alter the independent final evaluator's tolerances.
+        for name, spec in families[case_id].items():
+            spec['sampling'] = 'acquire' if name == 'measure' else 'retained'
+            spec['outputs'] = {
+                'temperature': {'unit': 'degC', 'instrument': 'reference_temperature', 'absolute_tolerance': 1e-9},
+                'sequence': {'unit': 'count', 'instrument': 'monitor_sequence', 'absolute_tolerance': 0}}
     return {'schema': 'candidate-task-contract/1', 'tasks': families[case_id],
             'effect_grants': list(effects),
             'instructions': 'These are requested observable behaviors, not protocol facts or hidden test values. '

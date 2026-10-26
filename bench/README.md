@@ -60,6 +60,22 @@ Probe/ground return instrument readings and candidate outputs, never grades. Rea
 
 Use `validate_capabilities.py` with `CAPABILITY_FORMAT.md` before submission. Mapping errors become handoff notes without I/O. Trusted pre-transport refusals leave no uncertain effect; opening/interrupted execution may require reconciliation.
 
+The sampled sensor's probe and ground assignments include `DEVELOPMENT_CONDITIONS.json`: five public reference inputs
+at −12, 32, 0, 7.5 and 18.5625 °C, independent of the hidden final vectors. Select a listed `condition_id` on a live
+`interface_execute` or `probe_run` call; omit it to retain the current source. The harness changes the source before
+the call, without acquiring or resetting. Acquire a sample and compare its returned value with the instrument
+reference and advancing sequence. Readings carry the condition's session, epoch and whether an acquisition occurred
+since selection; a retained sample is not a measurement of the requested new input. Zero-only observations cannot
+establish scale. The catalog is development evidence, not a new acceptance gate or a tool available to fresh reuse.
+
+For the sampled sensor, probe and ground compare mapped outputs with the configurator's paired instrument readings
+using the public `TASKS.json` quantities. Temperature allows `1e-9` °C of floating-point noise; sequence is exact.
+Only successful live calls of the assigned model, on the recorded session and matching the mapped task arguments,
+supply these differences. A batch probe compares its last sample with the after-reading. Retained reads compare
+with the retained measurement; a new acquisition must change the measured sequence. Observed value/unit or sampling
+differences enter the existing bounded interpretation repair with model/mapping hashes and dispatch evidence.
+Worker claims and malformed/missing mappings alone do not trigger this route. Final evaluation is unchanged.
+
 Owned-emulator recovery requires trusted completed model-failure evidence for every unresolved effectful dispatch, verified old-process disposal and independently verified replacement. The provider stores proof; the configurator commits receipt/session/lease with the handoff. Recovery uses a repair only when revising the model; exhausted repair budget alone does not forbid replacement. This applies to failed frozen-driver writes in reuse too. Retain failure evidence; attached sessions, unknown/host/operator faults, cancellation or unverified replacement stay blocked. Never replay the uncertain write.
 
 Store update discards pending edits, changes only the requested committed cell, preserves others, advances generation once and ends idle. Final grading covers idle/same-bank/different-bank pending updates, commit, abort and complete rejection, with full state checks. The diagnostic contract runs only during native calibration. Rejection needs a private complete-response witness matching captured bytes; candidate framing is insufficient, equivalent requests remain valid.

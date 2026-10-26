@@ -19,7 +19,9 @@ class DeviceUnavailable(RuntimeError):
 
 def reading(observed):
     """The flat reading a worker sees beside a live result: the instrument's values with their units, so labelled."""
-    return {**observed['values'], 'units': dict(observed['units']), 'source': 'instrument'}
+    return {**observed['values'], 'units': dict(observed['units']), 'source': 'instrument',
+            'session_id': observed['session_id'],
+            **({'condition': observed['condition']} if 'condition' in observed else {})}
 
 
 def descriptor_errors(device):
@@ -82,6 +84,10 @@ class DeviceClient:
     def observe(self):
         """An `instrument-observation/1`: projected values and units of the live session, nothing raw."""
         return self._call('observe')
+
+    def select_condition(self, condition_id, expected_session_id):
+        """Apply one public development input without acquiring a sample or resetting the device."""
+        return self._call('select_condition', condition_id=condition_id, expected_session_id=expected_session_id)
 
     @contextlib.contextmanager
     def window(self):

@@ -1,0 +1,190 @@
+{
+  "schema": "native-transport-experiment/1",
+  "execution": "native-reference-experiment",
+  "model_benchmark": false,
+  "image_sha256": "6137dfd5044bf38e791b77e25db0408ba081fc60ccdd2953629e7fb62090ca82",
+  "renode_release": "1.16.1",
+  "renode_infrastructure_commit": "add012af003a0f620d3da52828262676f374d121",
+  "purpose": "Diagnose intermittent read timeouts reproduced with a reference driver, independently of model inference.",
+  "controls": {
+    "inter_frame_delay": [
+      {
+        "delay_ms": 0,
+        "attempted": 10,
+        "passed": 9,
+        "errors": [
+          {
+            "index": 9,
+            "code": {
+              "code": "timeout",
+              "message": "timed out",
+              "fault": "model"
+            },
+            "identity_verified": true
+          }
+        ],
+        "seconds": 4.9618066620023455
+      },
+      {
+        "delay_ms": 10,
+        "attempted": 6,
+        "passed": 5,
+        "errors": [
+          {
+            "index": 5,
+            "code": {
+              "code": "timeout",
+              "message": "timed out",
+              "fault": "model"
+            },
+            "identity_verified": true
+          }
+        ],
+        "seconds": 3.514536073023919
+      }
+    ],
+    "synchronization_quantum": [
+      {
+        "configuration": "default",
+        "attempted": 100,
+        "passed": 100,
+        "errors": [],
+        "seconds": 41.28951585301547
+      },
+      {
+        "configuration": "quantum-10us",
+        "attempted": 24,
+        "passed": 23,
+        "errors": [
+          {
+            "index": 23,
+            "code": {
+              "code": "timeout",
+              "message": "timed out",
+              "fault": "model"
+            },
+            "identity_verified": true
+          }
+        ],
+        "seconds": 11.378587787010474
+      },
+      {
+        "configuration": "quantum-10us-serial",
+        "attempted": 57,
+        "passed": 56,
+        "errors": [
+          {
+            "index": 56,
+            "code": {
+              "code": "timeout",
+              "message": "timed out",
+              "fault": "model"
+            },
+            "identity_verified": true
+          }
+        ],
+        "seconds": 25.300324066978646
+      }
+    ],
+    "additional_aborted_control": "A further no-delay session stopped on monitor response timeout; no completed denominator is asserted for that session."
+  },
+  "buffered_transport": [
+    {
+      "configuration": "buffered-1",
+      "attempted": 250,
+      "passed": 250,
+      "errors": [],
+      "seconds": 100.28770304800128
+    },
+    {
+      "configuration": "buffered-2",
+      "attempted": 250,
+      "passed": 250,
+      "errors": [],
+      "seconds": 106.81363675699686
+    }
+  ],
+  "interpretation": "Buffering alone passed read stress but failed a full mission. Delivering each received socket block at one virtual timestamp passed three full missions without added driver delays; one other attempt stopped on monitor timeout. No result is a model benchmark. Native qualification and fresh agent execution remain separate evidence.",
+  "limitations": [
+    "Read-only stress is not a full driver workflow.",
+    "Host scheduling and TCP do not establish physical UART/RS-485 timing.",
+    "A passing control session does not by itself establish transport stability.",
+    "Atomic socket-block delivery does not simulate physical UART byte timing; TCP chunking is not an RTU frame definition."
+  ],
+  "buffer_only_adapter_sha256": "6b61bd895cca77d5db87de61841c4da023dcfbe1b411d7e7ba9519bf0e3c2bf9",
+  "buffered_whole_mission": {
+    "qualification_attempt": 4,
+    "status": "pending",
+    "cause": "Positive diagnostic reference coil-off request timed out. Qualification stopped before completion; no admission credit."
+  },
+  "buffered_whole_mission_delay_controls": [
+    {
+      "delay_ms": 10,
+      "reference": "a",
+      "passed": false,
+      "checks": 315,
+      "failed_checks": [
+        "final/read-0/operation_ok",
+        "final/read-0/value"
+      ],
+      "seconds": 44.50940026799799
+    },
+    {
+      "delay_ms": 10,
+      "reference": "b",
+      "passed": true,
+      "checks": 315,
+      "failed_checks": [],
+      "seconds": 42.44890890800161
+    },
+    {
+      "delay_ms": 50,
+      "reference": "a",
+      "passed": true,
+      "checks": 315,
+      "failed_checks": [],
+      "seconds": 44.2491957420134
+    },
+    {
+      "delay_ms": 50,
+      "reference": "b",
+      "passed": true,
+      "checks": 315,
+      "failed_checks": [],
+      "seconds": 48.831936656992184
+    }
+  ],
+  "atomic_block_whole_mission": [
+    {
+      "delay_ms": 0,
+      "reference": "a",
+      "passed": true,
+      "checks": 315,
+      "failed_checks": [],
+      "seconds": 47.63462855500984
+    },
+    {
+      "delay_ms": 0,
+      "passed": false,
+      "error": "Host fault: monitor response timed out",
+      "seconds": 47.25038477597991
+    },
+    {
+      "delay_ms": 0,
+      "reference": "a",
+      "passed": true,
+      "checks": 315,
+      "failed_checks": [],
+      "seconds": 53.10262044199044
+    },
+    {
+      "delay_ms": 0,
+      "reference": "b",
+      "passed": true,
+      "checks": 315,
+      "failed_checks": [],
+      "seconds": 48.133219702984206
+    }
+  ],
+  "adapter_sha256": "c77c19ff48f7ba15090c41b066203af4f26674ac9008dc4dda66976aa4444b57"
+}

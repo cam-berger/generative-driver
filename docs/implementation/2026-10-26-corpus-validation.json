@@ -1,0 +1,321 @@
+{
+  "schema": "benchmark-corpus-validation/1",
+  "date": "2026-10-26",
+  "scope": "Seven upstream intake lineages; one admitted software lineage; six explicit gaps.",
+  "build": {
+    "source": {
+      "repository": "https://github.com/zephyrproject-rtos/zephyr",
+      "commit": "413b789deb391d3a37d06b463288a5fe765ee57e",
+      "path": "samples/subsys/modbus/rtu_server",
+      "modules": {
+        "cmsis": "512cc7e895e8491696b61f7ba8066b4a182569b8",
+        "cmsis_6": "06d952b6713a2ca41c9224a62075e4059402a151",
+        "stm32": "1e753266ddfb4b07a8a0b1ec566e9637ea45d5ef"
+      },
+      "board": "stm32f4_disco",
+      "transformations": [
+        "Board wiring selects USART2 for Modbus and disables console/log traffic on that UART.",
+        "Application handlers, Modbus framing, CRC and exception behavior are unchanged."
+      ]
+    },
+    "images": {
+      "firmware.bin": "6137dfd5044bf38e791b77e25db0408ba081fc60ccdd2953629e7fb62090ca82"
+    },
+    "rebuild_hashes": [
+      "6137dfd5044bf38e791b77e25db0408ba081fc60ccdd2953629e7fb62090ca82",
+      "6137dfd5044bf38e791b77e25db0408ba081fc60ccdd2953629e7fb62090ca82"
+    ],
+    "tool_versions": {
+      "compiler": "arm-none-eabi-gcc (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 14.2.1 20241119",
+      "objcopy": "GNU objcopy (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119"
+    },
+    "tool_hashes": {
+      "compiler": "2e6d1fc0b7709d2fc08278a06bbcbfadb6fafcf5837e13cde01a1fbd07ad6db1",
+      "objcopy": "3155a6dc3f8986687111041143a2364ecd5239052347cba793f7ae040970624d"
+    },
+    "configuration_hashes": {
+      "zephyr-modbus.overlay": "63a4e32210d51358c9f07e5a83638f68faa4e0397a2e0e048e6c139efeb2e460",
+      "zephyr-modbus.conf": "6eeabd2ce0f13f16d99eb1e36b2e2c245f8066643046eb2cbf6a8038a9df4c0d"
+    },
+    "generated_configuration_sha256": "36210d8aa5a384f0dca57fb09659892498029e6beb1ea14b12f5c19ab9bc947e"
+  },
+  "isolation": {
+    "checks": {
+      "password_hidden": true,
+      "proc_password_hidden": true,
+      "symlink_hidden": true,
+      "private_answers": true,
+      "upstream_source": true,
+      "research_checkout": true,
+      "worktree": true,
+      "old_results": true,
+      "first_attempt": true,
+      "owner_reachable": true,
+      "work_writable": true
+    },
+    "passed": true
+  },
+  "installed_smoke": {
+    "execution": "scripted-replay",
+    "model_benchmark": false,
+    "verdict": "passed"
+  },
+  "original_task_contracts_unchanged": true,
+  "agent_run": {
+    "status": "running",
+    "suite_id": "suite-a3ee25bff5614bb2",
+    "repetitions": 3,
+    "runnable_lineages": 1,
+    "planned_lineages": 7,
+    "plan_sha256": "36302cc23ca778eb84c74b061600acc42415668a3b02daa7d513b4cdbf2b44fe"
+  },
+  "prior_agent_attempt": {
+    "suite_id": "suite-e43efdc9066d4000",
+    "run_id": "run-ffe5f6cf8da7437c",
+    "execution": "actual-agent-emulation",
+    "workflow": "six stages completed",
+    "measured_performance_valid": false,
+    "setup_error": "Case omitted emulator actuation grant required for coil switching.",
+    "recorded_grade": {
+      "passed": 286,
+      "total": 315,
+      "mission": false
+    },
+    "independent_causes": [
+      "Six coil operations refused the absent actuation grant before transport.",
+      "One read_register call timed out after identity verification; a missing result also produced a secondary unit mismatch."
+    ],
+    "disposition": "Preserve unchanged report; correct public grants and reference effects, requalify, then run a fresh agent."
+  },
+  "tests": {
+    "full_suite_executed": 872,
+    "skipped": 3,
+    "full_suite_failures": 1,
+    "cause": "Old distributed-inventory assertion omitted the new encrypted bundle.",
+    "correction": "Include the upstream case and its license notices.",
+    "inventory_regression_rerun": {
+      "tests": 3,
+      "passed": true
+    },
+    "original_mission_fixture_regressions": {
+      "tests": 2,
+      "passed": true
+    },
+    "focused_regression_rerun": {
+      "tests": 26,
+      "passed": true
+    },
+    "installed_focused_regression_rerun": {
+      "tests": 26,
+      "passed": true
+    }
+  },
+  "transport_experiment": "2026-10-26-modbus-transport-experiment.json",
+  "prior_reference_attempts": [
+    {
+      "attempt": 3,
+      "completed_positive_runs": 3,
+      "status": "host-failure",
+      "cause": "Intermittent timeout followed by stale response frames, reproduced with a reference; no model-performance claim."
+    },
+    {
+      "attempt": 4,
+      "status": "interrupted-after-positive-failure",
+      "cause": "Buffered per-byte transport still timed out a coil-off reference call. Remaining mutants were stopped; fail-fast qualification added."
+    }
+  ],
+  "superseded_native_qualification": {
+    "execution": "reference-calibration",
+    "model_benchmark": false,
+    "status": "passed",
+    "evidence_sha256": "23cbaa69d8745491e4d1e6a4b04cd688eadfc390d8059ee3082f372b65253674",
+    "evaluator_identity_sha256": "8ce39625c3f7c75540053be024a893eb5f7e420ab741de77b6b5a31065c512e6",
+    "native_runs": 10,
+    "references": [
+      {
+        "id": "a",
+        "passed": true,
+        "runs": [
+          "a-diagnostic-original",
+          "a-final-original"
+        ]
+      },
+      {
+        "id": "b",
+        "passed": true,
+        "runs": [
+          "b-diagnostic-original",
+          "b-final-original"
+        ]
+      }
+    ],
+    "reference_checks": [
+      {
+        "id": "a-diagnostic-original",
+        "phase": "diagnostic",
+        "passed": true,
+        "artifact_execution": "model-runtime",
+        "checks": 315
+      },
+      {
+        "id": "a-final-original",
+        "phase": "final",
+        "passed": true,
+        "artifact_execution": "emitted-package",
+        "checks": 315
+      },
+      {
+        "id": "b-diagnostic-original",
+        "phase": "diagnostic",
+        "passed": true,
+        "artifact_execution": "model-runtime",
+        "checks": 315
+      },
+      {
+        "id": "b-final-original",
+        "phase": "final",
+        "passed": true,
+        "artifact_execution": "emitted-package",
+        "checks": 315
+      }
+    ],
+    "mutants": [
+      {
+        "id": "constant-read",
+        "rejected": true,
+        "failed_checks": 4
+      },
+      {
+        "id": "wrong-byteorder",
+        "rejected": true,
+        "failed_checks": 4
+      },
+      {
+        "id": "wrong-register",
+        "rejected": true,
+        "failed_checks": 75
+      },
+      {
+        "id": "wrong-coil",
+        "rejected": true,
+        "failed_checks": 14
+      },
+      {
+        "id": "omit-write",
+        "rejected": true,
+        "failed_checks": 76
+      },
+      {
+        "id": "wrong-request-crc",
+        "rejected": true,
+        "failed_checks": 79
+      }
+    ],
+    "prior_attempt": {
+      "status": "host-failure",
+      "cause": "Renode reset cleared the vector-table offset; corrected the reset recipe before qualification."
+    },
+    "disposition": "Superseded: wrong public actuation grant and reference effect, followed by reproduced transport instability. Not current admission evidence."
+  },
+  "native_qualification": {
+    "execution": "reference-calibration",
+    "model_benchmark": false,
+    "status": "passed",
+    "attempt": 5,
+    "evidence_sha256": "3685e5ef7d3bb394eb5c199dc178f413f2e7039b74737f686dedf248f72446b4",
+    "evaluator_identity_sha256": "06248126b381520f63afba558d31be80d564ccd7c372846b60baad77c4dd861a",
+    "native_runs": 10,
+    "references": [
+      {
+        "id": "a",
+        "passed": true,
+        "runs": [
+          "a-diagnostic-original",
+          "a-final-original"
+        ]
+      },
+      {
+        "id": "b",
+        "passed": true,
+        "runs": [
+          "b-diagnostic-original",
+          "b-final-original"
+        ]
+      }
+    ],
+    "reference_checks": [
+      {
+        "id": "a-diagnostic-original",
+        "phase": "diagnostic",
+        "passed": true,
+        "artifact_execution": "model-runtime",
+        "checks": 315
+      },
+      {
+        "id": "a-final-original",
+        "phase": "final",
+        "passed": true,
+        "artifact_execution": "emitted-package",
+        "checks": 315
+      },
+      {
+        "id": "b-diagnostic-original",
+        "phase": "diagnostic",
+        "passed": true,
+        "artifact_execution": "model-runtime",
+        "checks": 315
+      },
+      {
+        "id": "b-final-original",
+        "phase": "final",
+        "passed": true,
+        "artifact_execution": "emitted-package",
+        "checks": 315
+      }
+    ],
+    "mutants": [
+      {
+        "id": "constant-read",
+        "rejected": true,
+        "failed_checks": 4
+      },
+      {
+        "id": "wrong-byteorder",
+        "rejected": true,
+        "failed_checks": 4
+      },
+      {
+        "id": "wrong-register",
+        "rejected": true,
+        "failed_checks": 75
+      },
+      {
+        "id": "wrong-coil",
+        "rejected": true,
+        "failed_checks": 14
+      },
+      {
+        "id": "omit-write",
+        "rejected": true,
+        "failed_checks": 76
+      },
+      {
+        "id": "wrong-request-crc",
+        "rejected": true,
+        "failed_checks": 79
+      }
+    ]
+  },
+  "verifier_counterexamples": [
+    {
+      "issue": "Qualification continued through mutants after a positive reference failed.",
+      "before": "Ten native calls in the failing test.",
+      "after": "Stops after one failed positive call, keeping admission pending."
+    },
+    {
+      "issue": "A harmless exploratory refusal negated a later completed reuse mission.",
+      "before": "Completed mission rejected despite unchanged state during refusal.",
+      "after": "Accepts completed mission; still rejects host failures, uncertain effects, wrong readback and unrelated state changes."
+    }
+  ]
+}

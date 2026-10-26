@@ -41,9 +41,8 @@ def _development_conditions(case_id, prepared, workspace, options):
 
 
 def _required_tasks(case_id):
-    return {'tq9-v2': ('temperature', 'arm', 'set_duty', 'disarm'),
-            'sampled-sensor-v1': ('measure', 'read'),
-            'parameter-store-v1': ('read', 'update', 'stage', 'commit', 'abort')}[case_id]
+    from .missions import load_mission
+    return tuple(load_mission(case_id)['tasks'])
 
 
 def _capability_guidance(workspace, case_id):
@@ -216,11 +215,10 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         from .candidate_context import task_contract
         _write(ws/'TASKS.json', task_contract(case_id, options.get('configured_effects', [])))
         guidance.append(str(ws/'TASKS.json'))
-        objective = 'Test the supplied immutable model over the emulator binding. Write capabilities.json with schema benchmark-capabilities/2 and tasks temperature, arm, set_duty, disarm. Each task has operation, constants, inputs and outputs. Map canonical set_duty input duty (permille) with copy or affine parameter mapping. Map canonical temperature output to its candidate output and declared unit. Report unsupported capabilities honestly.'
-        if case_id == 'sampled-sensor-v1':
-            objective = 'Test the supplied model over the emulator binding. Write benchmark-capabilities/2 tasks measure and read, mapping temperature (degC) and sequence (count) outputs. Measure performs a new acquisition; read returns the current sample. Report unsupported capabilities honestly.'
-        elif case_id == 'parameter-store-v1':
-            objective = 'Test the supplied model over the emulator binding. Write benchmark-capabilities/2 tasks read, update, stage, commit and abort. Read takes bank and slot and maps value (configuration-unit). Update and stage take bank, slot and value; commit and abort have no inputs. Every task declares operation, constants, inputs and outputs.'
+        objective = ('Test the supplied immutable model over the emulator binding. Write capabilities.json with '
+            'schema benchmark-capabilities/2 and tasks ' + ', '.join(_required_tasks(case_id)) + '. '
+            'Each task declares operation, constants, inputs and outputs. Map every requested input and output '
+            'in TASKS.json, including its physical unit, to the candidate model. Report unsupported capabilities honestly.')
         objective += (' Read TASKS.json for required task semantics, outputs and effect grants. '
             'Read CAPABILITY_FORMAT.md and run validate_capabilities.py with the supplied model directory '
             'and your capabilities.json. Correct mapping errors before submission. ' + INSTRUMENT +
@@ -240,12 +238,12 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
             return prepared
         if _binding(options) is None:
             return {'blocked': NO_DEVICE}
-        if case_id == 'sampled-sensor-v1':
+        if case_id not in RECORDED:  # The legacy adapter retains its original mapping contract.
             from .candidate_context import task_contract
             tasks = ws/'TASKS.json'
             _write(tasks, task_contract(case_id, options.get('configured_effects', [])))
             prepared['inputs'].append(str(tasks))
-            prepared['objective'] += ' Read TASKS.json for the public quantity comparisons, tolerances and acquisition requirements.'
+            prepared['objective'] += ' Read TASKS.json for the required observable behaviors and any public quantity comparisons.'
         return _development_conditions(case_id,
             {**prepared, 'allowed_tools': ['interface_execute', 'probe_run', 'probe_diff'],
              'binding': _binding(options)}, ws, options)
@@ -305,11 +303,8 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
             _verified(capabilities, 'probe')
         state['capabilities_path'] = str(capabilities[0]) if capabilities else None
         _write(path, state)
-        mission = 'Read temperature, enable the device, request 37 percent output, then disarm.'
-        if case_id == 'sampled-sensor-v1':
-            mission = 'Acquire and read two fresh temperature samples. Report their measured sequence numbers.'
-        elif case_id == 'parameter-store-v1':
-            mission = 'Commit bank B slot 1 to -7. Stage bank B slot 1 to 9, abort that transaction, then read bank B slot 1. Report observations and whether other cells changed.'
+        from .missions import load_mission
+        mission = load_mission('tq9-v2' if case_id == 'tq9' else case_id)['reuse_objective']
         return {'objective': 'Use only the emitted package and this objective: ' + mission + ' Use benchmark_package_execute for each operation. Find names and arguments in the package reference. Each result also carries an instrument reading of the emulated device after the call. Report actual observations and limitations.',
                 'inputs': [str(package)], 'allowed_tools': ['benchmark_package_execute'],
                 'context': {'package_dir': str(package)}, 'binding': binding,
@@ -355,7 +350,7 @@ def _mission(case_id, events, capabilities):
     readings of the emulated device: a note on the reuse stage, never a grade. Failed calls are attributed only on
     trusted evidence: untyped or mixed failures blame nobody."""
     try:
-        if case_id in ('sampled-sensor-v1', 'parameter-store-v1'):
+        if case_id in ('sampled-sensor-v1', 'parameter-store-v1', 'zephyr-modbus-v1'):
             done = family_for(case_id).reuse_passed(events, capabilities)
         elif case_id == 'tq9':
             from .cases import mission_done

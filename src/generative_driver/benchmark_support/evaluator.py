@@ -40,6 +40,9 @@ def case_truth(case_id, run_dir, options):
     from .emulator import truth_for_case
     _, manifest = _inputs(case_id, run_dir)
     truth = truth_for_case(case_root(), manifest, options)
+    if truth.get('schema') == 'benchmark-upstream-truth/1':
+        from .upstream import hydrate_truth
+        return hydrate_truth(truth)
     if case_id in ('sampled-sensor-v1', 'parameter-store-v1'):
         from .calibration import hydrate_truth
         return hydrate_truth(truth)

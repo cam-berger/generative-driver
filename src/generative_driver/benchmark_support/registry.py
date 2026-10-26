@@ -35,11 +35,12 @@ _BUILTINS = {
     'tq9-v2': ('tq9-v2', 'emulator-v2'),
     'sampled-sensor-v1': ('sampled-sensor-v1', 'emulator-v2'),
     'parameter-store-v1': ('parameter-store-v1', 'emulator-v2'),
+    'zephyr-modbus-v1': ('zephyr-modbus', 'emulator-v2'),
 }
 
 
 CURRENT_VERSIONS = {'tq9': '2', 'bme280': '3', 'tq9-v2': '5',
-                    'sampled-sensor-v1': '5', 'parameter-store-v1': '5'}
+                    'sampled-sensor-v1': '5', 'parameter-store-v1': '5', 'zephyr-modbus-v1': '1'}
 
 
 def validate_workflow_manifest(manifest):
@@ -323,11 +324,14 @@ def require_calibration(pin: dict, options: dict) -> dict:
         if truth.get('schema') == 'benchmark-family-truth/1':
             from .calibration import hydrate_truth
             truth = hydrate_truth(truth)
+        elif truth.get('schema') == 'benchmark-upstream-truth/1':
+            from .upstream import hydrate_truth
+            truth = hydrate_truth(truth)
     except (OSError, ValueError) as error:
         raise ValueError('Authenticated calibration evidence requires the evaluator password file') from error
     record = truth.get('calibration', {})
     try:
-        if manifest.get('family') in ('sampled-sensor', 'parameter-store'):
+        if manifest.get('family') in ('sampled-sensor', 'parameter-store', 'zephyr-modbus'):
             from .calibration import validate_calibration, apply_mutation, execution_input_identity
             expected = {r['id']: r['expected_failed_checks'] for r in truth['mutations']['mutants']}
             changes = {}

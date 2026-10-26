@@ -34,6 +34,11 @@ def sqlite_context(path):
 def public_case_fixture(root, case_id='tq9-v2', *, calibration=None, **changes):
     """Local registry inputs for pure freeze tests; never native qualification."""
     import hashlib
+    import shutil
+    from generative_driver.toolkit import resources_root
+    # Public missions are data resources now, just like images and manifests.
+    # Keep fixture asset trees complete without bringing evaluator answers in.
+    shutil.copytree(resources_root() / 'bench/missions', root / 'missions', dirs_exist_ok=True)
     case = root / 'cases' / case_id
     case.mkdir(parents=True)
     image = case / 'firmware.bin'; image.write_bytes(b'public suite contract image')

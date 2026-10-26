@@ -13,9 +13,12 @@ Current `assistive/1` runs follow acquire → interpret → probe → ground →
 | `tq9-v2` | Calibrated evaluation, device-driven repair and sealed final behavior |
 | `sampled-sensor-v1` | Signed/scaled readings, acquisition and sequence counters |
 | `parameter-store-v1` | Banks, pending/committed values, generation, commit and abort |
+| `zephyr-modbus-v1` | Upstream Zephyr RTU sample: register/coil effects, unrelated-state preservation and recovery |
 | `bme280` | Physical FTDI/I2C sensor and independent operator references |
 
 [Installed assets](../src/generative_driver/resources/bench/) pin stable original images, encrypted truth and evaluator versions. The three-family core plans nine default trials. The [growth plan](../docs/research/2026-10-03-benchmark-growth-plan.md) and [source review](../docs/research/2026-10-03-benchmark-source-review.md) propose future admissions; they are not measured results.
+
+The [upstream corpus](../docs/benchmark-corpus.md) adds a seven-area intake plan and a separately runnable upstream case. Its reports preserve blocked areas and distinguish missing evidence from model failures. `benchmark corpus plan --output corpus-plan.json` freezes that inventory; the original synthetic suite remains unchanged.
 
 ## Install and check
 

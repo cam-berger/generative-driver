@@ -36,6 +36,7 @@ REQUIRED_MUTANTS = {
             'wrong-temperature-unit','wrong-temperature-byteorder','wrong-crc','wrong-duty-effect'},
     'sampled-sensor': {'constant','scale','signedness','stale'},
     'parameter-store': {'constant','scale','order','wrong-bank','abort','idle-only-update','short-rejection-frame'},
+    'zephyr-modbus': {'constant-read', 'wrong-byteorder', 'wrong-register', 'wrong-coil', 'omit-write', 'wrong-request-crc'},
 }
 _REFERENCE_PHASES = {('diagnostic','original'), ('final','original')}
 
@@ -126,7 +127,8 @@ def validate_calibration(manifest, record):
             if row['execution_input']!={k:run[k] for k in ('model_sha256','capabilities_sha256')}:
                 failures.append('mutant execution inputs:'+row['id'])
             if (row['rejected'] is not True or not row['expected_failed_checks']
-                    or set(row['expected_failed_checks'])!=set(row['failed_checks'])
+                    or not (set(row['expected_failed_checks']) <= failed if manifest['family'] == 'zephyr-modbus'
+                            else set(row['expected_failed_checks']) == set(row['failed_checks']))
                     or len(row['expected_failed_checks'])!=len(set(row['expected_failed_checks']))
                     or len(row['failed_checks'])!=len(set(row['failed_checks']))
                     or failed!=set(row['failed_checks'])

@@ -98,7 +98,8 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
                 for identifier in action['checks']:
                     check = checks[identifier]
                     suffix = identifier.rsplit('/', 1)[-1]
-                    units = monitor_units if check['channel'] == 'independent-monitor' else result.get('units', {})
+                    units = (monitor_units if check['channel'] == 'independent-monitor' else
+                             {**getattr(observations, 'runtime_units', {}), **result.get('units', {})})
                     if suffix == 'refused_without_io':
                         units = {'refused_without_io': 'boolean'}
                     if suffix == 'operation_rejected' and check['channel'] == 'runtime-transcript':

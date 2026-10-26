@@ -7,6 +7,10 @@ from pathlib import Path
 
 def manage(action, case, password_file, output, new_password_file=None, compiler=None, authoring_dir=None, *, renode=None, ghidra_home=None, java_home=None):
     if action == 'calibrate':
+        if case == 'zephyr-modbus-v1':
+            from .upstream_qualification import calibrate
+            return calibrate(case, {'evaluator_password_file': password_file, 'output': output,
+                                   'renode': renode, 'ghidra_home': ghidra_home, 'java_home': java_home})
         if case in ('sampled-sensor-v1', 'parameter-store-v1'):
             # A family is calibrated from its private authoring root, whose sibling <case>.password is the handle.
             if not authoring_dir:

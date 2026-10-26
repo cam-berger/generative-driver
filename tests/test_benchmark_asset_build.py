@@ -336,13 +336,16 @@ class DistributedInventoryTests(unittest.TestCase):
         from generative_driver.benchmark import case_root
         from generative_driver.benchmark_support.registry import pin_case
         root=case_root()
-        cases={'tq9':'2','tq9-v2':'5','sampled-sensor-v1':'5','parameter-store-v1':'5','bme280':'3'}
+        cases={'tq9':'2','tq9-v2':'5','sampled-sensor-v1':'5','parameter-store-v1':'5','bme280':'3',
+               'zephyr-modbus-v1':'1'}
         for case,version in cases.items():
             with self.subTest(case=case):
                 pin=pin_case(case,'original',0)
                 self.assertEqual(pin['manifest']['version'],version)
                 self.assertEqual(pin['manifest']['evaluator_version'],version)
                 expected={'case.json'} | ({'firmware.bin'} if case!='bme280' else set())
+                if case == 'zephyr-modbus-v1':
+                    expected |= {'NOTICE.md', 'licenses'}
                 self.assertEqual({p.name for p in (root/'cases'/case).iterdir()},expected)
         self.assertEqual({p.name for p in (root/'groundtruth').iterdir()},{case+'.enc' for case in cases})
 

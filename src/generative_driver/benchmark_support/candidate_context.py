@@ -9,7 +9,8 @@ from .cases import _state, _write
 
 def task_contract(case_id, effects):
     from .missions import load_mission
-    return {'schema': 'candidate-task-contract/1', 'tasks': load_mission(case_id)['tasks'],
+    mission = load_mission(case_id)
+    contract = {'schema': 'candidate-task-contract/1', 'tasks': mission['tasks'],
             'effect_grants': list(effects),
             'instructions': 'These are requested observable behaviors, not protocol facts or hidden test values. '
                 'Recover command bytes, operation composition, bounds and decoders from the supplied evidence. '
@@ -17,6 +18,11 @@ def task_contract(case_id, effects):
                 'Effect labels describe actual behavior: acquisition and configuration changes are writes; '
                 'actuation controls a physical output. Read is implicit; other effects require the listed grants. '
                 'Do not relabel unsafe operations merely to bypass a grant. Report unsupported behavior.'}
+    if 'operating_conditions' in mission:
+        contract['operating_conditions'] = mission['operating_conditions']
+        contract['instructions'] += (' The operating_conditions are provided operating facts. '
+            'The tasks remain requested observable behaviors, not protocol facts or hidden test values.')
+    return contract
 
 
 def worker_claim(report):

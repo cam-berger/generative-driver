@@ -40,6 +40,12 @@ A separate empty-machine prototype verified Renode 1.16.1's [structured `Execute
 
 Defer adopting another harness, software-specific difficulty filters, trajectory matching and conversational LLM simulators as firmware standards. Container, database or emulator success establishes only the tested software scope. Physical transport, timing, electrical effects and plant behavior require separate evidence. Hashes establish provenance and integrity; they do not provide confidentiality, filesystem isolation or independent report authentication.
 
+## RTU pacing control
+
+[Modbus serial V1.02, §2.5.1.1][modbus-serial] requires at least 3.5 character times of silence between RTU frames: approximately 2.005 ms at 19200 baud with 8N2. The pinned Zephyr [serial configuration and timeout][zephyr-rtu-time] agree with that calculation. Its UART path [disables RX before TX][zephyr-rtu-tx], [discards incoming bytes while RX is disabled][zephyr-rtu-rx], and [drains/re-enables RX only after TX completes][zephyr-rtu-complete]. The runtime can issue identity then operation immediately, and the guest pauses between live calls; agent thinking time therefore supplies no guest-time gap. This establishes a pacing risk, not the cause of every observed timeout.
+
+Use a 50 ms scheduling margin inside every live operation, including identity and its following request, and disclose it to all stages and fresh reuse. This is an emulator margin, not the protocol minimum, an exact-delay grading requirement, or a physical timing/throughput claim. One operator-reported paced control recorded 315/315; it does not establish complete qualification. Queue 6 failed in the host parser on a leading-space reply, so full success remains unestablished.
+
 [swe-package]: https://github.com/SWE-bench/SWE-bench/blob/02e7a74ffd0b707aab73d203fe87bdc7c76afc8e/swebench/task/repo.py#L1-L20
 [harbor-package]: https://github.com/harbor-framework/harbor/blob/e77a18bfeed53f907f335b9132d87006e01b3dfd/src/harbor/models/task/paths.py#L14-L31
 [terminal]: https://github.com/harbor-framework/terminal-bench-2/blob/2fd12b88aafdd04a52c298e3940bcb189f9766d6/README.md#L29-L51
@@ -64,3 +70,8 @@ Defer adopting another harness, software-specific difficulty filters, trajectory
 [harbor-aggregate]: https://github.com/harbor-framework/harbor/blob/e77a18bfeed53f907f335b9132d87006e01b3dfd/src/harbor/job.py#L1165-L1204
 [tau-old]: https://github.com/sierra-research/tau-bench/blob/59a200c6d575d595120f1cb70fea53cef0632f6b/README.md#L3-L5
 [tau-versions]: https://github.com/sierra-research/tau2-bench/blob/0c69df456a96aa76a1162591574dad9c427a34d7/README.md#L89-L119
+[modbus-serial]: https://www.modbus.org/file/secure/modbusoverserial.pdf
+[zephyr-rtu-time]: https://github.com/zephyrproject-rtos/zephyr/blob/413b789deb391d3a37d06b463288a5fe765ee57e/subsys/modbus/modbus_serial.c#L479-L609
+[zephyr-rtu-tx]: https://github.com/zephyrproject-rtos/zephyr/blob/413b789deb391d3a37d06b463288a5fe765ee57e/subsys/modbus/modbus_serial.c#L315-L318
+[zephyr-rtu-rx]: https://github.com/zephyrproject-rtos/zephyr/blob/413b789deb391d3a37d06b463288a5fe765ee57e/subsys/modbus/modbus_serial.c#L325-L331
+[zephyr-rtu-complete]: https://github.com/zephyrproject-rtos/zephyr/blob/413b789deb391d3a37d06b463288a5fe765ee57e/subsys/modbus/modbus_serial.c#L393-L402

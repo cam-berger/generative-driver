@@ -306,7 +306,11 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         from .missions import load_mission
         from .registrations import registration_for
         registration = registration_for(case_id)
-        mission = load_mission(registration.mission_case or case_id)['reuse_objective']
+        public_mission = load_mission(registration.mission_case or case_id)
+        mission = public_mission['reuse_objective']
+        if 'operating_conditions' in public_mission:
+            mission += ('\nProvided operating conditions (public facts):\n'
+                + '\n'.join('- ' + condition for condition in public_mission['operating_conditions']) + '\n')
         return {'objective': 'Use only the emitted package and this objective: ' + mission + ' Use benchmark_package_execute for each operation. Find names and arguments in the package reference. Each result also carries an instrument reading of the emulated device after the call. Report actual observations and limitations.',
                 'inputs': [str(package)], 'allowed_tools': ['benchmark_package_execute'],
                 'context': {'package_dir': str(package)}, 'binding': binding,

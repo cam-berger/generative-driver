@@ -123,7 +123,7 @@ def _monitor_body(command, response):
     if text is None:
         return None
     clean = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
-    echo = re.search(r'(?:^|[\r\n]|\(device\)[ \t]*)' + re.escape(command)
+    echo = re.search(r'(?:^|[\r\n]|\(device\))[ \t]*' + re.escape(command)
                      + r'[ \t]*(?:\r\n|\r|\n)', clean)
     if echo is None:
         return None

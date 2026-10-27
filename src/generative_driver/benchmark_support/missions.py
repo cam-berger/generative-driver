@@ -5,10 +5,18 @@ import re
 
 
 def validate_mission(value, case_id):
-    if (not isinstance(value, dict) or set(value) != {'schema', 'case_id', 'tasks', 'reuse_objective'}
+    required = {'schema', 'case_id', 'tasks', 'reuse_objective'}
+    if (not isinstance(value, dict) or not required <= set(value)
+            or set(value) - required - {'operating_conditions'}
             or value['schema'] != 'benchmark-public-mission/1' or value['case_id'] != case_id
             or not isinstance(value['reuse_objective'], str) or not value['reuse_objective'].strip()):
         raise ValueError('Invalid public mission identity or objective')
+    if 'operating_conditions' in value:
+        conditions = value['operating_conditions']
+        if (not isinstance(conditions, list) or not 1 <= len(conditions) <= 16
+                or any(not isinstance(condition, str) or not condition.strip() or len(condition) > 1000
+                       for condition in conditions)):
+            raise ValueError('Public operating conditions require 1 through 16 nonblank strings of at most 1000 characters')
     tasks = value['tasks']
     if not isinstance(tasks, dict) or not tasks:
         raise ValueError('Public mission requires tasks')

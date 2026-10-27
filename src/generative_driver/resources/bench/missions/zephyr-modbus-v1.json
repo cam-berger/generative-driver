@@ -65,5 +65,10 @@
       "outputs": {}
     }
   },
-  "reuse_objective": "Write holding register 3 to 4660 and read it back. Turn coil 0 on and then off. Preserve every other holding register and coil throughout. Report the readback and observed effects."
+  "reuse_objective": "Write holding register 3 to 4660 and read it back. Turn coil 0 on and then off. Preserve every other holding register and coil throughout. Report the readback and observed effects.",
+  "operating_conditions": [
+    "The supplied UART-over-TCP device advances only during live calls and pauses between calls; agent thinking time does not advance it.",
+    "For this emulated profile, use a 50 ms execution delay between request exchanges, including automatic identity-to-operation exchanges. Place the delay inside the model operation while the live call is active; sleeping between tool calls does not advance device time.",
+    "The 50 ms interval is a conservative tested emulator scheduling margin. Acceptance judges returned values, refusal and device effects. Physical UART timing, response deadlines and throughput are not measured."
+  ]
 }

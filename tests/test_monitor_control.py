@@ -206,3 +206,11 @@ class MonitorControlTests(unittest.TestCase):
             self.assertEqual(evidence[0]['response'].encode('utf-8', errors='surrogateescape'), wire)
             self.assertIsInstance(evidence[0]['time'], float)
             self.assertEqual(peer.commands, ['start'])
+
+    def test_padded_pause_echo_after_a_greeting_tail_preserves_the_complete_response(self):
+        wire = b' \x1b[0mpause\n\rPausing emulation...\r\n\r\x1b[33;1m(device) \x1b[0m'
+        with ScriptedMonitor(lambda _: [wire], greeting=False) as peer:
+            response = self.session(peer)._monitor('pause')
+            self.assertEqual(response.encode('utf-8', errors='surrogateescape'), wire)
+            self.assertTrue(peer.processed.is_set())
+            self.assertEqual(peer.commands, ['pause'])

@@ -24,7 +24,7 @@
   },
   "truth": {
     "path": "groundtruth/zephyr-modbus-v1.enc",
-    "sha256": "49dfa4901e305554bdbac10b6a0004cecf21ced3c8508d693731c9fac2a6b216"
+    "sha256": "984d851229bac78512b31bacefedf9168bd82339a32504eaa4906841e550b718"
   },
   "default_effects": [
     "write",
@@ -37,12 +37,12 @@
       "source": "b9b52363de4af8b5773ecc7fadc9e2a2161fc55d3e51894dbf4a2c3f8614ea76",
       "contract": "43af2178a91a55bd587d5d3ce3521564fcd00c936fa5580229e24f7fbab12f1e",
       "recipe": "b251778072e1b4dd91bf792489f20c9917a993bd18c3470c5486c539d9b0d5f9",
-      "references": "eed6cef29f3edf468e59a1a9171d540155a66b3a93c09cbb1faf3160527e0d88",
-      "mutations": "39058a9d91860b33ba7e7e640e26b11b9e58ccc2d7fd8e19ff3577099598c1f3",
+      "references": "8240adeef79967fd2c1c66683728c7640d2a9b3e1cb06aa8ada7fb5b82311739",
+      "mutations": "3279a3c01ddcca6a5d32207905af3b8cae3034154c16bb44c5ae5ed00f718c8a",
       "build": "10c338339a6deecf370860c136704f64480947d9012604d7f4967273bd104d91",
-      "inventory": "64cd9ef77215b1befaf40207339682d239b12e5d87ccae247342aac13eaa53a9"
+      "inventory": "e590e3d1e305d1e39b8142a487ea4d17c243b396fa22dddf497213a559b71498"
     },
-    "evidence_sha256": "3685e5ef7d3bb394eb5c199dc178f413f2e7039b74737f686dedf248f72446b4"
+    "evidence_sha256": "7e28b21503768108678a0102621fa654d8681390371bb3ec38781216e849e34e"
   },
   "corpus_identity": {
     "lineage": "zephyr-modbus",

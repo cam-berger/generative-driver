@@ -1,0 +1,221 @@
+{
+  "schema": "benchmark-architecture-validation/1",
+  "date_utc": "2026-10-27",
+  "implementation_commit": "107858a4a5ff6dfd8cde04b11b81a42ab17f9554",
+  "scope": "One existing six-stage pipeline; seven upstream intake lineages, one executable lineage and six blocked; three separate synthetic development cases.",
+  "reviews": {
+    "fresh_reader": "Executed list, full/debug plans, include/exclude, report and missing-credential checks outside checkout; add/bootstrap/qualify/activate/promote/retire guide accepted.",
+    "independent_code_reviews": "No blocking spec or standards findings; legacy plan-construction duplication documented in ADR.",
+    "primary_sources": "docs/research/2026-10-26-benchmark-architecture.md"
+  },
+  "native_qualification": [
+    {
+      "case": "zephyr-modbus-v1",
+      "status": "passed",
+      "execution": "native-reference-calibration",
+      "model_benchmark": false,
+      "images": {
+        "firmware.bin": "6137dfd5044bf38e791b77e25db0408ba081fc60ccdd2953629e7fb62090ca82"
+      },
+      "qualified_evaluator_sha256": "100d720150781371f914c09087ab82c1f55e4daf03d61b55d50fead21d55321f",
+      "qualification_sha256": "7e28b21503768108678a0102621fa654d8681390371bb3ec38781216e849e34e",
+      "valid_references": 2,
+      "positive_episodes": 4,
+      "mutants_rejected": 6,
+      "required_mutants": 6,
+      "completed_episodes": 10,
+      "native_process_observed": true
+    },
+    {
+      "case": "tq9-v2",
+      "status": "passed",
+      "execution": "native-reference-calibration",
+      "model_benchmark": false,
+      "images": {
+        "firmware.bin": "793d0bd913c12a0a0b584f615f40e52393b9ad4ba6afe48a8f7bf7f212b4783e"
+      },
+      "qualified_evaluator_sha256": "100d720150781371f914c09087ab82c1f55e4daf03d61b55d50fead21d55321f",
+      "qualification_sha256": "5973a9605199154388cd4f072a15b097c4a46d1e0daf4870418d768a57233c55",
+      "valid_references": 2,
+      "positive_episodes": 4,
+      "mutants_rejected": 9,
+      "required_mutants": 9,
+      "completed_episodes": 13,
+      "native_process_observed": true
+    },
+    {
+      "case": "sampled-sensor-v1",
+      "status": "passed",
+      "execution": "native-reference-calibration",
+      "model_benchmark": false,
+      "images": {
+        "firmware.bin": "637370d3d7192a17b6abeb79a3fcbc60ec2f47eb14e199627798756c02bbb1e9"
+      },
+      "qualified_evaluator_sha256": "100d720150781371f914c09087ab82c1f55e4daf03d61b55d50fead21d55321f",
+      "qualification_sha256": "14ec332242bc27e4ce09e5915b5acf75353847434cf48a30d0fd05cff9680336",
+      "valid_references": 2,
+      "positive_episodes": 4,
+      "mutants_rejected": 4,
+      "required_mutants": 4,
+      "completed_episodes": 8,
+      "native_process_observed": true
+    },
+    {
+      "case": "parameter-store-v1",
+      "status": "passed",
+      "execution": "native-reference-calibration",
+      "model_benchmark": false,
+      "images": {
+        "firmware.bin": "e7a580834861f7fa96868245bf969d69350ee0acdab1ee8eda30abc1fdf1faf1"
+      },
+      "qualified_evaluator_sha256": "100d720150781371f914c09087ab82c1f55e4daf03d61b55d50fead21d55321f",
+      "qualification_sha256": "dd934ba6c89d944e71d8122d28700c20e93ab88162305980466682f5f4f3bc0a",
+      "valid_references": 2,
+      "positive_episodes": 4,
+      "mutants_rejected": 7,
+      "required_mutants": 7,
+      "completed_episodes": 11,
+      "native_process_observed": true
+    }
+  ],
+  "execution_profile": {
+    "profile": "one emulator at a time; no concurrent full test suite",
+    "audit_overlap": "54 lightweight deterministic review tests and one single-test portability check overlapped qualification; no other native emulator or model run overlapped."
+  },
+  "firmware_images_unchanged": true,
+  "public_tasks_and_reuse_objectives_unchanged": [
+    "zephyr-modbus-v1",
+    "tq9-v2",
+    "sampled-sensor-v1",
+    "parameter-store-v1"
+  ],
+  "zephyr_reference_change": {
+    "tasks_unchanged": true,
+    "contracts_unchanged": true,
+    "wire_requests_and_decoders_unchanged": true,
+    "only_reference_change": "50 ms delay before each operation, including identity",
+    "mutant_targets_preserved": true
+  },
+  "monitor_proof": {
+    "execution": "scripted TCP monitor; not firmware performance",
+    "early_completion_before_fix_ms": 349.55,
+    "regression_tests": 33,
+    "properties": [
+      "Full command echo and following prompt",
+      "Telnet/ANSI/fragmented and padded echoes",
+      "Lossless raw private evidence",
+      "Single dispatch; no retry"
+    ]
+  },
+  "retained_unsuccessful_zephyr_qualification_attempts": [
+    {
+      "attempt": 1,
+      "status": "pending",
+      "completed_episodes": 3,
+      "failure": "ValueError: Positive reference failed: b-diagnostic-original; mutant qualification is unavailable",
+      "model_measurement": false
+    },
+    {
+      "attempt": 2,
+      "status": "pending",
+      "completed_episodes": 6,
+      "failure": "RuntimeError: Host fault: monitor response timed out",
+      "model_measurement": false
+    },
+    {
+      "attempt": 3,
+      "status": "pending",
+      "completed_episodes": 0,
+      "failure": "RuntimeError: Host fault: monitor response timed out",
+      "model_measurement": false
+    },
+    {
+      "attempt": 4,
+      "status": "pending",
+      "completed_episodes": 0,
+      "failure": "RuntimeError: Host fault: monitor response timed out",
+      "model_measurement": false
+    },
+    {
+      "attempt": 5,
+      "status": "pending",
+      "completed_episodes": 3,
+      "failure": "RuntimeError: Host execution failed; behavioral grading is unavailable",
+      "model_measurement": false
+    },
+    {
+      "attempt": 6,
+      "status": "pending",
+      "completed_episodes": 3,
+      "failure": "RuntimeError: Host fault: monitor response timed out",
+      "model_measurement": false
+    }
+  ],
+  "qualification_causality_limit": "Controls demonstrate monitor defects and RTU pacing risk; successful qualification does not prove the cause of every earlier timeout.",
+  "worker_isolation": {
+    "checks": {
+      "password_hidden": true,
+      "proc_password_hidden": true,
+      "symlink_hidden": true,
+      "private_answers": true,
+      "upstream_source": true,
+      "research_checkout": true,
+      "worktree": true,
+      "old_results": true,
+      "first_attempt": true,
+      "new_private_options_hidden": true,
+      "tq9-v2_password_hidden": true,
+      "sampled-sensor-v1_password_hidden": true,
+      "parameter-store-v1_password_hidden": true,
+      "previous_final_run_hidden": true,
+      "owner_reachable": true,
+      "work_writable": true
+    },
+    "passed": true
+  },
+  "isolation_setup_control": "Initial probe could not mount a missing benchmark directory; created the normal harness directory and repeated exact probes before inference. Initial result retained privately.",
+  "installed_admission": [
+    {
+      "case": "zephyr-modbus-v1",
+      "authenticated_admission": true
+    },
+    {
+      "case": "tq9-v2",
+      "authenticated_admission": true
+    },
+    {
+      "case": "sampled-sensor-v1",
+      "authenticated_admission": true
+    },
+    {
+      "case": "parameter-store-v1",
+      "authenticated_admission": true
+    }
+  ],
+  "installed_smoke": {
+    "execution": "scripted-replay",
+    "model_benchmark": false,
+    "verdict": "passed"
+  },
+  "tests": {
+    "current_focused": "Observed red-to-green mission and monitor regressions; 33 native-control tests and 27 mission/ground/repair tests passed.",
+    "linux_environment": "Earlier full checkpoint: 900 tests had 10 daemon-process cleanup failures under non-reaping cloud PID 1; an external subreaper wrapper passed 901 tests with 3 skips. It changed no production code or tests. This is not the full test claim for the later parser/guidance changes.",
+    "cross_platform": "Latest full installed-package matrix in progress; earlier macOS path-only assertion failure corrected in test fixture."
+  },
+  "agent_run": {
+    "status": "running",
+    "suite_id": "suite-45687675b4534093",
+    "run_id": "run-381d71ac6baf4b6c",
+    "execution": "actual-agent-emulation",
+    "repetitions": 1,
+    "runtime": "codex",
+    "model": "gpt-6.1-sol",
+    "reasoning_effort": "medium"
+  },
+  "limitations": [
+    "One executable upstream lineage does not demonstrate seven-area device breadth.",
+    "UART-over-TCP does not establish physical transport, timing, electrical behavior or throughput.",
+    "The 50 ms guidance is a tested emulator margin, not an exact-delay acceptance requirement.",
+    "Evaluator qualification identity still spans all benchmark_support code; follow-up scope work is tracked locally."
+  ]
+}

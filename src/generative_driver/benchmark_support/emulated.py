@@ -304,7 +304,9 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         state['capabilities_path'] = str(capabilities[0]) if capabilities else None
         _write(path, state)
         from .missions import load_mission
-        mission = load_mission('tq9-v2' if case_id == 'tq9' else case_id)['reuse_objective']
+        from .registrations import registration_for
+        registration = registration_for(case_id)
+        mission = load_mission(registration.mission_case or case_id)['reuse_objective']
         return {'objective': 'Use only the emitted package and this objective: ' + mission + ' Use benchmark_package_execute for each operation. Find names and arguments in the package reference. Each result also carries an instrument reading of the emulated device after the call. Report actual observations and limitations.',
                 'inputs': [str(package)], 'allowed_tools': ['benchmark_package_execute'],
                 'context': {'package_dir': str(package)}, 'binding': binding,
@@ -350,18 +352,11 @@ def _mission(case_id, events, capabilities):
     readings of the emulated device: a note on the reuse stage, never a grade. Failed calls are attributed only on
     trusted evidence: untyped or mixed failures blame nobody."""
     try:
-        if case_id in ('sampled-sensor-v1', 'parameter-store-v1', 'zephyr-modbus-v1'):
-            done = family_for(case_id).reuse_passed(events, capabilities)
-        elif case_id == 'tq9':
+        if case_id == 'tq9':
             from .cases import mission_done
             done = mission_done(events, capabilities)
         else:
-            duties = [e['observation']['duty'] for e in events if e['result'].get('ok')]
-            mapping = capabilities['tasks']['temperature']
-            output = mapping['outputs']['temperature']['output']
-            read = any(e.get('operation') == mapping['operation'] and e['result'].get('ok')
-                       and type(e['result'].get('outputs', {}).get(output)) in (int, float) for e in events)
-            done = read and any(abs(value - 370) <= 2 for value in duties) and bool(duties) and duties[-1] == 0
+            done = family_for(case_id).reuse_passed(events, capabilities)
     except (KeyError, TypeError, ValueError, AttributeError, IndexError) as error:
         return {'name': 'fresh_worker_mission', 'passed': None,
                 'reason': 'The capability mapping cannot judge the mission: ' + type(error).__name__ + ': ' + str(error)}

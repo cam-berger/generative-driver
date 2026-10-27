@@ -9,3 +9,17 @@ Before implementation, read [CONTEXT.md](CONTEXT.md) and the [accepted design](d
 - Keep worker claims, accepted handoffs and evaluator verdicts separate. Score observable outputs/effects, not candidate source-code equality. Hashes establish provenance and integrity.
 - The bench harness holds evaluator passwords; the configurator and workers receive neither passwords nor their paths or plaintext answers. Describe password separation accurately; hashes are not a sandbox. Distinguish model runs, scripted tests, replay, emulation and physical evidence.
 - Keep docs concise, concrete and executable. Define terms on first use; remove repeated explanations. Preserve notices and private research artifacts. Launch model baselines or physical operations only when explicitly assigned by the primary agent.
+
+## Agent skills
+
+### Issue tracker
+
+Track specs and tickets as local Markdown under `.scratch/<feature>/`. See [issue tracker conventions](docs/agents/issue-tracker.md).
+
+### Triage labels
+
+Use `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human` and `wontfix`. See [triage labels](docs/agents/triage-labels.md).
+
+### Domain docs
+
+Use one repository-wide domain context, retaining the vocabulary in `CONTEXT.md`. See [domain documentation conventions](docs/agents/domain.md).

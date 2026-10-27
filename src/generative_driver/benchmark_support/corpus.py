@@ -158,7 +158,7 @@ def _availability(row):
             'case_pin': pin}
 
 
-def _plan(catalog, repetitions, availability):
+def _legacy_plan(catalog, repetitions, availability):
     from .suites import normalize_manifest
     if type(repetitions) is not int or not 1 <= repetitions <= 20:
         raise ValueError('Corpus repetitions must be an integer from 1 through 20')
@@ -201,19 +201,108 @@ def _plan(catalog, repetitions, availability):
     return {**body, 'plan_sha256': _digest(body)}
 
 
-def plan_corpus(catalog, repetitions=3):
+def _selection(catalog, include=None, exclude=None):
+    """Resolve operator choices without deleting anything from the intake inventory."""
+    names = {row['id'] for row in catalog['lineages']}
+    if include is not None:
+        if not isinstance(include, (list, tuple)) or any(not isinstance(v, str) for v in include):
+            raise ValueError('Include must contain lineage IDs')
+        if len(include) != len(set(include)) or not set(include) <= names:
+            raise ValueError('Duplicate or unknown included lineage')
+    if exclude is None:
+        exclude = []
+    elif isinstance(exclude, dict):
+        exclude = list(exclude.items())
+    if not isinstance(exclude, (list, tuple)):
+        raise ValueError('Exclude must contain lineage IDs and reasons')
+    excluded = {}
+    for entry in exclude:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            raise ValueError('Each excluded lineage requires a reason')
+        name, reason = entry
+        if not isinstance(name, str) or name not in names or name in excluded:
+            raise ValueError('Duplicate or unknown excluded lineage')
+        _text(reason, 'exclusion reason')
+        excluded[name] = reason
+    if include is not None and set(include) & set(excluded):
+        raise ValueError('A lineage cannot be both included and excluded')
+    selected = names if include is None else set(include)
+    return [{'lineage': row['id'], 'selected': row['id'] in selected and row['id'] not in excluded,
+             'reason': excluded.get(row['id']) or ('Selected by default.' if include is None
+                 else 'Explicitly included.' if row['id'] in selected
+                 else 'Not included in the explicit selection.')}
+            for row in catalog['lineages']]
+
+
+def _plan(catalog, repetitions, availability, selection=None):
+    from .suites import normalize_manifest
+    legacy = _legacy_plan(catalog, repetitions, availability)
+    selection = _selection(catalog) if selection is None else copy.deepcopy(selection)
+    if not isinstance(selection, list) or len(selection) != len(catalog['lineages']):
+        raise ValueError('Incomplete frozen lineage selection')
+    for row, decision in zip(catalog['lineages'], selection):
+        _object(decision, 'lineage selected reason', 'selection')
+        if decision['lineage'] != row['id'] or type(decision['selected']) is not bool:
+            raise ValueError('Inconsistent frozen lineage selection')
+        _text(decision['reason'], 'selection reason')
+    choices = {row['lineage']: row for row in selection}
+    ready = [row for row, available in zip(catalog['lineages'], availability)
+             if choices[row['id']]['selected'] and available['status'] == 'ready']
+    context = {'catalog': catalog, 'availability': availability, 'selection': selection,
+               'repetitions': repetitions}
+    context_sha256 = _digest(context)
+    suite = None
+    if ready:
+        suite = normalize_manifest({'schema': 'benchmark-suite/1',
+            'id': catalog['id'] + ':' + context_sha256, 'version': catalog['version'],
+            'entries': [{'case': row['case'], 'scenario': 'original', 'case_seed': 0} for row in ready],
+            'repetitions': repetitions, 'child_budget_seconds': 10800,
+            'suite_budget_seconds': min(604800, 10800 * repetitions * len(ready)), 'max_active_children': 1})
+    slots = []
+    for slot in legacy['slots']:
+        choice = choices[slot['lineage']]
+        slots.append({**slot, 'selected': choice['selected'], 'selection_reason': choice['reason'],
+                      'availability_status': slot['status'],
+                      'status': slot['status'] if choice['selected'] else 'excluded'})
+    body = {key: value for key, value in legacy.items() if key != 'plan_sha256'}
+    body.update(schema='benchmark-corpus-plan/2', selection=selection, context_sha256=context_sha256,
+                slots=slots, runnable_suite=suite,
+                coverage={area: {'lineages': sum(r['area'] == area for r in slots) // repetitions,
+                    'selected': sum(r['area'] == area and r['selected'] for r in slots) // repetitions,
+                    'excluded': sum(r['area'] == area and not r['selected'] for r in slots) // repetitions,
+                    'ready': sum(r['area'] == area and r['status'] == 'ready' for r in slots) // repetitions,
+                    'blocked': sum(r['area'] == area and r['status'] == 'blocked' for r in slots) // repetitions}
+                    for area in AREAS})
+    return {**body, 'plan_sha256': _digest(body)}
+
+
+def plan_corpus(catalog, repetitions=3, *, include=None, exclude=None):
     catalog = validate_catalog(catalog)
-    return _plan(catalog, repetitions, [_availability(row) for row in catalog['lineages']])
+    selection = _selection(catalog, include, exclude)
+    return _plan(catalog, repetitions, [_availability(row) for row in catalog['lineages']], selection)
 
 
-def validate_plan(plan):
+def validate_plan(plan, *, current=False):
+    """Validate frozen inputs, optionally requiring the entire public inventory to remain current."""
     try:
         catalog = validate_catalog(plan['catalog'])
-        expected = _plan(catalog, plan['repetitions'], plan['availability'])
+        if plan['schema'] == 'benchmark-corpus-plan/1':
+            expected = _legacy_plan(catalog, plan['repetitions'], plan['availability'])
+        elif plan['schema'] == 'benchmark-corpus-plan/2':
+            expected = _plan(catalog, plan['repetitions'], plan['availability'], plan['selection'])
+        else:
+            raise ValueError('Unsupported frozen corpus plan schema')
     except (KeyError, TypeError) as error:
         raise ValueError('Malformed frozen corpus plan') from error
     if plan != expected:
         raise ValueError('Frozen corpus plan changed')
+    if current:
+        availability = [_availability(row) for row in catalog['lineages']]
+        expected = (_legacy_plan(catalog, plan['repetitions'], availability)
+                    if plan['schema'] == 'benchmark-corpus-plan/1' else
+                    _plan(catalog, plan['repetitions'], availability, plan['selection']))
+        if plan != expected:
+            raise ValueError('Case availability or identity changed; freeze a new corpus plan')
     return copy.deepcopy(plan)
 
 
@@ -225,8 +314,7 @@ def start_corpus(plan, executor=None, options=None, request_id=None, *, home=Non
         raise ValueError('Corpus has no runnable, qualified cases')
     if executor == 'replay' or (options or {}).get('replay_candidates') is not None:
         raise ValueError('Corpus model measurements require an actual agent runtime')
-    if plan != plan_corpus(plan['catalog'], plan['repetitions']):
-        raise ValueError('Case availability or identity changed; freeze a new corpus plan')
+    plan = validate_plan(plan, current=True)
     return {**start_suite(plan['runnable_suite'], executor, options, request_id, home=home),
             'corpus_plan_sha256': plan['plan_sha256']}
 
@@ -238,9 +326,13 @@ def report_corpus(plan, suite=None):
     Its manifest and complete case pins must match this plan before any result counts.
     """
     from .suite_reporting import _saved_report, _report_equivalent
+    from ..configurator import _evaluation_errors
     plan = validate_plan(plan)
     trials, qualification = {}, None
-    ready = [a for a in plan['availability'] if a['status'] == 'ready']
+    modern = plan['schema'] == 'benchmark-corpus-plan/2'
+    selected = {row['lineage'] for row in plan['selection'] if row['selected']} if modern else {
+        row['id'] for row in plan['catalog']['lineages']}
+    ready = [a for a in plan['availability'] if a['status'] == 'ready' and a['lineage'] in selected]
     if suite is not None:
         try:
             suite = _saved_report(suite)
@@ -257,28 +349,46 @@ def report_corpus(plan, suite=None):
             raise ValueError('Malformed saved corpus suite') from error
     rows = []
     for slot in plan['slots']:
-        row = {**copy.deepcopy(slot), 'status': 'blocked' if slot['status'] == 'blocked' else 'not_run',
+        row = {**copy.deepcopy(slot), 'status': (slot['status'] if slot['status'] in ('blocked', 'excluded') else 'not_run'),
                'run_id': None, 'passed': False, 'reason': None}
         trial = trials.get((slot['lineage'], slot['repeat']))
+        if trial and not trial.get('run_id') and (
+                trial.get('status') in ('blocked', 'failed', 'cancelled')
+                or trial.get('status') == 'finished' and trial.get('outcome_category') != 'completed'):
+            row.update(status='stopped', reason=trial.get('reason'), trial_key=trial['trial_key'],
+                       stopped_stage=trial.get('stopped_stage'))
         if trial and trial.get('run_id'):
             accepted = all(trial.get('stages', {}).get(s, {}).get('workflow_status') == 'accepted' for s in STAGES)
             equivalent = (trial.get('status') == 'finished' and trial.get('outcome_category') == 'completed'
                 and _report_equivalent({**trial, 'schema': 'benchmark-report/3',
                                         'protocol': 'assistive/1', 'workflow_status': 'completed'}))
-            mission = ((trial.get('equivalence') or {}).get('mission') or {}).get('passed')
+            grade = trial.get('equivalence')
+            mission_record = grade.get('mission') if isinstance(grade, dict) else None
+            mission = mission_record.get('passed') if isinstance(mission_record, dict) else None
+            mission_fault = mission_record.get('fault') if isinstance(mission_record, dict) else None
+            mission_reason = mission_record.get('reason') if isinstance(mission_record, dict) else None
+            mission_fault = mission_fault if isinstance(mission_fault, str) else None
+            mission_reason = mission_reason if isinstance(mission_reason, str) else None
+            negative = (trial.get('status') == 'finished' and trial.get('outcome_category') == 'completed'
+                and trial.get('verdict') == 'not equivalent' and isinstance(grade, dict)
+                and not _evaluation_errors(grade) and grade['status'] in ('graded', 'no-driver')
+                and grade['equivalent'] is False)
             if equivalent and accepted and mission is True:
                 status = 'passed'
-            elif trial.get('outcome') == 'not_equivalent' or equivalent and accepted and mission is False:
+            elif negative or equivalent and accepted and mission is False and mission_fault == 'model':
                 status = 'failed'
-            elif trial.get('outcome') == 'equivalent':
+            elif (trial.get('status') in ('blocked', 'failed', 'cancelled')
+                    or trial.get('outcome') == 'stopped'
+                    or trial.get('status') == 'finished' and trial.get('outcome_category') != 'completed'):
+                status = 'stopped'
+            elif trial.get('verdict') in ('equivalent', 'unqualified'):
                 status = 'unqualified' if not accepted else 'unscored'
             else:
-                status = trial.get('outcome', 'unscored')
-                if status not in ('stopped', 'running', 'unscored', 'unqualified'):
-                    raise ValueError('Unknown corpus trial outcome')
+                status = 'running' if trial.get('status') in ('pending', 'launching', 'running', 'queued') else 'unscored'
             row.update(status=status, run_id=trial['run_id'], passed=status == 'passed',
-                       reason=trial.get('reason'), trial_key=trial['trial_key'],
-                       equivalent=equivalent, fresh_mission=mission,
+                       reason=trial.get('reason') or (mission_reason if status == 'unscored' and mission is False else None),
+                       trial_key=trial['trial_key'], equivalent=equivalent, fresh_mission=mission,
+                       fresh_mission_fault=mission_fault, fresh_mission_reason=mission_reason,
                        stopped_stage=trial.get('stopped_stage'), repairs=trial.get('repairs'),
                        elapsed_seconds=trial.get('elapsed_seconds'), usage=trial.get('usage'))
         rows.append(row)
@@ -286,11 +396,19 @@ def report_corpus(plan, suite=None):
         counts = {s: sum(r['status'] == s for r in selected) for s in
                   ('blocked', 'not_run', 'passed', 'failed', 'unscored', 'unqualified', 'stopped', 'running')}
         counts.update(planned=len(selected), started=sum(r['run_id'] is not None for r in selected))
+        if modern:
+            counts.update(selected=sum(r['selected'] for r in selected),
+                          excluded=sum(r['status'] == 'excluded' for r in selected))
         measured = counts['passed'] + counts['failed']
-        return {'counts': counts, 'measured_success': {'passed': counts['passed'], 'denominator': measured,
+        result = {'counts': counts, 'measured_success': {'passed': counts['passed'], 'denominator': measured,
                 'rate': counts['passed']/measured if measured else None},
                 'demonstrated_coverage': {'passed': counts['passed'], 'denominator': len(selected),
                 'rate': counts['passed']/len(selected) if selected else None}}
+        if modern:
+            denominator = counts['selected']
+            result['selected_coverage'] = {'passed': counts['passed'], 'denominator': denominator,
+                                          'rate': counts['passed']/denominator if denominator else None}
+        return result
     lineages = {r['id']: summary([s for s in rows if s['lineage'] == r['id']]) for r in plan['catalog']['lineages']}
     groups = {}
     for origin in sorted({r['origin_group'] for r in rows}):
@@ -300,7 +418,8 @@ def report_corpus(plan, suite=None):
         groups[origin] = {'lineages': sorted(names), 'measured_lineages': len(rates),
                           'mean_lineage_success': sum(rates)/len(rates) if rates else None}
     rates = [g['mean_lineage_success'] for g in groups.values() if g['mean_lineage_success'] is not None]
-    return {'schema': 'benchmark-corpus-report/1', 'plan_sha256': plan['plan_sha256'],
+    return {'schema': 'benchmark-corpus-report/2' if modern else 'benchmark-corpus-report/1',
+            'plan_sha256': plan['plan_sha256'],
             'catalog_sha256': plan['catalog_sha256'], 'model_benchmark': any(r['run_id'] for r in rows),
             'qualification': qualification, **summary(rows), 'slots': rows, 'lineages': lineages,
             'areas': {area: summary([r for r in rows if r['area'] == area]) for area in AREAS},
@@ -309,6 +428,7 @@ def report_corpus(plan, suite=None):
                 'Blocked and unrun slots remain in demonstrated coverage, not measured model failures.',
                 'Measured success requires equivalence, successful fresh reuse and all six accepted stages.',
                 'Missing mission evidence is unscored. Host/operator stops are reported separately.',
+                'A failed fresh mission counts as a model failure only with explicit model fault attribution.',
                 'Origin means weight measured lineages equally; unavailable groups have no measured rate.',
                 'Software execution does not establish physical transport, timing or actuation behavior.',
                 'Saved owner reports and hashes provide provenance, not cryptographic authentication.']}

@@ -1,7 +1,7 @@
 """Authenticated, evaluator-owned upstream case inventories.
 
-This is data validation, not a plugin loader. Native families remain allowlisted
-in instruments.py; neither a catalog nor an encrypted bundle selects Python code.
+This is data validation, not a plugin loader. Native families remain code-owned
+in registrations.py; neither a catalog nor an encrypted bundle selects Python code.
 """
 import copy
 from .snapshots import canonical_digest
@@ -10,15 +10,18 @@ from .snapshots import canonical_digest
 def hydrate_truth(payload):
     from .behavior import _check_contract
     from .calibration import apply_mutation
-    from .zephyr_modbus import REQUIRED_MUTANTS
+    from .registrations import registration_for, native_family_for
     try:
         fields = {'schema', 'case_id', 'family', 'inventory_state', 'images', 'source', 'build',
                   'recipe', 'phases', 'references', 'mutations', 'public_mission'}
         if (not isinstance(payload, dict) or set(payload) - fields - {'calibration'} or fields - set(payload)
                 or payload['schema'] != 'benchmark-upstream-truth/1'
-                or payload['case_id'] != 'zephyr-modbus-v1' or payload['family'] != 'zephyr-modbus'
                 or payload['inventory_state'] not in ('pending', 'qualified')):
             raise ValueError('Invalid upstream truth identity')
+        registration = registration_for(payload['case_id'])
+        if registration.truth_schema != payload['schema'] or registration.family != payload['family']:
+            raise ValueError('Invalid upstream truth identity')
+        required_mutants = native_family_for(registration.id).REQUIRED_MUTANTS
         if set(payload['references']) != {'a', 'b'} or set(payload['phases']) != {'diagnostic', 'final'}:
             raise ValueError('Upstream truth requires two references and disjoint phases')
         for phase in payload['phases'].values():
@@ -30,7 +33,7 @@ def hydrate_truth(payload):
                     or len(observed) != len(set(observed)) or set(wanted) != set(observed)):
                 raise ValueError('Upstream phase lacks complete reset/call/observe coverage')
         mutants = payload['mutations']['mutants']
-        if len(mutants) != len(REQUIRED_MUTANTS) or {m['id'] for m in mutants} != REQUIRED_MUTANTS:
+        if len(mutants) != len(required_mutants) or {m['id'] for m in mutants} != required_mutants:
             raise ValueError('Upstream mutant coverage changed')
         for mutant in mutants:
             reference = payload['references'][mutant['reference']]

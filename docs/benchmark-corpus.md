@@ -1,73 +1,124 @@
 # Upstream firmware corpus
 
-The software-first pilot selects seven upstream firmware lineages and preserves every admission gap. It adds Zephyr Modbus as the first executable upstream case. The three synthetic development cases remain available in their existing suite. Source intake, native evaluator qualification and actual model performance are separate results; see the [intake evidence](research/2026-10-26-corpus-intake.md).
+The software-first pilot tracks seven upstream firmware lineages. Its published inventory contains one upstream case with native qualification evidence, `zephyr-modbus-v1`, and six blocked lineages. A lineage is a source ancestry and mission; an executable case is a registered, versioned image and evaluator. Public availability is only a metadata check. Authenticate qualification against the installed code before running agents.
 
-## Plan, run and report
+The three synthetic development cases (`tq9-v2`, `sampled-sensor-v1`, `parameter-store-v1`) remain in their separate suite. They require fresh native qualification for the exact evaluator/runtime implementation before new trials. Source intake, evaluator qualification and measured model performance are separate evidence. See the [intake record](research/2026-10-26-corpus-intake.md), [architecture decision](research/2026-10-26-benchmark-architecture.md) and [case authoring guide](benchmark-case-authoring.md).
 
-Use an installed `generative-driver` and a configured Codex or Goose runtime. The existing native tool requirements (Renode, Ghidra and Java) still apply.
+## Freeze a selection
 
-```sh
-generative-driver benchmark corpus list
-generative-driver benchmark corpus plan --repetitions 3 --output corpus-plan.json
-generative-driver benchmark corpus start --plan corpus-plan.json --executor codex --options operator-options.json
-generative-driver benchmark suite status SUITE_ID
-generative-driver benchmark suite report SUITE_ID --output suite-report
-generative-driver benchmark corpus report --plan corpus-plan.json --suite-report suite-report/suite.json --output corpus-report.json
-```
-
-`operator-options.json` belongs outside the checkout and worker directories. Use the existing suite options: `home`, `evaluator_password_files` keyed by case ID, `renode`, `ghidra_home`, `java_home`, and `scoped_tool_approval: "emulator"`. Password handles go to the bench harness, never to the configurator or worker assignments. Keep the handles, decrypted bundles, upstream source/build trees and reference logs inaccessible to benchmark workers. The implementation's artifact hashes establish integrity, not filesystem isolation.
-
-For a nondefault configurator, set `GENERATIVE_DRIVER_HOME` to the same absolute directory as `home` in the options file. Configure the Codex or Goose runtime in that home before starting the suite.
-
-The corpus runner refuses a changed case pin or availability inventory: freeze a new plan after rebuilding or qualifying a case. Use `corpus report --plan corpus-plan.json` without a suite for an intake-only report. It reports no measured model rate. A saved suite must match the plan's manifest, case pins and actual-agent execution before its outcomes count.
-
-Report fields:
-
-- `measured_success`: equivalence and fresh mission success for the same completed trial, with all six accepted stages. Only graded outcomes enter this rate.
-- `demonstrated_coverage`: successful trials divided by **all** planned slots. Unavailable and unrun cases stay visible here.
-- `counts`: blocked, not run, stopped, running, unscored, unqualified, passed and failed, with reasons per slot.
-- `areas`, `lineages`, `origin_groups`: coverage and measured results at each level. Repetitions are not new devices; related lineages do not cross splits.
-
-A stopped host or missing evaluator result is not a model failure. A source-pinned catalog entry is not an executable device. Saved owner reports are trusted records; use the existing encrypted-evidence regrade path when independent report authentication is needed.
-
-## Rebuild the Zephyr image
-
-Install Zephyr's Python build requirements, CMake, Ninja and devicetree compiler, plus Arm GNU Toolchain 14.2.Rel1. Clone sources into an operator directory outside candidates:
+Use an installed `generative-driver`. All paths below are operator-chosen placeholders; replace them with absolute paths and create their report/private parent directories first. On Windows, use absolute Windows paths and follow the [owner startup instructions](setup.md#start-the-configurator).
 
 ```sh
-git clone https://github.com/zephyrproject-rtos/zephyr zephyr
-git -C zephyr checkout 413b789deb391d3a37d06b463288a5fe765ee57e
-west init -l zephyr
-west update cmsis cmsis_6 hal_stm32
-python -m pip install -r zephyr/scripts/requirements-base.txt
-generative-driver benchmark corpus build --case zephyr-modbus-v1 \
-  --source /absolute/path/to/zephyr \
-  --compiler /absolute/path/to/arm-none-eabi-gcc \
-  --west /absolute/path/to/west \
-  --output /absolute/path/to/empty-operator-build
+generative-driver --home /operator/state/corpus configure --executor codex --command /absolute/path/to/codex --provider openai --model YOUR_MODEL
+generative-driver --home /operator/state/corpus benchmark corpus list
+generative-driver --home /operator/state/corpus benchmark corpus plan --repetitions 3 --output /operator/reports/corpus-plan.json
 ```
 
-The command verifies the clean source/module commits, builds twice using the shipped overlay/configuration, compares binary hashes, and writes compiler identity, build commands and configuration hashes. It does not fetch source, modify protocol handlers or run a model. A dirty or mismatched source tree is refused before compilation. An alternate asset tree can be selected with `GENERATIVE_DRIVER_BENCH_ROOT`, which must be an existing absolute directory with the same `cases`, `groundtruth`, `missions` and `corpora` layout.
-
-To requalify the distributed encrypted inventory against installed evaluator/runtime code:
+This is the all-selected pilot: three slots for each of seven lineages, including all blocked lineages. Only selected, publicly ready cases enter the existing suite runner. To debug one lineage, freeze a separate plan:
 
 ```sh
-generative-driver benchmark truth calibrate --case zephyr-modbus-v1 \
-  --password-file /operator/private/zephyr-modbus-v1.password \
-  --renode /absolute/path/to/renode \
-  --ghidra-home /absolute/path/to/ghidra \
-  --java-home /absolute/path/to/jdk \
-  --output /operator/private/empty-qualification
+generative-driver --home /operator/state/corpus benchmark corpus plan --repetitions 1 --include zephyr-modbus --output /operator/reports/zephyr-debug-plan.json
 ```
 
-This runs native Ghidra analysis, two valid references in diagnostic and final phases, and six functional mutants. Final phases execute emitted packages. A failed positive reference stops qualification before mutants. Successful qualification writes a replacement `case.json` and encrypted bundle for the operator's asset tree. Changing the image, mission, evaluator, runtime or reference inventory requires qualification again. Do not copy plaintext logs, models or passwords into package resources.
+`--include LINEAGE` can repeat and selects only those lineage IDs. `--exclude LINEAGE REASON` can repeat and records an explicit exclusion, for example `--exclude grbl-motion "No qualified backend for this pilot"`. A lineage cannot be both explicitly included and excluded. With no `--include`, every lineage is selected except explicit exclusions. Neither option deletes catalog entries or coverage slots: unselected slots say `excluded` and retain a reason; selected gaps say `blocked` and retain their admission blockers.
 
-The native recipe includes `platforms/BufferedSocketTerminal.cs` (MIT), which forwards each received socket block to the UART at one virtual timestamp. Its source is also pinned inside the encrypted recipe. This avoids scheduling each input byte separately; it adds no protocol logic and never retries writes. The bridge is a software transport and does not establish physical baud, byte timing or RS-485 turnaround behavior. Coil switching has an explicit emulator `actuate` grant, in addition to register `write` permission.
+`benchmark-corpus-plan/2` freezes the entire catalog, selection, availability, case pins and repetition count. The runnable suite's manifest ID binds it to that complete context. Freeze a new plan after changing selection, catalog, assets or qualification. Do not edit a frozen plan or use a later exclusion to remove a failed run from its original report. Legacy `/1` plans remain readable with their original all-selected meaning.
 
-The supplied device advances during each live call and pauses between calls, including probe and ground calls. Agent thinking time does not advance device time. The case's inherited `time_policy.probe` label is not a promise of continuous execution between calls; assignments state the actual policy explicitly.
+## Authenticate, execute and reconnect
 
-## Add another lineage
+Create `/operator/private/corpus-options.json` outside the checkout and worker directories. This is valid JSON; replace the paths with your own native installations and separately supplied evaluator password file:
 
-Record upstream ancestry, immutable source/license evidence, target architecture/system, public mission, functional requirements and blockers in the catalog first. Add a public mission file rather than branching stage prompts by case name. Executable adapters remain explicitly registered code; catalog data and encrypted inventories cannot dynamically load Python modules.
+```json
+{
+  "home": "/operator/state/corpus",
+  "renode": "/absolute/path/to/renode",
+  "ghidra_home": "/absolute/path/to/ghidra",
+  "java_home": "/absolute/path/to/jdk",
+  "evaluator_password_files": {
+    "zephyr-modbus-v1": "/operator/private/zephyr-modbus-v1.password"
+  },
+  "scoped_tool_approval": "emulator"
+}
+```
 
-Admission needs a reproducible image, a working transport/backend, an independent observer, distinct valid references, disjoint diagnostic/final episodes, and mutants that fail the targeted functional requirements. Keep the case blocked until all of those exist. Run the existing six-stage agent pipeline after admission, including a fresh package-only reuse worker. Software qualification leaves physical transport, timing and plant behavior open until separately measured.
+`home` must equal the absolute `--home` used to configure and control the owner. Configure Goose with `--executor goose` and its executable instead if desired. Password handles go only to the operator check and detached bench harness; neither passwords nor their paths go to the configurator or assignments. Keep decrypted bundles, reference logs, upstream source/build trees and credentials outside worker inputs and enforce host access controls. Hashes establish integrity; workers are not filesystem-isolated by this implementation.
+
+```sh
+generative-driver --home /operator/state/corpus benchmark corpus check --plan /operator/reports/corpus-plan.json --options /operator/private/corpus-options.json
+generative-driver --home /operator/state/corpus service start
+generative-driver --home /operator/state/corpus benchmark corpus start --plan /operator/reports/corpus-plan.json --executor codex --options /operator/private/corpus-options.json --request-id corpus-pilot-1
+generative-driver --home /operator/state/corpus benchmark suite status SUITE_ID
+generative-driver --home /operator/state/corpus benchmark suite events SUITE_ID --after 0
+generative-driver --home /operator/state/corpus benchmark suite result SUITE_ID --offset 0 --limit 50
+```
+
+`corpus check` authenticates the frozen selection's current ready cases through the same `require_calibration` admission used by the harness. It launches no owner, worker, native process or device and reports no password handles or private paths. A successful check establishes authenticated evaluator qualification only: it does not validate runtime authentication, installed native tools or model performance. Blocked and excluded entries remain visible; a selection with no ready cases cannot pass. Requalify stale evidence and freeze a new plan before checking again.
+
+Save `suite_id` from `corpus start`; the returned suite is the normal suite lifecycle. The harness starts children sequentially through acquire → interpret → probe → ground → emit → fresh reuse. Repeating the request ID reconnects to the same suite. After correcting a stopped suite's operator or host fault:
+
+```sh
+generative-driver --home /operator/state/corpus benchmark suite resume SUITE_ID --options /operator/private/corpus-options.json
+```
+
+Use the [existing suite budget and recovery rules](../bench/README.md#run-a-repeated-suite); resume does not erase attempts, failures or elapsed time. No corpus-specific status or resume command is needed.
+
+## Report without losing coverage
+
+```sh
+generative-driver --home /operator/state/corpus benchmark corpus report --plan /operator/reports/corpus-plan.json --suite-id SUITE_ID --output /operator/reports/corpus-report.json
+```
+
+`--suite-id` exports through the existing suite reporter. With the output path above, it preserves the raw suite export in `/operator/reports/corpus-report-suite/` beside the corpus report. Without `--output`, it uses a temporary suite export and prints the corpus report. To choose the suite export directory explicitly, use these commands instead:
+
+```sh
+generative-driver --home /operator/state/corpus benchmark suite report SUITE_ID --output /operator/reports/corpus-suite
+generative-driver --home /operator/state/corpus benchmark corpus report --plan /operator/reports/corpus-plan.json --suite-report /operator/reports/corpus-suite/suite.json --output /operator/reports/corpus-report.json
+```
+
+Supply either `--suite-id` or `--suite-report`. Omit both for an intake-only report with no measured model rate. A suite must match the frozen manifest, complete case pins and actual-agent execution before its outcomes count. Reports retain every catalog slot, including excluded slots and their reasons.
+
+| `benchmark-corpus-report/2` field | Meaning |
+|---|---|
+| `measured_success` | Passed / (passed + failed). A pass requires equivalence, a successful fresh mission and all six accepted stage handoffs. A valid final negative/no-driver grade is a failure; an equivalent driver with failed fresh mission counts as failed only with explicit model attribution. Missing evidence and host/operator/unknown mission failures are unscored. |
+| `selected_coverage` | Passed / all selected slots, including selected blocked, stopped and unrun slots. |
+| `demonstrated_coverage` | Passed / all catalog slots, including excluded slots. |
+| `counts`, `slots` | Separate excluded, blocked, not run, running, stopped, unqualified, unscored, passed and failed outcomes, with selection/blocker/stop reasons and `fresh_mission_fault` / `fresh_mission_reason` when available. |
+| `areas`, `lineages`, `origin_groups` | Coverage and measured results at each level. Repetitions are not new devices; related origins do not cross splits. |
+
+A host stop is not a graded model failure. A debug selection's measured rate cannot establish seven-area coverage. Saved owner reports provide provenance, not independent cryptographic authentication; use the existing encrypted-evidence regrade path when authentication is required.
+
+## Rebuild and requalify Zephyr
+
+Install Zephyr's Python build requirements, CMake, Ninja, devicetree compiler and Arm GNU Toolchain 14.2.Rel1. Clone into an operator source directory outside the checkout and workers:
+
+```sh
+git clone https://github.com/zephyrproject-rtos/zephyr /operator/source/zephyr
+git -C /operator/source/zephyr checkout 413b789deb391d3a37d06b463288a5fe765ee57e
+```
+
+From `/operator/source`, run `west init -l zephyr`, `west update cmsis cmsis_6 hal_stm32` and `python -m pip install -r zephyr/scripts/requirements-base.txt`. Then:
+
+```sh
+generative-driver --home /operator/state/corpus benchmark corpus build --case zephyr-modbus-v1 --source /operator/source/zephyr --compiler /absolute/path/to/arm-none-eabi-gcc --west /absolute/path/to/west --output /operator/private/empty-zephyr-build
+generative-driver --home /operator/state/corpus benchmark truth calibrate --case zephyr-modbus-v1 --password-file /operator/private/zephyr-modbus-v1.password --renode /absolute/path/to/renode --ghidra-home /absolute/path/to/ghidra --java-home /absolute/path/to/jdk --output /operator/private/empty-zephyr-qualification
+```
+
+Build verifies clean pinned source/module commits, builds twice with the shipped configuration, compares image hashes and records compiler/configuration provenance. It does not fetch sources or modify protocol handlers. Qualification authenticates the selected encrypted inventory and its pinned image; a separate rebuild alone does not replace that image. It runs native Ghidra analysis, two valid references in diagnostic and final phases, and six functional mutants. Final phases execute emitted packages. A failed positive reference stops qualification before mutants. Image, mission, evaluator/runtime closure or reference-inventory changes require new qualification.
+
+Successful calibration writes `case.json` and `zephyr-modbus-v1.enc` to the private output directory. It does not activate them. Copy a complete public asset tree to an operator location, preserving `cases`, `groundtruth`, `missions`, `corpora`, `platforms`, `licenses` and other shipped layout. This Python example creates a new tree and replaces the reviewed pair together:
+
+```python
+from pathlib import Path
+import shutil
+from generative_driver.benchmark import case_root
+
+assets = Path("/operator/assets/bench")
+qualified = Path("/operator/private/empty-zephyr-qualification")
+shutil.copytree(case_root(), assets)  # Destination must not exist.
+shutil.copyfile(qualified / "case.json", assets / "cases/zephyr-modbus-v1/case.json")
+shutil.copyfile(qualified / "zephyr-modbus-v1.enc", assets / "groundtruth/zephyr-modbus-v1.enc")
+```
+
+Preserve the matching pinned `firmware.bin` and public mission; leave plaintext qualification logs, source and passwords private. Set `GENERATIVE_DRIVER_BENCH_ROOT` to `/operator/assets/bench` in the operator shell **before** starting the owner and running plan/check/start. Use `export GENERATIVE_DRIVER_BENCH_ROOT=/operator/assets/bench` in a POSIX shell, or `$env:GENERATIVE_DRIVER_BENCH_ROOT = 'C:\operator\assets\bench'` in PowerShell with your selected absolute path. Restart an already-running owner with that environment. The variable selects the tree; it does not copy or qualify assets. Freeze and authenticate a new plan against the activated tree.
+
+The native recipe's MIT `platforms/BufferedSocketTerminal.cs` forwards each socket block to UART at one virtual timestamp. It contains no protocol logic or write retries. UART-over-TCP establishes neither RS-485 electrical behavior nor physical baud/turnaround timing. Coil switching requires the emulator's `actuate` grant as well as register `write`. The supplied device runs during live calls and pauses between them, including probe and ground; thinking time does not advance the device. The inherited `time_policy.probe` label is not continuous execution between calls.

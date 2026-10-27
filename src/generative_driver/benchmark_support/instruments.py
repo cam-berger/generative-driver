@@ -9,12 +9,8 @@ LEGACY = {'tq9': {'duty': 'fraction'}}
 
 
 def family_for(case_id):
-    from . import tq9_v2, sampled_sensor, parameter_store, zephyr_modbus
-    families = {'tq9-v2': tq9_v2, 'sampled-sensor-v1': sampled_sensor,
-                'parameter-store-v1': parameter_store, 'zephyr-modbus-v1': zephyr_modbus}
-    if case_id not in families:
-        raise ValueError('Unknown native family')
-    return families[case_id]
+    from .registrations import native_family_for
+    return native_family_for(case_id)
 
 
 def units(case_id):

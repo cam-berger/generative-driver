@@ -360,11 +360,13 @@ def operation_effects(name, arguments):
 
 
 def _refuse_invalid_model(model_dir):
-    """Refuse a model the toolchain refuses before it opens the device: model.json bytes the runtime's strict bounded
-    reader cannot load (probe_run and interface_execute read every model with it first: a duplicate key, a non-finite
-    constant, the size bound, nesting), or an interface model that fails validation. The gateway calls this before it
-    marks an effectful dispatch uncertain, so such a refusal leaves no effect to reconcile. A register model has no
-    validation in the runtime: its probe runs it on the bus."""
+    """Refuse unreadable, structurally invalid or contradictory candidates before managed dispatch.
+
+    Use the runtime's strict bounded reader, then candidate response checks. The gateway
+    does this before marking a write uncertain, so a refusal leaves no effect to reconcile.
+    Raw bounded execution remains separate from candidate admission. Register models have
+    no runtime validation: their probe runs them on the bus.
+    """
     from interface_runtime.engine import SCHEMAS, validate_model
     try:
         model = _model_json(Path(model_dir) / 'model.json')
@@ -376,6 +378,11 @@ def _refuse_invalid_model(model_dir):
         if not checked['ok']:
             raise ValueError('The model fails validation, so the runtime would refuse it before opening the device; '
                              'nothing was dispatched: ' + str(checked['defects']))
+        from interface_runtime.qualify import validate_candidate
+        candidate = validate_candidate(model)
+        if not candidate['ok']:
+            raise ValueError('The response contract fails validation before managed device dispatch; '
+                             'nothing was dispatched: ' + str(candidate['defects']))
 
 
 class IntegrityError(ValueError):

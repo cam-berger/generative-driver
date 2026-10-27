@@ -186,8 +186,8 @@ def model_validate(model_dir, random_files=20, seed=0, **_):
     except Exception as e:
         return {"ok": False, "defects": [{"where": "model.json", "what": f"not valid JSON: {e}"}], "_exit": 1}
     if isinstance(model, dict) and model.get("schema") in _engine()[0].SCHEMAS:
-        from .interface import validate_model
-        result = validate_model(model)
+        from interface_runtime.qualify import validate_candidate
+        result = validate_candidate(model)
         return {**result, "_exit": 0 if result["ok"] else 1}
     if not isinstance(model, dict):
         return {"ok": False, "defects": [{"where":"model.json", "what":"model must be an object"}], "_exit":1}

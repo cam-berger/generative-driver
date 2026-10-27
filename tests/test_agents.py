@@ -8,6 +8,41 @@ import time
 
 
 class AgentAdapterTests(unittest.TestCase):
+    def test_configured_runtimes_preserve_standard_proxy_environment_without_extra_configuration(self):
+        import os
+        from unittest.mock import patch
+        from generative_driver.agents import StageRequest, execute
+        proxies = {'HTTP_PROXY': 'http://http-proxy.invalid:8080',
+            'HTTPS_PROXY': 'http://https-proxy.invalid:8080', 'ALL_PROXY': 'http://all-proxy.invalid:8080',
+            'NO_PROXY': 'localhost,127.0.0.1,::1'}
+        # Windows environment names ignore case; aliases must carry the same fixture values.
+        proxies.update({name.lower(): value for name, value in list(proxies.items())})
+        expected = {**proxies, 'SELECTED_RUNTIME_FLAG': 'selected-fixture-value'}
+        with tempfile.TemporaryDirectory(prefix='runtime proxy contract ') as temporary:
+            root = Path(temporary)
+            fake = root/'environment_contract.py'
+            fake.write_text('''import os,sys
+sys.stdin.read()
+expected = ''' + repr(expected) + '''
+actual = {name: os.environ.get(name) for name in expected}
+assert actual == expected, actual
+for name in ('UNRELATED_SESSION_FLAG', 'BENCH_EVALUATOR_TOKEN', 'GROUNDTRUTH_PASSWORD'):
+    assert name not in os.environ, name
+''', encoding='utf-8')
+            environment = {**expected, 'HOME': str(root/'home'), 'CODEX_HOME': str(root/'codex'),
+                'UNRELATED_SESSION_FLAG': 'unrelated-fixture-value',
+                'BENCH_EVALUATOR_TOKEN': 'forbidden-fixture-value', 'GROUNDTRUTH_PASSWORD': 'forbidden-fixture-value'}
+            if 'SYSTEMROOT' in os.environ:
+                environment['SYSTEMROOT'] = os.environ['SYSTEMROOT']
+            with patch.dict(os.environ, environment, clear=True):
+                for runtime in ('codex', 'goose'):
+                    with self.subTest(runtime=runtime):
+                        result = execute(StageRequest(stage='interpret', workspace=root/runtime,
+                            prompt='scripted environment contract', report_required=False),
+                            {'runtime': runtime, 'command': [sys.executable, str(fake)],
+                             'env_keys': ['SELECTED_RUNTIME_FLAG', 'BENCH_EVALUATOR_TOKEN', 'GROUNDTRUTH_PASSWORD']})
+                        self.assertEqual(result['status'], 'completed', Path(result['stderr']).read_text())
+
     def test_a_runtime_without_a_configured_command_is_never_looked_up_on_path(self):
         # Whatever has the runtime's name on PATH may be another program: with no configured command the stage stops
         # for the operator and nothing is launched.

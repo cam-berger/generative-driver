@@ -15,6 +15,8 @@ python -m generative_driver configure --executor goose --command "/absolute/path
 
 Only configured runtimes may launch. Without an executor selection, use the single configured runtime, or Codex if both exist. Use the installed `.exe` path on Windows. Wrapper arguments use repeated `--argument`; commands are stored as argument arrays. Credentials stay with the runtime. Select the model explicitly; Codex also accepts supported `--reasoning-effort` values. Goose reasoning settings stay in its provider setup.
 
+Configured runtimes inherit standard `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY` settings, including lowercase forms, so provider connections work through the operator's proxy. Other environment filtering still applies.
+
 State defaults to `~/Library/Application Support/GenerativeDriver` on macOS and `%LOCALAPPDATA%\GenerativeDriver` on Windows. Use a leading `--home DIRECTORY` or `GENERATIVE_DRIVER_HOME` for another location. Configure all clients against the same location.
 
 ## Start the configurator

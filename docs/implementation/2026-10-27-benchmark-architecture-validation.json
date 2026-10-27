@@ -169,6 +169,7 @@
       "parameter-store-v1_password_hidden": true,
       "previous_final_run_hidden": true,
       "owner_reachable": true,
+      "benchmark_login_file_present": true,
       "work_writable": true
     },
     "passed": true
@@ -200,12 +201,23 @@
   "tests": {
     "current_focused": "Observed red-to-green mission and monitor regressions; 33 native-control tests and 27 mission/ground/repair tests passed.",
     "linux_environment": "Earlier full checkpoint: 900 tests had 10 daemon-process cleanup failures under non-reaping cloud PID 1; an external subreaper wrapper passed 901 tests with 3 skips. It changed no production code or tests. This is not the full test claim for the later parser/guidance changes.",
-    "cross_platform": "Latest full installed-package matrix in progress; earlier macOS path-only assertion failure corrected in test fixture."
+    "cross_platform": {
+      "passed_run": "https://github.com/cam-berger/generative-driver/actions/runs/40447779785",
+      "revision": "107858a4a5ff6dfd8cde04b11b81a42ab17f9554",
+      "jobs_passed": 4,
+      "platforms": [
+        "macOS",
+        "Windows"
+      ],
+      "python": [
+        "3.11",
+        "3.13"
+      ],
+      "latest_proxy_fix": "Focused tests passed; full matrix pending."
+    }
   },
   "agent_run": {
-    "status": "running",
-    "suite_id": "suite-45687675b4534093",
-    "run_id": "run-381d71ac6baf4b6c",
+    "status": "pending",
     "execution": "actual-agent-emulation",
     "repetitions": 1,
     "runtime": "codex",
@@ -217,5 +229,37 @@
     "UART-over-TCP does not establish physical transport, timing, electrical behavior or throughput.",
     "The 50 ms guidance is a tested emulator margin, not an exact-delay acceptance requirement.",
     "Evaluator qualification identity still spans all benchmark_support code; follow-up scope work is tracked locally."
-  ]
+  ],
+  "retained_agent_setup_attempts": [
+    {
+      "status": "stopped",
+      "suite_id": "suite-45687675b4534093",
+      "run_id": "run-381d71ac6baf4b6c",
+      "execution": "actual-agent-emulation",
+      "repetitions": 1,
+      "runtime": "codex",
+      "model": "gpt-6.1-sol",
+      "reasoning_effort": "medium",
+      "stage": "acquire",
+      "fault": "host",
+      "reason": "Provider workspace-routing discovery failed; configured stage environment omitted standard proxy variables.",
+      "graded": false,
+      "accepted_stages": [],
+      "corpus_counts": {
+        "stopped": 1,
+        "blocked": 6,
+        "failed": 0,
+        "measured_denominator": 0
+      }
+    }
+  ],
+  "proxy_environment_fix": {
+    "public_seam": "Configured Codex and Goose child processes",
+    "observed_red": true,
+    "adapter_tests_passed": 10,
+    "qualified_grading_identity_unchanged": true,
+    "qualified_evaluator_sha256": "100d720150781371f914c09087ab82c1f55e4daf03d61b55d50fead21d55321f",
+    "source_evidence": "https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/http-client/src/outbound_proxy.rs#L379-L398"
+  },
+  "worker_wrapper_sha256": "8eea409c327700fbdd8bd5ac8eb696a19f0ed27d3431fe8bcf27d5df215c72f7"
 }

@@ -57,7 +57,9 @@ def _environment(config):
     # unrelated variables, particularly evaluator credentials and UI plugins.
     keep = {'PATH', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SYSTEMROOT', 'WINDIR',
             'COMSPEC', 'PATHEXT', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'USER', 'LOGNAME',
-            'CODEX_HOME', 'OPENAI_API_KEY', 'CODEX_API_KEY', 'SSL_CERT_FILE', 'SSL_CERT_DIR'}
+            'CODEX_HOME', 'OPENAI_API_KEY', 'CODEX_API_KEY', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
+            'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+            'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'}
     keep.update(config.get('env_keys', []))
     env = {k: v for k, v in os.environ.items() if k in keep and 'GROUNDTRUTH' not in k.upper() and 'EVALUATOR' not in k.upper()}
     return env

@@ -220,8 +220,10 @@ def admit(case_id, options, trial_dir, *, password_file, renode=None):
         case_truth(case_id, trial_dir, secret)
         return None, {}
     recipe = device_recipe(case_id, trial_dir, secret)
-    provider = DeviceProvider(case_id, resolve_case(case_id).root / 'firmware.bin', recipe, renode, Path(trial_dir) / 'device',
-                              image_sha256=pin['image_hashes']['firmware.bin'])
+    from .execution import artifact_name
+    artifact = artifact_name(pin['manifest'])
+    provider = DeviceProvider(case_id, resolve_case(case_id).root / artifact, recipe, renode, Path(trial_dir) / 'device',
+                              image_sha256=pin['image_hashes'][artifact])
     return provider, ({'calibration_evidence_sha256': admitted.get('evidence_sha256')}
                       if pin['manifest'].get('schema') == 'benchmark-case/2' else {})
 
@@ -717,7 +719,8 @@ def resume(trial_dir, *, password_file, renode=None, call=None):
                 and (result.get('status') != 'completed' or (result.get('progress') or {}).get('equivalence') != 'pending')):
             raise ValueError('The trial awaits no evaluation: run-stopped, and its run (' + str(result.get('status'))
                              + ') does not await its grade')
-        if renode is None and evaluator.needs_grading(trial_dir, result, password_file=password_file):
+        native = (result.get('case_pin') or {}).get('manifest', {}).get('execution_setup', {}).get('method') == 'native-sim'
+        if renode is None and not native and evaluator.needs_grading(trial_dir, result, password_file=password_file):
             raise ValueError('The trial\'s frozen driver is not graded yet: grading starts a fresh emulator, so pass its '
                              'executable (--renode)')
         done = conclude(trial_dir, record['case'], home / 'runs' / record['run_id'], result, password_file=password_file,

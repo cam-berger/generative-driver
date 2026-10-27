@@ -58,7 +58,7 @@ def reference_execute(pin, truth, model, capabilities, *, renode, image, output_
         raise ValueError('Unknown case scenario')
     if phase not in ('diagnostic', 'final'):
         raise ValueError('Unknown behavior phase')
-    from .native import NativeSession
+    from .execution import start_session
     from .emulated_actions import execute_plan, model_invoker, canonical_package_invoker, run_call
     from .behavior import validate_records
     from .snapshots import canonical_digest
@@ -82,7 +82,7 @@ def reference_execute(pin, truth, model, capabilities, *, renode, image, output_
                                          else reference_model_bytes(candidate))
     model_hash = hashlib.sha256((model_dir/'model.json').read_bytes()).hexdigest()
     probes = []
-    session = NativeSession.start(renode=renode, image=image, recipe=truth['recipe'], private_dir=private_dir)
+    session = start_session(renode=renode, image=image, recipe=truth['recipe'], private_dir=private_dir)
     try:
         frozen = None
         if phase == 'final' and package_final:
@@ -121,7 +121,8 @@ def reference_execute(pin, truth, model, capabilities, *, renode, image, output_
             healthy_device_failures=healthy_device_failures)
         if frozen and digest(package) != frozen:
             raise ValueError('Frozen package changed during final episode')
-        result = {'execution': 'reference-calibration', 'backend': 'native-renode',
+        result = {'execution': 'reference-calibration',
+            'backend': 'native-sim' if truth['recipe'].get('backend') == 'native-sim' else 'native-renode',
             'native_process_observed': session.process is not None and session.process.poll() is None,
             'process': session.info, 'contract': contract, 'records': records,
             'grade': validate_records(contract, records), 'probes': probes,
@@ -303,12 +304,13 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
             return record('graded', False, [], [{'id': 'frozen_package', 'reason': 'the frozen driver\'s model is not '
                           'structurally valid'}], sha, capabilities_sha, checked), None
         truth = case_truth(case_id, run_dir, {'evaluator_password_file': str(password_file)})
-        inputs, _ = _inputs(case_id, run_dir)
+        inputs, manifest = _inputs(case_id, run_dir)
+        from .execution import artifact_name
         output = private/'final'
         # The session's own files, the monitor commands that carry hidden stimuli among them, stay under `private`,
         # which the harness removes however grading ends.
         evaluation = reference_execute({**pin, 'revision': revision}, truth, model, capabilities, renode=renode,
-                                       image=inputs/'firmware.bin', output_dir=output, phase='final', package=package,
+                                       image=inputs/artifact_name(manifest), output_dir=output, phase='final', package=package,
                                        expected_package_sha256=sha, private_dir=private/'native',
                                        healthy_device_failures=True)
         raw = output/'raw.json'

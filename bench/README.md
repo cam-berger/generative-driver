@@ -1,5 +1,7 @@
 # Benchmark
 
+The [native Modbus pilot](../docs/research/2026-10-27-native-modbus.md) uses the same registry, provider, six-stage runner and reports with an explicitly pinned native executable.
+
 Recover a device interface, emit a portable driver, and have a fresh agent use it. Judge outputs/effects, not source-code similarity.
 
 Current `assistive/1` runs follow acquire → interpret → probe → ground → emit → reuse. Stages hand off artifacts/notes; device differences drive repair; only safety, integrity, operator and host faults stop runs. One equivalence verdict follows completion. This is a new series, never compared with earlier gated results, including the 2/3 trial. See [design](../docs/design.md#assistive-protocol-amendment--2026-10-07).

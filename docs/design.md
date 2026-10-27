@@ -2,6 +2,8 @@
 
 Current runs use `assistive/1`: stage handoffs carry notes, device differences drive bounded repair, and one final equivalence verdict follows fresh reuse. The [amendment below](#assistive-protocol-amendment--2026-10-07) governs current behavior; the original design records the earlier gated protocol. Results from the two protocols are separate series.
 
+Native execution variants also pin an `execution_setup`: method, actual executable, substitutions, validated behavior and hardware gaps. Acquisition, interpretation, provider and evaluator use that same artifact through the existing registry and lifecycle. A host ELF and an ARM image have distinct identities. The optional Zephyr native backend requires Linux; the core remains portable. Its process pauses leave the host clock running, so native clock pacing catches up on resume. Request/state comparison does not establish timing equivalence. Native admission additionally requires retained native/Renode comparison evidence and fresh reference/mutant calibration.
+
 ## Original design — 2026-10-03
 
 Confirmed 2026-10-03; transaction evaluation amended October 5. Install Generative Driver, connect a supported device, state an objective, and get a portable driver with evidence. The core targets native macOS and Windows 11+. Optional analysis tools may use containers.

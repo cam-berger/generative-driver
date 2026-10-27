@@ -10,6 +10,7 @@ import sys
 import tempfile
 
 from .snapshots import canonical_digest
+from .execution import artifact_name
 
 
 def _write(path, value):
@@ -24,28 +25,34 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
     from .upstream import hydrate_truth
     from ..toolkit import resources_root
     truth = hydrate_truth(payload)
+    artifact = artifact_name(manifest)
+    native = manifest.get('execution_setup', {}).get('method') == 'native-sim'
+    from .execution import validate_setup
+    validate_setup(manifest, truth)
     image, output = Path(image).resolve(), evaluator_directory(output)
     if output.exists() and any(output.iterdir()):
         raise ValueError('Qualification requires an empty private output directory')
-    if truth['images'] != manifest['images'] or hashlib.sha256(image.read_bytes()).hexdigest() != truth['images']['firmware.bin']:
+    if truth['images'] != manifest['images'] or hashlib.sha256(image.read_bytes()).hexdigest() != truth['images'][artifact]:
         raise ValueError('Qualification image differs from the authenticated upstream image')
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     output.chmod(0o700)
     identity = calibration_identity()
     paths = {key: Path(value).expanduser().resolve() for key, value in
-             (('renode', renode), ('ghidra', ghidra_home), ('java', java_home))}
+             ([('ghidra', ghidra_home), ('java', java_home)] + ([] if native else [('renode', renode)]))}
     java = paths['java'] / 'bin' / ('java.exe' if os.name == 'nt' else 'java')
-    if not paths['renode'].is_file() or not (paths['ghidra']/'support/analyzeHeadless').is_file() or not java.is_file():
+    if (not native and not paths['renode'].is_file()
+            or not (paths['ghidra']/'support/analyzeHeadless').is_file() or not java.is_file()):
         raise ValueError('Complete native Renode, Ghidra and Java tools are required')
     tools = copy.deepcopy(truth['build']['tool_versions'])
-    tools['renode'] = subprocess.check_output([str(paths['renode']), '--version'], text=True, timeout=30).strip()
+    if not native:
+        tools['renode'] = subprocess.check_output([str(paths['renode']), '--version'], text=True, timeout=30).strip()
     version = subprocess.run([str(java), '-version'], capture_output=True, text=True, timeout=30, check=True)
     tools['java'] = (version.stderr or version.stdout).strip()
     properties = (paths['ghidra']/'Ghidra/application.properties').read_text(encoding='utf-8')
     tools['ghidra'] = re.search(r'^application.version=(.+)$', properties, re.M).group(1).strip()
     record = {'schema': 'benchmark-calibration/1', 'status': 'pending', 'case': manifest['id'],
         'evaluator_version': manifest['evaluator_version'], 'execution': 'reference-calibration',
-        'backend': 'native-renode', 'images': manifest['images'], 'input_hashes': truth['input_hashes'],
+        'backend': 'native-sim' if native else 'native-renode', 'images': manifest['images'], 'input_hashes': truth['input_hashes'],
         'evaluator_identity': identity, 'native_process_observed': False, 'references': [], 'mutants': [],
         'scenarios': {}, 'required_mutants': sorted(REQUIRED_MUTANTS[truth['family']]),
         'tools': tools, 'runs': [], 'analysis': {}}
@@ -55,30 +62,40 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
     try:
         exports = output/'exports'
         with tempfile.TemporaryDirectory(prefix='gd-upstream-analysis-') as temp:
-            command = [sys.executable, str(resources_root()/'tools/workspace/ghidra_run.py'),
-                '--workspace', temp, '--image', str(image), '--base-address', '0x08000000',
-                '--processor', 'ARM:LE:32:Cortex', '--ghidra-path', str(paths['ghidra']),
-                '--java-home', str(paths['java']), '--export-dir', str(exports),
+            analysis_args = ['--base-address', '0x08000000', '--processor', 'ARM:LE:32:Cortex',
                 '--script-path', str(resources_root()/'toolchain/skills/interpret-firmware-binary'),
-                '--prescript', 'SeedCortexM.java', '--timeout-s', '600']
+                '--prescript', 'SeedCortexM.java']
+            if native:
+                header = image.read_bytes()[:64]
+                processors = {183: 'AARCH64:LE:64:v8A', 62: 'x86:LE:64:default'}
+                machine = int.from_bytes(header[18:20], 'little')
+                if header[:6] != b'\x7fELF\x02\x01' or machine not in processors:
+                    raise ValueError('Native qualification requires a supported 64-bit little-endian ELF')
+                analysis_args = ['--base-address', '0x0', '--processor', processors[machine], '--loader', 'ElfLoader',
+                    '--script-path', str(resources_root()/'toolchain/skills/interpret-firmware-binary')]
+            command = [sys.executable, str(resources_root()/'tools/workspace/ghidra_run.py'),
+                '--workspace', temp, '--image', str(image), *analysis_args, '--ghidra-path', str(paths['ghidra']),
+                '--java-home', str(paths['java']), '--export-dir', str(exports),
+                '--timeout-s', '600']
             analyzed = subprocess.run(command, capture_output=True, text=True, timeout=660)
             (output/'analysis.stdout').write_text(analyzed.stdout, encoding='utf-8')
             (output/'analysis.stderr').write_text(analyzed.stderr, encoding='utf-8')
             result = json.loads(analyzed.stdout)
             if analyzed.returncode or not result.get('ok') or result.get('markers', {}).get('script_error'):
                 raise ValueError('Native binary analysis failed; inspect private logs')
-        record['analysis']['firmware.bin'] = {'returncode': 0, 'export_hashes': {
+        record['analysis'][artifact] = {'returncode': 0, 'export_hashes': {
             p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in exports.iterdir() if p.is_file()}}
         save()
         def run(model, capabilities, name, phase):
             print(json.dumps({'reference_calibration': name, 'phase': phase}), file=sys.stderr, flush=True)
             pin = {'case_id': manifest['id'], 'family': manifest['family'], 'scenario_id': 'original',
                    'case_seed': 0, 'revision': 0}
-            result = reference_execute(pin, truth, model, capabilities, renode=paths['renode'], image=image,
+            result = reference_execute(pin, truth, model, capabilities, renode=paths.get('renode'), image=image,
                                        output_dir=output/'runs'/name, phase=phase, private_dir=output/'native'/name)
             record['runs'].append({'id': name, 'scenario': 'original', 'phase': phase,
+                'backend': result.get('backend'),
                 'native_process_observed': result['native_process_observed'], 'process': result['process'],
-                'image_sha256': manifest['images']['firmware.bin'], 'evidence_sha256': hashlib.sha256(
+                'image_sha256': manifest['images'][artifact], 'evidence_sha256': hashlib.sha256(
                     (output/'runs'/name/'evaluation.json').read_bytes()).hexdigest(),
                 'contract_sha256': canonical_digest(result['contract']), 'checks': result['grade']['checks'],
                 'check_ids': [c['id'] for c in result['contract']['checks']],
@@ -133,7 +150,7 @@ def calibrate(case, options):
     definition = resolve_case(case)
     payload = truth_for_case(case_root(), definition.manifest, options)
     output = Path(options['output']).expanduser().resolve()
-    record = qualify(payload, definition.manifest, definition.root/'firmware.bin', output,
+    record = qualify(payload, definition.manifest, definition.root/artifact_name(definition.manifest), output,
                      **{key: options[key] for key in ('renode', 'ghidra_home', 'java_home')})
     payload['calibration'] = record
     payload['inventory_state'] = 'qualified' if record['status'] == 'passed' else 'pending'

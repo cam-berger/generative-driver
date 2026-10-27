@@ -1,0 +1,22 @@
+/* Board wiring only; upstream RTU parser and application are unchanged. */
+/ {
+    aliases {
+        led1 = &native_led1;
+        led2 = &native_led2;
+    };
+    leds {
+        native_led1: led_1 { gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>; };
+        native_led2: led_2 { gpios = <&gpio0 14 GPIO_ACTIVE_HIGH>; };
+    };
+    native_uart: native_uart {
+        compatible = "zephyr,native-tty-uart";
+        status = "okay";
+        current-speed = <19200>;
+        modbus0 {
+            compatible = "zephyr,modbus-serial";
+            status = "okay";
+        };
+    };
+};
+&led0 { gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>; };
+&uart0 { status = "disabled"; };

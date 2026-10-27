@@ -77,8 +77,8 @@ class DeviceProvider:
         self.image_sha256 = actual
         start = self._start
         if start is None:
-            from .native import NativeSession
-            start = NativeSession.start
+            from .execution import start_session
+            start = start_session
         session_id = uuid.uuid4().hex
         private = self._session_dir(session_id)
         private.mkdir(parents=True, mode=0o700)
@@ -140,7 +140,9 @@ class DeviceProvider:
                 'session_id': self.session_id, 'binding': dict(session.binding),
                 'image_sha256': self.image_sha256,
                 'instrument': {'units': instruments.units(self.case_id), 'label': 'instrument_observation'},
-                'time_policy': 'paused-between-calls', **({'development_conditions': catalog} if catalog else {})}
+                'time_policy': ('host-clock-with-process-pauses' if self.recipe.get('backend') == 'native-sim'
+                                else 'paused-between-calls'),
+                **({'development_conditions': catalog} if catalog else {})}
 
     def development_conditions(self):
         """A fixed public catalog of environmental inputs, with no register coordinates or commands."""

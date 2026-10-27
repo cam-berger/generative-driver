@@ -44,7 +44,8 @@ def validate_workflow_manifest(manifest):
     scenarios = [row.get('id') if isinstance(row, dict) else row for row in manifest.get('scenarios', [])]
     if scenarios != ['original']:
         raise ValueError('Unsupported case scenario inventory: original is required')
-    if case_id != 'bme280' and list(manifest.get('images', {})) != ['firmware.bin']:
+    from .execution import artifact_name
+    if case_id != 'bme280' and list(manifest.get('images', {})) != [artifact_name(manifest)]:
         raise ValueError('Stable case requires one original firmware image')
 
 
@@ -92,6 +93,8 @@ def case_descriptors() -> list[dict]:
                      **({'calibration': copy.deepcopy(calibration)} if case.adapter_key == 'emulator-v2' else {}),
                      'version': case.version, 'execution': case.execution,
                      'evidence_track': case.evidence_track,
+                     **({'execution_setup': copy.deepcopy(case.manifest['execution_setup'])}
+                        if 'execution_setup' in case.manifest else {}),
                      'scenarios': copy.deepcopy(case.manifest.get('scenarios', []))})
     return [{**row, 'availability_basis': 'public-metadata',
              'authenticated_admission': 'not-checked'} for row in rows]
@@ -324,6 +327,8 @@ def require_calibration(pin: dict, options: dict) -> dict:
     except (OSError, ValueError) as error:
         raise ValueError('Authenticated calibration evidence requires the evaluator password file') from error
     record = truth.get('calibration', {})
+    from .execution import validate_setup
+    validate_setup(manifest, truth)
     try:
         if registration_for(pin['case_id']).truth_schema in ('benchmark-family-truth/1', 'benchmark-upstream-truth/1'):
             from .calibration import validate_calibration, apply_mutation, execution_input_identity

@@ -273,7 +273,8 @@ def _provided_device(params, pin):
     if errors:
         raise ValueError('An emulated case requires the device descriptor of the bench harness: ' + '; '.join(errors))
     binding_identity(device['binding'])
-    if device['image_sha256'] != pin.get('image_hashes', {}).get('firmware.bin'):
+    from .benchmark_support.execution import artifact_name
+    if device['image_sha256'] != pin.get('image_hashes', {}).get(artifact_name(pin['manifest'])):
         raise IntegrityError('Provided device image differs from the pinned firmware image')
     return {'session_id': device['session_id'], 'binding': dict(device['binding']), 'receipts': []}
 
@@ -2823,7 +2824,8 @@ class Controller:
         if errors:
             raise ValueError('Invalid provided device descriptor: ' + '; '.join(errors))
         binding_identity(device['binding'])
-        if device['image_sha256'] != spec['_case_pin'].get('image_hashes', {}).get('firmware.bin'):
+        from .benchmark_support.execution import artifact_name
+        if device['image_sha256'] != spec['_case_pin'].get('image_hashes', {}).get(artifact_name(spec['_case_pin']['manifest'])):
             raise IntegrityError('Provided device image differs from the pinned firmware image')
         status = open_device(device).status()
         if (not isinstance(status, dict) or status.get('healthy') is not True or status.get('session_id') != device['session_id']

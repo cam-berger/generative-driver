@@ -11,6 +11,7 @@ from pathlib import Path
 from .cases import _state, _write
 from .instruments import family_for
 from .registry import resolve_case
+from .execution import artifact_name
 from .snapshots import read_snapshot
 
 # Instrument readings are device evidence, as a real device's readings would be; workers see them, nothing grades them.
@@ -197,14 +198,14 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
     ws.mkdir(parents=True, exist_ok=True)
     inputs, manifest = _inputs(case_id, run_dir)
     if stage == 'acquire':
-        source = inputs/'firmware.bin'
-        if hashlib.sha256(source.read_bytes()).hexdigest() != manifest['images']['firmware.bin']:
+        source = inputs/artifact_name(manifest)
+        if hashlib.sha256(source.read_bytes()).hexdigest() != manifest['images'][artifact_name(manifest)]:
             raise ValueError('Supplied firmware hash mismatch')
         target = ws/'description.bin'
         shutil.copyfile(source, target)
         return {'objective': 'Import the supplied firmware with acquire_firmware_artifact, verify its hash, and report artifact and provenance paths.',
                 'inputs': [str(target)], 'allowed_tools': ['acquire_firmware_artifact'],
-                'context': {'source_path': str(target), 'expected_sha256': manifest['images']['firmware.bin'],
+                'context': {'source_path': str(target), 'expected_sha256': manifest['images'][artifact_name(manifest)],
                             'origin': 'provided_binary'}, 'boundary': 'provided artifact import'}
     if stage == 'probe':
         adapted = adapt(run_dir, ws, accepted, options)
@@ -320,7 +321,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         from ..analysis import firmware_analysis_inputs
         state_path, state = _state(run_dir)
         state['revision'] = int(options.get('revision', state.get('revision', 0)))
-        image = inputs/'firmware.bin'
+        image = inputs/artifact_name(manifest)
         sources = {'image.bin': str(image), **firmware_analysis_inputs(ws, options)}
         wiring = ws/'BINDING_CONTEXT.json'
         _write(wiring, {'schema': 'interpret-binding-context/1',
@@ -434,7 +435,7 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
             try:
                 json.loads(provenance.read_text())
                 for binary in sorted(provenance.parent.glob('*.bin')):
-                    if hashlib.sha256(binary.read_bytes()).hexdigest() == manifest['images']['firmware.bin']:
+                    if hashlib.sha256(binary.read_bytes()).hexdigest() == manifest['images'][artifact_name(manifest)]:
                         matches.extend([binary, provenance])
             except ValueError:
                 continue

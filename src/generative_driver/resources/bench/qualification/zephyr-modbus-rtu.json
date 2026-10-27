@@ -1,0 +1,383 @@
+{
+  "schema": "firmware-rehosting-plan/1",
+  "case": "zephyr-modbus-v1",
+  "source_commit": "413b789deb391d3a37d06b463288a5fe765ee57e",
+  "steps": [
+    {
+      "id": "initial-reset",
+      "kind": "reset",
+      "state": {
+        "register0": 0,
+        "register1": 0,
+        "register2": 0,
+        "register3": 0,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 0,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "initial-registers",
+      "kind": "request",
+      "request_hex": "010300000008440c",
+      "reply_hex": "01031000000000000000000000000000000000e459",
+      "state": {
+        "register0": 0,
+        "register1": 0,
+        "register2": 0,
+        "register3": 0,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 0,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "write-register",
+      "kind": "request",
+      "request_hex": "01060003123474bd",
+      "reply_hex": "01060003123474bd",
+      "state": {
+        "register0": 0,
+        "register1": 0,
+        "register2": 0,
+        "register3": 4660,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 0,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "read-register",
+      "kind": "request",
+      "request_hex": "010300030001740a",
+      "reply_hex": "0103021234b533",
+      "state": {
+        "register0": 0,
+        "register1": 0,
+        "register2": 0,
+        "register3": 4660,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 0,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "coil-on",
+      "kind": "request",
+      "request_hex": "01050000ff008c3a",
+      "reply_hex": "01050000ff008c3a",
+      "state": {
+        "register0": 0,
+        "register1": 0,
+        "register2": 0,
+        "register3": 4660,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 1,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "read-coils",
+      "kind": "request",
+      "request_hex": "0101000000037c0b",
+      "reply_hex": "010101019048",
+      "state": {
+        "register0": 0,
+        "register1": 0,
+        "register2": 0,
+        "register3": 4660,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 1,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "reject-register-address",
+      "kind": "request",
+      "request_hex": "01060008abcdb6ad",
+      "reply_hex": "018602c3a1",
+      "state": {
+        "register0": 0,
+        "register1": 0,
+        "register2": 0,
+        "register3": 4660,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 1,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "reject-coil-address",
+      "kind": "request",
+      "request_hex": "01050003ff007c3a",
+      "reply_hex": "018502c351",
+      "state": {
+        "register0": 0,
+        "register1": 0,
+        "register2": 0,
+        "register3": 4660,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 1,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "bad-crc",
+      "kind": "request",
+      "request_hex": "010600071122b443",
+      "reply_hex": "",
+      "state": {
+        "register0": 0,
+        "register1": 0,
+        "register2": 0,
+        "register3": 4660,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 1,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "recover-after-crc",
+      "kind": "request",
+      "request_hex": "010300030001740a",
+      "reply_hex": "0103021234b533",
+      "state": {
+        "register0": 0,
+        "register1": 0,
+        "register2": 0,
+        "register3": 4660,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 1,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "truncated-request",
+      "kind": "request",
+      "request_hex": "01060003",
+      "reply_hex": "",
+      "state": {
+        "register0": 0,
+        "register1": 0,
+        "register2": 0,
+        "register3": 4660,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 1,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "recover-multiple-register-write",
+      "kind": "request",
+      "request_hex": "0110000000020411223344425a",
+      "reply_hex": "01100000000241c8",
+      "state": {
+        "register0": 4386,
+        "register1": 13124,
+        "register2": 0,
+        "register3": 4660,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 1,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "wrong-unit-address",
+      "kind": "request",
+      "request_hex": "0206000355558696",
+      "reply_hex": "",
+      "state": {
+        "register0": 4386,
+        "register1": 13124,
+        "register2": 0,
+        "register3": 4660,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 1,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "unsupported-function",
+      "kind": "request",
+      "request_hex": "017f41c0",
+      "reply_hex": "01ff01a030",
+      "state": {
+        "register0": 4386,
+        "register1": 13124,
+        "register2": 0,
+        "register3": 4660,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 1,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "subsequent-write",
+      "kind": "request",
+      "request_hex": "01060007beef0827",
+      "reply_hex": "01060007beef0827",
+      "state": {
+        "register0": 4386,
+        "register1": 13124,
+        "register2": 0,
+        "register3": 4660,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 48879,
+        "coil0": 1,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "complete-state-read",
+      "kind": "request",
+      "request_hex": "010300000008440c",
+      "reply_hex": "0103101122334400001234000000000000beefbfd9",
+      "state": {
+        "register0": 4386,
+        "register1": 13124,
+        "register2": 0,
+        "register3": 4660,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 48879,
+        "coil0": 1,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "coil-off",
+      "kind": "request",
+      "request_hex": "010500000000cdca",
+      "reply_hex": "010500000000cdca",
+      "state": {
+        "register0": 4386,
+        "register1": 13124,
+        "register2": 0,
+        "register3": 4660,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 48879,
+        "coil0": 0,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "cold-reset",
+      "kind": "reset",
+      "state": {
+        "register0": 0,
+        "register1": 0,
+        "register2": 0,
+        "register3": 0,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 0,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "post-reset-registers",
+      "kind": "request",
+      "request_hex": "010300000008440c",
+      "reply_hex": "01031000000000000000000000000000000000e459",
+      "state": {
+        "register0": 0,
+        "register1": 0,
+        "register2": 0,
+        "register3": 0,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 0,
+        "coil1": 0,
+        "coil2": 0
+      }
+    },
+    {
+      "id": "post-reset-coils",
+      "kind": "request",
+      "request_hex": "0101000000037c0b",
+      "reply_hex": "010101005188",
+      "state": {
+        "register0": 0,
+        "register1": 0,
+        "register2": 0,
+        "register3": 0,
+        "register4": 0,
+        "register5": 0,
+        "register6": 0,
+        "register7": 0,
+        "coil0": 0,
+        "coil1": 0,
+        "coil2": 0
+      }
+    }
+  ]
+}

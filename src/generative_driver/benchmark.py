@@ -68,8 +68,24 @@ def main(argv=None):
         selection.add_argument('--output', help='Save the catalog or frozen plan as JSON')
     building = corpus_actions.add_parser('build', help='Rebuild a pinned upstream firmware twice; no inference')
     building.add_argument('--case', choices=build_case_ids(), required=True)
+    building.add_argument('--backend', choices=['renode', 'native-sim'], default='renode')
     for name in ('source', 'compiler', 'west', 'output'):
         building.add_argument('--' + name, required=True)
+    comparing_execution = corpus_actions.add_parser('compare-execution', help='Compare retained native/Renode RTU episodes; no inference')
+    comparing_execution.add_argument('native')
+    comparing_execution.add_argument('reference')
+    comparing_execution.add_argument('--output')
+    exercising = corpus_actions.add_parser('exercise-execution', help='Run the same bounded RTU qualification on a registered execution setup')
+    exercising.add_argument('--case', choices=case_ids(), required=True)
+    exercising.add_argument('--password-file', required=True)
+    exercising.add_argument('--renode')
+    exercising.add_argument('--output', required=True)
+    preparing_execution = corpus_actions.add_parser('prepare-execution', help='Prepare an external case root from native build evidence; admission remains pending')
+    preparing_execution.add_argument('--build', required=True)
+    preparing_execution.add_argument('--password-file', required=True)
+    preparing_execution.add_argument('--native-record')
+    preparing_execution.add_argument('--reference-record')
+    preparing_execution.add_argument('--output', required=True)
     corpus_start = corpus_actions.add_parser('start', help='Run admitted cases from an unchanged frozen plan')
     corpus_start.add_argument('--plan', required=True)
     corpus_start.add_argument('--executor', choices=['codex', 'goose'])
@@ -162,10 +178,29 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == 'corpus':
+            if args.action == 'prepare-execution':
+                from .benchmark_support.upstream_build import prepare_execution
+                result = prepare_execution(args.build, args.password_file, args.output,
+                    native_record=args.native_record, reference_record=args.reference_record)
+                print(json.dumps(result, indent=2, allow_nan=False))
+                return 0
+            if args.action == 'exercise-execution':
+                from .benchmark_support.rehosting import exercise_execution
+                result = exercise_execution(args.case, args.password_file, args.output, renode=args.renode)
+                print(json.dumps(result, indent=2, allow_nan=False))
+                return 0 if result['ok'] else 1
+            if args.action == 'compare-execution':
+                from .benchmark_support.rehosting import compare_executions
+                result = compare_executions(_read(args.native), _read(args.reference))
+                encoded = json.dumps(result, indent=2, allow_nan=False) + '\n'
+                if args.output:
+                    Path(args.output).write_text(encoded, encoding='utf-8')
+                print(encoded, end='')
+                return 0 if result['verdict'] == 'passed' else 1
             from .benchmark_support.corpus import load_catalog, plan_corpus, report_corpus, start_corpus
             if args.action == 'build':
                 from .benchmark_support.upstream_build import build
-                result = build(args.source, args.compiler, args.west, args.output)
+                result = build(args.source, args.compiler, args.west, args.output, backend=args.backend)
                 print(json.dumps(result, indent=2, allow_nan=False))
                 return 0
             if args.action in ('start', 'report', 'check'):

@@ -62,8 +62,11 @@ def validate_calibration(manifest, record):
     from .reference_calibration import calibration_identity
     failures=[]
     try:
+        from .execution import artifact_name
+        artifact = artifact_name(manifest)
+        native = manifest.get('execution_setup', {}).get('method') == 'native-sim'
         expected={'schema':'benchmark-calibration/1','status':'passed','case':manifest['id'],
-            'execution':'reference-calibration','backend':'native-renode',
+            'execution':'reference-calibration','backend':'native-sim' if native else 'native-renode',
             'evaluator_version':manifest['evaluator_version'],'images':manifest['images'],
             'input_hashes':manifest['calibration']['input_hashes'],
             'evaluator_identity':calibration_identity(),'native_process_observed':True}
@@ -71,7 +74,7 @@ def validate_calibration(manifest, record):
             if record.get(key)!=value:failures.append('identity:'+key)
         if record.get('native_process_observed') is not True:
             failures.append('native process type')
-        if set(manifest['images'])!={'firmware.bin'}:
+        if set(manifest['images'])!={artifact}:
             failures.append('image inventory')
         if (set(record['input_hashes'])!=({'source','contract','recipe','references','mutations','build'} |
                 ({'analysis'} if manifest['family']=='tq9' else {'inventory'}))
@@ -86,11 +89,13 @@ def validate_calibration(manifest, record):
         if not runs or len(runs)!=len(record['runs']):failures.append('run inventory')
         for run in runs.values():
             process=run['process']
+            if native and (run.get('backend') != 'native-sim' or process.get('backend') != 'native-sim'):
+                failures.append('run execution backend:'+run['id'])
             if manifest['family']=='parameter-store':
                 from .parameter_store import REQUIRED_SCENARIOS
                 if not REQUIRED_SCENARIOS <= {c.get('scenario') for c in run['checks']}:
                     failures.append('transaction scenario coverage:'+run['id'])
-            expected_image=manifest['images']['firmware.bin']
+            expected_image=manifest['images'][artifact]
             if (run['phase'],run['scenario']) not in _REFERENCE_PHASES or type(run['passed']) is not bool:
                 failures.append('run phase:'+run['id'])
             if (run['native_process_observed'] is not True or type(process.get('pid')) is not int
@@ -143,7 +148,8 @@ def validate_calibration(manifest, record):
         if len(used)!=len(set(used)) or set(used)!=set(runs):failures.append('run coverage')
         for scenario in ('original',):
             if record['scenarios'][scenario]['passed'] is not True:failures.append('scenario:'+scenario)
-        if (set(record['tools'])!={'compiler','objcopy','renode','ghidra','java'}
+        tool_names = {'compiler', 'ghidra', 'java'} if native else {'compiler','objcopy','renode','ghidra','java'}
+        if (set(record['tools'])!=tool_names
                 or any(not isinstance(v,str) or not v.strip() for v in record['tools'].values())):
             failures.append('native tools')
         if set(record['analysis'])!=set(manifest['images']):failures.append('binary analysis coverage')

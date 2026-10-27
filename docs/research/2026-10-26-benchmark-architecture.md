@@ -34,6 +34,8 @@ Failure categories must accompany rates. SWE-bench [adds likely infrastructure/a
 
 Apply trusted case registration first: it gives identity checks and family adapters one seam, with behavior tests through the same interface callers use. Then deepen corpus planning around immutable selection and explicit denominators, followed by authenticated admission through the existing suite owner. This adds locality and test leverage without another runner.
 
+A local TCP experiment also demonstrated an evaluator-control defect: a delayed greeting prompt completed `start` about 350 ms before the monitor processed it. Separate controls accepted unrelated numeric replies as observations. The [monitor regressions](../../tests/test_monitor_control.py) now require a complete command echo and its following prompt, use the same framing for observation values, and exercise real Renode Telnet negotiation and fragmented replies. Raw wire bytes round-trip through private JSON evidence. Each command is dispatched once. This repairs a demonstrated control defect; it does not establish the cause of every earlier native timeout.
+
 Defer adopting another harness, software-specific difficulty filters, trajectory matching and conversational LLM simulators as firmware standards. Container, database or emulator success establishes only the tested software scope. Physical transport, timing, electrical effects and plant behavior require separate evidence. Hashes establish provenance and integrity; they do not provide confidentiality, filesystem isolation or independent report authentication.
 
 [swe-package]: https://github.com/SWE-bench/SWE-bench/blob/02e7a74ffd0b707aab73d203fe87bdc7c76afc8e/swebench/task/repo.py#L1-L20

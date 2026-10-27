@@ -69,6 +69,69 @@ def render_stimuli(recipe, values):
     return rendered
 
 
+def _monitor_text(wire):
+    """Decode Telnet application bytes; an incomplete control sequence needs more data."""
+    application = bytearray()
+    position = 0
+    while position < len(wire):
+        if wire[position] != 255:  # IAC introduces a Telnet control or escaped data byte.
+            application.append(wire[position])
+            position += 1
+            continue
+        if position + 1 == len(wire):
+            return None
+        control = wire[position + 1]
+        if control in (251, 252, 253, 254):  # WILL, WONT, DO, DONT plus one option.
+            if position + 2 == len(wire):
+                return None
+            position += 3
+        elif control == 250:  # SB: ignore option payload through the unescaped IAC SE.
+            position += 2
+            while position < len(wire):
+                if wire[position] != 255:
+                    position += 1
+                    continue
+                if position + 1 == len(wire):
+                    return None
+                if wire[position + 1] == 240:  # SE
+                    position += 2
+                    break
+                if wire[position + 1] != 255:
+                    return None
+                position += 2  # Escaped IAC inside the subnegotiation payload.
+            else:
+                return None
+        elif control == 255:
+            application.append(255)
+            position += 2
+        elif 240 <= control <= 249:  # Other two-byte Telnet controls contain no application data.
+            position += 2
+        else:
+            application.append(255)  # Preserve malformed controls rather than inventing an echo boundary.
+            position += 1
+    return application.decode('utf-8', errors='surrogateescape')
+
+
+def _monitor_body(command, response):
+    """The complete response after this command's whole echoed line, or None.
+
+    A delayed greeting can arrive after dispatch. Its prompt, and mentions of a
+    short command inside a banner or another echo, acknowledge no command.
+    Keep this framing shared by control completion and observation decoding.
+    """
+    text = _monitor_text(response.encode('utf-8', errors='surrogateescape'))
+    if text is None:
+        return None
+    clean = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
+    echo = re.search(r'(?:^|[\r\n]|\(device\)[ \t]*)' + re.escape(command)
+                     + r'[ \t]*(?:\r\n|\r|\n)', clean)
+    if echo is None:
+        return None
+    following = clean[echo.end():]
+    prompt = re.search(r'\(device\)\s*$', following)
+    return following[:prompt.start()].strip() if prompt else None
+
+
 class NativeSession:
     def __init__(self, info, recipe):
         _validate_recipe(recipe)
@@ -194,7 +257,8 @@ class NativeSession:
                     if not chunk:
                         raise RuntimeError('Host fault: monitor disconnected')
                     greeting += chunk
-                    if re.search(r'\(device\)\s*$', re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', greeting.decode(errors='replace'))):
+                    text = _monitor_text(greeting)
+                    if text is not None and re.search(r'\(device\)\s*$', re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)):
                         break
                 else:
                     raise RuntimeError('Host fault: monitor greeting timed out')
@@ -209,14 +273,15 @@ class NativeSession:
                     if not chunk:
                         raise RuntimeError('Host fault: monitor disconnected')
                     data += chunk
-                    clean = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', data.decode(errors='replace'))
-                    if re.search(r'\(device\)\s*$', clean):
-                        if re.search(r'(?:Error|Exception|Could not|No such)', clean, re.I):
+                    response = data.decode('utf-8', errors='surrogateescape')
+                    body = _monitor_body(command, response)
+                    if body is not None:
+                        if re.search(r'(?:Error|Exception|Could not|No such)', body, re.I):
                             if self.info.get('private_dir'):
                                 with (Path(self.info['private_dir'])/'monitor-errors.jsonl').open('a') as evidence:
-                                    evidence.write(json.dumps({'command':command,'response':clean,'time':time.time()})+'\n')
+                                    evidence.write(json.dumps({'command':command,'response':response,'time':time.time()})+'\n')
                             raise RuntimeError('Host fault: monitor rejected evaluator control; see private evidence')
-                        return data.decode(errors='replace')
+                        return response
                 raise RuntimeError('Host fault: monitor response timed out')
         except OSError as error:
             raise RuntimeError('Host fault: monitor connection lost') from error
@@ -226,8 +291,9 @@ class NativeSession:
         for name, spec in self.recipe.get('observations', {}).items():
             command = spec['command']
             response = self._monitor(command)
-            clean = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', response)
-            tail = clean.split(command, 1)[-1].split('(device)', 1)[0].strip()
+            tail = _monitor_body(command, response)
+            if tail is None:
+                raise RuntimeError('Host fault: monitor observation lacks its command response')
             if spec.get('kind') == 'scalar':
                 if re.fullmatch(r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?', tail) is None:
                     raise RuntimeError('Host fault: missing or malformed scalar observation: ' + name)

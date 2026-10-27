@@ -13,6 +13,7 @@ The user requires one coherent benchmark structure for adding cases, selecting o
 - Separate graded success, selected coverage and full-catalog coverage.
 - Local Markdown tracker and default triage labels, as selected by the user.
 - Primary-source comparison with SWE-bench, Harbor/Terminal-Bench and Tau-bench.
+- Native monitor controls and observations correlated with their own replies, retaining private wire evidence without redispatch.
 
 ## Acceptance
 

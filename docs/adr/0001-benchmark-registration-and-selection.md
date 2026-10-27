@@ -16,6 +16,8 @@ Preserve the full catalog in a versioned plan. Include/exclude decisions carry r
 
 Use the existing authenticated calibration check in an operator-only preflight. A public availability label is not admission. The check launches no agents or devices and does not claim runtime authentication or tool availability.
 
+Bind native monitor completion and observation values to the submitted command's echo and its following prompt. Decode Telnet controls before matching application text; preserve the raw response bytes in private evidence. A greeting or unrelated reply is not a receipt. Commands are dispatched once, including effectful controls.
+
 Report measured success over graded trials, selected coverage over selected planned slots and demonstrated coverage over the entire catalog. A false fresh mission contributes a measured failure only with trusted model attribution; host, operator and missing attribution stay unscored. An independently validated negative final grade or no-driver record still counts as failure.
 
 ## Consequences
@@ -23,3 +25,5 @@ Report measured success over graded trials, selected coverage over selected plan
 Case authors have one registration declaration and explicit family/resource/qualification responsibilities. A new transport or backend still requires an actual implementation and independent observations. The [authoring guide](../benchmark-case-authoring.md) names those files and the promotion/activation steps.
 
 Legacy plans remain readable; new plans bind the complete catalog and selection into their suite identity. Changed evaluator code requires native requalification. Historical evidence retains its original code and case snapshots. The upstream pilot still covers one executable lineage and six blocked targets; this decision does not expand physical coverage.
+
+Version 1 plan reconstruction remains explicit for historical compatibility. Its suite construction overlaps version 2; a future scheduling change must preserve the old serialization while updating the current plan. The compatibility regressions cover both forms.

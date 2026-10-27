@@ -76,6 +76,8 @@ Copy the pending pair and its matching image into a complete operator asset tree
 
 Changing the image, mission/acceptance behavior, evaluator/runtime closure, native recipes, references or mutant inventory requires qualification again. Version changed expectations and preserve old evidence/checkouts so historical reports retain their meaning. Software qualification leaves physical transport, timing and plant behavior open until measured separately.
 
+The current evaluator identity includes every Python module under `benchmark_support`. Adding a registration or family therefore also invalidates existing software-case qualification. Refresh those cases before running the default development suite; `corpus check` authenticates only the selected upstream cases. Per-case qualification closures are a future design change, not an assumption this workflow makes.
+
 ## Add, unselect or retire
 
 **Add** a lineage by updating a versioned catalog, with blockers until admission is complete; implement and qualify its registered case before claiming execution. Never substitute a synthetic development case for an upstream lineage.

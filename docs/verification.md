@@ -2,6 +2,12 @@
 
 Separate scripted tests, replay, native reference qualification, model execution and physical observations. All current workflows end at acquire → interpret → probe → ground → emit → reuse. Results below describe dated snapshots, not every later checkout.
 
+## Whole-benchmark model study — 2026-10-27
+
+At implementation `9df3887`, actual `gpt-6.1-sol` workers produced equivalent drivers with successful fresh reuse in **7/9 core trials**, **3/3 runnable Zephyr trials** and **3/3 supplemental legacy TQ9 trials**. All 15 missions succeeded; two store drivers failed five complete-rejection checks each. Every sealed final regraded identically; two independent audits verified counts, identities, usage and public mission observations. Four automatic repairs, no manual trial repairs or budget extensions, and 98/98 usage attempts were recorded.
+
+The upstream catalog retains 21 selected slots: three passed and 18 blocked across six lineages, so demonstrated coverage is one of seven lineages. The native-ELF pilot, scripted smoke and physical BME280 are separate. This is a local macOS development-case result, not physical timing, Windows performance or a general firmware success rate. See the [results](research/2026-10-27-benchmark-performance-results.md), [frozen plan](research/2026-10-27-benchmark-performance-plan.md) and [verification index](implementation/whole-benchmark-performance-verification.json).
+
 ## Consolidated firmware pipeline
 
 [PR #16](https://github.com/cam-berger/generative-driver/pull/16) consolidates PRs #6–15. Its regressions exercise real USB/FTDI acquisition through the configurator, retention of observed evidence, the shared sealed firmware-analysis kit, tamper rejection during repair, and the intersection of independent equivalence with successful fresh reuse. The native package matrix enables both wheel and source-archive gates.
@@ -142,4 +148,4 @@ The [follow-up CI](https://github.com/cam-berger/generative-driver/actions/runs/
 
 An intermittent macOS suite reconnect failure was not reproduced: the unchanged 11-test suite and 12 repetitions passed locally. No scheduler fix is claimed.
 
-The nine-trial model study, physical performance, native Windows Renode/Ghidra, Windows 11 UI setup, live Goose and worker filesystem isolation remain unverified. Historical results retain their measured revisions.
+The nine-trial local model study is recorded above for `9df3887` (7/9 joint successes). Physical performance, native Windows Renode model runs, Windows 11 UI setup, live Goose and worker filesystem isolation remain unverified. Historical results retain their measured revisions.

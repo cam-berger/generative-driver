@@ -248,9 +248,14 @@ int main(int argc, char **argv) {
                 'observations': {**{'register_pair'+str(i): {'address': symbols['registers'] + 4*i,
                     'width': 32, 'count': 1} for i in range(4)},
                     'gpio_d': {'address': symbols['gpio'], 'width': 32, 'count': 1}}}
+            # Case snapshots contain the pinned bytes without executable permissions.
+            image.chmod(0o444)
             provider = DeviceProvider('zephyr-modbus-v1', image, recipe, None, root/'private')
             try:
                 descriptor = provider.start()
+                self.assertEqual(image.stat().st_mode & 0o777, 0o444)
+                self.assertEqual(hashlib.sha256(Path('/proc', str(provider.session.process.pid), 'exe').read_bytes()).hexdigest(),
+                                 hashlib.sha256(image.read_bytes()).hexdigest())
                 self.assertEqual(descriptor['time_policy'], 'host-clock-with-process-pauses')
                 self.assertEqual(provider.observe()['values']['register3'], 0)
                 first = provider.session.process

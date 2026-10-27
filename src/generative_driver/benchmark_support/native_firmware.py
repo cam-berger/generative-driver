@@ -24,7 +24,8 @@ class NativeFirmwareSession:
         import tty
         import tempfile
         image = Path(image).resolve()
-        if not image.is_file() or image.read_bytes()[:4] != b'\x7fELF':
+        image_bytes = image.read_bytes() if image.is_file() else b''
+        if image_bytes[:4] != b'\x7fELF':
             raise ValueError('Native firmware must be the executable ELF supplied to the agent')
         args = recipe.get('uart_args')
         observations = recipe.get('observations')
@@ -43,13 +44,18 @@ class NativeFirmwareSession:
         self.image, self.recipe = image, copy.deepcopy(recipe)
         self.private = Path(private_dir) if private_dir else Path(tempfile.mkdtemp(prefix='gd-native-firmware-'))
         self.private.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Snapshots pin bytes, not host execute bits. Stage those exact bytes without changing the input.
+        with tempfile.NamedTemporaryFile(prefix='firmware-', suffix='.elf', dir=self.private, delete=False) as executable:
+            executable.write(image_bytes)
+        self.executable = Path(executable.name)
+        self.executable.chmod(0o500)
         self.process, self.running, self.bridge_error = None, False, None
         self._closed, self._wire_lock = False, threading.Lock()
         self.master, self.slave = pty.openpty()
         tty.setraw(self.slave)
-        self.argv = [str(image), *[a.replace('{tty}', os.ttyname(self.slave)) for a in args]]
-        self.info = {'backend': 'native-sim', 'executable': str(image),
-                     'image_sha256': hashlib.sha256(image.read_bytes()).hexdigest(),
+        self.argv = [str(self.executable), *[a.replace('{tty}', os.ttyname(self.slave)) for a in args]]
+        self.info = {'backend': 'native-sim', 'executable': str(self.executable), 'source_image': str(image),
+                     'image_sha256': hashlib.sha256(image_bytes).hexdigest(),
                      'private_dir': str(self.private), 'log': str(self.private/'native.log')}
         class Bridge(socketserver.BaseRequestHandler):
             def handle(handler):
@@ -86,9 +92,13 @@ class NativeFirmwareSession:
     def binding(self):
         return dict(self.info['binding'])
 
+    def _verify_images(self, before):
+        if any(hashlib.sha256(path.read_bytes()).hexdigest() != self.info['image_sha256']
+               for path in (self.image, self.executable)):
+            raise ValueError('Native firmware image hash changed before ' + before)
+
     def _boot(self):
-        if hashlib.sha256(self.image.read_bytes()).hexdigest() != self.info['image_sha256']:
-            raise ValueError('Native firmware image hash changed before launch')
+        self._verify_images('launch')
         with (self.private/'native.log').open('ab') as log:
             self.process = subprocess.Popen(self.argv, stdin=subprocess.DEVNULL, stdout=log,
                                             stderr=subprocess.STDOUT, cwd=self.private)
@@ -148,8 +158,7 @@ class NativeFirmwareSession:
     def reset(self, initial):
         if initial:
             raise ValueError('Native target has no declared reset stimuli')
-        if hashlib.sha256(self.image.read_bytes()).hexdigest() != self.info['image_sha256']:
-            raise ValueError('Native firmware image hash changed before reset')
+        self._verify_images('reset')
         self._terminate()
         # Discard transport residue only at explicit cold reset, never after an uncertain write.
         while select.select([self.master], [], [], 0)[0]:

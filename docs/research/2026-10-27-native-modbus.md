@@ -18,6 +18,10 @@ The agent receives those same ELF bytes, including symbols and DWARF. Recovery
 difficulty differs from the ARM raw image; this is not a controlled comparison of
 agent performance with only the execution backend changed.
 
+Case snapshots copy bytes without preserving execute permissions. The native
+adapter stages an executable private copy and verifies both copies against the
+pinned hash before launch and reset; it leaves the supplied artifact unchanged.
+
 The optional backend runs on Linux, including a Linux VM on macOS/Windows. It
 pauses its owned process between calls. With `--rt`, the host clock continues and
 native simulated time catches up on resume. Reports name this policy
@@ -72,6 +76,10 @@ resources; installed resources and previous results stay unchanged.
 
 Use the existing runtime configuration and trial command with this resource root:
 
+Install the complete matching Codex distribution, including its tool-host helper
+and Bubblewrap resource. The Linux environment must support the worker sandbox's
+namespaces and mounts. Verify these before spending model inference on a trial.
+
 ```sh
 GENERATIVE_DRIVER_BENCH_ROOT="$PWD/native-qualified-inputs" \
   python -m generative_driver benchmark run --case zephyr-modbus-v1 --executor codex \
@@ -100,20 +108,35 @@ replies and independently observed complete register/coil state after every step
 Fresh native qualification passed all four 315-check reference runs (two distinct
 drivers, diagnostic and final) and rejected all six named mutants. These are
 authentic firmware executions with scripted requests, not agent performance.
-The final installed-wheel suite passed 928 tests with three optional skips;
-the separate Linux backend suite passed 11 tests with one non-Linux guard skipped.
 
-The first actual-agent attempt emitted no driver: Docker blocked Bubblewrap
-namespace creation. Acquire and interpret ran, while the remaining stages and
-fresh reuse did not. That setup failure is retained; it is not a measurement of
-native firmware recovery. A corrected unprivileged container has no host mounts
-or Linux capabilities and retains a working Codex sandbox. Its local smoke check
-allows workspace writes and denies an outside write. It is admitted after fresh
-calibration and awaits normal device authentication for another agent trial.
-This smoke check does not establish worker read isolation.
+The completed `gpt-6.1-sol` trial ran all six stages, including a fresh package-only
+mission. It used one interpretation repair after an invalid-register probe timed
+out: eight worker attempts, 489.95 worker seconds and 1,600,910 reported tokens
+(1,295,616 cached input tokens, a subset). The frozen driver passed **315/315**
+independent final checks and the fresh worker's mission. An offline regrade of
+the sealed observations confirmed the verdict.
+
+This was an engineering feasibility run with setup repairs. Two earlier attempts
+emitted no driver because Docker denied Bubblewrap namespaces and then because
+the replacement runtime lacked its matching tool-host executable. Both retain
+their failures and usage. The completed trial initially remained unscored because
+its copied ELF lacked execute permission. Restoring that bit left its bytes and
+hash unchanged; a grading-only resume passed without repeating any agent stage
+or changing its original evaluator. Its reported 837.42 seconds includes that
+repair interval. The separate permanent adapter fix passed a failing-then-passing
+Linux process regression, fresh 568-check comparison, reference/mutant calibration
+and registry admission with a read-only, non-executable source ELF. Historical
+trial and permanent-fix package identities are recorded separately. The final
+installed-wheel suite passed 928 tests with three optional skips; the Linux
+backend suite passed 11 tests with one non-Linux guard skipped.
+
+The unprivileged container had no host mounts or Linux capabilities. Its local
+sandbox smoke check allowed workspace writes and denied an outside write; this
+does not establish worker read isolation. Device authentication used normal
+sign-in and the dedicated session was logged out after the trial.
 
 The [verification index](../implementation/native-modbus-verification.json) pins
 the package and measurements. Raw private evidence is retained separately under
-`bench/runs/native-modbus-20261027`; previous build attempts and the setup failure
-are preserved. No physical UART/RS-485, electrical fault, timing-equivalence or
-cross-family result follows from this pilot.
+`bench/runs/native-modbus-20261027`; previous build attempts, setup failures and
+the pre-repair unscored seal are preserved. No physical UART/RS-485, electrical
+fault, timing-equivalence or cross-family result follows from this pilot.

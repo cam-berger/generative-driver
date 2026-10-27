@@ -145,6 +145,8 @@ def case_options(spec):
     if spec.get('device') and spec.get('_device'):
         # The provided device as the configurator's durable record holds it now (a recovery changes its binding).
         options['device']={key:spec['_device'][key] for key in ('session_id','binding')}
+        if spec['device'].get('development_conditions'):
+            options['device']['development_conditions'] = copy.deepcopy(spec['device']['development_conditions'])
     return {**options,'revision':spec.get('_revision',0),'feedback':spec.get('_feedback'),
         'operator_observations':spec.get('_operator_observations',[]),'configured_effects':spec['effects']}
 
@@ -2908,7 +2910,8 @@ class Controller:
         return {'stop': {'category': 'operator', 'reason': 'Device control lost after a dispatched call: ' + first['reason']
                          if first['phase'] == 'after' else first['reason'] + '; nothing was dispatched'}}
 
-    def _device_call(self, run, assignment, name, arguments, device, invoke):
+    def _device_call(self, run, assignment, name, arguments, device, invoke, *, condition_id=None,
+                     expected_session_id=None):
         """One live call on the provided device: the instrument reading before it, the call inside the device's window,
         the reading after it. A provider that fails before the call refuses it (nothing reached the device, so nothing
         is uncertain); one that fails after the call leaves the call's own result to reconcile. Either is recorded and
@@ -2917,6 +2920,8 @@ class Controller:
         from .device_client import DeviceUnavailable, reading
         started, result, before, after, lost = False, None, None, None, None
         try:
+            if condition_id is not None:
+                device.select_condition(condition_id, expected_session_id)
             before = reading(device.observe())
             with device.window():
                 started = True
@@ -2952,8 +2957,10 @@ class Controller:
             if lost:
                 return lost
             device = {}
+            mine = []
             if stage in ('probe', 'ground'):
-                device = self._observe_device(stage, assignment, self._finished(run_dir.name, assignment), accepted,
+                mine = self._finished(run_dir.name, assignment)
+                device = self._observe_device(stage, assignment, mine, accepted,
                                               run_dir, workspace)
                 if device.get('stop'):
                     return device
@@ -2965,6 +2972,9 @@ class Controller:
             checked = observe_stage(case_id, stage, run_dir, workspace, report, accepted, options)
             if checked.get('stop') or not device:
                 return checked
+            if spec.get('device'):
+                from .benchmark_support.instrument_evidence import discrepancies
+                device['device_diff'].extend(discrepancies(case_id, assignment, mine))
             checks, notes = [*checked['checks'], *device['checks']], checked.get('notes') or {}
             return {**checked, 'artifacts': list(dict.fromkeys([*checked['artifacts'], *device['artifacts']])),
                     'checks': checks, 'notes': {'checks': checks, 'records': device['records'],
@@ -3386,12 +3396,22 @@ class Controller:
         if assignment['stage'] != run['stage'] or assignment.get('revision',0) != progress.get('revision',0):
             raise ValueError('Worker assignment is inactive after stage or revision change')
         marker['assignment'] = assignment
+        spec = json.loads(run['spec'])
+        conditions = ((spec.get('device') or {}).get('development_conditions') or {}).get('conditions', []) \
+            if (assignment['stage'] in ('probe', 'ground')
+                and (spec.get('_case_pin') or {}).get('case_id') == 'sampled-sensor-v1') else []
+        condition_ids = [condition['id'] for condition in conditions]
         allowed=assignment['allowed_tools']
         contracts = [copy.deepcopy(t) for t in list_tools() if t['name'] in allowed]
         if 'benchmark_package_execute' in assignment['allowed_tools']:
             contracts.append(copy.deepcopy(BENCHMARK_PACKAGE_EXECUTE))
         for contract in contracts:
             schema = contract['inputSchema']
+            if condition_ids and contract['name'] in ('interface_execute', 'probe_run'):
+                schema['properties']['condition_id'] = {'type': 'string', 'enum': condition_ids,
+                    'description': 'Select a fixed public development source before this live call. It does not '
+                                   'acquire a sample. Compare a new acquisition with its instrument observation; '
+                                   'omit to retain the current source.'}
             owned = ('run_dir','binding','allow_effects','bus_url','port','allow_reset')
             if contract['name'] in USB_SELECTING:
                 owned += ('address', 'serial_number')
@@ -3405,6 +3425,11 @@ class Controller:
         if name not in [c['name'] for c in contracts]:
             raise ValueError('Tool is not assigned to this worker')
         arguments = dict(params.get('arguments', {}))
+        condition_requested = 'condition_id' in arguments
+        condition_id = arguments.pop('condition_id', None)
+        if condition_requested and (name not in ('interface_execute', 'probe_run') or arguments.get('replay')
+                or not isinstance(condition_id, str) or condition_id not in condition_ids):
+            raise ValueError('Select a catalog condition only for a live sampled-sensor probe or ground call')
         if {'run_dir','binding','allow_effects','bus_url','allow_reset','port'} & arguments.keys():
             raise ValueError('Connection, output directory and effect grants are configurator-owned')
         if name in USB_SELECTING and {'address', 'serial_number'} & arguments.keys():
@@ -3476,7 +3501,6 @@ class Controller:
         if effectful and name in ('probe_run','interface_execute'):
             # Refused here, never marked uncertain: the runtime would refuse it before opening the device.
             _refuse_invalid_model(arguments['model_dir'])
-        spec = json.loads(run['spec'])
         device = invoke = None
         if connected and _emulated(spec) and not spec.get('device'):
             # The configurator holds no emulator: an emulated case runs only on the device the bench harness provides.
@@ -3495,7 +3519,11 @@ class Controller:
             device = open_device(spec['device'])
         # Facts the device diff rests on, recorded by the configurator, never taken from the worker: whether it
         # supplied the device connection (a replay gets none), and the content of every evidence path the tool reads.
-        facts = {'connected': connected, 'argument_sha256': _argument_digests(arguments)}
+        facts = {'connected': connected, 'argument_sha256': _argument_digests(arguments),
+                 **({'device_session_id': (progress.get('device') or {}).get('session_id'),
+                     'operation': arguments.get('operation'), 'parameters': copy.deepcopy(arguments.get('parameters', {}))}
+                    if device is not None else {}),
+                 **({'condition_id': condition_id} if condition_requested else {})}
         # The uncertain flag is persisted before dispatch. A crash or cancellation
         # cannot turn an outstanding physical effect into an automatic retry.
         with self._lock:
@@ -3509,7 +3537,7 @@ class Controller:
                         or assignment['stage'] != active['stage']
                         or assignment.get('revision', 0) != (json.loads(saved['payload']) if saved else {}).get('revision', 0)):
                     raise ValueError('Worker assignment became inactive before dispatch')
-                if effectful and active['uncertain']:
+                if (effectful or condition_requested) and active['uncertain']:
                     raise ValueError('Outstanding effect is uncertain; another effectful operation is refused until operator reconciliation')
                 if effectful:
                     db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run['id'],))
@@ -3520,7 +3548,8 @@ class Controller:
                     db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(dispatch_id,run['id'],assignment['id'],'worker'))
         marker['dispatched'] = dispatch_id
         if device is not None:
-            result = self._device_call(run, assignment, name, arguments, device, invoke)
+            result = self._device_call(run, assignment, name, arguments, device, invoke,
+                condition_id=condition_id, expected_session_id=(progress.get('device') or {}).get('session_id'))
         elif name == 'benchmark_package_execute':
             from .benchmark import package_execute
             case = spec.get('case')

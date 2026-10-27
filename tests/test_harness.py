@@ -75,6 +75,7 @@ class DeviceEndpointTests(unittest.TestCase):
         self.assertEqual((observed['schema'], observed['session_id']), ('instrument-observation/1', descriptor['session_id']))
         self.assertFalse(keys(observed) & MONITOR)
         self.assertEqual(reading(observed), {'duty': 0.0, 'temperature_reference': 20.0, 'source': 'instrument',
+                                             'session_id': descriptor['session_id'],
                                              'units': {'duty': 'permille', 'temperature_reference': 'degC'}})
         # The device runs only inside the window, which closes when the call inside it raises too.
         with client.window():

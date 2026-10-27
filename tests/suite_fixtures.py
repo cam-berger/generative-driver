@@ -34,14 +34,21 @@ def sqlite_context(path):
 def public_case_fixture(root, case_id='tq9-v2', *, calibration=None, **changes):
     """Local registry inputs for pure freeze tests; never native qualification."""
     import hashlib
+    import shutil
+    from generative_driver.toolkit import resources_root
+    from generative_driver.benchmark_support.registrations import registration_for
+    registration = registration_for(case_id)
+    # Public missions are data resources now, just like images and manifests.
+    # Keep fixture asset trees complete without bringing evaluator answers in.
+    shutil.copytree(resources_root() / 'bench/missions', root / 'missions', dirs_exist_ok=True)
     case = root / 'cases' / case_id
     case.mkdir(parents=True)
     image = case / 'firmware.bin'; image.write_bytes(b'public suite contract image')
     truth = root / 'groundtruth' / (case_id + '.enc')
     truth.parent.mkdir(exist_ok=True); truth.write_bytes(b'public suite contract opaque fixture')
     manifest = {
-        'schema': 'benchmark-case/2', 'id': case_id, 'family': 'toy-family',
-        'version': '5', 'evaluator_version': '5', 'execution': 'actual-agent-emulation',
+        'schema': 'benchmark-case/2', 'id': case_id, 'family': registration.family,
+        'version': registration.version, 'evaluator_version': registration.version, 'execution': 'actual-agent-emulation',
         'evidence_track': 'firmware', 'scope': 'full-workflow', 'adapter_key': 'emulator-v2',
         'approval_scope': 'emulator', 'default_effects': ['write'], 'scenarios': ['original'],
         'required_stages': ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse'],

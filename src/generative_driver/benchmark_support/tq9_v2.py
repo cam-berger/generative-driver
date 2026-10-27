@@ -72,3 +72,13 @@ def observations(raw: dict, canonical_task_result: dict, inputs: dict) -> dict:
 
 
 observations.monitor_units = {'duty': 'permille'}
+
+
+def reuse_passed(events, capabilities):
+    """Observe the public temperature, requested duty and final disarm mission."""
+    duties = [event['observation']['duty'] for event in events if event['result'].get('ok')]
+    mapping = capabilities['tasks']['temperature']
+    output = mapping['outputs']['temperature']['output']
+    read = any(event.get('operation') == mapping['operation'] and event['result'].get('ok')
+               and type(event['result'].get('outputs', {}).get(output)) in (int, float) for event in events)
+    return read and any(abs(value - 370) <= 2 for value in duties) and bool(duties) and duties[-1] == 0

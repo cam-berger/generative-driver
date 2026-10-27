@@ -1,0 +1,41 @@
+{
+  "schema": "benchmark-public-mission/1",
+  "case_id": "sampled-sensor-v1",
+  "tasks": {
+    "measure": {
+      "meaning": "Perform a new acquisition, returning its temperature and sequence.",
+      "inputs": {},
+      "outputs": {
+        "temperature": {
+          "unit": "degC",
+          "instrument": "reference_temperature",
+          "absolute_tolerance": 1e-09
+        },
+        "sequence": {
+          "unit": "count",
+          "instrument": "monitor_sequence",
+          "absolute_tolerance": 0
+        }
+      },
+      "sampling": "acquire"
+    },
+    "read": {
+      "meaning": "Return the current sample and sequence without acquiring another sample.",
+      "inputs": {},
+      "outputs": {
+        "temperature": {
+          "unit": "degC",
+          "instrument": "reference_temperature",
+          "absolute_tolerance": 1e-09
+        },
+        "sequence": {
+          "unit": "count",
+          "instrument": "monitor_sequence",
+          "absolute_tolerance": 0
+        }
+      },
+      "sampling": "retained"
+    }
+  },
+  "reuse_objective": "Acquire and read two fresh temperature samples. Report their measured sequence numbers."
+}

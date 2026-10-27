@@ -41,6 +41,7 @@ Use a new output directory each time. Smoke tests installation and recorded repl
 | Connect a client | [Codex](docs/codex.md) · [Goose](docs/goose.md) |
 | Configure AI or hardware | [Setup and recovery](docs/setup.md) |
 | Evaluate a run | [Benchmarks](bench/README.md) · [Recorded results](docs/verification.md) |
+| Broaden firmware coverage | [Upstream corpus](docs/benchmark-corpus.md) · [Seven-area intake and gaps](docs/research/2026-10-26-corpus-intake.md) |
 | Contribute | [Development](CONTRIBUTING.md) · [Design](docs/design.md) |
 
 The background configurator keeps runs, stage notes and evidence after the client closes. Save your run ID. Under `assistive/1`, the final equivalence verdict is an evaluator grade for benchmarks and self-evidence otherwise. Results form a new series. Workers are not read-isolated; answer-key separation is password-based, not a sandbox.

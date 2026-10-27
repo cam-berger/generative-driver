@@ -1,0 +1,87 @@
+{
+  "schema": "benchmark-public-mission/1",
+  "case_id": "parameter-store-v1",
+  "tasks": {
+    "read": {
+      "meaning": "Read the committed value of the selected bank and slot.",
+      "inputs": {
+        "bank": {
+          "type": "string",
+          "enum": [
+            "A",
+            "B"
+          ]
+        },
+        "slot": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        }
+      },
+      "outputs": {
+        "value": {
+          "unit": "configuration-unit"
+        }
+      }
+    },
+    "update": {
+      "meaning": "Discard any pending uncommitted edits in either bank, commit only the requested value, preserve all other committed cells, advance generation once and finish with no pending transaction. Valid while idle or a transaction is pending.",
+      "inputs": {
+        "bank": {
+          "type": "string",
+          "enum": [
+            "A",
+            "B"
+          ]
+        },
+        "slot": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "value": {
+          "type": "integer",
+          "unit": "configuration-unit",
+          "minimum": -32768,
+          "maximum": 32767
+        }
+      },
+      "outputs": {}
+    },
+    "stage": {
+      "meaning": "Begin and stage the requested change while idle, leaving the transaction pending and committed values and generation unchanged.",
+      "inputs": {
+        "bank": {
+          "type": "string",
+          "enum": [
+            "A",
+            "B"
+          ]
+        },
+        "slot": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "value": {
+          "type": "integer",
+          "unit": "configuration-unit",
+          "minimum": -32768,
+          "maximum": 32767
+        }
+      },
+      "outputs": {}
+    },
+    "commit": {
+      "meaning": "Apply an existing pending transaction, advance generation once and close it. Requires a pending transaction.",
+      "inputs": {},
+      "outputs": {}
+    },
+    "abort": {
+      "meaning": "Discard an existing pending transaction, preserve committed values and generation, and close it. Requires a pending transaction.",
+      "inputs": {},
+      "outputs": {}
+    }
+  },
+  "reuse_objective": "Commit bank B slot 1 to -7. Stage bank B slot 1 to 9, abort that transaction, then read bank B slot 1. Report observations and whether other cells changed."
+}

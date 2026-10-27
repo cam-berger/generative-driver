@@ -28,11 +28,11 @@
   },
   "truth": {
     "path": "groundtruth/tq9-v2.enc",
-    "sha256": "82b6944214be1afae7540ecefd4037b0da9ec36d8b1fdb4ea29b373326095519"
+    "sha256": "2543ecd8f70514d1c03c93e1ee2ab7d6b876a74ba7e533427bede8d4df9f7e66"
   },
   "calibration": {
     "status": "passed",
-    "evidence_sha256": "5cdeefa00b677f2d4ee7f8617401897f554a68a576108d758623627ea87c6c36",
+    "evidence_sha256": "5973a9605199154388cd4f072a15b097c4a46d1e0daf4870418d768a57233c55",
     "input_hashes": {
       "source": "7ab030a6849a88ae0f1fd4faff1432fab6f3a0bcc20f90bb96869fa72c4d7411",
       "contract": "196b735f1e8ce6629cf7bb3d253373283c1d5d5dcf669b92f3636a49c6812295",

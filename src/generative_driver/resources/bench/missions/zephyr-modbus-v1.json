@@ -1,0 +1,74 @@
+{
+  "schema": "benchmark-public-mission/1",
+  "case_id": "zephyr-modbus-v1",
+  "tasks": {
+    "read_register": {
+      "meaning": "Read an unsigned 16-bit holding register at address 0 through 7. Address 8 is an explicit negative test: refuse without claiming success, changing state or preventing the next valid operation. No particular internal error code is required.",
+      "inputs": {
+        "address": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8
+        }
+      },
+      "outputs": {
+        "value": {
+          "unit": "register-value"
+        }
+      }
+    },
+    "write_register": {
+      "meaning": "Write the selected holding register; preserve all other registers and coils. Values are volatile and no power-loss persistence is required.",
+      "inputs": {
+        "address": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      },
+      "outputs": {}
+    },
+    "read_coil": {
+      "meaning": "Read the selected digital coil as 0 (off) or 1 (on).",
+      "inputs": {
+        "address": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        }
+      },
+      "outputs": {
+        "value": {
+          "unit": "boolean"
+        }
+      }
+    },
+    "set_coil": {
+      "meaning": "Set one digital coil to 0 (off) or 1 (on), preserving the other coils and all holding registers. Any encoding accepted by the device with the correct observable effect is valid.",
+      "inputs": {
+        "address": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "state": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "outputs": {}
+    }
+  },
+  "reuse_objective": "Write holding register 3 to 4660 and read it back. Turn coil 0 on and then off. Preserve every other holding register and coil throughout. Report the readback and observed effects.",
+  "operating_conditions": [
+    "The supplied UART-over-TCP device advances only during live calls and pauses between calls; agent thinking time does not advance it.",
+    "For this emulated profile, use a 50 ms execution delay between request exchanges, including automatic identity-to-operation exchanges. Place the delay inside the model operation while the live call is active; sleeping between tool calls does not advance device time.",
+    "The 50 ms interval is a conservative tested emulator scheduling margin. Acceptance judges returned values, refusal and device effects. Physical UART timing, response deadlines and throughput are not measured."
+  ]
+}

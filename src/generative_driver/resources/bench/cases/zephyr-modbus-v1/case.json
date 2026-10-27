@@ -1,0 +1,88 @@
+{
+  "schema": "benchmark-case/2",
+  "id": "zephyr-modbus-v1",
+  "family": "zephyr-modbus",
+  "version": "1",
+  "evaluator_version": "1",
+  "adapter_key": "emulator-v2",
+  "execution": "actual-agent-emulation",
+  "evidence_track": "firmware",
+  "scope": "full-workflow",
+  "scenarios": [
+    "original"
+  ],
+  "required_stages": [
+    "acquire",
+    "interpret",
+    "probe",
+    "ground",
+    "emit",
+    "reuse"
+  ],
+  "images": {
+    "firmware.bin": "6137dfd5044bf38e791b77e25db0408ba081fc60ccdd2953629e7fb62090ca82"
+  },
+  "truth": {
+    "path": "groundtruth/zephyr-modbus-v1.enc",
+    "sha256": "984d851229bac78512b31bacefedf9168bd82339a32504eaa4906841e550b718"
+  },
+  "default_effects": [
+    "write",
+    "actuate"
+  ],
+  "approval_scope": "emulator",
+  "calibration": {
+    "status": "passed",
+    "input_hashes": {
+      "source": "b9b52363de4af8b5773ecc7fadc9e2a2161fc55d3e51894dbf4a2c3f8614ea76",
+      "contract": "43af2178a91a55bd587d5d3ce3521564fcd00c936fa5580229e24f7fbab12f1e",
+      "recipe": "b251778072e1b4dd91bf792489f20c9917a993bd18c3470c5486c539d9b0d5f9",
+      "references": "8240adeef79967fd2c1c66683728c7640d2a9b3e1cb06aa8ada7fb5b82311739",
+      "mutations": "3279a3c01ddcca6a5d32207905af3b8cae3034154c16bb44c5ae5ed00f718c8a",
+      "build": "10c338339a6deecf370860c136704f64480947d9012604d7f4967273bd104d91",
+      "inventory": "e590e3d1e305d1e39b8142a487ea4d17c243b396fa22dddf497213a559b71498"
+    },
+    "evidence_sha256": "7e28b21503768108678a0102621fa654d8681390371bb3ec38781216e849e34e"
+  },
+  "corpus_identity": {
+    "lineage": "zephyr-modbus",
+    "origin_group": "zephyr-modbus",
+    "mission": "zephyr-modbus-mission-1",
+    "source_commit": "413b789deb391d3a37d06b463288a5fe765ee57e"
+  },
+  "provenance": {
+    "source": {
+      "repository": "https://github.com/zephyrproject-rtos/zephyr",
+      "commit": "413b789deb391d3a37d06b463288a5fe765ee57e",
+      "path": "samples/subsys/modbus/rtu_server",
+      "modules": {
+        "cmsis": "512cc7e895e8491696b61f7ba8066b4a182569b8",
+        "cmsis_6": "06d952b6713a2ca41c9224a62075e4059402a151",
+        "stm32": "1e753266ddfb4b07a8a0b1ec566e9637ea45d5ef"
+      },
+      "board": "stm32f4_disco",
+      "transformations": [
+        "Board wiring selects USART2 for Modbus and disables console/log traffic on that UART.",
+        "Application handlers, Modbus framing, CRC and exception behavior are unchanged."
+      ]
+    },
+    "license": "Apache-2.0 and component notices in NOTICE.md",
+    "build_execution": "reference-build",
+    "build_tools": {
+      "compiler": "arm-none-eabi-gcc (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 14.2.1 20241119",
+      "objcopy": "GNU objcopy (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119"
+    },
+    "build": "Two byte-identical native binary builds",
+    "uart_bridge": "Protocol-independent socket input delivered per received block at one virtual timestamp; Renode SocketServerProvider BufferSize=4096. Source in platforms/BufferedSocketTerminal.cs."
+  },
+  "time_policy": {
+    "probe": "continuous emulator virtual time",
+    "package_calls": "paused between calls",
+    "limitation": "Thinking time excluded; not a real-time control benchmark"
+  },
+  "limitations": [
+    "UART-over-TCP does not establish RS-485 electrical, baud or turnaround correctness.",
+    "Independent emulator memory and GPIO observation is not physical measurement.",
+    "One ARM STM32 platform; no architecture breadth claim."
+  ]
+}

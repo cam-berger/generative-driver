@@ -1,5 +1,7 @@
 # Benchmark growth plan
 
+Implementation milestone: the [2026-10-26 seven-area intake](2026-10-26-corpus-intake.md) adds source-pinned device selection, explicit software/physical gaps and an executable upstream Modbus case. It retains the growth targets below; intake coverage and admitted model measurements are reported separately.
+
 Proposed 2026-10-03; inspected `318058f1515d9a912773b656839298eb5883d929`, reconciled with [PR #1](https://github.com/cam-berger/generative-driver/pull/1) at `24d8861fab72a401135a4a71f61e54d73b5ba204`. AI-assisted planning with independent coverage/statistical reviews. No external build, admitted case or new model measurement; this is neither preregistration nor execution authorization.
 
 Question: how reliably and efficiently can an agent recover an unfamiliar supplied MCU image into a driver a fresh agent can use? Initially acquisition means importing a binary; reading chips is a separate study. Preserve the [six-stage endpoint](../superpowers/specs/2026-10-03-reuse-endpoint.md).

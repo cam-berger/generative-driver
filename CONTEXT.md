@@ -14,6 +14,12 @@
 | Groundtruth | Password-encrypted, hash-pinned expected behavior held only by the evaluator. |
 | Bench harness | Benchmark operator: holds password, owns emulator/provider, supplies device descriptor and grades after the run. |
 | Instrument observation | Device-state readings visible to workers, never grades. |
+| Lineage | Upstream firmware ancestry selected in a corpus. Repetitions of one lineage do not demonstrate another device family. |
+| Case | Registered, versioned image and evaluator contract, with public mission data and a separately encrypted answer key. |
+| Public mission | Required task meanings, inputs, output units and the objective for fresh reuse. Hidden vectors remain evaluator-owned. |
+| Trial | One fresh six-stage run. A repetition starts another trial, not another lineage. |
+| Selection | Frozen include/exclude decisions and reasons for every lineage in the full catalog. Excluded and blocked slots remain visible. |
+| Availability / admission | Public inventory checks / authenticated reference qualification against the current evaluator implementation. Availability does not establish admission. |
 
 Functional compatibility compares required outputs/effects, not source code. Hashes prove identity/integrity, not physical truth or access control. Keep passwords/answers out of candidate inputs; the configurator holds no truth.
 

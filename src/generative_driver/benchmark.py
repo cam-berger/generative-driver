@@ -50,9 +50,41 @@ def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=
 
 def main(argv=None):
     from .benchmark_support.registry import case_ids, case_descriptors
+    from .benchmark_support.registrations import build_case_ids
     parser = argparse.ArgumentParser(prog='gd benchmark')
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('cases')
+    corpus = commands.add_parser('corpus', help='Inspect upstream coverage and freeze a software-first corpus plan')
+    corpus_actions = corpus.add_subparsers(dest='action', required=True)
+    for action in ('list', 'plan'):
+        selection = corpus_actions.add_parser(action)
+        selection.add_argument('--catalog', help='Versioned corpus catalog; defaults to the seven-area pilot')
+        if action == 'plan':
+            selection.add_argument('--repetitions', type=int, default=3)
+            selection.add_argument('--include', action='append', metavar='LINEAGE',
+                                   help='Select lineage IDs from the full catalog; repeat for a subset')
+            selection.add_argument('--exclude', action='append', nargs=2, metavar=('LINEAGE', 'REASON'),
+                                   help='Record a lineage exclusion and its reason; keep its coverage slots')
+        selection.add_argument('--output', help='Save the catalog or frozen plan as JSON')
+    building = corpus_actions.add_parser('build', help='Rebuild a pinned upstream firmware twice; no inference')
+    building.add_argument('--case', choices=build_case_ids(), required=True)
+    for name in ('source', 'compiler', 'west', 'output'):
+        building.add_argument('--' + name, required=True)
+    corpus_start = corpus_actions.add_parser('start', help='Run admitted cases from an unchanged frozen plan')
+    corpus_start.add_argument('--plan', required=True)
+    corpus_start.add_argument('--executor', choices=['codex', 'goose'])
+    corpus_start.add_argument('--options')
+    corpus_start.add_argument('--request-id')
+    corpus_check = corpus_actions.add_parser('check', help='Authenticate selected case qualification without launching agents')
+    corpus_check.add_argument('--plan', required=True)
+    corpus_check.add_argument('--options', help='Operator-only evaluator password handles; native tools are not run')
+    corpus_check.add_argument('--output', help='Save the public qualification result as JSON')
+    corpus_report = corpus_actions.add_parser('report', help='Join a frozen coverage plan with its saved suite report')
+    corpus_report.add_argument('--plan', required=True)
+    report_source = corpus_report.add_mutually_exclusive_group()
+    report_source.add_argument('--suite-report', help='Previously exported suite.json')
+    report_source.add_argument('--suite-id', help='Read this suite from the configured owner')
+    corpus_report.add_argument('--output')
     suites = commands.add_parser('suite').add_subparsers(dest='action', required=True)
     starting = suites.add_parser('start')
     starting.add_argument('--manifest', required=True)
@@ -129,6 +161,47 @@ def main(argv=None):
     evaluator.add_argument('--java-home')
     args = parser.parse_args(argv)
     try:
+        if args.command == 'corpus':
+            from .benchmark_support.corpus import load_catalog, plan_corpus, report_corpus, start_corpus
+            if args.action == 'build':
+                from .benchmark_support.upstream_build import build
+                result = build(args.source, args.compiler, args.west, args.output)
+                print(json.dumps(result, indent=2, allow_nan=False))
+                return 0
+            if args.action in ('start', 'report', 'check'):
+                plan = json.loads(Path(args.plan).read_text(encoding='utf-8'))
+                if args.action == 'start':
+                    result = start_corpus(plan, args.executor,
+                        json.loads(Path(args.options).read_text(encoding='utf-8')) if args.options else {}, args.request_id)
+                    print(json.dumps(result, indent=2, allow_nan=False))
+                    return 0 if result.get('ok') else 1
+                if args.action == 'check':
+                    from .benchmark_support.preflight import check_corpus
+                    result = check_corpus(plan,
+                        json.loads(Path(args.options).read_text(encoding='utf-8')) if args.options else {})
+                else:
+                    if args.suite_id:
+                        from .benchmark_support.suite_reporting import report_suite
+                        if args.output:
+                            destination = Path(args.output)
+                            suite = report_suite(args.suite_id,
+                                output=destination.with_name(destination.stem + '-suite'))
+                        else:
+                            from tempfile import TemporaryDirectory
+                            with TemporaryDirectory(prefix='gd-corpus-report-') as temporary:
+                                suite = report_suite(args.suite_id, output=temporary)
+                    else:
+                        suite = args.suite_report
+                    result = report_corpus(plan, suite)
+            else:
+                catalog = load_catalog(args.catalog)
+                result = plan_corpus(catalog, args.repetitions, include=args.include,
+                                     exclude=args.exclude) if args.action == 'plan' else catalog
+            encoded = json.dumps(result, indent=2, allow_nan=False) + '\n'
+            if args.output:
+                Path(args.output).write_text(encoded, encoding='utf-8')
+            print(encoded, end='')
+            return 0 if result.get('ok', True) else 1
         if args.command == 'suite':
             if args.action == 'compare':
                 from .benchmark_support.suite_reporting import compare_suites
@@ -192,6 +265,13 @@ def main(argv=None):
 
 
 def case_root():
+    import os
+    selected = os.environ.get('GENERATIVE_DRIVER_BENCH_ROOT')
+    if selected is not None:
+        path = Path(selected).expanduser()
+        if not path.is_absolute() or not path.is_dir():
+            raise ValueError('GENERATIVE_DRIVER_BENCH_ROOT must name an existing absolute resource directory')
+        return path.resolve()
     return Path(__file__).resolve().parent / 'resources' / 'bench'
 
 

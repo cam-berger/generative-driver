@@ -20,10 +20,29 @@ INSTRUMENT = ('Live interface_execute and probe_run results carry before_observa
               'device time advances during a call and not while you work between calls. ')
 
 
+def _development_conditions(case_id, prepared, workspace, options):
+    """Give probe/ground the operator's public inputs; no control coordinates or evaluator answers."""
+    catalog = ((options or {}).get('device') or {}).get('development_conditions')
+    if case_id != 'sampled-sensor-v1' or not catalog:
+        return prepared
+    path = Path(workspace)/'DEVELOPMENT_CONDITIONS.json'
+    _write(path, catalog)
+    guidance = (' Read DEVELOPMENT_CONDITIONS.json. On interface_execute or probe_run, condition_id selects a fixed '
+        'public source condition before that live call; omit it to keep the source. Changing the source does not '
+        'acquire a sample: read may still return the retained value. Perform a new acquisition, check its sequence '
+        'and observation.condition.sample_after_change, and compare decoded outputs with the measured instrument '
+        'reference. Use distinct reference conditions to investigate scale and offset, then additional conditions '
+        'to check the conversion; zero-only readings cannot establish scale. Each probe_run may use n=1. '
+        'The requested reference is an experimental input, not proof of a new measurement. Preserve the observed '
+        'discrepancies in your notes; final evaluation is separate.')
+    return {**prepared, 'objective': prepared['objective'] + guidance,
+            'inputs': [*prepared.get('inputs', []), str(path)],
+            'context': {**prepared.get('context', {}), 'development_conditions': str(path)}}
+
+
 def _required_tasks(case_id):
-    return {'tq9-v2': ('temperature', 'arm', 'set_duty', 'disarm'),
-            'sampled-sensor-v1': ('measure', 'read'),
-            'parameter-store-v1': ('read', 'update', 'stage', 'commit', 'abort')}[case_id]
+    from .missions import load_mission
+    return tuple(load_mission(case_id)['tasks'])
 
 
 def _capability_guidance(workspace, case_id):
@@ -196,11 +215,10 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         from .candidate_context import task_contract
         _write(ws/'TASKS.json', task_contract(case_id, options.get('configured_effects', [])))
         guidance.append(str(ws/'TASKS.json'))
-        objective = 'Test the supplied immutable model over the emulator binding. Write capabilities.json with schema benchmark-capabilities/2 and tasks temperature, arm, set_duty, disarm. Each task has operation, constants, inputs and outputs. Map canonical set_duty input duty (permille) with copy or affine parameter mapping. Map canonical temperature output to its candidate output and declared unit. Report unsupported capabilities honestly.'
-        if case_id == 'sampled-sensor-v1':
-            objective = 'Test the supplied model over the emulator binding. Write benchmark-capabilities/2 tasks measure and read, mapping temperature (degC) and sequence (count) outputs. Measure performs a new acquisition; read returns the current sample. Report unsupported capabilities honestly.'
-        elif case_id == 'parameter-store-v1':
-            objective = 'Test the supplied model over the emulator binding. Write benchmark-capabilities/2 tasks read, update, stage, commit and abort. Read takes bank and slot and maps value (configuration-unit). Update and stage take bank, slot and value; commit and abort have no inputs. Every task declares operation, constants, inputs and outputs.'
+        objective = ('Test the supplied immutable model over the emulator binding. Write capabilities.json with '
+            'schema benchmark-capabilities/2 and tasks ' + ', '.join(_required_tasks(case_id)) + '. '
+            'Each task declares operation, constants, inputs and outputs. Map every requested input and output '
+            'in TASKS.json, including its physical unit, to the candidate model. Report unsupported capabilities honestly.')
         objective += (' Read TASKS.json for required task semantics, outputs and effect grants. '
             'Read CAPABILITY_FORMAT.md and run validate_capabilities.py with the supplied model directory '
             'and your capabilities.json. Correct mapping errors before submission. ' + INSTRUMENT +
@@ -208,11 +226,11 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
             'when incomplete; report needs_revision and the observed discrepancy if the immutable model needs repair. '
             'Do not invent unsupported units or change the model here. Your observed probe records, capabilities.json and '
             'notes are handed on; where the model fails on the device, that difference goes back to interpretation.')
-        return {'objective': objective,
+        return _development_conditions(case_id, {'objective': objective,
                 'inputs': [str(ws/'model'), *guidance],
                 'context': {'model_dir': str(ws/'model'), 'capabilities_output': str(ws/'capabilities.json')},
                 'allowed_tools': ['interface_describe', 'interface_execute', 'probe_run', 'probe_diff'],
-                'binding': binding, 'effects': ['write', 'actuate']}
+                'binding': binding, 'effects': ['write', 'actuate']}, ws, options)
     if stage == 'ground':
         from .ground import device_evidence
         prepared = device_evidence(accepted, ws)
@@ -220,8 +238,15 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
             return prepared
         if _binding(options) is None:
             return {'blocked': NO_DEVICE}
-        return {**prepared, 'allowed_tools': ['interface_execute', 'probe_run', 'probe_diff'],
-                'binding': _binding(options)}
+        if case_id not in RECORDED:  # The legacy adapter retains its original mapping contract.
+            from .candidate_context import task_contract
+            tasks = ws/'TASKS.json'
+            _write(tasks, task_contract(case_id, options.get('configured_effects', [])))
+            prepared['inputs'].append(str(tasks))
+            prepared['objective'] += ' Read TASKS.json for the required observable behaviors and any public quantity comparisons.'
+        return _development_conditions(case_id,
+            {**prepared, 'allowed_tools': ['interface_execute', 'probe_run', 'probe_diff'],
+             'binding': _binding(options)}, ws, options)
     if stage == 'emit':
         found = _latest(accepted, ('probe',), 'model.json')
         if found is None:
@@ -278,11 +303,14 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
             _verified(capabilities, 'probe')
         state['capabilities_path'] = str(capabilities[0]) if capabilities else None
         _write(path, state)
-        mission = 'Read temperature, enable the device, request 37 percent output, then disarm.'
-        if case_id == 'sampled-sensor-v1':
-            mission = 'Acquire and read two fresh temperature samples. Report their measured sequence numbers.'
-        elif case_id == 'parameter-store-v1':
-            mission = 'Commit bank B slot 1 to -7. Stage bank B slot 1 to 9, abort that transaction, then read bank B slot 1. Report observations and whether other cells changed.'
+        from .missions import load_mission
+        from .registrations import registration_for
+        registration = registration_for(case_id)
+        public_mission = load_mission(registration.mission_case or case_id)
+        mission = public_mission['reuse_objective']
+        if 'operating_conditions' in public_mission:
+            mission += ('\nProvided operating conditions (public facts):\n'
+                + '\n'.join('- ' + condition for condition in public_mission['operating_conditions']) + '\n')
         return {'objective': 'Use only the emitted package and this objective: ' + mission + ' Use benchmark_package_execute for each operation. Find names and arguments in the package reference. Each result also carries an instrument reading of the emulated device after the call. Report actual observations and limitations.',
                 'inputs': [str(package)], 'allowed_tools': ['benchmark_package_execute'],
                 'context': {'package_dir': str(package)}, 'binding': binding,
@@ -328,18 +356,11 @@ def _mission(case_id, events, capabilities):
     readings of the emulated device: a note on the reuse stage, never a grade. Failed calls are attributed only on
     trusted evidence: untyped or mixed failures blame nobody."""
     try:
-        if case_id in ('sampled-sensor-v1', 'parameter-store-v1'):
-            done = family_for(case_id).reuse_passed(events, capabilities)
-        elif case_id == 'tq9':
+        if case_id == 'tq9':
             from .cases import mission_done
             done = mission_done(events, capabilities)
         else:
-            duties = [e['observation']['duty'] for e in events if e['result'].get('ok')]
-            mapping = capabilities['tasks']['temperature']
-            output = mapping['outputs']['temperature']['output']
-            read = any(e.get('operation') == mapping['operation'] and e['result'].get('ok')
-                       and type(e['result'].get('outputs', {}).get(output)) in (int, float) for e in events)
-            done = read and any(abs(value - 370) <= 2 for value in duties) and bool(duties) and duties[-1] == 0
+            done = family_for(case_id).reuse_passed(events, capabilities)
     except (KeyError, TypeError, ValueError, AttributeError, IndexError) as error:
         return {'name': 'fresh_worker_mission', 'passed': None,
                 'reason': 'The capability mapping cannot judge the mission: ' + type(error).__name__ + ': ' + str(error)}

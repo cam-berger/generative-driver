@@ -18,6 +18,9 @@ from . import instruments
 
 DESCRIPTOR = 'device-descriptor/1'
 RECEIPT = 'emulator-recovery/2'
+# Public development inputs, selected independently of the evaluator's final cases.
+SENSOR_CONDITIONS = (('low', -12.0), ('high', 32.0), ('zero', 0.0),
+                     ('fractional', 7.5), ('fine_fraction', 18.5625))
 # Keys of a decrypted case truth (a legacy one's too) or a credential; a provider is given the device recipe and nothing
 # else.
 TRUTH_KEYS = ('recipe', 'contracts', 'phases', 'scenarios', 'images', 'references', 'input_hashes',
@@ -64,6 +67,7 @@ class DeviceProvider:
         self.provider_id, self._start, self._lock = uuid.uuid4().hex, start, threading.RLock()
         self.session = self.session_id = self.baseline = None
         self.running = self.released = False
+        self.condition, self.condition_epoch = None, 0
 
     def _launch(self):
         """A new session of the pinned image: its bytes are checked before every start, a replacement's too."""
@@ -113,6 +117,7 @@ class DeviceProvider:
 
     def _hold(self, session):
         self.session, self.session_id = session, session.info['session_id'] if session is not None else None
+        self.condition, self.condition_epoch = None, 0
 
     def _live(self):
         if self.released:
@@ -130,11 +135,45 @@ class DeviceProvider:
         session = self.session
         if session is None:
             raise RuntimeError('No live device session')
+        catalog = self.development_conditions()
         return {'schema': DESCRIPTOR, 'kind': 'provided-emulator', 'provider_id': self.provider_id,
                 'session_id': self.session_id, 'binding': dict(session.binding),
                 'image_sha256': self.image_sha256,
                 'instrument': {'units': instruments.units(self.case_id), 'label': 'instrument_observation'},
-                'time_policy': 'paused-between-calls'}
+                'time_policy': 'paused-between-calls', **({'development_conditions': catalog} if catalog else {})}
+
+    def development_conditions(self):
+        """A fixed public catalog of environmental inputs, with no register coordinates or commands."""
+        if self.case_id != 'sampled-sensor-v1' or 'source_q4' not in self.recipe.get('stimuli', {}):
+            return None
+        return {'schema': 'development-conditions/1', 'conditions': [
+            {'id': name, 'reference': {'value': value, 'unit': 'degC'}} for name, value in SENSOR_CONDITIONS]}
+
+    def select_condition(self, condition_id, expected_session_id):
+        """Set a catalog input between calls. This neither acquires a sample nor resets device state."""
+        with self._lock:
+            session = self._live()
+            if not expected_session_id or expected_session_id != self.session_id:
+                raise ValueError('Development condition names an inactive device session')
+            if self.running:
+                raise ValueError('Development conditions can change only between calls')
+            catalog = self.development_conditions()
+            selected = next((c for c in (catalog or {}).get('conditions', []) if c['id'] == condition_id), None)
+            if selected is None:
+                raise ValueError('Unknown development condition')
+            before = self.observe()
+            self.condition = None
+            try:
+                # Operator equipment coordinates stay here; workers see measured physical references.
+                applied = session.stimulate({'source_q4': int(selected['reference']['value'] * 16)})
+                receipt = {**selected, 'session_id': self.session_id, 'epoch': self.condition_epoch + 1,
+                           'applied_at': time.time(), 'sequence_at_change': before['values']['monitor_sequence']}
+                self._journal('development_condition', receipt=receipt, application=applied)
+            except Exception as error:
+                self._journal('development_condition_failed', condition_id=condition_id, reason=str(error))
+                raise RuntimeError('Development condition could not be applied; no acquisition was dispatched') from None
+            self.condition, self.condition_epoch = receipt, receipt['epoch']
+            return copy.deepcopy(receipt)
 
     def start(self):
         """Start the device from the pinned image and the recipe, and keep its startup reading as the baseline a
@@ -170,7 +209,11 @@ class DeviceProvider:
     def observe(self):
         """An `instrument-observation/1` of the live session: projected values and units, nothing raw."""
         with self._lock:
-            return instruments.observation(self.case_id, self._live().observe(), self.session_id)
+            observed = instruments.observation(self.case_id, self._live().observe(), self.session_id)
+            if self.condition:
+                observed['condition'] = {**copy.deepcopy(self.condition), 'sample_after_change':
+                    observed['values']['monitor_sequence'] != self.condition['sequence_at_change']}
+            return observed
 
     @contextlib.contextmanager
     def window(self):

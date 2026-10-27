@@ -1,0 +1,522 @@
+{
+  "schema": "benchmark-corpus/1",
+  "id": "seven-area-pilot",
+  "version": "1",
+  "development_cases": [
+    "tq9-v2",
+    "sampled-sensor-v1",
+    "parameter-store-v1"
+  ],
+  "lineages": [
+    {
+      "id": "grbl-motion",
+      "area": "robotic-control",
+      "origin_group": "grbl",
+      "split": "development",
+      "source": {
+        "repository": "https://github.com/RiS3-Lab/p2im-real_firmware",
+        "commit": "d4c7456574ce2c2ed038e6f14fea8e3142b3c1f7",
+        "path": "CNC",
+        "license": "GPL-3.0-or-later (grbl); board/HAL notices require separate review",
+        "evidence": [
+          "https://github.com/RiS3-Lab/p2im-real_firmware/blob/d4c7456574ce2c2ed038e6f14fea8e3142b3c1f7/LICENSE.md",
+          "https://github.com/RiS3-Lab/p2im-real_firmware/blob/d4c7456574ce2c2ed038e6f14fea8e3142b3c1f7/CNC/Makefile",
+          "https://github.com/RiS3-Lab/p2im-real_firmware/blob/d4c7456574ce2c2ed038e6f14fea8e3142b3c1f7/CNC/board/gpio.h",
+          "https://github.com/RiS3-Lab/p2im-real_firmware/blob/d4c7456574ce2c2ed038e6f14fea8e3142b3c1f7/CNC/grbl/grbl-master/protocol.c"
+        ]
+      },
+      "architecture": "ARM Cortex-M4",
+      "system": "bare-metal",
+      "protocols": [
+        "UART",
+        "G-code"
+      ],
+      "strata": [
+        "bounded-actuation",
+        "sessions-errors-reset"
+      ],
+      "mission": {
+        "id": "grbl-motion-mission-1",
+        "objective": "Unlock a stationary controller, perform bounded positive and negative X moves in millimetres, observe position and stop motion.",
+        "requirements": [
+          {
+            "id": "motion",
+            "basis": "observable-behavior",
+            "behavior": "Requested signed displacement agrees with independently counted step/direction pulses within one step.",
+            "evidence": "Independent GPIO pulse counter; compare with the commanded displacement."
+          },
+          {
+            "id": "position",
+            "basis": "observable-behavior",
+            "behavior": "Readback agrees with independently observed movement in millimetres.",
+            "evidence": "Pulse-derived position and candidate decoded output."
+          },
+          {
+            "id": "stop",
+            "basis": "safety-integrity",
+            "behavior": "Stop or abort halts further pulses within the declared bound.",
+            "evidence": "Pulse counter sampled before and after stop; no mechanical timing claim."
+          }
+        ]
+      },
+      "case": null,
+      "blockers": [
+        {
+          "kind": "backend",
+          "reason": "Initial native probe accepts G-code and reports Run but has not produced motion or step outputs; timer/backend qualification is unresolved.",
+          "evidence": "docs/research/2026-10-26-corpus-intake.md#grbl"
+        },
+        {
+          "kind": "oracle",
+          "reason": "A qualified step/direction observer and discriminating motion mutants are required.",
+          "evidence": "CNC/board/timers.c and CNC/board/gpio.h"
+        }
+      ],
+      "limitations": [
+        "The inspected port has no-op spindle and coolant functions; those are excluded from the mission.",
+        "The build disables the P2IM aflCall hook; original and transformed image hashes must both be recorded.",
+        "No physical motion, silicon timing, collision avoidance or complete G-code coverage is claimed."
+      ]
+    },
+    {
+      "id": "tasmota-relay",
+      "area": "iot",
+      "origin_group": "tasmota",
+      "split": "development",
+      "source": {
+        "repository": "https://github.com/arendst/Tasmota",
+        "commit": "63c38614ed0f19c550148d2d17f6e8cbaf8faea0",
+        "path": "tasmota",
+        "license": "GPL-3.0",
+        "evidence": [
+          "https://github.com/arendst/Tasmota/blob/63c38614ed0f19c550148d2d17f6e8cbaf8faea0/LICENSE.txt",
+          "https://github.com/arendst/Tasmota/blob/63c38614ed0f19c550148d2d17f6e8cbaf8faea0/platformio.ini",
+          "https://github.com/arendst/Tasmota/blob/63c38614ed0f19c550148d2d17f6e8cbaf8faea0/tasmota/tasmota_support/support_command.ino"
+        ]
+      },
+      "architecture": "Xtensa / ESP32 target to freeze",
+      "system": "FreeRTOS",
+      "protocols": [
+        "TCP",
+        "HTTP",
+        "JSON",
+        "MQTT"
+      ],
+      "strata": [
+        "bounded-actuation",
+        "sessions-errors-reset",
+        "framing-bulk-transfer"
+      ],
+      "mission": {
+        "id": "tasmota-relay-mission-1",
+        "objective": "Set and read a relay state over a network connection, distinguish unsolicited traffic from responses, then turn the relay off.",
+        "requirements": [
+          {
+            "id": "relay",
+            "basis": "observable-behavior",
+            "behavior": "Relay output follows the requested state and ends off.",
+            "evidence": "Independent GPIO observer with a declared relay pin."
+          },
+          {
+            "id": "correlation",
+            "basis": "observable-behavior",
+            "behavior": "Replies are associated with the requested operation despite unsolicited messages.",
+            "evidence": "Controlled interleaving of network traffic and independent output observation."
+          },
+          {
+            "id": "reset",
+            "basis": "compatibility",
+            "behavior": "Reconnect and reset behavior follows the publicly declared configuration.",
+            "evidence": "Fresh connection and reset episodes with GPIO readback."
+          }
+        ]
+      },
+      "case": null,
+      "blockers": [
+        {
+          "kind": "build",
+          "reason": "Freeze one board configuration and reproducible ESP32 image before admission.",
+          "evidence": "Upstream platformio.ini and tasmota build configuration."
+        },
+        {
+          "kind": "backend",
+          "reason": "No qualified ESP32 network/GPIO backend is installed in this benchmark.",
+          "evidence": "Current device provider owns Renode STM32 UART sessions."
+        },
+        {
+          "kind": "runtime",
+          "reason": "HTTP/JSON/MQTT session behavior needs representability tests; TCP transport support alone is insufficient.",
+          "evidence": "interface-model/4 through /6 support bounded exchanges, not an MQTT session engine."
+        }
+      ],
+      "limitations": [
+        "This is one Tasmota lineage, regardless of board variants or protocols.",
+        "BLE, radio propagation and physical relay switching remain outside the software track."
+      ]
+    },
+    {
+      "id": "openimu-sampling",
+      "area": "sensors",
+      "origin_group": "aceinna-openimu",
+      "split": "development",
+      "source": {
+        "repository": "https://github.com/Aceinna/platform-aceinna_imu",
+        "commit": "d908cb746f8dabbfd7929db8ed779e8223692818",
+        "path": "examples/OpenIMU330BI/IMU",
+        "license": "Apache-2.0 declared in README; dependency and binary-library rights pending",
+        "evidence": [
+          "https://github.com/Aceinna/platform-aceinna_imu/blob/d908cb746f8dabbfd7929db8ed779e8223692818/README.md",
+          "https://github.com/Aceinna/platform-aceinna_imu/blob/d908cb746f8dabbfd7929db8ed779e8223692818/examples/OpenIMU330BI/IMU/lib/Core/Common/include/scaling.h",
+          "https://github.com/Aceinna/platform-aceinna_imu/blob/d908cb746f8dabbfd7929db8ed779e8223692818/examples/OpenIMU330BI/IMU/lib/Core/Common/include/ucb_packet_struct.h"
+        ]
+      },
+      "architecture": "ARM Cortex-M4",
+      "system": "embedded sensor application",
+      "protocols": [
+        "UART",
+        "binary frames"
+      ],
+      "strata": [
+        "units-measurement",
+        "fresh-streamed-acquisition",
+        "framing-bulk-transfer"
+      ],
+      "mission": {
+        "id": "openimu-sampling-mission-1",
+        "objective": "Obtain successive inertial samples with physical units, preserve signed values, and distinguish a fresh sample from a repeated packet.",
+        "requirements": [
+          {
+            "id": "quantities",
+            "basis": "observable-behavior",
+            "behavior": "Acceleration and angular-rate outputs match controlled sensor stimuli within declared uncertainty.",
+            "evidence": "Independent injected sensor inputs and calibrated unit conversion."
+          },
+          {
+            "id": "freshness",
+            "basis": "observable-behavior",
+            "behavior": "Fresh samples advance the observed acquisition identity; repeated packets are not counted as new samples.",
+            "evidence": "Independent acquisition counter and delayed/repeated frame episodes."
+          },
+          {
+            "id": "framing",
+            "basis": "safety-integrity",
+            "behavior": "Corrupt or incomplete frames cannot produce a successful measurement.",
+            "evidence": "Independent byte corruption and truncation controls."
+          }
+        ]
+      },
+      "case": null,
+      "blockers": [
+        {
+          "kind": "license",
+          "reason": "Review the selected example's complete dependency and binary-library license inventory.",
+          "evidence": "Upstream README license statement and PlatformIO dependency inventory."
+        },
+        {
+          "kind": "backend",
+          "reason": "Qualify a stimulus model for the IMU's actual sensor interfaces and acquisition timing.",
+          "evidence": "Selected OpenIMU330BI sensor drivers."
+        },
+        {
+          "kind": "oracle",
+          "reason": "No independent physical-quantity and freshness oracle is qualified yet.",
+          "evidence": "Mission requires both acquisition identity and independently controlled stimuli."
+        }
+      ],
+      "limitations": [
+        "A stimulus-backed emulator can test decoding and freshness, not calibration of physical MEMS sensors.",
+        "UART framing support must be checked against the selected packet types, not inferred from transport availability."
+      ]
+    },
+    {
+      "id": "fx2lafw-capture",
+      "area": "usb-peripherals",
+      "origin_group": "sigrok-fx2lafw",
+      "split": "development",
+      "source": {
+        "repository": "https://github.com/sigrokproject/sigrok-firmware-fx2lafw",
+        "commit": "0f2d3242ffb5582e5b9a018ed9ae9812d517a56e",
+        "path": "hw/sigrok-fx2-8ch",
+        "license": "GPL-2.0-or-later; shared library LGPL-2.1-or-later (file-specific notices)",
+        "evidence": [
+          "https://github.com/sigrokproject/sigrok-firmware-fx2lafw/blob/0f2d3242ffb5582e5b9a018ed9ae9812d517a56e/COPYING",
+          "https://github.com/sigrokproject/sigrok-firmware-fx2lafw/blob/0f2d3242ffb5582e5b9a018ed9ae9812d517a56e/COPYING.LESSER",
+          "https://github.com/sigrokproject/sigrok-firmware-fx2lafw/blob/0f2d3242ffb5582e5b9a018ed9ae9812d517a56e/HACKING",
+          "https://github.com/sigrokproject/sigrok-firmware-fx2lafw/blob/0f2d3242ffb5582e5b9a018ed9ae9812d517a56e/hw/sigrok-fx2-8ch/dscr.a51"
+        ]
+      },
+      "architecture": "8051 / Cypress FX2",
+      "system": "bare-metal",
+      "protocols": [
+        "USB control",
+        "USB bulk"
+      ],
+      "strata": [
+        "framing-bulk-transfer",
+        "fresh-streamed-acquisition",
+        "sessions-errors-reset"
+      ],
+      "mission": {
+        "id": "fx2lafw-capture-mission-1",
+        "objective": "Enumerate the selected logic analyser, configure a bounded capture, collect known digital input samples, and stop cleanly.",
+        "requirements": [
+          {
+            "id": "usb-contract",
+            "basis": "compatibility",
+            "behavior": "Use the device's actual descriptors, control requests and endpoint directions.",
+            "evidence": "USB descriptor and transfer observation from an independent device backend."
+          },
+          {
+            "id": "capture",
+            "basis": "observable-behavior",
+            "behavior": "Captured bytes reproduce independently driven digital input patterns at the selected capture settings.",
+            "evidence": "Known input pattern generator and transfer count."
+          },
+          {
+            "id": "stop",
+            "basis": "safety-integrity",
+            "behavior": "Stop ends capture without reporting unreceived bytes as samples.",
+            "evidence": "Independent endpoint and sample-count observation."
+          }
+        ]
+      },
+      "case": null,
+      "blockers": [
+        {
+          "kind": "backend",
+          "reason": "The benchmark has no qualified 8051/FX2 USB device emulator or virtual USB binding.",
+          "evidence": "Current Renode provider exposes only a UART stream; the runtime's native USB support is separate."
+        },
+        {
+          "kind": "build",
+          "reason": "Pin SDCC and the selected board descriptor build before admitting a binary.",
+          "evidence": "Upstream HACKING and hw/sigrok-fx2-8ch/dscr.a51."
+        },
+        {
+          "kind": "oracle",
+          "reason": "Qualify capture, truncation and endpoint mutants against an independent input generator.",
+          "evidence": "The upstream firmware itself is not a capture oracle."
+        }
+      ],
+      "limitations": [
+        "A UART mock of the USB protocol does not count as USB coverage.",
+        "Physical USB timing, host-controller behavior and electrical capture limits require a separate physical track."
+      ]
+    },
+    {
+      "id": "eez-psu",
+      "area": "instruments",
+      "origin_group": "eez-psu",
+      "split": "development",
+      "source": {
+        "repository": "https://github.com/eez-open/psu-firmware",
+        "commit": "94faf3fed2bd139dc679b411a7895f252291ac47",
+        "path": "eez_psu_sketch",
+        "license": "GPL-3.0",
+        "evidence": [
+          "https://github.com/eez-open/psu-firmware/blob/94faf3fed2bd139dc679b411a7895f252291ac47/LICENSE.TXT",
+          "https://github.com/eez-open/psu-firmware/blob/94faf3fed2bd139dc679b411a7895f252291ac47/readme.md",
+          "https://github.com/eez-open/psu-firmware/blob/94faf3fed2bd139dc679b411a7895f252291ac47/simulator/platform/linux/Makefile"
+        ]
+      },
+      "architecture": "Arduino Due / ARM Cortex-M3",
+      "system": "embedded instrument",
+      "protocols": [
+        "SCPI",
+        "TCP"
+      ],
+      "strata": [
+        "units-measurement",
+        "bounded-actuation",
+        "sessions-errors-reset"
+      ],
+      "mission": {
+        "id": "eez-psu-mission-1",
+        "objective": "Set bounded voltage/current limits, enable an output, read measurements and device errors, then disable the output.",
+        "requirements": [
+          {
+            "id": "setpoint",
+            "basis": "observable-behavior",
+            "behavior": "The selected channel reaches the requested bounded setpoints without changing another channel.",
+            "evidence": "Independent simulated plant channel values."
+          },
+          {
+            "id": "measurement",
+            "basis": "observable-behavior",
+            "behavior": "Measured values and units agree with the independent plant observation.",
+            "evidence": "Known load and independently observed voltage/current."
+          },
+          {
+            "id": "shutdown",
+            "basis": "safety-integrity",
+            "behavior": "Output disable leaves the selected output off.",
+            "evidence": "Independent output-enable state."
+          },
+          {
+            "id": "errors",
+            "basis": "compatibility",
+            "behavior": "Rejected commands do not claim success or corrupt the next valid operation.",
+            "evidence": "Device error queue and subsequent valid-query behavior."
+          }
+        ]
+      },
+      "case": null,
+      "blockers": [
+        {
+          "kind": "backend",
+          "reason": "The upstream Linux simulator is a host application; an MCU-image backend is not yet qualified.",
+          "evidence": "simulator/platform/linux/Makefile"
+        },
+        {
+          "kind": "oracle",
+          "reason": "A separate plant observer must be qualified; querying the same SCPI implementation is insufficient.",
+          "evidence": "Mission measurement and shutdown requirements."
+        }
+      ],
+      "limitations": [
+        "The upstream simulator may support protocol diagnostics, but those do not establish MCU-binary reverse engineering.",
+        "Physical power output, overload protection and absolute calibration are not established in software."
+      ]
+    },
+    {
+      "id": "odrive-controller",
+      "area": "controllers",
+      "origin_group": "odrive",
+      "split": "development",
+      "source": {
+        "repository": "https://github.com/odriverobotics/ODrive",
+        "commit": "3a2e4dd1bfbda9e4c534d5c7d8428a99c361e783",
+        "path": "Firmware",
+        "license": "MIT; inspect Firmware/LICENSE and dependency notices",
+        "evidence": [
+          "https://github.com/odriverobotics/ODrive/blob/3a2e4dd1bfbda9e4c534d5c7d8428a99c361e783/Firmware/LICENSE",
+          "https://github.com/odriverobotics/ODrive/blob/3a2e4dd1bfbda9e4c534d5c7d8428a99c361e783/Firmware/communication/ascii_protocol.cpp",
+          "https://github.com/odriverobotics/ODrive/blob/3a2e4dd1bfbda9e4c534d5c7d8428a99c361e783/README.md"
+        ]
+      },
+      "architecture": "ARM Cortex-M4",
+      "system": "FreeRTOS",
+      "protocols": [
+        "UART ASCII",
+        "USB",
+        "CAN"
+      ],
+      "strata": [
+        "bounded-actuation",
+        "sessions-errors-reset",
+        "units-measurement"
+      ],
+      "mission": {
+        "id": "odrive-controller-mission-1",
+        "objective": "Read axis state, change a bounded non-motion setting, preserve the other axis, and enter idle without commanding torque.",
+        "requirements": [
+          {
+            "id": "configuration",
+            "basis": "observable-behavior",
+            "behavior": "A bounded setting round-trips on the selected axis while the other axis remains unchanged.",
+            "evidence": "Independent axis-state observer."
+          },
+          {
+            "id": "idle",
+            "basis": "safety-integrity",
+            "behavior": "The selected axis enters idle and no torque-producing command is issued.",
+            "evidence": "Independent state and output-enable observations."
+          },
+          {
+            "id": "errors",
+            "basis": "compatibility",
+            "behavior": "Invalid state transitions are distinguishable from successful changes and allow a subsequent valid request.",
+            "evidence": "Observed state before/after a refused transition."
+          }
+        ]
+      },
+      "case": null,
+      "blockers": [
+        {
+          "kind": "backend",
+          "reason": "Motor, encoder and calibration dependencies need a qualified deterministic peripheral model.",
+          "evidence": "Firmware board and axis startup dependencies."
+        },
+        {
+          "kind": "runtime",
+          "reason": "The proposed first mission can use UART ASCII; CAN coverage remains unsupported.",
+          "evidence": "interface runtime transport inventory has no CAN binding."
+        },
+        {
+          "kind": "oracle",
+          "reason": "No independent axis-state and output-enable oracle is qualified yet.",
+          "evidence": "Reading only the candidate's own decoded state would be circular."
+        }
+      ],
+      "limitations": [
+        "This deliberately bounded configuration mission does not establish closed-loop motor control.",
+        "Different ODrive boards and interface versions share one origin group."
+      ]
+    },
+    {
+      "id": "zephyr-modbus",
+      "area": "industrial-controllers",
+      "origin_group": "zephyr-modbus",
+      "split": "development",
+      "source": {
+        "repository": "https://github.com/zephyrproject-rtos/zephyr",
+        "commit": "413b789deb391d3a37d06b463288a5fe765ee57e",
+        "path": "samples/subsys/modbus/rtu_server",
+        "license": "Apache-2.0; HAL/CMSIS notices retained separately",
+        "evidence": [
+          "https://github.com/zephyrproject-rtos/zephyr/blob/413b789deb391d3a37d06b463288a5fe765ee57e/LICENSE",
+          "https://github.com/zephyrproject-rtos/zephyr/blob/413b789deb391d3a37d06b463288a5fe765ee57e/samples/subsys/modbus/rtu_server/src/main.c",
+          "https://github.com/zephyrproject-rtos/zephyr/blob/413b789deb391d3a37d06b463288a5fe765ee57e/subsys/modbus/modbus_serial.c",
+          "https://github.com/zephyrproject-rtos/zephyr/blob/413b789deb391d3a37d06b463288a5fe765ee57e/west.yml"
+        ]
+      },
+      "architecture": "ARM Cortex-M4",
+      "system": "Zephyr 4.2.0",
+      "protocols": [
+        "UART",
+        "Modbus RTU"
+      ],
+      "strata": [
+        "framing-bulk-transfer",
+        "bounded-actuation",
+        "sessions-errors-reset"
+      ],
+      "mission": {
+        "id": "zephyr-modbus-mission-1",
+        "objective": "Read and write holding registers, switch individual coils, preserve unrelated state, and handle exception replies and bad CRCs.",
+        "requirements": [
+          {
+            "id": "registers",
+            "basis": "observable-behavior",
+            "behavior": "Signedness/width and address selection preserve the requested 16-bit register values and unrelated registers.",
+            "evidence": "Independent holding-register observer and disjoint read/write episodes."
+          },
+          {
+            "id": "coils",
+            "basis": "observable-behavior",
+            "behavior": "A coil write changes exactly the selected GPIO output.",
+            "evidence": "Independent GPIO output observation."
+          },
+          {
+            "id": "exceptions",
+            "basis": "compatibility",
+            "behavior": "Invalid addresses do not claim success, change state or prevent the next valid operation.",
+            "evidence": "Complete exception reply plus state and subsequent valid-operation checks."
+          },
+          {
+            "id": "crc",
+            "basis": "safety-integrity",
+            "behavior": "A bad-CRC request cannot change device state or yield a successful data result.",
+            "evidence": "Independent request corruption and GPIO/register observation."
+          }
+        ]
+      },
+      "case": "zephyr-modbus-v1",
+      "blockers": [],
+      "limitations": [
+        "The sample's holding registers are volatile; power-loss persistence is not claimed.",
+        "RTU over a loopback UART bridge does not establish RS-485 electrical behavior, TCP Modbus or CANopen."
+      ]
+    }
+  ]
+}

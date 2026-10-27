@@ -1,0 +1,1286 @@
+modules/hal/stm32/stm32cube/stm32f4xx/drivers/src/stm32f4xx_hal.c
+/**
+  ******************************************************************************
+  * @file    stm32f4xx_hal.c
+  * @author  MCD Application Team
+  * @brief   HAL module driver.
+  *          This is the common part of the HAL initialization
+  *
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2017 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  @verbatim
+  ==============================================================================
+                     ##### How to use this driver #####
+  ==============================================================================
+    [..]
+    The common HAL driver contains a set of generic and common APIs that can be
+    used by the PPP peripheral drivers and the user to start using the HAL.
+    [..]
+    The HAL contains two APIs' categories:
+         (+) Common HAL APIs
+         (+) Services HAL APIs
+
+  @endverbatim
+  ******************************************************************************
+  */
+
+modules/hal/stm32/stm32cube/stm32f4xx/drivers/src/stm32f4xx_hal_rcc.c
+/**
+  ******************************************************************************
+  * @file    stm32f4xx_hal_rcc.c
+  * @author  MCD Application Team
+  * @brief   RCC HAL module driver.
+  *          This file provides firmware functions to manage the following
+  *          functionalities of the Reset and Clock Control (RCC) peripheral:
+  *           + Initialization and de-initialization functions
+  *           + Peripheral Control functions
+  *
+  @verbatim
+  ==============================================================================
+                      ##### RCC specific features #####
+  ==============================================================================
+    [..]
+      After reset the device is running from Internal High Speed oscillator
+      (HSI 16MHz) with Flash 0 wait state, Flash prefetch buffer, D-Cache
+      and I-Cache are disabled, and all peripherals are off except internal
+      SRAM, Flash and JTAG.
+      (+) There is no prescaler on High speed (AHB) and Low speed (APB) busses;
+          all peripherals mapped on these busses are running at HSI speed.
+      (+) The clock for all peripherals is switched off, except the SRAM and FLASH.
+      (+) All GPIOs are in input floating state, except the JTAG pins which
+          are assigned to be used for debug purpose.
+
+    [..]
+      Once the device started from reset, the user application has to:
+      (+) Configure the clock source to be used to drive the System clock
+          (if the application needs higher frequency/performance)
+      (+) Configure the System clock frequency and Flash settings
+      (+) Configure the AHB and APB busses prescalers
+      (+) Enable the clock for the peripheral(s) to be used
+      (+) Configure the clock source(s) for peripherals which clocks are not
+          derived from the System clock (I2S, RTC, ADC, USB OTG FS/SDIO/RNG)
+
+                      ##### RCC Limitations #####
+  ==============================================================================
+    [..]
+      A delay between an RCC peripheral clock enable and the effective peripheral
+      enabling should be taken into account in order to manage the peripheral read/write
+      from/to registers.
+      (+) This delay depends on the peripheral mapping.
+      (+) If peripheral is mapped on AHB: the delay is 2 AHB clock cycle
+          after the clock enable bit is set on the hardware register
+      (+) If peripheral is mapped on APB: the delay is 2 APB clock cycle
+          after the clock enable bit is set on the hardware register
+
+    [..]
+      Implemented Workaround:
+      (+) For AHB & APB peripherals, a dummy read to the peripheral register has been
+          inserted in each __HAL_RCC_PPP_CLK_ENABLE() macro.
+
+  @endverbatim
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2017 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file in
+  * the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  ******************************************************************************
+  */
+
+modules/hal/stm32/stm32cube/stm32f4xx/drivers/src/stm32f4xx_hal_rcc_ex.c
+/**
+  ******************************************************************************
+  * @file    stm32f4xx_hal_rcc_ex.c
+  * @author  MCD Application Team
+  * @brief   Extension RCC HAL module driver.
+  *          This file provides firmware functions to manage the following
+  *          functionalities RCC extension peripheral:
+  *           + Extended Peripheral Control functions
+  *
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2017 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file in
+  * the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  ******************************************************************************
+  */
+
+modules/hal/stm32/stm32cube/stm32f4xx/drivers/src/stm32f4xx_ll_rcc.c
+/**
+  ******************************************************************************
+  * @file    stm32f4xx_ll_rcc.c
+  * @author  MCD Application Team
+  * @brief   RCC LL module driver.
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2017 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file in
+  * the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  ******************************************************************************
+  */
+
+modules/hal/stm32/stm32cube/stm32f4xx/drivers/src/stm32f4xx_ll_utils.c
+/**
+  ******************************************************************************
+  * @file    stm32f4xx_ll_utils.c
+  * @author  MCD Application Team
+  * @brief   UTILS LL module driver.
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2017 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+
+modules/hal/stm32/stm32cube/stm32f4xx/soc/system_stm32f4xx.c
+/**
+  ******************************************************************************
+  * @file    system_stm32f4xx.c
+  * @author  MCD Application Team
+  * @brief   CMSIS Cortex-M4 Device Peripheral Access Layer System Source File.
+  *
+  *   This file provides two functions and one global variable to be called from
+  *   user application:
+  *      - SystemInit(): This function is called at startup just after reset and
+  *                      before branch to main program. This call is made inside
+  *                      the "startup_stm32f4xx.s" file.
+  *
+  *      - SystemCoreClock variable: Contains the core clock (HCLK), it can be used
+  *                                  by the user application to setup the SysTick
+  *                                  timer or configure other parameters.
+  *
+  *      - SystemCoreClockUpdate(): Updates the variable SystemCoreClock and must
+  *                                 be called whenever the core clock is changed
+  *                                 during program execution.
+  *
+  *
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2017 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+
+zephyr/arch/arm/core/cortex_m/cpu_idle.c
+/*
+ * Copyright (c) 2013-2014 Wind River Systems, Inc.
+ * Copyright (c) 2023 Arm Limited
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/cortex_m/exc_exit.c
+/*
+ * Copyright (c) 2013-2014 Wind River Systems, Inc.
+ * Copyright (c) 2023 Arm Limited
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/cortex_m/fault.c
+/*
+ * Copyright (c) 2014 Wind River Systems, Inc.
+ * Copyright (c) 2020 Nordic Semiconductor ASA.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/cortex_m/fault_s.S
+/*
+ * Copyright (c) 2013-2014 Wind River Systems, Inc.
+ * Copyright (c) 2017-2019 Nordic Semiconductor ASA.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/cortex_m/fpu.c
+/*
+ * Copyright (c) 2019,2020 Linaro Limited
+ * Copyright (c) 2021 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/cortex_m/irq_init.c
+/*
+ * Copyright (c) 2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/cortex_m/irq_manage.c
+/*
+ * Copyright (c) 2013-2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/cortex_m/isr_wrapper.c
+/*
+ * Copyright (c) 2013-2014 Wind River Systems, Inc.
+ * Copyright (c) 2020 Stephanos Ioannidis <root@stephanos.io>
+ * Copyright (c) 2023 Arm Limited
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/cortex_m/prep_c.c
+/*
+ * Copyright (c) 2013-2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/cortex_m/reset.S
+/*
+ * Copyright (c) 2013-2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/cortex_m/scb.c
+/*
+ * Copyright (c) 2013-2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/cortex_m/swap_helper.S
+/*
+ * Copyright (c) 2013-2014 Wind River Systems, Inc.
+ * Copyright (c) 2017-2019 Nordic Semiconductor ASA.
+ * Copyright (c) 2020 Stephanos Ioannidis <root@stephanos.io>
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/cortex_m/thread.c
+/*
+ * Copyright (c) 2013-2014 Wind River Systems, Inc.
+ * Copyright (c) 2021 Lexmark International, Inc.
+ * Copyright (c) 2023 Arm Limited
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/cortex_m/thread_abort.c
+/*
+ * Copyright (c) 2016 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/cortex_m/vector_table.S
+/*
+ * Copyright (c) 2013-2015 Wind River Systems, Inc.
+ * Copyright (c) 2020 Nordic Semiconductor ASA.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/fatal.c
+/*
+ * Copyright (c) 2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/mpu/arm_core_mpu.c
+/*
+ * Copyright (c) 2017 Linaro Limited.
+ * Copyright 2025 Arm Limited and/or its affiliates <open-source-office@arm.com>
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/mpu/arm_mpu.c
+/*
+ * Copyright (c) 2017 Linaro Limited.
+ * Copyright 2025 Arm Limited and/or its affiliates <open-source-office@arm.com>
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/mpu/arm_mpu_regions.c
+/*
+ * Copyright (c) 2017 Linaro Limited.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/nmi.c
+/*
+ * Copyright (c) 2013-2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/nmi_on_reset.S
+/*
+ * Copyright (c) 2013-2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/arm/core/offsets/offsets.c
+/*
+ * Copyright (c) 2019 Carlo Caione <ccaione@baylibre.com>
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/common/isr_tables.c
+/*
+ * Copyright (c) 2017 Intel Corporation.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/arch/common/sw_isr_common.c
+/*
+ * Copyright (c) 2018 Intel Corporation.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/drivers/clock_control/clock_stm32_ll_common.c
+/*
+ * Copyright (c) 2017-2022 Linaro Limited.
+ * Copyright (c) 2017 RnDity Sp. z o.o.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/drivers/clock_control/clock_stm32f2_f4_f7.c
+/*
+ *
+ * Copyright (c) 2017 Linaro Limited.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/drivers/gpio/gpio_stm32.c
+/*
+ * Copyright (c) 2016 Open-RnD Sp. z o.o.
+ * Copyright (C) 2025 Savoir-faire Linux, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/drivers/interrupt_controller/intc_exti_stm32.c
+/*
+ * Copyright (c) 2016 Open-RnD Sp. z o.o.
+ * Copyright (c) 2017 RnDity Sp. z o.o.
+ * Copyright (c) 2019-23 Linaro Limited
+ * Copyright (C) 2025 Savoir-faire Linux, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/drivers/pinctrl/common.c
+/*
+ * Copyright (c) 2021 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/drivers/pinctrl/pinctrl_stm32.c
+/*
+ * Copyright (c) 2016 Open-RnD Sp. z o.o.
+ * Copyright (c) 2021 Linaro Limited
+ * Copyright (c) 2021 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/drivers/reset/reset_stm32.c
+/*
+ * Copyright (c) 2022 Google Inc
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/drivers/serial/uart_stm32.c
+/*
+ * Copyright (c) 2016 Open-RnD Sp. z o.o.
+ * Copyright (c) 2016 Linaro Limited.
+ * Copyright (c) 2024 STMicroelectronics
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/drivers/timer/cortex_m_systick.c
+/*
+ * Copyright (c) 2018 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/drivers/timer/sys_clock_init.c
+/*
+ * Copyright (c) 2015 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/banner.c
+/*
+ * Copyright (c) 2020 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/busy_wait.c
+/*
+ * Copyright (c) 2018 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/condvar.c
+/*
+ * Copyright (c) 2020 Intel Corporation.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/device.c
+/*
+ * Copyright (c) 2015-2016 Intel Corporation.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/dynamic_disabled.c
+/*
+ * Copyright (c) 2022, Meta
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/errno.c
+/*
+ * Copyright (c) 2015 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/fatal.c
+/*
+ * Copyright (c) 2019 Intel Corporation.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/float.c
+/*
+ * Copyright (c) 2010-2014 Wind River Systems, Inc.
+ * Copyright (c) 2024 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/idle.c
+/*
+ * Copyright (c) 2016 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/init.c
+/*
+ * Copyright (c) 2010-2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/kheap.c
+/*
+ * Copyright (c) 2020 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/mailbox.c
+/*
+ * Copyright (c) 2016 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/main_weak.c
+/*
+ * Copyright (c) 2010-2014 Wind River Systems, Inc.
+ * Copyright (c) 2021 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/mem_slab.c
+/*
+ * Copyright (c) 2016 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/mempool.c
+/*
+ * Copyright (c) 2017 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/msg_q.c
+/*
+ * Copyright (c) 2016 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/mutex.c
+/*
+ * Copyright (c) 2016 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/pipe.c
+/*
+ * Copyright (c) 2024 Måns Ansgariusson <mansgariusson@gmail.com>
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/queue.c
+/*
+ * Copyright (c) 2010-2016 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/sched.c
+/*
+ * Copyright (c) 2018 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/sem.c
+/*
+ * Copyright (c) 2010-2016 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/stack.c
+/*
+ * Copyright (c) 2010-2016 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/system_work_q.c
+/*
+ * Copyright (c) 2016 Wind River Systems, Inc.
+ * Copyright (c) 2016 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/thread.c
+/*
+ * Copyright (c) 2010-2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/timeout.c
+/*
+ * Copyright (c) 2018 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/timer.c
+/*
+ * Copyright (c) 1997-2016 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/timeslicing.c
+/*
+ * Copyright (c) 2018, 2024 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/version.c
+/*
+ * Copyright (c) 1997-2010, 2012-2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/work.c
+/*
+ * Copyright (c) 2020 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/kernel/xip.c
+/*
+ * Copyright (c) 2010-2014 Wind River Systems, Inc.
+ * Copyright (c) 2020 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/crc/crc16_sw.c
+/*
+ * Copyright (c) 2017 Intel Corporation.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/crc/crc24_sw.c
+/*
+ * Copyright (C) 2024 BayLibre.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/crc/crc32_sw.c
+/*
+ * Copyright (c) 2018 Workaround GmbH.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/crc/crc32c_sw.c
+/*
+ * Copyright (c) 2021 Workaround GmbH.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/crc/crc32k_4_2_sw.c
+/*
+ * Copyright (c) 2024 Intercreate, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/crc/crc4_sw.c
+/*
+ * Copyright (c) 2023 Michal Morsisko
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/crc/crc7_sw.c
+/*
+ * Copyright (c) 2018 Google LLC.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/crc/crc8_sw.c
+/*
+ * Copyright (c) 2020 Intel Corporation
+ * Copyright (c) 2017 Nordic Semiconductor ASA
+ * Copyright (c) 2015 Runtime Inc
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/heap/heap.c
+/*
+ * Copyright (c) 2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/common/source/stdlib/abort.c
+/*
+ * Copyright (c) 2020 Linaro Limited
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/common/source/stdlib/malloc.c
+/*
+ * Copyright (c) 2018 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/common/source/string/strnlen.c
+/*
+ * Copyright (c) 2014 Wind River Systems, Inc.
+ * Copyright (c) 2021 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/common/source/time/asctime.c
+/*
+ * Copyright (c) 2024 Meta Platforms
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/common/source/time/ctime.c
+/*
+ * Copyright (c) 2024 Meta Platforms
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/common/source/time/gmtime_r.c
+/*
+ * Copyright (c) 2019 Peter Bigot Consulting, LLC
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/common/source/time/localtime_r_utc.c
+/*
+ * Copyright (c) 2024 Meta Platforms
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/common/source/time/time.c
+/*
+ * Copyright (c) 2021 Golioth, Inc.
+ * Copyright (c) 2025 Tenstorrent AI ULC
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/minimal/source/math/sqrt.c
+/*
+ * Copyright (c) 2019 Vestas Wind Systems A/S
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/minimal/source/math/sqrtf.c
+/*
+ * Copyright (c) 2018 Vikrant More
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/minimal/source/stdlib/atoi.c
+/* SPDX-License-Identifier: MIT */
+
+/*
+ * Copyright © 2005-2014 Rich Felker, et al.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+zephyr/lib/libc/minimal/source/stdlib/bsearch.c
+/*
+ * Copyright (c) 2019 Balaji Kulkarni
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/minimal/source/stdlib/exit.c
+/*
+ * Copyright (c) 2019 Linaro Limited
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/minimal/source/stdlib/qsort.c
+/*
+ * Copyright (c) 2021 Friedt Professional Engineering Services, Inc
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/minimal/source/stdlib/strtol.c
+/* SPDX-License-Identifier: BSD-3-Clause */
+
+/*-
+ * Copyright (c) 1990 The Regents of the University of California.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+zephyr/lib/libc/minimal/source/stdlib/strtoll.c
+/* SPDX-License-Identifier: BSD-3-Clause */
+
+/*-
+ * Copyright (c) 1990 The Regents of the University of California.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+zephyr/lib/libc/minimal/source/stdlib/strtoul.c
+/* SPDX-License-Identifier: BSD-3-Clause */
+
+/*
+ * Copyright (c) 1990 Regents of the University of California.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+zephyr/lib/libc/minimal/source/stdlib/strtoull.c
+/* SPDX-License-Identifier: BSD-3-Clause */
+
+/*
+ * Copyright (c) 1990 Regents of the University of California.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+zephyr/lib/libc/minimal/source/stdout/fprintf.c
+/*
+ * Copyright (c) 1997-2010, 2013-2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/minimal/source/stdout/sprintf.c
+/*
+ * Copyright (c) 1997-2010, 2013-2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/minimal/source/stdout/stdout_console.c
+/*
+ * Copyright (c) 2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/minimal/source/string/strerror.c
+/*
+ * Copyright (c) 2022 Meta
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/minimal/source/string/string.c
+/*
+ * Copyright (c) 2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/minimal/source/string/strncasecmp.c
+/*
+ * Copyright (c) 2018 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/minimal/source/string/strspn.c
+/*
+ * Copyright (c) 2019 Peter Bigot Consulting, LLC
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/libc/minimal/source/string/strstr.c
+/* SPDX-License-Identifier: BSD-3-Clause */
+
+/*-
+ * Copyright (c) 1990, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * The quadratic code is derived from software contributed to Berkeley by
+ * Chris Torek.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 4. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+zephyr/lib/libc/minimal/source/time/gmtime.c
+/*
+ * Copyright (c) 2019 Peter Bigot Consulting, LLC
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/os/assert.c
+/*
+ * Copyright (c) 2019 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/os/cbprintf.c
+/*
+ * Copyright (c) 2020 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/os/cbprintf_complete.c
+/*
+ * Copyright (c) 1997-2010, 2012-2015 Wind River Systems, Inc.
+ * Copyright (c) 2020 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/os/cbprintf_packaged.c
+/*
+ * Copyright (c) 2021 BayLibre, SAS
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/os/clock.c
+/*
+ * Copyright (c) 2018 Intel Corporation
+ * Copyright (c) 2018 Friedt Professional Engineering Services, Inc
+ * Copyright (c) 2025 Tenstorrent AI ULC
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/os/printk.c
+/*
+ * Copyright (c) 2010, 2013-2014 Wind River Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/os/sem.c
+/*
+ * Copyright (c) 2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/os/thread_entry.c
+/*
+ * Copyright (c) 2018 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/utils/bitarray.c
+/*
+ * Copyright (c) 2021 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/utils/dec.c
+/*
+ * Copyright (c) 2019 Oticon A/S
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/utils/hex.c
+/*
+ * Copyright (c) 2019 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/utils/last_section_id.c
+/*
+ * Copyright (C) 2025, Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+zephyr/lib/utils/rb.c
+/*
+ * Copyright (c) 2018 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/utils/ring_buffer.c
+/*
+ * Copyright (c) 2015 Intel Corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/lib/utils/timeutil.c
+/*
+ * Copyright (c) 2019 Peter Bigot Consulting, LLC
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/samples/subsys/modbus/rtu_server/src/main.c
+/*
+ * Copyright (c) 2020 PHYTEC Messtechnik GmbH
+ * Copyright (c) 2022 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/soc/st/stm32/common/soc_config.c
+/*
+ * Copyright (c) 2021 Andrés Manelli <am@toroid.io>
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/soc/st/stm32/common/stm32_backup_domain.c
+/*
+ * Copyright (c) 2025 STMicroelectronics
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/soc/st/stm32/common/stm32cube_hal.c
+/*
+ * Copyright (c) 2018, I-SENSE group of ICCS
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/soc/st/stm32/stm32f4x/soc.c
+/*
+ * Copyright (c) 2016 Open-RnD Sp. z o.o.
+ * Copyright (c) 2016 Linaro Limited.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/subsys/mem_mgmt/mem_attr.c
+/*
+ * Copyright (c) 2023 Carlo Caione, <ccaione@baylibre.com>
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/subsys/modbus/modbus_core.c
+/*
+ * Copyright (c) 2020 PHYTEC Messtechnik GmbH
+ * Copyright (c) 2021 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+zephyr/subsys/modbus/modbus_serial.c
+/*
+ * Copyright (c) 2020 PHYTEC Messtechnik GmbH
+ * Copyright (c) 2021 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * This file is based on mb.c and mb_util.c from uC/Modbus Stack.
+ *
+ *                                uC/Modbus
+ *                         The Embedded Modbus Stack
+ *
+ *      Copyright 2003-2020 Silicon Laboratories Inc. www.silabs.com
+ *
+ *                   SPDX-License-Identifier: Apache-2.0
+ *
+ * This software is subject to an open source license and is distributed by
+ *  Silicon Laboratories Inc. pursuant to the terms of the Apache License,
+ *      Version 2.0 available at www.apache.org/licenses/LICENSE-2.0.
+ */
+
+zephyr/subsys/modbus/modbus_server.c
+/*
+ * Copyright (c) 2020 PHYTEC Messtechnik GmbH
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * This file is based on mbs_core.c from uC/Modbus Stack.
+ *
+ *                                uC/Modbus
+ *                         The Embedded Modbus Stack
+ *
+ *      Copyright 2003-2020 Silicon Laboratories Inc. www.silabs.com
+ *
+ *                   SPDX-License-Identifier: Apache-2.0
+ *
+ * This software is subject to an open source license and is distributed by
+ *  Silicon Laboratories Inc. pursuant to the terms of the Apache License,
+ *      Version 2.0 available at www.apache.org/licenses/LICENSE-2.0.
+ */
+
+zephyr/subsys/tracing/tracing_none.c
+/*
+ * Copyright (c) 2019 Intel corporation
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */

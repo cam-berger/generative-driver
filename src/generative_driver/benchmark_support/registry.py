@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from types import SimpleNamespace
+from .registrations import registered_case_ids, registration_for
 
 
 @dataclass(frozen=True)
@@ -28,18 +29,8 @@ class PendingCaseError(ValueError):
     """A registered case is missing distributable build outputs."""
 
 
-_BUILTINS = {
-    'setup-smoke': ('setup-smoke', 'smoke'),
-    'tq9': ('tq9', 'legacy-emulator'),
-    'bme280': ('bme280', 'legacy-physical'),
-    'tq9-v2': ('tq9-v2', 'emulator-v2'),
-    'sampled-sensor-v1': ('sampled-sensor-v1', 'emulator-v2'),
-    'parameter-store-v1': ('parameter-store-v1', 'emulator-v2'),
-}
-
-
-CURRENT_VERSIONS = {'tq9': '2', 'bme280': '3', 'tq9-v2': '5',
-                    'sampled-sensor-v1': '5', 'parameter-store-v1': '5'}
+CURRENT_VERSIONS = {case_id: registration_for(case_id).version for case_id in registered_case_ids()
+                    if registration_for(case_id).schema is not None}
 
 
 def validate_workflow_manifest(manifest):
@@ -75,10 +66,11 @@ def validate_pinned_workflow(pin):
 
 
 def case_ids() -> tuple[str, ...]:
-    return tuple(_BUILTINS)
+    return registered_case_ids()
 
 
 def case_descriptors() -> list[dict]:
+    """Discover public assets and labels without authenticating admission."""
     from ..benchmark import case_root
     root = case_root()
     rows = []
@@ -101,7 +93,8 @@ def case_descriptors() -> list[dict]:
                      'version': case.version, 'execution': case.execution,
                      'evidence_track': case.evidence_track,
                      'scenarios': copy.deepcopy(case.manifest.get('scenarios', []))})
-    return rows
+    return [{**row, 'availability_basis': 'public-metadata',
+             'authenticated_admission': 'not-checked'} for row in rows]
 
 
 def _legacy_emulator():
@@ -144,8 +137,7 @@ def adapter_for(case_id: str):
 
 
 def resolve_case(case_id: str) -> CaseDefinition:
-    if not isinstance(case_id, str) or case_id not in _BUILTINS:
-        raise ValueError('Unknown benchmark case: ' + str(case_id))
+    registration_for(case_id)
     from ..benchmark import case_root
     root = case_root()
     if case_id == 'setup-smoke':
@@ -194,15 +186,16 @@ def load_definition(path: Path, *, resource_root: Path) -> CaseDefinition:
     if not isinstance(manifest, dict) or manifest.get('schema') not in ('benchmark-case/1', 'benchmark-case/2'):
         raise ValueError('Unsupported case schema')
     case_id = manifest.get('id')
-    if not isinstance(case_id, str) or case_id != path.parent.name or case_id not in _BUILTINS:
+    if not isinstance(case_id, str) or case_id != path.parent.name or case_id not in case_ids():
         raise ValueError('Case ID mismatch or unknown case')
-    if manifest['schema'] != ('benchmark-case/1' if case_id in ('tq9', 'bme280') else 'benchmark-case/2'):
+    registration = registration_for(case_id)
+    if manifest['schema'] != registration.schema:
         raise ValueError('Case schema does not match registered version')
     identity_fields = {'version', 'evaluator_version', 'execution'}
     if identity_fields - manifest.keys() or any(not isinstance(manifest[key], str) or not manifest[key]
                                                 for key in identity_fields if key in manifest):
         raise ValueError('Missing or invalid required case identity fields')
-    adapter_key = _BUILTINS[case_id][1]
+    adapter_key = registration.adapter_key
     if 'adapter_key' in manifest and manifest['adapter_key'] != adapter_key:
         raise ValueError('Unknown case adapter key')
     if manifest['schema'] == 'benchmark-case/2':
@@ -211,6 +204,8 @@ def load_definition(path: Path, *, resource_root: Path) -> CaseDefinition:
                     'default_effects', 'provenance', 'limitations'}
         if required - manifest.keys():
             raise ValueError('Missing required v2 case fields: ' + ', '.join(sorted(required - manifest.keys())))
+        if manifest['family'] != registration.family:
+            raise ValueError('Case family does not match registered identity')
         if not isinstance(manifest['scenarios'], list) or not manifest['scenarios']:
             raise ValueError('V2 case requires scenarios')
         scenarios = [row.get('id') if isinstance(row, dict) else row for row in manifest['scenarios']]
@@ -323,11 +318,14 @@ def require_calibration(pin: dict, options: dict) -> dict:
         if truth.get('schema') == 'benchmark-family-truth/1':
             from .calibration import hydrate_truth
             truth = hydrate_truth(truth)
+        elif truth.get('schema') == 'benchmark-upstream-truth/1':
+            from .upstream import hydrate_truth
+            truth = hydrate_truth(truth)
     except (OSError, ValueError) as error:
         raise ValueError('Authenticated calibration evidence requires the evaluator password file') from error
     record = truth.get('calibration', {})
     try:
-        if manifest.get('family') in ('sampled-sensor', 'parameter-store'):
+        if registration_for(pin['case_id']).truth_schema in ('benchmark-family-truth/1', 'benchmark-upstream-truth/1'):
             from .calibration import validate_calibration, apply_mutation, execution_input_identity
             expected = {r['id']: r['expected_failed_checks'] for r in truth['mutations']['mutants']}
             changes = {}

@@ -29,7 +29,8 @@ assert actual == expected, actual
 for name in ('UNRELATED_SESSION_FLAG', 'BENCH_EVALUATOR_TOKEN', 'GROUNDTRUTH_PASSWORD'):
     assert name not in os.environ, name
 ''', encoding='utf-8')
-            environment = {**expected, 'HOME': str(root/'home'), 'CODEX_HOME': str(root/'codex'),
+            environment = {**expected, 'HOME': str(root/'home'), 'USERPROFILE': str(root/'home'),
+                'CODEX_HOME': str(root/'codex'),
                 'UNRELATED_SESSION_FLAG': 'unrelated-fixture-value',
                 'BENCH_EVALUATOR_TOKEN': 'forbidden-fixture-value', 'GROUNDTRUTH_PASSWORD': 'forbidden-fixture-value'}
             if 'SYSTEMROOT' in os.environ:

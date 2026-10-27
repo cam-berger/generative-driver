@@ -39,7 +39,7 @@ class PublicMissionTests(unittest.TestCase):
             'reuse_objective': 'Read pressure twice and report observations.',
             'operating_conditions': conditions}
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
+            root = Path(temp).resolve()
             assets = root/'assets'; (assets/'missions').mkdir(parents=True)
             mission_path = assets/'missions/future-node.json'
             mission_path.write_text(json.dumps(mission))

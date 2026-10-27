@@ -17,6 +17,8 @@ generative-driver benchmark corpus report --plan corpus-plan.json --suite-report
 
 `operator-options.json` belongs outside the checkout and worker directories. Use the existing suite options: `home`, `evaluator_password_files` keyed by case ID, `renode`, `ghidra_home`, `java_home`, and `scoped_tool_approval: "emulator"`. Password handles go to the bench harness, never to the configurator or worker assignments. Keep the handles, decrypted bundles, upstream source/build trees and reference logs inaccessible to benchmark workers. The implementation's artifact hashes establish integrity, not filesystem isolation.
 
+For a nondefault configurator, set `GENERATIVE_DRIVER_HOME` to the same absolute directory as `home` in the options file. Configure the Codex or Goose runtime in that home before starting the suite.
+
 The corpus runner refuses a changed case pin or availability inventory: freeze a new plan after rebuilding or qualifying a case. Use `corpus report --plan corpus-plan.json` without a suite for an intake-only report. It reports no measured model rate. A saved suite must match the plan's manifest, case pins and actual-agent execution before its outcomes count.
 
 Report fields:
@@ -61,6 +63,8 @@ generative-driver benchmark truth calibrate --case zephyr-modbus-v1 \
 This runs native Ghidra analysis, two valid references in diagnostic and final phases, and six functional mutants. Final phases execute emitted packages. A failed positive reference stops qualification before mutants. Successful qualification writes a replacement `case.json` and encrypted bundle for the operator's asset tree. Changing the image, mission, evaluator, runtime or reference inventory requires qualification again. Do not copy plaintext logs, models or passwords into package resources.
 
 The native recipe includes `platforms/BufferedSocketTerminal.cs` (MIT), which forwards each received socket block to the UART at one virtual timestamp. Its source is also pinned inside the encrypted recipe. This avoids scheduling each input byte separately; it adds no protocol logic and never retries writes. The bridge is a software transport and does not establish physical baud, byte timing or RS-485 turnaround behavior. Coil switching has an explicit emulator `actuate` grant, in addition to register `write` permission.
+
+The supplied device advances during each live call and pauses between calls, including probe and ground calls. Agent thinking time does not advance device time. The case's inherited `time_policy.probe` label is not a promise of continuous execution between calls; assignments state the actual policy explicitly.
 
 ## Add another lineage
 

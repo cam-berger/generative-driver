@@ -62,12 +62,178 @@
   },
   "original_task_contracts_unchanged": true,
   "agent_run": {
-    "status": "running",
+    "status": "completed",
+    "completed_at": "2026-10-26T23:59:57.382812+00:00",
     "suite_id": "suite-a3ee25bff5614bb2",
+    "execution": "actual-agent-emulation",
+    "runtime": "codex",
+    "model": "gpt-6.1-sol",
+    "reasoning_effort": "medium",
     "repetitions": 3,
     "runnable_lineages": 1,
     "planned_lineages": 7,
-    "plan_sha256": "36302cc23ca778eb84c74b061600acc42415668a3b02daa7d513b4cdbf2b44fe"
+    "qualification": "regraded-encrypted-evidence",
+    "plan_sha256": "36302cc23ca778eb84c74b061600acc42415668a3b02daa7d513b4cdbf2b44fe",
+    "results": [
+      {
+        "repeat": 0,
+        "run_id": "run-e45d76bdc5a34463",
+        "status": "finished",
+        "outcome": "equivalent",
+        "equivalent": true,
+        "passed_checks": 315,
+        "total_checks": 315,
+        "fresh_mission": {
+          "name": "fresh_worker_mission",
+          "passed": true
+        },
+        "accepted_stages": [
+          "acquire",
+          "interpret",
+          "probe",
+          "ground",
+          "emit",
+          "reuse"
+        ],
+        "stage_attempts": {
+          "acquire": 1,
+          "interpret": 1,
+          "probe": 1,
+          "ground": 1,
+          "emit": 1,
+          "reuse": 1
+        },
+        "repairs": 0,
+        "elapsed_seconds": 790.7290964126587,
+        "usage": {
+          "input_tokens": 2654177,
+          "cached_input_tokens": 2474496,
+          "output_tokens": 21542,
+          "reasoning_output_tokens": 3059,
+          "total_tokens": 2675719,
+          "observed_total_tokens": 2675719,
+          "reported_attempts": 6,
+          "attempts": 6,
+          "coverage": 1.0,
+          "counting": "input + output; cached input and reasoning output are subsets"
+        },
+        "evidence_sha256": "1736a55e312db08f91183e35c22529b421a3e6998506848aa070fe35b3aba405",
+        "frozen_artifact_sha256": "7386362654274cab170db14d05104e146b22c7c865222e330425211885b8cebb"
+      },
+      {
+        "repeat": 1,
+        "run_id": "run-432248611aab4078",
+        "status": "finished",
+        "outcome": "equivalent",
+        "equivalent": true,
+        "passed_checks": 315,
+        "total_checks": 315,
+        "fresh_mission": {
+          "name": "fresh_worker_mission",
+          "passed": true
+        },
+        "accepted_stages": [
+          "acquire",
+          "interpret",
+          "probe",
+          "ground",
+          "emit",
+          "reuse"
+        ],
+        "stage_attempts": {
+          "acquire": 1,
+          "interpret": 2,
+          "probe": 3,
+          "ground": 1,
+          "emit": 1,
+          "reuse": 1
+        },
+        "repairs": 1,
+        "elapsed_seconds": 1689.7923316955566,
+        "usage": {
+          "input_tokens": 3638056,
+          "cached_input_tokens": 3269888,
+          "output_tokens": 33297,
+          "reasoning_output_tokens": 3279,
+          "total_tokens": 3671353,
+          "observed_total_tokens": 3671353,
+          "reported_attempts": 9,
+          "attempts": 9,
+          "coverage": 1.0,
+          "counting": "input + output; cached input and reasoning output are subsets"
+        },
+        "evidence_sha256": "d6ca8cef6f7c06aeb73cf4e36764c3bb410a3c4640710b227bcff38482cfd535",
+        "frozen_artifact_sha256": "8814ea5980c76e15f650845f8a7a07773c5d0f219d80938bbdc4eb67f15c34b7"
+      },
+      {
+        "repeat": 2,
+        "run_id": "run-495c45b196ed415f",
+        "status": "finished",
+        "outcome": "equivalent",
+        "equivalent": true,
+        "passed_checks": 315,
+        "total_checks": 315,
+        "fresh_mission": {
+          "name": "fresh_worker_mission",
+          "passed": true
+        },
+        "accepted_stages": [
+          "acquire",
+          "interpret",
+          "probe",
+          "ground",
+          "emit",
+          "reuse"
+        ],
+        "stage_attempts": {
+          "acquire": 1,
+          "interpret": 1,
+          "probe": 1,
+          "ground": 1,
+          "emit": 1,
+          "reuse": 1
+        },
+        "repairs": 0,
+        "elapsed_seconds": 759.8675515651703,
+        "usage": {
+          "input_tokens": 2796697,
+          "cached_input_tokens": 2555136,
+          "output_tokens": 20548,
+          "reasoning_output_tokens": 2208,
+          "total_tokens": 2817245,
+          "observed_total_tokens": 2817245,
+          "reported_attempts": 6,
+          "attempts": 6,
+          "coverage": 1.0,
+          "counting": "input + output; cached input and reasoning output are subsets"
+        },
+        "evidence_sha256": "4593986286875af65ebed7ca0af7d518fcdea74475b5651906b3077bf2a18d45",
+        "frozen_artifact_sha256": "dd2f592df348bcb568f7c1e1e63fe7008ef8f48c2e4eacdfdcc65748419eac3f"
+      }
+    ],
+    "counts": {
+      "blocked": 18,
+      "not_run": 0,
+      "passed": 3,
+      "failed": 0,
+      "unscored": 0,
+      "unqualified": 0,
+      "stopped": 0,
+      "running": 0,
+      "planned": 21,
+      "started": 3
+    },
+    "measured_success": {
+      "passed": 3,
+      "denominator": 3,
+      "rate": 1.0
+    },
+    "demonstrated_coverage": {
+      "passed": 3,
+      "denominator": 21,
+      "rate": 0.14285714285714285
+    },
+    "cli_report_matches_verified_report": true
   },
   "prior_agent_attempt": {
     "suite_id": "suite-e43efdc9066d4000",
@@ -108,6 +274,37 @@
     "installed_focused_regression_rerun": {
       "tests": 26,
       "passed": true
+    },
+    "repository_ci": {
+      "conclusion": "success",
+      "jobs": [
+        {
+          "conclusion": "success",
+          "name": "native (macos-latest, 3.13)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "native (windows-latest, 3.11)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "native (macos-latest, 3.11)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "native (windows-latest, 3.13)",
+          "status": "completed"
+        }
+      ],
+      "status": "completed",
+      "url": "https://github.com/cam-berger/generative-driver/actions/runs/40417567104",
+      "head_sha": "29ec629781a75ada75f1be672f0780e68f8dffcb",
+      "tests_per_job": 874,
+      "windows_skipped": 4,
+      "macos_skipped": 0
     }
   },
   "transport_experiment": "2026-10-26-modbus-transport-experiment.json",
@@ -317,5 +514,70 @@
       "before": "Completed mission rejected despite unchanged state during refusal.",
       "after": "Accepts completed mission; still rejects host failures, uncertain effects, wrong readback and unrelated state changes."
     }
+  ],
+  "development_evidence_findings": [
+    {
+      "kind": "ambiguous-hash-scope",
+      "run_id": "run-e45d76bdc5a34463",
+      "worker_claim": "needs_revision",
+      "model_directory_sha256": "2aaf5bfc46c240e58599bcd509daacaaf17aa68898d3c8f44f20e3c960b32359",
+      "model_file_sha256": "f034be8a0e854c525e6ab319597a4f0d2ff7b7c479fb35988b62a12800c24f29",
+      "model_file_copies_checked": 12,
+      "all_model_file_bytes_equal": true,
+      "managed_integrity_passed": true,
+      "independent_behavior_checks": {
+        "passed": 315,
+        "total": 315
+      },
+      "fresh_mission_passed": true,
+      "recommendation": "Label model-directory and model-file hash scopes in notes/tool results; retain integrity checks.",
+      "implementation": "Recommendation only; no changes to the frozen inference interfaces."
+    },
+    {
+      "kind": "late-acknowledgment-attribution",
+      "run_id": "run-432248611aab4078",
+      "observed": "Coil effect occurred; its complete acknowledgment appeared during the next identity call after a timeout. Later identity replies were stale.",
+      "operational_repair": {
+        "operation": "set_coil",
+        "timeout_ms_before": 1000,
+        "timeout_ms_after": 10000,
+        "request_bytes_unchanged": true,
+        "response_length_unchanged": true,
+        "decoders_unchanged": true
+      },
+      "next_probe": "passed",
+      "causal_limit": "Driver timing, transport and emulator scheduling cannot be separated by the current evidence.",
+      "recommendation": "Record response timestamps and virtual-time advancement; use public timing budgets only with a qualified clock.",
+      "implementation": "Recommendation only; the existing bounded agent repair loop changed its own candidate."
+    }
+  ],
+  "agent_interventions": [
+    {
+      "run_id": "run-432248611aab4078",
+      "stage": "probe",
+      "cause": "Device provider observe failed: monitor response timed out before dispatch.",
+      "recorded_outcome_category": "operator",
+      "underlying_fault": "host",
+      "uncertain_effect": false,
+      "emulator_stop_confirmed": true,
+      "status": "Resumed through the existing verified emulator replacement path; no model or frozen benchmark inputs changed.",
+      "preserved_report": "interrupted suite report retained outside repository",
+      "control_probe": {
+        "execution": "native-read-only-control",
+        "model_benchmark": false,
+        "requested": 2000,
+        "passed": 2000,
+        "failure": null,
+        "conclusion": "Did not reproduce the control-channel timeout; root cause remains unresolved."
+      }
+    }
+  ],
+  "limitations": [
+    "One admitted upstream software lineage; six other source-pinned lineages remain blocked.",
+    "Three repetitions are three generated drivers, not three different devices.",
+    "One host stop required a verified emulator replacement; final outcome counts do not erase this intervention.",
+    "One acknowledgment timeout led to a bounded candidate repair; its causal attribution remains unresolved.",
+    "Physical transport, timing, motor safety and sensor accuracy are unmeasured.",
+    "The three synthetic development cases were not natively requalified or model-benchmarked against this new evaluator."
   ]
 }

@@ -44,7 +44,27 @@ A fresh-reuse counterexample also exposed an overstrict check: an exploratory ar
 
 The existing fixed public conditions and independently verified quantity repair changes remain in this branch. This corpus refactor does not add repair attempts based on hidden grades. Missing tasks, unit/value discrepancies and connection problems must retain their distinct evidence and repairability; one final evaluator verdict follows the completed run.
 
+The first corrected agent trial exposed an informative-evidence issue without causing a false grade. Its emit worker compared the notes' `model_sha256` (`2aaf5bfc…`) with the SHA-256 of `model.json` (`f034be8a…`) and reported `needs_revision`. Recomputing both identities showed that the former hashes the **model directory**, including adaptation metadata. Every inspected model-file copy had the latter hash. Managed package integrity checks passed; fresh reuse and all 315 final behavioral checks also passed. The existing separation between worker claims and trusted checks correctly prevented this warning from vetoing a working driver.
+
+Recommended follow-up: add explicit hash scope to public tool results and notes, such as `model-directory` and `model-file`, and explain which identity each consumer should compare. Preserve both integrity checks. This recommendation is supported by the recorded run and a direct recomputation; the running benchmark's interfaces were left frozen. A repeated hash string with an ambiguous name is less useful development evidence than a typed identity.
+
+The second corrected trial exposed a separate timing-evidence gap. A monitor timeout stopped it **before dispatch**, with no uncertain effect; its emulator stop was confirmed. A separate 2,000-command read-only monitor experiment passed without reproducing the fault. The suite resumed through the existing verified replacement path, with the stop and intervention retained. Its cause remains unresolved.
+
+After resumption, a coil command took effect but its eight-byte acknowledgment arrived during the next call, after the candidate's one-second deadline. Subsequent identity checks consumed stale replies. The worker identified the mismatch and the bounded repair loop ran. Comparing its accepted models showed that the only operational change was increasing the coil acknowledgment timeout from 1,000 to 10,000 ms; request bytes, response length and decoding were unchanged. The next probe passed. That is evidence of a useful repair, but it does not establish whether the delay originated in the driver timing, transport or emulator scheduling.
+
+Recommended follow-up: record request/response timestamps and emulator virtual-time advancement around each call before attributing a timeout to generated logic. A live process or open socket does not prove the firmware made progress. Keep functional acceptance separate from latency requirements unless the public mission specifies a response budget and the execution clock is qualified. Public timing conditions and progress evidence can inform development without exposing hidden vectors. Also measure control-channel overhead separately: the read-only experiment took about 337 seconds for 2,000 monitor commands; the current observer opens a connection for each individual read. Batching complete state observations is worth testing, while preserving all state checks and never retrying an uncertain write.
+
 ## Reading the results
+
+The final suite, `suite-a3ee25bff5614bb2`, ran three fresh Codex trials on the admitted Zephyr image. Each completed all six stages, including package-only reuse. The saved encrypted evidence was authenticated and regraded; the public corpus CLI reproduced the resulting report.
+
+| Trial | Independent behavior | Fresh reuse | Recorded intervention |
+|---|---|---|---|
+| `run-e45d76bdc5a34463` | 315/315 | Passed | None; the hash-scope warning above did not veto acceptance. |
+| `run-432248611aab4078` | 315/315 | Passed | One host recovery and one bounded timeout repair. |
+| `run-495c45b196ed415f` | 315/315 | Passed | None. |
+
+Measured success is **3/3 trials on one lineage**. Demonstrated coverage is **3/21 planned slots**, or one of seven lineages; the other 18 slots remain blocked. The terminal pass counts do not erase the recorded host stop or repair. These results establish the pilot's software path, not breadth across seven working devices. [Validation evidence](../implementation/2026-10-26-corpus-validation.json) includes the frozen plan, per-trial evidence hashes, usage, stage attempts and qualification results.
 
 A frozen plan retains `origin group → lineage → mission → repetition` and all six required stages. The runner executes admitted cases through the existing harness. The report accepts only a matching frozen suite manifest and case pins from actual agent emulation. Blocked, unrun, running, stopped, unscored and failed trials remain separate.
 

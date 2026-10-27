@@ -87,6 +87,14 @@ Supply either `--suite-id` or `--suite-report`. Omit both for an intake-only rep
 
 A host stop is not a graded model failure. A debug selection's measured rate cannot establish seven-area coverage. Saved owner reports provide provenance, not independent cryptographic authentication; use the existing encrypted-evidence regrade path when authentication is required.
 
+## Investigate a qualification failure
+
+Keep each attempt in its own output directory. Read its private `calibration-record.json` for the failed reference, mutant or host operation; a pending record cannot admit a case. Positive references must pass before their mutant results can establish qualification.
+
+Native session directories contain `renode.log` and, when a monitor request fails, `monitor-errors.jsonl`. A response-timeout entry retains the command, greeting and response separately, with the raw bytes preserved through JSON escaping. This lets the operator distinguish missing command completion from unrelated output. These records remain evaluator-private; do not copy them into issues, worker inputs or public reports.
+
+Use the existing single-emulator execution profile when qualifying and measuring cases. Preserve any attempt made under additional load. A subsequent control run does not erase an earlier failure or prove its cause. A monitor or runtime fault requires environment investigation; it supplies no evidence that a generated driver's functional behavior is wrong.
+
 ## Rebuild and requalify Zephyr
 
 Install Zephyr's Python build requirements, CMake, Ninja, devicetree compiler and Arm GNU Toolchain 14.2.Rel1. Clone into an operator source directory outside the checkout and workers:

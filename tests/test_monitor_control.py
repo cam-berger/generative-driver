@@ -39,7 +39,7 @@ class ScriptedMonitor:
         with channel:
             channel.settimeout(2)
             if self.greeting:
-                channel.sendall(b'(device) ')
+                channel.sendall(self.greeting if isinstance(self.greeting, bytes) else b'(device) ')
             negotiation = b''
             while len(negotiation) < 9:
                 negotiation += channel.recv(9 - len(negotiation))
@@ -191,3 +191,18 @@ class MonitorControlTests(unittest.TestCase):
             self.assertEqual(observed['reads'][0]['response'].encode('utf-8', errors='surrogateescape'),
                              b''.join(fragments))
             self.assertEqual(peer.commands, ['read'])
+
+    def test_response_timeout_records_lossless_greeting_and_response_once(self):
+        greeting = b'\xff\xfb\x01\x1b[33;1m(device) \x1b[0m'
+        wire = b'\xff\xfd\x00unrelated\r\n\x1b[33;1m(device) \x1b[0m'
+        with tempfile.TemporaryDirectory() as private, ScriptedMonitor(lambda _: [wire], greeting=greeting) as peer:
+            with self.assertRaisesRegex(RuntimeError, 'Host fault: monitor response timed out'):
+                self.session(peer, private=private).set_running(True)
+            evidence = [json.loads(line) for line in (Path(private)/'monitor-errors.jsonl').read_text().splitlines()]
+            self.assertEqual(len(evidence), 1)
+            self.assertEqual(evidence[0]['command'], 'start')
+            self.assertEqual(evidence[0]['reason'], 'response-timeout')
+            self.assertEqual(evidence[0]['greeting'].encode('utf-8', errors='surrogateescape'), greeting)
+            self.assertEqual(evidence[0]['response'].encode('utf-8', errors='surrogateescape'), wire)
+            self.assertIsInstance(evidence[0]['time'], float)
+            self.assertEqual(peer.commands, ['start'])

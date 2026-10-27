@@ -240,6 +240,12 @@ class NativeSession:
     def binding(self):
         return {key: self.info['binding'][key] for key in ('host', 'port')}
 
+    def _record_monitor_error(self, command, response, **details):
+        if self.info.get('private_dir'):
+            with (Path(self.info['private_dir'])/'monitor-errors.jsonl').open('a') as evidence:
+                evidence.write(json.dumps({'command': command, 'response': response,
+                    **details, 'time': time.time()}) + '\n')
+
     def _monitor(self, command):
         _command(command)
         timeout = self.info.get('monitor_timeout_seconds', 5.0)
@@ -277,11 +283,11 @@ class NativeSession:
                     body = _monitor_body(command, response)
                     if body is not None:
                         if re.search(r'(?:Error|Exception|Could not|No such)', body, re.I):
-                            if self.info.get('private_dir'):
-                                with (Path(self.info['private_dir'])/'monitor-errors.jsonl').open('a') as evidence:
-                                    evidence.write(json.dumps({'command':command,'response':response,'time':time.time()})+'\n')
+                            self._record_monitor_error(command, response)
                             raise RuntimeError('Host fault: monitor rejected evaluator control; see private evidence')
                         return response
+                self._record_monitor_error(command, data.decode('utf-8', errors='surrogateescape'),
+                    greeting=greeting.decode('utf-8', errors='surrogateescape'), reason='response-timeout')
                 raise RuntimeError('Host fault: monitor response timed out')
         except OSError as error:
             raise RuntimeError('Host fault: monitor connection lost') from error

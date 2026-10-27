@@ -1,7 +1,7 @@
 {
   "schema": "benchmark-architecture-validation/1",
   "date_utc": "2026-10-27",
-  "implementation_commit": "107858a4a5ff6dfd8cde04b11b81a42ab17f9554",
+  "implementation_commit": "4daa0bd874d46565582a31a7f55e398d93789156",
   "scope": "One existing six-stage pipeline; seven upstream intake lineages, one executable lineage and six blocked; three separate synthetic development cases.",
   "reviews": {
     "fresh_reader": "Executed list, full/debug plans, include/exclude, report and missing-credential checks outside checkout; add/bootstrap/qualify/activate/promote/retire guide accepted.",
@@ -202,27 +202,104 @@
     "current_focused": "Observed red-to-green mission and monitor regressions; 33 native-control tests and 27 mission/ground/repair tests passed.",
     "linux_environment": "Earlier full checkpoint: 900 tests had 10 daemon-process cleanup failures under non-reaping cloud PID 1; an external subreaper wrapper passed 901 tests with 3 skips. It changed no production code or tests. This is not the full test claim for the later parser/guidance changes.",
     "cross_platform": {
-      "passed_run": "https://github.com/cam-berger/generative-driver/actions/runs/40447779785",
-      "revision": "107858a4a5ff6dfd8cde04b11b81a42ab17f9554",
-      "jobs_passed": 4,
-      "platforms": [
-        "macOS",
-        "Windows"
+      "run": "https://github.com/cam-berger/generative-driver/actions/runs/40453063055",
+      "revision": "92ca2a905dc26257c354464d2e5b673e9c7ad6b1",
+      "status": "passed",
+      "jobs": [
+        {
+          "name": "native (windows-latest, 3.13)",
+          "tests": 915,
+          "skipped": 4,
+          "conclusion": "passed",
+          "url": "https://github.com/cam-berger/generative-driver/actions/runs/40453063055/job/122020002265"
+        },
+        {
+          "name": "native (windows-latest, 3.11)",
+          "tests": 915,
+          "skipped": 4,
+          "conclusion": "passed",
+          "url": "https://github.com/cam-berger/generative-driver/actions/runs/40453063055/job/122020002348"
+        },
+        {
+          "name": "native (macos-latest, 3.11)",
+          "tests": 915,
+          "skipped": 0,
+          "conclusion": "passed",
+          "url": "https://github.com/cam-berger/generative-driver/actions/runs/40453063055/job/122020002386"
+        },
+        {
+          "name": "native (macos-latest, 3.13)",
+          "tests": 915,
+          "skipped": 0,
+          "conclusion": "passed",
+          "url": "https://github.com/cam-berger/generative-driver/actions/runs/40453063055/job/122020002474"
+        }
       ],
-      "python": [
-        "3.11",
-        "3.13"
-      ],
-      "latest_proxy_fix": "Focused tests passed; full matrix pending."
+      "includes": "Dashboard browser contracts, wheel/sdist build and installed tests outside checkout, scripted installed smoke.",
+      "retained_fixture_failures": [
+        {
+          "revision": "19208fc",
+          "platform": "macOS",
+          "issue": "Synthetic workspace comparison used unresolved /var rather than canonical /private/var; corrected test fixture."
+        },
+        {
+          "revision": "4daa0bd",
+          "platform": "Windows",
+          "issue": "Cleared synthetic environment omitted USERPROFILE; corrected test fixture. Production code unchanged."
+        }
+      ]
     }
   },
   "agent_run": {
-    "status": "pending",
+    "status": "completed",
     "execution": "actual-agent-emulation",
     "repetitions": 1,
     "runtime": "codex",
     "model": "gpt-6.1-sol",
-    "reasoning_effort": "medium"
+    "reasoning_effort": "medium",
+    "suite_id": "suite-9b990b7b5e52435e",
+    "run_id": "run-631de518aae342e4",
+    "qualification": "regraded-encrypted-evidence",
+    "plan_sha256": "e1f4fe7cbe867c8824c7acff88d1e3cbc317fa824d6798a5c4f486d2401e8d47",
+    "passed_checks": 315,
+    "total_checks": 315,
+    "fresh_mission": {
+      "name": "fresh_worker_mission",
+      "passed": true
+    },
+    "accepted_stages": [
+      "acquire",
+      "interpret",
+      "probe",
+      "ground",
+      "emit",
+      "reuse"
+    ],
+    "stage_attempts": {
+      "acquire": 1,
+      "interpret": 2,
+      "probe": 2,
+      "ground": 1,
+      "emit": 1,
+      "reuse": 1
+    },
+    "repairs": 1,
+    "elapsed_seconds": 1028.4825549125671,
+    "usage": {
+      "input_tokens": 3148638,
+      "cached_input_tokens": 2805760,
+      "output_tokens": 30568,
+      "reasoning_output_tokens": 2807,
+      "total_tokens": 3179206,
+      "observed_total_tokens": 3179206,
+      "reported_attempts": 8,
+      "attempts": 8,
+      "coverage": 1.0,
+      "counting": "input + output; cached input and reasoning output are subsets"
+    },
+    "interventions": [],
+    "evidence_sha256": "f25b9f57d0c95a67a9f1c06234e508656a12f081a5a0e5a8a99d3d0511ad56d2",
+    "frozen_artifact_sha256": "26ffd3475eee71418a7be23f927c8b41e193ab2e6546b4280c2163b0c973db60"
   },
   "limitations": [
     "One executable upstream lineage does not demonstrate seven-area device breadth.",
@@ -259,7 +336,119 @@
     "adapter_tests_passed": 10,
     "qualified_grading_identity_unchanged": true,
     "qualified_evaluator_sha256": "100d720150781371f914c09087ab82c1f55e4daf03d61b55d50fead21d55321f",
-    "source_evidence": "https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/http-client/src/outbound_proxy.rs#L379-L398"
+    "source_evidence": "https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/http-client/src/outbound_proxy.rs#L379-L398",
+    "installed_forwarded_names": [
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "NO_PROXY",
+      "http_proxy",
+      "https_proxy",
+      "no_proxy"
+    ]
   },
-  "worker_wrapper_sha256": "8eea409c327700fbdd8bd5ac8eb696a19f0ed27d3431fe8bcf27d5df215c72f7"
+  "worker_wrapper_sha256": "8eea409c327700fbdd8bd5ac8eb696a19f0ed27d3431fe8bcf27d5df215c72f7",
+  "distribution": {
+    "wheel_sha256": "9afdf61058542cddf12711e256af412fd134b421850ff360f5730b2d1b72f800",
+    "sdist_sha256": "fe0aa14f9f93b9b430707e72856b60b22bbefba3d6d8c1247ef86238b0c48452",
+    "installed_outside_checkout": true,
+    "pinned_dependencies": "Operator requirements snapshot retained privately; cryptography 50.0.2 matches native qualification.",
+    "scope": "Archives built/installed for the scored run at implementation_commit; subsequent source changes are test fixtures and documentation only."
+  },
+  "coverage": {
+    "counts": {
+      "blocked": 6,
+      "not_run": 0,
+      "passed": 1,
+      "failed": 0,
+      "unscored": 0,
+      "unqualified": 0,
+      "stopped": 0,
+      "running": 0,
+      "planned": 7,
+      "started": 1,
+      "selected": 7,
+      "excluded": 0
+    },
+    "measured_success": {
+      "passed": 1,
+      "denominator": 1,
+      "rate": 1.0
+    },
+    "selected_coverage": {
+      "passed": 1,
+      "denominator": 7,
+      "rate": 0.14285714285714285
+    },
+    "demonstrated_coverage": {
+      "passed": 1,
+      "denominator": 7,
+      "rate": 0.14285714285714285
+    }
+  },
+  "expected_refusal_repair_finding": {
+    "status": "proposal only; not implemented",
+    "trusted_call_receipt": {
+      "negative_input_is_public_invalid_address": true,
+      "negative_call_failed": true,
+      "fault": "model",
+      "code": "timeout",
+      "negative_state_unchanged": true,
+      "identity_verified": true,
+      "next_call_succeeded": true,
+      "same_runtime_model_sha256": true,
+      "same_model_argument": true,
+      "recovery_value_matches_independent_state": true,
+      "later_live_probe_record_observed": true,
+      "repair_consumed": true,
+      "source": "Trusted captured device calls and accepted configurator notes; no expected values copied."
+    },
+    "associated_additional_worker_seconds": 283.3520361199626,
+    "associated_reported_input_tokens": 807141,
+    "associated_reported_output_tokens": 9386,
+    "associated_cached_input_tokens": 670848,
+    "counterfactual_savings_measured": false,
+    "synthetic_scenarios": 16,
+    "synthetic_assertions": "passed",
+    "prototype_sha256": "b4f7a51495bbb28bb680ad7ff20c23bb68f2ad46df795ee89766fba4163bc460",
+    "prototype_outside_repository": true,
+    "proposal": "docs/research/2026-10-27-expected-refusal-repair.md",
+    "pre_repair_functional_control": {
+      "execution": "scripted-posthoc-driver-evaluation",
+      "model_benchmark": false,
+      "source_run": "run-631de518aae342e4",
+      "source_revision": 0,
+      "source_model_sha256": "b336b26cae8b5411415cdedf53105a7cc3b35140e306c8455551a2e244d2ae29",
+      "executed_model_sha256": "b336b26cae8b5411415cdedf53105a7cc3b35140e306c8455551a2e244d2ae29",
+      "source_capabilities_sha256": "8cd17d7cbf1f4df60d93c65f9a7b65202a4b7b9295d2843f4120da982c5e7dac",
+      "artifact_execution": "emitted-package",
+      "package_sha256": "6c06dd798b0d4744af81f01c93e0df81475008a871655950e8734e0d62126440",
+      "model_semantics_preserved_except_fresh_tcp_binding": true,
+      "passed_checks": 315,
+      "total_checks": 315,
+      "verdict": "passed",
+      "native_process_observed": true,
+      "scope": "Initial saved model/capabilities emitted and tested on a fresh emulator after the scored run. No new inference or fresh reuse; original trial/verdict unchanged."
+    },
+    "observed_scope": "Expected refusal receipt proved locally; saved pre-repair driver independently passed all315 functional checks. No counterfactual agent/fresh-reuse trial or broad performance savings measured."
+  },
+  "installed_cli_report": {
+    "suite_id": "suite-9b990b7b5e52435e",
+    "coverage_matches_authenticated_report": true,
+    "qualification": "recorded-controller-verdicts",
+    "independent_regrade_qualification": "regraded-encrypted-evidence"
+  },
+  "cleanup": {
+    "benchmark_owner_stopped": true,
+    "owner_process_reaped": true,
+    "private_evaluator_credentials_remain_outside_repository": true
+  },
+  "subsequent_changes": {
+    "production_and_resource_bytes_unchanged_from_agent_commit": true,
+    "changes": "Windows test fixture and validation/research documentation only."
+  },
+  "credential_scan": {
+    "secret_handles_checked": 4,
+    "files_checked": 315,
+    "leaks": 0
+  }
 }

@@ -2,6 +2,14 @@
 
 Separate scripted tests, replay, native reference qualification, model execution and physical observations. All current workflows end at acquire → interpret → probe → ground → emit → reuse. Results below describe dated snapshots, not every later checkout.
 
+## Multiline-reply repair comparison — 2026-10-27
+
+At implementation `625f55a`, the same five software profiles received three fresh `gpt-6.1-sol` trials each. Joint successes changed **13/15 → 15/15**, entirely from parameter store **1/3 → 3/3**; every new store trial passed **891/891** final checks. All three agents corrected one-line rejection/completion bounds within interpretation after validator feedback, before live probing. These local edits are distinct from pipeline repair cycles. Store trial 2 retained an uncovered offline `update` fixture; its later live and final behavior passed.
+
+The installed suite ran **938 tests: 937 passed, one optional Linux-backend skip**. Ten focused framing/deployment tests cover recorded red/green regressions. Fresh qualification ran 42 Renode reference/control executions with unchanged control outcomes, including the original five short-frame failures. Every new seal regraded identically, all 15 missions were independently rederived, and frozen inputs/package hashes reconciled. Token totals were **23,672,845 → 23,650,505**, with **98/98 → 100/100** usage attempts. Pipeline cycles were **4 → 5**; the last legacy trial included one automatic verified emulator recovery.
+
+Upstream/core standard comparisons retain their changed-pin incompatibility; legacy remains compatible. This is a descriptive fixed development-case comparison. The first Zephyr trial's raw timing retains an observed host sleep/wake gap; it was not replaced or time-adjusted. Selected upstream coverage remains **3/21**, with 18 slots blocked across six lineages. Physical and Windows model performance, continuous within-call state and worker read isolation remain unverified. Temporary evaluator keys were removed, the isolated owner/devices stopped and the scoped idle-sleep guard released. See [results](research/2026-10-27-multiline-repair-results.md), [plan](research/2026-10-27-multiline-repair-comparison-plan.md) and [verification index](implementation/multiline-repair-verification.json).
+
 ## Whole-benchmark model study — 2026-10-27
 
 At implementation `9df3887`, actual `gpt-6.1-sol` workers produced equivalent drivers with successful fresh reuse in **7/9 core trials**, **3/3 runnable Zephyr trials** and **3/3 supplemental legacy TQ9 trials**. All 15 missions succeeded; two store drivers failed five complete-rejection checks each. Every sealed final regraded identically; two independent audits verified counts, identities, usage and public mission observations. Four automatic repairs, no manual trial repairs or budget extensions, and 98/98 usage attempts were recorded.
@@ -148,4 +156,4 @@ The [follow-up CI](https://github.com/cam-berger/generative-driver/actions/runs/
 
 An intermittent macOS suite reconnect failure was not reproduced: the unchanged 11-test suite and 12 repetitions passed locally. No scheduler fix is claimed.
 
-The nine-trial local model study is recorded above for `9df3887` (7/9 joint successes). Physical performance, native Windows Renode model runs, Windows 11 UI setup, live Goose and worker filesystem isolation remain unverified. Historical results retain their measured revisions.
+The historical nine-trial core result remains `9df3887` (7/9 joint successes); the later multiline comparison above records `625f55a` at 9/9 core and 15/15 runnable-profile successes. Physical performance, native Windows Renode model runs, Windows 11 UI setup, live Goose and worker filesystem isolation remain unverified. Historical results retain their measured revisions.

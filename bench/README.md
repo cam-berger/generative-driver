@@ -1,6 +1,6 @@
 # Benchmark
 
-The [native Modbus pilot](../docs/research/2026-10-27-native-modbus.md) uses the same registry, provider, six-stage runner and reports with an explicitly pinned native executable.
+The [native Modbus pilot](../docs/benchmark-case-authoring.md#native-zephyr-execution) uses the same registry, provider, six-stage runner and reports with an explicitly pinned native executable.
 
 Recover a device interface, emit a portable driver, and have a fresh agent use it. Judge outputs/effects, not source-code similarity.
 
@@ -18,9 +18,9 @@ Current `assistive/1` runs follow acquire → interpret → probe → ground →
 | `zephyr-modbus-v1` | Upstream Zephyr RTU sample: register/coil effects, unrelated-state preservation and recovery |
 | `bme280` | Physical FTDI/I2C sensor and independent operator references |
 
-[Installed assets](../src/generative_driver/resources/bench/) pin stable original images, encrypted truth and evaluator versions. A listed or publicly `available` case has not authenticated admission for the installed implementation. The three-family core plans nine default trials and requires fresh native qualification before execution. The [growth plan](../docs/research/2026-10-03-benchmark-growth-plan.md) and [source review](../docs/research/2026-10-03-benchmark-source-review.md) propose future admissions; they are not measured results.
+[Installed assets](../src/generative_driver/resources/bench/) pin stable original images, encrypted truth and evaluator versions. A listed or publicly `available` case has not authenticated admission for the installed implementation. The three-family core plans nine default trials and requires fresh native qualification before execution. The [catalog and execution gaps](../docs/benchmark-corpus.md#catalog-and-execution-gaps) describe future admissions separately from [measured results](../docs/verification.md).
 
-The [upstream corpus](../docs/benchmark-corpus.md) adds seven lineages: one upstream case with published native qualification evidence and six blocked lineages. Freeze all lineages for a pilot or select a debug subset; immutable plans retain excluded slots and reasons. Authenticate selected ready cases with `benchmark corpus check`, run them through the existing suite lifecycle and report measured success, selected coverage and full-catalog demonstrated coverage separately. See [case authoring](../docs/benchmark-case-authoring.md) to add or retire cases and the [architecture decision](../docs/research/2026-10-26-benchmark-architecture.md) for the static registration boundary.
+The [upstream corpus](../docs/benchmark-corpus.md) adds seven lineages: one upstream case with published native qualification evidence and six blocked lineages. Freeze all lineages for a pilot or select a debug subset; immutable plans retain excluded slots and reasons. Authenticate selected ready cases with `benchmark corpus check`, run them through the existing suite lifecycle and report measured success, selected coverage and full-catalog demonstrated coverage separately. See [case authoring](../docs/benchmark-case-authoring.md) to add or retire cases and the [architecture decision](../docs/adr/0001-benchmark-registration-and-selection.md) for the static registration boundary.
 
 ## Install and check
 
@@ -199,3 +199,8 @@ generative-driver --home /operator/state/physical benchmark score reports/physic
 Reports retain stage attempts/acceptance, final verdict and package/mapping hashes, budgets, runtime/provider/model/settings, toolchain/skill/case/evaluator identities, environment, time, managed calls, usage and interventions. Artifact and notes hashes are sealed in the trial's run evidence; `driver_result` returns the notes. Tool time overlaps worker time; managed counts exclude arbitrary shell calls. Missing usage stays unknown, failed attempts consume resources.
 
 Current assistive run reports record equivalence; repeated acceptance/corpus success also requires the declared fresh mission and six accepted handoffs. Earlier gated results retain their original acceptance rules and remain a separate series. Preserve failures, exclusions, blocked and unrun slots. Corpus measured success uses only graded passes/failures; selected coverage retains all selected slots and demonstrated coverage retains the entire catalog. Match versions, inputs, modes, seeds, time policies and budgets; label multi-dimension changes as system comparisons. Report repetitions, uncertainty and time/usage coverage. [Verification](../docs/verification.md) separates software/reference evidence from model results; the nine-trial model study remains unrun.
+
+
+## Verification evidence
+
+[docs/verification.md](../docs/verification.md) is the single narrative record for measured plugin results, methods and limits. Frozen JSON indices live in [bench/evidence/](evidence/): baseline and multiline comparison, native Modbus, corpus/lifecycle validation and historical qualification. The source distribution includes these indices. They retain their original bytes, hashes and historical path fields; relocating an index does not revise its experiment. Raw captures, evaluator material, source/build trees and private archives remain outside the repository. Superseded research notes and implementation checklists remain recoverable from Git history.

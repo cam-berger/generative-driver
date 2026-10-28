@@ -33,3 +33,5 @@ Every stage hands off its artifacts with notes: the worker's checks, the configu
 The run log retains the latest 200 configurator events. Uncheck “Follow” to read earlier entries without automatic scrolling. Agent activity shows the latest 12 progress messages and command/tool status entries from the current worker. Full command arguments, outputs and evaluator payloads stay in their original run artifacts.
 
 The dashboard observes status and logs. Use the existing Codex, Goose or CLI run tools when you need to respond, resume or cancel.
+
+See [recorded dashboard verification](verification.md#analysis-client-and-protocol-evidence) for the measured browser/run observation and its limits.

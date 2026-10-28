@@ -25,4 +25,4 @@ Observe behavioral regression tests fail before implementing changes. Run the re
 
 All four software cases passed current native qualification: 42 episodes and 26 rejected mutants. An installed actual-agent trial completed all six stages, fresh reuse and 315/315 independent checks, authenticated by encrypted-evidence regrade. The documented CLI exported matching coverage: one passed upstream lineage out of seven, six blocked. All four macOS/Windows × Python 3.11/3.13 jobs passed 915 tests each (Windows: four skips).
 
-See the [validation record](../../docs/implementation/2026-10-27-benchmark-architecture-validation.json). The expected-refusal investigation and proposal remain follow-up issue 03; its exemption is not implemented. Issues 01 and 02 also remain separate follow-ups.
+See the [validation record](../../bench/evidence/2026-10-27-benchmark-architecture-validation.json). Open follow-ups: [qualification closure](issues/01-scope-qualification-closure.md), [structured monitor](issues/02-structured-native-monitor.md) and [expected-refusal repair](issues/03-expected-refusal-repair.md). The expected-refusal exemption is not implemented.

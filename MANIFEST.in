@@ -2,6 +2,8 @@ global-exclude *.py[cod]
 global-exclude *.password *.secret .env
 prune **/__pycache__
 include NOTICE
+include AGENTS.md CONTEXT.md CONTRIBUTING.md
+recursive-include .scratch/benchmark-lifecycle *.md
 include .gitattributes
 recursive-include docs *.md *.json
 recursive-include plugins *.json *.md

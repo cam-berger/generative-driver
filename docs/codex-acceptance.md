@@ -38,5 +38,3 @@ python tests/native_codex_pipeline.py -v
 ```
 
 The gate regrades the sealed evidence through the benchmark API, requires Codex with a recorded model, at least three families and three repetitions, and requires equivalence plus successful fresh reuse in every planned trial. Missing configuration fails explicitly. The gate launches no new inference. A pass establishes those recorded trials only; broader reliability needs held-out firmware and repeated measurements. This acceptance lane has not been run for the integrated branch.
-
-REA's obligation ledger proposal is retained in [the design specification](superpowers/specs/2026-10-15-obligation-ledger-verdict.md). Its tools are not integrated by this change; an eventual adapter should contribute attributable evidence without receiving evaluator truth or deciding its own grade.

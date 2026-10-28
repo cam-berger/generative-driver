@@ -1,6 +1,6 @@
 # Author a benchmark case
 
-Add intake evidence first, implement executable support in trusted code, qualify its evaluator, then run actual agents. A catalog entry alone does not supply an adapter, a native backend or a correct evaluator. Use the [operator workflow](benchmark-corpus.md) for selection, authentication, execution and reporting, and the [architecture decision](research/2026-10-26-benchmark-architecture.md) for the trust boundaries.
+Add intake evidence first, implement executable support in trusted code, qualify its evaluator, then run actual agents. A catalog entry alone does not supply an adapter, a native backend or a correct evaluator. Use the [operator workflow](benchmark-corpus.md) for selection, authentication, execution and reporting, and the [registration decision](adr/0001-benchmark-registration-and-selection.md) for the trust boundaries.
 
 ## Choose the identities and responsibility
 
@@ -91,3 +91,79 @@ The current evaluator identity includes every Python module under `benchmark_sup
 **Unselect** a lineage for one experiment with repeated `--include LINEAGE` or `--exclude LINEAGE REASON` while creating a new plan. Its catalog slots remain visible as excluded, and full-catalog demonstrated coverage retains them. Preserve the original plan/report when a completed trial failed.
 
 **Retire** a case from future experiments by publishing a new catalog/selection and documenting why. Preserve its historical case/lineage/mission IDs, static registration and retained assets/evidence needed to read old pins and reports. Do not rename another case into its ID or delete rows from saved plans. Removing a registry entry is a compatibility change, not an experiment-selection operation.
+
+
+## Native Zephyr execution
+
+Prefer authentic host-compiled application/protocol code when a qualified board backend is unavailable. For the Zephyr pilot, the interrupt-capable native TTY driver and GPIO emulation replace board I/O; application handlers, parsing and state logic remain upstream. The final `zephyr.exe` (retained as `firmware.elf`) is the executable, whereas the intermediate `zephyr.elf` is not. Supply the agent with the bytes actually executed and disclose its symbols/DWARF, substitutions and hardware gaps.
+
+The optional backend requires Linux (a Linux VM is suitable on macOS/Windows). Its clock policy is `host-clock-with-process-pauses`: the process pauses between calls, while `--rt` catches up to the continuing host clock on resume. The adapter verifies a private executable copy against the pinned source before launch/reset. It preserves source bytes and does not retry uncertain writes. [Measured results and setup failures](verification.md#native-modbus-pilot--2026-10-27) remain distinct from these operating instructions.
+
+Run these commands in a writable evaluator directory with an installed package,
+the clean pinned Zephyr source, host GCC, west and Zephyr build dependencies.
+`pyelftools` is needed only when authoring the native observation recipe. Password
+files belong to the evaluator; workers receive neither their paths nor contents.
+
+```sh
+python -m generative_driver benchmark corpus build --case zephyr-modbus-v1 \
+  --backend native-sim --source /path/to/zephyr --compiler /path/to/gcc \
+  --west /path/to/west --output native-build
+
+python -m generative_driver benchmark corpus prepare-execution --build native-build \
+  --password-file /path/to/evaluator.password --output native-intake
+
+GENERATIVE_DRIVER_BENCH_ROOT="$PWD/native-intake" \
+  python -m generative_driver benchmark corpus exercise-execution --case zephyr-modbus-v1 \
+  --password-file /path/to/evaluator.password --output native-observations
+
+python -m generative_driver benchmark corpus exercise-execution --case zephyr-modbus-v1 \
+  --password-file /path/to/evaluator.password --renode /path/to/renode --output renode-observations
+
+python -m generative_driver benchmark corpus compare-execution \
+  native-observations/observations.json renode-observations/observations.json --output comparison.json
+
+python -m generative_driver benchmark corpus prepare-execution --build native-build \
+  --password-file /path/to/evaluator.password --native-record native-observations/observations.json \
+  --reference-record renode-observations/observations.json --output native-qualified-inputs
+
+GENERATIVE_DRIVER_BENCH_ROOT="$PWD/native-qualified-inputs" \
+  python -m generative_driver benchmark truth calibrate --case zephyr-modbus-v1 \
+  --password-file /path/to/evaluator.password --ghidra-home /path/to/ghidra \
+  --java-home /path/to/jdk --output native-calibration
+```
+
+Stop if comparison or calibration fails. Native calibration requires the measured
+comparison records, checks the backend and executed image, runs two distinct
+reference drivers through diagnostic/final episodes, and rejects the declared
+mutants. Pending metadata cannot admit an agent.
+
+After successful calibration, copy its `case.json` to
+`native-qualified-inputs/cases/zephyr-modbus-v1/case.json` and its
+`zephyr-modbus-v1.enc` to
+`native-qualified-inputs/groundtruth/zephyr-modbus-v1.enc`. These are external
+resources; installed resources and previous results stay unchanged.
+
+Use the existing runtime configuration and trial command with this resource root:
+
+Install the complete matching Codex distribution, including its tool-host helper
+and Bubblewrap resource. The Linux environment must support the worker sandbox's
+namespaces and mounts. Verify these before spending model inference on a trial.
+
+```sh
+GENERATIVE_DRIVER_BENCH_ROOT="$PWD/native-qualified-inputs" \
+  python -m generative_driver benchmark run --case zephyr-modbus-v1 --executor codex \
+  --password-file /path/to/evaluator.password --home "$PWD/native-state" \
+  --output "$PWD/native-trial" --ghidra-home /path/to/ghidra --java-home /path/to/jdk \
+  --approve-emulator-tools --wait
+```
+
+The case keeps the same lineage and mission. `execution_setup.method=native-sim`
+and the native ELF hash distinguish its execution from the ARM variant. The
+generic software-emulation execution category alone does not identify a backend.
+All six handoffs, a fresh package-only mission and the final evaluator verdict
+remain separately reviewable. One trial establishes feasibility for that trial;
+it does not estimate a success rate across firmware families.
+
+Implementation references: [native simulator](https://docs.zephyrproject.org/4.2.0/boards/native/native_sim/doc/index.html),
+[pinned native TTY driver](https://github.com/zephyrproject-rtos/zephyr/blob/413b789deb391d3a37d06b463288a5fe765ee57e/drivers/serial/uart_native_tty.c),
+[pinned RTU application](https://github.com/zephyrproject-rtos/zephyr/blob/413b789deb391d3a37d06b463288a5fe765ee57e/samples/subsys/modbus/rtu_server/src/main.c).

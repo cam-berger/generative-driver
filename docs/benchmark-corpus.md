@@ -2,7 +2,28 @@
 
 The software-first pilot tracks seven upstream firmware lineages. Its published inventory contains one upstream case with native qualification evidence, `zephyr-modbus-v1`, and six blocked lineages. A lineage is a source ancestry and mission; an executable case is a registered, versioned image and evaluator. Public availability is only a metadata check. Authenticate qualification against the installed code before running agents.
 
-The three synthetic development cases (`tq9-v2`, `sampled-sensor-v1`, `parameter-store-v1`) remain in their separate suite. They require fresh native qualification for the exact evaluator/runtime implementation before new trials. Source intake, evaluator qualification and measured model performance are separate evidence. See the [intake record](research/2026-10-26-corpus-intake.md), [architecture decision](research/2026-10-26-benchmark-architecture.md) and [case authoring guide](benchmark-case-authoring.md).
+The three synthetic development cases (`tq9-v2`, `sampled-sensor-v1`, `parameter-store-v1`) remain in their separate suite. They require fresh native qualification for the exact evaluator/runtime implementation before new trials. Source intake, evaluator qualification and measured model performance are separate evidence. See the [catalog and execution gaps](#catalog-and-execution-gaps), [registration decision](adr/0001-benchmark-registration-and-selection.md) and [case authoring guide](benchmark-case-authoring.md).
+
+## Catalog and execution gaps
+
+The [versioned catalog](../src/generative_driver/resources/bench/corpora/seven-area-pilot.json) pins upstream commits, source ancestry, missions, acceptance requirements and blockers. All seven lineages are development cases. Source availability or a license declaration is not execution qualification; only the admitted Zephyr image is redistributed, with component notices.
+
+| Area | Selected upstream lineage | Software evidence and remaining gap |
+|---|---|---|
+| Robotic control | P2IM's STM32 port of grbl | Built and booted in Renode; accepted unlock and motion commands but no position/step change was observed. Timer/peripheral behavior and an independent step observer remain unqualified. |
+| IoT | Tasmota | Pinned application source and build configuration. ESP32 board/image selection, network/GPIO emulation and session representation remain open. |
+| Sensors | Aceinna OpenIMU330BI | Pinned inertial-sensor example, packet and scaling definitions. Dependency rights, actual sensor stimuli and a freshness/quantity observer remain open. |
+| USB peripherals | sigrok fx2lafw | Pinned 8051 application and board descriptors. Needs SDCC build qualification, a USB-capable FX2 backend and independent digital stimuli. UART is not a substitute for USB evidence. |
+| Instruments | EEZ PSU firmware | Pinned Arduino Due application and Linux simulator build. The simulator is a host application, not an MCU image. Needs a validated execution setup and independent plant observer; the host simulator is a candidate, not a requirement for MCU emulation. |
+| Controllers | ODrive | Pinned application and ASCII interface. Start with non-motion configuration and idle state. Motor/encoder peripherals and an independent state observer remain unqualified; CAN remains a separate gap. |
+| Industrial controllers | Zephyr Modbus RTU server | Upstream sample compiled for STM32F4, with unchanged application and Modbus code. Native register/GPIO probes and two identical rebuilds succeeded. Reference/mutant and agent results are recorded separately below. |
+
+
+### grbl
+
+The P2IM port at `d4c7456574ce2c2ed038e6f14fea8e3142b3c1f7` built and booted in Renode 1.16.1 with GCC 14.2.Rel1. The only disclosed source change disabled its fuzzing hypercall (`noHyperCall = 1`); compilation used `-fcommon`. Acknowledged commands and `Run` status produced no observed position/step change. The port also has no-op spindle/coolant handlers. It is not admitted: protocol acknowledgment alone cannot establish actuator effects.
+
+These six targets lack validated execution setups. A full board emulator is optional. Investigate native application/protocol execution first, then selective HAL replacement or peripheral modeling where appropriate. Preserve authentic parsing, validation, state and replies plus independently observable effects; replacing the graded handler with a substitute weakens the evidence. Hardware forwarding needs separate reset/synchronization qualification. Recorded replies do not support arbitrary new probes. Use the same registry, provider, lifecycle, runner and reports for each execution method, and identify the artifact actually executed. The [native Zephyr instructions](benchmark-case-authoring.md#native-zephyr-execution) and [measured pilot](verification.md#native-modbus-pilot--2026-10-27) demonstrate that path for one lineage only.
 
 ## Freeze a selection
 

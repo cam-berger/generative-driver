@@ -123,6 +123,7 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
             "case": case_manifest.get("id"), "case_version": case_manifest.get("version"),
             "evaluator_version": case_manifest.get("evaluator_version"), "seed": 0,
             "execution": execution,
+            **({"execution_setup": case_manifest['execution_setup']} if 'execution_setup' in case_manifest else {}),
             "model_benchmark": execution in ("actual-agent-emulation", "actual-agent-physical"),
             "workflow_status": status, "verdict": verdict,
             # The run's final equivalence verdict and its basis; self-evidence is not the independent verdict above.
@@ -191,6 +192,12 @@ def markdown(report):
              f"Run: `{report['run_id']}`. Execution: `{report['execution']}`.", "",
              f"Workflow: **{report['workflow_status']}**." +
              (f" Independent verdict: **{report['verdict']}**." if independent else ""), ""]
+    setup = report.get('execution_setup')
+    if isinstance(setup, dict):
+        lines += [f"Execution method: `{setup.get('method')}`. Executed artifact: `{setup.get('artifact')}`.", ""]
+        for key, label in (('substitutions', 'Substitutions'), ('validated_behavior', 'Validated behavior'),
+                           ('hardware_gaps', 'Hardware gaps')):
+            lines += [label + ': ' + '; '.join(setup.get(key, [])) + '.', '']
     final = report.get("equivalence")
     if isinstance(final, dict):
         from .configurator import equivalence_label

@@ -5,7 +5,7 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent/'_toolkit'))
-from interface_runtime.engine import validate_model
+from interface_runtime.qualify import validate_candidate as validate_model
 from interface_runtime.evidence import read_json
 
 model_dir = Path(sys.argv[1] if len(sys.argv) > 1 else '.').resolve()

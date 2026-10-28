@@ -16,6 +16,7 @@
 | Instrument observation | Device-state readings visible to workers, never grades. |
 | Lineage | Upstream firmware ancestry selected in a corpus. Repetitions of one lineage do not demonstrate another device family. |
 | Case | Registered, versioned image and evaluator contract, with public mission data and a separately encrypted answer key. |
+| Execution setup | The case's method, actual executable artifact, substitutions, validated behavior and remaining hardware gaps. Native and MCU binaries have distinct identities. |
 | Public mission | Required task meanings, inputs, output units and the objective for fresh reuse. Hidden vectors remain evaluator-owned. |
 | Trial | One fresh six-stage run. A repetition starts another trial, not another lineage. |
 | Selection | Frozen include/exclude decisions and reasons for every lineage in the full catalog. Excluded and blocked slots remain visible. |

@@ -1,0 +1,107 @@
+{
+  "schema": "native-modbus-pilot/1",
+  "date": "2026-10-27",
+  "case": "zephyr-modbus-v1",
+  "source_commit": "413b789deb391d3a37d06b463288a5fe765ee57e",
+  "base_commit": "f9195b1b05dc46c970d28cd5e0f5e3da268b5398",
+  "execution_method": "native-sim",
+  "artifact": "firmware.elf",
+  "image_sha256": "d7b0d96dfbd0c2b42b50339a9abf75752899d775762b5ef37e6c82dd425e927c",
+  "arm_reference_image_sha256": "6137dfd5044bf38e791b77e25db0408ba081fc60ccdd2953629e7fb62090ca82",
+  "identical_clean_builds": 2,
+  "wheel_sha256": "040f91e6d6f6da205566897040676aaedbcff9df9fc09446e694952a64274042",
+  "trial_wheel_sha256": "02f14a6991701ad9caf0df9ab94ae5c1237fa9427d89f489f7624db933cab122",
+  "trial_implementation_commit": "6efebe9",
+  "comparison": {
+    "execution": "firmware-rehosting-validation",
+    "episodes": 20,
+    "passed": 568,
+    "total": 568
+  },
+  "calibration": {
+    "execution": "reference-calibration",
+    "status": "passed",
+    "evidence_sha256": "64dbcd5d8d76d33936f6857ad2bb6ad074fbfc433ed497975aa9ee60623a9db6",
+    "distinct_references": 2,
+    "positive_runs": 4,
+    "checks_per_positive_run": 315,
+    "rejected_mutants": 6,
+    "registry_admission": "passed"
+  },
+  "trial_calibration_sha256": "8e888ba33275b04c794e1954f45ec08a9bd56a0b236df1783e9d0af093341500",
+  "trial_implementation_installed_tests": {
+    "status": "passed",
+    "tests": 928,
+    "skipped": 3,
+    "elapsed_seconds": 373.131,
+    "imports": "Frozen wheel in a clean environment; working directory outside the checkout",
+    "test_locations": "Original repository paths retained for documentation and source-boundary fixtures"
+  },
+  "installed_tests": {
+    "status": "passed",
+    "tests": 928,
+    "skipped": 3,
+    "elapsed_seconds": 384.857,
+    "imports": "Frozen permanent-fix wheel in a clean environment outside the checkout"
+  },
+  "linux_backend_tests": {"status": "passed", "tests": 11, "skipped": 1, "elapsed_seconds": 1.343},
+  "agent_trials": [
+    {
+      "trial_id": "trial-937d7a46d06c47b0",
+      "run_id": "run-61e80997dd1c480b",
+      "wheel_sha256": "550fe6a82391b9e30a6f75f101c72eab2be0128a4d5671bf0a4c7be7f814021f",
+      "verdict": "no-driver",
+      "classification": "runtime-setup-failure",
+      "reason": "Docker denied Bubblewrap namespace creation",
+      "executed_stages": ["acquire", "interpret"],
+      "fresh_reuse": "not-run",
+      "elapsed_seconds": 52.65322422981262,
+      "observed_total_tokens": 137864
+    },
+    {
+      "trial_id": "trial-eb70d0c1a1114b58",
+      "run_id": "run-0cc7872fd0014cb2",
+      "wheel_sha256": "02f14a6991701ad9caf0df9ab94ae5c1237fa9427d89f489f7624db933cab122",
+      "verdict": "no-driver",
+      "classification": "runtime-setup-failure",
+      "reason": "Replacement runtime lacked the matching codex-code-mode-host executable",
+      "executed_stages": ["acquire", "interpret"],
+      "fresh_reuse": "not-run",
+      "elapsed_seconds": 23.4242901802063,
+      "observed_total_tokens": 53234
+    },
+    {
+      "trial_id": "trial-44b1e4da5bab4056",
+      "run_id": "run-e66d2d2227d24810",
+      "wheel_sha256": "02f14a6991701ad9caf0df9ab94ae5c1237fa9427d89f489f7624db933cab122",
+      "verdict": "equivalent",
+      "classification": "engineering-feasibility-run-with-host-repair",
+      "runtime": "codex",
+      "runtime_version": "0.164.0-alpha.11.1",
+      "model": "gpt-6.1-sol",
+      "executed_stages": ["acquire", "interpret", "probe", "ground", "emit", "reuse"],
+      "worker_attempts": 8,
+      "repairs": 1,
+      "fresh_reuse_mission": "passed",
+      "final_checks": {"passed": 315, "total": 315},
+      "offline_regrade": "equivalent",
+      "frozen_package_sha256": "f5dd195fade9bf973c47285ae5f10a455c00efdce25fdd17a5bf56612fd80d30",
+      "evidence_sha256": "98a61361a80735206560dfa16a5df857d97f81984a3336bbe55fa2fd853a5ddd",
+      "elapsed_seconds_including_grading_repair": 837.4221658706665,
+      "worker_seconds": 489.9459718629987,
+      "observed_total_tokens": 1600910,
+      "cached_input_tokens": 1295616,
+      "usage_coverage": "8/8 worker attempts",
+      "host_repair": "Snapshot ELF mode 0644 to 0744; bytes unchanged; original evaluator resumed grading only",
+      "worker_run_files_containing_evaluator_password_path": 0
+    }
+  ],
+  "permanent_fix": "Execute a private copy of the pinned ELF; rehash source and executable before launch/reset; source remains non-executable",
+  "private_evidence_directory": "bench/runs/native-modbus-20261027",
+  "unverified": [
+    "Physical UART/RS-485, electrical faults and MCU execution",
+    "Timing equivalence; the native host clock continues during process pauses",
+    "Worker read isolation",
+    "Cross-family performance"
+  ]
+}

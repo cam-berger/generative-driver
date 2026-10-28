@@ -289,6 +289,35 @@ class HarnessGradingTests(PendingRunFixture):
 
     calls, unreachable = (), ()
 
+    def test_native_pending_grade_resumes_without_a_renode_executable(self):
+        # Scripted workflow regression; the native Adapter itself is exercised on Linux separately.
+        from generative_driver.benchmark_support import evaluator
+        manifest_path = self.image.parent/'case.json'
+        manifest = json.loads(manifest_path.read_text())
+        native_image = self.image.with_suffix('.elf')
+        self.image.rename(native_image); self.image = native_image
+        manifest['images'] = {'firmware.elf': next(iter(manifest['images'].values()))}
+        manifest['execution_setup'] = {'method': 'native-sim', 'artifact': 'firmware.elf',
+            'substitutions': ['Scripted descriptor'], 'validated_behavior': [], 'hardware_gaps': ['Test only']}
+        manifest_path.write_text(json.dumps(manifest))
+        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                patch.object(evaluator, 'reference_execute', side_effect=OSError('host grading interrupted')):
+            trial, record = self.trial('native-resume')
+        self.assertEqual(record['status'], 'unscored')
+        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                patch.object(evaluator, 'reference_execute', side_effect=reference(FAIL)):
+            resumed = self.resume(trial)
+        self.assertEqual(resumed['status'], 'evaluated')
+        self.assertIs(resumed['equivalence']['equivalent'], False)
+        from generative_driver.reporting import report_run
+        output = self.root/'native-report.json'
+        with patch('generative_driver.client.call', side_effect=self.configurator):
+            report = report_run(record['run_id'], home=self.home, output=output)
+        self.assertEqual(report['execution_setup'], manifest['execution_setup'])
+        self.assertEqual(json.loads(output.read_text())['execution_setup'], manifest['execution_setup'])
+        for text in ('native-sim', 'firmware.elf', 'Scripted descriptor', 'Test only'):
+            self.assertIn(text, output.with_suffix('.md').read_text())
+
     def configurator(self, method, params=None, home=None, **kwargs):
         if method == 'ping':
             return {'ok': True}

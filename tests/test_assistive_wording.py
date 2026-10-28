@@ -14,16 +14,15 @@ GRADED = ('diagnostic feedback', 'diagnostic observation', 'evaluator observatio
           'diagnostic evaluation', 'diagnostic and final evaluation')
 # The gated protocol's stage checks, which the current docs no longer describe as a gate.
 GATED = ('checked stage progression', 'checked handoff', 'until its handoff is accepted')
-# Docs that describe current behaviour; design.md, verification.md and the handoff keep dated historical sections.
+# Docs that describe current behaviour; design.md and verification.md also retain dated history.
 CURRENT = ('README.md', 'bench/README.md', 'docs/support.md', 'docs/goose.md', 'docs/codex.md', 'docs/setup.md',
            'docs/dashboard.md', SKILL)
-DOCS = (*CURRENT, 'docs/design.md', 'docs/verification.md', 'docs/implementation/benchmark-handoff.md')
+DOCS = (*CURRENT, 'docs/design.md', 'docs/verification.md')
 CHANGE = (r'assistive/1', r'new series', r'not read-isolated', r'password-based')
 LIMITS = (r'fresh native calibration', r'preserved checkout', r'time_policy\.probe', r'paused between',
           r'configurator[^.]*(holds no|never receives?)[^.]*password', r'instrument readings')
 REQUIRED = {'bench/README.md': CHANGE + LIMITS, 'docs/design.md': CHANGE + LIMITS,
             'docs/verification.md': CHANGE[:3] + LIMITS[:2],
-            'docs/implementation/benchmark-handoff.md': CHANGE[:2] + LIMITS[:1],
             'docs/goose.md': CHANGE + LIMITS[4:], 'docs/codex.md': CHANGE + LIMITS[4:],
             'README.md': CHANGE[2:], SKILL: CHANGE + (r'self-evidence', r'bench harness', r'notes',
                                                   r'[Nn]ever relay[^.]*`driver_respond`',

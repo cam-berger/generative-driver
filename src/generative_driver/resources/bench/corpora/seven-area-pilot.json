@@ -64,7 +64,7 @@
         {
           "kind": "backend",
           "reason": "Initial native probe accepts G-code and reports Run but has not produced motion or step outputs; timer/backend qualification is unresolved.",
-          "evidence": "docs/research/2026-10-26-corpus-intake.md#grbl"
+          "evidence": "docs/benchmark-corpus.md#grbl"
         },
         {
           "kind": "oracle",

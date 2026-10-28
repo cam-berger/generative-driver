@@ -1,5 +1,7 @@
 """Release archive contract; CI supplies the built wheel path."""
 import os
+import posixpath
+import re
 import tarfile
 from pathlib import Path
 import unittest
@@ -23,8 +25,14 @@ class DistributionTests(unittest.TestCase):
             names = archive.getnames()
             prefix = names[0].split("/")[0]
             document = archive.extractfile(prefix + "/docs/verification.md").read().decode("utf-8")
-            self.assertIn("implementation/benchmark-final-verification.json", document)
-            self.assertIn(prefix + "/docs/implementation/benchmark-final-verification.json", names)
+            self.assertIn("../bench/evidence/benchmark-final-verification.json", document)
+            links = re.findall(r"\]\(([^)]+\.json)\)", document)
+            self.assertTrue(links, "Verification must link its machine-readable evidence")
+            for link in links:
+                with self.subTest(link=link):
+                    target = posixpath.normpath(posixpath.join(prefix, "docs", link))
+                    self.assertTrue(target.startswith(prefix + "/bench/evidence/"))
+                    self.assertIn(target, names)
 
     @unittest.skipUnless(os.environ.get("GD_TEST_SDIST"), "Set GD_TEST_SDIST for the source archive gate")
     def test_source_archive_includes_helpers_for_documented_test_commands(self):

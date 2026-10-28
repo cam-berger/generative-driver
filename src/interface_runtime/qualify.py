@@ -48,6 +48,49 @@ def _require(condition, message):
         raise QualifyError(message)
 
 
+def _rejection_lines(step, prefix):
+    """Smallest declared error prefix/completion witness, without invented message text."""
+    form, completion = next(iter(step['rx']['end'].items()))
+    if form == 'line_equals':
+        if completion.startswith(prefix):
+            return [completion]
+    elif form == 'line_prefix':
+        if completion.startswith(prefix):
+            return [completion]
+        if prefix.startswith(completion):
+            return [prefix]
+    else:
+        token = prefix.lstrip()
+        if not token or completion.startswith(token):
+            return [prefix[:len(prefix) - len(token)] + completion]
+        if token.split(None, 1)[0] == completion:
+            return [prefix]
+    return [prefix, completion]
+
+
+def validate_candidate(model):
+    """Candidate response fitness, beyond structural validity; never opens a device.
+
+    Raw execution keeps structural validation so a deliberately wrong, bounded model
+    can still be measured. Generation and managed dispatch reject contradictory replies.
+    """
+    checked = validate_model(model)
+    if not checked['ok']:
+        return checked
+    defects = []
+    for name, operation in model['operations'].items():
+        for index, step in enumerate(operation['steps']):
+            if step['op'] != 'exchange' or step['rx']['mode'] != 'lines':
+                continue
+            for prefix in step.get('expect', {}).get('reject_line_prefix', []):
+                if len(_rejection_lines(step, prefix)) > step['rx'].get('max_lines', 4096):
+                    defects.append({'where': f'operations.{name}.steps.{index}.rx.max_lines',
+                        'what': 'max_lines cannot capture the declared rejection and separate completion line; '
+                                'allow at least two lines within an evidence-backed max_bytes bound'})
+                    break
+    return {**checked, 'ok': not defects, 'defects': defects}
+
+
 def _exchange_steps(operation):
     """Every step that transfers bytes and so takes one scripted reply: exchanges and USB control requests."""
     return [step for step in operation['steps'] if step['op'] in ('exchange', 'usb_control')]
@@ -178,7 +221,9 @@ def fault_reply(lines, fault, step, decoders, capture):
         return [''], True, 'the only line emptied'
     if fault == 'error':
         prefix, declared = _reject_prefix(step)
-        return [prefix + ' synthetic rejected request', completion], True, ('' if declared else 'model declares no reject_line_prefix; generic Error: used')
+        lines = (_rejection_lines(step, prefix) if step['rx']['mode'] == 'lines'
+                 else [prefix + ' synthetic rejected request', completion])
+        return lines, True, ('' if declared else 'model declares no reject_line_prefix; generic Error: used')
     if fault == 'malformed':
         return ['@@@ malformed reply @@@', completion], True, ''
     if fault in ('timeout', 'disconnect'):
@@ -638,6 +683,16 @@ def run_case(model, replies, operation, parameters, framing, chunk_bytes, fault=
                    if fault_phase == 'identity' else
                    result['identity_verified'] and state['attempted_tx'] == expected_tx[:identity_count + 1])
         case['negative_pass'] = bool(state['fault_applied'] and not result['ok'] and stopped)
+        if fault == 'error':
+            faulted = identity if fault_phase == 'identity' else operation
+            exchanges = _exchange_steps(model['operations'][faulted])
+            if exchanges and exchanges[0]['rx']['mode'] == 'lines':
+                # A declared device rejection must be received through its completion line.
+                # Hitting a receive limit rejects bytes too, but does not handle the error reply.
+                entry = result['transcript'][-1] if result['transcript'] else {}
+                supplied = script[0 if fault_phase == 'identity' else identity_count][0]
+                case['negative_pass'] = bool(case['negative_pass'] and entry.get('status') == 'completed'
+                    and entry.get('device_rejected') is True and entry.get('rx_hex') == supplied.hex())
     return case
 
 
@@ -732,8 +787,8 @@ def operation_suite(model, replies, name):
 
 def qualify(model, replies):
     """Full suite. Raises QualifyError for an invalid model or fixture; never opens hardware."""
-    checked = validate_model(model)
-    _require(checked['ok'], 'model is not structurally valid: ' + json.dumps(checked['defects']))
+    checked = validate_candidate(model)
+    _require(checked['ok'], 'candidate model is not valid: ' + json.dumps(checked['defects']))
     model = copy.deepcopy(model)
     validate_replies(model, replies)
     operations = {name: operation_suite(model, replies, name) for name in model['operations']}

@@ -114,6 +114,8 @@ UART/TCP only, schema 4+. Read through the first completion line, retaining late
 
 The complete reply, including final newline, must fit byte/line bounds. Missing completion at a bound fails `limit`; expired deadline `timeout`; early TCP close `disconnect`. The engine repeats shape checks for replay/injected transports: final LF, bounds, newline policy, and last line being the first completion match.
 
+Choose `max_lines` and `max_bytes` for complete success **and error** replies, including the completion line. A rejection prefix that cannot share the completion line needs room for at least two lines; candidate validation and the managed gateway refuse an impossible one-line contract before I/O. If the rejection line itself satisfies the completion rule, a one-line bound remains valid.
+
 Use completion-aware `lines`, never `up_to` or newline-only `until`, for multi-line replies: either can leave a tail that contaminates the next exchange. Pin acknowledgments with `final_line_equals`/`final_line_token` plus error prefixes; substring `ok` also matches `not ok` and `token`. Pin identity family/version/type separately, including token boundaries (trailing space or whole-line `contains_line`). Status must pin its own line shape.
 
 ## Worked example
@@ -181,7 +183,7 @@ Run configured Python 3.11+ (full interpreter path on Windows): `python3 validat
 
 `interface-replies/1` supplies one array of reply lines per exchange, including completion, excluding delays; include `parameters` when required. Derive replies from supplied evidence, not from model guards.
 
-The real engine/stream adapter receives complete replies and 1, 2, 7, 16, 32, 64-byte fragments under LF/CRLF. Faults cover unrelated replies, changed identity anchors, truncation, missing completion, declared errors, malformed lines, timeout and disconnect. Trailing bytes are a diagnostic. Qualification tests predicted replies and guards, not whether the device behaves that way; probe/ground establish behavior later.
+The real engine/stream adapter receives complete replies and 1, 2, 7, 16, 32, 64-byte fragments under LF/CRLF. Faults cover unrelated replies, changed identity anchors, truncation, missing completion, declared errors, malformed lines, timeout and disconnect. For completion-aware line error cases, qualification requires a completed reply with the declared rejection recognized; a framing or receive-limit failure does not count as handling the device rejection. Trailing bytes are a diagnostic. Qualification tests predicted replies and guards, not whether the device behaves that way; probe/ground establish behavior later.
 
 Predicted replies for the example:
 

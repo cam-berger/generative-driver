@@ -49,6 +49,12 @@ def public_v2_report(payload: dict) -> dict:
         'tool_seconds', 'tool_calls', 'worker_tool_seconds', 'evaluator_tool_seconds',
         'additional_attempts', 'unfinished_tool_calls', 'human_inputs', 'original_budget_seconds', 'effective_budget_seconds'))
     result['schema'] = 'benchmark-report/2'
+    setup = payload.get('execution_setup')
+    if isinstance(setup, dict):
+        result['execution_setup'] = {**_scalars(setup, ('method', 'artifact')),
+            **{key: [item for item in setup.get(key, []) if isinstance(item, str)]
+               for key in ('substitutions', 'validated_behavior', 'hardware_gaps')
+               if isinstance(setup.get(key), list)}}
     result['case_pin'] = public_pin(payload.get('case_pin', {}))
     result['final_evaluation'] = _scalars(payload.get('final_evaluation', {}), (*COUNTS, 'evidence_sha256'))
     result['evaluations'] = [_evaluation(row) for row in payload.get('evaluations', [])]

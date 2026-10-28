@@ -1,0 +1,2364 @@
+{
+  "schema": "benchmark-performance-verification/1",
+  "date": "2026-10-27",
+  "implementation_commit": "9df3887",
+  "plan_commit": "a4d29cf",
+  "wheel_sha256": "040f91e6d6f6da205566897040676aaedbcff9df9fc09446e694952a64274042",
+  "runtime_version": "0.164.0-alpha.11.1",
+  "model": "gpt-6.1-sol",
+  "reasoning_effort": "unspecified CLI default",
+  "runtime_hashes": {
+    "entrypoint": "50ab38ba21d0d9f8346f32f41848382f15b556190f3c7a07e885a4fb73e379c8",
+    "binary": "a04752e4d46a4d89e53e6f61c59c5349a638c8ce172ffbf391fd482b4d902a4e",
+    "tool_host": "ed54cd5333f72f9354b1c8e6e9601ccb2eec8c2b7a4e4c566f370b28308d8c59"
+  },
+  "protocol": "assistive/1",
+  "execution": "actual-agent-emulation",
+  "host": {
+    "system": "Darwin",
+    "release": "25.5.0",
+    "architecture": "arm64",
+    "python": "3.13.12"
+  },
+  "evaluator_revision": "c971117c61518c0d261b577c9b4d3a1fe1cb80e627dd6e01b183a3ce93764e7a",
+  "toolchain_revision": "a43d45702e0a489d4eb4ce9084271a020a7f372c79e52517370a5ce4e3418eab",
+  "skills_revision": "ce059d9a773b1f80279eed9c5b571286f4188880b4b93bdd1515de5c4e7a9ab6",
+  "primary_success": "Independent equivalence and successful fresh mission for the same frozen driver, with six accepted handoffs",
+  "mission_verification": "Offline score authenticates and carries sealed mission judgments; a separate read-only audit checks public reuse observations.",
+  "frozen_child_budget_seconds": 10800,
+  "max_pipeline_repairs": 2,
+  "case_seed": 0,
+  "tracks": {
+    "upstream": {
+      "suite_id": "suite-fd16e2c5b7b04017",
+      "qualification": "regraded-encrypted-evidence",
+      "qualification_meaning": "Authenticated sidecars; run association comes from the configured owner.",
+      "counts": {
+        "planned": 3,
+        "started": 3,
+        "finished": 3,
+        "not_run": 0,
+        "equivalent": 3,
+        "not_equivalent": 0,
+        "no_driver": 0,
+        "unqualified": 0,
+        "unscored": 0,
+        "running": 0,
+        "stopped": {}
+      },
+      "joint": {
+        "passed": 3,
+        "denominator": 3,
+        "rate": 1.0
+      },
+      "suite_wall_seconds": 1817.5153269767761,
+      "planned": 3,
+      "scored_finals": 3,
+      "joint_success": 3,
+      "equivalent": 3,
+      "mission": 3,
+      "all_six_accepted": 3,
+      "outcomes": {
+        "equivalent": 3
+      },
+      "no_driver": 0,
+      "trials_with_repairs": 1,
+      "additional_attempts": 2,
+      "intervention_events": 0,
+      "repairs": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 1,
+        "observed_sum": 1,
+        "min": 0,
+        "median": 0,
+        "max": 1
+      },
+      "wall_seconds": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 1809.2230157852173,
+        "observed_sum": 1809.2230157852173,
+        "min": 458.9762558937073,
+        "median": 576.179004907608,
+        "max": 774.067754983902
+      },
+      "worker_seconds": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 1695.7836871649997,
+        "observed_sum": 1695.7836871649997,
+        "min": 421.27751129199896,
+        "median": 538.6408044990021,
+        "max": 735.8653713739986
+      },
+      "managed_calls": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 232,
+        "observed_sum": 232,
+        "min": 49,
+        "median": 58,
+        "max": 125
+      },
+      "usage_attempts": 20,
+      "usage_reported_attempts": 20,
+      "tokens": {
+        "input_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 8601972,
+          "observed_sum": 8601972,
+          "min": 2273929,
+          "median": 2477173,
+          "max": 3850870
+        },
+        "cached_input_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 7860736,
+          "observed_sum": 7860736,
+          "min": 2039296,
+          "median": 2254336,
+          "max": 3567104
+        },
+        "output_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 51292,
+          "observed_sum": 51292,
+          "min": 12932,
+          "median": 16084,
+          "max": 22276
+        },
+        "reasoning_output_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3251,
+          "observed_sum": 3251,
+          "min": 592,
+          "median": 1208,
+          "max": 1451
+        },
+        "total_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 8653264,
+          "observed_sum": 8653264,
+          "min": 2286861,
+          "median": 2493257,
+          "max": 3873146
+        }
+      }
+    },
+    "core": {
+      "suite_id": "suite-80c1085b82e34925",
+      "qualification": "regraded-encrypted-evidence",
+      "qualification_meaning": "Authenticated sidecars; run association comes from the configured owner.",
+      "counts": {
+        "planned": 9,
+        "started": 9,
+        "finished": 9,
+        "not_run": 0,
+        "equivalent": 7,
+        "not_equivalent": 2,
+        "no_driver": 0,
+        "unqualified": 0,
+        "unscored": 0,
+        "running": 0,
+        "stopped": {}
+      },
+      "joint": {
+        "passed": 7,
+        "denominator": 9,
+        "rate": 0.7777777777777778
+      },
+      "suite_wall_seconds": 3517.4427959918976,
+      "planned": 9,
+      "scored_finals": 9,
+      "joint_success": 7,
+      "equivalent": 7,
+      "mission": 9,
+      "all_six_accepted": 9,
+      "outcomes": {
+        "equivalent": 7,
+        "not_equivalent": 2
+      },
+      "no_driver": 0,
+      "trials_with_repairs": 3,
+      "additional_attempts": 6,
+      "intervention_events": 0,
+      "repairs": {
+        "n": 9,
+        "expected_n": 9,
+        "missing": 0,
+        "sum": 3,
+        "observed_sum": 3,
+        "min": 0,
+        "median": 0,
+        "max": 1
+      },
+      "wall_seconds": {
+        "n": 9,
+        "expected_n": 9,
+        "missing": 0,
+        "sum": 3494.9407427310944,
+        "observed_sum": 3494.9407427310944,
+        "min": 301.62536907196045,
+        "median": 417.70682096481323,
+        "max": 431.3674359321594
+      },
+      "worker_seconds": {
+        "n": 9,
+        "expected_n": 9,
+        "missing": 0,
+        "sum": 3160.3687782889974,
+        "observed_sum": 3160.3687782889974,
+        "min": 283.83157187399775,
+        "median": 351.4836141239939,
+        "max": 401.1590928759906
+      },
+      "managed_calls": {
+        "n": 9,
+        "expected_n": 9,
+        "missing": 0,
+        "sum": 255,
+        "observed_sum": 255,
+        "min": 20,
+        "median": 31,
+        "max": 34
+      },
+      "usage_attempts": 60,
+      "usage_reported_attempts": 60,
+      "tokens": {
+        "input_tokens": {
+          "n": 9,
+          "expected_n": 9,
+          "missing": 0,
+          "sum": 11167832,
+          "observed_sum": 11167832,
+          "min": 1071081,
+          "median": 1244170,
+          "max": 1360906
+        },
+        "cached_input_tokens": {
+          "n": 9,
+          "expected_n": 9,
+          "missing": 0,
+          "sum": 9527808,
+          "observed_sum": 9527808,
+          "min": 929024,
+          "median": 1060224,
+          "max": 1153920
+        },
+        "output_tokens": {
+          "n": 9,
+          "expected_n": 9,
+          "missing": 0,
+          "sum": 119478,
+          "observed_sum": 119478,
+          "min": 11009,
+          "median": 13309,
+          "max": 15227
+        },
+        "reasoning_output_tokens": {
+          "n": 9,
+          "expected_n": 9,
+          "missing": 0,
+          "sum": 4485,
+          "observed_sum": 4485,
+          "min": 221,
+          "median": 371,
+          "max": 901
+        },
+        "total_tokens": {
+          "n": 9,
+          "expected_n": 9,
+          "missing": 0,
+          "sum": 11287310,
+          "observed_sum": 11287310,
+          "min": 1082090,
+          "median": 1256513,
+          "max": 1375728
+        }
+      }
+    },
+    "legacy": {
+      "suite_id": "suite-048fc982fd3d4b9f",
+      "qualification": "regraded-encrypted-evidence",
+      "qualification_meaning": "Authenticated sidecars; run association comes from the configured owner.",
+      "counts": {
+        "planned": 3,
+        "started": 3,
+        "finished": 3,
+        "not_run": 0,
+        "equivalent": 3,
+        "not_equivalent": 0,
+        "no_driver": 0,
+        "unqualified": 0,
+        "unscored": 0,
+        "running": 0,
+        "stopped": {}
+      },
+      "joint": {
+        "passed": 3,
+        "denominator": 3,
+        "rate": 1.0
+      },
+      "suite_wall_seconds": 943.505224943161,
+      "planned": 3,
+      "scored_finals": 3,
+      "joint_success": 3,
+      "equivalent": 3,
+      "mission": 3,
+      "all_six_accepted": 3,
+      "outcomes": {
+        "equivalent": 3
+      },
+      "no_driver": 0,
+      "trials_with_repairs": 0,
+      "additional_attempts": 0,
+      "intervention_events": 0,
+      "repairs": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 0,
+        "observed_sum": 0,
+        "min": 0,
+        "median": 0,
+        "max": 0
+      },
+      "wall_seconds": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 935.7213938236237,
+        "observed_sum": 935.7213938236237,
+        "min": 301.3438489437103,
+        "median": 309.7631530761719,
+        "max": 324.61439180374146
+      },
+      "worker_seconds": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 932.9448077100096,
+        "observed_sum": 932.9448077100096,
+        "min": 300.505172918005,
+        "median": 308.8344620409989,
+        "max": 323.60517275100574
+      },
+      "managed_calls": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 64,
+        "observed_sum": 64,
+        "min": 20,
+        "median": 22,
+        "max": 22
+      },
+      "usage_attempts": 18,
+      "usage_reported_attempts": 18,
+      "tokens": {
+        "input_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3694711,
+          "observed_sum": 3694711,
+          "min": 1220411,
+          "median": 1233880,
+          "max": 1240420
+        },
+        "cached_input_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3208576,
+          "observed_sum": 3208576,
+          "min": 1058048,
+          "median": 1067776,
+          "max": 1082752
+        },
+        "output_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 37560,
+          "observed_sum": 37560,
+          "min": 12351,
+          "median": 12516,
+          "max": 12693
+        },
+        "reasoning_output_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 1669,
+          "observed_sum": 1669,
+          "min": 397,
+          "median": 534,
+          "max": 738
+        },
+        "total_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3732271,
+          "observed_sum": 3732271,
+          "min": 1232762,
+          "median": 1246396,
+          "max": 1253113
+        }
+      }
+    }
+  },
+  "by_case": {
+    "zephyr-modbus-v1": {
+      "planned": 3,
+      "scored_finals": 3,
+      "joint_success": 3,
+      "equivalent": 3,
+      "mission": 3,
+      "all_six_accepted": 3,
+      "outcomes": {
+        "equivalent": 3
+      },
+      "no_driver": 0,
+      "trials_with_repairs": 1,
+      "additional_attempts": 2,
+      "intervention_events": 0,
+      "repairs": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 1,
+        "observed_sum": 1,
+        "min": 0,
+        "median": 0,
+        "max": 1
+      },
+      "wall_seconds": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 1809.2230157852173,
+        "observed_sum": 1809.2230157852173,
+        "min": 458.9762558937073,
+        "median": 576.179004907608,
+        "max": 774.067754983902
+      },
+      "worker_seconds": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 1695.7836871649997,
+        "observed_sum": 1695.7836871649997,
+        "min": 421.27751129199896,
+        "median": 538.6408044990021,
+        "max": 735.8653713739986
+      },
+      "managed_calls": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 232,
+        "observed_sum": 232,
+        "min": 49,
+        "median": 58,
+        "max": 125
+      },
+      "usage_attempts": 20,
+      "usage_reported_attempts": 20,
+      "tokens": {
+        "input_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 8601972,
+          "observed_sum": 8601972,
+          "min": 2273929,
+          "median": 2477173,
+          "max": 3850870
+        },
+        "cached_input_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 7860736,
+          "observed_sum": 7860736,
+          "min": 2039296,
+          "median": 2254336,
+          "max": 3567104
+        },
+        "output_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 51292,
+          "observed_sum": 51292,
+          "min": 12932,
+          "median": 16084,
+          "max": 22276
+        },
+        "reasoning_output_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3251,
+          "observed_sum": 3251,
+          "min": 592,
+          "median": 1208,
+          "max": 1451
+        },
+        "total_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 8653264,
+          "observed_sum": 8653264,
+          "min": 2286861,
+          "median": 2493257,
+          "max": 3873146
+        }
+      },
+      "exact_95_interval": [
+        0.2924017738212866,
+        1.0
+      ]
+    },
+    "tq9-v2": {
+      "planned": 3,
+      "scored_finals": 3,
+      "joint_success": 3,
+      "equivalent": 3,
+      "mission": 3,
+      "all_six_accepted": 3,
+      "outcomes": {
+        "equivalent": 3
+      },
+      "no_driver": 0,
+      "trials_with_repairs": 0,
+      "additional_attempts": 0,
+      "intervention_events": 0,
+      "repairs": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 0,
+        "observed_sum": 0,
+        "min": 0,
+        "median": 0,
+        "max": 0
+      },
+      "wall_seconds": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 962.8483619689941,
+        "observed_sum": 962.8483619689941,
+        "min": 301.62536907196045,
+        "median": 328.98693799972534,
+        "max": 332.23605489730835
+      },
+      "worker_seconds": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 909.4304518720091,
+        "observed_sum": 909.4304518720091,
+        "min": 283.83157187399775,
+        "median": 311.0640820420085,
+        "max": 314.5347979560029
+      },
+      "managed_calls": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 66,
+        "observed_sum": 66,
+        "min": 20,
+        "median": 21,
+        "max": 25
+      },
+      "usage_attempts": 18,
+      "usage_reported_attempts": 18,
+      "tokens": {
+        "input_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3563052,
+          "observed_sum": 3563052,
+          "min": 1071081,
+          "median": 1244170,
+          "max": 1247801
+        },
+        "cached_input_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3045504,
+          "observed_sum": 3045504,
+          "min": 929024,
+          "median": 1048448,
+          "max": 1068032
+        },
+        "output_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 34871,
+          "observed_sum": 34871,
+          "min": 11009,
+          "median": 11519,
+          "max": 12343
+        },
+        "reasoning_output_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 858,
+          "observed_sum": 858,
+          "min": 221,
+          "median": 297,
+          "max": 340
+        },
+        "total_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3597923,
+          "observed_sum": 3597923,
+          "min": 1082090,
+          "median": 1256513,
+          "max": 1259320
+        }
+      },
+      "exact_95_interval": [
+        0.2924017738212866,
+        1.0
+      ]
+    },
+    "sampled-sensor-v1": {
+      "planned": 3,
+      "scored_finals": 3,
+      "joint_success": 3,
+      "equivalent": 3,
+      "mission": 3,
+      "all_six_accepted": 3,
+      "outcomes": {
+        "equivalent": 3
+      },
+      "no_driver": 0,
+      "trials_with_repairs": 3,
+      "additional_attempts": 6,
+      "intervention_events": 0,
+      "repairs": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 3,
+        "observed_sum": 3,
+        "min": 1,
+        "median": 1,
+        "max": 1
+      },
+      "wall_seconds": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 1273.4654910564423,
+        "observed_sum": 1273.4654910564423,
+        "min": 419.5843551158905,
+        "median": 425.2917540073395,
+        "max": 428.5893819332123
+      },
+      "worker_seconds": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 1191.7900083339991,
+        "observed_sum": 1191.7900083339991,
+        "min": 392.56524421001086,
+        "median": 398.06567124799767,
+        "max": 401.1590928759906
+      },
+      "managed_calls": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 94,
+        "observed_sum": 94,
+        "min": 31,
+        "median": 31,
+        "max": 32
+      },
+      "usage_attempts": 24,
+      "usage_reported_attempts": 24,
+      "tokens": {
+        "input_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3830268,
+          "observed_sum": 3830268,
+          "min": 1232051,
+          "median": 1237311,
+          "max": 1360906
+        },
+        "cached_input_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3210880,
+          "observed_sum": 3210880,
+          "min": 1007744,
+          "median": 1049216,
+          "max": 1153920
+        },
+        "output_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 45129,
+          "observed_sum": 45129,
+          "min": 14822,
+          "median": 15080,
+          "max": 15227
+        },
+        "reasoning_output_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 1207,
+          "observed_sum": 1207,
+          "min": 370,
+          "median": 371,
+          "max": 466
+        },
+        "total_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3875397,
+          "observed_sum": 3875397,
+          "min": 1247131,
+          "median": 1252538,
+          "max": 1375728
+        }
+      },
+      "exact_95_interval": [
+        0.2924017738212866,
+        1.0
+      ]
+    },
+    "parameter-store-v1": {
+      "planned": 3,
+      "scored_finals": 3,
+      "joint_success": 1,
+      "equivalent": 1,
+      "mission": 3,
+      "all_six_accepted": 3,
+      "outcomes": {
+        "not_equivalent": 2,
+        "equivalent": 1
+      },
+      "no_driver": 0,
+      "trials_with_repairs": 0,
+      "additional_attempts": 0,
+      "intervention_events": 0,
+      "repairs": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 0,
+        "observed_sum": 0,
+        "min": 0,
+        "median": 0,
+        "max": 0
+      },
+      "wall_seconds": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 1258.626889705658,
+        "observed_sum": 1258.626889705658,
+        "min": 409.5526328086853,
+        "median": 417.70682096481323,
+        "max": 431.3674359321594
+      },
+      "worker_seconds": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 1059.1483180829891,
+        "observed_sum": 1059.1483180829891,
+        "min": 342.7509318329903,
+        "median": 351.4836141239939,
+        "max": 364.9137721260049
+      },
+      "managed_calls": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 95,
+        "observed_sum": 95,
+        "min": 30,
+        "median": 31,
+        "max": 34
+      },
+      "usage_attempts": 18,
+      "usage_reported_attempts": 18,
+      "tokens": {
+        "input_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3774512,
+          "observed_sum": 3774512,
+          "min": 1203179,
+          "median": 1265900,
+          "max": 1305433
+        },
+        "cached_input_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3271424,
+          "observed_sum": 3271424,
+          "min": 1060224,
+          "median": 1080448,
+          "max": 1130752
+        },
+        "output_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 39478,
+          "observed_sum": 39478,
+          "min": 12298,
+          "median": 13309,
+          "max": 13871
+        },
+        "reasoning_output_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 2420,
+          "observed_sum": 2420,
+          "min": 753,
+          "median": 766,
+          "max": 901
+        },
+        "total_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3813990,
+          "observed_sum": 3813990,
+          "min": 1215477,
+          "median": 1279209,
+          "max": 1319304
+        }
+      },
+      "exact_95_interval": [
+        0.008403758659612636,
+        0.9057006759497539
+      ]
+    },
+    "tq9": {
+      "planned": 3,
+      "scored_finals": 3,
+      "joint_success": 3,
+      "equivalent": 3,
+      "mission": 3,
+      "all_six_accepted": 3,
+      "outcomes": {
+        "equivalent": 3
+      },
+      "no_driver": 0,
+      "trials_with_repairs": 0,
+      "additional_attempts": 0,
+      "intervention_events": 0,
+      "repairs": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 0,
+        "observed_sum": 0,
+        "min": 0,
+        "median": 0,
+        "max": 0
+      },
+      "wall_seconds": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 935.7213938236237,
+        "observed_sum": 935.7213938236237,
+        "min": 301.3438489437103,
+        "median": 309.7631530761719,
+        "max": 324.61439180374146
+      },
+      "worker_seconds": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 932.9448077100096,
+        "observed_sum": 932.9448077100096,
+        "min": 300.505172918005,
+        "median": 308.8344620409989,
+        "max": 323.60517275100574
+      },
+      "managed_calls": {
+        "n": 3,
+        "expected_n": 3,
+        "missing": 0,
+        "sum": 64,
+        "observed_sum": 64,
+        "min": 20,
+        "median": 22,
+        "max": 22
+      },
+      "usage_attempts": 18,
+      "usage_reported_attempts": 18,
+      "tokens": {
+        "input_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3694711,
+          "observed_sum": 3694711,
+          "min": 1220411,
+          "median": 1233880,
+          "max": 1240420
+        },
+        "cached_input_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3208576,
+          "observed_sum": 3208576,
+          "min": 1058048,
+          "median": 1067776,
+          "max": 1082752
+        },
+        "output_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 37560,
+          "observed_sum": 37560,
+          "min": 12351,
+          "median": 12516,
+          "max": 12693
+        },
+        "reasoning_output_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 1669,
+          "observed_sum": 1669,
+          "min": 397,
+          "median": 534,
+          "max": 738
+        },
+        "total_tokens": {
+          "n": 3,
+          "expected_n": 3,
+          "missing": 0,
+          "sum": 3732271,
+          "observed_sum": 3732271,
+          "min": 1232762,
+          "median": 1246396,
+          "max": 1253113
+        }
+      },
+      "exact_95_interval": [
+        0.2924017738212866,
+        1.0
+      ]
+    }
+  },
+  "resource_totals_all_profile_trials": {
+    "planned": 15,
+    "scored_finals": 15,
+    "joint_success": 13,
+    "equivalent": 13,
+    "mission": 15,
+    "all_six_accepted": 15,
+    "outcomes": {
+      "equivalent": 13,
+      "not_equivalent": 2
+    },
+    "no_driver": 0,
+    "trials_with_repairs": 4,
+    "additional_attempts": 8,
+    "intervention_events": 0,
+    "repairs": {
+      "n": 15,
+      "expected_n": 15,
+      "missing": 0,
+      "sum": 4,
+      "observed_sum": 4,
+      "min": 0,
+      "median": 0,
+      "max": 1
+    },
+    "wall_seconds": {
+      "n": 15,
+      "expected_n": 15,
+      "missing": 0,
+      "sum": 6239.885152339935,
+      "observed_sum": 6239.885152339935,
+      "min": 301.3438489437103,
+      "median": 417.70682096481323,
+      "max": 774.067754983902
+    },
+    "worker_seconds": {
+      "n": 15,
+      "expected_n": 15,
+      "missing": 0,
+      "sum": 5789.097273164007,
+      "observed_sum": 5789.097273164007,
+      "min": 283.83157187399775,
+      "median": 351.4836141239939,
+      "max": 735.8653713739986
+    },
+    "managed_calls": {
+      "n": 15,
+      "expected_n": 15,
+      "missing": 0,
+      "sum": 551,
+      "observed_sum": 551,
+      "min": 20,
+      "median": 31,
+      "max": 125
+    },
+    "usage_attempts": 98,
+    "usage_reported_attempts": 98,
+    "tokens": {
+      "input_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 23464515,
+        "observed_sum": 23464515,
+        "min": 1071081,
+        "median": 1244170,
+        "max": 3850870
+      },
+      "cached_input_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 20597120,
+        "observed_sum": 20597120,
+        "min": 929024,
+        "median": 1068032,
+        "max": 3567104
+      },
+      "output_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 208330,
+        "observed_sum": 208330,
+        "min": 11009,
+        "median": 12932,
+        "max": 22276
+      },
+      "reasoning_output_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 9405,
+        "observed_sum": 9405,
+        "min": 221,
+        "median": 534,
+        "max": 1451
+      },
+      "total_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 23672845,
+        "observed_sum": 23672845,
+        "min": 1082090,
+        "median": 1256513,
+        "max": 3873146
+      }
+    }
+  },
+  "stage_worker_seconds_all_profile_trials": {
+    "acquire": {
+      "n": 15,
+      "expected_n": 15,
+      "missing": 0,
+      "sum": 307.71972295800515,
+      "observed_sum": 307.71972295800515,
+      "min": 18.168326667000656,
+      "median": 20.51945262499794,
+      "max": 23.475795125006698
+    },
+    "interpret": {
+      "n": 15,
+      "expected_n": 15,
+      "missing": 0,
+      "sum": 2234.1983304570094,
+      "observed_sum": 2234.1983304570094,
+      "min": 95.48849770800007,
+      "median": 131.95954699999857,
+      "max": 285.85268079100206
+    },
+    "probe": {
+      "n": 15,
+      "expected_n": 15,
+      "missing": 0,
+      "sum": 1272.677188415997,
+      "observed_sum": 1272.677188415997,
+      "min": 38.72073400000227,
+      "median": 57.662485250002646,
+      "max": 236.25036787599674
+    },
+    "ground": {
+      "n": 15,
+      "expected_n": 15,
+      "missing": 0,
+      "sum": 925.8782796680098,
+      "observed_sum": 925.8782796680098,
+      "min": 39.92688887500117,
+      "median": 57.69747137500235,
+      "max": 117.08537300000171
+    },
+    "emit": {
+      "n": 15,
+      "expected_n": 15,
+      "missing": 0,
+      "sum": 360.86597849999816,
+      "observed_sum": 360.86597849999816,
+      "min": 19.576979124998616,
+      "median": 22.659148375001678,
+      "max": 34.62953133299743
+    },
+    "reuse": {
+      "n": 15,
+      "expected_n": 15,
+      "missing": 0,
+      "sum": 687.7577731649872,
+      "observed_sum": 687.7577731649872,
+      "min": 36.056072416999086,
+      "median": 46.99522949999664,
+      "max": 58.90176966700528
+    }
+  },
+  "stage_tokens_all_profile_trials": {
+    "acquire": {
+      "input_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 891405,
+        "observed_sum": 891405,
+        "min": 45645,
+        "median": 61222,
+        "max": 72542
+      },
+      "cached_input_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 601984,
+        "observed_sum": 601984,
+        "min": 21504,
+        "median": 42112,
+        "max": 53632
+      },
+      "output_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 14580,
+        "observed_sum": 14580,
+        "min": 787,
+        "median": 984,
+        "max": 1109
+      },
+      "total_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 905985,
+        "observed_sum": 905985,
+        "min": 46640,
+        "median": 62241,
+        "max": 73651
+      }
+    },
+    "interpret": {
+      "input_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 10820767,
+        "observed_sum": 10820767,
+        "min": 404368,
+        "median": 497106,
+        "max": 1800427
+      },
+      "cached_input_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 9959424,
+        "observed_sum": 9959424,
+        "min": 362112,
+        "median": 451328,
+        "max": 1731968
+      },
+      "output_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 80761,
+        "observed_sum": 80761,
+        "min": 3712,
+        "median": 5047,
+        "max": 10280
+      },
+      "total_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 10901528,
+        "observed_sum": 10901528,
+        "min": 408080,
+        "median": 501550,
+        "max": 1807379
+      }
+    },
+    "probe": {
+      "input_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 4141821,
+        "observed_sum": 4141821,
+        "min": 122598,
+        "median": 185317,
+        "max": 1253260
+      },
+      "cached_input_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 3522304,
+        "observed_sum": 3522304,
+        "min": 93952,
+        "median": 158848,
+        "max": 1184512
+      },
+      "output_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 40213,
+        "observed_sum": 40213,
+        "min": 1445,
+        "median": 2086,
+        "max": 5542
+      },
+      "total_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 4182034,
+        "observed_sum": 4182034,
+        "min": 124468,
+        "median": 187403,
+        "max": 1258802
+      }
+    },
+    "ground": {
+      "input_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 3489046,
+        "observed_sum": 3489046,
+        "min": 157169,
+        "median": 201035,
+        "max": 547809
+      },
+      "cached_input_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 2993280,
+        "observed_sum": 2993280,
+        "min": 134784,
+        "median": 179200,
+        "max": 516736
+      },
+      "output_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 32092,
+        "observed_sum": 32092,
+        "min": 1634,
+        "median": 2006,
+        "max": 2994
+      },
+      "total_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 3521138,
+        "observed_sum": 3521138,
+        "min": 158990,
+        "median": 203080,
+        "max": 550391
+      }
+    },
+    "emit": {
+      "input_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 1305165,
+        "observed_sum": 1305165,
+        "min": 69110,
+        "median": 90180,
+        "max": 115208
+      },
+      "cached_input_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 1068288,
+        "observed_sum": 1068288,
+        "min": 39168,
+        "median": 68864,
+        "max": 104960
+      },
+      "output_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 16460,
+        "observed_sum": 16460,
+        "min": 922,
+        "median": 1013,
+        "max": 1447
+      },
+      "total_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 1321625,
+        "observed_sum": 1321625,
+        "min": 70055,
+        "median": 91165,
+        "max": 116646
+      }
+    },
+    "reuse": {
+      "input_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 2816311,
+        "observed_sum": 2816311,
+        "min": 93699,
+        "median": 172487,
+        "max": 300408
+      },
+      "cached_input_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 2451840,
+        "observed_sum": 2451840,
+        "min": 56960,
+        "median": 159488,
+        "max": 267264
+      },
+      "output_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 24224,
+        "observed_sum": 24224,
+        "min": 1261,
+        "median": 1579,
+        "max": 2208
+      },
+      "total_tokens": {
+        "n": 15,
+        "expected_n": 15,
+        "missing": 0,
+        "sum": 2840535,
+        "observed_sum": 2840535,
+        "min": 95270,
+        "median": 174143,
+        "max": 302336
+      }
+    }
+  },
+  "corpus": {
+    "counts": {
+      "blocked": 18,
+      "not_run": 0,
+      "passed": 3,
+      "failed": 0,
+      "unscored": 0,
+      "unqualified": 0,
+      "stopped": 0,
+      "running": 0,
+      "planned": 21,
+      "started": 3,
+      "selected": 21,
+      "excluded": 0
+    },
+    "measured_success": {
+      "passed": 3,
+      "denominator": 3,
+      "rate": 1.0
+    },
+    "selected_coverage": {
+      "passed": 3,
+      "denominator": 21,
+      "rate": 0.14285714285714285
+    },
+    "demonstrated_coverage": {
+      "passed": 3,
+      "denominator": 21,
+      "rate": 0.14285714285714285
+    },
+    "lineages": {
+      "grbl-motion": {
+        "counts": {
+          "blocked": 3,
+          "not_run": 0,
+          "passed": 0,
+          "failed": 0,
+          "unscored": 0,
+          "unqualified": 0,
+          "stopped": 0,
+          "running": 0,
+          "planned": 3,
+          "started": 0,
+          "selected": 3,
+          "excluded": 0
+        },
+        "measured_success": {
+          "passed": 0,
+          "denominator": 0,
+          "rate": null
+        },
+        "demonstrated_coverage": {
+          "passed": 0,
+          "denominator": 3,
+          "rate": 0.0
+        },
+        "selected_coverage": {
+          "passed": 0,
+          "denominator": 3,
+          "rate": 0.0
+        }
+      },
+      "tasmota-relay": {
+        "counts": {
+          "blocked": 3,
+          "not_run": 0,
+          "passed": 0,
+          "failed": 0,
+          "unscored": 0,
+          "unqualified": 0,
+          "stopped": 0,
+          "running": 0,
+          "planned": 3,
+          "started": 0,
+          "selected": 3,
+          "excluded": 0
+        },
+        "measured_success": {
+          "passed": 0,
+          "denominator": 0,
+          "rate": null
+        },
+        "demonstrated_coverage": {
+          "passed": 0,
+          "denominator": 3,
+          "rate": 0.0
+        },
+        "selected_coverage": {
+          "passed": 0,
+          "denominator": 3,
+          "rate": 0.0
+        }
+      },
+      "openimu-sampling": {
+        "counts": {
+          "blocked": 3,
+          "not_run": 0,
+          "passed": 0,
+          "failed": 0,
+          "unscored": 0,
+          "unqualified": 0,
+          "stopped": 0,
+          "running": 0,
+          "planned": 3,
+          "started": 0,
+          "selected": 3,
+          "excluded": 0
+        },
+        "measured_success": {
+          "passed": 0,
+          "denominator": 0,
+          "rate": null
+        },
+        "demonstrated_coverage": {
+          "passed": 0,
+          "denominator": 3,
+          "rate": 0.0
+        },
+        "selected_coverage": {
+          "passed": 0,
+          "denominator": 3,
+          "rate": 0.0
+        }
+      },
+      "fx2lafw-capture": {
+        "counts": {
+          "blocked": 3,
+          "not_run": 0,
+          "passed": 0,
+          "failed": 0,
+          "unscored": 0,
+          "unqualified": 0,
+          "stopped": 0,
+          "running": 0,
+          "planned": 3,
+          "started": 0,
+          "selected": 3,
+          "excluded": 0
+        },
+        "measured_success": {
+          "passed": 0,
+          "denominator": 0,
+          "rate": null
+        },
+        "demonstrated_coverage": {
+          "passed": 0,
+          "denominator": 3,
+          "rate": 0.0
+        },
+        "selected_coverage": {
+          "passed": 0,
+          "denominator": 3,
+          "rate": 0.0
+        }
+      },
+      "eez-psu": {
+        "counts": {
+          "blocked": 3,
+          "not_run": 0,
+          "passed": 0,
+          "failed": 0,
+          "unscored": 0,
+          "unqualified": 0,
+          "stopped": 0,
+          "running": 0,
+          "planned": 3,
+          "started": 0,
+          "selected": 3,
+          "excluded": 0
+        },
+        "measured_success": {
+          "passed": 0,
+          "denominator": 0,
+          "rate": null
+        },
+        "demonstrated_coverage": {
+          "passed": 0,
+          "denominator": 3,
+          "rate": 0.0
+        },
+        "selected_coverage": {
+          "passed": 0,
+          "denominator": 3,
+          "rate": 0.0
+        }
+      },
+      "odrive-controller": {
+        "counts": {
+          "blocked": 3,
+          "not_run": 0,
+          "passed": 0,
+          "failed": 0,
+          "unscored": 0,
+          "unqualified": 0,
+          "stopped": 0,
+          "running": 0,
+          "planned": 3,
+          "started": 0,
+          "selected": 3,
+          "excluded": 0
+        },
+        "measured_success": {
+          "passed": 0,
+          "denominator": 0,
+          "rate": null
+        },
+        "demonstrated_coverage": {
+          "passed": 0,
+          "denominator": 3,
+          "rate": 0.0
+        },
+        "selected_coverage": {
+          "passed": 0,
+          "denominator": 3,
+          "rate": 0.0
+        }
+      },
+      "zephyr-modbus": {
+        "counts": {
+          "blocked": 0,
+          "not_run": 0,
+          "passed": 3,
+          "failed": 0,
+          "unscored": 0,
+          "unqualified": 0,
+          "stopped": 0,
+          "running": 0,
+          "planned": 3,
+          "started": 3,
+          "selected": 3,
+          "excluded": 0
+        },
+        "measured_success": {
+          "passed": 3,
+          "denominator": 3,
+          "rate": 1.0
+        },
+        "demonstrated_coverage": {
+          "passed": 3,
+          "denominator": 3,
+          "rate": 1.0
+        },
+        "selected_coverage": {
+          "passed": 3,
+          "denominator": 3,
+          "rate": 1.0
+        }
+      }
+    }
+  },
+  "aggregation_limit": "All-executable totals are administrative/resource totals across profile trials; legacy TQ9 repeats TQ9 ancestry. No pooled population success estimate.",
+  "trial_records": [
+    {
+      "run_id": "run-2acb204fd7c146af",
+      "case": "sampled-sensor-v1",
+      "track": "core",
+      "equivalent": true,
+      "mission": true,
+      "all_six_accepted": true,
+      "joint": true,
+      "outcome": "equivalent",
+      "comparable_model_outcome": true,
+      "no_driver": false,
+      "workflow_status": "completed",
+      "reason": "Final verdict: equivalent",
+      "verdict": "equivalent",
+      "checks_passed": 85,
+      "checks_total": 85,
+      "evaluation_method": "fresh-final",
+      "repairs": 1,
+      "additional_attempts": 2,
+      "interventions": [],
+      "human_inputs": 0,
+      "unfinished_tool_calls": 0,
+      "elapsed_seconds": 419.5843551158905,
+      "worker_seconds": 392.56524421001086,
+      "tool_calls": 32,
+      "total_tokens": 1247131,
+      "cached_input_tokens": 1007744,
+      "usage_reported_attempts": 8,
+      "usage_attempts": 8,
+      "failed_checks": [],
+      "evidence_sha256": "1fbb99c8e9764aee20dad4edb02f0e50d42bb118e35915a570d690e06d66e41f",
+      "snapshot_sha256": "c887f681f0db368ea002529c9ce9c7e71d9d22929b4cd18b0a0e3a8c82e34526",
+      "case_version": "5",
+      "report_sha256": "8d6bd5ddebda4e91ab528c18cb28d17b41fb091829c4ec85e9034f23fb7b3074",
+      "frozen_artifact_sha256": "dede43161264d025a78105ebde2d1e618c6829c5e32e5c99a3891c1b7a8b7643",
+      "capabilities_sha256": "c43c9528572e79e46d17b3f17cec5f830cab200ae8cac854ee80e476c9b648c8"
+    },
+    {
+      "run_id": "run-2bc0aca074674ba7",
+      "case": "tq9-v2",
+      "track": "core",
+      "equivalent": true,
+      "mission": true,
+      "all_six_accepted": true,
+      "joint": true,
+      "outcome": "equivalent",
+      "comparable_model_outcome": true,
+      "no_driver": false,
+      "workflow_status": "completed",
+      "reason": "Final verdict: equivalent",
+      "verdict": "equivalent",
+      "checks_passed": 9,
+      "checks_total": 9,
+      "evaluation_method": "fresh-final",
+      "repairs": 0,
+      "additional_attempts": 0,
+      "interventions": [],
+      "human_inputs": 0,
+      "unfinished_tool_calls": 0,
+      "elapsed_seconds": 301.62536907196045,
+      "worker_seconds": 283.83157187399775,
+      "tool_calls": 20,
+      "total_tokens": 1082090,
+      "cached_input_tokens": 929024,
+      "usage_reported_attempts": 6,
+      "usage_attempts": 6,
+      "failed_checks": [],
+      "evidence_sha256": "935b5bbd1f6be6648d4c6734dd584880694fbd622b479bb1e2729fe470b2e2ae",
+      "snapshot_sha256": "89944d5784ed1840aebf0f31582c2bf0f020100fe84900788b9a22a9dfe2910c",
+      "case_version": "5",
+      "report_sha256": "f574050730484a783fb6cd5a96d9800fe667b462f927b03ab8d892705e8f024d",
+      "frozen_artifact_sha256": "d7c05371e88d03caee851aa24f1e1abb6699d758ac566a06de8c50104d394c75",
+      "capabilities_sha256": "4e8480078a5ef271ac51fd6b69b0f6ee56288d3a8bb8ec6e437291af3cccc5b5"
+    },
+    {
+      "run_id": "run-3e891259f3ed4672",
+      "case": "tq9-v2",
+      "track": "core",
+      "equivalent": true,
+      "mission": true,
+      "all_six_accepted": true,
+      "joint": true,
+      "outcome": "equivalent",
+      "comparable_model_outcome": true,
+      "no_driver": false,
+      "workflow_status": "completed",
+      "reason": "Final verdict: equivalent",
+      "verdict": "equivalent",
+      "checks_passed": 9,
+      "checks_total": 9,
+      "evaluation_method": "fresh-final",
+      "repairs": 0,
+      "additional_attempts": 0,
+      "interventions": [],
+      "human_inputs": 0,
+      "unfinished_tool_calls": 0,
+      "elapsed_seconds": 328.98693799972534,
+      "worker_seconds": 311.0640820420085,
+      "tool_calls": 21,
+      "total_tokens": 1256513,
+      "cached_input_tokens": 1068032,
+      "usage_reported_attempts": 6,
+      "usage_attempts": 6,
+      "failed_checks": [],
+      "evidence_sha256": "f613aa088a7918f63b30f093ef92fd867289f2a1c4393737a2a99890c405a94c",
+      "snapshot_sha256": "89944d5784ed1840aebf0f31582c2bf0f020100fe84900788b9a22a9dfe2910c",
+      "case_version": "5",
+      "report_sha256": "2b63c2b18f47314193c400e2f106366360ea6cee26894649839451cd0b49e652",
+      "frozen_artifact_sha256": "aea99de24e324d4b110ec960b59a646851b0cf3da8ffecf6cba3febe4adaf36b",
+      "capabilities_sha256": "4e8480078a5ef271ac51fd6b69b0f6ee56288d3a8bb8ec6e437291af3cccc5b5"
+    },
+    {
+      "run_id": "run-58df7257fdae4ff4",
+      "case": "tq9",
+      "track": "legacy",
+      "equivalent": true,
+      "mission": true,
+      "all_six_accepted": true,
+      "joint": true,
+      "outcome": "equivalent",
+      "comparable_model_outcome": true,
+      "no_driver": false,
+      "workflow_status": "completed",
+      "reason": "Final verdict: equivalent",
+      "verdict": "equivalent",
+      "checks_passed": 3,
+      "checks_total": 3,
+      "evaluation_method": "recorded-reuse",
+      "repairs": 0,
+      "additional_attempts": 0,
+      "interventions": [],
+      "human_inputs": 0,
+      "unfinished_tool_calls": 0,
+      "elapsed_seconds": 301.3438489437103,
+      "worker_seconds": 300.505172918005,
+      "tool_calls": 22,
+      "total_tokens": 1232762,
+      "cached_input_tokens": 1067776,
+      "usage_reported_attempts": 6,
+      "usage_attempts": 6,
+      "failed_checks": [],
+      "evidence_sha256": "1efca6cde5804377f362cca23a302369cd93c8df712bf5806a884ccc5e39a35b",
+      "snapshot_sha256": "869f0f870259a8e5eeb4f27b8f49a254b53731c27fa136e22b61ce859ef42888",
+      "case_version": "2",
+      "report_sha256": "8d6a26464460109758b89dc39f0b44892829dec067c736df6190749c78aadd52",
+      "frozen_artifact_sha256": "32be70676e96e60dbff51e277c5dd2bb9af233e067ec6d3346ee33641992ed10",
+      "capabilities_sha256": "6535034c644bbaf4fe20d2a169385162eabcf7f6c49d0ad4f0ab8821cabfdea9"
+    },
+    {
+      "run_id": "run-73fc7bd47b754502",
+      "case": "parameter-store-v1",
+      "track": "core",
+      "equivalent": false,
+      "mission": true,
+      "all_six_accepted": true,
+      "joint": false,
+      "outcome": "not_equivalent",
+      "comparable_model_outcome": true,
+      "no_driver": false,
+      "workflow_status": "completed",
+      "reason": "Final verdict: not equivalent: value mismatch; value mismatch; value mismatch; 2 more",
+      "verdict": "not equivalent",
+      "checks_passed": 886,
+      "checks_total": 891,
+      "evaluation_method": "fresh-final",
+      "repairs": 0,
+      "additional_attempts": 0,
+      "interventions": [],
+      "human_inputs": 0,
+      "unfinished_tool_calls": 0,
+      "elapsed_seconds": 409.5526328086853,
+      "worker_seconds": 342.7509318329903,
+      "tool_calls": 30,
+      "total_tokens": 1215477,
+      "cached_input_tokens": 1080448,
+      "usage_reported_attempts": 6,
+      "usage_attempts": 6,
+      "failed_checks": [
+        {
+          "id": "final/rejection/end/operation_rejected",
+          "reason": "value mismatch"
+        },
+        {
+          "id": "final/cell-0/no-transaction/operation_rejected",
+          "reason": "value mismatch"
+        },
+        {
+          "id": "final/cell-1/no-transaction/operation_rejected",
+          "reason": "value mismatch"
+        },
+        {
+          "id": "final/cell-2/no-transaction/operation_rejected",
+          "reason": "value mismatch"
+        },
+        {
+          "id": "final/cell-3/no-transaction/operation_rejected",
+          "reason": "value mismatch"
+        }
+      ],
+      "evidence_sha256": "d6d59ed74279ee3af5c1e71d08e42c287e864fead0084ee853177c8c5e9d38eb",
+      "snapshot_sha256": "84c060f02ff4358c0d2b3247c4e96f8d9c7c73378ca17613f80bed04f9918e68",
+      "case_version": "5",
+      "report_sha256": "203baafb4ec0cd834e7cc0618339747e41d5d8e0a59295c1cd179b6ce46b7f12",
+      "frozen_artifact_sha256": "8630b95ea1726edb957935d4e42ff051be67b89176e81c2666d8a8dcd9f96aa3",
+      "capabilities_sha256": "1db15ea0bee95d75c8b25e5e54eb705ac1511f1527412cbe59723945c57ade42"
+    },
+    {
+      "run_id": "run-89ab2e052ea54764",
+      "case": "parameter-store-v1",
+      "track": "core",
+      "equivalent": false,
+      "mission": true,
+      "all_six_accepted": true,
+      "joint": false,
+      "outcome": "not_equivalent",
+      "comparable_model_outcome": true,
+      "no_driver": false,
+      "workflow_status": "completed",
+      "reason": "Final verdict: not equivalent: value mismatch; value mismatch; value mismatch; 2 more",
+      "verdict": "not equivalent",
+      "checks_passed": 886,
+      "checks_total": 891,
+      "evaluation_method": "fresh-final",
+      "repairs": 0,
+      "additional_attempts": 0,
+      "interventions": [],
+      "human_inputs": 0,
+      "unfinished_tool_calls": 0,
+      "elapsed_seconds": 417.70682096481323,
+      "worker_seconds": 351.4836141239939,
+      "tool_calls": 34,
+      "total_tokens": 1279209,
+      "cached_input_tokens": 1060224,
+      "usage_reported_attempts": 6,
+      "usage_attempts": 6,
+      "failed_checks": [
+        {
+          "id": "final/rejection/end/operation_rejected",
+          "reason": "value mismatch"
+        },
+        {
+          "id": "final/cell-0/no-transaction/operation_rejected",
+          "reason": "value mismatch"
+        },
+        {
+          "id": "final/cell-1/no-transaction/operation_rejected",
+          "reason": "value mismatch"
+        },
+        {
+          "id": "final/cell-2/no-transaction/operation_rejected",
+          "reason": "value mismatch"
+        },
+        {
+          "id": "final/cell-3/no-transaction/operation_rejected",
+          "reason": "value mismatch"
+        }
+      ],
+      "evidence_sha256": "3d896bd45539dc8a929ace44d9c9d00d51b2b1554fbd5eded9b6c9427080021f",
+      "snapshot_sha256": "84c060f02ff4358c0d2b3247c4e96f8d9c7c73378ca17613f80bed04f9918e68",
+      "case_version": "5",
+      "report_sha256": "d68b12af709bcf329f6dd955279317aee2d5aa86577c748b2731e10fa595301d",
+      "frozen_artifact_sha256": "85d05ec5810664666be21836d706950af6154dde815b0f4ccd601cc5bd3dadec",
+      "capabilities_sha256": "d672e800fd5ac8890431e15e729e4e1a13118062c1719ba49ba9851f51832efe"
+    },
+    {
+      "run_id": "run-901051907cf74755",
+      "case": "zephyr-modbus-v1",
+      "track": "upstream",
+      "equivalent": true,
+      "mission": true,
+      "all_six_accepted": true,
+      "joint": true,
+      "outcome": "equivalent",
+      "comparable_model_outcome": true,
+      "no_driver": false,
+      "workflow_status": "completed",
+      "reason": "Final verdict: equivalent",
+      "verdict": "equivalent",
+      "checks_passed": 315,
+      "checks_total": 315,
+      "evaluation_method": "fresh-final",
+      "repairs": 1,
+      "additional_attempts": 2,
+      "interventions": [],
+      "human_inputs": 0,
+      "unfinished_tool_calls": 0,
+      "elapsed_seconds": 774.067754983902,
+      "worker_seconds": 735.8653713739986,
+      "tool_calls": 125,
+      "total_tokens": 3873146,
+      "cached_input_tokens": 3567104,
+      "usage_reported_attempts": 8,
+      "usage_attempts": 8,
+      "failed_checks": [],
+      "evidence_sha256": "a1d384fcf394cafc9c4eb1cec654b8d34976bca351c848aa06ce43cd71403c73",
+      "snapshot_sha256": "ceb07d53b3e30c6fc8a579b6c562128908eb122ac9b1803a4fe10ef4e84c6365",
+      "case_version": "1",
+      "report_sha256": "6e718704b641a7398d4a289738b473eab9eadcba0d6be26c1f9d239c930a35a9",
+      "frozen_artifact_sha256": "cfc330a9733f3885e884ae8a9b7579d98881c251378c0eca428c57c5df0907f0",
+      "capabilities_sha256": "8cd17d7cbf1f4df60d93c65f9a7b65202a4b7b9295d2843f4120da982c5e7dac"
+    },
+    {
+      "run_id": "run-9277cb2659384ea4",
+      "case": "sampled-sensor-v1",
+      "track": "core",
+      "equivalent": true,
+      "mission": true,
+      "all_six_accepted": true,
+      "joint": true,
+      "outcome": "equivalent",
+      "comparable_model_outcome": true,
+      "no_driver": false,
+      "workflow_status": "completed",
+      "reason": "Final verdict: equivalent",
+      "verdict": "equivalent",
+      "checks_passed": 85,
+      "checks_total": 85,
+      "evaluation_method": "fresh-final",
+      "repairs": 1,
+      "additional_attempts": 2,
+      "interventions": [],
+      "human_inputs": 0,
+      "unfinished_tool_calls": 0,
+      "elapsed_seconds": 428.5893819332123,
+      "worker_seconds": 401.1590928759906,
+      "tool_calls": 31,
+      "total_tokens": 1252538,
+      "cached_input_tokens": 1049216,
+      "usage_reported_attempts": 8,
+      "usage_attempts": 8,
+      "failed_checks": [],
+      "evidence_sha256": "7b0cf817b3a80cc0267bffdaab1dc3aa2344a0719f7f0a4d1c471ceb5b821a5a",
+      "snapshot_sha256": "c887f681f0db368ea002529c9ce9c7e71d9d22929b4cd18b0a0e3a8c82e34526",
+      "case_version": "5",
+      "report_sha256": "4b83865d6ebb7360755a6db5491b008039dbf3edcfd2e244a4fcd939f32412d1",
+      "frozen_artifact_sha256": "69fd0b71eec2b8e42f2f122317f9765d1d6d2583e2ea68338239716b79a42d95",
+      "capabilities_sha256": "c43c9528572e79e46d17b3f17cec5f830cab200ae8cac854ee80e476c9b648c8"
+    },
+    {
+      "run_id": "run-bf6cbd387dae4cb1",
+      "case": "tq9",
+      "track": "legacy",
+      "equivalent": true,
+      "mission": true,
+      "all_six_accepted": true,
+      "joint": true,
+      "outcome": "equivalent",
+      "comparable_model_outcome": true,
+      "no_driver": false,
+      "workflow_status": "completed",
+      "reason": "Final verdict: equivalent",
+      "verdict": "equivalent",
+      "checks_passed": 3,
+      "checks_total": 3,
+      "evaluation_method": "recorded-reuse",
+      "repairs": 0,
+      "additional_attempts": 0,
+      "interventions": [],
+      "human_inputs": 0,
+      "unfinished_tool_calls": 0,
+      "elapsed_seconds": 324.61439180374146,
+      "worker_seconds": 323.60517275100574,
+      "tool_calls": 20,
+      "total_tokens": 1253113,
+      "cached_input_tokens": 1082752,
+      "usage_reported_attempts": 6,
+      "usage_attempts": 6,
+      "failed_checks": [],
+      "evidence_sha256": "61cbcd533d728439bf90b915ad6b093cd90570e2a77a341efd2b86e35084844f",
+      "snapshot_sha256": "869f0f870259a8e5eeb4f27b8f49a254b53731c27fa136e22b61ce859ef42888",
+      "case_version": "2",
+      "report_sha256": "4c736474c3dd3914ce671ed253d6875f13d5af477d6b9b1bb6dbddcb83ed477a",
+      "frozen_artifact_sha256": "e7f298817c5eb056a10d78502388100eba38cbf1e9983010b7a6577a698d6cf3",
+      "capabilities_sha256": "d9c174d6e0a0cb458962801510954f17d7c3bfc20300f4178873d84fbbdb5800"
+    },
+    {
+      "run_id": "run-c6164684dbaa4a70",
+      "case": "zephyr-modbus-v1",
+      "track": "upstream",
+      "equivalent": true,
+      "mission": true,
+      "all_six_accepted": true,
+      "joint": true,
+      "outcome": "equivalent",
+      "comparable_model_outcome": true,
+      "no_driver": false,
+      "workflow_status": "completed",
+      "reason": "Final verdict: equivalent",
+      "verdict": "equivalent",
+      "checks_passed": 315,
+      "checks_total": 315,
+      "evaluation_method": "fresh-final",
+      "repairs": 0,
+      "additional_attempts": 0,
+      "interventions": [],
+      "human_inputs": 0,
+      "unfinished_tool_calls": 0,
+      "elapsed_seconds": 458.9762558937073,
+      "worker_seconds": 421.27751129199896,
+      "tool_calls": 49,
+      "total_tokens": 2286861,
+      "cached_input_tokens": 2039296,
+      "usage_reported_attempts": 6,
+      "usage_attempts": 6,
+      "failed_checks": [],
+      "evidence_sha256": "8d3c8b50884352a35ed3066a1b6c19ccf08ac46a62025093a52aefc76bef996b",
+      "snapshot_sha256": "ceb07d53b3e30c6fc8a579b6c562128908eb122ac9b1803a4fe10ef4e84c6365",
+      "case_version": "1",
+      "report_sha256": "5734139f5532d0d3fa4e6bfca6a1dcfbfef8d721eca693d22e0cc38742c8dfd2",
+      "frozen_artifact_sha256": "04fa9b507473d44435b3187ef7c76751d925b0d56687e323348413e9a51e36c0",
+      "capabilities_sha256": "39a4d51d985b7ada884c488d174c5907d745060bccb4c0515911b7e2a2f62387"
+    },
+    {
+      "run_id": "run-d0b9b26b028b4007",
+      "case": "zephyr-modbus-v1",
+      "track": "upstream",
+      "equivalent": true,
+      "mission": true,
+      "all_six_accepted": true,
+      "joint": true,
+      "outcome": "equivalent",
+      "comparable_model_outcome": true,
+      "no_driver": false,
+      "workflow_status": "completed",
+      "reason": "Final verdict: equivalent",
+      "verdict": "equivalent",
+      "checks_passed": 315,
+      "checks_total": 315,
+      "evaluation_method": "fresh-final",
+      "repairs": 0,
+      "additional_attempts": 0,
+      "interventions": [],
+      "human_inputs": 0,
+      "unfinished_tool_calls": 0,
+      "elapsed_seconds": 576.179004907608,
+      "worker_seconds": 538.6408044990021,
+      "tool_calls": 58,
+      "total_tokens": 2493257,
+      "cached_input_tokens": 2254336,
+      "usage_reported_attempts": 6,
+      "usage_attempts": 6,
+      "failed_checks": [],
+      "evidence_sha256": "e578c5daa1d41f43cd8b1250e9acd5d6ead6fe670dbad1cf4c64a30a947895ec",
+      "snapshot_sha256": "ceb07d53b3e30c6fc8a579b6c562128908eb122ac9b1803a4fe10ef4e84c6365",
+      "case_version": "1",
+      "report_sha256": "603ab5a0633439f5565458735e1d4d0d5ad933902ee7aea61f217952edc21186",
+      "frozen_artifact_sha256": "637dd1b09bdab24c6c1c6be18605ba20439bae4064c2a39219d88b73e54d3ab4",
+      "capabilities_sha256": "8cd17d7cbf1f4df60d93c65f9a7b65202a4b7b9295d2843f4120da982c5e7dac"
+    },
+    {
+      "run_id": "run-d0d25db1173f4e51",
+      "case": "tq9-v2",
+      "track": "core",
+      "equivalent": true,
+      "mission": true,
+      "all_six_accepted": true,
+      "joint": true,
+      "outcome": "equivalent",
+      "comparable_model_outcome": true,
+      "no_driver": false,
+      "workflow_status": "completed",
+      "reason": "Final verdict: equivalent",
+      "verdict": "equivalent",
+      "checks_passed": 9,
+      "checks_total": 9,
+      "evaluation_method": "fresh-final",
+      "repairs": 0,
+      "additional_attempts": 0,
+      "interventions": [],
+      "human_inputs": 0,
+      "unfinished_tool_calls": 0,
+      "elapsed_seconds": 332.23605489730835,
+      "worker_seconds": 314.5347979560029,
+      "tool_calls": 25,
+      "total_tokens": 1259320,
+      "cached_input_tokens": 1048448,
+      "usage_reported_attempts": 6,
+      "usage_attempts": 6,
+      "failed_checks": [],
+      "evidence_sha256": "990fce722ae56275f482006faccfdeb14bc0832ae29503315b6bc3d67480756b",
+      "snapshot_sha256": "89944d5784ed1840aebf0f31582c2bf0f020100fe84900788b9a22a9dfe2910c",
+      "case_version": "5",
+      "report_sha256": "ae85f097a1c272d8beba6f8c7bdef134afb2f03cf182e40b949a94f728d8801a",
+      "frozen_artifact_sha256": "b801daf5cfb64f0c44851bbf2226d8e4d386230c036387817893fea9df2cfb4e",
+      "capabilities_sha256": "4e8480078a5ef271ac51fd6b69b0f6ee56288d3a8bb8ec6e437291af3cccc5b5"
+    },
+    {
+      "run_id": "run-d59e3b500e234c0c",
+      "case": "parameter-store-v1",
+      "track": "core",
+      "equivalent": true,
+      "mission": true,
+      "all_six_accepted": true,
+      "joint": true,
+      "outcome": "equivalent",
+      "comparable_model_outcome": true,
+      "no_driver": false,
+      "workflow_status": "completed",
+      "reason": "Final verdict: equivalent",
+      "verdict": "equivalent",
+      "checks_passed": 891,
+      "checks_total": 891,
+      "evaluation_method": "fresh-final",
+      "repairs": 0,
+      "additional_attempts": 0,
+      "interventions": [],
+      "human_inputs": 0,
+      "unfinished_tool_calls": 0,
+      "elapsed_seconds": 431.3674359321594,
+      "worker_seconds": 364.9137721260049,
+      "tool_calls": 31,
+      "total_tokens": 1319304,
+      "cached_input_tokens": 1130752,
+      "usage_reported_attempts": 6,
+      "usage_attempts": 6,
+      "failed_checks": [],
+      "evidence_sha256": "c4871cdef7f814c9a2c1dc4f12af8609257b30babe46b7b36ab4e72d041c2c40",
+      "snapshot_sha256": "84c060f02ff4358c0d2b3247c4e96f8d9c7c73378ca17613f80bed04f9918e68",
+      "case_version": "5",
+      "report_sha256": "b9fd9abd504708421ff9220bbd2ce9900bffae18b8405ee24f8e589341cc9165",
+      "frozen_artifact_sha256": "1c506a8ac794b1e5ae4a9680f6dc97b08fac62b9b2b3a6048a8c0628cdaa7828",
+      "capabilities_sha256": "d672e800fd5ac8890431e15e729e4e1a13118062c1719ba49ba9851f51832efe"
+    },
+    {
+      "run_id": "run-ec49b7bb8f3f4e61",
+      "case": "tq9",
+      "track": "legacy",
+      "equivalent": true,
+      "mission": true,
+      "all_six_accepted": true,
+      "joint": true,
+      "outcome": "equivalent",
+      "comparable_model_outcome": true,
+      "no_driver": false,
+      "workflow_status": "completed",
+      "reason": "Final verdict: equivalent",
+      "verdict": "equivalent",
+      "checks_passed": 3,
+      "checks_total": 3,
+      "evaluation_method": "recorded-reuse",
+      "repairs": 0,
+      "additional_attempts": 0,
+      "interventions": [],
+      "human_inputs": 0,
+      "unfinished_tool_calls": 0,
+      "elapsed_seconds": 309.7631530761719,
+      "worker_seconds": 308.8344620409989,
+      "tool_calls": 22,
+      "total_tokens": 1246396,
+      "cached_input_tokens": 1058048,
+      "usage_reported_attempts": 6,
+      "usage_attempts": 6,
+      "failed_checks": [],
+      "evidence_sha256": "15229c3052d262529c4411679c0460621c1ea95a9a6e96bb2a47dc4fd217216c",
+      "snapshot_sha256": "869f0f870259a8e5eeb4f27b8f49a254b53731c27fa136e22b61ce859ef42888",
+      "case_version": "2",
+      "report_sha256": "368509cb31b443366851f508bda60ea0d8af11c9c0cc9caee68aa103a0347411",
+      "frozen_artifact_sha256": "0119bf14357c233034f625de234bd54ccaf0bcab9379da6af25324f25fee0b65",
+      "capabilities_sha256": "167790eeaf1282d4eda13ebe8ff1d9ca056d3c7a9f6f8dae3e67f41f353d2478"
+    },
+    {
+      "run_id": "run-fdffb238f7394535",
+      "case": "sampled-sensor-v1",
+      "track": "core",
+      "equivalent": true,
+      "mission": true,
+      "all_six_accepted": true,
+      "joint": true,
+      "outcome": "equivalent",
+      "comparable_model_outcome": true,
+      "no_driver": false,
+      "workflow_status": "completed",
+      "reason": "Final verdict: equivalent",
+      "verdict": "equivalent",
+      "checks_passed": 85,
+      "checks_total": 85,
+      "evaluation_method": "fresh-final",
+      "repairs": 1,
+      "additional_attempts": 2,
+      "interventions": [],
+      "human_inputs": 0,
+      "unfinished_tool_calls": 0,
+      "elapsed_seconds": 425.2917540073395,
+      "worker_seconds": 398.06567124799767,
+      "tool_calls": 31,
+      "total_tokens": 1375728,
+      "cached_input_tokens": 1153920,
+      "usage_reported_attempts": 8,
+      "usage_attempts": 8,
+      "failed_checks": [],
+      "evidence_sha256": "b5512888ba2558a7d97bcbc685277a43fadf99b8b76185e07c1e256509643dcd",
+      "snapshot_sha256": "c887f681f0db368ea002529c9ce9c7e71d9d22929b4cd18b0a0e3a8c82e34526",
+      "case_version": "5",
+      "report_sha256": "8ee4c2699ff0a8fc05013ca873c8ee472f8bc8ce309943c2d7469f8c15e4385f",
+      "frozen_artifact_sha256": "9aa418cfa5ea46b8ed44963a6c54c53aa6c52869cfcbc90204813c6139d96786",
+      "capabilities_sha256": "c43c9528572e79e46d17b3f17cec5f830cab200ae8cac854ee80e476c9b648c8"
+    }
+  ],
+  "local_archive": "20261027-whole-benchmark-9a965fb8",
+  "archive_file_sha256": {
+    "study.json": "17a0d8957e64a2bacd833d8275f03f466b940eb8b20bfe82040a6a5af8310c1f",
+    "reports/performance-analysis.json": "20acf4a9670221fd3f3e96e2410771bccce39c45e664b0cf1526c8396da31bd8",
+    "reports/offline-regrades.json": "1e55867e16035d619af841af785e03eaaffda2ba97b46d152e71d694931f759d",
+    "reports/upstream-corpus-verified.json": "000a79e658ae5ea6e128dd1607f3b00420887da59e990c401705307045ec6b09",
+    "reports/authenticated-admission.json": "58e3715d973f711514d84e464c3afb63697148c5a017198fdfa0c5b16ca69aef",
+    "reports/runtime-preflight.json": "394d108a9c2bba93f440aaa46dafd3d7f3ab776710d2f00d98cacecce2ca9b83",
+    "reports/implementation-preflight.json": "9351b3f870f7e12ca2b5b150c5c2c34bc271a082d4c411768aa09a6c7f8cc066",
+    "reports/executor-configuration.json": "2f28e3e9234cc89142f129529d64bb6fdd6dc51633cf5884a2b44c64df097d4d",
+    "reports/sandbox-preflight.json": "00f52ccdfecc25e54baf4e862753a47ec3696243cda439c5b7487d09ffe9c98e",
+    "reports/design-audit.json": "7b7d8a8508418359327f73082429321b4acdd1d21683e9190eacc9aaae8a2405",
+    "reports/analysis-audit.json": "c6fdcf62dd323b854e785384d2aafb60e85053b03cf1bdaaa21b2bb4b92603cd",
+    "reports/failure-analysis.json": "f8cab8c32ba6c135a3b99a65967ab9b0a38e1f4c76d5c8819ad42ee9f6c782ff",
+    "reports/analysis-scripts.json": "e39c51f5d16a84d67e307d9437d37562f4213c8eb1d15a9fbbffbf7affa886b4",
+    "reports/result-audit.json": "902b96cbe8bb19635ee0f1a69cbe215060684471bb121cd671b92fd40614e013",
+    "reports/cleanup.json": "e3f46d34b0f1d27ecbd12c7de4e86a36dbfcd6ad737128f372632926c06fceec",
+    "reports/upstream-suite-verified/suite.json": "3c1cc1260c34799527ae19b05931f3215096e6744ab15f2e75d2e3c9e59e169d",
+    "reports/core-suite-verified/suite.json": "fb4431e80bb2253a28d6d6f51bedddc0bfa01602347f4c2885e062d86b2008d7",
+    "reports/legacy-suite-verified/suite.json": "8adfde66beedd9e762105afda676b8f5f945be7db8a8f716d300882010ee0450"
+  },
+  "hash_meaning": "Provenance/integrity only; run association trusts configured owner. Hashes are not a sandbox.",
+  "cleanup": {
+    "schema": "benchmark-study-cleanup/1",
+    "completed_at": "2026-10-27T20:02:37.867993+00:00",
+    "owned_configurator_stopped": {
+      "ok": true,
+      "stopped": true,
+      "pid": 2007
+    },
+    "trial_devices_confirmed_stopped": 15,
+    "temporary_evaluator_key_copies_removed": 5,
+    "temporary_key_mapping_and_track_options_removed": true,
+    "original_password_files_and_vault_untouched": true,
+    "preexisting_host_codex_auth_untouched": true,
+    "raw_evidence_and_private_qualification_artifacts_preserved": true,
+    "remaining_observed_study_processes": []
+  },
+  "independent_result_audit": {
+    "schema": "benchmark-independent-result-audit/1",
+    "status": "complete",
+    "reviewers": [
+      "review_native",
+      "explore_execution"
+    ],
+    "main_trials_audited": 12,
+    "main_joint_success": 10,
+    "main_missions_rederived_from_public_observations": 12,
+    "main_usage_coverage": [
+      80,
+      80
+    ],
+    "main_pipeline_repairs": 4,
+    "main_additional_stage_attempts": 8,
+    "checks_passed": [
+      "Case and track counts independently rederived.",
+      "Report file hashes, frozen case pins, snapshots, captured firmware identities and emitted/reuse package hashes agree.",
+      "Full public regraded equivalence and mission fields agree.",
+      "All6 latest handoffs accepted; budgets unchanged10800; maxrepairs2; no interventions/unfinished calls.",
+      "CIs independently rederived; blocked slots and duplicate ancestry retained.",
+      "Receive-line bound comparison and limits of causal explanation inspected."
+    ],
+    "wording_corrections": [
+      "Resource table explicitly sums trials, distinct from first-table medians.",
+      "Offline score recomputes behavior grades but carries authenticated mission judgments; public-event audit separately corroborates missions.",
+      "Store receive-line comparison is observational, not a controlled intervention or inspection of sealed final transcripts."
+    ],
+    "completed_at": "2026-10-27T20:05:08.447151+00:00",
+    "total_trials_audited": 15,
+    "all_public_missions_rederived": 15,
+    "final_joint_success_by_track": {
+      "core": [
+        7,
+        9
+      ],
+      "upstream_runnable": [
+        3,
+        3
+      ],
+      "legacy_supplement": [
+        3,
+        3
+      ]
+    },
+    "final_usage_coverage": [
+      98,
+      98
+    ],
+    "final_reported_total_tokens": 23672845,
+    "final_pipeline_repairs": 4,
+    "final_additional_stage_attempts": 8,
+    "legacy_delta": "Both reviewers passed; public mission sequences corroborated; temperature accuracy remains sealed behavior evidence."
+  }
+}

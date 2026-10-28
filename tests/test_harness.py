@@ -282,6 +282,27 @@ class StartAdmissionTests(unittest.TestCase):
         with self.controller._db() as db:
             return db.execute('SELECT COUNT(*) FROM runs').fetchone()[0]
 
+    def test_native_artifact_is_the_device_identity_and_appears_in_the_report(self):
+        # Scripted descriptor/worker test; no authentic firmware or admission claim.
+        from test_configurator import wait_stopped
+        from generative_driver.reporting import summarize
+        case = self.root/'resources/cases/tq9-v2'
+        (case/'firmware.bin').rename(case/'firmware.elf')
+        self.manifest['images'] = {'firmware.elf': self.manifest['images']['firmware.bin']}
+        setup = {'method': 'native-sim', 'artifact': 'firmware.elf', 'substitutions': ['Test TTY'],
+                 'validated_behavior': [], 'hardware_gaps': ['Test descriptor only']}
+        self.manifest['execution_setup'] = setup
+        (case/'case.json').write_text(json.dumps(self.manifest))
+        device = Device(self, case/'firmware.elf', self.root)
+        run = self.controller.start({'goal': 'native image identity', 'case': 'tq9-v2',
+            'effects': ['write', 'actuate'], 'executor_config': {'command': ['missing-runtime-native']},
+            'device': device.server.descriptor, 'admission': {'calibration_evidence_sha256': EVIDENCE},
+            'evaluation_token_sha256': hashlib.sha256(b'harness token').hexdigest()})
+        result = wait_stopped(self.controller, run)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(result['case_pin']['image_hashes'], self.manifest['images'])
+        self.assertEqual(summarize(result, [], case_manifest=self.manifest)['execution_setup'], setup)
+
     def test_the_configurator_refuses_a_password_or_the_emulator_executable(self):
         secret = self.root / 'private-password-handle'
         for spec in ({'goal': 'g', 'case': 'tq9-v2', 'effects': ['write'],

@@ -301,12 +301,17 @@ def main(argv=None):
 
 def case_root():
     import os
-    selected = os.environ.get('GENERATIVE_DRIVER_BENCH_ROOT')
-    if selected is not None:
-        path = Path(selected).expanduser()
-        if not path.is_absolute() or not path.is_dir():
-            raise ValueError('GENERATIVE_DRIVER_BENCH_ROOT must name an existing absolute resource directory')
-        return path.resolve()
+    selected = {}
+    for name in ('GENERATIVE_DRIVER_BENCH_ROOT', 'GENERATIVE_DRIVER_CASE_ROOT'):
+        if name in os.environ:
+            path = Path(os.environ[name]).expanduser()
+            if not path.is_absolute() or not path.is_dir():
+                raise ValueError(name + ' must name an existing absolute resource directory')
+            selected[name] = path.resolve()
+    if len(set(selected.values())) > 1:
+        raise ValueError('Conflicting GENERATIVE_DRIVER_BENCH_ROOT and GENERATIVE_DRIVER_CASE_ROOT')
+    if selected:
+        return next(iter(selected.values()))
     return Path(__file__).resolve().parent / 'resources' / 'bench'
 
 

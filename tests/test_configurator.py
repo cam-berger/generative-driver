@@ -2630,7 +2630,25 @@ class RealToolVerdictTests(unittest.TestCase):
                 checks.append(name)
                 with on_emit_check(len(checks)):
                     return real_call_tool(name, arguments)
-            return real_call_tool(name, arguments)
+            result = real_call_tool(name, arguments)
+            if name == 'emit_package' and result.get('ok'):
+                # These tests exercise the historical generic live-test tools. Produce a genuine
+                # format-1 artifact before the owner records its build hash, never exempt format 2.
+                from interface_runtime.package import package_files, verify_package
+                package = Path(result['package_dir'])
+                manifest = json.loads((package/'manifest.json').read_text())
+                for filename, field in (('driver/contract.json', 'contract_sha256'),
+                                        ('driver/protocol.json', 'protocol_sha256'),
+                                        ('mcp-tools.json', 'mcp_catalog_sha256')):
+                    (package/filename).unlink()
+                    del manifest[field]
+                manifest.update(schema='interface-package/1', files=package_files(package))
+                (package/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
+                pin = hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()
+                (package/'manifest.sha256').write_text(pin+'\n')
+                self.assertTrue(verify_package(package)['ok'])
+                result = {**result, 'manifest_sha256': pin, '_files': {str(package/'manifest.json'): pin}}
+            return result
         controller = Controller(home)
         real_check = controller._check
         def check(spec, stage, run_dir, workspace, report, accepted, assignment):

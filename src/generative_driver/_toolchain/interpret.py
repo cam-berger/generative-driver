@@ -321,8 +321,16 @@ def _prompt(ws, mode):
             f"supplied, read it as the requested repair feedback. "
             f"{where} and do exactly what it says: it tells you to produce an "
             f"interface model from the description supplied. You have no access to the device and must not try "
-            f"to reach it, and you must not search the web. {check} An operation the qualifier reports "
-            f"uncovered is recorded in NOTES.md, not retried. Report in one paragraph what you produced and what "
+            f"to reach it, and you must not search the web. {check} When BRIEF.md asks for replies.json, "
+            f"build synthetic predicted-reply fixtures "
+            f"from evidence-backed framing, checks and decoding, including operations with dynamic readings. "
+            f"A hypothetical payload value is allowed to exercise that derived format; these fixtures are "
+            f"not measured device observations and must not be presented as such. Do not invent unsupported "
+            f"command bytes, response layouts or integrity rules. When both predicted replies and TASKS.json are required, completion "
+            f"requires qualification with no uncovered operations. Address missing reply coverage during a "
+            f"requested repair, rather than preserving an omission merely because the live value is unknown. "
+            f"If the source evidence cannot support a fixture, record the gap in NOTES.md and report the "
+            f"model as incomplete. Report in one paragraph what you produced and what "
             f"the description left ambiguous.")
 
 

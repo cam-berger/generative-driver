@@ -41,6 +41,14 @@ Blind interpretation receives its prepared inputs and generic tools. Fresh reuse
 
 Generic tools and skills ship to workers. Sources, answers, scorers and historical outputs stay evaluator-side. Codex uses plugin/MCP wiring; Goose uses a recipe and MCP. Both connect to the same configurator. Follow [setup](setup.md) through runtime configuration, dependency checks and installation smoke before a device trial.
 
+## Driver contracts and generated MCP — 2026-10-28
+
+The [extension guide](extending-drivers-and-mcp.md) and [accepted contract design](superpowers/specs/2026-10-28-driver-contract-mcp-design.md) define the public driver contract, declarative protocol and supported application SDK. The contract supplies operation/field meanings, caveats and executable preconditions. Device-specific executable plugins remain outside the driver format; new behavior uses a shared runtime capability or a higher-level application tool.
+
+Format-2 emission freezes the contract, protocol, executable projection and derived MCP catalog. Generic and benchmark fresh reuse use that catalog through configurator-owned dispatch. Current `assistive/1` handoffs retain notes; final equivalence additionally requires observed generated-tool use of the unchanged package. Benchmark passwords and final grading stay in the bench harness, after the run. Historical format-1 packages and reports retain their original meaning.
+
+The [preserved nine-trial result](../bench/evidence/2026-10-29-driver-contract-mcp-verification.json) belongs to its pinned r2 release under the earlier gated workflow. Current-main integration is checked separately; that old result does not qualify a new runtime or evaluator.
+
 ## Evaluation
 
 | Profile | Evidence |

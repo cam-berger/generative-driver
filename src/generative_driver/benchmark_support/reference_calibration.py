@@ -130,13 +130,15 @@ def calibrate(case_id, options):
     from ..benchmark import case_root
     from ..toolkit import resources_root
     definition=resolve_case(case_id)
-    family_case = case_id in ('sampled-sensor-v1', 'parameter-store-v1')
+    from .registrations import registration_for
+    registration = registration_for(case_id)
+    family_case = registration.calibration_kind == 'family'
     if family_case:
         from .calibration import (authoring_payload, hydrate_truth, apply_mutation,
                                   validate_calibration, REQUIRED_MUTANTS, execution_input_identity)
         from .asset_build import build_family, inventory
         truth = hydrate_truth(authoring_payload(evaluator_directory(options['authoring_root'])))
-    elif case_id == 'tq9-v2':
+    elif registration.calibration_kind == 'reference':
         truth=truth_for_case(case_root(),definition.manifest,options)
     else:
         raise ValueError('No reference calibration recipe registered for this case')

@@ -79,12 +79,13 @@ def snapshot_case(run_dir: Path, pin: dict, provenance: dict) -> dict:
     return require_snapshot(run_dir, pin)
 
 
-def execution_provenance(config: dict) -> dict:
+def execution_provenance(config: dict, *, reuse_profile=None) -> dict:
     """Capture implementation identity and nonsecret runtime settings before launch."""
     import platform
     from ..reporting import _tree_hash
     package = Path(__file__).resolve().parents[1]
-    return {'toolchain_revision': hashlib.sha256(
+    return {**({'reuse_profile': reuse_profile} if reuse_profile else {}),
+            'toolchain_revision': hashlib.sha256(
                 (_tree_hash(package) + _tree_hash(package.parent / 'interface_runtime')).encode()).hexdigest(),
             'skills_revision': _tree_hash(package / 'resources/toolchain/skills'),
             'evaluator_revision': _tree_hash(package / 'benchmark_support'),

@@ -711,7 +711,8 @@ class HarnessTrialTests(unittest.TestCase):
                 events = client.call('events', {'run_id': launched['run_id']}, home=home, autostart=False)['events']
                 live = [e['data'] for e in events if e['kind'] == 'tool.finished' and e['data'].get('connected')
                         and not e['data'].get('refused_before_open')]
-                self.assertEqual({e['name'] for e in live}, {'interface_execute', 'probe_run', 'benchmark_package_execute'})
+                self.assertEqual({e['name'] for e in live}, {'interface_execute', 'probe_run', 'device_measure',
+                                                            'device_arm', 'device_set_duty', 'device_disarm'})
                 for event in live:
                     self.assertEqual((event['result']['before_observation']['source'], event['result']['observation']['source']),
                                      ('instrument', 'instrument'))

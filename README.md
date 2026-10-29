@@ -1,5 +1,7 @@
 # Generative Driver
 
+[Driver contracts and application MCP authoring](docs/extending-drivers-and-mcp.md) · [Generated MCP verification](bench/evidence/2026-10-29-driver-contract-mcp-verification.json)
+
 Turn a supported device’s firmware or documentation into a portable driver, with evidence that it works. Use Codex, Goose or the command line.
 
 The workflow reads the input, infers commands, tests the device, checks independent observations, builds a package, and asks a fresh agent to use it. This is an experimental tool; see [supported paths](docs/support.md).

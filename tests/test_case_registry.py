@@ -5,6 +5,32 @@ from generative_driver.configurator import validate_scoped_approval
 
 
 class RegistryTests(unittest.TestCase):
+    def test_operator_can_select_an_external_qualified_case_bundle(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from suite_fixtures import public_case_fixture
+        with tempfile.TemporaryDirectory(prefix='external cases ') as directory:
+            root = Path(directory).resolve()
+            public_case_fixture(root, calibration={'status': 'pending'})
+            with patch.dict(os.environ, {'GENERATIVE_DRIVER_CASE_ROOT': str(root)}):
+                case = resolve_case('tq9-v2')
+                self.assertEqual(case.root, root/'cases/tq9-v2',
+                    'requalification outputs must be selectable outside installed resources')
+                self.assertEqual(case.manifest['calibration']['status'], 'pending')
+
+    def test_conflicting_explicit_benchmark_roots_are_rejected(self):
+        import os
+        import tempfile
+        from unittest.mock import patch
+        from generative_driver.benchmark import case_root
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            with patch.dict(os.environ, {'GENERATIVE_DRIVER_BENCH_ROOT': first,
+                                         'GENERATIVE_DRIVER_CASE_ROOT': second}):
+                with self.assertRaisesRegex(ValueError, 'Conflicting'):
+                    case_root()
+
     @staticmethod
     def _v2_case(root, *, calibration=None):
         from suite_fixtures import public_case_fixture

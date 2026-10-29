@@ -10,7 +10,12 @@ def _load():
     checked = verify_package(ROOT)
     if not checked['ok']:
         raise ValueError(str(checked['defects']))
-    return read_json(ROOT/'driver/model.json', 1048576), checked['manifest']
+    if checked['manifest']['schema'] == 'interface-package/2':
+        from interface_runtime.contracts import compile_contract
+        model = compile_contract(read_json(ROOT/'driver/contract.json'), read_json(ROOT/'driver/protocol.json'))
+    else:
+        model = read_json(ROOT/'driver/model.json', 1048576)
+    return model, checked['manifest']
 
 
 def describe():
@@ -20,12 +25,18 @@ def describe():
     return {'schema':model['schema'],'device':model['device'],'channel':model['channel'],
             'identity':model['identity'],'operations':model['operations'],
             'capabilities':capabilities(),'source_evidence_kind':manifest['source_evidence_kind'],
-            'probe_coverage':probe_coverage(model,read_json(ROOT/'probe.json')),'coverage_scope':COVERAGE_SCOPE}
+            'probe_coverage':probe_coverage(model,read_json(ROOT/'probe.json')),'coverage_scope':COVERAGE_SCOPE,
+            **({'contract':read_json(ROOT/'driver/contract.json')}
+               if manifest['schema'] == 'interface-package/2' else {})}
 
 
 def execute(operation, parameters=None, *, binding=None, allow_effects=(), replay=None):
-    from interface_runtime.evidence import run_samples
     model, manifest = _load()
+    if manifest['schema'] == 'interface-package/2':
+        from interface_runtime.driver import execute_package
+        return execute_package(ROOT, operation, parameters, binding=binding,
+                               allow_effects=allow_effects, replay=replay)
+    from interface_runtime.evidence import run_samples
     run = run_samples(model, operation, parameters, binding=binding, allow_effects=allow_effects, replay=replay)
     return {**run['results'][0], 'evidence_kind':run['evidence_kind'],
             'timing_policy':run['timing_policy'],
@@ -34,8 +45,11 @@ def execute(operation, parameters=None, *, binding=None, allow_effects=(), repla
 
 def session(*, binding=None, allow_effects=()):
     """One connection for several operations; a device that resets on open is not restarted between them."""
+    model, manifest = _load()
+    if manifest['schema'] == 'interface-package/2':
+        from interface_runtime.driver import PackageSession
+        return PackageSession(ROOT, binding=binding, allow_effects=allow_effects)
     from interface_runtime.engine import Session
-    model, _ = _load()
     return Session(model, binding=binding, allow_effects=allow_effects)
 
 

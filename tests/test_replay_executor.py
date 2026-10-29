@@ -120,7 +120,8 @@ class ReplayExecutionTests(unittest.TestCase):
         finished = [e['data'] for e in events if e['kind'] == 'tool.finished']
         self.assertEqual([(e['stage'], e['name']) for e in finished],
                          [('acquire', 'acquire_firmware_artifact'), ('probe', 'interface_execute'), ('probe', 'probe_run'),
-                          ('emit', 'emit_package'), ('emit', 'emit_check')] + [('reuse', 'benchmark_package_execute')] * 4)
+                          ('emit', 'emit_package'), ('emit', 'emit_check')] +
+                         [('reuse', 'device_'+operation) for operation in ('measure', 'arm', 'set_duty', 'disarm')])
         self.assertTrue(all(e['ok'] and e['actor'] == 'worker' for e in finished), finished)
         self.assertEqual([e for e in events if e['kind'] == 'tool.refused'], [])
         # Nothing reached the device outside the configurator's live-call windows.
@@ -135,7 +136,9 @@ class ReplayExecutionTests(unittest.TestCase):
         package = result['accepted_handoffs'][4]['artifacts']
         self.assertEqual([a['sha256'] for a in package], [build['artifacts'][str(Path(build['result']['package_dir']).resolve())]])
         # Fresh reuse ran the frozen package live on the provided device, with instrument readings around each call.
-        live = [e for e in finished if e['name'] == 'benchmark_package_execute']
+        live = [e for e in finished if e['stage'] == 'reuse']
+        self.assertEqual([e['result']['mcp']['request_id'] for e in live],
+                         ['saved-reuse-'+operation for operation in ('measure', 'arm', 'set_duty', 'disarm')])
         self.assertTrue(all(e['connected'] and not e['refused_before_open'] for e in live), live)
         self.assertEqual({(e['result']['before_observation']['source'], e['result']['observation']['source'])
                           for e in live}, {('instrument', 'instrument')})
@@ -328,7 +331,9 @@ def harnessed(test):
     bench.root = root = Path(temporary.name).resolve()
     bench.candidate = replay_candidate(root / 'candidate')
     resources, bench.home = root / 'resources', root / 'home'
-    manifest = public_case_fixture(resources, calibration={'status': 'passed', 'evidence_sha256': EVIDENCE})
+    # This lifecycle fixture actuates duty; suite children inherit these explicit grants.
+    manifest = public_case_fixture(resources, default_effects=['write', 'actuate'],
+                                   calibration={'status': 'passed', 'evidence_sha256': EVIDENCE})
     bench.password = root / 'password-handle'
     bench.password.write_text('synthetic fixture credential')
     # The final phase the harness grades the frozen driver with after the run, on a fresh emulator of its own.

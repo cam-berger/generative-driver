@@ -1,0 +1,495 @@
+{
+  "schema": "driver-contract-mcp-verification/1",
+  "series": "generated-mcp-nine-trial-20261028",
+  "execution": "actual-agent-emulation",
+  "workflow_protocol": "historical gated six-stage workflow",
+  "suite_id": "suite-7b6ef98ac81447e1",
+  "model": "codex/gpt-6.1-sol/high",
+  "qualified_wheel_sha256": "079cec63fd991fc7a68abfc5877be8c03c634cbf77bc4f1438bbb8a9a7a91d4c",
+  "qualified_installed_tests": 521,
+  "qualified_source_python_files": 93,
+  "case_versions": {
+    "tq9-v3": "1",
+    "sampled-sensor-v1": "5",
+    "parameter-store-v1": "5"
+  },
+  "frozen_scenarios": "original; case seed0; three fresh contexts per case",
+  "planned": 9,
+  "finished": 9,
+  "passed": 9,
+  "failed": 0,
+  "blocked": 0,
+  "unrun": 0,
+  "case_success": {
+    "parameter-store-v1": {
+      "passed": 3,
+      "denominator": 3,
+      "rate": 1.0
+    },
+    "sampled-sensor-v1": {
+      "passed": 3,
+      "denominator": 3,
+      "rate": 1.0
+    },
+    "tq9-v3": {
+      "passed": 3,
+      "denominator": 3,
+      "rate": 1.0
+    }
+  },
+  "generated_mcp_dispatches": 100,
+  "repairs": 7,
+  "repaired_trials": 6,
+  "verified_owned_emulator_recoveries": 1,
+  "first_attempt_passes": 3,
+  "worker_attempts": 68,
+  "distinct_completed_threads": 68,
+  "suite_wall_seconds": 9973.83559679985,
+  "usage": {
+    "input_tokens": 22336775,
+    "cached_input_tokens": 19541760,
+    "output_tokens": 361336,
+    "reasoning_output_tokens": 57551,
+    "total_tokens": 22698111
+  },
+  "usage_counting": "input+output; cached input and reasoning output are subsets",
+  "verification": {
+    "authenticated_offline_regrades": 9,
+    "independent_trial_audits": 9,
+    "strict_mcp_transcript_bindings": 9,
+    "unchanged_package_checks": 9,
+    "relocation_replay_and_stdio_discovery": 9,
+    "aggregate_archive_audit_sha256": "a29b322e6968ca0f23ab0ae3d42ac0b395b16db5ae3baffb77a0a48cbc30c966",
+    "suite_report_sha256": "2d2cc2abc6ebb8ad5ffa845fe87f1725491515a8ffe9077b732c7915a7e2525e",
+    "artifact_inventory_sha256": "9011a7b4902c1a28ec5928018f4635fb2e030d09ea213b8c34581eee641456ee"
+  },
+  "trials": [
+    {
+      "trial_key": "entry-000-repeat-000",
+      "ordinal": 0,
+      "case": "tq9-v3",
+      "repeat": 1,
+      "run_id": "run-9c794a9774ee456d",
+      "repairs": 0,
+      "recovery_count": 0,
+      "worker_attempts": 6,
+      "mcp_dispatches": 4,
+      "elapsed_seconds": 703.1129479408264,
+      "package_sha256": "44b002863068b36adf0d7837033285647745dbfd4c624dc90e2302cca527e48a",
+      "diagnostics": [
+        {
+          "revision": 0,
+          "verdict": "passed",
+          "passed": 10,
+          "total": 10
+        }
+      ],
+      "usage": {
+        "input_tokens": 1646715,
+        "cached_input_tokens": 1345920,
+        "output_tokens": 25179,
+        "reasoning_output_tokens": 3194,
+        "total_tokens": 1671894,
+        "observed_total_tokens": 1671894,
+        "reported_attempts": 6,
+        "attempts": 6,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      },
+      "final_checks": {
+        "verdict": "passed",
+        "passed": 12,
+        "total": 12,
+        "evidence_sha256": "8694a0f9414c83addae613472fab7a039080944921749eb5c80c908dbb9a37e1"
+      },
+      "independent_audit_sha256": "4ff1366fc667b497e0e7d9f142076d895032e585b2d9b6234bdbf0fe764b722f"
+    },
+    {
+      "trial_key": "entry-001-repeat-000",
+      "ordinal": 1,
+      "case": "sampled-sensor-v1",
+      "repeat": 1,
+      "run_id": "run-00e35bbc9d1c49c0",
+      "repairs": 1,
+      "recovery_count": 0,
+      "worker_attempts": 8,
+      "mcp_dispatches": 5,
+      "elapsed_seconds": 1047.3370628356934,
+      "package_sha256": "79fabd629301e8f14ccbcd0494266d750679c6d987606339b19f59904f1f1b31",
+      "diagnostics": [
+        {
+          "revision": 0,
+          "verdict": "failed",
+          "passed": 14,
+          "total": 17
+        },
+        {
+          "revision": 1,
+          "verdict": "passed",
+          "passed": 17,
+          "total": 17
+        }
+      ],
+      "usage": {
+        "input_tokens": 2119838,
+        "cached_input_tokens": 1841664,
+        "output_tokens": 36869,
+        "reasoning_output_tokens": 5009,
+        "total_tokens": 2156707,
+        "observed_total_tokens": 2156707,
+        "reported_attempts": 8,
+        "attempts": 8,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      },
+      "final_checks": {
+        "verdict": "passed",
+        "passed": 85,
+        "total": 85,
+        "evidence_sha256": "18f64d256da51473bf0aa2823426bc8ce26d41f9271466d10bc87477938262b6"
+      },
+      "independent_audit_sha256": "7f5a22c52e4c51384584e6de459c5c736fa7c58f729c750f8f97e2521da200de"
+    },
+    {
+      "trial_key": "entry-002-repeat-000",
+      "ordinal": 2,
+      "case": "parameter-store-v1",
+      "repeat": 1,
+      "run_id": "run-87dd9dae78094297",
+      "repairs": 1,
+      "recovery_count": 0,
+      "worker_attempts": 8,
+      "mcp_dispatches": 21,
+      "elapsed_seconds": 1461.726676940918,
+      "package_sha256": "105a08743a7d46145a61c30071a97499f3708fdf92a13ee550227a5ce5395887",
+      "diagnostics": [
+        {
+          "revision": 0,
+          "verdict": "failed",
+          "passed": 364,
+          "total": 366
+        },
+        {
+          "revision": 1,
+          "verdict": "passed",
+          "passed": 366,
+          "total": 366
+        }
+      ],
+      "usage": {
+        "input_tokens": 3085692,
+        "cached_input_tokens": 2732160,
+        "output_tokens": 46763,
+        "reasoning_output_tokens": 7341,
+        "total_tokens": 3132455,
+        "observed_total_tokens": 3132455,
+        "reported_attempts": 8,
+        "attempts": 8,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      },
+      "final_checks": {
+        "verdict": "passed",
+        "passed": 891,
+        "total": 891,
+        "evidence_sha256": "fc59bd13545d3b53b1f17f5d2c7874dcb6a487a7ca10d0096d9f98b8eb8f0ee8"
+      },
+      "independent_audit_sha256": "8564b6910a4de04ce8cf993a19423875529d28fe1d00baef2bc0e6bf9f937115"
+    },
+    {
+      "trial_key": "entry-000-repeat-001",
+      "ordinal": 3,
+      "case": "tq9-v3",
+      "repeat": 2,
+      "run_id": "run-a68f3bffefdb4f6b",
+      "repairs": 0,
+      "recovery_count": 0,
+      "worker_attempts": 6,
+      "mcp_dispatches": 4,
+      "elapsed_seconds": 747.3275680541992,
+      "package_sha256": "9b361c16013cb9bc47457fc1d77a280c094bddb94fc24c943b0b4e55df677255",
+      "diagnostics": [
+        {
+          "revision": 0,
+          "verdict": "passed",
+          "passed": 10,
+          "total": 10
+        }
+      ],
+      "usage": {
+        "input_tokens": 1774432,
+        "cached_input_tokens": 1474432,
+        "output_tokens": 27287,
+        "reasoning_output_tokens": 4242,
+        "total_tokens": 1801719,
+        "observed_total_tokens": 1801719,
+        "reported_attempts": 6,
+        "attempts": 6,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      },
+      "final_checks": {
+        "verdict": "passed",
+        "passed": 12,
+        "total": 12,
+        "evidence_sha256": "3cc60a5549e4f2609d980410e8bbfd1c6d74773aa25ac90a271dd75c12640441"
+      },
+      "independent_audit_sha256": "11288909dd2f43c0124438e3b28d2448e62c3acc81e9d97f740f093682f58743"
+    },
+    {
+      "trial_key": "entry-001-repeat-001",
+      "ordinal": 4,
+      "case": "sampled-sensor-v1",
+      "repeat": 2,
+      "run_id": "run-5d91bd922d774bbb",
+      "repairs": 1,
+      "recovery_count": 0,
+      "worker_attempts": 8,
+      "mcp_dispatches": 6,
+      "elapsed_seconds": 949.7853820323944,
+      "package_sha256": "9027cacd515cd0deacffcf9a8837cbf5698cec7b0556a256e83c1b7de1ded9f3",
+      "diagnostics": [
+        {
+          "revision": 0,
+          "verdict": "failed",
+          "passed": 14,
+          "total": 17
+        },
+        {
+          "revision": 1,
+          "verdict": "passed",
+          "passed": 17,
+          "total": 17
+        }
+      ],
+      "usage": {
+        "input_tokens": 2155944,
+        "cached_input_tokens": 1856000,
+        "output_tokens": 38478,
+        "reasoning_output_tokens": 4997,
+        "total_tokens": 2194422,
+        "observed_total_tokens": 2194422,
+        "reported_attempts": 8,
+        "attempts": 8,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      },
+      "final_checks": {
+        "verdict": "passed",
+        "passed": 85,
+        "total": 85,
+        "evidence_sha256": "ae4b693ffa0e321da9d89246f34b253bf955a36180ddabc1a16b08f64d3424c3"
+      },
+      "independent_audit_sha256": "17be1553e036b2164c880e4b342bdc9698f0b4328b9d7d042da3db7c6a5f9af6"
+    },
+    {
+      "trial_key": "entry-002-repeat-001",
+      "ordinal": 5,
+      "case": "parameter-store-v1",
+      "repeat": 2,
+      "run_id": "run-e8ac438777dd4886",
+      "repairs": 1,
+      "recovery_count": 0,
+      "worker_attempts": 8,
+      "mcp_dispatches": 29,
+      "elapsed_seconds": 1585.4337480068207,
+      "package_sha256": "599e2fa3017c396233a3ff6535575f51070aba8855dbbfbf12fb685ad255d30f",
+      "diagnostics": [
+        {
+          "revision": 0,
+          "verdict": "failed",
+          "passed": 364,
+          "total": 366
+        },
+        {
+          "revision": 1,
+          "verdict": "passed",
+          "passed": 366,
+          "total": 366
+        }
+      ],
+      "usage": {
+        "input_tokens": 3072578,
+        "cached_input_tokens": 2728192,
+        "output_tokens": 53145,
+        "reasoning_output_tokens": 11404,
+        "total_tokens": 3125723,
+        "observed_total_tokens": 3125723,
+        "reported_attempts": 8,
+        "attempts": 8,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      },
+      "final_checks": {
+        "verdict": "passed",
+        "passed": 891,
+        "total": 891,
+        "evidence_sha256": "840eb51ad7232601574d0dd5f0e4a8e1d86305ce13ba1e9663439811f32545f9"
+      },
+      "independent_audit_sha256": "1c0a3d6e921058a47a63a906b0e60b1632e5b65bb53e64e30a6a96efb95d9bb0"
+    },
+    {
+      "trial_key": "entry-000-repeat-002",
+      "ordinal": 6,
+      "case": "tq9-v3",
+      "repeat": 3,
+      "run_id": "run-3a9562ed91d140f6",
+      "repairs": 0,
+      "recovery_count": 0,
+      "worker_attempts": 6,
+      "mcp_dispatches": 4,
+      "elapsed_seconds": 747.7613122463226,
+      "package_sha256": "ec2c46da37c7c8014192f538a913c9c23f3721cfd2756e1d618e8c75f70d6a10",
+      "diagnostics": [
+        {
+          "revision": 0,
+          "verdict": "passed",
+          "passed": 10,
+          "total": 10
+        }
+      ],
+      "usage": {
+        "input_tokens": 1809021,
+        "cached_input_tokens": 1585664,
+        "output_tokens": 29122,
+        "reasoning_output_tokens": 5022,
+        "total_tokens": 1838143,
+        "observed_total_tokens": 1838143,
+        "reported_attempts": 6,
+        "attempts": 6,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      },
+      "final_checks": {
+        "verdict": "passed",
+        "passed": 12,
+        "total": 12,
+        "evidence_sha256": "2ae2f32f41f14ed185deb934308c88251c311495905b93b3bf4c9101b74dd465"
+      },
+      "independent_audit_sha256": "2113eda5d3f3b90da092c31ce0364a875b18c0d932249817a777aff3fc481bfd"
+    },
+    {
+      "trial_key": "entry-001-repeat-002",
+      "ordinal": 7,
+      "case": "sampled-sensor-v1",
+      "repeat": 3,
+      "run_id": "run-4ac47779849447ef",
+      "repairs": 1,
+      "recovery_count": 0,
+      "worker_attempts": 8,
+      "mcp_dispatches": 5,
+      "elapsed_seconds": 995.0855519771576,
+      "package_sha256": "32c278ec63434f8bb993cda1dedb58a6a67ab66f125633bdda35dbb009c2b697",
+      "diagnostics": [
+        {
+          "revision": 0,
+          "verdict": "failed",
+          "passed": 14,
+          "total": 17
+        },
+        {
+          "revision": 1,
+          "verdict": "passed",
+          "passed": 17,
+          "total": 17
+        }
+      ],
+      "usage": {
+        "input_tokens": 1998903,
+        "cached_input_tokens": 1697024,
+        "output_tokens": 38968,
+        "reasoning_output_tokens": 5550,
+        "total_tokens": 2037871,
+        "observed_total_tokens": 2037871,
+        "reported_attempts": 8,
+        "attempts": 8,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      },
+      "final_checks": {
+        "verdict": "passed",
+        "passed": 85,
+        "total": 85,
+        "evidence_sha256": "62ddf54000496b38ef7f77fe9bdf7031feeb14121b00b859b8222ea683ebe577"
+      },
+      "independent_audit_sha256": "696a392fe486f7f0aee043e9b2d7afbb1f41e93b5a1d86ca3152087428222ce9"
+    },
+    {
+      "trial_key": "entry-002-repeat-002",
+      "ordinal": 8,
+      "case": "parameter-store-v1",
+      "repeat": 3,
+      "run_id": "run-2dae93f4054048be",
+      "repairs": 2,
+      "recovery_count": 1,
+      "worker_attempts": 10,
+      "mcp_dispatches": 22,
+      "elapsed_seconds": 1732.051866054535,
+      "package_sha256": "376210eeba10619a226c10a53c15e4e82f5278de652a62b75a53d62fa2a09de4",
+      "diagnostics": [
+        {
+          "revision": 0,
+          "verdict": "failed",
+          "passed": 364,
+          "total": 366
+        },
+        {
+          "revision": 2,
+          "verdict": "passed",
+          "passed": 366,
+          "total": 366
+        }
+      ],
+      "usage": {
+        "input_tokens": 4673652,
+        "cached_input_tokens": 4280704,
+        "output_tokens": 65525,
+        "reasoning_output_tokens": 10792,
+        "total_tokens": 4739177,
+        "observed_total_tokens": 4739177,
+        "reported_attempts": 10,
+        "attempts": 10,
+        "coverage": 1.0,
+        "counting": "input + output; cached input and reasoning output are subsets"
+      },
+      "final_checks": {
+        "verdict": "passed",
+        "passed": 891,
+        "total": 891,
+        "evidence_sha256": "ade7301b4bbec29a79af4ad5bd795572130680a3851ecd2734782062aacbc05d"
+      },
+      "independent_audit_sha256": "0afa713de934d95fb51a02af8750a7a9959a73e53c464252c9fc9ca08bf57b25"
+    }
+  ],
+  "retained_failures": {
+    "sensor_all_three": "Revision0 temperature mismatches:14/17; one repair each reached17/17 then85/85 final.",
+    "store_all_three": "Revision0 complete-rejection checks:364/366; repairs reached366/366 then891/891 final.",
+    "store_third_revision1": "No diagnostic grade: a completed effectful commit reply failed candidate validation after I/O. Four later writes refused before dispatch, ten reads allowed; no uncertain command resent. Verified owned-emulator replacement consumed repair2, revision2 passed.",
+    "orchestration": "Failed preflight assumptions, collector and archive-retry controls, and two final audit-checker corrections retained separately from model trials."
+  },
+  "archive": {
+    "current_model_trials": 9,
+    "current_worker_workspaces": 68,
+    "current_external_copies": 16,
+    "missing_workspaces": 0,
+    "prior_development_trials": 6,
+    "all_historical_current_workspaces": 105,
+    "all_external_copies": 30,
+    "owners_stopped": true,
+    "original_workspaces_deleted": false,
+    "consistent_database_sha256": "7e440423c0fb7b976cd43a4ddb647616585b747f9ca01620cdc014043642b0b2"
+  },
+  "prior_attempts_excluded_from_denominator": {
+    "store": "Two blocked trials and one later pass retained.",
+    "sensor": "One prior pass retained.",
+    "replacement_tq9": "One interpretation-blocked trial and one later pass retained.",
+    "locked_tq9_v2": "Old ciphertext, missing original credential and failed credential attempts retained; replacement does not unlock it."
+  },
+  "scope_limits": [
+    "This preserved r2 snapshot predates integration onto current main; it does not qualify the PR head or newer assistive/1 workflow.",
+    "Current integrated source requires fresh native evaluator admission before a future model benchmark.",
+    "Same fixed scenarios repeated; no population success-rate, causal comparison, physical-device or Windows qualification claim.",
+    "Full raw/worker/evaluator evidence and protected credential handles remain in the local evaluator-owned benchmark home; this is a sanitized public summary.",
+    "No model or native device run was launched as part of PR integration."
+  ]
+}

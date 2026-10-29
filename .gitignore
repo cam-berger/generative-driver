@@ -14,3 +14,6 @@ bench/runs/
 bench/groundtruth/plaintext/
 
 .local-runs/
+
+# Generated local device packages, reports and benchmark runs stay outside Git.
+outputs/

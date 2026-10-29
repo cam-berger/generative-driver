@@ -392,6 +392,8 @@ class TQ9V2Tests(unittest.TestCase):
                 manifest['truth']['sha256']=seal(truth,resources/manifest['truth']['path'],password.read_text())
                 (case/'case.json').write_text(json.dumps(manifest))
                 controller=Controller(root/'home');peers=[];worker_live=[]
+                from owner_ipc_fixture import owner_ipc
+                ipc = owner_ipc(controller); ipc.__enter__()
                 class Handler(http.server.BaseHTTPRequestHandler):
                     def do_POST(self):
                         request=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
@@ -416,6 +418,8 @@ class TQ9V2Tests(unittest.TestCase):
                 script=root/'scripted_worker.py'
                 source=WORKER.replace('PACKAGE_PARENT',repr(str(Path(generative_driver.__file__).resolve().parents[1])))\
                     .replace('FIXTURE_PARENT',repr(str(Path(__file__).parent))).replace('SERVICE_URL',repr('http://127.0.0.1:'+str(server.server_port)))
+                if mode == 'generated-identity-only':
+                    source = source.replace("sequence=[('measure',{}),('arm',{}),('set_duty',{'duty':370}),('disarm',{})]", "sequence=[('identify',{})]")
                 if mode=='missing-mission':source=source.replace("('set_duty',{'duty':370}),",'')
                 if mode=='rejected-write':
                     source=source.replace("'operation':'measure','parameters':{'unexpected':1}",
@@ -906,7 +910,8 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertFalse(grade_keys(equivalence)&{'expected','absolute_tolerance'})
                             failing={'final-bounds':['final/denied/refused_without_io','final/effect-1/duty'],
                                      'hidden-wrong':['final/temperature-0/temperature'],
-                                     'repair-mapping':['final/temperature-0/temperature','final/temperature-1/temperature']}
+                                     'repair-mapping':['final/temperature-0/temperature','final/temperature-1/temperature','fresh_worker_mission'],
+                                     **{key:['fresh_worker_mission'] for key in ('generated-identity-only','missing-mission','recover-budget','recover-repeat','recover-reuse')}}
                             if driver is None:
                                 # No driver was emitted: not equivalent, judged without truth or an emulator.
                                 self.assertEqual((equivalence['status'],equivalence['equivalent'],equivalence['diff']),
@@ -1031,7 +1036,7 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertEqual((call['result']['before_observation']['source'],call['result']['observation']['source']),
                                              ('instrument','instrument'),call['name'])
                             self.assertEqual(call['result']['observation']['units'],{'duty':'permille','temperature_reference':'degC'})
-                        self.assertEqual({c['name'] for c in live_calls}>={'interface_execute','probe_run','benchmark_package_execute'},True)
+                        self.assertEqual({c['name'] for c in live_calls}>={'interface_execute','probe_run','device_identify' if mode == 'generated-identity-only' else 'device_measure'},True)
                         self.assertFalse([e for e in events if e['kind'] in ('device.unavailable','device.release_failed')])
                         # The configurator released its control of the device; the harness stopped it, confirmed.
                         self.assertTrue(provider.released)
@@ -1090,7 +1095,7 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertIn('tasks.temperature',[error['path'] for error in mapping['errors']])
                             self.assertIn('Worker reported needs_revision',' '.join(probe['notes']['inline']['open_questions']))
                         mission=next(c for c in handoffs[-1]['checks'] if c['name']=='fresh_worker_mission')
-                        self.assertIs(mission['passed'],False if mode in ('missing-mission','recover-budget','recover-repeat','recover-reuse')
+                        self.assertIs(mission['passed'],False if mode in ('generated-identity-only','missing-mission','recover-budget','recover-repeat','recover-reuse')
                                       else None if mode=='repair-mapping' else True)
                         if mode=='normal':
                             # The probe hands on the worker's own observed probe record; emit packages it; ground gets
@@ -1217,7 +1222,7 @@ class TQ9V2Tests(unittest.TestCase):
                             reused=handoffs[-1]
                             self.assertEqual((reused['stage'],reused.get('route')),('reuse',None))
                             self.assertEqual(reused['notes']['inline']['outcome']['kind'],'advance')
-                            failed=[e['data'] for e in events if e['kind']=='tool.finished' and e['data']['name']=='benchmark_package_execute'
+                            failed=[e['data'] for e in events if e['kind']=='tool.finished' and e['data']['name']=='device_disarm'
                                     and e['data']['assignment_id']==reused['assignment_id'] and not e['data']['ok']]
                             self.assertEqual(len(failed),1)
                             self.assertEqual(failed[0]['result']['error']['fault'],'model')
@@ -1241,6 +1246,26 @@ class TQ9V2Tests(unittest.TestCase):
                         # accepted artifact and notes hash, the single final and the mission check beside it.
                         self.assertFalse((run_dir/'benchmark/run-evidence.enc').exists());self.assertNotIn('final_evaluation',state)
                         sealed=unlock(trial/'run-evidence.enc',password.read_text(),equivalence['evidence_sha256'])
+                        if mode in ('generated-mcp', 'forged-mcp', 'reordered-mcp', 'mcp-reconnect'):
+                            import copy
+                            from generative_driver.benchmark_support.mcp_reuse import verified
+                            proof = sealed['mcp_reuse']; frozen = equivalence['frozen_artifact_sha256']
+                            self.assertEqual(proof['package_schema'], 'interface-package/2')
+                            self.assertTrue(verified(proof, frozen))
+                            self.assertTrue(sealed['final']['generated_reuse_verified'])
+                            from generative_driver.benchmark_support.evidence import seal_run_evidence_v2
+                            omitted = copy.deepcopy(sealed); omitted.pop('mcp_reuse')
+                            with self.assertRaisesRegex(ValueError, 'generated|MCP|proof'):
+                                seal_run_evidence_v2(omitted, trial/'missing-proof.enc', password)
+                            for mutation in ('prefix', 'reorder', 'arguments', 'result', 'invented', 'missing'):
+                                tampered = copy.deepcopy(proof)
+                                if mutation == 'prefix': tampered['package_events'] = tampered['package_events'][:-1]
+                                if mutation == 'reorder': tampered['package_events'].reverse()
+                                if mutation == 'arguments': tampered['package_events'][0]['parameters'] = {'forged': 1}
+                                if mutation == 'result': tampered['package_events'][0]['result']['outputs'] = {'forged': 1}
+                                if mutation == 'invented': tampered['package_events'][0]['mcp']['dispatch_id'] = '999999'
+                                if mutation == 'missing': tampered['catalogs'] = []
+                                self.assertFalse(verified(tampered, frozen), mutation)
                         self.assertEqual(len([r for r in sealed['accepted_artifacts'] if r['kind']=='artifact']),sum(len(h['artifacts']) for h in handoffs))
                         self.assertEqual({r['sha256'] for r in sealed['accepted_artifacts'] if r['kind']=='notes'},{h['notes']['sha256'] for h in handoffs})
                         self.assertEqual((sealed['final']['frozen_artifact_sha256'],sealed['mission']),
@@ -1273,6 +1298,18 @@ class TQ9V2Tests(unittest.TestCase):
                         from generative_driver.benchmark_support.suite_reporting import _recorded_success
                         with patch('generative_driver.client.call',side_effect=lambda method,params,**kw:controller.call(method,params)):
                             report=report_run(run['run_id'],home=root/'home')
+                        if mode in ('generated-mcp','generated-identity-only','missing-mission'):
+                            import copy
+                            from generative_driver.benchmark_support.evidence import regrade_v3
+                            from generative_driver.benchmark_support.mcp_reuse import verified
+                            self.assertTrue(verified(sealed['mcp_reuse'], equivalence['frozen_artifact_sha256']))
+                            self.assertEqual(regrade_v3(report, trial/'run-evidence.enc', password)['equivalence']['equivalent'], mode == 'generated-mcp')
+                            bad = copy.deepcopy(sealed)
+                            bad['mcp_reuse']['package_events'] = bad['mcp_reuse']['package_events'][:-1]
+                            forged_path = trial/'prefix-proof.enc'
+                            forged_sha = seal(bad, forged_path, password.read_text())
+                            forged_report = {**report, 'equivalence': {**report['equivalence'], 'evidence_sha256': forged_sha}}
+                            self.assertFalse(regrade_v3(forged_report, forged_path, password)['equivalence']['equivalent'])
                         # A driver awaiting its independent grade is never counted as a success.
                         self.assertFalse(_recorded_success(result,events,report))
                         # The report carries the protocol and that the run's verdict is recorded.
@@ -1287,7 +1324,7 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertIsNone(updated['final'])
                             self.assertEqual(len([r for r in updated['accepted_artifacts'] if r['kind']=='artifact']),sum(len(h['artifacts']) for h in kept))
                 finally:
-                    controller.close();server.shutdown();server.server_close()
+                    controller.close();server.shutdown();server.server_close();ipc.__exit__(None,None,None)
                     if endpoint is not None:endpoint.close()
                     for peer in peers+graders:
                         if not getattr(peer,'closed',False):peer.close()

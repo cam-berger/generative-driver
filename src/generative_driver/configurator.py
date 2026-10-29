@@ -845,12 +845,12 @@ def _live_outcome(event):
     if event.get('ok') is True:
         return 'succeeded', None
     executions = (_listed(result['results']) if isinstance(result.get('results'), list) else
-                  [result] if result.get('schema') == 'interface-result/1' else [])
+                  [result] if result.get('schema') in ('interface-result/1', 'driver-result/1') else [])
     failed = [r for r in executions if r.get('ok') is not True]
     refused = bool(failed) and all(r.get('transport_open_attempted') is False for r in failed)
     if event.get('refused_before_open') is True or _declared_refusal(result) or (refused and len(failed) == len(executions)):
         return 'refused', None
-    fault = lambda r: classify_failure(r) if r.get('schema') == 'interface-result/1' else r.get('fault')
+    fault = lambda r: classify_failure(r) if r.get('schema') == 'interface-result/1' else (r.get('error') or {}).get('fault', r.get('fault'))
     if any(fault(r) == 'model' and r.get('transport_open_attempted', True) is True for r in failed):
         return 'failed', None
     if refused and result.get('fault') is None:
@@ -918,7 +918,7 @@ def _frozen_package(package, strict=False):
     return {'sha256': package['sha256'], 'manifest_sha256': read(lambda: digest(root / 'manifest.json')),
             'driver_sha256': read(lambda: digest(root / 'driver')), 'identity': identity, 'effects': effects,
             'resets_on_open': isinstance(channel, dict) and channel.get('resets_on_open') is True,
-            'functions': functions}
+            'functions': functions, 'generated_mcp': read(lambda: json.loads((root/'manifest.json').read_text()).get('schema')) == 'interface-package/2'}
 
 
 NEVER_RAN = 'fresh reuse never ran the frozen package with emit_test_live'
@@ -1005,9 +1005,15 @@ def _fresh_reuse(package, events, started=(), grants=None, unreachable=None):
     Returns (the fresh_reuse_live_operations check, its diff entries)."""
     shas = lambda e: e.get('argument_sha256') or {}
     snapshot = lambda e: _result_of(e).get('manifest_sha256')
-    dispatched = lambda e: (package is not None and e.get('name') == 'emit_test_live'
+    generated = lambda e: bool(package and package.get('generated_mcp') and _result_of(e).get('mcp', {}).get('schema') == 'driver-mcp-call/1'
+        and _result_of(e)['mcp'].get('manifest_sha256') == package['manifest_sha256']
+        and _result_of(e)['mcp'].get('package_sha256') == package['sha256']
+        and _result_of(e)['mcp'].get('dispatch_id') == e.get('dispatch_id')
+        and _result_of(e)['mcp'].get('assignment_id') == e.get('assignment_id')
+        and _result_of(e)['mcp'].get('tool_name') == e.get('name') and e.get('connected') is True)
+    dispatched = lambda e: generated(e) or (package is not None and not package.get('generated_mcp') and e.get('name') == 'emit_test_live'
                             and shas(e).get('package_dir') == package['sha256'])
-    emitted = lambda e: dispatched(e) and snapshot(e) is not None and snapshot(e) == package['manifest_sha256']
+    emitted = lambda e: generated(e) or (dispatched(e) and snapshot(e) is not None and snapshot(e) == package['manifest_sha256'])
     ran_driver = lambda e: emitted(e) or (package is not None and package['driver_sha256'] is not None
                                           and e.get('name') == 'interface_execute' and shas(e).get('model_dir') == package['driver_sha256'])
     def outcome_of(event):
@@ -1019,6 +1025,8 @@ def _fresh_reuse(package, events, started=(), grants=None, unreachable=None):
         """Whether the call ran a function of the frozen package (beyond its identity operation) on the device: True,
         False, or None when its result does not say (it recorded no execution, or stopped at a fault before one)."""
         result = _result_of(event)
+        if generated(event):
+            return result.get('operation') in (package['functions'] or ())
         if isinstance(result.get('output'), list):
             return True  # a register package's live suite reads its identity, then measures
         executions = _listed(result.get('results'))
@@ -1263,6 +1271,8 @@ class Controller:
                 db.execute("UPDATE assignments SET state='interrupted' WHERE run_id=? AND state='active'", (row['id'],))
                 self._event(row['id'],'run.recovered',{'uncertain_effect':bool(uncertain)},db)
 
+        from .device_access import DeviceAccess
+        self.device_access = DeviceAccess(self)
         from .benchmark_support.suite_store import SuiteStore
         self._suites = SuiteStore(self._db)
         self._suites.recover()
@@ -1322,6 +1332,10 @@ class Controller:
 
     def call(self, method, params=None):
         params = params or {}
+        if method == 'mcp_cancel':
+            return self.device_access.cancel_invocation(params, assignment=True)
+        if method.startswith('device_'):
+            return self.device_access.control(method, params)
         if method == 'benchmark_spawn':
             from .benchmark_support.harness import bench_home, _spawn
             kind = params.get('kind')
@@ -1345,11 +1359,11 @@ class Controller:
             return self._suite_call(method,params)
         run_id = params.get('run_id')
         row = self._row(run_id)
-        if method in ('tool', 'tools'):
+        if method in ('tool', 'tools', 'mcp_tool', 'mcp_tools'):
             with self._lock:
                 operation_lock = self._operations.setdefault(run_id,threading.RLock())
             with operation_lock:
-                if method == 'tools':
+                if method in ('tools', 'mcp_tools'):
                     return self._tool(method,params,self._row(run_id))
                 with self._active_operation(run_id):
                     return self._tool(method, params, self._row(run_id))
@@ -2271,6 +2285,8 @@ class Controller:
                               'binding': prepared.get('binding', spec.get('binding')), 'effects': spec['effects'], 'revision': revision}
                 if spec.get('scoped_tool_approval')=='bound-device' and assignment['binding']!=spec['binding']:
                     raise SafetyError('Prepared stage changed the explicitly approved device binding')
+                if prepared.get('device_mcp'):
+                    assignment['device_mcp'] = prepared['device_mcp']
                 if prepared.get('collection'):
                     assignment['collection'] = prepared['collection']
                 with self._db() as db:
@@ -2294,6 +2310,8 @@ class Controller:
                 gateway = {'command': sys.executable, 'args': ['-c',
                     'import sys; sys.path.insert(0,' + repr(str(Path(__file__).resolve().parents[1])) + '); from generative_driver.worker_tools import main; main()',
                     '--home',str(self.home),'--run',run_id,'--assignment',attempt]}
+                if assignment.get('device_mcp'):
+                    gateway['args'][1] = gateway['args'][1].replace('generative_driver.worker_tools', 'generative_driver.device_mcp')
                 result = execute(StageRequest(stage=stage, workspace=workspace, prompt=prompt,
                                 budget_seconds=max(0.01, row['created'] + spec['budget_seconds'] - time.time()),
                                 report_required=assignment['report_required'], allowed_tools=assignment['allowed_tools'],
@@ -2539,15 +2557,7 @@ class Controller:
                         db.execute('DELETE FROM bindings WHERE run_id=?',(run_id,))
 
     def _claim_binding(self, binding, run_id, db):
-        if not binding:
-            return
-        identity = _lease(binding)
-        prior = db.execute('SELECT run_id FROM bindings WHERE identity=?',(identity,)).fetchone()
-        if prior and prior['run_id'] != run_id:
-            owner = db.execute('SELECT status,uncertain FROM runs WHERE id=?',(prior['run_id'],)).fetchone()
-            if owner and (owner['status'] in ('queued','running') or owner['uncertain'] or prior['run_id'] in self._workers or prior['run_id'] in self._inflight):
-                raise SafetyError('Device binding is already owned by another run')
-        db.execute('INSERT OR REPLACE INTO bindings VALUES(?,?)',(identity,run_id))
+        return self.device_access.claim_binding(binding, run_id, db)
 
     @staticmethod
     def _verify_inputs(inputs):
@@ -2644,7 +2654,7 @@ class Controller:
             prior = _prior_notes(accepted, spec.get('_revision', 0)) if stage != 'reuse' else []
             if prior and not prepared.get('skip') and 'prompt' not in prepared:
                 prepared = {**prepared, 'context': {**(prepared.get('context') or {}), 'prior_notes': prior}}
-            return prepared
+            return self._generated_reuse(prepared) if stage == 'reuse' else prepared
         if stage == 'interpret':
             # Interpretation that cannot start hands off empty with the reason; it never stops the run.
             from .toolkit import call_tool
@@ -2769,8 +2779,31 @@ class Controller:
         prior = _prior_notes(accepted, spec.get('_revision', 0)) if stage != 'reuse' else []
         if prior:
             context['prior_notes'] = prior
-        return {'objective': GROUND_OBJECTIVE + spec['goal'] if stage == 'ground' else spec['goal'], 'inputs': inputs,
+        prepared = {'objective': GROUND_OBJECTIVE + spec['goal'] if stage == 'ground' else spec['goal'], 'inputs': inputs,
                 'allowed_tools': STAGE_TOOLS[stage], 'context': context, **({'input_notes': missing} if missing else {})}
+        return self._generated_reuse(prepared) if stage == 'reuse' else prepared
+
+    @staticmethod
+    def _generated_reuse(prepared):
+        from interface_runtime.package import verify_package
+        for raw in prepared.get('inputs', []):
+            package = Path(raw)
+            manifest_path = package / 'manifest.json'
+            if not manifest_path.is_file():
+                continue
+            manifest = json.loads(manifest_path.read_text())
+            if manifest.get('schema') != 'interface-package/2':
+                continue
+            checked = verify_package(package)
+            if not checked['ok']:
+                raise IntegrityError('Generated reuse package is invalid: ' + str(checked['defects']))
+            catalog = json.loads((package/'mcp-tools.json').read_text())
+            configured = {'package_dir': str(package), 'manifest_sha256': digest(manifest_path),
+                'contract_sha256': manifest['contract_sha256'], 'catalog_sha256': digest(package/'mcp-tools.json')}
+            return {**prepared, 'device_mcp': configured, 'allowed_tools': [t['name'] for t in catalog['tools']],
+                'objective': prepared['objective'].replace('Use benchmark_package_execute for each operation.',
+                    'Use the generated MCP tools for each operation.') + ' Use only the assigned generated MCP tools to operate this device.'}
+        return prepared
 
     @staticmethod
     def _device_ready(spec):
@@ -3381,7 +3414,7 @@ class Controller:
         try:
             return self._dispatch(method, params, run, marker)
         except Exception as error:
-            if method == 'tool' and 'assignment' in marker and 'dispatched' not in marker:
+            if method in ('tool', 'mcp_tool') and 'assignment' in marker and 'dispatched' not in marker:
                 # A refusal the runtime owns (no port matches the bound device) names its fault.
                 fault = getattr(error, 'fault', None)
                 self._event(run['id'], 'tool.refused', {'stage': marker['assignment']['stage'],
@@ -3406,6 +3439,10 @@ class Controller:
             raise ValueError('Worker assignment is inactive after stage or revision change')
         marker['assignment'] = assignment
         spec = json.loads(run['spec'])
+        if assignment.get('device_mcp'):
+            return self.device_access.worker_tool(method, params, run, assignment, marker=marker)
+        if method in ('mcp_tool', 'mcp_tools'):
+            raise ValueError('No generated MCP gateway assigned')
         conditions = ((spec.get('device') or {}).get('development_conditions') or {}).get('conditions', []) \
             if (assignment['stage'] in ('probe', 'ground')
                 and (spec.get('_case_pin') or {}).get('case_id') == 'sampled-sensor-v1') else []

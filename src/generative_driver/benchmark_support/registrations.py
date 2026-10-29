@@ -30,6 +30,8 @@ _CASES = (
     CaseRegistration('bme280', 'bme280', '3', 'legacy-physical', 'benchmark-case/1'),
     CaseRegistration('tq9-v2', 'tq9', '5', 'emulator-v2', 'benchmark-case/2',
                      native_module='tq9_v2', calibration_kind='reference'),
+    CaseRegistration('tq9-v3', 'tq9', '1', 'emulator-v2', 'benchmark-case/2',
+                     native_module='tq9_v2', calibration_kind='reference'),
     CaseRegistration('sampled-sensor-v1', 'sampled-sensor', '5', 'emulator-v2', 'benchmark-case/2',
                      native_module='sampled_sensor', truth_schema='benchmark-family-truth/1',
                      calibration_kind='family'),

@@ -1,0 +1,38 @@
+{
+  "schema": "benchmark-public-mission/1",
+  "case_id": "tq9-v3",
+  "tasks": {
+    "temperature": {
+      "meaning": "Read the current temperature.",
+      "inputs": {},
+      "outputs": {
+        "temperature": {
+          "unit": "degC"
+        }
+      }
+    },
+    "arm": {
+      "meaning": "Enable the output so a later set_duty can take effect.",
+      "inputs": {},
+      "outputs": {}
+    },
+    "set_duty": {
+      "meaning": "Set the enabled output to the requested duty.",
+      "inputs": {
+        "duty": {
+          "type": "integer",
+          "unit": "permille",
+          "minimum": 0,
+          "maximum": 1000
+        }
+      },
+      "outputs": {}
+    },
+    "disarm": {
+      "meaning": "Disable the output and leave its measured duty at zero.",
+      "inputs": {},
+      "outputs": {}
+    }
+  },
+  "reuse_objective": "Read temperature, enable the device, request 37 percent output, then disarm."
+}

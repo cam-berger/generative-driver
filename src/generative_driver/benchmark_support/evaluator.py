@@ -212,8 +212,15 @@ def unscored(reason, frozen, method='fresh-final'):
 
 def reuse_mission(case_id, run_dir, accepted, frozen, capabilities):
     """Whether fresh reuse did the public mission with the frozen package, from the package events the run recorded for
-    its accepted reuse assignment: a secondary check beside the grade, never the verdict."""
+    its accepted reuse assignment. Required generated reuse must complete this mission; historical evidence retains
+    this as a secondary check beside the grade."""
     from .emulated import _mission
+    from .mcp_reuse import owner_evidence, required, verified
+    from .snapshots import read_snapshot
+    proof = owner_evidence(run_dir, accepted)
+    snapshot = read_snapshot(run_dir) if (Path(run_dir)/'benchmark/execution.json').is_file() else {}
+    if required(proof, snapshot) and not verified(proof, frozen):
+        return {'name': 'fresh_worker_mission', 'passed': False, 'reason': 'Missing or inconsistent owner proof of generated MCP reuse'}
     reuse = next((h for h in reversed(accepted) if h.get('stage') == 'reuse' and h.get('artifacts')), None)
     if reuse is None or frozen is None:
         return {'name': 'fresh_worker_mission', 'passed': None, 'reason': 'Fresh reuse did not run the frozen package'}
@@ -286,7 +293,13 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
         except (ValueError, UnicodeError):
             capabilities = None
     if method == 'recorded-reuse':
-        return _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, capabilities_sha, password_file)
+        verdict, final = _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, capabilities_sha, password_file)
+        from .mcp_reuse import owner_evidence, required, verified
+        proof = owner_evidence(run_dir, accepted)
+        if final is not None and required(proof, snapshot):
+            final = {**final, 'generated_reuse_required': True, 'generated_reuse_verified': verified(proof, sha)}
+            verdict = final_record(final, capabilities_sha, verdict.get('mission'))
+        return verdict, final
     checked = reuse_mission(case_id, run_dir, accepted, sha, capabilities)
     if not isinstance(capabilities, dict):
         return record('graded', False, [], [{'id': 'capability_mapping', 'reason': 'no capability mapping'}], sha,
@@ -319,6 +332,10 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
                  'raw': json.loads(raw.read_text(encoding='utf-8')) if raw.is_file() else None}
         draft['evaluations'].append(final)
         _draft(trial_dir, password_file, draft)
+    from .mcp_reuse import owner_evidence, required, verified
+    proof = owner_evidence(run_dir, accepted)
+    if required(proof, snapshot):
+        final = {**final, 'generated_reuse_required': True, 'generated_reuse_verified': verified(proof, sha)}
     return final_record(final, capabilities_sha, checked), final
 
 
@@ -329,7 +346,17 @@ def final_record(final, capabilities_sha256=None, mission=None):
     graded = validate_records(final['contract'], final['records'])
     checks = [{'id': str(row['id']), 'passed': row['passed'] is True} for row in graded['checks']]
     diff = [{'id': str(row['id']), 'reason': str(row.get('reason') or 'failed')} for row in graded['checks'] if row['passed'] is not True]
-    return record('graded', graded['verdict'] == 'passed', checks, diff, final['frozen_artifact_sha256'], capabilities_sha256,
+    if final.get('generated_reuse_required'):
+        passed = final.get('generated_reuse_verified') is True
+        checks.append({'id': 'generated_mcp_reuse', 'passed': passed})
+        if not passed:
+            diff.append({'id': 'generated_mcp_reuse', 'reason': 'Missing or inconsistent owner proof of generated MCP reuse'})
+        mission_passed = isinstance(mission, dict) and mission.get('passed') is True
+        checks.append({'id': 'fresh_worker_mission', 'passed': mission_passed})
+        if not mission_passed:
+            diff.append({'id': 'fresh_worker_mission', 'reason': (mission or {}).get('reason')
+                         or 'Fresh generated MCP worker did not complete the required mission'})
+    return record('graded', all(c['passed'] for c in checks), checks, diff, final['frozen_artifact_sha256'], capabilities_sha256,
                   mission, final.get('method', 'fresh-final'))
 
 
@@ -504,7 +531,9 @@ def evidence(trial_dir, run_dir, result, *, final=None, equivalence=None, missio
         if notes.get('path'):
             rows.append({**identity, 'kind': 'notes', 'path': notes['path'], 'sha256': notes['sha256']})
     journal = Path(trial_dir)/'device/journal.jsonl'
-    return {'schema': 'benchmark-run-evidence/2', 'protocol': PROTOCOL, 'run_id': result['run_id'],
+    from .mcp_reuse import owner_evidence
+    proof = owner_evidence(run_dir, result.get('accepted_handoffs') or [])
+    return {'schema': 'benchmark-run-evidence/2', 'mcp_reuse': proof, 'protocol': PROTOCOL, 'run_id': result['run_id'],
             'run': {key: result.get(key) for key in ('status', 'outcome_category')},
             'case_pin': snapshot['case_pin'], 'execution_snapshot': snapshot, 'accepted_artifacts': rows,
             'final': final, 'equivalence': equivalence, 'mission': mission, 'evaluation_error': error,

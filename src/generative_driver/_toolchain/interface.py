@@ -252,6 +252,17 @@ def emit_package(run_dir, model_dir, probe, name=None, version='1.0.0', **_):
     checked = check_probe(model, evidence, sha)
     if not checked['ok']:
         return {**checked,'_exit':1}
+    from interface_runtime.contracts import from_model, compile_contract
+    authored = [(path(model_dir)/name).is_file() for name in ('contract.json', 'protocol.json')]
+    if any(authored) and not all(authored):
+        raise ValueError('Authored contract.json and protocol.json must be supplied together')
+    contract, protocol = from_model(model)
+    if (path(model_dir)/'contract.json').is_file():
+        contract = read_json(path(model_dir)/'contract.json', 1048576)
+    if (path(model_dir)/'protocol.json').is_file():
+        protocol = read_json(path(model_dir)/'protocol.json', 1048576)
+    if compile_contract(contract, protocol) != model:
+        raise ValueError('Authored contract/protocol differ from the probed model projection')
     parent = Path(core.resolve_run(run_dir))/'emit'; parent.mkdir(parents=True, exist_ok=True)
     pkg = Path(tempfile.mkdtemp(prefix='interface-package-', dir=parent))
     shutil.copytree(TEMPLATE, pkg/'driver', ignore=shutil.ignore_patterns('__pycache__'))
@@ -281,8 +292,16 @@ def emit_package(run_dir, model_dir, probe, name=None, version='1.0.0', **_):
         'to verify against a trusted pin; an attacker replacing every file and checksum cannot be detected '
         'by a self-contained checksum alone. Hardware verification requires a separate physical test.\n')
     (pkg/'REFERENCE.md').write_text(reference, encoding="utf-8")
-    manifest = {'schema':'interface-package/1','name':name or 'device-interface','version':version,
+    for filename, document in (('contract.json', contract), ('protocol.json', protocol)):
+        (pkg/'driver'/filename).write_text(json.dumps(document, indent=2, allow_nan=False)+'\n', encoding='utf-8')
+    from interface_runtime.catalog import render_catalog
+    catalog = render_catalog(contract, digest(pkg/'driver/contract.json'))
+    (pkg/'mcp-tools.json').write_text(json.dumps(catalog, indent=2, allow_nan=False)+'\n', encoding='utf-8')
+    manifest = {'schema':'interface-package/2','name':name or 'device-interface','version':version,
                 'model_sha256':sha,'probe_sha256':digest(pkg/'probe.json'),
+                'contract_sha256':digest(pkg/'driver/contract.json'),
+                'protocol_sha256':digest(pkg/'driver/protocol.json'),
+                'mcp_catalog_sha256':digest(pkg/'mcp-tools.json'),
                 'source_evidence_kind':evidence['evidence_kind'],'files':package_files(pkg)}
     (pkg/'manifest.json').write_text(json.dumps(manifest,indent=2,allow_nan=False)+'\n', encoding="utf-8")
     manifest_sha = digest(pkg/'manifest.json')
@@ -315,6 +334,8 @@ def _snapshot(pkg, sha, expected_manifest_sha256, temporary):
         return None, None, {**checked,'ok':False,'replay_status':'not_run',
                             'defects':[{'where':'runtime','what':'execution requires current trusted runtime/templates'}],'_exit':1}
     allowlist = set(trusted) | {'driver/model.json','probe.json','REFERENCE.md','requirements.txt'}
+    if checked['manifest']['schema'] == 'interface-package/2':
+        allowlist |= {'driver/contract.json', 'driver/protocol.json', 'mcp-tools.json'}
     if set(checked['manifest']['files']) != allowlist:
         return None, None, {'ok':False,'defects':[{'where':'package','what':'unexpected or missing package artifact'}],'_exit':1}
     # Execute only a freshly verified allowlisted snapshot. Existing bytecode or native import sidecars
@@ -414,7 +435,7 @@ def is_interface_package(package_dir):
         manifest = read_json(path(package_dir)/'manifest.json', 1048576)
     except (OSError, ValueError):
         return False
-    return type(manifest) is dict and manifest.get('schema') == 'interface-package/1'
+    return type(manifest) is dict and manifest.get('schema') in ('interface-package/1', 'interface-package/2')
 
 
 def _live_call(operation, command):

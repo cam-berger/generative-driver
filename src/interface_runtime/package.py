@@ -34,8 +34,11 @@ def verify_package(root, expected_model_sha256=None, expected_manifest_sha256=No
         if (root/'manifest.json').is_symlink() or (root/'manifest.sha256').is_symlink():
             raise ValueError('manifest may not be a symlink')
         manifest = read_json(root/'manifest.json', 1048576)
-        if (type(manifest) is not dict or set(manifest) != {'schema','name','version','model_sha256',
-                'probe_sha256','source_evidence_kind','files'} or manifest['schema'] != 'interface-package/1'):
+        fields = {'schema','name','version','model_sha256','probe_sha256','source_evidence_kind','files'}
+        if type(manifest) is dict and manifest.get('schema') == 'interface-package/2':
+            fields |= {'contract_sha256', 'protocol_sha256', 'mcp_catalog_sha256'}
+        if (type(manifest) is not dict or set(manifest) != fields
+                or manifest['schema'] not in ('interface-package/1', 'interface-package/2')):
             raise ValueError('invalid package manifest')
         actual_manifest = digest(root/'manifest.json')
         checksum = (root/'manifest.sha256').read_text(encoding="utf-8").strip()
@@ -62,6 +65,21 @@ def verify_package(root, expected_model_sha256=None, expected_manifest_sha256=No
             raise ValueError('manifest model/probe hash mismatch')
         if expected_model_sha256 is not None and manifest['model_sha256'] != expected_model_sha256:
             raise ValueError('package belongs to different model bytes')
+        if manifest['schema'] == 'interface-package/2':
+            for name in ('contract', 'protocol'):
+                if files.get('driver/'+name+'.json') != manifest[name+'_sha256']:
+                    raise ValueError('manifest '+name+' hash mismatch')
+            from .contracts import compile_contract
+            compiled = compile_contract(read_json(root/'driver/contract.json'), read_json(root/'driver/protocol.json'))
+            if compiled != read_json(root/'driver/model.json'):
+                raise ValueError('model projection differs from driver contract and protocol')
+            from .catalog import render_catalog
+            catalog = read_json(root/'mcp-tools.json')
+            if files.get('mcp-tools.json') != manifest['mcp_catalog_sha256']:
+                raise ValueError('manifest MCP catalog hash mismatch')
+            if catalog != render_catalog(read_json(root/'driver/contract.json'),
+                                         manifest['contract_sha256'], catalog.get('namespace')):
+                raise ValueError('MCP catalog differs from the public driver contract')
         if manifest['source_evidence_kind'] not in ('live','replay'):
             raise ValueError('invalid package evidence kind')
         for needed in ('driver/__init__.py','driver/__main__.py','interface_runtime/engine.py',

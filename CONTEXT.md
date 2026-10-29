@@ -9,7 +9,12 @@
 | Worker report | A claim, never a reason by itself to stop a run. |
 | Equivalence | One final verdict: evaluator grade for benchmarks, self-evidence for generic runs. Completion alone does not mean success. |
 | Interface model / binding | Byte operations, decoding and effects / operator-selected host connection. |
-| Package | Model, runtime, reference, evidence and integrity manifest. |
+| Driver contract | Authoritative public operations, meanings, value schemas, units, scoped caveats and preconditions. |
+| Declarative protocol | Wire exchanges and decoders implementing the public contract through a versioned shared runtime. |
+| Precondition | Driver-declared requirement checked from fresh read observations before the requested command. |
+| Application MCP layer | Separately authored tools composing public managed-driver operations through the supported SDK. |
+| Semantic uncertainty | Missing or weakly supported operation or field meaning; retained as a scoped warning. |
+| Package | Contract, protocol, executable model projection, generated MCP catalog, runtime, reference, evidence and integrity manifest. |
 | Ground / fresh reuse | Test meanings against the device / new agent uses only package and objective. Reuse is the final stage. |
 | Groundtruth | Password-encrypted, hash-pinned expected behavior held only by the evaluator. |
 | Bench harness | Benchmark operator: holds password, owns emulator/provider, supplies device descriptor and grades after the run. |

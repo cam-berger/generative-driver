@@ -11,12 +11,27 @@ RECEIPT = 'emulator-recovery/2'
 LIVE_TOOLS = ('interface_execute', 'probe_run', 'benchmark_package_execute', 'emit_test_live')
 
 
+def _generated(event, assignment):
+    """A generated call is trusted only through its assignment and owner dispatch facts."""
+    configured = assignment.get('device_mcp') or {}
+    proof = (event.get('result') or {}).get('mcp') or {}
+    return bool(configured and event.get('connected') is True
+        and proof.get('schema') == 'driver-mcp-call/1'
+        and proof.get('assignment_id') == assignment['id']
+        and proof.get('dispatch_id') == event.get('dispatch_id')
+        and proof.get('tool_name') == event.get('name')
+        and proof.get('package_sha256') == assignment.get('inputs', {}).get(configured.get('package_dir'))
+        and (event.get('argument_sha256') or {}).get('package_dir') == proof.get('package_sha256')
+        and all(proof.get(key) == configured.get(key) for key in
+                ('manifest_sha256', 'contract_sha256', 'catalog_sha256')))
+
+
 def diagnostic_faults(finishes, assignment):
     """Other observed host/operator/unknown runtime failures still block repair."""
     faults = []
     for _, event in finishes:
         if (event.get('actor') != 'worker' or event.get('assignment_id') != assignment['id']
-                or event.get('ok') is not False or event.get('name') not in LIVE_TOOLS):
+                or event.get('ok') is not False or (event.get('name') not in LIVE_TOOLS and not _generated(event, assignment))):
             continue
         result = event.get('result')
         if not isinstance(result,dict):
@@ -44,7 +59,8 @@ def diagnostic_faults(finishes, assignment):
             fault = error.get('fault')
             if fault in ('host','operator'):
                 faults.append(fault)
-            elif fault != 'model' or item.get('schema') != 'interface-result/1':
+            elif fault != 'model' or (item.get('schema') != 'interface-result/1' and not
+                    (item.get('schema') == 'driver-result/1' and _generated(event, assignment))):
                 faults.append('unknown')
     return faults
 
@@ -73,13 +89,16 @@ def unresolved_outcomes(db, run_id, assignment):
             faults.append('unknown')
             continue
         result = event.get('result')
+        generated = _generated(event, assignment) and (result.get('mcp') or {}).get('session_id') == run_id
         items = result.get('results') if isinstance(result,dict) and 'results' in result else [result]
         if not isinstance(items,list) or not items:
             faults.append('unknown')
             continue
         failures = []
         for item in items:
-            if not isinstance(item,dict) or item.get('schema') != 'interface-result/1' or type(item.get('ok')) is not bool:
+            if (not isinstance(item,dict) or (item.get('schema') != 'interface-result/1' and not
+                    (generated and item.get('schema') == 'driver-result/1' and item.get('requested_command_dispatched') is True))
+                    or type(item.get('ok')) is not bool):
                 faults.append('unknown')
                 continue
             if item['ok']:

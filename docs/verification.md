@@ -1,5 +1,14 @@
 # Verification
 
+## Generated driver MCP — 2026-10-28–29
+
+A separately preserved r2 release completed nine actual-agent emulated trials: **9/9**, three each for replacement TQ9-v3, sampled sensor and parameter store. Every trial used a fresh generated-MCP worker, passed frozen final behavior and authenticated offline regrade, and received an independent audit of complete calls, package identity and raw observations. Total: 100 MCP dispatches, 68 distinct completed workers, seven repairs across six trials and one verified owned-emulator recovery. All failed revisions, earlier development attempts and the locked predecessor remain archived.
+
+All three sensor trials needed temperature repairs; all three store trials needed complete-rejection handling repairs. The final store trial also had an ungraded post-I/O response-validation failure. Four later writes were refused, ten reads completed, and verified emulator replacement consumed the second repair. The uncertain command was never resent. These failures and all resource counters are retained in the [sanitized verification record](../bench/evidence/2026-10-29-driver-contract-mcp-verification.json).
+
+That result qualifies wheel `079cec63fd991fc7a68abfc5877be8c03c634cbf77bc4f1438bbb8a9a7a91d4c`, with 521 installed tests, under the historical gated workflow. It predates the current-main integration and its `assistive/1` harness. Fresh installed tests qualify the integrated software separately; new native evaluator admission is required before a future model study. No extra model/native run was launched for PR preparation. Three repetitions of fixed familiar scenarios establish neither a population success rate nor physical or Windows qualification.
+
+
 Results describe the pinned revisions below. Scripted tests, replay, native reference qualification, model execution and physical observations establish different things. Current runs use acquire → interpret → probe → ground → emit → fresh reuse; stage completion alone is not equivalence.
 
 ## Multiline-reply repair comparison — 2026-10-27

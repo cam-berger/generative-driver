@@ -214,13 +214,26 @@ class _RequestInterrupted(OSError):
     """Dispatch was attempted; a lost reply cannot authorize repeating an operation."""
 
 
+
+def _interrupted_reply(method, params, error):
+    if method not in ('device_execute', 'mcp_tool'):
+        return {'ok': False, 'reason': str(error)}
+    return {'schema': 'driver-result/1', 'operation': params.get('operation', params.get('name', '')),
+            'ok': False, 'outputs': {}, 'warnings': [],
+            'session_id': params.get('session_id', params.get('run_id')),
+            'request_id': params.get('request_id'),
+            'error': {'code': 'invocation_outcome_unknown', 'fault': 'host',
+                'message': 'The owner reply was lost. Inspect the saved invocation using this request_id; '
+                           'do not issue the command again with a new ID.'}}
+
+
 def _request(home, method, params, *, reply_timeout=None):
     endpoint = json.loads((home / 'service.json').read_text(encoding='utf-8'))
     with Client(endpoint['address'], family=endpoint['family'], authkey=bytes.fromhex(endpoint['authkey'])) as conn:
         message = json.dumps({'method': method, 'params': params}).encode('utf-8')
         try:
             conn.send_bytes(message)
-            timeout = reply_timeout if reply_timeout is not None else (620 if method == 'tool' else 30)
+            timeout = reply_timeout if reply_timeout is not None else (620 if method in ('tool', 'mcp_tool', 'device_execute') else 30)
             if not conn.poll(timeout):
                 raise TimeoutError('Configurator request timed out')
             return json.loads(conn.recv_bytes(4 * 1024 * 1024))
@@ -321,7 +334,7 @@ def _start(home, timeout=30):
 
 def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
     """Send one JSON request; starting or disconnecting a UI never owns a run."""
-    if read_timeout is not None and (autostart or method not in ('ping', 'status', 'result', 'events')
+    if read_timeout is not None and (autostart or method not in ('ping', 'status', 'result', 'events', 'device_status')
             or type(read_timeout) not in (int, float) or not math.isfinite(read_timeout) or read_timeout <= 0):
         raise ValueError('read_timeout requires a positive finite deadline and a reconnect-only read')
     request_options = {'reply_timeout': read_timeout} if read_timeout is not None else {}
@@ -329,7 +342,7 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     params = params or {}
     # A worker gateway (tools, tool) is the configurator's own machinery for an assignment it authenticates.
-    if method not in ('ping', 'shutdown', 'tools', 'tool'):
+    if method not in ('ping', 'shutdown', 'tools', 'tool', 'mcp_tools', 'mcp_tool', 'mcp_cancel'):
         try:
             endpoint = json.loads((directory / 'service.json').read_text(encoding='utf-8'))
         except (OSError, ValueError):
@@ -350,14 +363,14 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
         # Never silently replay a tool or state-changing request whose reply was
         # lost. The owner may already have performed it; reconnect to its state.
         if isinstance(error, _RequestInterrupted):
-            return {'ok':False, 'reason':str(error)}
+            return _interrupted_reply(method, params, error)
         if not autostart:
             return {'ok': False, 'reason': 'Configurator is not reachable. Run generative-driver service start from an operator terminal, then reconnect this UI.'}
         _start(directory)
         try:
             result = _request(directory, method, params, **request_options)
         except _RequestInterrupted as error:
-            return {'ok':False, 'reason':str(error)}
+            return _interrupted_reply(method, params, error)
     if method == 'shutdown' and result.get('stopped'):
         return _confirmed_shutdown(result.get('pid'))
     if method == 'ping' and result.get('ok'):

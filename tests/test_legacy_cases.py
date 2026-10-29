@@ -140,15 +140,32 @@ class LegacyTrialTests(unittest.TestCase):
             elif request.stage == 'emit':
                 self.assertTrue(self.tool(request, 'emit_package', task['context'])['ok'])
             elif request.stage == 'reuse':
-                package = task['inputs'][0]
-                for operation, parameters in (('measure', {}), ('arm', {}), ('set_duty', {'duty': duty}),
-                                              *((('disarm', {}),) if disarm else ())):
-                    self.tool(request, 'benchmark_package_execute', {'package_dir': package, 'operation': operation,
-                                                                     'parameters': parameters})
+                # Legacy case grading still uses recorded reuse, but this newly emitted package
+                # is format 2: the fresh worker uses its actual assigned generated MCP gateway.
+                import asyncio
+                from mcp import ClientSession, StdioServerParameters
+                from mcp.client.stdio import stdio_client
+                from package_env import package_env
+                async def reuse():
+                    gateway = request.gateway
+                    async with stdio_client(StdioServerParameters(command=gateway['command'],
+                            args=gateway['args'], env=package_env())) as streams:
+                        async with ClientSession(*streams) as client:
+                            await client.initialize()
+                            self.assertEqual({tool.name for tool in (await client.list_tools()).tools},
+                                             set(task['allowed_tools']))
+                            for operation, parameters in (('measure', {}), ('arm', {}), ('set_duty', {'duty': duty}),
+                                                          *((('disarm', {}),) if disarm else ())):
+                                result = await client.call_tool('device_'+operation, {**parameters,
+                                    '_request_id': gateway_identity(request)['assignment_id']+':'+operation})
+                                self.assertTrue(result.structured_content['ok'], result)
+                asyncio.run(reuse())
         request = {'trial_id': 'trial-legacy', 'home': str(self.home), 'goal': 'Legacy scripted contract', 'case': 'tq9',
                    'executor': 'codex', 'budget_seconds': 120, 'effects': ['write', 'actuate'], 'case_options': {},
                    'scoped_tool_approval': 'emulator', 'password_file': str(self.password), 'renode': str(self.root / 'renode')}
-        with scripted_stages(self.controller, check=real_check, prepare=lambda original, *args: original(*args), work=work):
+        from owner_ipc_fixture import owner_ipc
+        with owner_ipc(self.controller), \
+                scripted_stages(self.controller, check=real_check, prepare=lambda original, *args: original(*args), work=work):
             record = harness.run_trial(self.root / 'trial', request, call=self.configurator)
         return record, self.controller.call('result', {'run_id': record['run_id']})
 
@@ -166,7 +183,8 @@ class LegacyTrialTests(unittest.TestCase):
         self.assertEqual(record['equivalence'], equivalence)
         self.assertEqual((equivalence['status'], equivalence['equivalent'], equivalence['basis'], equivalence['method'],
                           equivalence['protocol']), ('graded', True, 'evaluator', 'recorded-reuse', 'assistive/1'))
-        self.assertEqual([check['id'] for check in equivalence['checks']], REUSE_CHECKS)
+        self.assertEqual([check['id'] for check in equivalence['checks']],
+                         REUSE_CHECKS + ['generated_mcp_reuse', 'fresh_worker_mission'])
         self.assertEqual((result['status'], result['reason']), ('completed', 'Final verdict: equivalent'))
         # The probe worker is told the provided emulator's time policy, not the manifest's continuous virtual time.
         self.assertIn('paused between calls', self.objectives['probe'])
@@ -210,7 +228,8 @@ class LegacyTrialTests(unittest.TestCase):
         record, result = self.trial(duty=500, disarm=False)
         equivalence = result['equivalence']
         self.assertEqual((record['status'], equivalence['status'], equivalence['equivalent']), ('evaluated', 'graded', False))
-        self.assertEqual([d['id'] for d in equivalence['diff']], ['fresh_package_requested_output', 'fresh_package_disarm'])
+        self.assertEqual([d['id'] for d in equivalence['diff']],
+                         ['fresh_package_requested_output', 'fresh_package_disarm', 'fresh_worker_mission'])
         self.assertTrue(result['reason'].startswith('Final verdict: not equivalent'), result['reason'])
         for check in equivalence['checks'] + equivalence['diff']:
             self.assertNotIn('0.37', json.dumps(check))

@@ -59,8 +59,8 @@ def replay_candidate(directory):
                       {'write': 'capabilities.json'}],
             'emit': [{'call': 'emit_package', 'arguments': {'model_dir': context('model_dir'), 'probe_json': context('probe')}},
                      {'call': 'emit_check', 'arguments': {'package_dir': {'$result': 'package_dir'}}}],
-            'reuse': [{'call': 'benchmark_package_execute', 'arguments': {'package_dir': context('package_dir'),
-                                                                           'operation': operation, 'parameters': parameters}}
+            'reuse': [{'call': 'device_'+operation,
+                       'arguments': {**parameters, '_request_id': 'saved-reuse-'+operation}}
                       for operation, parameters in (('measure', {}), ('arm', {}), ('set_duty', {'duty': 370}), ('disarm', {}))]}}
     (root/'replay.json').write_text(json.dumps(script, indent=1), encoding='utf-8')
     return root
@@ -185,7 +185,23 @@ elif stage=='emit':
 elif stage=='reuse':
     package=task['inputs'][0]
     sequence=[('measure',{}),('arm',{}),('set_duty',{'duty':370}),('disarm',{})]
-    results=[call('benchmark_package_execute',{'package_dir':package,'operation':op,'parameters':params}) for op,params in sequence]
+    if 'benchmark_package_execute' in task['allowed_tools']:
+        results=[call('benchmark_package_execute',{'package_dir':package,'operation':op,'parameters':params}) for op,params in sequence]
+    else:
+        import asyncio
+        from mcp import ClientSession,StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        async def reuse_mcp():
+            parameters=StdioServerParameters(command=sys.executable,args=args)
+            async with stdio_client(parameters) as (reader,writer):
+                async with ClientSession(reader,writer) as client:
+                    await client.initialize()
+                    tools=[tool.name for tool in (await client.list_tools()).tools]
+                    assert sorted(tools)==sorted(task['allowed_tools']),tools
+                    results=[(await client.call_tool('device_'+op,{**values,'_request_id':identity['assignment_id']+':'+str(index)})).structured_content for index,(op,values) in enumerate(sequence)]
+                    print(json.dumps({'type':'fixture.mcp','tools':tools,'results':results}))
+                    return results
+        results=asyncio.run(reuse_mcp())
 
 def digest(path):
     path=pathlib.Path(path)

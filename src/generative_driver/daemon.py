@@ -88,7 +88,7 @@ def serve(home):
                         if not shutdown:
                             result['reason'] = 'Shutdown is pending: a worker or accepted operation is still stopping; retry shutdown after it finishes'
                     else:
-                        slot = tool_slots if method == 'tool' else ordinary_slots
+                        slot = tool_slots if method in ('tool', 'device_execute', 'mcp_tool') else ordinary_slots
                         if not slot.acquire(blocking=False):
                             raise RuntimeError('Configurator request capacity reached; retry later')
                         thread = threading.Thread(target=dispatch,args=(conn,method,params,slot),daemon=True)

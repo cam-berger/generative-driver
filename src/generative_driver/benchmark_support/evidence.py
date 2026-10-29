@@ -157,6 +157,8 @@ def _snapshot_identity(payload, v2=True):
     registered workflow case, legacy ones included, for an assistive run's evidence."""
     from .snapshots import canonical_digest
     snapshot = payload['execution_snapshot']
+    from .mcp_reuse import required
+    required(payload.get('mcp_reuse', {}), snapshot)
     if (snapshot.get('schema') != 'benchmark-execution-snapshot/1' or
             canonical_digest({k: v for k, v in snapshot.items() if k != 'snapshot_sha256'}) != snapshot.get('snapshot_sha256') or
             snapshot['case_pin'] != payload['case_pin']):
@@ -220,6 +222,20 @@ def seal_run_evidence_v2(payload: dict, path: Path, password_file: Path) -> dict
             observed = None
         if observed != row['sha256']:
             raise IntegrityError('Accepted artifact bytes changed before sealing: ' + Path(row['path']).name)
+    import json
+    from .mcp_reuse import required, verified
+    emits = [row for row in payload['accepted_artifacts'] if row['stage'] == 'emit' and row['kind'] == 'artifact']
+    emitted = next((row for row in emits if row['assignment_id'] == emits[-1]['assignment_id']), None) if emits else None
+    manifest = Path(emitted['path'])/'manifest.json' if emitted else None
+    package_schema = json.loads(manifest.read_text()).get('schema') if manifest and manifest.is_file() else None
+    proof = payload.get('mcp_reuse', {})
+    if package_schema == 'interface-package/2' and proof.get('package_schema') != package_schema:
+        raise IntegrityError('Generated MCP proof must retain the frozen package format')
+    final = payload.get('final')
+    if final is not None and required(proof, payload['execution_snapshot']):
+        if (final.get('generated_reuse_required') is not True or
+                final.get('generated_reuse_verified') is not verified(proof, final['frozen_artifact_sha256'])):
+            raise IntegrityError('Generated MCP proof differs from the final evaluation')
     digest = seal(payload, path, Path(password_file).read_text(encoding='utf-8').strip())
     return {'path': Path(path).name, 'sha256': digest}
 
@@ -327,6 +343,10 @@ def regrade_v2(report: dict, evidence_path: Path, password_file: Path) -> dict:
     evaluations = [{**_scalars(row, identity_fields), **_scalars(validate_records(row['contract'], row['records']), COUNTS)}
                    for row in payload['evaluations']]
     gates, gates_ok = _gate_results(payload, evaluations)
+    from .mcp_reuse import required, gate_passed
+    if required(payload.get('mcp_reuse', {}), payload['execution_snapshot']):
+        gates_ok = gates_ok and any(g.get('stage') == 'reuse' and gate_passed(payload, g)
+                                   for g in payload.get('accepted_gates', []))
     finals = [row for row in evaluations if row['phase'] == 'final']
     passed, total = sum(row['passed'] for row in finals), sum(row['total'] for row in finals)
     ok = bool(finals) and all(row['verdict'] == 'passed' for row in finals) and gates_ok
@@ -375,6 +395,11 @@ def regrade_v3(report: dict, evidence_path: Path, password_file: Path) -> dict:
             raise ValueError('A verdict sealed without a final evaluation is never equivalent')
         regraded = sealed
     else:
+        from .mcp_reuse import required, verified
+        proof = payload.get('mcp_reuse', {})
+        if required(proof, payload['execution_snapshot']) or final.get('generated_reuse_required'):
+            final = {**final, 'generated_reuse_required': True,
+                     'generated_reuse_verified': verified(proof, final['frozen_artifact_sha256'])}
         regraded = final_record(final, sealed['capabilities_sha256'], sealed['mission'])
         if (sealed['status'] != 'graded' or final.get('capabilities_sha256') != sealed['capabilities_sha256']
                 or ids(regraded) != ids(sealed)):

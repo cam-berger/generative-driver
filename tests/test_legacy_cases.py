@@ -283,7 +283,8 @@ class RecordedReuseGradeTests(unittest.TestCase):
         checks, records, raw = evaluator._legacy_tq9(self.TRUTH, [dict(e, package_sha256=self.SHA) for e in events],
                                                      self.MAPPING, self.SHA, 0)
         return evaluator.final_record({'contract': {'schema': 'benchmark-behavior/1', 'artifact_sha256': self.SHA, 'checks': checks},
-                                       'records': records, 'frozen_artifact_sha256': self.SHA, 'method': 'recorded-reuse'})
+                                       'records': records, 'frozen_artifact_sha256': self.SHA, 'method': 'recorded-reuse'},
+                                      protocol='assistive/1')
 
     def test_an_observed_contradiction_is_not_equivalent_whatever_else_failed(self):
         # A later unavailable call cannot erase an already observed contradiction.
@@ -334,7 +335,8 @@ class RecordedReuseGradeTests(unittest.TestCase):
                                                    self.MAPPING, self.SHA, 0)
         record = evaluator.final_record({'contract': {'schema': 'benchmark-behavior/1', 'artifact_sha256': self.SHA,
                                                       'checks': checks}, 'records': records,
-                                         'frozen_artifact_sha256': self.SHA, 'method': 'recorded-reuse'})
+                                         'frozen_artifact_sha256': self.SHA, 'method': 'recorded-reuse'},
+                                        protocol='assistive/1')
         self.assertEqual([d['id'] for d in record['diff']], ['fresh_package_requested_output'])
 
     def test_a_fully_observed_goal_is_equivalent(self):
@@ -353,7 +355,7 @@ class ConcludeTests(unittest.TestCase):
         posted = []
         def call(method, params):
             posted.append((method, params)); return {'ok': True}
-        result = {'run_id': 'run-recorded', 'status': 'completed', 'progress': {'equivalence': 'pending'},
+        result = {'run_id': 'run-recorded', 'status': 'completed', 'progress': {'equivalence': 'pending', 'protocol': 'assistive/1'},
                   'accepted_handoffs': [{'stage': 'emit', 'revision': 0, 'artifacts': [{'path': 'package', 'sha256': 'a' * 64}]}]}
         with tempfile.TemporaryDirectory() as temporary, \
              patch.object(evaluator, 'grade', side_effect=evaluator.Unscorable(reason)), \

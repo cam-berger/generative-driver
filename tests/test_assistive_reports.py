@@ -170,6 +170,8 @@ class ScoreTests(AssistiveFixture):
             value = copy.deepcopy(report); change(value); return value
         for label, value in (
                 ('run', changed(lambda r: r.update(run_id='run-another'))),
+                ('protocol', changed(lambda r: r.update(protocol='learning/1'))),
+                ('no protocol', changed(lambda r: r.pop('protocol'))),
                 ('snapshot', changed(lambda r: r.update(snapshot_sha256='f' * 64))),
                 ('case', changed(lambda r: r['case_pin'].update(truth_sha256='f' * 64))),
                 ('execution', changed(lambda r: r.update(execution='actual-agent-physical'))),
@@ -193,6 +195,29 @@ class ScoreTests(AssistiveFixture):
         with patch('generative_driver.reporting._tree_hash', return_value='0' * 64), \
                 self.assertRaisesRegex(ValueError, 'evaluator'):
             self.score(report, evidence)
+
+    def test_a_regrade_takes_the_runs_protocol_from_its_sealed_evidence(self):
+        # Catches a regrade that insists on the configurator's own protocol, so that the same grader could not regrade
+        # the run of a system under another protocol, and a report that names another protocol than its evidence was
+        # sealed under.
+        from generative_driver.benchmark_support import evaluator
+        from generative_driver.benchmark_support.truth import unlock
+        trial, record = self.trial('good', PASS)
+        result = self.controller.call('result', {'run_id': record['run_id']})
+        report = self.report(record['run_id'], 'good')
+        sealed = unlock(trial / 'run-evidence.enc', self.password.read_text(), report['equivalence']['evidence_sha256'])
+        learning = {**result, 'progress': {**result['progress'], 'protocol': 'learning/1'}}
+        folder = self.root / 'learning'
+        digest = evaluator.seal(folder, self.home / 'runs' / record['run_id'], learning, password_file=self.password,
+                                final=sealed['final'], equivalence={**sealed['equivalence'], 'protocol': 'learning/1'})['sha256']
+        named = {**report, 'protocol': 'learning/1',
+                 'equivalence': {**report['equivalence'], 'protocol': 'learning/1', 'evidence_sha256': digest}}
+        scored = self.score(named, folder / 'run-evidence.enc')
+        self.assertEqual((scored['protocol'], scored['equivalence']['protocol'], scored['verdict']),
+                         ('learning/1', 'learning/1', 'equivalent'))
+        self.assertEqual(scored['equivalence'], named['equivalence'])
+        with self.assertRaisesRegex(ValueError, 'run identity'):
+            self.score({**named, 'protocol': 'assistive/1'}, folder / 'run-evidence.enc')
 
     def test_a_regrade_trusts_no_sealed_verdict_its_final_does_not_bear_out(self):
         # Catches a regrade that keeps the sealed verdict over the sealed final's records, credits an equivalent verdict
@@ -268,6 +293,13 @@ class ProtocolSeparationTests(unittest.TestCase):
         self.assertEqual((result['before_verdict'], result['after_verdict'], result['elapsed_seconds_delta']),
                          ('equivalent', 'not equivalent', 3))
         self.assertFalse(compare(self.assistive(), {**self.assistive(), 'case_seed': 1})['compatible'])
+
+    def test_a_public_report_carries_the_protocol_of_its_run(self):
+        # Catches a public report stamped with the configurator's protocol whatever the run's.
+        from generative_driver.benchmark_support.evidence import public_v3_report
+        for protocol in ('assistive/1', 'learning/1'):
+            with self.subTest(protocol=protocol):
+                self.assertEqual(public_v3_report({**self.assistive(), 'protocol': protocol})['protocol'], protocol)
 
     def test_exported_run_comparison_requires_matching_evaluator_and_case_hashes(self):
         from generative_driver.benchmark import compare
@@ -360,8 +392,10 @@ class ProtocolSeparationTests(unittest.TestCase):
         earlier = summarize({'run_id': 'earlier', 'status': 'completed', 'created': 0, 'updated': 1, 'worker_reports': [],
                              'accepted_handoffs': []}, [])
         self.assertIn('| Stage | Workflow | Evaluator |', markdown(earlier))
-        with self.assertRaisesRegex(ValueError, 'protocol'):
-            evidence.regrade_v2({**report, 'progress': {'protocol': 'assistive/1'}}, path, fixture.password)
+        # No run of the earlier protocol names one, so a run that does is never scored here, whichever protocol it names.
+        for protocol in ('assistive/1', 'learning/1'):
+            with self.subTest(protocol=protocol), self.assertRaisesRegex(ValueError, 'protocol'):
+                evidence.regrade_v2({**report, 'progress': {'protocol': protocol}}, path, fixture.password)
 
 
 def assistive_fixture():

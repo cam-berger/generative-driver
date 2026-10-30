@@ -515,6 +515,26 @@ class HarnessGradingTests(PendingRunFixture):
         self.assertEqual(final['frozen_artifact_sha256'], self.emitted(result))
         self.assertFalse((trial / 'private/final').exists())
 
+    def test_a_grade_carries_the_protocol_of_the_run_it_grades(self):
+        # Catches a grade stamped with the configurator's own protocol rather than the run's, and a run that names no
+        # protocol graded under a default, where the grade would claim a protocol the run never had.
+        from generative_driver.benchmark_support import evaluator
+        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
+            trial, record = self.trial()
+        result = self.controller.call('result', {'run_id': record['run_id']})
+        def grade(progress):
+            with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+                    patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
+                return evaluator.grade('tq9-v2', trial, self.home / 'runs' / record['run_id'], {**result, 'progress': progress},
+                                       password_file=self.password)[0]
+        graded = grade({**result['progress'], 'protocol': 'learning/1'})
+        self.assertEqual((graded['status'], graded['equivalent'], graded['protocol']), ('graded', True, 'learning/1'))
+        unnamed = {key: value for key, value in result['progress'].items() if key != 'protocol'}
+        for case, progress in (('no protocol', unnamed), ('null protocol', {**unnamed, 'protocol': None}), ('no progress', None)):
+            with self.subTest(case=case), self.assertRaisesRegex(ValueError, 'protocol'):
+                grade(progress)
+
     def test_an_evaluator_host_fault_is_unscored_until_an_explicit_resume_grades(self):
         # Catches a host fault recorded as a failed driver, its message (which may name a hidden stimulus) published,
         # an unscored grade that can never be completed, and a resume with no emulator posting another host fault.
@@ -656,7 +676,7 @@ class HarnessGradingTests(PendingRunFixture):
         # A record no clamp makes valid is posted as unscored; why it was invalid stays sealed.
         def inconsistent(case_id, trial_dir, run_dir, result, **options):
             return evaluator.record('graded', True, [{'id': 'final/effect-1/duty', 'passed': False}], [],
-                                    self.emitted(result)), None
+                                    self.emitted(result), protocol=result['progress']['protocol']), None
         with patch.object(evaluator, 'grade', side_effect=inconsistent):
             trial, record = self.trial('inconsistent')
         run = {'run_id': record['run_id']}
@@ -1011,6 +1031,49 @@ class SealedEvidenceTests(PendingRunFixture):
         with self.assertRaisesRegex(ValueError, 'changed'):
             evaluator.seal(self.root / 'changed', run_dir, result, password_file=self.password, final=final)
         self.assertFalse([p for p in files(self.root) if p.name == 'run-evidence.enc' and p.parent.name != 'trial'])
+
+    def test_sealed_run_evidence_names_the_protocol_of_its_run(self):
+        # Catches run evidence stamped with the configurator's protocol whatever the run's, which a regrade would take
+        # for the run's own, and evidence sealed for a run that names no protocol.
+        from generative_driver.benchmark_support import evaluator
+        from generative_driver.benchmark_support.evidence import seal_run_evidence_v2
+        from generative_driver.benchmark_support.truth import unlock
+        run, result = self.pending()
+        run_dir = self.home / 'runs' / run['run_id']
+        learning = {**result, 'progress': {**result['progress'], 'protocol': 'learning/1'}}
+        sealed = evaluator.seal(self.root / 'learning', run_dir, learning, password_file=self.password)
+        payload = unlock(self.root / 'learning/run-evidence.enc', self.password.read_text(), sealed['sha256'])
+        self.assertEqual(payload['protocol'], 'learning/1')
+        unnamed = {**result, 'progress': {key: value for key, value in result['progress'].items() if key != 'protocol'}}
+        with self.assertRaisesRegex(ValueError, 'protocol'):
+            evaluator.seal(self.root / 'unnamed', run_dir, unnamed, password_file=self.password)
+        for protocol in (None, '', 1):
+            with self.subTest(protocol=protocol), self.assertRaisesRegex(ValueError, 'protocol'):
+                seal_run_evidence_v2({**payload, 'protocol': protocol}, self.root / 'unnamed/run-evidence.enc', self.password)
+        self.assertFalse((self.root / 'unnamed/run-evidence.enc').exists())
+
+
+class RunProtocolTests(unittest.TestCase):
+    """The evaluator stamps what it builds with the protocol of the run it grades, never the configurator's own, so one
+    grader grades the runs of systems under different protocols."""
+
+    def test_records_carry_the_runs_protocol(self):
+        # Catches a grade stamped with the configurator's protocol whatever the run's.
+        from generative_driver.benchmark_support.evaluator import record
+        made = record('graded', True, [{'id': 'a', 'passed': True}], [], 'e' * 64, protocol='learning/1')
+        self.assertEqual(made['protocol'], 'learning/1')
+
+    def test_final_and_unscored_records_carry_the_runs_protocol(self):
+        # Catches a regraded final, or an unscored grade, stamped with the configurator's protocol whatever the run's.
+        from generative_driver.benchmark_support.evaluator import final_record, unscored
+        sha = 'a' * 64
+        checks = contract(sha)['checks']
+        final = {'contract': contract(sha), 'frozen_artifact_sha256': sha,
+                 'records': [{'id': c['id'], 'revision': 0, 'artifact_sha256': sha, 'channel': c['channel'], 'unit': c['unit'],
+                              'value': value} for c, value in zip(checks, PASS)]}
+        graded = final_record(final, protocol='learning/1')
+        self.assertEqual((graded['equivalent'], graded['protocol']), (True, 'learning/1'))
+        self.assertEqual(unscored('evaluator host fault: RuntimeError', sha, protocol='learning/1')['protocol'], 'learning/1')
 
 
 class DurableRecordTests(unittest.TestCase):

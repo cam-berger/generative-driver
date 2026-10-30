@@ -199,20 +199,30 @@ def _mission_fields(found):
             for key in ('name', 'passed', 'reason', 'fault') if key in found}
 
 
-def record(status, equivalent, checks, diff, frozen, capabilities_sha256=None, mission=None, method='fresh-final'):
+def _protocol(result):
+    """The protocol a run was under, from its progress: the evaluator stamps its grade and its evidence with it. The
+    evaluator holds no protocol of its own, so a result that names none raises ValueError and no default stands in."""
+    protocol = (result.get('progress') or {}).get('protocol')
+    if not isinstance(protocol, str) or not protocol:
+        raise ValueError('The run result names no protocol: its grade and evidence cannot be stamped')
+    return protocol
+
+
+def record(status, equivalent, checks, diff, frozen, capabilities_sha256=None, mission=None, method='fresh-final', *,
+           protocol: str):
     """A public equivalence/1 record: check ids with passed flags and the failing ids with their reasons. Expected values,
-    tolerances, witnesses and raw records stay sealed. Text is held to the configurator's length limit."""
-    from ..configurator import PROTOCOL
+    tolerances, witnesses and raw records stay sealed. Text is held to the configurator's length limit. It names the
+    `protocol` of the run it grades."""
     checks = [{'id': _text(c['id']), 'passed': c['passed']} for c in checks]
     diff = [{'id': _text(d['id']), 'reason': _text(d['reason'], 'failed')} for d in diff]
     return {'schema': SCHEMA, 'status': status, 'equivalent': equivalent, 'basis': 'evaluator', 'method': method,
             'checks': checks, 'diff': diff, 'passed': sum(c['passed'] is True for c in checks), 'total': len(checks),
             'mission': _mission_fields(mission), 'frozen_artifact_sha256': frozen,
-            'capabilities_sha256': capabilities_sha256, 'protocol': PROTOCOL}
+            'capabilities_sha256': capabilities_sha256, 'protocol': protocol}
 
 
-def unscored(reason, frozen, method='fresh-final'):
-    return record('unscored', None, [], [{'id': 'evaluation', 'reason': reason}], frozen, method=method)
+def unscored(reason, frozen, method='fresh-final', *, protocol: str):
+    return record('unscored', None, [], [{'id': 'evaluation', 'reason': reason}], frozen, method=method, protocol=protocol)
 
 
 def reuse_mission(case_id, run_dir, accepted, frozen, capabilities):
@@ -264,11 +274,13 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
     it packages and re-hashes both, unlocks the truth and runs the final phase on a fresh emulator, or grades the fresh
     reuse the run recorded (`recorded-reuse`). A final the draft already holds for this run and package is rebuilt and
     never graded again. A changed record raises IntegrityError; recorded evidence the evaluator cannot grade for a reason
-    outside the driver raises Unscorable."""
+    outside the driver raises Unscorable. Every record names the protocol the run's progress names, and a result that
+    names none raises ValueError."""
     from ..configurator import IntegrityError
     from .emulated import _inputs
     from .registry import pin_case
     from .snapshots import require_snapshot
+    protocol = _protocol(result)
     trial_dir, run_dir = Path(trial_dir), Path(run_dir)
     pin = result['case_pin']
     try:
@@ -284,7 +296,7 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
     frozen = emitted(accepted)
     if frozen is None:
         return record('no-driver', False, [], [{'id': 'frozen_package', 'reason': 'no driver emitted'}], None,
-                      mission=reuse_mission(case_id, run_dir, accepted, None, None), method=method), None
+                      mission=reuse_mission(case_id, run_dir, accepted, None, None), method=method, protocol=protocol), None
     source, sha, revision, index = frozen
     private = trial_dir/'private'
     shutil.rmtree(private, ignore_errors=True)
@@ -298,17 +310,18 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
         except (ValueError, UnicodeError):
             capabilities = None
     if method == 'recorded-reuse':
-        verdict, final = _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, capabilities_sha, password_file)
+        verdict, final = _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, capabilities_sha, password_file,
+                                   protocol=protocol)
         from .mcp_reuse import owner_evidence, required, verified
         proof = owner_evidence(run_dir, accepted)
         if final is not None and required(proof, snapshot):
             final = {**final, 'generated_reuse_required': True, 'generated_reuse_verified': verified(proof, sha)}
-            verdict = final_record(final, capabilities_sha, verdict.get('mission'))
+            verdict = final_record(final, capabilities_sha, verdict.get('mission'), protocol=protocol)
         return verdict, final
     checked = reuse_mission(case_id, run_dir, accepted, sha, capabilities)
     if not isinstance(capabilities, dict):
         return record('graded', False, [], [{'id': 'capability_mapping', 'reason': 'no capability mapping'}], sha,
-                      capabilities_sha, checked), None
+                      capabilities_sha, checked, protocol=protocol), None
     draft = _draft(trial_dir, password_file)
     final = _held(draft, result['run_id'], sha)
     if final is None:
@@ -320,7 +333,7 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
             valid = False
         if not valid:
             return record('graded', False, [], [{'id': 'frozen_package', 'reason': 'the frozen driver\'s model is not '
-                          'structurally valid'}], sha, capabilities_sha, checked), None
+                          'structurally valid'}], sha, capabilities_sha, checked, protocol=protocol), None
         truth = case_truth(case_id, run_dir, {'evaluator_password_file': str(password_file)})
         inputs, manifest = _inputs(case_id, run_dir)
         from .execution import artifact_name
@@ -341,12 +354,13 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
     proof = owner_evidence(run_dir, accepted)
     if required(proof, snapshot):
         final = {**final, 'generated_reuse_required': True, 'generated_reuse_verified': verified(proof, sha)}
-    return final_record(final, capabilities_sha, checked), final
+    return final_record(final, capabilities_sha, checked, protocol=protocol), final
 
 
-def final_record(final, capabilities_sha256=None, mission=None):
+def final_record(final, capabilities_sha256=None, mission=None, *, protocol: str):
     """The public equivalence/1 record of a final evaluation, graded from its contract and records: equivalent when every
-    check passed. Grading after the run and an offline regrade of the sealed evidence both build it here."""
+    check passed. Grading after the run and an offline regrade of the sealed evidence both build it here, and it names
+    the `protocol` of the run they grade."""
     from .behavior import validate_records
     graded = validate_records(final['contract'], final['records'])
     checks = [{'id': str(row['id']), 'passed': row['passed'] is True} for row in graded['checks']]
@@ -362,7 +376,7 @@ def final_record(final, capabilities_sha256=None, mission=None):
             diff.append({'id': 'fresh_worker_mission', 'reason': (mission or {}).get('reason')
                          or 'Fresh generated MCP worker did not complete the required mission'})
     return record('graded', all(c['passed'] for c in checks), checks, diff, final['frozen_artifact_sha256'], capabilities_sha256,
-                  mission, final.get('method', 'fresh-final'))
+                  mission, final.get('method', 'fresh-final'), protocol=protocol)
 
 
 def _finite(value):
@@ -468,11 +482,11 @@ def _physical(truth, events, capabilities, sha, revision, reuse, private):
     return checks, records, {'measurement': measurement, 'reference': saved}
 
 
-def _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, capabilities_sha, password_file):
+def _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, capabilities_sha, password_file, *, protocol):
     """Grade the frozen driver from the fresh reuse of it the run recorded (`recorded-reuse`): the accepted reuse
     handoff's package calls, re-hashed, against the truth's reuse goal (legacy tq9), or against the operator reference
     within the truth's limits (bme280). No device is touched. A final the draft holds for this run and package is
-    rebuilt, never graded again."""
+    rebuilt, never graded again. Its records name the run's `protocol`."""
     from .emulated import REUSE_EVENTS, _artifact, _mission
     from .physical import mapping_errors as physical_errors, valid_rows
     from .cases import mapping_errors as tq9_errors
@@ -494,10 +508,10 @@ def _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, 
     method = method_for(case_id)
     if invalid:
         return record('graded', False, [], [{'id': 'capability_mapping', 'reason': 'no capability mapping'}], sha,
-                      capabilities_sha, _mission_fields(mission), method), None
+                      capabilities_sha, _mission_fields(mission), method, protocol=protocol), None
     if events is None:
         return record('graded', False, [], [{'id': 'fresh_reuse', 'reason': 'fresh reuse recorded no call of the frozen driver'}],
-                      sha, capabilities_sha, _mission_fields(mission), method), None
+                      sha, capabilities_sha, _mission_fields(mission), method, protocol=protocol), None
     draft = _draft(trial_dir, password_file)
     final = _held(draft, result['run_id'], sha)
     if final is None:
@@ -506,7 +520,8 @@ def _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, 
                  _physical(truth, events, capabilities, sha, revision, reuse, private))
         if built is None:
             return record('graded', False, [], [{'id': 'fresh_physical_measurement', 'reason': 'No finite measurement of '
-                          'every mapped output by the frozen package'}], sha, capabilities_sha, _mission_fields(mission), method), None
+                          'every mapped output by the frozen package'}], sha, capabilities_sha, _mission_fields(mission), method,
+                          protocol=protocol), None
         checks, records, raw = built
         final = {'run_id': result['run_id'], 'phase': 'final', 'method': method, 'revision': revision,
                  'frozen_artifact_sha256': sha, 'capabilities_sha256': capabilities_sha,
@@ -514,16 +529,17 @@ def _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, 
                  'records': records, 'raw': raw}
         draft['evaluations'].append(final)
         _draft(trial_dir, password_file, draft)
-    return final_record(final, capabilities_sha, _mission_fields(mission)), final
+    return final_record(final, capabilities_sha, _mission_fields(mission), protocol=protocol), final
 
 
 def evidence(trial_dir, run_dir, result, *, final=None, equivalence=None, mission=None, error=None):
-    """The benchmark-run-evidence/2 payload of a terminal run: its pinned case and snapshot, every accepted artifact and
-    notes.json hash, the single final evaluation (None for a stopped or ungraded run), the public verdict, the mission
-    check, the provider's recovery receipts and the hash of its device journal. A snapshot that no longer verifies raises
-    IntegrityError."""
-    from ..configurator import IntegrityError, PROTOCOL
+    """The benchmark-run-evidence/2 payload of a terminal run: the protocol its progress names, its pinned case and
+    snapshot, every accepted artifact and notes.json hash, the single final evaluation (None for a stopped or ungraded
+    run), the public verdict, the mission check, the provider's recovery receipts and the hash of its device journal. A
+    snapshot that no longer verifies raises IntegrityError; a result that names no protocol raises ValueError."""
+    from ..configurator import IntegrityError
     from .snapshots import read_snapshot
+    protocol = _protocol(result)
     try:
         snapshot = read_snapshot(run_dir)
     except (OSError, ValueError) as error:
@@ -538,7 +554,7 @@ def evidence(trial_dir, run_dir, result, *, final=None, equivalence=None, missio
     journal = Path(trial_dir)/'device/journal.jsonl'
     from .mcp_reuse import owner_evidence
     proof = owner_evidence(run_dir, result.get('accepted_handoffs') or [])
-    return {'schema': 'benchmark-run-evidence/2', 'mcp_reuse': proof, 'protocol': PROTOCOL, 'run_id': result['run_id'],
+    return {'schema': 'benchmark-run-evidence/2', 'mcp_reuse': proof, 'protocol': protocol, 'run_id': result['run_id'],
             'run': {key: result.get(key) for key in ('status', 'outcome_category')},
             'case_pin': snapshot['case_pin'], 'execution_snapshot': snapshot, 'accepted_artifacts': rows,
             'final': final, 'equivalence': equivalence, 'mission': mission, 'evaluation_error': error,

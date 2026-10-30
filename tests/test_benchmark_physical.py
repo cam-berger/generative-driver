@@ -133,7 +133,7 @@ class RecordedReuseTests(unittest.TestCase):
     def grade(self, reuse):
         from generative_driver.benchmark_support import evaluator
         result={'run_id':'run-physical','case_pin':self.pin,'snapshot_sha256':self.snapshot['snapshot_sha256'],'status':'completed',
-                'progress':{'equivalence':'pending'},'accepted_handoffs':[*self.accepted,reuse]}
+                'progress':{'equivalence':'pending','protocol':'assistive/1'},'accepted_handoffs':[*self.accepted,reuse]}
         trial=self.root/'trial';trial.mkdir(exist_ok=True)
         with patch('generative_driver.benchmark_support.physical._measure',side_effect=AssertionError('the evaluator touched the board')):
             return evaluator.grade('bme280',trial,self.run_dir,result,password_file=self.secret['evaluator_password_file'])

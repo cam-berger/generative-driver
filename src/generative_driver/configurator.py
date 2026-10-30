@@ -359,6 +359,15 @@ def operation_effects(name, arguments):
     return {operations[item].get('effect','actuate') for item in names}
 
 
+def _copy_model(source, target):
+    """Copy a model directory for one dispatch, so its digest still names the source. A symlink would read the worker's
+    file again, so it is refused, as `digest` refuses one."""
+    shutil.copytree(source, target, symlinks=True)
+    for folder, folders, files in os.walk(target):
+        if any(os.path.islink(os.path.join(folder, item)) for item in (*folders, *files)):
+            raise ValueError('model_dir holds a symlink, which the configurator does not copy; nothing was dispatched')
+
+
 def _refuse_invalid_model(model_dir):
     """Refuse unreadable, structurally invalid or contradictory candidates before managed dispatch.
 
@@ -3421,6 +3430,9 @@ class Controller:
                     'assignment_id': marker['assignment']['id'], 'name': params.get('name'), 'reason': str(error),
                     **({'fault': fault} if fault in ('operator', 'host') else {}), 'actor': 'worker'})
             raise
+        finally:
+            if 'snapshot' in marker:
+                shutil.rmtree(marker['snapshot'], ignore_errors=True)
 
     def _dispatch(self, method, params, run, marker):
         from .toolkit import list_tools, call_tool
@@ -3492,6 +3504,18 @@ class Controller:
         if 'inputs' in arguments:
             if not isinstance(arguments['inputs'],dict) or any(not isinstance(p,str) or not Path(p).is_absolute() or not Path(p).resolve().is_relative_to(workspace) for p in arguments['inputs'].values()):
                 raise ValueError('Every tool input must be inside this stage workspace')
+        if name in ('probe_run', 'interface_execute') and not arguments.get('replay') and arguments.get('model_dir') is not None:
+            # The gateway reads the model to classify, validate and hash the dispatch, and the tool reads it again. Both
+            # read the configurator's copy, outside the workspace, so a model the worker rewrites meanwhile never runs.
+            snapshots = self.home / 'runs' / run['id'] / 'snapshots'; snapshots.mkdir(parents=True, exist_ok=True)
+            marker['snapshot'] = Path(tempfile.mkdtemp(dir=snapshots))
+            copied = marker['snapshot'] / 'model'
+            try:
+                _copy_model(arguments['model_dir'], copied)
+            except OSError as error:
+                raise ValueError('The configurator cannot copy model_dir to dispatch it; nothing was dispatched: '
+                                 + type(error).__name__ + ': ' + str(error)) from None
+            arguments['model_dir'] = str(copied)
         binding = assignment.get('binding') or {}
         selfdescribing = name == 'acquire_selfdescription' or (name == 'acquire_classify' and arguments.get('transports') is not None)
         if selfdescribing:

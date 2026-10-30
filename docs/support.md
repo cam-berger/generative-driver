@@ -19,6 +19,8 @@ The core targets native macOS and Windows 11+. Development uses Apple silicon ma
 
 BLE and SCPI discovery are absent. An available adapter does not qualify arbitrary hardware; frame checks do not prove decoding, physical meaning or state sequencing. The bench harness owns the emulator/password; the configurator uses its control endpoint. A stopped run needs a healthy device matching its recorded session before resuming.
 
+Effect grants bound the effects a model declares. Only a register model's write steps and a USB control transfer's direction are checked against the request. Elsewhere, on UART, TCP and USB bulk/interrupt, a `read` label is the model author's claim, and probe and ground workers may run models they wrote. A read-only grant does not show that the device was left unchanged, and an interrupted read is never held uncertain.
+
 Local macOS scripted CLI/MCP tests cover suite reconnection, owner loss, Windows missing-owner policy, pagination, exports and offline comparison. Simulated Windows policy checks are not native Windows results. TQ9 v2 native qualification uses GCC/Renode/Ghidra/Java and authenticates the installed evaluator; it measures reference behavior, not model or physical performance.
 
 [Benchmark reports](../bench/README.md) distinguish replay, scripted workers, model execution, emulation and physical observations.

@@ -180,7 +180,7 @@ class MutationTests(unittest.TestCase):
 
 class DispatchTests(unittest.TestCase):
     def test_family_dispatch_uses_family_phase_and_measured_oracle(self):
-        from generative_driver.benchmark_support.emulated import family_for
+        from generative_driver.benchmark_support.instruments import family_for
         sensor=family_for('sampled-sensor-v1')
         result=sensor.observations({'values':{'latched_q4':65520,'acquisition_counter':8}},
             {'ok':True,'outputs':{'temperature':-1,'sequence':8}}, {})
@@ -577,8 +577,8 @@ class TruthBoundaryTests(unittest.TestCase):
             root=Path(temp);password=root/'password';password.write_text('toy')
             digest=seal(InventoryTests().fixture(),root/'truth.enc','toy')
             manifest={'truth':{'path':'truth.enc','sha256':digest}}
-            with patch('generative_driver.benchmark_support.emulated._inputs',return_value=(root,manifest)),patch(
-                    'generative_driver.benchmark.case_root',return_value=root):
+            with patch('generative_driver.benchmark_support.case_assets.case_inputs',return_value=(root,manifest)),patch(
+                    'generative_driver.benchmark_support.case_assets.case_root',return_value=root):
                 with self.assertRaises((ValueError,KeyError)):
                     case_truth('sampled-sensor-v1',root,{'evaluator_password_file':str(password)})
 
@@ -623,7 +623,7 @@ class WrapperTests(unittest.TestCase):
     def test_missing_native_configuration_fails_before_shared_runner(self):
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.calibration import calibrate
+        from generative_driver.benchmark_support.family_calibration import calibrate
         with patch('generative_driver.benchmark_support.authoring.calibrate',side_effect=AssertionError('Native runner started')):
             with self.assertRaises(ValueError):
                 calibrate('sampled-sensor-v1',authoring_root=Path('/absent-authoring'),renode=Path('relative'),
@@ -637,7 +637,7 @@ class WrapperTests(unittest.TestCase):
             manage('calibrate', 'parameter-store-v1', None, '/absent-output')
         record = {'ok': True, 'case': 'sampled-sensor-v1', 'execution': 'reference-calibration', 'backend': 'native-renode',
                   'status': 'passed', 'references': [1], 'mutants': [1, 2], 'private': 'evaluator-only evidence'}
-        with patch('generative_driver.benchmark_support.calibration.calibrate', return_value=record) as family:
+        with patch('generative_driver.benchmark_support.family_calibration.calibrate', return_value=record) as family:
             summary = manage('calibrate', 'sampled-sensor-v1', None, '/private/out', compiler='/opt/arm/bin/arm-none-eabi-gcc',
                              authoring_dir='/private/sampled-sensor-v1-authoring', renode='/opt/renode',
                              ghidra_home='/opt/ghidra', java_home='/opt/java')
@@ -652,7 +652,7 @@ class WrapperTests(unittest.TestCase):
         # The command exits 1 when the calibration did not pass, as the family's own CLI does.
         import io, contextlib
         from generative_driver.benchmark import main
-        with patch('generative_driver.benchmark_support.calibration.calibrate', return_value={**record, 'ok': False}), \
+        with patch('generative_driver.benchmark_support.family_calibration.calibrate', return_value={**record, 'ok': False}), \
                 contextlib.redirect_stdout(io.StringIO()):
             code = main(['truth', 'calibrate', '--case', 'sampled-sensor-v1', '--output', '/private/out',
                          '--authoring-dir', '/private/sampled-sensor-v1-authoring', '--renode', '/opt/renode',

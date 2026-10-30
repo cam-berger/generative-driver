@@ -69,6 +69,7 @@ class PublicMissionTests(unittest.TestCase):
                         'sealed_inputs': list(arguments['inputs'])}
 
             with patch('generative_driver.benchmark.case_root', return_value=assets), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=assets), \
                     patch.object(emulated, '_inputs', return_value=(inputs, {})), \
                     patch.object(emulated, 'adapt', return_value={'binding': binding}), \
                     patch('generative_driver.analysis.firmware_analysis_inputs', return_value={}), \

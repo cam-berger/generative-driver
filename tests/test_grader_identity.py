@@ -105,6 +105,17 @@ class GraderClosureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'benchmark_support.zephyr_modbus'):
             grader_closure(root)
 
+    def test_closure_excludes_shared_system_modules(self):
+        shared = ('configurator', 'benchmark', 'reporting', 'replay', 'client', 'setup', 'benchmark_support.cases',
+                  'benchmark_support.emulated', 'benchmark_support.legacy', 'benchmark_support.authoring')
+        root = self.copy_package()
+        # physical (legacy recorded grading) and reference_calibration (the evaluator identity) are still in the closure,
+        # and their own imports hold the shared modules in. They leave it when recorded grading moves out of the
+        # evaluator and admission checks the grader identity, so this checks the rest of the closure without them.
+        for name in ('physical', 'reference_calibration'):
+            (root / 'benchmark_support' / (name + '.py')).write_text('', encoding='utf-8')
+        self.assertEqual([m for m in grader_closure(root) if m in shared], [])
+
 
 if __name__ == '__main__':
     unittest.main()

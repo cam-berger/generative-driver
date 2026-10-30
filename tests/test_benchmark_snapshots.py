@@ -80,7 +80,8 @@ class ControllerSnapshotTests(unittest.TestCase):
                 run = controller.start(request)
                 self.wait_stopped(controller, run)
                 config.write_text('invalid edited configuration')
-                with patch('generative_driver.benchmark.case_root', return_value=root / 'unavailable'):
+                with patch('generative_driver.benchmark.case_root', return_value=root / 'unavailable'), \
+                        patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root / 'unavailable'):
                     duplicate = controller.start(dict(request))
                 self.assertEqual(duplicate['run_id'], run['run_id'])
                 self.assertTrue(duplicate['duplicate'])
@@ -185,7 +186,9 @@ class ControllerSnapshotTests(unittest.TestCase):
             def execute(request, config, cancel):
                 observed.append((request.workspace / 'description.bin').read_bytes())
                 return self.blocked_executor(request, config, cancel)
-            with patch('generative_driver.benchmark.case_root', return_value=installed), patch('generative_driver.configurator.execute', execute):
+            with patch('generative_driver.benchmark.case_root', return_value=installed), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=installed), \
+                    patch('generative_driver.configurator.execute', execute):
                 controller = Controller(root / 'home')
                 scripted_runtime(root / 'home')
                 try:
@@ -213,7 +216,7 @@ class ControllerSnapshotTests(unittest.TestCase):
             try:
                 run = controller.start({'goal': 'implementation identity', 'case': 'tq9'})
                 before = self.wait_stopped(controller, run)
-                with patch('generative_driver.reporting._tree_hash', return_value='changed-installation'):
+                with patch('generative_driver.benchmark_support.integrity.tree_hash', return_value='changed-installation'):
                     with self.assertRaisesRegex(ValueError, 'implementation'):
                         controller.call('resume', run)
                 self.assertEqual(controller.call('result', run)['worker_reports'], before['worker_reports'])
@@ -270,7 +273,8 @@ class ControllerSnapshotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             RegistryTests._v2_case(root / 'installed')
-            with patch('generative_driver.benchmark.case_root', return_value=root / 'installed'):
+            with patch('generative_driver.benchmark.case_root', return_value=root / 'installed'), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root / 'installed'):
                 controller = Controller(root / 'home')
                 scripted_runtime(root / 'home')
                 try:

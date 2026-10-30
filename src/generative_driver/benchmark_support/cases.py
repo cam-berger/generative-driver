@@ -7,11 +7,8 @@ import json
 import tempfile
 from pathlib import Path
 
-
-def _write(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
+# The evaluator uses these too, so they are defined in a module of its own and imported here under their old names.
+from .case_assets import mapping_errors, write_json as _write
 
 
 def _state(run_dir):
@@ -29,46 +26,6 @@ def _case_inputs(run_dir=None):
         return Path(run_dir) / 'benchmark/inputs', saved['case_pin']['manifest']
     root = case_root() / 'cases/tq9'
     return root, json.loads((root / 'case.json').read_text())
-
-
-TASKS = ('temperature', 'arm', 'set_duty', 'disarm')
-# The public reuse mission requests 37 percent output, then disarm; the instrument reads the duty as a fraction.
-REQUESTED = .37
-
-
-def mapping_errors(mapping, model):
-    """The structural errors of a legacy tq9 capability mapping against its model, or []: every task an object naming
-    one of the model's operations, with object parameters, and temperature naming an output of its operation."""
-    if not isinstance(mapping, dict):
-        return [{'path': 'capabilities.json', 'message': 'The mapping must be a JSON object of tasks'}]
-    operations = model.get('operations') if isinstance(model, dict) and isinstance(model.get('operations'), dict) else {}
-    errors = []
-    for task in TASKS:
-        entry = mapping.get(task)
-        if not isinstance(entry, dict):
-            errors.append({'path': task, 'message': 'Task is missing or not an object'})
-            continue
-        operation = operations.get(entry.get('operation')) if isinstance(entry.get('operation'), str) else None
-        if not isinstance(operation, dict):
-            errors.append({'path': task + '.operation', 'message': 'Names no operation of the model'})
-        if not isinstance(entry.get('parameters', {}), dict):
-            errors.append({'path': task + '.parameters', 'message': 'Parameters must be an object'})
-        outputs = operation.get('outputs') if isinstance(operation, dict) else None
-        if task == 'temperature' and not (isinstance(entry.get('output'), str) and isinstance(outputs, dict)
-                                          and entry['output'] in outputs):
-            errors.append({'path': 'temperature.output', 'message': 'Names no output of the task\'s operation'})
-    return errors
-
-
-def mission_done(events, capabilities):
-    """Whether fresh reuse did the public legacy mission with the frozen package: a temperature read, the requested 37
-    percent output and disarm, judged from the package results and the instrument's duty readings after them. A note on
-    the reuse stage, never a grade."""
-    spec = capabilities['temperature']
-    duties = [e['observation']['duty'] for e in events if e['result'].get('ok') is True and isinstance(e.get('observation'), dict)]
-    read = any(e.get('operation') == spec['operation'] and e['result'].get('ok') is True
-               and type(e['result'].get('outputs', {}).get(spec['output'])) in (int, float) for e in events)
-    return read and bool(duties) and any(abs(d - REQUESTED) <= .002 for d in duties) and duties[-1] == 0
 
 
 def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=None):

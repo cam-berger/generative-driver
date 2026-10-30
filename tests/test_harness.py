@@ -267,8 +267,10 @@ class StartAdmissionTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.manifest = public_case_fixture(self.root / 'resources', calibration={'status': 'passed', 'evidence_sha256': EVIDENCE})
-        guard = patch('generative_driver.benchmark.case_root', return_value=self.root / 'resources')
-        guard.start(); self.addCleanup(guard.stop)
+        for target in ('generative_driver.benchmark.case_root',
+                       'generative_driver.benchmark_support.case_assets.case_root'):
+            guard = patch(target, return_value=self.root / 'resources')
+            guard.start(); self.addCleanup(guard.stop)
         # The configurator no longer admits a case by unlocking truth: the harness does, before the run.
         for target in ('generative_driver.benchmark_support.registry.require_calibration',
                        'generative_driver.benchmark_support.emulator.truth_for_case'):
@@ -408,6 +410,7 @@ def start(**kwargs):
     session.process = Process()
     return session
 patch('generative_driver.benchmark.case_root', return_value=Path(RESOURCES)).start()
+patch('generative_driver.benchmark_support.case_assets.case_root', return_value=Path(RESOURCES)).start()
 patch('generative_driver.benchmark_support.registry.require_calibration',
       return_value={'ok': True, 'evidence_sha256': EVIDENCE}).start()
 patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=start).start()
@@ -449,6 +452,7 @@ def configurator(method, params=None, home=None, **kwargs):
         return {'ok': False, 'reason': 'configurator refused the fixture run'}
     raise AssertionError(method)
 patch('generative_driver.benchmark.case_root', return_value=Path(RESOURCES_DIR)).start()
+patch('generative_driver.benchmark_support.case_assets.case_root', return_value=Path(RESOURCES_DIR)).start()
 patch('generative_driver.benchmark_support.registry.require_calibration', side_effect=admitted).start()
 patch('generative_driver.benchmark_support.evaluator.case_truth', return_value={'recipe': RECIPE}).start()
 patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=start).start()
@@ -638,6 +642,7 @@ class HarnessTrialTests(unittest.TestCase):
                                                            'authkey': secrets.token_hex(32), 'pid': os.getpid(),
                                                            'code': client.code_identity()}))
             for target, value in (('generative_driver.benchmark.case_root', {'return_value': resources}),
+                                  ('generative_driver.benchmark_support.case_assets.case_root', {'return_value': resources}),
                                   ('generative_driver.benchmark_support.registry.require_calibration',
                                    {'side_effect': AssertionError('the configurator admitted the case')}),
                                   ('generative_driver.benchmark_support.emulator.truth_for_case',

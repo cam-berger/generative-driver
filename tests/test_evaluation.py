@@ -107,8 +107,10 @@ class PendingRunFixture(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
         public_case_fixture(self.root / 'resources', calibration={'status': 'passed', 'evidence_sha256': EVIDENCE})
         self.image = self.root / 'resources/cases/tq9-v2/firmware.bin'
-        guard = patch('generative_driver.benchmark.case_root', return_value=self.root / 'resources')
-        guard.start(); self.addCleanup(guard.stop)
+        for target in ('generative_driver.benchmark.case_root',
+                       'generative_driver.benchmark_support.case_assets.case_root'):
+            guard = patch(target, return_value=self.root / 'resources')
+            guard.start(); self.addCleanup(guard.stop)
         for target in ('generative_driver.benchmark_support.registry.require_calibration',
                        'generative_driver.benchmark_support.emulator.truth_for_case'):
             refused = patch(target, side_effect=AssertionError('the configurator unlocked case truth'))
@@ -657,11 +659,11 @@ class HarnessGradingTests(PendingRunFixture):
         # Catches a record the configurator's equivalence/1 schema refuses (a mission reason over its length limit, a
         # grade inconsistent with its checks), which every resume would rebuild and post again, so that the driver's
         # grade is never recorded.
-        from generative_driver.benchmark_support import emulated, evaluator
+        from generative_driver.benchmark_support import case_assets, evaluator
         from generative_driver.benchmark_support.truth import unlock
         reason = 'The capability mapping cannot judge the mission: KeyError: ' + 'k' * 300
         long = {'name': 'fresh_worker_mission', 'passed': None, 'reason': reason, 'fault': 'f' * 400}
-        with patch.object(emulated, '_mission', return_value=long):
+        with patch.object(case_assets, 'reuse_mission', return_value=long):
             mission = evaluator.reuse_mission('tq9-v2', self.root, [{'stage': 'reuse', 'assignment_id': 'reuse-1',
                                                                      'artifacts': [{'path': 'x', 'sha256': 'a' * 64}]}],
                                               'a' * 64, {})

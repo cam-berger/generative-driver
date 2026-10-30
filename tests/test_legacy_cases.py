@@ -467,7 +467,8 @@ class PhysicalTrialTests(BoundDeviceFixture):
             calls.append(method)
             # A start is refused here, so a trial the harness let through ends at once instead of running.
             return {'ok': True} if method == 'ping' else {'ok': False, 'reason': 'The run must not start'}
-        with patch('generative_driver.benchmark.case_root', return_value=resources):
+        with patch('generative_driver.benchmark.case_root', return_value=resources), \
+                patch('generative_driver.benchmark_support.case_assets.case_root', return_value=resources):
             record = harness.run_trial(self.root / 'refused', self.request('trial-refused', password_file=str(wrong)),
                                        call=configurator)
             self.assertEqual((record['status'], record['run_id'], calls), ('failed', None, ['ping']), record)

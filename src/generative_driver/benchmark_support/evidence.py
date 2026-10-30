@@ -67,7 +67,7 @@ def public_v2_report(payload: dict) -> dict:
     result['usage'] = _scalars(payload.get('usage', {}), USAGE)
     result['executed'] = _executed(payload.get('executed', {}))
     result['stages'] = {}
-    from ..benchmark import STAGES
+    from .case_assets import STAGES
     for stage in STAGES:
         if stage not in payload.get('stages', {}):
             continue
@@ -111,7 +111,7 @@ def public_v3_report(payload: dict) -> dict:
     or stopped); a report found unqualified keeps that word. Its reason says why (a stop, the verdict or the unscored
     grade's reasons, with paths already scrubbed by its exporter) and `stopped_stage` names where a stopped run stopped.
     It names the protocol its payload names. Unknown fields never cross this boundary."""
-    from ..configurator import equivalence_label
+    from .labels import equivalence_label
     result = public_v2_report(payload)
     for key in ('accepted_gates', 'evaluations', 'final_evaluation', 'evaluator_verdicts'):
         result.pop(key)
@@ -174,7 +174,7 @@ def _validate_payload_v2(payload):
     which grades the run's accepted emitted driver: the first artifact of its latest emit handoff that handed one on.
     A final graded from the run's recorded fresh reuse (`recorded-reuse`) has the same contract and records. It names the
     protocol its run was under, whichever that is."""
-    from ..benchmark import STAGES
+    from .case_assets import STAGES
     from .behavior import validate_records, _sha
     protocol = payload.get('protocol')
     if payload.get('schema') != 'benchmark-run-evidence/2' or not isinstance(protocol, str) or not protocol:
@@ -211,7 +211,7 @@ def seal_run_evidence_v2(payload: dict, path: Path, password_file: Path) -> dict
     """Seal benchmark-run-evidence/2 after re-hashing every accepted artifact it names. An identity that does not hold or
     an accepted record whose bytes changed raises IntegrityError: no retry seals it."""
     from .truth import seal
-    from ..configurator import IntegrityError, digest as artifact_digest
+    from .integrity import IntegrityError, digest as artifact_digest
     try:
         _validate_payload_v2(payload)
     except ValueError as error:
@@ -244,7 +244,7 @@ def seal_run_evidence_v2(payload: dict, path: Path, password_file: Path) -> dict
 def seal_run_evidence(payload: dict, path: Path, password_file: Path) -> dict:
     from .truth import seal
     _validate_payload(payload)
-    from ..configurator import digest as artifact_digest
+    from .integrity import digest as artifact_digest
     for artifact in payload.get('accepted_artifacts', []):
         if 'path' in artifact and artifact_digest(Path(artifact['path'])) != artifact['sha256']:
             raise ValueError('Accepted artifact bytes changed before sealing')
@@ -254,7 +254,7 @@ def seal_run_evidence(payload: dict, path: Path, password_file: Path) -> dict:
 
 def _gate_results(payload, evaluations):
     """Sealed evaluator checks establish structural gates; referenced behavior is regraded."""
-    from ..benchmark import STAGES
+    from .case_assets import STAGES
     from .behavior import _sha
     artifacts = payload.get('accepted_artifacts', [])
     identities = {(row.get('stage'), row.get('revision'), row.get('assignment_id'), row.get('sha256'))
@@ -302,7 +302,7 @@ def _execution_identity(report, payload):
     expected_aliases = {key: payload['case_pin'].get(key) for key in
                         ('case_version', 'evaluator_version', 'scenario_id', 'case_seed')}
     # A replayed candidate's label comes from the sealed snapshot's runtime, so a relabelled replay never matches it.
-    from ..replay import execution_label
+    from .labels import execution_label
     execution = execution_label(payload['case_pin'].get('execution', 'unclassified'),
                                 (snapshot['executed'].get('runtime_configuration') or {}).get('runtime'))
     expected_aliases.update(case=payload['case_pin']['case_id'], execution=execution,
@@ -315,8 +315,8 @@ def _execution_identity(report, payload):
 
 
 def _installed_evaluator(snapshot):
-    from ..reporting import _tree_hash
-    if snapshot['executed']['evaluator_revision'] != _tree_hash(Path(__file__).parent):
+    from .integrity import tree_hash
+    if snapshot['executed']['evaluator_revision'] != tree_hash(Path(__file__).parent):
         raise ValueError('Installed evaluator implementation hash mismatch')
 
 
@@ -405,9 +405,9 @@ def regrade_v3(report: dict, evidence_path: Path, password_file: Path) -> dict:
         if (sealed['status'] != 'graded' or final.get('capabilities_sha256') != sealed['capabilities_sha256']
                 or ids(regraded) != ids(sealed)):
             raise ValueError('Sealed verdict differs from its final evaluation')
-    from ..configurator import _verdict_reason
+    from .labels import verdict_reason
     return public_v3_report({**report, 'protocol': payload['protocol'], 'verdict': None, 'equivalence_status': None,
-                             'reason': _verdict_reason(regraded),
+                             'reason': verdict_reason(regraded),
                              'equivalence': {**regraded, 'evidence_sha256': recorded['evidence_sha256']}})
 
 

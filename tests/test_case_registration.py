@@ -17,6 +17,7 @@ class CaseRegistrationTests(unittest.TestCase):
             root = Path(temp)
             public_case_fixture(root, family='zephyr-modbus')
             with patch('generative_driver.benchmark.case_root', return_value=root), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root), \
                     patch('generative_driver.benchmark_support.harness.launch') as launch:
                 with self.assertRaisesRegex(ValueError, 'family'):
                     run('tq9-v2')
@@ -54,6 +55,7 @@ class CaseRegistrationTests(unittest.TestCase):
             public_case_fixture(root, 'zephyr-modbus-v1')
             output = io.StringIO()
             with patch('generative_driver.benchmark.case_root', return_value=root), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root), \
                     patch('generative_driver.benchmark_support.emulator.truth_for_case',
                           side_effect=AssertionError('Discovery must not unlock evaluator truth')), \
                     contextlib.redirect_stdout(output):

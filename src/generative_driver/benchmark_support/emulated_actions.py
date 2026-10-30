@@ -1,6 +1,6 @@
 """Private evaluator action execution; no service, worker gateway or process owner."""
 from .behavior import _check_rejection_evidence
-from .cases import _write
+from .case_assets import write_json
 
 
 # A package call runs the identity operation, then the requested one (each up to the 120 s a valid model may declare),
@@ -134,10 +134,10 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
             else:
                 raise ValueError('Unknown evaluator action')
             raw_events.append(event)
-            _write(evidence_path, {'schema': 'benchmark-action-evidence/1', 'events': raw_events, 'records': records})
+            write_json(evidence_path, {'schema': 'benchmark-action-evidence/1', 'events': raw_events, 'records': records})
     except Exception:
-        _write(evidence_path, {'schema': 'benchmark-action-evidence/1', 'events': raw_events, 'records': records,
-                               'incomplete': True})
+        write_json(evidence_path, {'schema': 'benchmark-action-evidence/1', 'events': raw_events, 'records': records,
+                                   'incomplete': True})
         raise
     return records
 

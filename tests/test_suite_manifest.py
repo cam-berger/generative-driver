@@ -175,7 +175,9 @@ class FreezeTests(unittest.TestCase):
             with self.subTest(changes=changes), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp); public_case_fixture(root, **changes)
                 manifest = pilot_manifest(); manifest['entries'] = manifest['entries'][:1]
-                with patch('generative_driver.benchmark.case_root', return_value=root), self.assertRaises(ValueError):
+                with patch('generative_driver.benchmark.case_root', return_value=root), \
+                        patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root), \
+                        self.assertRaises(ValueError):
                     freeze_suite(manifest, 'codex', {'command': ['toy']}, {'scoped_tool_approval': 'emulator'}, {},
                                  harness_token_sha256=TOKEN)
 
@@ -190,7 +192,9 @@ class FreezeTests(unittest.TestCase):
             public_case_fixture(root)
             public_case_fixture(root, 'sampled-sensor-v1', evidence_track='other-track')
             manifest = pilot_manifest(); manifest['entries'] = [manifest['entries'][0], manifest['entries'][2]]
-            with patch('generative_driver.benchmark.case_root', return_value=root), self.assertRaises(ValueError):
+            with patch('generative_driver.benchmark.case_root', return_value=root), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root), \
+                    self.assertRaises(ValueError):
                 freeze_suite(manifest, 'codex', {'command': ['toy']}, {}, {}, harness_token_sha256=TOKEN)
 
     def test_child_projection_uses_selected_pin_and_frozen_configuration_and_names_no_password(self):
@@ -208,7 +212,8 @@ class FreezeTests(unittest.TestCase):
             manifest['entries'][1]['case_seed'] = 73
             config = {'command': ['scripted-contract-fixture'], 'model': 'toy-model'}
             options = {'ghidra_home': 'C:/Tools/Ghidra', 'java_home': 'C:/Tools/Java', 'scoped_tool_approval': 'emulator'}
-            with patch('generative_driver.benchmark.case_root', return_value=root):
+            with patch('generative_driver.benchmark.case_root', return_value=root), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root):
                 frozen = freeze_suite(manifest, 'codex', config, options, {'skills_revision': 'toy'}, harness_token_sha256=TOKEN)
                 trial = dict(frozen['trials'][3], child_request_id='suite-toy-entry-001-repeat-001')
                 child = child_request(frozen, trial)

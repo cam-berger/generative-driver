@@ -1,10 +1,34 @@
 """Strict evaluator-only family inventory and measured qualification boundary."""
 import base64
 import binascii
+import copy
 import hashlib
 import json
-from .asset_build import inventory
 from .snapshots import canonical_digest
+
+BUILD_FILES = {'build/build-report.json', 'build/firmware.elf', 'build/firmware.bin'}
+_INPUT_FILES = {'AUTHORING.json', 'LICENSE', 'source/startup.c', 'source/board_uart.c',
+    'source/application.c', 'source/linker.ld', 'build.py', 'build-recipe.json',
+    'native/platform.repl', 'native/device.resc', 'native/observation-map.json',
+    'diagnostic/episodes.json', 'final/episodes.json', 'oracle/vectors.json', 'mutants/manifest.json',
+    *{f'reference-{ref}/{name}.json' for ref in ('a', 'b') for name in ('model', 'capabilities', 'replies')}}
+_FAMILIES = {'sampled-sensor', 'parameter-store'}
+
+
+def inventory(family, *, qualified=False):
+    if family not in _FAMILIES:
+        raise ValueError('Unsupported family')
+    return (_INPUT_FILES | BUILD_FILES | ({'native/SampleSource.cs'} if family == 'sampled-sensor' else set())
+            | ({'calibration/calibration.json'} if qualified else set()))
+
+
+def _files(root):
+    if root.is_symlink():
+        raise ValueError('Inventory symlinks are forbidden')
+    paths = list(root.rglob('*'))
+    if any(path.is_symlink() or not (path.is_dir() or path.is_file()) for path in paths):
+        raise ValueError('Inventory requires regular files and directories without symlinks')
+    return {path.relative_to(root).as_posix() for path in paths if path.is_file()}
 
 
 def decode_inventory(payload):
@@ -161,6 +185,68 @@ def validate_calibration(manifest, record):
     return {'ok':not failures,'failures':failures}
 
 
+# Admission of tq9-v2: the mutants a record must cover, the input identities it must carry and its check.
+REQUIRED_SCENARIOS = ('original',)
+CORE_MUTANTS = ('wrong-scale', 'constant-output', 'wrong-state')
+
+
+def input_hashes(truth):
+    return {'source':canonical_digest(truth['source_hashes']), 'contract':canonical_digest(truth['contracts']),
+            'recipe':canonical_digest(truth['recipe']), 'references':canonical_digest(truth['references']),
+            'mutations':canonical_digest(truth['mutations']), 'build':canonical_digest(truth['build']),
+            'analysis':canonical_digest(truth['analysis'])}
+
+
+def tq9_candidate(truth, reference_name, scenario, mutation=None):
+    """Derive the declared legacy reference variant without executing it."""
+    reference=truth['references'][reference_name]
+    if scenario != 'original':raise ValueError('Unknown reference scenario')
+    candidate=copy.deepcopy(reference['model'])
+    caps=copy.deepcopy(reference['capabilities'])
+    if isinstance(mutation,str):
+        task=caps['tasks']['temperature']
+        decoder=candidate['operations'][task['operation']]['outputs'][task['outputs']['temperature']['output']]
+        if mutation=='wrong-scale':decoder['scale']=decoder.get('scale',1)*10
+        elif mutation=='constant-output':decoder.update(scale=0,offset_value=0)
+        elif mutation=='wrong-state':candidate['operations'][caps['tasks']['arm']['operation']]=copy.deepcopy(candidate['operations'][caps['tasks']['disarm']['operation']])
+        else:raise ValueError('Unknown legacy mutation')
+    elif mutation is not None:
+        for patch in mutation['patch']:
+            if patch['op']!='replace':raise ValueError('Unsupported reference mutant patch')
+            parts=patch['path'].split('/')[1:];target=candidate
+            for part in parts[:-1]:target=target[int(part)] if isinstance(target,list) else target[part]
+            target[int(parts[-1]) if isinstance(target,list) else parts[-1]]=copy.deepcopy(patch['value'])
+        for mapping in caps['tasks'].values():
+            for output_mapping in mapping['outputs'].values():
+                output_mapping['unit']=candidate['operations'][mapping['operation']]['outputs'][output_mapping['output']].get('unit')
+    return candidate,caps
+
+
+def tq9_execution_inputs(truth):
+    """Expected identities from authenticated reference and mutation definitions."""
+    result={}
+    for name in truth['references']:
+        for phase in ('diagnostic','final'):
+            result[name+'-'+phase+'-original']=execution_input_identity(*tq9_candidate(truth,name,'original'))
+    for scenario in REQUIRED_SCENARIOS:
+        for mutation in CORE_MUTANTS:
+            result[mutation+'-'+scenario]=execution_input_identity(*tq9_candidate(truth,'reference-a',scenario,mutation))
+    for mutation in truth['mutations']['mutations']:
+        scenario='original'
+        result[mutation['id']]=execution_input_identity(*tq9_candidate(truth,'reference-a',scenario,mutation))
+    return result
+
+
+def validate_record(manifest, record):
+    checked=validate_calibration({**manifest,'family':'tq9'},record)
+    try:
+        measured={run['id']:{k:run[k] for k in ('model_sha256','capabilities_sha256')} for run in record['runs']}
+        if len(measured)!=len(record['runs']) or measured!=record['execution_inputs']:
+            checked['failures'].append('executed input identities')
+    except (KeyError,TypeError):checked['failures'].append('missing executed input identities')
+    return {'ok':not checked['failures'],'failures':checked['failures']}
+
+
 def apply_mutation(model, capabilities, mutation):
     """Apply bounded model or capability patches with input commitments."""
     from copy import deepcopy
@@ -235,7 +321,6 @@ def hydrate_truth(payload):
 def authoring_payload(root):
     """Read only exact private inputs; qualification excludes its own record hash."""
     from pathlib import Path
-    from .asset_build import _files
     root=Path(root)
     metadata=json.loads((root/'AUTHORING.json').read_text())
     family=metadata['family']
@@ -252,62 +337,9 @@ def authoring_payload(root):
         'inventory_sha256':canonical_digest({n:e['sha256'] for n,e in entries.items()})}
 
 
-def calibrate(case_id, *, authoring_root, renode, ghidra_home, java_home, output_dir, compiler=None):
-    """Evaluator Python return includes private evidence. CLI uses safe_summary only."""
-    import os
-    from pathlib import Path
-    from . import authoring
-    from .asset_build import require_private_root, _disjoint
-    from .registry import resolve_case
-    if case_id not in ('sampled-sensor-v1','parameter-store-v1'):raise ValueError('Unknown authored family')
-    tool_paths={'renode':Path(renode),'ghidra_home':Path(ghidra_home),'java_home':Path(java_home)}
-    compiler=Path(compiler or os.environ.get('ARM_NONE_EABI_GCC',''))
-    if (any(not p.is_absolute() or not p.exists() for p in tool_paths.values())
-            or not compiler.is_absolute() or not compiler.is_file()):
-        raise ValueError('Explicit absolute native tool configuration required')
-    if (not tool_paths['renode'].is_file()
-            or not (tool_paths['ghidra_home']/'support/analyzeHeadless').is_file()
-            or not (tool_paths['java_home']/'bin'/('java.exe' if os.name=='nt' else 'java')).is_file()):
-        raise ValueError('Complete native tool installations required')
-    root=require_private_root(authoring_root,[]);output=require_private_root(output_dir,[])
-    _disjoint(root,output)
-    if output.exists() and (not output.is_dir() or any(output.iterdir())):raise ValueError('Calibration output must be empty')
-    payload=authoring_payload(root)
-    if payload['case_id']!=case_id:raise ValueError('Authoring case mismatch')
-    password=root.parent/(case_id+'.password')
-    if not password.is_file() or not password.read_text().strip():raise ValueError('Evaluator password handle required')
-    authoring.calibrate(case_id,{'authoring_root':str(root),**{k:str(v.resolve()) for k,v in tool_paths.items()},
-        'output_dir':str(output),'output':str(output),'compiler':str(compiler),'evaluator_password_file':str(password)})
-    record_path=output/'calibration-record.json'
-    if record_path.is_symlink() or not record_path.is_file():raise ValueError('Measured private calibration record missing')
-    record=json.loads(record_path.read_text())
-    manifest=dict(resolve_case(case_id).manifest)
-    manifest['calibration']={'input_hashes':record.get('input_hashes')}
-    return {**record,**validate_calibration(manifest,record)}
-
-
 def safe_summary(record):
     return {'ok':record.get('ok') is True,'case':record.get('case'),
         'execution':record.get('execution'),'backend':record.get('backend'),
         'status':record.get('status'),'references':len(record.get('references',[])),
         'mutants':len(record.get('mutants',[])),'evidence_sha256':canonical_digest(
             {k:v for k,v in record.items() if k not in ('ok','failures')})}
-
-
-def main():
-    import argparse
-    from pathlib import Path
-    parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('case_id',choices=('sampled-sensor-v1','parameter-store-v1'))
-    for name in ('authoring-root','renode','ghidra-home','java-home','output-dir'):
-        parser.add_argument('--'+name,required=True,type=Path)
-    args=parser.parse_args()
-    try:
-        result=calibrate(**vars(args))
-    except (ValueError,OSError,KeyError,RuntimeError):
-        parser.exit(1,'Native family calibration failed; inspect private evaluator diagnostics.\n')
-    print(json.dumps(safe_summary(result),sort_keys=True))
-    if not result['ok']:parser.exit(1)
-
-
-if __name__=='__main__':main()

@@ -11,7 +11,7 @@ import shutil
 import time
 from pathlib import Path
 
-from .cases import _write
+from .case_assets import write_json
 from .instruments import family_for
 
 DRAFT, EVIDENCE = 'evaluator-draft.enc', 'run-evidence.enc'
@@ -35,10 +35,9 @@ def method_for(case_id):
 def case_truth(case_id, run_dir, options):
     """The case truth, unlocked with the evaluator password file in `options`: the bench harness takes the device recipe
     from it, and the evaluator grades with it. The manifest is the run's pinned snapshot when `run_dir` holds one."""
-    from ..benchmark import case_root
-    from .emulated import _inputs
+    from .case_assets import case_inputs, case_root
     from .emulator import truth_for_case
-    _, manifest = _inputs(case_id, run_dir)
+    _, manifest = case_inputs(case_id, run_dir)
     truth = truth_for_case(case_root(), manifest, options)
     if truth.get('schema') == 'benchmark-upstream-truth/1':
         from .upstream import hydrate_truth
@@ -53,7 +52,7 @@ def accept_frozen_package(package, expected_sha256):
     """The digest of a frozen package, which must be the one recorded when the run froze it, else ValueError: that
     digest is the package's integrity check. The package is graded by its own bytes, never by comparing its bundled
     runtime with this checkout's, so the package of a changed system is graded like any other."""
-    from ..configurator import digest
+    from .integrity import digest
     frozen = digest(package)
     if frozen != expected_sha256:
         raise ValueError('Frozen package changed before final episode')
@@ -73,7 +72,7 @@ def reference_execute(pin, truth, model, capabilities, *, renode, image, output_
     from .emulated_actions import execute_plan, model_invoker, canonical_package_invoker, run_call
     from .behavior import validate_records
     from .snapshots import canonical_digest
-    from ..configurator import digest
+    from .integrity import digest
     from ..toolkit import call_tool
     from interface_runtime.engine import validate_model
     candidate = {**model, 'channel': {'type': 'tcp'}}
@@ -134,7 +133,7 @@ def reference_execute(pin, truth, model, capabilities, *, renode, image, output_
             'model_sha256': model_hash, 'capabilities_sha256': canonical_digest(capabilities), 'package_sha256': frozen,
             'artifact_execution': 'emitted-package' if frozen else 'model-runtime',
             'package_dir': str(package) if package is not None else None, 'runtime_sha256': runtime_hash}
-        _write(output/'evaluation.json', result)
+        write_json(output/'evaluation.json', result)
         return result
     finally:
         session.stop()
@@ -167,14 +166,14 @@ def emitted(accepted):
 def mapping(accepted, index):
     """(path, recorded sha256) of the capability mapping of the probe handoff whose model emit packaged: the latest probe
     handoff with a model.json before that emit handoff. Never another model's mapping, so None when that one has none."""
-    from .emulated import _artifact
-    probe = next((h for h in reversed(accepted[:index]) if h.get('stage') == 'probe' and _artifact(h, 'model.json')), None)
-    return _artifact(probe, 'capabilities.json')
+    from .case_assets import accepted_artifact
+    probe = next((h for h in reversed(accepted[:index]) if h.get('stage') == 'probe' and accepted_artifact(h, 'model.json')), None)
+    return accepted_artifact(probe, 'capabilities.json')
 
 
 def _copy(found, target, what):
     """A private copy of an accepted artifact, re-hashed against the hash recorded when it was accepted."""
-    from ..configurator import IntegrityError, digest
+    from .integrity import IntegrityError, digest
     path, expected = found
     try:
         (shutil.copytree if Path(path).is_dir() else shutil.copyfile)(path, target)
@@ -229,7 +228,7 @@ def reuse_mission(case_id, run_dir, accepted, frozen, capabilities):
     """Whether fresh reuse did the public mission with the frozen package, from the package events the run recorded for
     its accepted reuse assignment. Required generated reuse must complete this mission; historical evidence retains
     this as a secondary check beside the grade."""
-    from .emulated import _mission
+    from .case_assets import reuse_mission as _mission
     from .mcp_reuse import owner_evidence, required, verified
     from .snapshots import read_snapshot
     proof = owner_evidence(run_dir, accepted)
@@ -276,8 +275,8 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
     never graded again. A changed record raises IntegrityError; recorded evidence the evaluator cannot grade for a reason
     outside the driver raises Unscorable. Every record names the protocol the run's progress names, and a result that
     names none raises ValueError."""
-    from ..configurator import IntegrityError
-    from .emulated import _inputs
+    from .case_assets import case_inputs
+    from .integrity import IntegrityError
     from .registry import pin_case
     from .snapshots import require_snapshot
     protocol = _protocol(result)
@@ -335,7 +334,7 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
             return record('graded', False, [], [{'id': 'frozen_package', 'reason': 'the frozen driver\'s model is not '
                           'structurally valid'}], sha, capabilities_sha, checked, protocol=protocol), None
         truth = case_truth(case_id, run_dir, {'evaluator_password_file': str(password_file)})
-        inputs, manifest = _inputs(case_id, run_dir)
+        inputs, manifest = case_inputs(case_id, run_dir)
         from .execution import artifact_name
         output = private/'final'
         # The session's own files, the monitor commands that carry hidden stimuli among them, stay under `private`,
@@ -459,13 +458,13 @@ def _physical(truth, events, capabilities, sha, revision, reuse, private):
     """bme280's latest finite fresh measurement by the frozen package, against the operator reference recorded with
     fresh reuse, which must hold within the truth's age and tolerance limits of that measurement. None when fresh reuse
     measured nothing finite."""
-    from .emulated import _artifact
+    from .case_assets import accepted_artifact
     from .physical import REFERENCE, valid_rows
     valid = valid_rows(events, capabilities)
     if not valid:
         return None
     measurement = valid[-1]
-    found = _artifact(reuse, REFERENCE)
+    found = accepted_artifact(reuse, REFERENCE)
     if found is None:
         raise Unscorable('No operator reference was recorded with fresh reuse')
     saved = json.loads(_copy(found, private/REFERENCE, 'operator reference').read_text(encoding='utf-8'))
@@ -487,12 +486,11 @@ def _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, 
     handoff's package calls, re-hashed, against the truth's reuse goal (legacy tq9), or against the operator reference
     within the truth's limits (bme280). No device is touched. A final the draft holds for this run and package is
     rebuilt, never graded again. Its records name the run's `protocol`."""
-    from .emulated import REUSE_EVENTS, _artifact, _mission
+    from .case_assets import REUSE_EVENTS, accepted_artifact, mapping_errors as tq9_errors, reuse_mission as _mission
     from .physical import mapping_errors as physical_errors, valid_rows
-    from .cases import mapping_errors as tq9_errors
     accepted, private = result.get('accepted_handoffs') or [], Path(trial_dir)/'private'
     reuse = next((h for h in reversed(accepted) if h.get('stage') == 'reuse' and h.get('artifacts')), None)
-    found = _artifact(reuse, REUSE_EVENTS) if reuse else None
+    found = accepted_artifact(reuse, REUSE_EVENTS) if reuse else None
     events = None
     if found is not None:
         copy = _copy(found, private/REUSE_EVENTS, 'fresh reuse record')
@@ -537,7 +535,7 @@ def evidence(trial_dir, run_dir, result, *, final=None, equivalence=None, missio
     snapshot, every accepted artifact and notes.json hash, the single final evaluation (None for a stopped or ungraded
     run), the public verdict, the mission check, the provider's recovery receipts and the hash of its device journal. A
     snapshot that no longer verifies raises IntegrityError; a result that names no protocol raises ValueError."""
-    from ..configurator import IntegrityError
+    from .integrity import IntegrityError
     from .snapshots import read_snapshot
     protocol = _protocol(result)
     try:

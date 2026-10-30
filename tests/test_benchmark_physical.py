@@ -99,7 +99,8 @@ class RecordedReuseTests(unittest.TestCase):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
         self.root=Path(temporary.name).resolve()
         self.resources,self.observed,self.secret=self.reference_fixture(self.root)
-        guard=patch('generative_driver.benchmark.case_root',return_value=self.resources);guard.start();self.addCleanup(guard.stop)
+        for target in ('generative_driver.benchmark.case_root','generative_driver.benchmark_support.case_assets.case_root'):
+            guard=patch(target,return_value=self.resources);guard.start();self.addCleanup(guard.stop)
         from generative_driver.benchmark_support.registry import pin_case
         from generative_driver.benchmark_support.snapshots import snapshot_case
         self.run_dir=self.root/'run';self.pin=pin_case('bme280',None,0)
@@ -344,7 +345,8 @@ class EarlierProtocolScoreTests(unittest.TestCase):
             def saved_client(method,*args,**kwargs):
                 return result if method=='result' else {'events':[],'cursor':0}
             output=base/'export/report.json'
-            with patch('generative_driver.client.call',side_effect=saved_client), patch('generative_driver.benchmark.case_root',return_value=resources):
+            with patch('generative_driver.client.call',side_effect=saved_client), patch('generative_driver.benchmark.case_root',return_value=resources), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root',return_value=resources):
                 public=report_run('toy',home=home,output=output,autostart=False)
             self.assertNotIn(str(base),output.read_text())
             saved=Path(final['reference']['evidence_path'])

@@ -22,7 +22,8 @@ class ScenarioTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             public_case_fixture(root/'resources')
-            with patch('generative_driver.benchmark.case_root', return_value=root/'resources'):
+            with patch('generative_driver.benchmark.case_root', return_value=root/'resources'), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root/'resources'):
                 controller = Controller(root/'home')
                 try:
                     for scenario in ('semantic','control','identity','unknown'):

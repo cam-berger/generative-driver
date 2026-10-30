@@ -19,7 +19,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-RUNTIME = 'replay'
+# The evaluator uses these too, so they are defined in a module of its own and imported here under their old names.
+from .benchmark_support.labels import RUNTIME, execution_label
+
 SCHEMA = 'replay-candidate/1'
 SCRIPT = 'replay.json'
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
@@ -147,12 +149,6 @@ def stored_candidate(config, store):
     if digest(target) != config['candidate_sha256']:
         raise ValueError('The stored replay candidate changed: ' + str(target))
     return {'runtime': RUNTIME, 'candidate': str(target), 'candidate_sha256': config['candidate_sha256']}
-
-
-def execution_label(case_execution, runtime):
-    """How a benchmark run executed: a candidate replayed on an emulated case is `replay-emulation`, since no model ran
-    it, and never an actual-agent result."""
-    return 'replay-emulation' if runtime == RUNTIME and case_execution == 'actual-agent-emulation' else case_execution
 
 
 def _context(prompt):

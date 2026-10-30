@@ -13,15 +13,12 @@ import sys
 import tempfile
 
 from .snapshots import canonical_digest
-
-REQUIRED_SCENARIOS = ('original',)
-CORE_MUTANTS = ('wrong-scale', 'constant-output', 'wrong-state')
-
+# The evaluator admits tq9-v2 by these, so they are defined in its calibration module and imported here.
+from .calibration import (CORE_MUTANTS, REQUIRED_SCENARIOS, input_hashes, tq9_candidate, tq9_execution_inputs,
+                          validate_record)
 
 # The toolchain tools grading calls (probe_run, emit_package, emit_check and the interface runtime tools), what they
-# execute, and the analysis wrappers calibration runs. The rest of the kit is the candidate's side. Grading also uses a
-# few shared helpers outside this closure (configurator.digest, benchmark.case_root, reporting's tree hash): a change
-# there alters hashes and fails integrity checks rather than changing a grade.
+# execute, and the analysis wrappers calibration runs. The rest of the kit is the candidate's side.
 GRADING_TOOLCHAIN = ('__init__.py', 'core.py', 'runner.py', 'probe.py', 'emit.py', 'interface.py')
 CALIBRATION_ANALYSIS = ('resources/tools/model_exec.py',  # the toolchain runner executes it on import
                         'resources/tools/workspace/ghidra_run.py',
@@ -52,65 +49,6 @@ def calibration_identity():
     dependencies = {'cryptography': importlib.metadata.version('cryptography')}
     body = {'schema':'benchmark-evaluator-identity/2','files':files,'dependencies':dependencies}
     return {**body,'sha256':canonical_digest(body)}
-
-
-def input_hashes(truth):
-    return {'source':canonical_digest(truth['source_hashes']), 'contract':canonical_digest(truth['contracts']),
-            'recipe':canonical_digest(truth['recipe']), 'references':canonical_digest(truth['references']),
-            'mutations':canonical_digest(truth['mutations']), 'build':canonical_digest(truth['build']),
-            'analysis':canonical_digest(truth['analysis'])}
-
-
-def tq9_candidate(truth, reference_name, scenario, mutation=None):
-    """Derive the declared legacy reference variant without executing it."""
-    reference=truth['references'][reference_name]
-    if scenario != 'original':raise ValueError('Unknown reference scenario')
-    candidate=copy.deepcopy(reference['model'])
-    caps=copy.deepcopy(reference['capabilities'])
-    if isinstance(mutation,str):
-        task=caps['tasks']['temperature']
-        decoder=candidate['operations'][task['operation']]['outputs'][task['outputs']['temperature']['output']]
-        if mutation=='wrong-scale':decoder['scale']=decoder.get('scale',1)*10
-        elif mutation=='constant-output':decoder.update(scale=0,offset_value=0)
-        elif mutation=='wrong-state':candidate['operations'][caps['tasks']['arm']['operation']]=copy.deepcopy(candidate['operations'][caps['tasks']['disarm']['operation']])
-        else:raise ValueError('Unknown legacy mutation')
-    elif mutation is not None:
-        for patch in mutation['patch']:
-            if patch['op']!='replace':raise ValueError('Unsupported reference mutant patch')
-            parts=patch['path'].split('/')[1:];target=candidate
-            for part in parts[:-1]:target=target[int(part)] if isinstance(target,list) else target[part]
-            target[int(parts[-1]) if isinstance(target,list) else parts[-1]]=copy.deepcopy(patch['value'])
-        for mapping in caps['tasks'].values():
-            for output_mapping in mapping['outputs'].values():
-                output_mapping['unit']=candidate['operations'][mapping['operation']]['outputs'][output_mapping['output']].get('unit')
-    return candidate,caps
-
-
-def tq9_execution_inputs(truth):
-    """Expected identities from authenticated reference and mutation definitions."""
-    from .calibration import execution_input_identity
-    result={}
-    for name in truth['references']:
-        for phase in ('diagnostic','final'):
-            result[name+'-'+phase+'-original']=execution_input_identity(*tq9_candidate(truth,name,'original'))
-    for scenario in REQUIRED_SCENARIOS:
-        for mutation in CORE_MUTANTS:
-            result[mutation+'-'+scenario]=execution_input_identity(*tq9_candidate(truth,'reference-a',scenario,mutation))
-    for mutation in truth['mutations']['mutations']:
-        scenario='original'
-        result[mutation['id']]=execution_input_identity(*tq9_candidate(truth,'reference-a',scenario,mutation))
-    return result
-
-
-def validate_record(manifest, record):
-    from .calibration import validate_calibration
-    checked=validate_calibration({**manifest,'family':'tq9'},record)
-    try:
-        measured={run['id']:{k:run[k] for k in ('model_sha256','capabilities_sha256')} for run in record['runs']}
-        if len(measured)!=len(record['runs']) or measured!=record['execution_inputs']:
-            checked['failures'].append('executed input identities')
-    except (KeyError,TypeError):checked['failures'].append('missing executed input identities')
-    return {'ok':not checked['failures'],'failures':checked['failures']}
 
 
 def calibrate(case_id, options):

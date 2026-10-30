@@ -695,6 +695,7 @@ class TQ9V2Tests(unittest.TestCase):
                 endpoint=provider=None;graders=[]
                 try:
                     with patch.object(toolkit,'call_tool',side_effect=runtime_boundary),patch.object(device_client.DeviceClient,'replace',replace),patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
+                         patch('generative_driver.benchmark_support.case_assets.case_root',return_value=resources),\
                          patch.object(controller,'_check',side_effect=check),patch.object(controller,'_verify_snapshot',side_effect=verify_snapshot),\
                          patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True,'evidence_sha256':evidence}),\
                          patch.object(emulator_module,'truth_for_case',side_effect=truth_for_case),\
@@ -1651,7 +1652,8 @@ class TQ9V2Tests(unittest.TestCase):
             password=root/'password';password.write_text('synthetic calibration fixture')
             manifest['truth']['sha256']=seal(truth,resources/manifest['truth']['path'],password.read_text())
             (case/'case.json').write_text(json.dumps(manifest))
-            with patch('generative_driver.benchmark.case_root',return_value=resources):
+            with patch('generative_driver.benchmark.case_root',return_value=resources), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root',return_value=resources):
                 result=calibrate('tq9-v2',{'evaluator_password_file':str(password),'output':str(root/'output'),
                     'compiler':'/absent','renode':None,'ghidra_home':None,'java_home':None})
             self.assertFalse(result['ok'])

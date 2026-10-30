@@ -17,15 +17,31 @@
 | Package | Contract, protocol, executable model projection, generated MCP catalog, runtime, reference, evidence and integrity manifest. |
 | Ground / fresh reuse | Test meanings against the device / new agent uses only package and objective. Reuse is the final stage. |
 | Groundtruth | Password-encrypted, hash-pinned expected behavior held only by the evaluator. |
-| Bench harness | Benchmark operator: holds password, owns emulator/provider, supplies device descriptor and grades after the run. |
-| Instrument observation | Device-state readings visible to workers, never grades. |
+| Bench harness | Benchmark operator: holds password, owns emulator/provider, supplies device descriptor and grades after the run. A suite's harness reads each password once, starts trials only after the answer vault and generator volume are unmounted, and seals each graded scoring trial in the answer vault. |
+| Instrument observation | Device-state readings visible to workers, never grades. Generated devices offer none for now: workers see only their UART. |
 | Lineage | Upstream firmware ancestry selected in a corpus. Repetitions of one lineage do not demonstrate another device family. |
-| Case | Registered, versioned image and evaluator contract, with public mission data and a separately encrypted answer key. |
+| Case | Registered, versioned image and evaluator contract, with public mission data and a separately encrypted answer key. A generated device is a case registered through its set. |
 | Execution setup | The case's method, actual executable artifact, substitutions, validated behavior and remaining hardware gaps. Native and MCU binaries have distinct identities. |
-| Public mission | Required task meanings, inputs, output units and the objective for fresh reuse. Hidden vectors remain evaluator-owned. |
+| Public mission | Required task meanings, inputs, output units and the objective for fresh reuse. Hidden vectors remain evaluator-owned. A generated mission states only each task's effect; ranges, refusal conditions, framing and the mapping onto firmware commands stay hidden. |
 | Trial | One fresh six-stage run. A repetition starts another trial, not another lineage. |
+| Pass / failure | The evaluator grades a trial's frozen driver equivalent / not equivalent, a departure from the original function; a trial that emits no driver fails. Fresh reuse and accepted stages are reported beside a pass, never inside it. |
+| Unknown | A completed grade with no failed step and at least one step the evaluator could not decide; neither pass nor failure. |
+| Pass rate | Passes / (passes + failures), printed with the unknown, fault and planned counts. A trial stopped by a host or operator fault it did not cause, or missing its evidence, is counted but not graded; running out of budget, or a stop the system caused, is a failure. |
+| Scorecard | Trial metrics computed afterwards from retained records: outcome, step accuracy, stage times, tool and device use, tokens, repairs and claim agreement (the fresh-reuse claim against the grade). The system under test records nothing for it. |
+| Scoring set / development set | Generated devices sealed for comparisons, from which only aggregate scorecards leave the bench harness / devices from the same generator, open for development. |
+| Pinned system | The revision, runtime binary and version, model, reasoning effort and limits that every trial of a baseline shares. |
+| Baseline | One pinned system's graded trials on the scoring set, stored so later systems are compared with it device by device. |
+| Hidden sequence / step | An evaluator-owned task sequence that starts from a verified reset / one task call in it, which passes when both the driver's answer (a value, a refusal, no reply or an error) and the device state match the reference. A refusal counts whether the device or the driver made it. |
+| Framing | How a generated device's commands and replies travel over UART: text lines, binary frames with length and checksum, or register access. A case's family is its registered evaluator, not its framing. |
+| Answer vault / generator volume | The encrypted volume holding passwords, answer keys, each set's secret seed and sealed scoring trials / the one holding the generator's repository. Neither is mounted while workers run. |
+| Device generator | The private tool, kept in its own encrypted volume outside this repository, that writes each generated device's firmware, mission, answer key, reference drivers and mutants from a sampled design. |
+| Difficulty level | One of five generator settings, easy to hard, that raise state, refusal rules, composite tasks, hidden triggers, value encoding and binary obfuscation together. |
+| Comparison | Two systems' per-device results on one admitted scoring set under the same evaluator revision and limits, naming every changed dimension. Reports outside a scoring set stay separate series. |
+| Anchor | Today's admitted hand-made and upstream cases, run with each pinned system and reported apart from the scoring set; never pooled into its pass rate or comparisons. |
+| Leak check | A small fresh batch run at each comparison; a clearly better score on the scoring set than on fresh devices means the set leaked. |
 | Selection | Frozen include/exclude decisions and reasons for every lineage in the full catalog. Excluded and blocked slots remain visible. |
-| Availability / admission | Public inventory checks / authenticated reference qualification against the current evaluator implementation. Availability does not establish admission. |
+| Availability / admission | Public inventory checks / authenticated reference qualification against the current evaluator implementation. Availability does not establish admission. A generated set is admitted when both references pass on every device and every mutant fails on a sample of two devices per level and framing. |
+| Reference driver / mutant | A correct driver the grader must pass, two distinct ones per case / a deliberately wrong driver the grader must fail. |
 
 Functional compatibility compares required outputs/effects, not source code. Hashes prove identity/integrity, not physical truth or access control. Keep passwords/answers out of candidate inputs; the configurator holds no truth.
 

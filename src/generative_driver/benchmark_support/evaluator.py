@@ -49,6 +49,17 @@ def case_truth(case_id, run_dir, options):
     return truth
 
 
+def accept_frozen_package(package, expected_sha256):
+    """The digest of a frozen package, which must be the one recorded when the run froze it, else ValueError: that
+    digest is the package's integrity check. The package is graded by its own bytes, never by comparing its bundled
+    runtime with this checkout's, so the package of a changed system is graded like any other."""
+    from ..configurator import digest
+    frozen = digest(package)
+    if frozen != expected_sha256:
+        raise ValueError('Frozen package changed before final episode')
+    return frozen
+
+
 def reference_execute(pin, truth, model, capabilities, *, renode, image, output_dir,
                       phase='final', package=None, expected_package_sha256=None, package_final=True, private_dir=None,
                       healthy_device_failures=False):
@@ -76,8 +87,8 @@ def reference_execute(pin, truth, model, capabilities, *, renode, image, output_
     model_dir = output/'model'
     from .calibration import reference_model_bytes
     model_dir.mkdir(parents=True, exist_ok=True)
-    # A frozen package is checked against its own model bytes, whatever newline convention the host that wrote them
-    # used; emit_check holds them to the package's manifest. A model with no package is written in the portable form.
+    # A frozen package's model is its own bytes, whatever newline convention the host that wrote them used. A model with
+    # no package is written in the portable form.
     (model_dir/'model.json').write_bytes((Path(package)/'driver/model.json').read_bytes() if package is not None
                                          else reference_model_bytes(candidate))
     model_hash = hashlib.sha256((model_dir/'model.json').read_bytes()).hexdigest()
@@ -99,13 +110,7 @@ def reference_execute(pin, truth, model, capabilities, *, renode, image, output_
                 if not emitted.get('ok'):raise ValueError('Reference package emission failed')
                 package = Path(emitted['package_dir'])
                 expected_package_sha256 = digest(package)
-            checked = call_tool('emit_check', {'run_dir': str(output/'tools'),
-                'model_dir': str(model_dir), 'package_dir': str(package)})
-            if not all(checked.get(k) for k in ('ok', 'integrity_ok', 'runtime_current')):
-                raise ValueError('Reference package integrity failed')
-            frozen = digest(package)
-            if frozen != expected_package_sha256:
-                raise ValueError('Frozen package changed before final episode')
+            frozen = accept_frozen_package(package, expected_package_sha256)
             invoke = canonical_package_invoker(package, capabilities, session.binding)
             runtime_root = Path(package)/'interface_runtime'
         else:

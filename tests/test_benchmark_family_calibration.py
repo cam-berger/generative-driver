@@ -1,5 +1,6 @@
 """Synthetic unrelated inventories cannot qualify distributed cases."""
 import base64
+import contextlib
 import copy
 import hashlib
 import unittest
@@ -209,13 +210,13 @@ class HydrationTests(unittest.TestCase):
         self.assertNotIn('artifact_sha256',hydrated)
 
 class ReferenceExecutionTests(unittest.TestCase):
-    def test_final_uses_real_emitted_package_and_rejects_frozen_tampering(self):
-        import socketserver,threading,tempfile,json
-        from pathlib import Path
-        from unittest.mock import patch
-        from benchmark_family_fixtures import toy_sample_model,toy_sensor_phase,sample_reply
-        from generative_driver.benchmark_support.evaluator import reference_execute
-        from generative_driver.configurator import digest
+    @contextlib.contextmanager
+    def toy_sensor(self):
+        """The toy sampled sensor behind a local socket and the case graded against it: (temp, Session, pin, truth, caps).
+        `Session` is a fake emulator session bound to the socket and `temp` a scratch directory; leaving the block stops
+        the device and removes `temp`."""
+        import socketserver,threading,tempfile
+        from benchmark_family_fixtures import toy_sensor_phase,sample_reply
         class Device(socketserver.StreamRequestHandler):
             def handle(self):
                 while True:
@@ -243,59 +244,112 @@ class ReferenceExecutionTests(unittest.TestCase):
             truth['phases']['final']=phase;truth['recipe']={};truth['contracts']={'time_policy':{'sample_settle_seconds':0}}
             caps={'schema':'benchmark-capabilities/2','tasks':{'sample':{'operation':'sample','constants':{},'inputs':{},
                 'outputs':{k:{'output':k,'unit':u} for k,u in (('temperature','degC'),('sequence','count'))}}}}
-            session=Session()
-            try:
-                with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=session):
-                    result=reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),output_dir=Path(temp)/'good')
-                self.assertEqual(result['grade']['verdict'],'passed')
-                self.assertTrue(session.stopped)
-                self.assertFalse(result['native_process_observed'])
-                original_write=Path.write_text
-                def windows_default_write(path,data,*args,**kwargs):
-                    if path.name=='model.json' and path.parent.name=='model' and 'newline' not in kwargs:
-                        kwargs['newline']='\r\n'
-                    return original_write(path,data,*args,**kwargs)
-                with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()), \
-                     patch.object(Path,'write_text',windows_default_write):
-                    modeled=reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
-                        output_dir=Path(temp)/'modeled',package_final=False)
-                self.assertEqual(modeled['grade']['verdict'],'passed')
-                from generative_driver.benchmark_support.calibration import execution_input_identity
-                expected=execution_input_identity(toy_sample_model(),caps)
-                self.assertEqual(modeled['model_sha256'],expected['model_sha256'])
-                self.assertEqual(modeled['capabilities_sha256'],expected['capabilities_sha256'])
-                self.assertNotIn(b'\r\n',(Path(temp)/'modeled/model/model.json').read_bytes())
-                self.assertIsNone(modeled['package_sha256'])
-                self.assertEqual(modeled['contract']['artifact_sha256'],modeled['model_sha256'])
-                # A frozen package whose model bytes a Windows host wrote with CRLF line endings is graded by its own
-                # bytes: its integrity holds against its own manifest, never against reference-normalised model bytes.
-                from generative_driver.toolkit import call_tool
-                from generative_driver.benchmark_support.calibration import reference_model_bytes
-                crlf=Path(temp)/'crlf';(crlf/'model').mkdir(parents=True)
-                (crlf/'model/model.json').write_bytes(reference_model_bytes(toy_sample_model()).replace(b'\n',b'\r\n'))
-                probed=call_tool('probe_run',{'run_dir':str(crlf/'tools'),'model_dir':str(crlf/'model'),
-                    'operation':toy_sample_model()['identity']['operation'],'parameters':{},'binding':Session.binding,'n':1})
-                self.assertTrue(probed.get('ok'),probed)
-                emitted=call_tool('emit_package',{'run_dir':str(crlf/'tools'),'model_dir':str(crlf/'model'),'probe':probed['probe']})
-                self.assertTrue(emitted.get('ok'),emitted)
-                windows=Path(emitted['package_dir'])
-                self.assertIn(b'\r\n',(windows/'driver/model.json').read_bytes())
-                with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()) as native:
-                    graded=reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
-                        output_dir=crlf/'final',package=windows,expected_package_sha256=digest(windows),private_dir=crlf/'native')
-                self.assertEqual(graded['grade']['verdict'],'passed')
-                # The grading session keeps its own files where the caller's cleanup reaches them.
-                self.assertEqual(native.call_args.kwargs['private_dir'],crlf/'native')
-                self.assertEqual((graded['package_sha256'],graded['artifact_execution']),(digest(windows),'emitted-package'))
-                package=Path(result['package_dir']);frozen=result['package_sha256']
-                self.assertEqual(digest(package),frozen)
-                self.assertEqual(result['contract']['artifact_sha256'],frozen)
-                (package/'driver/model.json').write_text('{}')
-                with patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=AssertionError('Device accessed')):
-                    with self.assertRaisesRegex(ValueError,'Frozen package'):
-                        reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
-                            output_dir=Path(temp)/'bad',package=package,expected_package_sha256=frozen)
+            try:yield temp,Session,pin,truth,caps
             finally:server.shutdown();thread.join()
+
+    def emit_toy_package(self,root,binding,newline=b'\n'):
+        """A package of the toy sample model, emitted under `root` by probe_run and emit_package against the toy device at
+        `binding`, with the model's bytes written with the line ending `newline`."""
+        from pathlib import Path
+        from benchmark_family_fixtures import toy_sample_model
+        from generative_driver.toolkit import call_tool
+        from generative_driver.benchmark_support.calibration import reference_model_bytes
+        (root/'model').mkdir(parents=True)
+        (root/'model/model.json').write_bytes(reference_model_bytes(toy_sample_model()).replace(b'\n',newline))
+        probed=call_tool('probe_run',{'run_dir':str(root/'tools'),'model_dir':str(root/'model'),
+            'operation':toy_sample_model()['identity']['operation'],'parameters':{},'binding':binding,'n':1})
+        self.assertTrue(probed.get('ok'),probed)
+        emitted=call_tool('emit_package',{'run_dir':str(root/'tools'),'model_dir':str(root/'model'),'probe':probed['probe']})
+        self.assertTrue(emitted.get('ok'),emitted)
+        return Path(emitted['package_dir'])
+
+    def test_final_uses_real_emitted_package_and_rejects_frozen_tampering(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        from benchmark_family_fixtures import toy_sample_model
+        from generative_driver.benchmark_support.evaluator import reference_execute
+        from generative_driver.configurator import digest
+        with self.toy_sensor() as (temp,Session,pin,truth,caps):
+            session=Session()
+            with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=session):
+                result=reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),output_dir=Path(temp)/'good')
+            self.assertEqual(result['grade']['verdict'],'passed')
+            self.assertTrue(session.stopped)
+            self.assertFalse(result['native_process_observed'])
+            original_write=Path.write_text
+            def windows_default_write(path,data,*args,**kwargs):
+                if path.name=='model.json' and path.parent.name=='model' and 'newline' not in kwargs:
+                    kwargs['newline']='\r\n'
+                return original_write(path,data,*args,**kwargs)
+            with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()), \
+                 patch.object(Path,'write_text',windows_default_write):
+                modeled=reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
+                    output_dir=Path(temp)/'modeled',package_final=False)
+            self.assertEqual(modeled['grade']['verdict'],'passed')
+            from generative_driver.benchmark_support.calibration import execution_input_identity
+            expected=execution_input_identity(toy_sample_model(),caps)
+            self.assertEqual(modeled['model_sha256'],expected['model_sha256'])
+            self.assertEqual(modeled['capabilities_sha256'],expected['capabilities_sha256'])
+            self.assertNotIn(b'\r\n',(Path(temp)/'modeled/model/model.json').read_bytes())
+            self.assertIsNone(modeled['package_sha256'])
+            self.assertEqual(modeled['contract']['artifact_sha256'],modeled['model_sha256'])
+            # A frozen package whose model bytes a Windows host wrote with CRLF line endings is graded by its own
+            # bytes: its integrity holds against its own manifest, never against reference-normalised model bytes.
+            crlf=Path(temp)/'crlf'
+            windows=self.emit_toy_package(crlf,Session.binding,b'\r\n')
+            self.assertIn(b'\r\n',(windows/'driver/model.json').read_bytes())
+            with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()) as native:
+                graded=reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
+                    output_dir=crlf/'final',package=windows,expected_package_sha256=digest(windows),private_dir=crlf/'native')
+            self.assertEqual(graded['grade']['verdict'],'passed')
+            # The grading session keeps its own files where the caller's cleanup reaches them.
+            self.assertEqual(native.call_args.kwargs['private_dir'],crlf/'native')
+            self.assertEqual((graded['package_sha256'],graded['artifact_execution']),(digest(windows),'emitted-package'))
+            package=Path(result['package_dir']);frozen=result['package_sha256']
+            self.assertEqual(digest(package),frozen)
+            self.assertEqual(result['contract']['artifact_sha256'],frozen)
+            (package/'driver/model.json').write_text('{}')
+            with patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=AssertionError('Device accessed')):
+                with self.assertRaisesRegex(ValueError,'Frozen package'):
+                    reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
+                        output_dir=Path(temp)/'bad',package=package,expected_package_sha256=frozen)
+
+    def test_package_with_a_different_bundled_runtime_is_graded(self):
+        import json
+        from pathlib import Path
+        from unittest.mock import patch
+        from benchmark_family_fixtures import toy_sample_model
+        from generative_driver.benchmark_support.evaluator import reference_execute
+        from generative_driver.configurator import digest
+        with self.toy_sensor() as (temp,Session,pin,truth,caps):
+            package=self.emit_toy_package(Path(temp)/'emitted',Session.binding)
+            # Another system's package bundles another runtime. Its manifest and file hashes follow the edit, so the
+            # package is consistent and only its runtime bytes differ from this checkout's.
+            sha=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
+            engine=package/'interface_runtime/engine.py'
+            engine.write_bytes(engine.read_bytes()+b'\n# another runtime\n')
+            manifest=json.loads((package/'manifest.json').read_text(encoding='utf-8'))
+            manifest['files']['interface_runtime/engine.py']=sha(engine)
+            (package/'manifest.json').write_text(json.dumps(manifest,indent=2,allow_nan=False)+'\n',encoding='utf-8')
+            (package/'manifest.sha256').write_text(sha(package/'manifest.json')+'\n',encoding='utf-8')
+            with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()):
+                graded=reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
+                    output_dir=Path(temp)/'other-runtime',package=package,expected_package_sha256=digest(package))
+            self.assertEqual(graded['grade']['verdict'],'passed')
+            self.assertEqual((graded['package_sha256'],graded['artifact_execution']),(digest(package),'emitted-package'))
+
+    def test_only_the_package_that_was_frozen_is_accepted(self):
+        import tempfile
+        from pathlib import Path
+        from generative_driver.benchmark_support.evaluator import accept_frozen_package
+        from generative_driver.configurator import digest
+        with tempfile.TemporaryDirectory() as temp:
+            package=Path(temp);(package/'driver').mkdir();(package/'driver/model.json').write_text('{}')
+            frozen=digest(package)
+            self.assertEqual(accept_frozen_package(package,frozen),frozen)
+            (package/'driver/model.json').write_text('{"changed":true}')
+            with self.assertRaisesRegex(ValueError,'Frozen package changed before final episode'):
+                accept_frozen_package(package,frozen)
 
 class FamilyAdmissionBoundaryTests(unittest.TestCase):
     def test_registry_admission_consumes_family_validator_and_authenticated_inputs(self):

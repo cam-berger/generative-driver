@@ -921,6 +921,34 @@ class DeviceRepairTests(unittest.TestCase):
                 self.assertEqual((finished['effectful'], finished['refused_before_open'], finished['effects_reconciled']),
                                  (True, True, True), finished)
 
+    def test_a_state_changing_request_a_worker_labels_a_read_is_marked_uncertain_before_it_reaches_the_device(self):
+        # An effect label is its model author's claim. Under the default read-only grant, the probe worker runs its own
+        # variant of the assigned thermometer: heater_on is labelled read but sends H1, which switches the heater on. The
+        # device acts and never answers, so the request is interrupted, the case an uncertain effect exists for. The
+        # gateway classifies the dispatch by the label, and the runtime runs a read without a grant, so the request
+        # reaches the device. The configurator must still mark it uncertain, as it marks a declared write.
+        seen, ran = [], []
+        def work(call, assigned, workspace):
+            variant = workspace / 'variant'; variant.mkdir()
+            model = json.loads((Path(assigned) / 'model.json').read_text())
+            model['operations']['heater_on'] = {'effect': 'read', 'parameters': {}, 'outputs': {}, 'steps': [
+                {'op': 'exchange', 'tx': [{'text': 'H1\n'}], 'rx': {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 64},
+                 'timeout_ms': 200}]}
+            model['provenance'].append({'item': 'operations.heater_on', 'source': 'scripted fixture'})
+            (variant / 'model.json').write_text(json.dumps(model))
+            ran.append(call('interface_execute', model_dir=str(variant), operation='heater_on'))
+        with tempfile.TemporaryDirectory() as directory, \
+                line_device({b'ID': b'THERMO-1\n', b'T': b'21.5\n'}, seen) as binding:
+            result, events, _, _ = self.run_device_stage(Path(directory) / 'home', work, None, stage='probe',
+                                                         real=('interface_execute',), binding=binding)
+        assigned = next(e['data'] for e in events if e['kind'] == 'stage.assigned' and e['data']['stage'] == 'probe')
+        self.assertEqual(assigned['effects'], ['read'])
+        # After identity the device received the heater command, and it never confirmed it.
+        self.assertEqual(seen, [b'ID', b'H1'])
+        self.assertEqual((ran[0]['ok'], ran[0]['transport_open_attempted']), (False, True), ran)
+        [started] = [e['data'] for e in events if e['kind'] == 'tool.started' and e['data']['name'] == 'interface_execute']
+        self.assertEqual((started['effectful'], result['uncertain_effect']), (True, True), (started, result['status']))
+
     def test_probe_and_ground_workers_cannot_validate_an_assigned_model_in_place(self):
         # The register validator writes defects.json beside the model it checks, which would alter an assigned input
         # and stop the run for integrity. The configurator validates each assigned model on its own copy and hands the

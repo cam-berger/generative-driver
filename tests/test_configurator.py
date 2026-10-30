@@ -2647,7 +2647,7 @@ class RealToolVerdictTests(unittest.TestCase):
     DEVICE = {b'ID': b'THERMO-1\n', b'T': b'21.5\n'}
 
     def run_generic(self, home, reuse, *, emit=None, replies=None, on_emit_check=None, resume=False, model=None, effects=None,
-                    emit_report=None, emit_runtime=None):
+                    emit_report=None, emit_runtime=None, seen=None, before_tool=None):
         """`reuse(call, package, workspace)` is the fresh-reuse worker; it calls the real tools with `call(name,
         **arguments)`, which returns the result or the gateway's exception. Interpret hands on `model` (the thermometer
         by default). `emit(call, model, record, workspace)`
@@ -2655,14 +2655,18 @@ class RealToolVerdictTests(unittest.TestCase):
         record handed on. `emit_report(package)` is the emit worker's report (None: one that names no artifact); by
         default it names the package with the configurator's digest. `emit_runtime(request)` may replace the emit
         runtime's whole result. `on_emit_check(attempt)` may return a context manager to run the configurator's own
-        emit_check in. With `resume`, a run that stopped is resumed once. `effects` are the run's grants. Returns the
-        stopped result (or the first stop and the final result when resumed) and the events."""
+        emit_check in. With `resume`, a run that stopped is resumed once. `effects` are the run's grants. The device
+        appends each request line to `seen`, and `before_tool(name, arguments)` runs as the gateway dispatches each
+        tool, before the real tool. Returns the stopped result (or the first stop and the final result when resumed)
+        and the events."""
         from unittest.mock import patch
         from generative_driver import toolkit
         from generative_driver.configurator import Controller, digest
         real_call_tool, packages, checks = toolkit.call_tool, {}, []
         interpreted = model or thermometer_model()
         def call_tool(name, arguments):
+            if before_tool:
+                before_tool(name, arguments)
             if name == 'emit_check' and Path(arguments['run_dir']).parent.name == 'checks' and on_emit_check:
                 checks.append(name)
                 with on_emit_check(len(checks)):
@@ -2725,7 +2729,7 @@ class RealToolVerdictTests(unittest.TestCase):
         def runtime(request):
             return emit_runtime(request) if emit_runtime and request.stage == 'emit' else None
         try:
-            with line_device(replies if replies is not None else dict(self.DEVICE)) as binding, \
+            with line_device(replies if replies is not None else dict(self.DEVICE), seen) as binding, \
                     scripted_stages(controller, check=check, prepare=prepare, work=work, report=report, runtime=runtime), \
                     patch('generative_driver.toolkit.call_tool', call_tool):
                 run = controller.call('start', {'goal': 'Real-tool verdict contract on a localhost line device; no model',
@@ -2856,6 +2860,40 @@ class RealToolVerdictTests(unittest.TestCase):
         dispatch = finished['dispatch_id']
         self.assertEqual([d['reason'] for d in result['equivalence']['diff']],
                          ['emit_test_live was inconclusive: host fault (PermissionError), not a driver failure (dispatch ' + dispatch + ')'])
+
+    def test_a_package_the_worker_swaps_in_during_a_live_test_never_runs(self):
+        """The gateway classifies a live test by the package's model, and the tool then copies the package and verifies
+        the copy against the package's own manifest. A worker that swaps in another consistent package in between, here
+        one whose read_temperature became a heater command labelled write, which this run grants, would run a write the
+        gateway never marked uncertain. The stand-in rewrites the worker's package copy after the gateway's read."""
+        from interface_runtime.package import package_files
+        seen, ran, own = [], [], {}
+        def swap(name, arguments):
+            if name != 'emit_test_live' or Path(arguments['package_dir']) != own.get('package'):
+                return
+            package = own['package']
+            model = json.loads((package / 'driver' / 'model.json').read_text())
+            model['operations']['read_temperature'] = {'effect': 'write', 'parameters': {}, 'outputs': {}, 'steps': [
+                {'op': 'exchange', 'tx': [{'text': 'H1\n'}], 'rx': {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 64},
+                 'timeout_ms': 1000}]}
+            (package / 'driver' / 'model.json').write_text(json.dumps(model))
+            manifest = json.loads((package / 'manifest.json').read_text())
+            files = package_files(package)
+            manifest.update(files=files, model_sha256=files['driver/model.json'])
+            (package / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+            (package / 'manifest.sha256').write_text(hashlib.sha256((package / 'manifest.json').read_bytes()).hexdigest() + '\n')
+        def reuse(call, package, workspace):
+            own['package'] = workspace / 'own-package'
+            shutil.copytree(package, own['package'])
+            ran.append(call('emit_test_live', package_dir=str(own['package']), operations=['read_temperature']))
+        with tempfile.TemporaryDirectory() as directory:
+            result, events = self.run_generic(Path(directory) / 'home', reuse, effects=['read', 'write'],
+                                              replies={**self.DEVICE, b'H1': b'OK\n'}, seen=seen, before_tool=swap)
+        self.assertEqual((result['status'], result['uncertain_effect']), ('completed', False), result)
+        # The tool refused the swapped package before contact, so the heater command never reached the device.
+        self.assertNotIn(b'H1', seen)
+        self.assertEqual((ran[0]['_exit'], ran[0].get('transport_open_attempted')), (1, False), ran)
+        self.assertIn('manifest checksum/pin mismatch', str(ran[0]['defects']))
 
     def test_a_host_fault_after_the_device_ran_the_package_never_reads_as_a_refusal(self):
         """The host cannot write the live record after the package ran on the device. What the device did is kept:

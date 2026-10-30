@@ -41,10 +41,8 @@ class InventoryTests(unittest.TestCase):
 
 class AdmissionTests(unittest.TestCase):
     def fixture(self):
-        from generative_driver.benchmark_support.reference_calibration import calibration_identity
+        from generative_driver.benchmark_support.grader_identity import grader_identity
         h='a'*64
-        identity=calibration_identity()
-        runtime=canonical_digest({k.split('/',1)[1]:v for k,v in identity['files'].items() if k.startswith('interface_runtime/') and k.count('/')==1})
         runs=[]
         refs=[]
         for ref in ('a','b'):
@@ -54,7 +52,7 @@ class AdmissionTests(unittest.TestCase):
                 runs.append(dict(id=name, phase=phase, scenario=scenario, passed=True,
                     native_process_observed=True, process={'pid':123,'executable':'/toy/renode','image_sha256':h},
                     image_sha256=h, evidence_sha256=h, contract_sha256=h, model_sha256=(ref*64), capabilities_sha256=(ref*64),
-                    package_sha256=h if phase=='final' else None, runtime_sha256=runtime, check_ids=['toy/ok'], checks=[{'id':'toy/ok','passed':True}]))
+                    package_sha256=h if phase=='final' else None, runtime_sha256=h, check_ids=['toy/ok'], checks=[{'id':'toy/ok','passed':True}]))
             refs.append(dict(id=ref,model_sha256=('b' if ref=='b' else 'a')*64,passed=True,runs=ids,execution_inputs={r['id']:{k:r[k] for k in ('model_sha256','capabilities_sha256')} for r in runs if r['id'] in ids}))
         mutants=[]
         for name in ('constant','scale','signedness','stale'):
@@ -63,7 +61,7 @@ class AdmissionTests(unittest.TestCase):
                 expected_failed_checks=['toy/'+name],failed_checks=['toy/'+name],execution_input={k:run[k] for k in ('model_sha256','capabilities_sha256')}))
         record=dict(schema='benchmark-calibration/1',status='passed',case='toy-case',execution='reference-calibration',
             backend='native-renode',evaluator_version='3',images={'firmware.bin':h},
-            input_hashes={k:h for k in ('source','contract','recipe','references','mutations','build','inventory')},evaluator_identity=calibration_identity(),native_process_observed=True,
+            input_hashes={k:h for k in ('source','contract','recipe','references','mutations','build','inventory')},evaluator_identity=grader_identity(),native_process_observed=True,
             references=refs,mutants=mutants,required_mutants=[r['id'] for r in mutants],runs=runs,
             scenarios={'original':{'passed':True}},
             tools={k:'toy-version' for k in ('compiler','objcopy','renode','ghidra','java')},
@@ -109,6 +107,20 @@ class AdmissionTests(unittest.TestCase):
     def test_complete_measured_record_passes(self):
         from generative_driver.benchmark_support.calibration import validate_calibration
         self.assertTrue(validate_calibration(*self.fixture())['ok'])
+
+    def test_admission_accepts_grader_identity_with_any_reference_runtime(self):
+        from generative_driver.benchmark_support.calibration import validate_calibration
+        from generative_driver.benchmark_support.grader_identity import grader_identity
+        manifest, record = self.fixture()
+        record['evaluator_identity'] = grader_identity()
+        for run in record['runs']: run['runtime_sha256'] = 'f' * 64
+        self.assertEqual(validate_calibration(manifest, record)['failures'], [])
+
+    def test_admission_refuses_the_previous_identity_schema(self):
+        from generative_driver.benchmark_support.calibration import validate_calibration
+        manifest, record = self.fixture()
+        record['evaluator_identity'] = {'schema': 'benchmark-evaluator-identity/2', 'files': {}, 'dependencies': {}, 'sha256': '0' * 64}
+        self.assertEqual(validate_calibration(manifest, record)['failures'], ['identity:evaluator_identity'])
 
     def test_exact_intended_behavioral_failures_are_required(self):
         from generative_driver.benchmark_support.calibration import validate_calibration
@@ -158,7 +170,7 @@ class AdmissionTests(unittest.TestCase):
             if defect=='input-inventory':record['input_hashes']={'inventory':'a'*64};manifest['calibration']['input_hashes']=record['input_hashes']
             if defect=='executed-model':record['runs'][0]['model_sha256']='e'*64
             if defect=='executed-capabilities':record['runs'][0]['capabilities_sha256']='e'*64
-            if defect=='runtime':record['runs'][0]['runtime_sha256']='c'*64
+            if defect=='runtime':record['runs'][0]['runtime_sha256']='not-a-sha256'
             with self.subTest(defect=defect):self.assertFalse(validate_calibration(manifest,record)['ok'])
 
 class MutationTests(unittest.TestCase):

@@ -80,15 +80,17 @@ def snapshot_case(run_dir: Path, pin: dict, provenance: dict) -> dict:
 
 
 def execution_provenance(config: dict, *, reuse_profile=None) -> dict:
-    """Capture implementation identity and nonsecret runtime settings before launch."""
+    """Capture implementation identity and nonsecret runtime settings before launch. The toolchain and skills
+    revisions hash the system under test; the evaluator revision is the grader identity, the grading code alone."""
     import platform
+    from .grader_identity import grader_identity  # which imports this module, so not at module level
     from .integrity import tree_hash
     package = Path(__file__).resolve().parents[1]
     return {**({'reuse_profile': reuse_profile} if reuse_profile else {}),
             'toolchain_revision': hashlib.sha256(
                 (tree_hash(package) + tree_hash(package.parent / 'interface_runtime')).encode()).hexdigest(),
             'skills_revision': tree_hash(package / 'resources/toolchain/skills'),
-            'evaluator_revision': tree_hash(package / 'benchmark_support'),
+            'evaluator_revision': grader_identity()['sha256'],
             'runtime_configuration': public_configuration(config),
             'environment': {'system': platform.system(), 'release': platform.release(),
                             'architecture': platform.machine(), 'python': platform.python_version()}}

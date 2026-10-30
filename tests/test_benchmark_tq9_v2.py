@@ -1662,28 +1662,25 @@ class TQ9V2Tests(unittest.TestCase):
             self.assertFalse(record['runs'])
             self.assertFalse(record['mutants'])
 
-    def test_calibration_identity_includes_the_executed_analysis_wrappers(self):
-        # Static tooling is executable evidence, unlike enclosing case ciphertext.
-        from generative_driver.benchmark_support.reference_calibration import calibration_identity
-        files=calibration_identity()['files']
-        self.assertIn('resources/tools/workspace/ghidra_run.py',files)
-        self.assertIn('resources/toolchain/skills/interpret-firmware-binary/ExportDecomp.java',files)
-        self.assertFalse(any('/bench/cases/' in path or path.endswith('.enc') for path in files))
+    def test_grader_identity_names_modules_never_case_assets_or_analysis_tooling(self):
+        # Case ciphertext and the static analysis wrappers calibration runs are inputs, not grading code: the identity
+        # names the modules the grader imports, and no asset path enters it.
+        from generative_driver.benchmark_support.grader_identity import grader_identity
+        modules=grader_identity()['modules']
+        self.assertTrue(modules)
+        self.assertTrue(all(part.isidentifier() for name in modules for part in name.split('.')), modules)
 
-    def test_calibration_identity_is_the_grading_closure_not_the_kit(self):
-        # A change to the candidate-side kit (configurator, stage tools, skills, reports) must not void a calibration,
-        # so a new kit is measured against the same qualified evaluator. Grading code and the runtime still are pinned.
-        from generative_driver.benchmark_support.reference_calibration import calibration_identity
-        identity = calibration_identity()
-        files = identity['files']
-        for pinned in ('benchmark_support/evaluator.py', 'benchmark_support/emulated_actions.py', 'interface_runtime/engine.py',
-                       'toolchain/emit.py', 'toolchain/probe.py', 'toolchain/interface.py', 'toolkit.py',
-                       'resources/tools/workspace/ghidra_run.py', 'resources/tools/model_exec.py'):
-            self.assertIn(pinned, files)
-        self.assertTrue(any(path.startswith('template/') for path in files), files)
-        for kit in ('configurator.py', 'benchmark.py', 'reporting.py', 'toolchain/acquire.py', 'toolchain/interpret.py',
-                    'resources/tools/esp_image_to_elf.py', 'resources/tools/read_flash_chunked.py'):
-            self.assertNotIn(kit, files)
+    def test_grader_identity_pins_the_grading_modules_not_the_candidate_kit(self):
+        # A change to the candidate-side kit (stage tools, skills, dashboard) must not void a qualification, so a new kit
+        # is measured against the same qualified evaluator. Grading modules and the identity's own computation are pinned.
+        from generative_driver.benchmark_support.grader_identity import grader_identity
+        identity = grader_identity()
+        modules = set(identity['modules'])
+        self.assertLessEqual({'benchmark_support.evaluator', 'benchmark_support.evidence', 'benchmark_support.calibration',
+                              'benchmark_support.registry', 'benchmark_support.truth', 'benchmark_support.tq9_v2',
+                              'benchmark_support.grader_identity'}, modules)
+        self.assertEqual(modules & {'_toolchain.acquire', '_toolchain.interpret', '_toolchain.probe', '_toolchain.emit',
+                                    'dashboard', 'daemon'}, set())
         self.assertEqual(set(identity['dependencies']), {'cryptography'})
 
     def test_monitor_rejection_keeps_recipe_and_response_in_private_evidence(self):

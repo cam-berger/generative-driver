@@ -192,7 +192,7 @@ class ScoreTests(AssistiveFixture):
             with self.subTest(missing=missing), self.assertRaises(ValueError):
                 from generative_driver.benchmark import score
                 score(copy.deepcopy(report), missing[1], evidence_path=missing[0])
-        with patch('generative_driver.benchmark_support.integrity.tree_hash', return_value='0' * 64), \
+        with patch('generative_driver.benchmark_support.evidence.grader_identity', return_value={'sha256': '0' * 64}), \
                 self.assertRaisesRegex(ValueError, 'evaluator'):
             self.score(report, evidence)
 

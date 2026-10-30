@@ -21,7 +21,7 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
     from .authoring import evaluator_directory
     from .calibration import apply_mutation, execution_input_identity, validate_calibration, REQUIRED_MUTANTS
     from .evaluator import reference_execute
-    from .reference_calibration import calibration_identity
+    from .grader_identity import grader_identity
     from .upstream import hydrate_truth
     from ..toolkit import resources_root
     truth = hydrate_truth(payload)
@@ -36,7 +36,7 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
         raise ValueError('Qualification image differs from the authenticated upstream image')
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     output.chmod(0o700)
-    identity = calibration_identity()
+    identity = grader_identity()
     paths = {key: Path(value).expanduser().resolve() for key, value in
              ([('ghidra', ghidra_home), ('java', java_home)] + ([] if native else [('renode', renode)]))}
     java = paths['java'] / 'bin' / ('java.exe' if os.name == 'nt' else 'java')
@@ -136,7 +136,7 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
             record.update(status='pending', failures=checked['failures'])
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError) as error:
         record.update(status='pending', failure=type(error).__name__ + ': ' + str(error))
-    if calibration_identity() != identity:
+    if grader_identity() != identity:
         record.update(status='pending', failure='Evaluator changed during qualification')
     save()
     return record

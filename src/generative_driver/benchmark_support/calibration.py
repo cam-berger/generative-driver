@@ -4,6 +4,7 @@ import binascii
 import copy
 import hashlib
 import json
+from .grader_identity import grader_identity
 from .snapshots import canonical_digest
 
 BUILD_FILES = {'build/build-report.json', 'build/firmware.elf', 'build/firmware.bin'}
@@ -82,8 +83,8 @@ def execution_input_identity(model, capabilities):
 
 
 def validate_calibration(manifest, record):
-    """Validate measured coverage, not candidate success flags. Local trust only."""
-    from .reference_calibration import calibration_identity
+    """Validate measured coverage, not candidate success flags. Local trust only. A record admits only under the
+    grader identity it was measured with; a run's `runtime_sha256` is provenance, not a check."""
     failures=[]
     try:
         from .execution import artifact_name
@@ -93,7 +94,7 @@ def validate_calibration(manifest, record):
             'execution':'reference-calibration','backend':'native-sim' if native else 'native-renode',
             'evaluator_version':manifest['evaluator_version'],'images':manifest['images'],
             'input_hashes':manifest['calibration']['input_hashes'],
-            'evaluator_identity':calibration_identity(),'native_process_observed':True}
+            'evaluator_identity':grader_identity(),'native_process_observed':True}
         for key,value in expected.items():
             if record.get(key)!=value:failures.append('identity:'+key)
         if record.get('native_process_observed') is not True:
@@ -104,8 +105,6 @@ def validate_calibration(manifest, record):
                 ({'analysis'} if manifest['family']=='tq9' else {'inventory'}))
                 or any(not _sha(v) for v in record['input_hashes'].values())):
             failures.append('input commitment inventory')
-        runtime=canonical_digest({k.split('/',1)[1]:v for k,v in expected['evaluator_identity']['files'].items()
-                                  if k.startswith('interface_runtime/') and k.count('/')==1})
         required=REQUIRED_MUTANTS[manifest['family']]
         if set(record['required_mutants'])!=required or len(record['required_mutants'])!=len(required):
             failures.append('family mutant inventory')
@@ -127,7 +126,7 @@ def validate_calibration(manifest, record):
                     or process.get('image_sha256')!=run['image_sha256']
                     or run['image_sha256'] != expected_image
                     or any(not _sha(run.get(k)) for k in ('evidence_sha256','contract_sha256','model_sha256','capabilities_sha256','runtime_sha256'))
-                    or run['runtime_sha256']!=runtime or not run['checks']):failures.append('run evidence:'+run['id'])
+                    or not run['checks']):failures.append('run evidence:'+run['id'])
             if (len(run['check_ids'])!=len(set(run['check_ids']))
                     or {c['id'] for c in run['checks']} != set(run['check_ids'])
                     or len(run['checks']) != len({c['id'] for c in run['checks']})):

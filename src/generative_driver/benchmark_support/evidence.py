@@ -1,6 +1,8 @@
 """Sealed evaluator records and explicitly allowlisted public summaries."""
 from pathlib import Path
 
+from .grader_identity import grader_identity
+
 
 COUNTS = ('verdict', 'passed', 'total')
 USAGE = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens',
@@ -315,8 +317,8 @@ def _execution_identity(report, payload):
 
 
 def _installed_evaluator(snapshot):
-    from .integrity import tree_hash
-    if snapshot['executed']['evaluator_revision'] != tree_hash(Path(__file__).parent):
+    """A sealed run regrades under the grader it was sealed under, whatever has changed in the system since."""
+    if snapshot['executed']['evaluator_revision'] != grader_identity()['sha256']:
         raise ValueError('Installed evaluator implementation hash mismatch')
 
 

@@ -40,7 +40,7 @@
 | Anchor | Today's admitted hand-made and upstream cases, run with each pinned system and reported apart from the scoring set; never pooled into its pass rate or comparisons. |
 | Leak check | A small fresh batch run at each comparison; a clearly better score on the scoring set than on fresh devices means the set leaked. |
 | Selection | Frozen include/exclude decisions and reasons for every lineage in the full catalog. Excluded and blocked slots remain visible. |
-| Availability / admission | Public inventory checks / authenticated reference qualification against the current evaluator implementation. Availability does not establish admission. A generated set is admitted when both references pass on every device and every mutant fails on a sample of two devices per level and framing. |
+| Availability / admission | Public inventory checks / authenticated reference qualification against the current grader identity: the hashes of the code the grader imports, never of the system under test. Availability does not establish admission. A generated set is admitted when both references pass on every device and every mutant fails on a sample of two devices per level and framing. |
 | Reference driver / mutant | A correct driver the grader must pass, two distinct ones per case / a deliberately wrong driver the grader must fail. |
 
 Functional compatibility compares required outputs/effects, not source code. Hashes prove identity/integrity, not physical truth or access control. Keep passwords/answers out of candidate inputs; the configurator holds no truth.

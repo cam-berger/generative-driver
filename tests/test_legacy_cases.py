@@ -183,8 +183,8 @@ class LegacyTrialTests(unittest.TestCase):
         self.assertEqual(record['equivalence'], equivalence)
         self.assertEqual((equivalence['status'], equivalence['equivalent'], equivalence['basis'], equivalence['method'],
                           equivalence['protocol']), ('graded', True, 'evaluator', 'recorded-reuse', 'assistive/1'))
-        self.assertEqual([check['id'] for check in equivalence['checks']],
-                         REUSE_CHECKS + ['generated_mcp_reuse', 'fresh_worker_mission'])
+        self.assertEqual([check['id'] for check in equivalence['checks']], REUSE_CHECKS)
+        self.assertEqual(equivalence['mission'], {'name': 'fresh_worker_mission', 'passed': True})
         self.assertEqual((result['status'], result['reason']), ('completed', 'Final verdict: equivalent'))
         # The probe worker is told the provided emulator's time policy, not the manifest's continuous virtual time.
         self.assertIn('paused between calls', self.objectives['probe'])
@@ -228,8 +228,8 @@ class LegacyTrialTests(unittest.TestCase):
         record, result = self.trial(duty=500, disarm=False)
         equivalence = result['equivalence']
         self.assertEqual((record['status'], equivalence['status'], equivalence['equivalent']), ('evaluated', 'graded', False))
-        self.assertEqual([d['id'] for d in equivalence['diff']],
-                         ['fresh_package_requested_output', 'fresh_package_disarm', 'fresh_worker_mission'])
+        self.assertEqual([d['id'] for d in equivalence['diff']], ['fresh_package_requested_output', 'fresh_package_disarm'])
+        self.assertIs(equivalence['mission']['passed'], False)
         self.assertTrue(result['reason'].startswith('Final verdict: not equivalent'), result['reason'])
         for check in equivalence['checks'] + equivalence['diff']:
             self.assertNotIn('0.37', json.dumps(check))

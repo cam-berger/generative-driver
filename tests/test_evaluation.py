@@ -1122,6 +1122,59 @@ class RunProtocolTests(unittest.TestCase):
         self.assertEqual(unscored('evaluator host fault: RuntimeError', sha, protocol='learning/1')['protocol'], 'learning/1')
 
 
+class FreshReuseVerdictTests(unittest.TestCase):
+    """Fresh reuse is reported beside the verdict, never inside it: the evaluator grades the driver's behavior alone, and
+    the record's mission says whether a fresh worker used the driver."""
+
+    def test_fresh_reuse_is_reported_beside_the_verdict(self):
+        # Catches the owner's proof of generated MCP reuse, or the fresh worker's mission, entering the verdict as a check:
+        # a driver whose behavior matched graded not equivalent for a reuse that failed.
+        from generative_driver.benchmark_support.evaluator import final_record
+        sha = 'a' * 64
+        checks = contract(sha)['checks']
+        final = {'contract': contract(sha), 'frozen_artifact_sha256': sha,
+                 'records': [{'id': c['id'], 'revision': 0, 'artifact_sha256': sha, 'channel': c['channel'], 'unit': c['unit'],
+                              'value': value} for c, value in zip(checks, PASS)],
+                 'generated_reuse_required': True, 'generated_reuse_verified': False}
+        made = final_record(final, mission={'name': 'fresh_worker_mission', 'passed': True}, protocol='assistive/1')
+        self.assertTrue(made['equivalent'])
+        self.assertNotIn('fresh_worker_mission', [c['id'] for c in made['checks']])
+        self.assertEqual((made['mission']['passed'], made['mission']['reason']),
+                         (False, 'Missing or inconsistent owner proof of generated MCP reuse'))
+        # The verdict holds the behavior checks alone.
+        self.assertEqual([c['id'] for c in made['checks']], [c['id'] for c in checks])
+        self.assertEqual((made['diff'], made['passed'], made['total']), ([], 2, 2))
+        # The mission passes only if the fresh worker's did and the owner's proof holds; a failed proof replaces its reason.
+        failed = {'name': 'fresh_worker_mission', 'passed': False, 'reason': 'Only identity was called', 'fault': 'model'}
+        for case, verified, mission, expected in (
+                ('proof and mission', True, {'name': 'fresh_worker_mission', 'passed': True},
+                 {'name': 'fresh_worker_mission', 'passed': True}),
+                ('mission failed', True, failed, failed),
+                ('mission undecided', True, {'name': 'fresh_worker_mission', 'passed': None, 'reason': 'No mapping'},
+                 {'name': 'fresh_worker_mission', 'passed': None, 'reason': 'No mapping'}),
+                ('no mission', True, None, {'name': 'fresh_worker_mission', 'passed': None}),
+                ('proof failed, mission failed', False, failed,
+                 {'name': 'fresh_worker_mission', 'passed': False,
+                  'reason': 'Missing or inconsistent owner proof of generated MCP reuse'}),
+                ('proof failed, no mission', False, None,
+                 {'name': 'fresh_worker_mission', 'passed': False,
+                  'reason': 'Missing or inconsistent owner proof of generated MCP reuse'})):
+            with self.subTest(case=case):
+                made = final_record({**final, 'generated_reuse_verified': verified}, mission=mission, protocol='assistive/1')
+                self.assertEqual((made['equivalent'], made['mission']), (True, expected))
+                self.assertEqual([c['id'] for c in made['checks']], [c['id'] for c in checks])
+        # A final that needs no generated reuse reports the mission it was given.
+        historical = {k: v for k, v in final.items() if not k.startswith('generated_reuse_')}
+        made = final_record(historical, mission=failed, protocol='assistive/1')
+        self.assertEqual((made['equivalent'], made['mission']), (True, failed))
+        # A wrong driver is not equivalent however its reuse went, and the mission still reports the reuse.
+        wrong = {**final, 'generated_reuse_verified': True,
+                 'records': [{**r, 'value': value} for r, value in zip(final['records'], FAIL)]}
+        made = final_record(wrong, mission={'name': 'fresh_worker_mission', 'passed': True}, protocol='assistive/1')
+        self.assertEqual((made['equivalent'], made['mission']['passed']), (False, True))
+        self.assertEqual([d['id'] for d in made['diff']], ['final/effect-1/duty'])
+
+
 class DurableRecordTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()

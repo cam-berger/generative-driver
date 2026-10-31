@@ -909,10 +909,10 @@ class TQ9V2Tests(unittest.TestCase):
                             self.assertNotIn('EVALUATOR SENTINEL',json.dumps(graded_result))
                             # The public verdict is a grade after the run, with no answer in it.
                             self.assertFalse(grade_keys(equivalence)&{'expected','absolute_tolerance'})
+                            # Fresh reuse is reported beside the verdict: a driver whose reuse failed is still equivalent.
                             failing={'final-bounds':['final/denied/refused_without_io','final/effect-1/duty'],
                                      'hidden-wrong':['final/temperature-0/temperature'],
-                                     'repair-mapping':['final/temperature-0/temperature','final/temperature-1/temperature','fresh_worker_mission'],
-                                     **{key:['fresh_worker_mission'] for key in ('generated-identity-only','missing-mission','recover-budget','recover-repeat','recover-reuse')}}
+                                     'repair-mapping':['final/temperature-0/temperature','final/temperature-1/temperature']}
                             if driver is None:
                                 # No driver was emitted: not equivalent, judged without truth or an emulator.
                                 self.assertEqual((equivalence['status'],equivalence['equivalent'],equivalence['diff']),
@@ -1304,13 +1304,19 @@ class TQ9V2Tests(unittest.TestCase):
                             from generative_driver.benchmark_support.evidence import regrade_v3
                             from generative_driver.benchmark_support.mcp_reuse import verified
                             self.assertTrue(verified(sealed['mcp_reuse'], equivalence['frozen_artifact_sha256']))
-                            self.assertEqual(regrade_v3(report, trial/'run-evidence.enc', password)['equivalence']['equivalent'], mode == 'generated-mcp')
+                            # The offline regrade reports the verdict and the reuse as the live grade did.
+                            regraded = regrade_v3(report, trial/'run-evidence.enc', password)['equivalence']
+                            self.assertEqual((regraded['equivalent'], regraded['mission']), (True, equivalence['mission']))
+                            self.assertIs(regraded['mission']['passed'], mode == 'generated-mcp')
                             bad = copy.deepcopy(sealed)
                             bad['mcp_reuse']['package_events'] = bad['mcp_reuse']['package_events'][:-1]
                             forged_path = trial/'prefix-proof.enc'
                             forged_sha = seal(bad, forged_path, password.read_text())
                             forged_report = {**report, 'equivalence': {**report['equivalence'], 'evidence_sha256': forged_sha}}
-                            self.assertFalse(regrade_v3(forged_report, forged_path, password)['equivalence']['equivalent'])
+                            # A proof cut short leaves the driver's verdict alone and fails the reuse it no longer establishes.
+                            forged = regrade_v3(forged_report, forged_path, password)['equivalence']
+                            self.assertEqual((forged['equivalent'], forged['mission']['passed'], forged['mission']['reason']),
+                                             (True, False, 'Missing or inconsistent owner proof of generated MCP reuse'))
                         # A driver awaiting its independent grade is never counted as a success.
                         self.assertFalse(_recorded_success(result,events,report))
                         # The report carries the protocol and that the run's verdict is recorded.

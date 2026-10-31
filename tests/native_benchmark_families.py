@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from generative_driver.benchmark_support.calibration import calibrate
+from generative_driver.benchmark_support.family_calibration import calibrate
 
 class NativeFamilyCalibrationTests(unittest.TestCase):
     def test_both_authored_families(self):

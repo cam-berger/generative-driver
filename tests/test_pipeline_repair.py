@@ -254,7 +254,8 @@ class DiagnosticRepairTests(unittest.TestCase):
     def test_runtime_refusal_survives_diagnostic_projection_as_invocation_failure(self):
         # Catches a missing effect grant being presented only as a decoder mismatch.
         from tq9_workflow_fixture import model, capabilities
-        from generative_driver.benchmark_support.emulated_actions import execute_plan, model_invoker
+        from generative_driver.benchmark_support.emulated_actions import execute_plan
+        from generative_driver.benchmark_support.reference_calibration import model_invoker
         from generative_driver.benchmark_support.behavior import project_feedback, validate_records
         class Session:
             def set_running(self, value): pass
@@ -279,7 +280,7 @@ class DiagnosticRepairTests(unittest.TestCase):
     def test_missing_probe_execution_is_host_failure_without_model_feedback(self):
         # Catches toolkit startup/I/O envelopes being scored as missing outputs.
         from tq9_workflow_fixture import model, capabilities
-        from generative_driver.benchmark_support.emulated_actions import model_invoker
+        from generative_driver.benchmark_support.reference_calibration import model_invoker
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); (root/'model.json').write_text(json.dumps(model()))
             with patch('generative_driver.toolkit.call_tool', return_value={
@@ -324,7 +325,8 @@ class DiagnosticRepairTests(unittest.TestCase):
     def test_binding_bounds_errors_reach_repair_without_disclosing_evaluator_inputs(self):
         from tq9_workflow_fixture import model, capabilities
         from generative_driver.benchmark_support.behavior import project_feedback, validate_records
-        from generative_driver.benchmark_support.emulated_actions import execute_plan, model_invoker
+        from generative_driver.benchmark_support.emulated_actions import execute_plan
+        from generative_driver.benchmark_support.reference_calibration import model_invoker
         class Session:
             def set_running(self, value):
                 self.running = value
@@ -464,7 +466,7 @@ class DiagnosticRepairTests(unittest.TestCase):
     def test_unsupported_task_is_model_discrepancy_without_device_io(self):
         # Catches misclassifying an incomplete candidate mapping as a host crash.
         from tq9_workflow_fixture import model
-        from generative_driver.benchmark_support.emulated_actions import model_invoker
+        from generative_driver.benchmark_support.reference_calibration import model_invoker
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root/'model.json').write_text(json.dumps(model()))

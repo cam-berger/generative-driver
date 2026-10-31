@@ -53,12 +53,13 @@ class GeneratedMissionVerdictTests(unittest.TestCase):
         for mission in (None, {'name': 'fresh_worker_mission', 'passed': None},
                         {'name': 'fresh_worker_mission', 'passed': False, 'reason': 'Only identity was called'}):
             with self.subTest(mission=mission):
-                verdict = final_record(final, mission=mission)
+                verdict = final_record(final, mission=mission, protocol='assistive/1')
                 self.assertFalse(verdict['equivalent'])
                 self.assertIn({'id': 'fresh_worker_mission', 'passed': False}, verdict['checks'])
                 historical = {k: v for k, v in final.items() if not k.startswith('generated_reuse_')}
-                self.assertTrue(final_record(historical, mission=mission)['equivalent'])
-        self.assertTrue(final_record(final, mission={'name': 'fresh_worker_mission', 'passed': True})['equivalent'])
+                self.assertTrue(final_record(historical, mission=mission, protocol='assistive/1')['equivalent'])
+        self.assertTrue(final_record(final, mission={'name': 'fresh_worker_mission', 'passed': True},
+                                     protocol='assistive/1')['equivalent'])
 
     def test_identity_only_and_incomplete_actual_mcp_missions_fail_live_and_offline_grades(self):
         workflow_fixture.TQ9V2Tests._scripted_controller_modes(self, ('generated-identity-only', 'missing-mission'))

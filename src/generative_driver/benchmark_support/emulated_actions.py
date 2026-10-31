@@ -1,10 +1,11 @@
 """Private evaluator action execution; no service, worker gateway or process owner."""
 from .behavior import _check_rejection_evidence
-from .cases import _write
+from .case_assets import write_json
 
 
 # A package call runs the identity operation, then the requested one (each up to the 120 s a valid model may declare),
-# after a 5 s connect and the process start. A call that outlasts this is the host's, never the driver's.
+# after a 5 s connect and the process start. A package that outlasts this failed on its own, as one that exits without a
+# result does: grading on a healthy device counts that against the driver (`execute_plan`).
 PACKAGE_CALL_SECONDS = 300
 
 
@@ -46,8 +47,9 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
     invoke(task, inputs, grants) returns canonical outputs and measured runtime units.
     observations(raw, result, inputs) returns check suffix -> value. Monitor units
     are supplied by that measurement function's optional ``monitor_units`` map.
-    With ``healthy_device_failures`` (grading a candidate's frozen package, never calibration), a call the runtime
-    reports as a host fault on a device that is still healthy is graded as the driver's failure.
+    With ``healthy_device_failures`` (grading a candidate's frozen package, never calibration), a call reported as a host
+    fault on a device that is still healthy is graded as the driver's failure, unless its package process could not
+    start or was killed from outside.
     """
     # Validate evaluator-owned witnesses before any device access. Candidate receive
     # completion and reject prefixes are diagnostic claims, not protocol truth.
@@ -81,8 +83,10 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
                 if error.get('fault') == 'host':
                     # The device was verified healthy before the episode and only this call touched it. If it still runs,
                     # answers its monitor and accepts a connection, the call failed on a healthy device: the driver's
-                    # failure, graded. A package process that hung or printed nothing is the host's, and so is any host
-                    # fault while calibrating, where an outage must never pass for a mutant's rejection.
+                    # failure, graded. So is a frozen package that hung or exited without a result, since its bundled
+                    # runtime is the system's code. A package process that could not start, or was killed by a signal the
+                    # grader did not send, is the host's, and so is any host fault while calibrating, where an outage must
+                    # never pass for a mutant's rejection.
                     if healthy_device_failures and error.get('source') != 'package-process':
                         event['device_healthy'] = _device_healthy(session)
                     if not event.get('device_healthy'):
@@ -134,45 +138,19 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
             else:
                 raise ValueError('Unknown evaluator action')
             raw_events.append(event)
-            _write(evidence_path, {'schema': 'benchmark-action-evidence/1', 'events': raw_events, 'records': records})
+            write_json(evidence_path, {'schema': 'benchmark-action-evidence/1', 'events': raw_events, 'records': records})
     except Exception:
-        _write(evidence_path, {'schema': 'benchmark-action-evidence/1', 'events': raw_events, 'records': records,
-                               'incomplete': True})
+        write_json(evidence_path, {'schema': 'benchmark-action-evidence/1', 'events': raw_events, 'records': records,
+                                   'incomplete': True})
         raise
     return records
 
 
-def model_invoker(model_dir, capabilities, binding, output_dir, probes):
-    """Use the toolkit's normal probe operation; retain executable probe evidence."""
-    import json
-    from pathlib import Path
-    from ..toolkit import call_tool
-    from .behavior import bind_task
-    model = json.loads((Path(model_dir)/'model.json').read_text())
-    def invoke(task, inputs, grants):
-        try:
-            request = bind_task(capabilities, task, inputs, model)
-        except ValueError as error:
-            return _binding_failure(task, error)
-        probed = call_tool('probe_run', {'run_dir': str(output_dir), 'model_dir': str(model_dir),
-            **request, 'n': 1, 'binding': binding, 'allow_effects': grants})
-        results = probed.get('results')
-        if not isinstance(results, list) or not results or not isinstance(results[0], dict):
-            return {'ok': False, 'error': {'fault': 'host', 'code': 'probe_execution_unavailable',
-                'message': 'Probe tool returned no runtime execution evidence'},
-                'outputs': {}, 'units': {}, 'transcript': []}
-        if probed.get('probe'):
-            probes.append(probed['probe'])
-        result = results[0]
-        outputs = capabilities['tasks'][task]['outputs']
-        return {**result, 'ok': bool(probed.get('ok') and result.get('ok')),
-            'outputs': {key: result.get('outputs', {}).get(mapping['output']) for key, mapping in outputs.items()},
-            'units': {key: result.get('units', {}).get(mapping['output']) for key, mapping in outputs.items()}}
-    return invoke
-
-
 def package_invoker(package, binding, grants):
-    """Normal installed package CLI, isolated from the source checkout."""
+    """Normal installed package CLI, isolated from the source checkout. A call that ends without a result is reported as
+    a host fault, never raised: from `package` when the package outlasted the call limit or exited without a result
+    (`execute_plan` may grade that as the driver's), from `package-process` when the process could not start or a signal
+    the grader did not send killed it."""
     import json
     import subprocess
     import sys
@@ -184,19 +162,29 @@ def package_invoker(package, binding, grants):
         for effect in grants:
             if effect != 'read':
                 command.extend(['--allow-effect', effect])
-        failed = lambda code, message: {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [],
-                                        'error': {'fault': 'host', 'source': 'package-process', 'code': code,
-                                                  'message': message}}
+        failed = lambda source, code, message: {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [],
+                                                'error': {'fault': 'host', 'source': source, 'code': code,
+                                                          'message': message}}
         try:
+            # Output that does not decode is the package's own too: no result, never an exception.
             completed = subprocess.run(command, cwd=Path(package).parent, capture_output=True, text=True,
-                                       timeout=PACKAGE_CALL_SECONDS)
+                                       errors='replace', timeout=PACKAGE_CALL_SECONDS)
         except subprocess.TimeoutExpired:
-            return failed('timeout', f'The package call did not finish within {PACKAGE_CALL_SECONDS} s')
+            return failed('package', 'timeout', f'The package call did not finish within {PACKAGE_CALL_SECONDS} s')
+        except OSError as error:
+            return failed('package-process', 'spawn', 'The package process could not start: ' + type(error).__name__
+                          + ': ' + str(error))
         try:
             result = json.loads(completed.stdout)
-        except ValueError:
-            return failed('no_result', 'The package returned no runtime result (exit %d)' % completed.returncode)
-        return result if isinstance(result, dict) else failed('no_result', 'The package result is not an object')
+        except (ValueError, RecursionError):
+            result = None
+        if isinstance(result, dict):
+            return result
+        if completed.returncode < 0:
+            # The grader's own kill, at the call limit, ends in TimeoutExpired above.
+            return failed('package-process', 'signal',
+                          'The package process was killed by signal %d' % -completed.returncode)
+        return failed('package', 'no_result', 'The package returned no runtime result (exit %d)' % completed.returncode)
     return invoke
 
 

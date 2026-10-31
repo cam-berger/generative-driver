@@ -67,6 +67,7 @@ class UpstreamModbusTests(unittest.TestCase):
     def test_pending_upstream_case_is_visible_and_cannot_launch_without_assets(self):
         from generative_driver.benchmark_support.registry import case_ids, resolve_case, PendingCaseError
         self.assertIn('zephyr-modbus-v1', case_ids())
-        with tempfile.TemporaryDirectory() as root, patch('generative_driver.benchmark.case_root', return_value=Path(root)):
+        with tempfile.TemporaryDirectory() as root, patch('generative_driver.benchmark.case_root', return_value=Path(root)), \
+                patch('generative_driver.benchmark_support.case_assets.case_root', return_value=Path(root)):
             with self.assertRaises(PendingCaseError):
                 resolve_case('zephyr-modbus-v1')

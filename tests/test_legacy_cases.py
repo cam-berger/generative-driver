@@ -279,11 +279,12 @@ class RecordedReuseGradeTests(unittest.TestCase):
     SHA = 'f' * 64
 
     def grade(self, events):
-        from generative_driver.benchmark_support import evaluator
-        checks, records, raw = evaluator._legacy_tq9(self.TRUTH, [dict(e, package_sha256=self.SHA) for e in events],
-                                                     self.MAPPING, self.SHA, 0)
+        from generative_driver.benchmark_support import evaluator, recorded_grading
+        checks, records, raw = recorded_grading._legacy_tq9(self.TRUTH, [dict(e, package_sha256=self.SHA) for e in events],
+                                                            self.MAPPING, self.SHA, 0)
         return evaluator.final_record({'contract': {'schema': 'benchmark-behavior/1', 'artifact_sha256': self.SHA, 'checks': checks},
-                                       'records': records, 'frozen_artifact_sha256': self.SHA, 'method': 'recorded-reuse'})
+                                       'records': records, 'frozen_artifact_sha256': self.SHA, 'method': 'recorded-reuse'},
+                                      protocol='assistive/1')
 
     def test_an_observed_contradiction_is_not_equivalent_whatever_else_failed(self):
         # A later unavailable call cannot erase an already observed contradiction.
@@ -306,7 +307,7 @@ class RecordedReuseGradeTests(unittest.TestCase):
 
     def test_evidence_the_host_or_operator_kept_unavailable_is_unscored(self):
         import itertools
-        from generative_driver.benchmark_support.evaluator import Unscorable
+        from generative_driver.benchmark_support.recorded_grading import Unscorable
         for fault, available in itertools.product(('host', 'operator', None), ('none', 'temperature', 'disarm')):
             with self.subTest(fault=fault, available=available):
                 events = []
@@ -329,12 +330,13 @@ class RecordedReuseGradeTests(unittest.TestCase):
         events = [{'operation': 'read', 'result': {'ok': True, 'outputs': {'t': 20.4}}, 'observation': {'duty': 0}},
                   {'operation': 'disarm', 'result': {'ok': True}, 'observation': {'duty': 0}}]
         other = {'operation': 'set', 'result': {'ok': True}, 'observation': {'duty': .5}, 'package_sha256': 'e' * 64}
-        from generative_driver.benchmark_support import evaluator
-        checks, records, _ = evaluator._legacy_tq9(self.TRUTH, [dict(e, package_sha256=self.SHA) for e in events] + [other],
-                                                   self.MAPPING, self.SHA, 0)
+        from generative_driver.benchmark_support import evaluator, recorded_grading
+        checks, records, _ = recorded_grading._legacy_tq9(self.TRUTH, [dict(e, package_sha256=self.SHA) for e in events] + [other],
+                                                          self.MAPPING, self.SHA, 0)
         record = evaluator.final_record({'contract': {'schema': 'benchmark-behavior/1', 'artifact_sha256': self.SHA,
                                                       'checks': checks}, 'records': records,
-                                         'frozen_artifact_sha256': self.SHA, 'method': 'recorded-reuse'})
+                                         'frozen_artifact_sha256': self.SHA, 'method': 'recorded-reuse'},
+                                        protocol='assistive/1')
         self.assertEqual([d['id'] for d in record['diff']], ['fresh_package_requested_output'])
 
     def test_a_fully_observed_goal_is_equivalent(self):
@@ -348,15 +350,15 @@ class ConcludeTests(unittest.TestCase):
     def test_recorded_evidence_that_cannot_grade_the_driver_is_posted_unscored_with_its_public_reason(self):
         # Catches recorded reuse evidence the evaluator cannot grade (an operator reference outside its limits, calls
         # the host or the operator failed) becoming a grade, or an unscored record that hides why.
-        from generative_driver.benchmark_support import evaluator, harness
+        from generative_driver.benchmark_support import evaluator, harness, recorded_grading
         reason = 'The operator reference cannot grade the fresh measurement: Reference channel/timestamp missing or stale'
         posted = []
         def call(method, params):
             posted.append((method, params)); return {'ok': True}
-        result = {'run_id': 'run-recorded', 'status': 'completed', 'progress': {'equivalence': 'pending'},
+        result = {'run_id': 'run-recorded', 'status': 'completed', 'progress': {'equivalence': 'pending', 'protocol': 'assistive/1'},
                   'accepted_handoffs': [{'stage': 'emit', 'revision': 0, 'artifacts': [{'path': 'package', 'sha256': 'a' * 64}]}]}
         with tempfile.TemporaryDirectory() as temporary, \
-             patch.object(evaluator, 'grade', side_effect=evaluator.Unscorable(reason)), \
+             patch.object(recorded_grading, 'grade', side_effect=recorded_grading.Unscorable(reason)), \
              patch.object(evaluator, 'seal', return_value={'path': 'run-evidence.enc', 'sha256': 'e' * 64}) as seal:
             done = harness.conclude(Path(temporary), 'bme280', Path(temporary) / 'run', result, password_file='unused',
                                     token='token', call=call)
@@ -465,7 +467,8 @@ class PhysicalTrialTests(BoundDeviceFixture):
             calls.append(method)
             # A start is refused here, so a trial the harness let through ends at once instead of running.
             return {'ok': True} if method == 'ping' else {'ok': False, 'reason': 'The run must not start'}
-        with patch('generative_driver.benchmark.case_root', return_value=resources):
+        with patch('generative_driver.benchmark.case_root', return_value=resources), \
+                patch('generative_driver.benchmark_support.case_assets.case_root', return_value=resources):
             record = harness.run_trial(self.root / 'refused', self.request('trial-refused', password_file=str(wrong)),
                                        call=configurator)
             self.assertEqual((record['status'], record['run_id'], calls), ('failed', None, ['ping']), record)

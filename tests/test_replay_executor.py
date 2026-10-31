@@ -58,6 +58,7 @@ class ReplayExecutionTests(unittest.TestCase):
         self.candidate = replay_candidate(self.root / 'candidate')
         public_case_fixture(self.root / 'resources', calibration={'status': 'passed', 'evidence_sha256': EVIDENCE})
         for target, value in (('generative_driver.benchmark.case_root', {'return_value': self.root / 'resources'}),
+                              ('generative_driver.benchmark_support.case_assets.case_root', {'return_value': self.root / 'resources'}),
                               ('generative_driver.benchmark_support.registry.require_calibration',
                                {'side_effect': AssertionError('the configurator admitted the case')}),
                               ('generative_driver.benchmark_support.emulator.truth_for_case',
@@ -353,6 +354,7 @@ def harnessed(test):
                              .replace('PRIVATE', repr(str(root / 'native'))).replace('RESOURCES', repr(str(resources)))
                              .replace('EVIDENCE', repr(EVIDENCE)))
     for target, value in (('generative_driver.benchmark.case_root', {'return_value': resources}),
+                          ('generative_driver.benchmark_support.case_assets.case_root', {'return_value': resources}),
                           ('generative_driver.benchmark_support.registry.require_calibration',
                            {'side_effect': AssertionError('the configurator admitted the case')}),
                           ('generative_driver.benchmark_support.emulator.truth_for_case',

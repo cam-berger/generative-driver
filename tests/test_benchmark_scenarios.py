@@ -22,7 +22,8 @@ class ScenarioTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             public_case_fixture(root/'resources')
-            with patch('generative_driver.benchmark.case_root', return_value=root/'resources'):
+            with patch('generative_driver.benchmark.case_root', return_value=root/'resources'), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root/'resources'):
                 controller = Controller(root/'home')
                 try:
                     for scenario in ('semantic','control','identity','unknown'):
@@ -36,10 +37,15 @@ class ScenarioTests(unittest.TestCase):
 
     def test_reference_execution_rejects_unknown_scenario_before_native_start(self):
         from generative_driver.benchmark_support.evaluator import reference_execute
+        from generative_driver.benchmark_support.reference_calibration import run_reference
         from tq9_workflow_fixture import model, capabilities
         with tempfile.TemporaryDirectory() as temp, patch(
                 'generative_driver.benchmark_support.native.NativeSession.start',
                 side_effect=AssertionError('native process started before scenario rejection')):
+            pin = {'case_id':'tq9-v2','scenario_id':'unknown'}
+            place = {'renode': 'unused', 'image': Path(temp)/'missing.bin', 'output_dir': Path(temp)/'output'}
             with self.assertRaisesRegex(ValueError, 'scenario'):
-                reference_execute({'case_id':'tq9-v2','scenario_id':'unknown'}, {'recipe':{}}, model(), capabilities(),
-                    renode='unused', image=Path(temp)/'missing.bin', output_dir=Path(temp)/'output')
+                reference_execute(pin, {'recipe':{}}, capabilities(), package=Path(temp)/'package',
+                                  expected_package_sha256='a'*64, **place)
+            with self.assertRaisesRegex(ValueError, 'scenario'):
+                run_reference(pin, {'recipe':{}}, model(), capabilities(), phase='final', **place)

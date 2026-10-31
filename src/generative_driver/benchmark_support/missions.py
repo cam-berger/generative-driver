@@ -40,7 +40,7 @@ def validate_mission(value, case_id):
 
 
 def load_mission(case_id):
-    from ..benchmark import case_root
+    from .case_assets import case_root
     from .registry import _unique_object
     if not isinstance(case_id, str) or not re.fullmatch('[a-z0-9][a-z0-9-]*', case_id):
         raise ValueError('Invalid public mission case ID')

@@ -54,7 +54,7 @@ def score(report, password_file=None, *, evidence_path=None):
                 or not math.isfinite(measured) or not math.isfinite(observed_at)
                 or abs(measured-observed_at)>truth['max_reference_age_seconds']):
             raise ValueError('Recorded final measurement lacks a current independent reference')
-        from .evaluator import grade_physical_reference
+        from .recorded_grading import grade_physical_reference
         saved_reference=dict(final.get('reference',{}))
         if evidence_path is not None:
             # The caller owns this resolution handle; the recorded digest, values

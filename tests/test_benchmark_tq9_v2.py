@@ -695,6 +695,7 @@ class TQ9V2Tests(unittest.TestCase):
                 endpoint=provider=None;graders=[]
                 try:
                     with patch.object(toolkit,'call_tool',side_effect=runtime_boundary),patch.object(device_client.DeviceClient,'replace',replace),patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
+                         patch('generative_driver.benchmark_support.case_assets.case_root',return_value=resources),\
                          patch.object(controller,'_check',side_effect=check),patch.object(controller,'_verify_snapshot',side_effect=verify_snapshot),\
                          patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True,'evidence_sha256':evidence}),\
                          patch.object(emulator_module,'truth_for_case',side_effect=truth_for_case),\
@@ -1488,10 +1489,11 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_reference_gate_refuses_structurally_invalid_mutant_before_native_start(self):
         # Catches recording a malformed model as a measured behavioral rejection.
-        from generative_driver.benchmark_support.evaluator import reference_execute
+        from generative_driver.benchmark_support.reference_calibration import run_reference
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaisesRegex(ValueError,'structurally valid'):
-                reference_execute({'scenario_id':'original'}, {}, {'schema':'invalid'}, {}, renode='/absent',image='/absent',output_dir=Path(temp))
+                run_reference({'scenario_id':'original'}, {}, {'schema':'invalid'}, {}, renode='/absent',image='/absent',
+                              output_dir=Path(temp),phase='final')
 
     def test_action_host_failure_cannot_be_a_behavioral_rejection(self):
         # Synthetic runtime fault: an unavailable channel cannot reject a mutant.
@@ -1553,32 +1555,44 @@ class TQ9V2Tests(unittest.TestCase):
                         execute_plan(session, lambda *args: dict(no_reply), plan, contract, path, lambda *args: {},
                                      healthy_device_failures=opted)
 
-    def test_a_package_process_that_hangs_or_prints_no_result_is_the_hosts(self):
-        # The package's Python is the evaluator's trusted template and runtime, which enforces every deadline the model
-        # declares: a call that outlasts identity plus the longest operation, or prints nothing, failed on the host. It
-        # is reported, never raised, and never blamed on the driver however healthy the device is.
+    def test_a_package_process_that_cannot_start_or_is_killed_from_outside_is_the_hosts(self):
+        # Every package call is reported, never raised. A package that outlasts identity plus the longest operation, or
+        # exits without a result, failed on its own: its bundled runtime is the system's code, so grading on a healthy
+        # device makes that the driver's failure. A process that could not start, or was killed by a signal the grader
+        # did not send, failed on the host however healthy the device is; and calibration keeps every host fault the host's.
         import socket
         import subprocess
         from unittest.mock import patch
         from generative_driver.benchmark_support.emulated_actions import package_invoker, execute_plan, PACKAGE_CALL_SECONDS
         self.assertGreaterEqual(PACKAGE_CALL_SECONDS, 2 * 120 + 5)
         call = package_invoker('/frozen/package', {'host': '127.0.0.1', 'port': 1}, ['write'])
-        with patch('subprocess.run', side_effect=subprocess.TimeoutExpired(['driver'], PACKAGE_CALL_SECONDS)) as ran:
-            hung = call('read', {})
-        self.assertEqual(ran.call_args.kwargs['timeout'], PACKAGE_CALL_SECONDS)
-        with patch('subprocess.run', return_value=subprocess.CompletedProcess(['driver'], 1, 'Traceback (most recent call last)', '')):
-            silent = call('read', {})
-        for failed, code in ((hung, 'timeout'), (silent, 'no_result')):
+        outcomes = {}
+        for code, source, process in (
+                ('spawn', 'package-process', {'side_effect': OSError('the interpreter could not start')}),
+                ('signal', 'package-process', {'return_value': subprocess.CompletedProcess(['driver'], -9, '', '')}),
+                ('timeout', 'package', {'side_effect': subprocess.TimeoutExpired(['driver'], PACKAGE_CALL_SECONDS)}),
+                ('no_result', 'package', {'return_value': subprocess.CompletedProcess(['driver'], 1, 'Traceback (most recent call last)', '')})):
+            with patch('subprocess.run', **process) as ran:
+                failed = outcomes[code] = call('read', {})
+            self.assertEqual(ran.call_args.kwargs['timeout'], PACKAGE_CALL_SECONDS)
             self.assertEqual((failed['ok'], failed['error']['fault'], failed['error']['source'], failed['error']['code']),
-                             (False, 'host', 'package-process', code))
+                             (False, 'host', source, code))
         channel = socket.socket(); channel.bind(('127.0.0.1', 0)); channel.listen(4); self.addCleanup(channel.close)
         class Session:
             binding = {'host': '127.0.0.1', 'port': channel.getsockname()[1]}
             def set_running(self, value): pass
             def observe(self): return {'values': {}, 'reads': []}
-        with tempfile.TemporaryDirectory() as temp, self.assertRaisesRegex(RuntimeError, 'Host execution failed'):
-            execute_plan(Session(), lambda *args: dict(hung), [{'kind': 'call', 'task': 'read', 'inputs': {}, 'grants': []}],
-                         {'checks': []}, Path(temp)/'raw.json', lambda *args: {}, healthy_device_failures=True)
+        plan = [{'kind': 'call', 'task': 'read', 'inputs': {}, 'grants': []}]
+        with tempfile.TemporaryDirectory() as temp:
+            for code, grading in (('spawn', True), ('signal', True), ('timeout', False), ('no_result', False)):
+                with self.subTest(code=code, grading=grading), self.assertRaisesRegex(RuntimeError, 'Host execution failed'):
+                    execute_plan(Session(), lambda *args: dict(outcomes[code]), plan, {'checks': []}, Path(temp)/'raw.json',
+                                 lambda *args: {}, healthy_device_failures=grading)
+            for code in ('timeout', 'no_result'):
+                execute_plan(Session(), lambda *args: dict(outcomes[code]), plan, {'checks': []}, Path(temp)/'raw.json',
+                             lambda *args: {}, healthy_device_failures=True)
+                event = json.loads((Path(temp)/'raw.json').read_text())['events'][0]
+                self.assertEqual((event['device_healthy'], event['result']['error']['fault']), (True, 'model'))
 
     def test_fresh_reuse_acknowledgements_do_not_substitute_for_a_reading(self):
         # Public adapter seam: actuator ACK outputs alone do not finish the mission, which is a note, never a stop.
@@ -1651,7 +1665,8 @@ class TQ9V2Tests(unittest.TestCase):
             password=root/'password';password.write_text('synthetic calibration fixture')
             manifest['truth']['sha256']=seal(truth,resources/manifest['truth']['path'],password.read_text())
             (case/'case.json').write_text(json.dumps(manifest))
-            with patch('generative_driver.benchmark.case_root',return_value=resources):
+            with patch('generative_driver.benchmark.case_root',return_value=resources), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root',return_value=resources):
                 result=calibrate('tq9-v2',{'evaluator_password_file':str(password),'output':str(root/'output'),
                     'compiler':'/absent','renode':None,'ghidra_home':None,'java_home':None})
             self.assertFalse(result['ok'])
@@ -1660,28 +1675,25 @@ class TQ9V2Tests(unittest.TestCase):
             self.assertFalse(record['runs'])
             self.assertFalse(record['mutants'])
 
-    def test_calibration_identity_includes_the_executed_analysis_wrappers(self):
-        # Static tooling is executable evidence, unlike enclosing case ciphertext.
-        from generative_driver.benchmark_support.reference_calibration import calibration_identity
-        files=calibration_identity()['files']
-        self.assertIn('resources/tools/workspace/ghidra_run.py',files)
-        self.assertIn('resources/toolchain/skills/interpret-firmware-binary/ExportDecomp.java',files)
-        self.assertFalse(any('/bench/cases/' in path or path.endswith('.enc') for path in files))
+    def test_grader_identity_names_modules_never_case_assets_or_analysis_tooling(self):
+        # Case ciphertext and the static analysis wrappers calibration runs are inputs, not grading code: the identity
+        # names the modules the grader imports, and no asset path enters it.
+        from generative_driver.benchmark_support.grader_identity import grader_identity
+        modules=grader_identity()['modules']
+        self.assertTrue(modules)
+        self.assertTrue(all(part.isidentifier() for name in modules for part in name.split('.')), modules)
 
-    def test_calibration_identity_is_the_grading_closure_not_the_kit(self):
-        # A change to the candidate-side kit (configurator, stage tools, skills, reports) must not void a calibration,
-        # so a new kit is measured against the same qualified evaluator. Grading code and the runtime still are pinned.
-        from generative_driver.benchmark_support.reference_calibration import calibration_identity
-        identity = calibration_identity()
-        files = identity['files']
-        for pinned in ('benchmark_support/evaluator.py', 'benchmark_support/emulated_actions.py', 'interface_runtime/engine.py',
-                       'toolchain/emit.py', 'toolchain/probe.py', 'toolchain/interface.py', 'toolkit.py',
-                       'resources/tools/workspace/ghidra_run.py', 'resources/tools/model_exec.py'):
-            self.assertIn(pinned, files)
-        self.assertTrue(any(path.startswith('template/') for path in files), files)
-        for kit in ('configurator.py', 'benchmark.py', 'reporting.py', 'toolchain/acquire.py', 'toolchain/interpret.py',
-                    'resources/tools/esp_image_to_elf.py', 'resources/tools/read_flash_chunked.py'):
-            self.assertNotIn(kit, files)
+    def test_grader_identity_pins_the_grading_modules_not_the_candidate_kit(self):
+        # A change to the candidate-side kit (stage tools, skills, dashboard) must not void a qualification, so a new kit
+        # is measured against the same qualified evaluator. Grading modules and the identity's own computation are pinned.
+        from generative_driver.benchmark_support.grader_identity import grader_identity
+        identity = grader_identity()
+        modules = set(identity['modules'])
+        self.assertLessEqual({'benchmark_support.evaluator', 'benchmark_support.evidence', 'benchmark_support.calibration',
+                              'benchmark_support.registry', 'benchmark_support.truth', 'benchmark_support.tq9_v2',
+                              'benchmark_support.grader_identity'}, modules)
+        self.assertEqual(modules & {'_toolchain.acquire', '_toolchain.interpret', '_toolchain.probe', '_toolchain.emit',
+                                    'dashboard', 'daemon'}, set())
         self.assertEqual(set(identity['dependencies']), {'cryptography'})
 
     def test_monitor_rejection_keeps_recipe_and_response_in_private_evidence(self):

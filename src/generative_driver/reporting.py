@@ -5,6 +5,8 @@ import platform
 import sys
 from pathlib import Path
 from .benchmark import STAGES
+# The evaluator uses this hash too, so it is defined in a module of its own and imported here under its old name.
+from .benchmark_support.integrity import tree_hash as _tree_hash
 
 
 def _usage(workers):
@@ -156,15 +158,6 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
                 "skills_revision", "time_policy", "artifact_hashes", "truth_sha256", "case_inputs"} and k != "attempt_limits"},
             "attempt_limits": {k: v for k, v in ((provenance or {}).get("attempt_limits") or {}).items()
                                if k == "max_model_repairs"}}
-
-
-def _tree_hash(root):
-    digest = hashlib.sha256()
-    for path in sorted(Path(root).rglob("*")):
-        if path.is_file() and "__pycache__" not in path.parts and path.suffix not in (".pyc", ".pyo"):
-            digest.update(path.relative_to(root).as_posix().encode() + b"\0")
-            digest.update(hashlib.sha256(path.read_bytes()).digest())
-    return digest.hexdigest()
 
 
 def _public(value, home):

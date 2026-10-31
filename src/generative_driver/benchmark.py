@@ -13,37 +13,38 @@ import tempfile
 import time
 from pathlib import Path
 
-STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
+# The evaluator uses these too, so they are defined in a module of its own and imported here under their old names.
+from .benchmark_support.case_assets import STAGES, case_root
 
 
 def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=None):
-    from .benchmark_support.registry import adapter_for
+    from .benchmark_support.adapters import adapter_for
     return adapter_for(case_id).prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
 
 
 def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, options=None):
     """Truth-free stage observation: the checked contract of the configurator's stage loop (artifacts, checks as
     notes, optional stop). It runs no evaluator, grades nothing and records no stage verdict."""
-    from .benchmark_support.registry import adapter_for
+    from .benchmark_support.adapters import adapter_for
     return adapter_for(case_id).observe_stage(case_id, stage, run_dir, workspace, report, accepted, options)
 
 
 def package_call(case_id, run_dir, stage, arguments):
     """A provided device's package call, checked before anything is dispatched; returns the call to run."""
-    from .benchmark_support.registry import adapter_for
+    from .benchmark_support.adapters import adapter_for
     return adapter_for(case_id).package_call(case_id, run_dir, stage, arguments)
 
 
 def record_call(case_id, run_dir, stage, name, arguments, result, before, after, options=None):
     """Journal one live call on a provided device with the instrument readings around it."""
-    from .benchmark_support.registry import adapter_for
+    from .benchmark_support.adapters import adapter_for
     return adapter_for(case_id).record_call(case_id, run_dir, stage, name, arguments, result, before, after, options)
 
 
 def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=None,
                     binding=None, allow_effects=None, options=None):
     """A package call on the operator's bound device (bme280), which the configurator dispatches itself."""
-    from .benchmark_support.registry import adapter_for
+    from .benchmark_support.adapters import adapter_for
     return adapter_for(case_id).package_execute(case_id, run_dir, stage, package_dir,
         operation, parameters, binding, allow_effects, options)
 
@@ -299,22 +300,6 @@ def main(argv=None):
         return 1
 
 
-def case_root():
-    import os
-    selected = {}
-    for name in ('GENERATIVE_DRIVER_BENCH_ROOT', 'GENERATIVE_DRIVER_CASE_ROOT'):
-        if name in os.environ:
-            path = Path(os.environ[name]).expanduser()
-            if not path.is_absolute() or not path.is_dir():
-                raise ValueError(name + ' must name an existing absolute resource directory')
-            selected[name] = path.resolve()
-    if len(set(selected.values())) > 1:
-        raise ValueError('Conflicting GENERATIVE_DRIVER_BENCH_ROOT and GENERATIVE_DRIVER_CASE_ROOT')
-    if selected:
-        return next(iter(selected.values()))
-    return Path(__file__).resolve().parent / 'resources' / 'bench'
-
-
 def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, autostart=True, wait=False, via_owner=False):
     """Run the installation replay, or start an actual-agent trial. Every actual-agent case starts a detached bench
     harness, which admits the case, holds the evaluator password file and grades the frozen driver once after the run;
@@ -492,13 +477,13 @@ def score_observations(truth, observations):
 def cleanup(case_id, run_dir, options=None):
     """No stage adapter owns a device. An emulated case's device belongs to the bench harness, which alone stops it, and
     a bound device is the operator's: nothing here may stop or forget it, whatever a run state records."""
-    from .benchmark_support.registry import adapter_for
+    from .benchmark_support.adapters import adapter_for
     adapter_for(case_id)
     raise RuntimeError('The bench harness owns this case\'s device; the configurator holds no ownership to clean up')
 
 
 def score(report, password_file=None, *, evidence_path=None):
-    from .benchmark_support.registry import adapter_for
+    from .benchmark_support.adapters import adapter_for
     data = _read(report)
     if data.get('schema') == 'benchmark-report/3':
         from .benchmark_support.evidence import regrade_v3

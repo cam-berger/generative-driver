@@ -44,8 +44,10 @@ class SuiteCliTests(unittest.TestCase):
             code = """import sys
 from pathlib import Path
 import generative_driver.benchmark as benchmark
+import generative_driver.benchmark_support.case_assets as case_assets
 resources = Path(sys.argv.pop(1))
 benchmark.case_root = lambda: resources
+case_assets.case_root = lambda: resources
 from generative_driver.cli import main
 raise SystemExit(main())
 """

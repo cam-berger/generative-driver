@@ -127,7 +127,7 @@ class OwnerGeneratedTests(unittest.TestCase):
         final = {'contract':definition,'records':[{'id':c['id'],'revision':0,'artifact_sha256':sha,
             'channel':c['channel'],'unit':c['unit'],'value':v} for c,v in zip(definition['checks'],(EXPECTED,370))],
             'frozen_artifact_sha256':sha, 'generated_reuse_required':True}
-        verdict = final_record(final)
+        verdict = final_record(final, protocol='assistive/1')
         self.assertFalse(verdict['equivalent'])
         self.assertIn('generated_mcp_reuse', [c['id'] for c in verdict['checks']])
 

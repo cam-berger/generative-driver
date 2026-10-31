@@ -220,6 +220,21 @@ class SealedEvidenceTests(SealedEvidenceFixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'hash'):
             evidence.regrade_v2(report, path, self.password)
 
+    def test_regrade_follows_the_grader_not_the_system(self):
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.snapshots import execution_provenance
+        payload = self.payload()
+        report, path = self.sealed(payload)
+        # A changed system moves the toolchain revision and leaves the grader: the sealed run still regrades.
+        with patch('generative_driver.benchmark_support.integrity.tree_hash', return_value='0' * 64):
+            self.assertNotEqual(execution_provenance({})['toolchain_revision'],
+                                payload['execution_snapshot']['executed']['toolchain_revision'])
+            self.assertEqual(evidence.regrade_v2(report, path, self.password)['verdict'], 'passed')
+        # A changed grader is refused, whatever the system.
+        with patch.object(evidence, 'grader_identity', return_value={'sha256': 'f' * 64}), \
+                self.assertRaisesRegex(ValueError, 'Installed evaluator implementation hash mismatch'):
+            evidence.regrade_v2(report, path, self.password)
+
 
 
 class EvidenceBoundaryTests(unittest.TestCase):

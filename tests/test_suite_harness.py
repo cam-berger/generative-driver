@@ -472,22 +472,38 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         # Catches a resume sent again after a lost reply that finds the child the first resume started cancelled
         # meanwhile and resumes it a second time, undoing the operator's cancellation, or is refused, which has the
         # harness record a resume that took place as one that never did.
-        runtime = self.stopping_probe()
+        stopped, entered, release = [], threading.Event(), threading.Event()
+        def runtime(request):
+            if request.stage == 'probe' and not stopped:
+                stopped.append(request.stage)
+                return {'runtime': 'codex', 'elapsed_seconds': 0, 'usage': None, 'report': None, 'status': 'blocked',
+                        'cause': 'runtime_unavailable', 'reason': 'Cannot start configured runtime: scripted'}
+            if request.stage == 'probe':
+                # The resumed child holds its probe until the operator's cancellation landed, so it cannot finish first.
+                entered.set()
+                release.wait(20)
         with self.harness(runtime=runtime):
             sid = self.drive(manifest=manifest(1), executor='codex', options={})['suite_id']
         child = {'run_id': self.child(sid)['run_id']}
-        repeated = []
+        repeated, cancelling = [], []
         def intercept(method, params, forward):
             if method == 'suite_resume_child' and not repeated:
                 # The configurator resumed the child and its reply never arrived; the operator cancels the child before
                 # the client sends the resume again, and that reply arrives.
                 repeated.append(forward(method, params))
-                self.controller.call('cancel', child)
+                self.assertTrue(entered.wait(10))
+                cancelling.append(threading.Thread(target=self.controller.call, args=('cancel', child), daemon=True))
+                cancelling[0].start()
+                until = time.monotonic() + 10
+                while self.controller.call('status', child)['status'] != 'cancelled':
+                    self.assertLess(time.monotonic(), until); time.sleep(.02)
                 repeated.append(forward(method, params))
+                release.set()
                 return repeated[-1]
             return forward(method, params)
         with self.harness(runtime=runtime):
             resumed = self.drive(suite_id=sid, intercept=intercept)
+        cancelling[0].join(20)
         self.assertEqual(resumed['status'], 'finished', resumed)
         self.assertEqual([reply.get('ok') for reply in repeated], [True, True], repeated)
         self.assertEqual(len(self.events(child, 'run.resumed')), 1)

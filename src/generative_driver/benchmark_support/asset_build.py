@@ -7,6 +7,8 @@ import shutil
 import sysconfig
 import tempfile
 from . import authoring, truth
+# The evaluator's calibration admits a family by this inventory, so it is defined there and imported here.
+from .calibration import BUILD_FILES, _FAMILIES, _files, inventory
 
 GCC_VERSION = 'arm-none-eabi-gcc (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 14.2.1 20241119'
 OBJCOPY_VERSION = 'GNU objcopy (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119'
@@ -37,22 +39,6 @@ def build_argv(compiler, source_dir, elf, flags):
             str(source / 'application.c'), '-lgcc', '-o', str(elf)]
 
 
-BUILD_FILES = {'build/build-report.json', 'build/firmware.elf', 'build/firmware.bin'}
-_INPUT_FILES = {'AUTHORING.json', 'LICENSE', 'source/startup.c', 'source/board_uart.c',
-    'source/application.c', 'source/linker.ld', 'build.py', 'build-recipe.json',
-    'native/platform.repl', 'native/device.resc', 'native/observation-map.json',
-    'diagnostic/episodes.json', 'final/episodes.json', 'oracle/vectors.json', 'mutants/manifest.json',
-    *{f'reference-{ref}/{name}.json' for ref in ('a', 'b') for name in ('model', 'capabilities', 'replies')}}
-_FAMILIES = {'sampled-sensor', 'parameter-store'}
-
-
-def inventory(family, *, qualified=False):
-    if family not in _FAMILIES:
-        raise ValueError('Unsupported family')
-    return (_INPUT_FILES | BUILD_FILES | ({'native/SampleSource.cs'} if family == 'sampled-sensor' else set())
-            | ({'calibration/calibration.json'} if qualified else set()))
-
-
 def _hash(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -69,15 +55,6 @@ def _write(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n', encoding='utf-8')
-
-
-def _files(root):
-    if root.is_symlink():
-        raise ValueError('Inventory symlinks are forbidden')
-    paths = list(root.rglob('*'))
-    if any(path.is_symlink() or not (path.is_dir() or path.is_file()) for path in paths):
-        raise ValueError('Inventory requires regular files and directories without symlinks')
-    return {path.relative_to(root).as_posix() for path in paths if path.is_file()}
 
 
 def _author(root, *, complete):

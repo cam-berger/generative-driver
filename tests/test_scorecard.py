@@ -81,6 +81,42 @@ def probe_result(*entries):
         {'schema': 'interface-result/1', 'ok': True, 'operation': 'read_temperature', 'outputs': {}, 'transcript': list(entries)}]}
 
 
+def package_output(*entries):
+    """What a package's own command line prints for one live operation: an interface-result whose transcript holds `entries`."""
+    return {'schema': 'interface-result/1', 'ok': True, 'identity_verified': True, 'outputs': {}, 'units': {},
+            'transcript': list(entries)}
+
+
+def write_live_record(tools, *outputs, name='live-1.json'):
+    """Write the record emit_test_live keeps in `<tools>/emit/<name>` as the tool does, a result for each of `outputs` (what the
+    package printed for an operation, or None when it printed no JSON), and return its path."""
+    path = Path(tools) / 'emit' / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    results = [{'operation': 'op%d' % number, 'command': ['python', '-I'], 'returncode': 0, 'stdout_json': output, 'stderr': '',
+                'ok': output is not None, 'error_code': None, 'error_message': None, 'fault': None}
+               for number, output in enumerate(outputs)]
+    path.write_text(json.dumps({'schema': 'interface-live-test/1', 'package_dir': 'package', 'operations': ['op0'],
+                                'results': results, 'passed': len(results), 'failed': 0, 'not_run': [], 'ok': True,
+                                'verdict': 'pass'}), encoding='utf-8')
+    return path
+
+
+def live_summary(record, operations=1, **extra):
+    """What emit_test_live returns: a summary of each operation and the path of the record it wrote, and no transcript."""
+    return {'ok': True, '_exit': 0, 'verdict': 'pass', 'passed': operations, 'failed': 0, 'not_run': [], 'manifest_sha256': 'f' * 64,
+            'results': [{'operation': 'op%d' % number, 'ok': True, 'returncode': 0, 'error_code': None, 'error_message': None,
+                         'fault': None, 'identity_verified': True, 'outputs': {}, 'units': {}} for number in range(operations)],
+            'live_record': str(record), **extra}
+
+
+def replayed(*entries):
+    """What probe_diff returns for a recorded probe: a replay of its exchanges against the model, which contacts no device and
+    still holds the recorded transcript (`evidence_kind` says replay)."""
+    return {'ok': True, '_exit': 0, 'evidence_kind': 'replay', 'source_evidence_kind': 'live', 'timing_policy': 'skip_delays',
+            'defects': [], 'results': [{'schema': 'interface-result/1', 'ok': True, 'operation': 'read_temperature',
+                                        'identity_verified': True, 'outputs': {}, 'units': {}, 'transcript': list(entries)}]}
+
+
 def gateway_call(controller, request, model=None):
     """For a stage worker with tools: write `model` (the thermometer by default) into its workspace, and return
     `call(name, **arguments)`, which calls a tool of its gateway on that model."""
@@ -144,9 +180,11 @@ def repairing(spec, stage, run_dir, workspace, report, accepted, assignment):
 
 
 class TrialMetricsTests(unittest.TestCase):
-    def scripted(self, work=None, *, runtime=completed, toolkit=None, check=accepting, skip=None, sealed=False, **start):
+    def scripted(self, work=None, *, runtime=completed, toolkit=None, check=accepting, skip=None, sealed=False, tools=None,
+                 **start):
         """A scripted six-stage run in a temporary home: no model, tool or device runs. `work(controller, request)` acts
-        as a stage's worker, `toolkit(name, arguments)` stands in for the tools it calls, `skip(spec, stage)` names the
+        as a stage's worker, `toolkit(name, arguments)` stands in for the tools it calls, `tools` maps a stage to the tools
+        it is assigned (probe has probe_run and interface_execute, the others none), `skip(spec, stage)` names the
         reason a stage runs no worker, `sealed` runs each interpretation in a workspace of its own outside the run, named
         attempt<N> as the interpretation tool names it, and `start` adds to the run's parameters. Returns the home, the
         run's id and its result once the run has stopped and its controller is closed."""
@@ -160,7 +198,7 @@ class TrialMetricsTests(unittest.TestCase):
             reason = skip and skip(spec, stage)
             if reason:
                 return {'skip': reason}
-            prepared = {'inputs': [], 'allowed_tools': ['probe_run', 'interface_execute'] if stage == 'probe' else []}
+            prepared = {'inputs': [], 'allowed_tools': {'probe': ['probe_run', 'interface_execute'], **(tools or {})}.get(stage, [])}
             if sealed and stage == 'interpret':
                 interpretations.append(stage)
                 number = len(interpretations)
@@ -387,6 +425,166 @@ class TrialMetricsTests(unittest.TestCase):
         probe = trial_metrics(home, run)['stages']['probe']
         self.assertEqual(probe['managed_calls'], {'interface_execute': 2, 'probe_run': 1})
         self.assertEqual(probe['device'], {'exchanges': 5, 'writes': 0, 'refusals': 0, 'resets': 0})
+
+    def test_a_replay_of_a_recorded_probe_adds_no_exchange_and_no_refusal(self):
+        # probe_diff replays a recorded probe against the model without contacting the device, yet its result holds the
+        # recorded transcript: counted again, the same exchanges (and the reply the device rejected) would be doubled.
+        def tools(name, arguments):
+            return replayed(EXCHANGE, EXCHANGE, {**EXCHANGE, 'device_rejected': True}) if name == 'probe_diff' \
+                else probe_result(EXCHANGE, EXCHANGE)
+        def work(controller, request):
+            if request.stage == 'probe':
+                call = gateway_call(controller, request)
+                call('probe_run', operation='read_temperature')
+                call('probe_diff', probe=str(Path(request.workspace) / 'probe.json'))
+        home, run, result = self.scripted(work, toolkit=tools, tools={'probe': ['probe_run', 'probe_diff']})
+        self.assertEqual(result['status'], 'completed')
+        probe = trial_metrics(home, run)['stages']['probe']
+        self.assertEqual(probe['managed_calls'], {'probe_diff': 1, 'probe_run': 1})
+        self.assertEqual(probe['device'], {'exchanges': 2, 'writes': 0, 'refusals': 0, 'resets': 0})
+
+    def live_tested(self, *calls):
+        """A scripted run whose fresh-reuse worker calls emit_test_live once for each of `calls`. Each is called with the tool's
+        output folder and returns what the tool returns, having written the record it names. Returns the home, the run's id
+        and its metrics."""
+        queue, count = list(calls), len(calls)
+        def tools(name, arguments):
+            return queue.pop(0)(Path(arguments['run_dir'])) if name == 'emit_test_live' else probe_result(EXCHANGE)
+        def work(controller, request):
+            if request.stage == 'reuse':
+                package = Path(request.workspace) / 'package'
+                (package / 'driver').mkdir(parents=True)
+                (package / 'driver' / 'model.json').write_text(json.dumps(thermometer_model()), encoding='utf-8')
+                for _ in range(count):
+                    controller.call('tool', {**gateway_identity(request), 'name': 'emit_test_live',
+                                             'arguments': {'package_dir': str(package)}})
+        home, run, result = self.scripted(work, toolkit=tools, tools={'reuse': ['emit_test_live']})
+        self.assertEqual(result['status'], 'completed')
+        return home, run, trial_metrics(home, run)
+
+    def test_a_live_package_tests_exchanges_are_counted_from_the_record_its_result_names(self):
+        # emit_test_live keeps only a summary in its result; the transcripts of its calls are in emit/live-N.json. Its first
+        # record has three operations, the last of which printed no JSON; an attempted exchange and a delay are no exchange.
+        # The reply a test saw the device reject is an exchange; only exchanges are read from the record, so it is no refusal.
+        first = lambda tools: live_summary(write_live_record(
+            tools, package_output(EXCHANGE, EXCHANGE),
+            package_output(EXCHANGE, {**EXCHANGE, 'status': 'attempted'}, {'op': 'delay', 'status': 'completed'}), None), 3)
+        second = lambda tools: live_summary(write_live_record(
+            tools, package_output({**EXCHANGE, 'op': 'usb_control'}, {**EXCHANGE, 'device_rejected': True}), name='live-2.json'))
+        home, run, metrics = self.live_tested(first, second)
+        self.assertEqual(metrics['stages']['reuse']['managed_calls'], {'emit_test_live': 2})
+        self.assertEqual(metrics['stages']['reuse']['device'], {'exchanges': 5, 'writes': 0, 'refusals': 0, 'resets': 0})
+        for stage in STAGES[:-1]:
+            self.assertEqual(metrics['stages'][stage]['device'], NO_DEVICE, stage)
+
+    def test_a_live_record_that_cannot_be_used_leaves_the_stages_exchanges_unknown_not_zero_and_not_partial(self):
+        # A first call counts two exchanges; the second names a record that cannot be used, for each reason below. The stage
+        # then reads None, not 2 and not 0, like the worker figures; its other device figures are still exact.
+        # The tool's folder is <home>/runs/<run>/work/reuse/<assignment>/tools: parents[3] is the run's folder, parents[4] the
+        # folder of all runs and parents[5] the home. Its first call has written emit/live-1.json.
+        good = lambda tools: live_summary(write_live_record(tools, package_output(EXCHANGE, EXCHANGE)))
+        def valid(path):
+            """A record that would count one exchange, if it were read."""
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({'results': [{'stdout_json': package_output(EXCHANGE)}]}), encoding='utf-8')
+            return path
+        def written(content):
+            def call(tools):
+                path = Path(tools) / 'emit' / 'live-2.json'
+                path.write_text(content, encoding='utf-8')
+                return live_summary(path)
+            return call
+        def gone(tools):
+            return live_summary(Path(tools) / 'emit' / 'live-2.json')
+        def folder(tools):
+            path = Path(tools) / 'emit' / 'live-2.json'
+            path.mkdir()
+            return live_summary(path)
+        def unwritten(tools):
+            # The host could not write the record after the device was contacted: the tool says so, naming none.
+            return {**gone(tools), 'ok': False, 'verdict': 'inconclusive', 'fault': 'host', '_exit': 4, 'live_record': None,
+                    'error': 'live record not written: OSError: disk full'}
+        def outside(tools):
+            return live_summary(valid(Path(tools).parents[5] / 'elsewhere' / 'live-1.json'))
+        def climbing(tools):
+            valid(Path(tools).parents[4] / 'other' / 'live-1.json')
+            return live_summary(str(Path(tools).parents[3]) + '/../other/live-1.json')
+        def another_run(tools):
+            # The same place in another run's folder: this run holds a record there too (the first call's), which must not be read.
+            return live_summary(Path(tools).parents[4] / 'run-other' / (Path(tools) / 'emit' / 'live-1.json').relative_to(
+                Path(tools).parents[3]))
+        def linked(tools):
+            link = Path(tools) / 'emit' / 'live-2.json'
+            link.symlink_to(valid(Path(tools).parents[5] / 'elsewhere' / 'live-1.json'))
+            return live_summary(link)
+        cases = {'a record that is gone': gone, 'a record that is no JSON': written('not json'),
+                 'a record that is not an object': written('[1, 2]'), 'a record with no list of results': written('{"results": {}}'),
+                 'a record that is a folder': folder, 'an empty path': lambda tools: {**gone(tools), 'live_record': ''},
+                 'a path that is no text': lambda tools: {**gone(tools), 'live_record': 42},
+                 'a record the host could not write': unwritten, 'a record outside the run': outside,
+                 'a path that climbs out of the run': climbing, 'a record of another run': another_run,
+                 'a link to a record outside the run': linked}
+        with tempfile.TemporaryDirectory() as temporary:
+            try:
+                (Path(temporary) / 'link').symlink_to(temporary)
+            except OSError:  # Windows without the privilege to link
+                del cases['a link to a record outside the run']
+        for name, bad in cases.items():
+            with self.subTest(name):
+                home, run, metrics = self.live_tested(good, bad)
+                reuse = metrics['stages']['reuse']
+                self.assertEqual(reuse['managed_calls'], {'emit_test_live': 2})
+                self.assertEqual(reuse['device'], {'exchanges': None, 'writes': 0, 'refusals': 0, 'resets': 0})
+                self.assertEqual([metrics['stages'][stage]['device']['exchanges'] for stage in STAGES[:-1]], [0] * 5)
+
+    def test_a_call_that_named_no_record_because_it_reached_no_device_is_an_exact_zero(self):
+        # emit_test_live refuses before contact (a binding or grant it refuses, a package that fails its snapshot check) with
+        # transport_open_attempted false and no live record: nothing was exchanged, which is not unknown.
+        refusal = {'ok': False, 'error': 'ValueError: operations need an effect grant that allow_effects does not give',
+                   'transport_open_attempted': False, '_exit': 1}
+        host = {'ok': False, 'fault': 'host', 'error': 'OSError: cannot read back the snapshot', 'transport_open_attempted': False,
+                '_exit': 4}
+        good = lambda tools: live_summary(write_live_record(tools, package_output(EXCHANGE, EXCHANGE)))
+        home, run, metrics = self.live_tested(good, lambda tools: refusal, lambda tools: host)
+        self.assertEqual(metrics['stages']['reuse']['device']['exchanges'], 2)
+
+    def test_a_record_is_found_by_its_place_in_the_run_wherever_the_run_was_when_its_path_was_named(self):
+        # The path in a stored result is the one the run had when it was recorded: another home after the home was copied,
+        # or a Windows path on a host that scores it here. The record is read where it is in this run's folder.
+        def named_under(prefix, separator):
+            def call(tools):
+                path = write_live_record(tools, package_output(EXCHANGE, EXCHANGE))
+                run = Path(tools).parents[3]
+                return live_summary(prefix.format(run=run.name) + separator.join(['runs', run.name, *path.relative_to(run).parts]))
+            return call
+        for place, prefix, separator in (('copied home', '/Users/someone/Library/Application Support/GenerativeDriver/', '/'),
+                                         ('windows', 'C:\\Users\\someone\\AppData\\Local\\GenerativeDriver\\', '\\'),
+                                         # The place in the run is what follows the last such folder.
+                                         ('home under a folder named like the run', '/archive/runs/{run}/state/', '/')):
+            with self.subTest(place):
+                home, run, metrics = self.live_tested(named_under(prefix, separator))
+                self.assertEqual(metrics['stages']['reuse']['device']['exchanges'], 2)
+
+    def test_a_package_calls_exchanges_are_counted_where_its_result_holds_them(self):
+        # benchmark_package_execute on the device the bench harness provides returns the package's own interface-result, with
+        # the instrument readings around the call, so its transcript is counted like interface_execute's. On the physical
+        # bme280 case it returns a measurement row, which holds no transcript: its exchanges are not counted.
+        provided = {**package_output(EXCHANGE, EXCHANGE), 'before_observation': {'values': {}}, 'observation': {'values': {}}}
+        physical = {'status': 'OK', 'ok': True, 'stage': 'reuse', 'execution': 'actual-physical-package', 'time': 1.0,
+                    'evidence': '/runs/run-1/benchmark/package-events.jsonl'}
+        for name, result, exchanges in (('the provided emulator', provided, 2), ('the physical case', physical, 0)):
+            with self.subTest(name):
+                home, run, before = self.probed_once()
+                with contextlib.closing(database(home, 'rw')) as db, db:
+                    started = db.execute('INSERT INTO events(run_id,kind,payload,created) VALUES(?,?,?,?)', (
+                        run, 'tool.started', json.dumps({'stage': 'reuse', 'name': 'benchmark_package_execute', 'effectful': False}),
+                        time.time())).lastrowid
+                    db.execute('INSERT INTO events(run_id,kind,payload,created) VALUES(?,?,?,?)', (
+                        run, 'tool.finished', json.dumps({'stage': 'reuse', 'name': 'benchmark_package_execute',
+                                                          'dispatch_id': str(started), 'result': result}), time.time()))
+                reuse = trial_metrics(home, run)['stages']['reuse']
+                self.assertEqual(reuse['managed_calls'], {'benchmark_package_execute': 1})
+                self.assertEqual(reuse['device'], {**NO_DEVICE, 'exchanges': exchanges})
 
     def test_calls_are_paired_by_dispatch_so_a_finish_counts_once_and_one_with_no_start_still_counts(self):
         home, run, before = self.probed_once()
@@ -632,19 +830,40 @@ def probed(run_id, total, **probe):
     return metrics
 
 
-def scoring_report(outcomes, *, scoring=True, **labels):
+SYSTEM = {'runtime': 'codex', 'version': '0.164.0', 'model': 'toy-model', 'provider': 'toy', 'reasoning_effort': 'medium',
+          'max_turns': 40, 'skills_revision': 'c' * 64, 'toolchain_revision': 'd' * 64}
+
+
+def scoring_report(outcomes, *, scoring=True, dimensions=None, overrides=(), joint=None, **labels):
     """A `benchmark-suite-report/3` down to what a scorecard reads of the one `report_suite` gives: a trial row for each case of
     `outcomes` (case -> scored outcome), with run id r<n> unless it was not run, and the scoring set in the comparison
-    identity when `scoring`. `labels` are top-level fields such as `execution`."""
+    identity when `scoring`. `dimensions` (by default SYSTEM) are the experiment's, `overrides` the child budget overrides it
+    froze, `joint` a flag for each trial of whether it was an equivalent driver with a successful fresh mission (which sets
+    each row's `equivalent_and_mission` and the report's count of them), and `labels` are top-level fields such as
+    `execution`."""
     rows = [{'trial_key': 'entry-%03d-repeat-000' % number, 'case': case, 'family': 'generated', 'scored': outcome,
              'run_id': None if outcome == 'not_run' else 'r%d' % number} for number, (case, outcome) in enumerate(outcomes.items())]
-    identity = {'scoring_set': {'registration': 'generated-set-1', 'manifest_sha256': 'a' * 64}} if scoring else {}
-    return {'schema': 'benchmark-suite-report/3', 'experiment': {'comparison_identity': identity}, 'trials': rows, **labels}
+    identity = {**({'scoring_set': {'registration': 'generated-set-1', 'manifest_sha256': 'abcdef0123456789' + '0' * 48}}
+                   if scoring else {}),
+                'evaluator_revision': 'b' * 64, 'execution': 'actual-agent-emulation', 'evidence_track': 'firmware',
+                'scope': 'full-workflow',
+                'budgets': {'effective': {'child_budget_seconds': 10800, 'suite_budget_seconds': 86400,
+                                          'child_budget_overrides': list(overrides)}},
+                'intervention_policy': {'scoped_tool_approval': 'emulator', 'max_model_repairs': 2}}
+    if joint is not None:
+        for row, flag in zip(rows, joint):
+            row['equivalent_and_mission'] = flag
+        labels['equivalent_and_mission'] = {'passed': sum(joint), 'denominator': len(rows), 'rate': sum(joint) / len(rows)}
+    return {'schema': 'benchmark-suite-report/3', 'suite_id': 'suite-1', 'protocol': 'assistive/1',
+            'qualification': 'recorded-controller-verdicts',
+            'experiment': {'comparison_identity': identity, 'dimensions': dict(SYSTEM if dimensions is None else dimensions)},
+            'trials': rows, **labels}
 
 
-def three_probed():
+def three_probed(exchanges=(5, 3, 0)):
     """The report and the metrics (by run id) of three trials that probed. The first measured every figure; the second has
-    no wall time, no action counts and no cached or reasoning tokens; the third has no worker time and no tokens."""
+    no wall time, no action counts and no cached or reasoning tokens; the third has no worker time and no tokens. Their
+    `exchanges` are given (None when a trial could not count them)."""
     def probe(run_id, **figures):
         metrics = blank_metrics(run_id)
         metrics['stages']['probe'].update(figures)
@@ -652,11 +871,13 @@ def three_probed():
     counts = lambda command, mcp, files: {'command_execution': command, 'mcp_tool_call': mcp, 'file_change': files}
     metrics = {
         'r0': probe('r0', attempts=1, wall_seconds=10.0, worker_seconds=4, managed_calls={'probe_run': 2},
-                    worker_actions=counts(3, 0, 1), device={'exchanges': 5, 'writes': 1, 'refusals': 0, 'resets': 0},
+                    worker_actions=counts(3, 0, 1), device={'exchanges': exchanges[0], 'writes': 1, 'refusals': 0, 'resets': 0},
                     tokens={'input': 100, 'cached_input': 40, 'output': 20, 'reasoning_output': 5, 'total': 120}),
         'r1': probe('r1', attempts=2, worker_seconds=6, managed_calls={'probe_run': 1, 'interface_execute': 4},
-                    device={'exchanges': 3, 'writes': 0, 'refusals': 2, 'resets': 1}, tokens=tokens(60, input=50, output=10)),
-        'r2': probe('r2', attempts=1, wall_seconds=30.0, worker_actions=counts(1, 2, 0))}
+                    device={'exchanges': exchanges[1], 'writes': 0, 'refusals': 2, 'resets': 1},
+                    tokens=tokens(60, input=50, output=10)),
+        'r2': probe('r2', attempts=1, wall_seconds=30.0, worker_actions=counts(1, 2, 0),
+                    device={'exchanges': exchanges[2], 'writes': 0, 'refusals': 0, 'resets': 0})}
     return scoring_report({'d0': 'pass', 'd1': 'failure', 'd2': 'failure'}), metrics
 
 
@@ -692,15 +913,31 @@ class SuiteScorecardTests(unittest.TestCase):
             'tokens': {'input': 150, 'cached_input': 40, 'output': 30, 'reasoning_output': 5, 'total': 180},
             'median': {'wall_seconds': 20.0, 'worker_seconds': 5.0,
                        'tokens': {'input': 75.0, 'cached_input': 40, 'output': 15.0, 'reasoning_output': 5, 'total': 90.0}},
-            'measured': {'wall_seconds': 2, 'worker_seconds': 2, 'worker_actions': counts(2, 2, 2),
+            'measured': {'wall_seconds': 2, 'worker_seconds': 2, 'worker_actions': counts(2, 2, 2), 'device': {'exchanges': 3},
                          'tokens': {'input': 2, 'cached_input': 1, 'output': 2, 'reasoning_output': 1, 'total': 2}}})
+        # Nothing happened in emit, and each trial counted that exactly: zero exchanges, measured by all three.
         self.assertEqual(card['stages']['emit'], {
             'attempts': 0, 'wall_seconds': None, 'worker_seconds': None, 'managed_calls': {}, 'worker_actions': UNKNOWN_ACTIONS,
             'device': NO_DEVICE, 'tokens': UNKNOWN_TOKENS,
             'median': {'wall_seconds': None, 'worker_seconds': None, 'tokens': UNKNOWN_TOKENS},
             'measured': {'wall_seconds': 0, 'worker_seconds': 0, 'worker_actions': dict.fromkeys(UNKNOWN_ACTIONS, 0),
-                         'tokens': dict.fromkeys(UNKNOWN_TOKENS, 0)}})
+                         'device': {'exchanges': 3}, 'tokens': dict.fromkeys(UNKNOWN_TOKENS, 0)}})
         self.assertEqual(list(card['stages']), list(STAGES))
+
+    def test_exchanges_a_trial_could_not_count_are_skipped_and_counted_as_unmeasured(self):
+        # A stage's exchanges are unknown (None) when a live record of a package test could not be used. They are summed over
+        # the trials that have them, like the other figures that can be unknown; the other device counts are plain sums.
+        def reused(run_id, exchanges, writes=0):
+            metrics = blank_metrics(run_id)
+            metrics['stages']['reuse']['device'].update(exchanges=exchanges, writes=writes)
+            return metrics
+        report = scoring_report({'d0': 'pass', 'd1': 'failure', 'd2': 'failure'})
+        card = self.card(report, {'r0': reused('r0', 5, 1), 'r1': reused('r1', None, 2), 'r2': reused('r2', 3)})
+        self.assertEqual(card['stages']['reuse']['device'], {'exchanges': 8, 'writes': 3, 'refusals': 0, 'resets': 0})
+        self.assertEqual(card['stages']['reuse']['measured']['device'], {'exchanges': 2})
+        card = self.card(report, {run: reused(run, None) for run in ('r0', 'r1', 'r2')})
+        self.assertEqual(card['stages']['reuse']['device'], {'exchanges': None, 'writes': 0, 'refusals': 0, 'resets': 0})
+        self.assertEqual(card['stages']['reuse']['measured']['device'], {'exchanges': 0})
 
     def test_repairs_are_summed_and_each_claim_figure_is_counted_by_answer(self):
         # Repairs add up over the trials that gave them. The yes/no figures of the claim are counted as true, false and
@@ -762,6 +999,47 @@ class SuiteScorecardTests(unittest.TestCase):
                              {'r0': blank_metrics('r0')})
         self.assertEqual((replayed['execution'], replayed['model_benchmark']), ('replay-emulation', False))
 
+    def test_the_scorecard_names_its_suite_its_system_and_the_conditions_it_ran_under(self):
+        # Suite-level identities, none a per-trial detail: the child budget overrides name trial keys, so only their number is
+        # given. A scoring set is named only by a suite that ran one.
+        blank = {'r0': blank_metrics('r0'), 'r1': blank_metrics('r1')}
+        override = {'trial_key': 'entry-001-repeat-000', 'budget_seconds': 20000}
+        card = self.card(scoring_report({'d0': 'pass', 'd1': 'failure'}, overrides=[override]), blank)
+        self.assertEqual(card['suite_id'], 'suite-1')
+        self.assertEqual(card['system'], {'protocol': 'assistive/1', **SYSTEM})
+        conditions = {'scoring_set': {'registration': 'generated-set-1', 'manifest_sha256': 'abcdef0123456789' + '0' * 48},
+                      'evaluator_revision': 'b' * 64, 'execution': 'actual-agent-emulation', 'evidence_track': 'firmware',
+                      'scope': 'full-workflow', 'child_budget_seconds': 10800, 'child_budget_overrides': 1,
+                      'max_model_repairs': 2, 'scoped_tool_approval': 'emulator', 'qualification': 'recorded-controller-verdicts'}
+        self.assertEqual(card['conditions'], conditions)
+        self.assertNotIn('entry-001', json.dumps(card))
+        plain = self.card(scoring_report({'d0': 'pass', 'd1': 'failure'}, scoring=False), blank)
+        self.assertEqual(plain['conditions'], {**{key: value for key, value in conditions.items() if key != 'scoring_set'},
+                                               'child_budget_overrides': 0})
+
+    def test_a_replay_suites_candidates_are_a_per_device_detail_and_stay_out_of_its_system(self):
+        dimensions = {'runtime': 'replay', 'replay_candidates': {'secret-device-7': 'e' * 64}, 'skills_revision': 'c' * 64}
+        report = scoring_report({'secret-device-7': 'pass'}, dimensions=dimensions, execution='replay-emulation', model_benchmark=False)
+        card = self.card(report, {'r0': blank_metrics('r0')})
+        self.assertEqual(card['system'], {'protocol': 'assistive/1', 'runtime': 'replay', 'skills_revision': 'c' * 64})
+        self.assertNotIn('secret-device', json.dumps(card) + scorecard_markdown(card))
+
+    def test_the_joint_verdict_of_earlier_studies_is_carried_when_the_report_has_it(self):
+        # The count of equivalent drivers with a successful fresh mission, beside the pass rate. A suite without a scoring set
+        # also gives each trial's own flag; a scoring suite has no rows.
+        blank = {'r0': blank_metrics('r0'), 'r1': blank_metrics('r1'), 'r2': blank_metrics('r2')}
+        card = self.card(scoring_report({'d0': 'pass', 'd1': 'pass', 'd2': 'failure'}, joint=(True, False, False)), blank)
+        self.assertEqual(card['joint_verdict'], {'passed': 1, 'denominator': 3, 'rate': 1 / 3})
+        self.assertNotIn('trials', card)
+        plain = self.card(scoring_report({'d0': 'pass', 'd1': 'not_run', 'd2': 'failure'}, scoring=False, joint=(True, False, False)),
+                          blank)
+        self.assertEqual(plain['joint_verdict'], {'passed': 1, 'denominator': 3, 'rate': 1 / 3})
+        self.assertEqual([row['equivalent_and_mission'] for row in plain['trials']], [True, False, False])
+        # A report with none (an earlier build of it) gives none, and its rows none.
+        bare = self.card(scoring_report({'d0': 'pass'}, scoring=False), {'r0': blank_metrics('r0')})
+        self.assertNotIn('joint_verdict', bare)
+        self.assertNotIn('equivalent_and_mission', bare['trials'][0])
+
     def test_a_suite_with_no_scoring_set_adds_a_row_for_each_trial_and_never_the_audit(self):
         # Every planned trial has a row, one with no run included, and a row is its key, outcome and metrics. A flagged
         # trial's findings quote the worker's raw command: they are in no scorecard.
@@ -780,7 +1058,9 @@ class SuiteScorecardTests(unittest.TestCase):
     def test_a_scoring_suites_scorecard_names_no_case_run_or_trial_and_quotes_no_command(self):
         # The rows of a report carry the case, run id and trial key of each trial and, when an audit ran, findings that
         # quote worker commands. None reaches the scorecard of a scoring suite, whatever its groups are.
-        report = scoring_report({'secret-device-7': 'flagged', 'secret-device-8': 'pass'})
+        report = scoring_report({'secret-device-7': 'flagged', 'secret-device-8': 'pass'}, joint=(False, True),
+                                overrides=[{'trial_key': 'entry-001-repeat-000', 'budget_seconds': 20000}],
+                                dimensions={**SYSTEM, 'replay_candidates': {'secret-device-7': 'e' * 64}})
         report['trials'][0]['audit'] = [{'transcript': 'work/probe/a1/_agent_events.jsonl', 'command': 'cat /vault/key'}]
         for row, run_id, level in zip(report['trials'], ('run-5ecret1', 'run-5ecret2'), (1, 2)):
             row.update(run_id=run_id, level=level)
@@ -832,11 +1112,37 @@ class ScorecardMarkdownTests(unittest.TestCase):
     def test_the_markdown_leads_with_the_pass_line_and_a_suite_no_model_ran_says_so_on_its_second_line(self):
         blank = {'r0': blank_metrics('r0'), 'r1': blank_metrics('r1')}
         lines = self.markdown(scoring_report({'d0': 'pass', 'd1': 'failure'}), blank).splitlines()
-        self.assertEqual(lines[:2], ['1/2 pass, 0 unknown, 0 faults, 2 planned', ''])
+        self.assertEqual(lines[0], '1/2 pass, 0 unknown, 0 faults, 2 planned')
+        self.assertNotIn('No model ran', lines[1])
         report = scoring_report({'d0': 'pass'}, execution='replay-emulation', model_benchmark=False)
         lines = self.markdown(report, blank).splitlines()
         self.assertEqual(lines[0], '1/1 pass, 0 unknown, 0 faults, 1 planned')
         self.assertRegex(lines[1], r'^No model ran these trials \(replay-emulation\): none of these figures is model performance')
+
+    def test_the_markdown_names_the_system_and_a_scoring_set_under_the_pass_line(self):
+        blank = {'r0': blank_metrics('r0'), 'r1': blank_metrics('r1')}
+        system = 'System: protocol assistive/1, runtime codex 0.164.0, model toy-model, reasoning effort medium'
+        lines = self.markdown(scoring_report({'d0': 'pass', 'd1': 'failure'}), blank).splitlines()
+        self.assertEqual(lines[:4], ['1/2 pass, 0 unknown, 0 faults, 2 planned', system,
+                                     'Scoring set: generated-set-1, manifest abcdef012345', ''])
+        # A suite that ran no scoring set names none.
+        lines = self.markdown(scoring_report({'d0': 'pass', 'd1': 'failure'}, scoring=False), blank).splitlines()
+        self.assertEqual(lines[:3], ['1/2 pass, 0 unknown, 0 faults, 2 planned', system, ''])
+        # A replay suite keeps its label on the second line; the system, which has no model, follows.
+        report = scoring_report({'d0': 'pass'}, dimensions={'runtime': 'replay', 'replay_candidates': {'d0': 'e' * 64}},
+                                execution='replay-emulation', model_benchmark=False)
+        lines = self.markdown(report, blank).splitlines()
+        self.assertRegex(lines[1], r'^No model ran these trials')
+        self.assertEqual(lines[2], 'System: protocol assistive/1, runtime replay')
+        self.assertNotIn('e' * 12, '\n'.join(lines))
+
+    def test_the_markdown_gives_the_joint_verdict_of_earlier_studies_on_one_line(self):
+        blank = {'r%d' % number: blank_metrics('r%d' % number) for number in range(3)}
+        report = scoring_report({'d0': 'pass', 'd1': 'pass', 'd2': 'failure'}, joint=(True, False, False))
+        text = self.markdown(report, blank)
+        self.assertIn("\nEarlier studies' joint verdict (an equivalent driver and a successful fresh mission): 1 of 3 planned trials.\n",
+                      text)
+        self.assertNotIn('joint verdict', self.markdown(scoring_report({'d0': 'pass'}), {'r0': blank_metrics('r0')}))
 
     def test_each_group_is_given_as_a_pass_line(self):
         report = scoring_report({'d0': 'pass', 'd1': 'failure', 'd2': 'pass'})
@@ -858,6 +1164,12 @@ class ScorecardMarkdownTests(unittest.TestCase):
         self.assertEqual(self.table_row(text, 'Stages', 'probe'),
                          ['probe', '4', '40 (2/3)', '10 (2/3)', '180 (2/3)', '4 (2/3)', '2 (2/3)', '1 (2/3)', '8', '1', '2', '1'])
         self.assertEqual(self.table_row(text, 'Stages', 'emit'), ['emit', '0'] + ['unknown'] * 6 + ['0'] * 4)
+        # Exchanges are marked like the other figures a trial may not have: one trial of three could not count them.
+        text = self.markdown(*three_probed(exchanges=(5, None, 3)))
+        self.assertEqual(self.table_row(text, 'Stages', 'probe')[8:], ['8 (2/3)', '1', '2', '1'])
+        self.assertEqual(self.table_row(text, 'Stages', 'emit')[8:], ['0'] * 4)
+        text = self.markdown(*three_probed(exchanges=(None, None, None)))
+        self.assertEqual(self.table_row(text, 'Stages', 'probe')[8:], ['unknown', '1', '2', '1'])
         # Every trial measured: no count beside the sum, and a half is written as a decimal.
         text = self.markdown(scoring_report({'d0': 'pass', 'd1': 'failure'}), {'r0': probed('r0', 10), 'r1': probed('r1', 15)})
         self.assertEqual(self.table_row(text, 'Stages', 'probe')[4], '25')
@@ -884,7 +1196,7 @@ class ScorecardMarkdownTests(unittest.TestCase):
         self.assertEqual(text.splitlines()[0], '0/0 pass, 0 unknown, 0 faults, 1 planned')
         self.assertIn('\nFigures cover 0 of 1 planned trials, those with a run.', text)
         for stage in STAGES:
-            self.assertEqual(self.table_row(text, 'Stages', stage), [stage, '0'] + ['unknown'] * 6 + ['0'] * 4)
+            self.assertEqual(self.table_row(text, 'Stages', stage), [stage, '0'] + ['unknown'] * 7 + ['0'] * 3)
             self.assertEqual(self.table_row(text, 'Medians', stage), [stage] + ['unknown'] * 3)
         self.assertTrue(text.endswith('\n## Managed calls\n\nnone\n'))
 
@@ -1008,6 +1320,10 @@ class RealSuiteTests(AssistiveFixture):
                          [(rows[0]['trial_key'], 'flagged', rows[0]['run_id']), (rows[1]['trial_key'], 'failure', rows[1]['run_id']),
                           (rows[2]['trial_key'], 'fault', rows[2]['run_id'])])
         self.assertEqual([card['stages'][stage]['attempts'] for stage in STAGES], [3] * 6)
+        self.assertEqual((card['suite_id'], card['system']['protocol'], card['conditions']['qualification']),
+                         (sid, 'assistive/1', 'recorded-controller-verdicts'))
+        self.assertNotIn('scoring_set', card['conditions'])
+        self.assertEqual([type(row['equivalent_and_mission']) for row in card['trials']], [bool] * 3)
         directories = {call.args[1]: call.kwargs['trial_dir'] for call in measured.call_args_list}
         self.assertEqual(sorted(directories), sorted(row['run_id'] for row in rows))
         for row in rows:
@@ -1028,6 +1344,11 @@ class RealSuiteTests(AssistiveFixture):
         card = suite_scorecard(report, home=self.home, trial_dirs=bench_trial_dirs(report, self.home))
         self.assertNotIn('trials', card)
         self.assertEqual(card['pass_line'], '0/1 pass, 0 unknown, 1 faults, 3 planned, 1 flagged')
+        # What the suite says of itself comes through whole: its id, system, conditions and joint count.
+        self.assertEqual(card['suite_id'], sid)
+        self.assertEqual(card['system'], {'protocol': report['protocol'], **report['experiment']['dimensions']})
+        self.assertEqual(card['conditions']['scoring_set'], {'registration': 'generated-set-1', 'manifest_sha256': 'a' * 64})
+        self.assertEqual(card['joint_verdict'], report['equivalent_and_mission'])
         text = json.dumps(card) + scorecard_markdown(card)
         for row in rows:
             for private in (row['run_id'], row['trial_key'], row['case'], self.VAULT, 'password'):

@@ -185,7 +185,11 @@ generative-driver --home /operator/state/suite benchmark suite scorecard SUITE_I
 generative-driver --home /operator/state/suite benchmark suite compare reports/before/suite.json reports/after/suite.json [--leak-check reports/fresh/suite.json]
 ```
 
-`scorecard` makes the export that `suite report` makes in a temporary folder and writes only `scorecard.json` and `scorecard.md` to `--output`. The Markdown opens with the pass line (and, for a replay suite, a second line saying no model ran), then gives the pass line of each group (`family`, and `level` and `framing` where the rows carry them), the repairs and fresh-reuse claims, and for each stage the attempts, wall and worker seconds, tokens, worker actions, managed calls and device use, summed over the trials, with medians for times and tokens. A sum that only some trials could measure shows how many (`n/N`); `unknown` means none could. A suite that ran a scoring set, a fixed sealed set of generated devices that every compared system runs, gets aggregates only and names no trial, case or run; any other suite adds a row of key, outcome and metrics per trial to `scorecard.json`. No scorecard quotes an audit finding.
+`scorecard` makes the export that `suite report` makes in a temporary folder and writes only `scorecard.json` and `scorecard.md` to `--output`.
+
+The two files say what they measure. `scorecard.json` holds the `suite_id`, the `system` (the protocol and the runtime, version, model, reasoning effort and revisions the suite froze) and the `conditions` (scoring set, evaluator revision, execution, evidence track, scope, child budget and its number of overrides, repair limit, tool approval and qualification). The Markdown names the system and any scoring set under its pass line and gives the joint verdict of earlier studies (an equivalent driver and a successful fresh mission; `joint_verdict` in the JSON, beside each trial's own flag where trials are listed).
+
+The Markdown opens with the pass line (and, for a replay suite, a second line saying no model ran). Below the identity it gives the pass line of each group (`family`, and `level` and `framing` where the rows carry them), the repairs and fresh-reuse claims, and for each stage the attempts, wall and worker seconds, tokens, worker actions, managed calls and device use, summed over the trials, with medians for times and tokens. A sum that only some trials could measure shows how many (`n/N`); `unknown` means none could. A suite that ran a scoring set, a fixed sealed set of generated devices that every compared system runs, gets aggregates only and names no trial, case or run; any other suite adds a row of key, outcome and metrics per trial to `scorecard.json`. No scorecard quotes an audit finding.
 
 `compare` pairs two reports of one scoring set device by device, whatever their protocols; `--leak-check` takes the after system's saved report on a fresh batch of devices (see [leak check](../CONTEXT.md)). Other reports compare as whole suites within one protocol.
 
@@ -195,6 +199,7 @@ Limits:
 - A stage skipped without an assignment has `wall_seconds` None.
 - Resets without the trial's directory are a lower bound: they come from the configurator's events, plus the device provider's journal where the bench home still holds the directory.
 - Worker actions are read only from Codex transcripts.
+- Device exchanges are counted once, where the device made them: a replay (`probe_diff`, `emit_check`) is skipped, and an `emit_test_live` is counted in the live record its result names, found inside the run's folder. A stage whose record is missing or unreadable has `exchanges` None (`unknown`), never a partial count. A `benchmark_package_execute` call is counted where its result holds a transcript, as on the provided emulator; on the bme280 case it returns a measurement with none, so those exchanges are not counted. Replies a live test saw the device reject are not counted as refusals.
 - Reading the configurator database leaves a `-shm` and an empty `-wal` file beside it in a quiescent home.
 
 ## Optional physical trial

@@ -629,6 +629,26 @@ class HarnessGradingTests(PendingRunFixture):
                 self.assertEqual((result['equivalence'], equivalence['frozen_artifact_sha256']),
                                  (equivalence, self.emitted(result)))
 
+    def test_a_run_stamped_with_another_evaluator_revision_is_unscored_before_grading(self):
+        # Catches a grader edited during a trial sealing a verdict under the revision the run started with: the grade
+        # refuses for integrity before any truth is unlocked or emulator started, and the trial ends unscored.
+        from generative_driver.benchmark_support import evaluator, harness
+        with patch('generative_driver.benchmark_support.grader_identity.grader_identity', return_value={'sha256': 'e' * 64}):
+            run, result = self.pending()
+        run_dir = self.home / 'runs' / run['run_id']
+        executed = json.loads((run_dir / 'benchmark/execution.json').read_text())['executed']
+        self.assertEqual(executed['evaluator_revision'], 'e' * 64)
+        trial = self.root / 'trial'; trial.mkdir()
+        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')), \
+                patch.object(evaluator, 'reference_execute', side_effect=AssertionError('device started')):
+            done = harness.conclude(trial, 'tq9-v2', run_dir, result, password_file=self.password, token=TOKEN,
+                                    call=self.configurator)
+        self.assertEqual((done['status'], done['equivalence']['status'], done['equivalence']['equivalent']),
+                         ('unscored', 'unscored', None))
+        reason = done['equivalence']['diff'][0]['reason']
+        self.assertTrue(reason.startswith('integrity: ') and 'evaluator revision' in reason, reason)
+        self.assertEqual(self.controller.call('status', run)['equivalence'], None)
+
     def test_grading_ended_by_any_exit_leaves_no_plaintext_evaluation(self):
         # Catches the private copy and the plaintext evaluation output (the contract with its expected values and the
         # raw records) left in the trial directory when grading ends by an exit no handler catches.

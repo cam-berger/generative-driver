@@ -101,10 +101,12 @@ class RecordedReuseTests(unittest.TestCase):
         self.resources,self.observed,self.secret=self.reference_fixture(self.root)
         for target in ('generative_driver.benchmark.case_root','generative_driver.benchmark_support.case_assets.case_root'):
             guard=patch(target,return_value=self.resources);guard.start();self.addCleanup(guard.stop)
+        from generative_driver.benchmark_support.grader_identity import grader_identity
         from generative_driver.benchmark_support.registry import pin_case
         from generative_driver.benchmark_support.snapshots import snapshot_case
         self.run_dir=self.root/'run';self.pin=pin_case('bme280',None,0)
-        self.snapshot=snapshot_case(self.run_dir,self.pin,{})
+        # Stamped as a run is, with the installed grader's revision, which the grade checks.
+        self.snapshot=snapshot_case(self.run_dir,self.pin,{'evaluator_revision':grader_identity()['sha256']})
         accepted=self.root/'accepted';(accepted/'probe').mkdir(parents=True)
         for name,content in (('model.json','{}'),('convert.py','# scripted converter\n'),('capabilities.json',json.dumps(MAPPING))):
             (accepted/'probe'/name).write_text(content)

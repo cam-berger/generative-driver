@@ -230,10 +230,12 @@ def needs_grading(trial_dir, result, *, password_file):
 
 def accepted_driver(case_id, trial_dir, run_dir, result):
     """The frozen driver a completed run accepted, checked and copied for grading: (snapshot, driver). It checks the
-    run's snapshot and pin. Then, when an emit handoff handed a package on, it first deletes `trial_dir/private` and
-    copies into a fresh one the package of the latest such handoff and the mapping of the model it packages, re-hashing
-    both. `driver` is None when no emit handed a package on, else (package copy, recorded sha256, revision, capability
-    mapping or None, mapping sha256 or None). A changed record raises IntegrityError."""
+    run's snapshot and pin, and that the installed grader is the evaluator revision the run was stamped with. Then, when
+    an emit handoff handed a package on, it first deletes `trial_dir/private` and copies into a fresh one the package of
+    the latest such handoff and the mapping of the model it packages, re-hashing both. `driver` is None when no emit
+    handed a package on, else (package copy, recorded sha256, revision, capability mapping or None, mapping sha256 or
+    None). A changed record or grader raises IntegrityError."""
+    from .grader_identity import grader_identity
     from .integrity import IntegrityError
     from .registry import pin_case
     from .snapshots import require_snapshot
@@ -247,6 +249,9 @@ def accepted_driver(case_id, trial_dir, run_dir, result):
         raise IntegrityError('Execution snapshot differs from the run record')
     if pin_case(case_id, pin.get('scenario_id'), pin.get('case_seed', 0)) != pin:
         raise IntegrityError('The installed case differs from the run\'s pinned case')
+    if snapshot['executed'].get('evaluator_revision') != grader_identity()['sha256']:
+        # A grader edited during the trial never seals a verdict under the revision the run started with.
+        raise IntegrityError('The installed grader differs from the evaluator revision the run was stamped with')
     accepted = result.get('accepted_handoffs') or []
     frozen = emitted(accepted)
     if frozen is None:
@@ -271,9 +276,9 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
     the final evaluation for the seal or None). It takes the accepted driver (`accepted_driver`), unlocks the truth and
     runs the final phase on a fresh emulator; a driver without a capability mapping, or whose model is not a JSON object,
     fails before either. A final the draft already holds for this run and package is rebuilt and never graded again. A
-    changed record raises IntegrityError. Every record names the protocol the run's progress names, and a result that
-    names none raises ValueError. Legacy tq9 and bme280 are graded from their recorded reuse by `recorded_grading.grade`
-    instead."""
+    changed record, or a grader other than the evaluator revision the run was stamped with, raises IntegrityError. Every
+    record names the protocol the run's progress names, and a result that names none raises ValueError. Legacy tq9 and
+    bme280 are graded from their recorded reuse by `recorded_grading.grade` instead."""
     from .case_assets import case_inputs
     protocol = _protocol(result)
     trial_dir, run_dir = Path(trial_dir), Path(run_dir)

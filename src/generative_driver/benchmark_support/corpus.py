@@ -324,9 +324,11 @@ def report_corpus(plan, suite=None):
 
     A saved suite is trusted configured-owner evidence, not independent authentication.
     Its manifest and complete case pins must match this plan before any result counts.
+    A trial passes or fails as its suite export scored it (the row's `scored` outcome); fresh reuse is reported beside
+    a pass.
     """
-    from .suite_reporting import _saved_report, _report_equivalent
-    from ..configurator import _evaluation_errors
+    from .outcomes import STOPPED, classify
+    from .suite_reporting import _saved_report
     plan = validate_plan(plan)
     trials, qualification = {}, None
     modern = plan['schema'] == 'benchmark-corpus-plan/2'
@@ -353,15 +355,16 @@ def report_corpus(plan, suite=None):
                'run_id': None, 'passed': False, 'reason': None}
         trial = trials.get((slot['lineage'], slot['repeat']))
         if trial and not trial.get('run_id') and (
-                trial.get('status') in ('blocked', 'failed', 'cancelled')
+                trial.get('status') in STOPPED
                 or trial.get('status') == 'finished' and trial.get('outcome_category') != 'completed'):
             row.update(status='stopped', reason=trial.get('reason'), trial_key=trial['trial_key'],
                        stopped_stage=trial.get('stopped_stage'))
         if trial and trial.get('run_id'):
-            accepted = all(trial.get('stages', {}).get(s, {}).get('workflow_status') == 'accepted' for s in STAGES)
-            equivalent = (trial.get('status') == 'finished' and trial.get('outcome_category') == 'completed'
-                and _report_equivalent({**trial, 'schema': 'benchmark-report/3',
-                                        'protocol': 'assistive/1', 'workflow_status': 'completed'}))
+            # The outcome the suite export stored for the trial. A benchmark-suite-report/2 row stored none, so it is
+            # classified as exported, which shows no spent budget.
+            scored = trial.get('scored') or classify(trial, trial)
+            # A counted equivalent is a pass of a trial the owner completed.
+            equivalent = scored == 'pass' and trial.get('outcome_category') == 'completed'
             grade = trial.get('equivalence')
             mission_record = grade.get('mission') if isinstance(grade, dict) else None
             mission = mission_record.get('passed') if isinstance(mission_record, dict) else None
@@ -369,24 +372,22 @@ def report_corpus(plan, suite=None):
             mission_reason = mission_record.get('reason') if isinstance(mission_record, dict) else None
             mission_fault = mission_fault if isinstance(mission_fault, str) else None
             mission_reason = mission_reason if isinstance(mission_reason, str) else None
-            negative = (trial.get('status') == 'finished' and trial.get('outcome_category') == 'completed'
-                and trial.get('verdict') == 'not equivalent' and isinstance(grade, dict)
-                and not _evaluation_errors(grade) and grade['status'] in ('graded', 'no-driver')
-                and grade['equivalent'] is False)
-            if equivalent and accepted and mission is True:
+            if equivalent:
                 status = 'passed'
-            elif negative or equivalent and accepted and mission is False and mission_fault == 'model':
+            elif scored == 'failure':
                 status = 'failed'
-            elif (trial.get('status') in ('blocked', 'failed', 'cancelled')
+            elif scored == 'running':
+                status = 'running'
+            elif (trial.get('status') in STOPPED
                     or trial.get('outcome') == 'stopped'
                     or trial.get('status') == 'finished' and trial.get('outcome_category') != 'completed'):
                 status = 'stopped'
             elif trial.get('verdict') in ('equivalent', 'unqualified'):
-                status = 'unqualified' if not accepted else 'unscored'
+                status = 'unqualified'
             else:
-                status = 'running' if trial.get('status') in ('pending', 'launching', 'running', 'queued') else 'unscored'
+                status = 'unscored'
             row.update(status=status, run_id=trial['run_id'], passed=status == 'passed',
-                       reason=trial.get('reason') or (mission_reason if status == 'unscored' and mission is False else None),
+                       reason=trial.get('reason'),
                        trial_key=trial['trial_key'], equivalent=equivalent, fresh_mission=mission,
                        fresh_mission_fault=mission_fault, fresh_mission_reason=mission_reason,
                        stopped_stage=trial.get('stopped_stage'), repairs=trial.get('repairs'),
@@ -426,9 +427,10 @@ def report_corpus(plan, suite=None):
             'origin_groups': groups, 'measured_origin_macro_success': sum(rates)/len(rates) if rates else None,
             'limitations': [
                 'Blocked and unrun slots remain in demonstrated coverage, not measured model failures.',
-                'Measured success requires equivalence, successful fresh reuse and all six accepted stages.',
-                'Missing mission evidence is unscored. Host/operator stops are reported separately.',
-                'A failed fresh mission counts as a model failure only with explicit model fault attribution.',
+                'Measured success counts a pass when the evaluator grades the frozen driver equivalent; '
+                'fresh reuse is reported beside it.',
+                'Host and operator stops and missing grades are reported separately; '
+                'a spent budget or a stop the system caused is a failure.',
                 'Origin means weight measured lineages equally; unavailable groups have no measured rate.',
                 'Software execution does not establish physical transport, timing or actuation behavior.',
                 'Saved owner reports and hashes provide provenance, not cryptographic authentication.']}

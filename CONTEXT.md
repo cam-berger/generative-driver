@@ -45,4 +45,4 @@
 
 Functional compatibility compares required outputs/effects, not source code. Hashes prove identity/integrity, not physical truth or access control. Keep passwords/answers out of candidate inputs; the configurator holds no truth.
 
-Only safety, integrity, operator and host faults stop runs. Model/device differences drive bounded interpretation repair. Operator faults need configuration; host faults need environment repair. After repair budget is spent, continue with the best revision.
+Only safety, integrity, operator and host stops end runs. Model/device differences drive bounded interpretation repair. Operator stops need configuration; host stops need environment repair. After repair budget is spent, continue with the best revision. The pass rate scores safety and integrity stops, like a spent budget, as failures, and other operator stops and host stops as faults.

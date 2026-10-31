@@ -8,6 +8,7 @@ import statistics
 from pathlib import PurePosixPath,PureWindowsPath
 from .suites import normalize_manifest,expand_trials
 from .evidence import public_equivalence,public_pin,public_v2_report,public_v3_report,PIN,USAGE
+from .outcomes import classify,pass_rate,pass_rate_line
 from ..benchmark import STAGES
 
 QUALIFICATIONS={'recorded-controller-verdicts','regraded-encrypted-evidence'}
@@ -249,8 +250,9 @@ def _outcomes(trials,reports,equivalent):
 
 def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
     """A suite's measurements. An assistive suite (its frozen identity names the protocol) counts equivalent drivers out
-    of those planned, from benchmark-report/3 reports alone (benchmark-suite-report/2); an earlier suite keeps its gated
-    success count (benchmark-suite-report/1)."""
+    of those planned, from benchmark-report/3 reports alone, and leads with its pass rate: each trial's `scored` outcome,
+    classified from its slot and its full report, and the rate counted from them (benchmark-suite-report/3). An earlier
+    suite keeps its gated success count (benchmark-suite-report/1)."""
     if qualification not in QUALIFICATIONS:raise ValueError('Suite aggregates require qualified trial evidence')
     experiment=_experiment(experiment)
     _validate_trials(manifest,trials,reports,experiment)
@@ -277,7 +279,7 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
         missions=[public_equivalence((reports.get(t.get('run_id')) or {}).get('equivalence')) or {} for t in trials]
         mission=sum((m.get('mission') or {}).get('passed') is True for m in missions)
         reused=[t for t in passed if (reports[t['run_id']]['equivalence'].get('mission') or {}).get('passed') is True]
-        result={'schema':'benchmark-suite-report/2','protocol':protocol,'qualification':qualification,'counts':counts,
+        result={'schema':'benchmark-suite-report/3','protocol':protocol,'qualification':qualification,'counts':counts,
             'equivalence':{'equivalent':len(passed),'denominator':len(trials),'rate':len(passed)/len(trials)},'unscored':unscored,
             'provisional':len(finished)!=len(trials),'family_equivalence':rates,'family_macro_equivalence':sum(rates.values())/len(rates),
             # Secondary: whether fresh reuse did the public mission with the frozen package; never the verdict.
@@ -308,8 +310,9 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
         # An assistive trial that has no report yet carries no verdict, not even an unscored one.
         safe=(public_v3_report(report) if report else {}) if protocol else public_v2_report(report)
         row={key:trial[key] for key in ('trial_key','ordinal','entry_index','repeat_index','case','family','scenario','case_seed','run_id','status','outcome_category')}
+        # `workflow_status` and `effective_budget_seconds` let the row alone repeat the outcome its report gave.
         row.update({key:safe[key] for key in ('verdict','equivalence','equivalence_status','stages','final_evaluation','elapsed_seconds',
-            'worker_seconds','tool_seconds','usage') if key in safe})
+            'worker_seconds','tool_seconds','usage','workflow_status','effective_budget_seconds') if key in safe})
         if row.get('verdict')==win and trial not in passed:row['verdict']='unqualified'
         if protocol:
             # Why the trial stands as it does: its outcome as its count holds it, the reason its report gives (paths
@@ -317,12 +320,16 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
             outcome=_outcome(trial,report,passed);repairs=(safe.get('progress') or {}).get('repairs')
             row.update(equivalent_and_mission=trial in reused,
                        outcome=outcome,reason=UNQUALIFIED if outcome=='unqualified' else safe.get('reason'),
-                       stopped_stage=safe.get('stopped_stage'),repairs=repairs if type(repairs) is int else None)
+                       stopped_stage=safe.get('stopped_stage'),repairs=repairs if type(repairs) is int else None,
+                       # From the slot and the full report, with the verdict the row carries: a claimed equivalent the count
+                       # refuses is unqualified here as in `report_suite`, so its passes are the equivalent drivers counted.
+                       scored=classify(trial,{**report,'verdict':row.get('verdict')}))
         row['report_sha256']=_digest(_public_report(report)) if report else None
         row['interventions']=[{key:item[key] for key in ('event_id','kind','time','effect_resolution','scoped_tool_approval','old_budget_seconds','new_budget_seconds','extension_seconds','old_deadline','new_deadline','stage','uncertain_effect','has_observation')
             if key in item and (item[key] is None or type(item[key]) in (str,int,float,bool))} for item in trial.get('interventions',[])]
         public_trials.append(row)
     prefix='first_attempt_'+('equivalent' if protocol else 'success'),'repaired_'+('equivalent' if protocol else 'success')
+    if protocol:result['pass_rate']=pass_rate([row['scored'] for row in public_trials])
     result.update({'experiment':experiment,'trials':public_trials,
         ('case_equivalence' if protocol else 'case_success'):rates_by('case'),
         ('scenario_equivalence' if protocol else 'scenario_success'):rates_by('scenario'),
@@ -349,12 +356,14 @@ def _read_saved(value):
 
 def _saved_report(value):
     """A saved suite report: an earlier suite's gated success (benchmark-suite-report/1), or an assistive suite's
-    equivalent drivers (benchmark-suite-report/2), each counted again from its trials' verdicts."""
+    equivalent drivers (benchmark-suite-report/2, or /3, which adds the pass rate and each trial's scored outcome), each
+    counted again from its trials' verdicts and, for /3, its pass rate from the outcomes its rows store."""
     report=_read_saved(value)
-    if report.get('schema') not in ('benchmark-suite-report/1','benchmark-suite-report/2') or report.get('qualification') not in QUALIFICATIONS:raise ValueError('Unsupported suite report')
+    assistive=('benchmark-suite-report/2','benchmark-suite-report/3')
+    if report.get('schema') not in ('benchmark-suite-report/1',*assistive) or report.get('qualification') not in QUALIFICATIONS:raise ValueError('Unsupported suite report')
     experiment=_experiment(report['experiment'])
     protocol=experiment['comparison_identity'].get('protocol')
-    if (report['schema']=='benchmark-suite-report/2')!=bool(protocol) or report.get('protocol')!=protocol:raise ValueError('Unsupported suite report')
+    if (report['schema'] in assistive)!=bool(protocol) or report.get('protocol')!=protocol:raise ValueError('Unsupported suite report')
     _validate_trials(experiment['comparison_identity']['manifest'],report['trials'],{},experiment)
     key,win=('equivalence','equivalent') if protocol else ('success','passed')
     success=report[key];planned=len(report['trials'])
@@ -370,6 +379,11 @@ def _saved_report(value):
         if 'equivalent_and_mission' in report and report['equivalent_and_mission']!=metric:
             raise ValueError('Saved joint success count differs from trial evidence')
         report['equivalent_and_mission']=metric
+        if report['schema']=='benchmark-suite-report/3':
+            # A forged or missing outcome is no outcome, and `pass_rate` refuses it.
+            rate=pass_rate([t.get('scored') for t in report['trials']])
+            if 'pass_rate' in report and report['pass_rate']!=rate:raise ValueError('Saved pass rate differs from trial outcomes')
+            report['pass_rate']=rate
     _number(report.get('usage',{}).get('total_tokens'),True)
     _number(report.get('latency',{}).get('median'))
     return report
@@ -515,10 +529,10 @@ def _cell(value,missing=''):
 
 
 def _summary(result):
-    """An assistive suite's report.md body, built from its trial rows: the count, why the suite stands as it does, its
-    dimensions, each trial's outcome with its reason, stop stage, repairs, time and tokens, and the check ids that failed
-    most often. Expected values and tolerances are in none of these fields."""
-    equivalence,rows,counts=result['equivalence'],result['trials'],result['counts']
+    """An assistive suite's report.md body, built from its trial rows: the pass rate, why the suite stands as it does, its
+    dimensions, each trial's scored outcome and outcome with its reason, stop stage, repairs, time and tokens, and the
+    check ids that failed most often. Expected values and tolerances are in none of these fields."""
+    rows,counts=result['trials'],result['counts']
     joint=result['equivalent_and_mission']
     dimensions=', '.join(f'{key} `{value}`' for key,value in result['experiment']['dimensions'].items() if value is not None)
     tallied={}
@@ -531,7 +545,7 @@ def _summary(result):
             if isinstance(diff,dict) and isinstance(diff.get('id'),str):failing[diff['id']]=failing.get(diff['id'],0)+1
     common=sorted(failing.items(),key=lambda item:(-item[1],item[0]))[:5]
     unscored=', '.join(row['trial_key'] for row in result['unscored'])
-    lines=[f"Equivalent drivers: {equivalence['equivalent']}/{equivalence['denominator']}. Protocol: {result['protocol']}, "
+    lines=[f"{pass_rate_line(result['pass_rate'])}. Protocol: {result['protocol']}, "
            f"a series never compared with earlier gated results. Qualification: {result['qualification']}.",'',
            f"Equivalent drivers with successful fresh reuse: {joint['passed']}/{joint['denominator']}. "
            'Both conditions must hold for the same trial; missing mission evidence is no success.','',
@@ -539,12 +553,12 @@ def _summary(result):
            'Dimensions: '+(dimensions or 'none recorded')+'.','',
            'Outcomes: '+', '.join(f'{count} {outcome}'+(f' ({detail[outcome]})' if detail.get(outcome) else '')
                                   for outcome,count in tallied.items())+'.','',
-           '| Trial | Case | Outcome | Reason | Stopped stage | Repairs | Wall seconds | Tokens |',
-           '|---|---|---|---|---|---:|---:|---:|']
+           '| Trial | Case | Scored | Outcome | Reason | Stopped stage | Repairs | Wall seconds | Tokens |',
+           '|---|---|---|---|---|---|---:|---:|---:|']
     for row in rows:
         # A started trial's missing time or tokens are unknown; a trial never started has none.
         measured=[_cell(value,'unknown' if row['run_id'] else '') for value in (row.get('elapsed_seconds'),(row.get('usage') or {}).get('total_tokens'))]
-        lines.append('| '+' | '.join([*(_cell(value) for value in (row['trial_key'],row['case'],row['outcome'],row['reason'],
+        lines.append('| '+' | '.join([*(_cell(value) for value in (row['trial_key'],row['case'],row['scored'],row['outcome'],row['reason'],
                                                                      row['stopped_stage'],row['repairs'])),*measured])+' |')
     lines+=['','Most frequent failing checks: '+(', '.join(f'`{key}` ({count})' for key,count in common) or 'none recorded')+'.']
     return '\n'.join(lines)+'\n\n'+(f'Unscored: {unscored}.\n\n' if unscored else '')
@@ -639,7 +653,7 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
         result=aggregate_suite(manifest,trials,reports,qualification,experiment=experiment)
         result.update(suite_id=suite_id,status=first['status'],reason=_public(first.get('reason'),root),
             suite_wall_seconds=max(0,first['updated']-first['created']),
-            exporter={'evaluator_revision':_tree_hash(Path(__file__).parent),'toolchain_revision':_tree_hash(Path(__file__).parents[1])},
+            exporter={'benchmark_support_tree_sha256':_tree_hash(Path(__file__).parent),'toolchain_revision':_tree_hash(Path(__file__).parents[1])},
             qualification_meaning='Trusted configured owner records; not cryptographic authentication.' if not regrading else 'Authenticated sidecars; run association comes from the configured owner.')
         destination.mkdir(parents=True,exist_ok=True)
         for trial in result['trials']:
@@ -655,8 +669,10 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
             if result.get('execution'):
                 summary += (f"Execution: {result['execution']}: saved candidates replayed without a model, never model "
                             "performance or a series compared with model suites.\n\n")
+            denominators='The pass rate divides by graded trials; the fresh-reuse count divides by all planned slots.'
         else:
             summary=f"Success: {result['success']['passed']}/{result['success']['denominator']}. Qualification: {qualification}.\n\n"
-        (destination/'report.md').write_text('# Benchmark suite\n\n'+summary+
-            'All planned slots remain in the denominator. Missing resource totals remain unknown. Worker, child wall, suite wall and tool durations overlap.\n',encoding='utf-8')
+            denominators='All planned slots remain in the denominator.'
+        (destination/'report.md').write_text('# Benchmark suite\n\n'+summary+denominators+
+            ' Missing resource totals remain unknown. Worker, child wall, suite wall and tool durations overlap.\n',encoding='utf-8')
     return result

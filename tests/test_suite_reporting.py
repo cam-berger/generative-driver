@@ -351,6 +351,23 @@ class ExportIntegrationTests(unittest.TestCase):
             owners['r1']['snapshot_sha256']='0'*64
             with patch('generative_driver.client.call',side_effect=call),self.assertRaises(ValueError):report_suite('suite-toy',home=root,output=root/'refused')
 
+    def test_the_export_names_its_tree_hash_for_what_it_is_and_leaves_evaluator_revision_to_the_grader(self):
+        # Catches the exporter's whole-tree hash of benchmark_support named `evaluator_revision`, the name of the grader
+        # identity that a run is stamped with and the grade checks.
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from generative_driver.benchmark_support import suite_reporting
+        from generative_driver.benchmark_support.integrity import tree_hash
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);call,_,_,_,_=export_fixture(root)
+            with patch('generative_driver.client.call',side_effect=call):
+                result=suite_reporting.report_suite('suite-toy',home=root,output=root/'export')
+            self.assertEqual(set(result['exporter']),{'benchmark_support_tree_sha256','toolchain_revision'})
+            self.assertEqual(result['exporter']['benchmark_support_tree_sha256'],tree_hash(Path(suite_reporting.__file__).parent))
+            saved=json.loads((root/'export/suite.json').read_text(encoding='utf-8'))
+            self.assertEqual(saved['exporter'],result['exporter'])
+
     def test_regrade_requires_two_matching_sidecars_and_case_keyed_handles(self):
         import tempfile
         from pathlib import Path

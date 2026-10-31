@@ -505,7 +505,7 @@ class SuiteAggregateTests(unittest.TestCase):
         from generative_driver.benchmark_support.suite_reporting import aggregate_suite
         suite, trials, reports, experiment = assistive_fixture()
         result = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
-        self.assertEqual((result['schema'], result['protocol']), ('benchmark-suite-report/2', 'assistive/1'))
+        self.assertEqual((result['schema'], result['protocol']), ('benchmark-suite-report/3', 'assistive/1'))
         self.assertNotIn('success', result)
         self.assertEqual(result['equivalence'], {'equivalent': 1, 'denominator': 9, 'rate': 1 / 9})
         counts = result['counts']
@@ -531,6 +531,54 @@ class SuiteAggregateTests(unittest.TestCase):
         self.assertNotIn('PRIVATE', json.dumps(result))
         self.assertNotIn('final_evaluation', json.dumps(rows))
 
+    def test_assistive_suite_reports_the_pass_rate(self):
+        # Catches a suite report that leads with the equivalent drivers of all planned slots instead of the pass rate: the
+        # passes of the graded trials, with the unknown, fault and planned counts printed beside it.
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite, _summary
+        suite, trials, reports, experiment = assistive_fixture()
+        result = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+        self.assertEqual({k: result['pass_rate'][k] for k in ('passes', 'failures', 'unknown', 'faults', 'running', 'not_run', 'planned')},
+                         {'passes': 1, 'failures': 2, 'unknown': 0, 'faults': 4, 'running': 1, 'not_run': 1, 'planned': 9})
+        self.assertTrue(_summary({**result, 'status': 'completed', 'reason': None}).startswith('1/3 pass, 0 unknown, 4 faults, 9 planned'))
+
+    def test_each_trial_row_stores_the_outcome_the_pass_rate_counts(self):
+        # Catches a pass rate that is not the count of the outcomes its rows store, a row that stores none, and an
+        # assistive suite exported under the schema that has neither.
+        from generative_driver.benchmark_support.outcomes import pass_rate
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        suite, trials, reports, experiment = assistive_fixture()
+        result = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+        scored = [row['scored'] for row in result['trials']]
+        self.assertEqual(scored, ['pass', 'failure', 'failure', 'fault', 'running', 'fault', 'fault', 'fault', 'not_run'])
+        self.assertEqual(result['pass_rate'], pass_rate(scored))
+        self.assertEqual((result['schema'], result['pass_rate']['rate']), ('benchmark-suite-report/3', 1 / 3))
+        # The equivalent drivers the suite counts are its passes.
+        self.assertEqual(result['pass_rate']['passes'], result['equivalence']['equivalent'])
+
+    def test_an_exported_row_alone_is_scored_as_its_slot_with_its_report_is(self):
+        # Catches a row that drops what its outcome rested on: with the report's own status and its effective budget
+        # exported, the row alone gives the outcome that the slot with the full report gave, for a stop on the operator
+        # that ran out of budget and for a stored slot that still says running after its child stopped.
+        from generative_driver.benchmark_support.outcomes import classify
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        spent = lambda trials, reports: reports['r5'].update(elapsed_seconds=10800, effective_budget_seconds=10800)
+        stale = lambda trials, reports: trials[5].update(status='running', outcome_category='model')
+        for name, change, expected in (('as recorded', None, 'fault'), ('spent budget', spent, 'failure'),
+                                       ('stale slot', stale, 'failure')):
+            with self.subTest(trial=name):
+                suite, trials, reports, experiment = assistive_fixture()
+                if change:
+                    change(trials, reports)
+                rows = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)['trials']
+                for trial, row in zip(trials, rows):
+                    full = classify(trial, reports.get(trial['run_id']))
+                    self.assertEqual((row['scored'], classify(row, row)), (full, full), trial['trial_key'])
+                # The two figures the outcome rests on are in the row, whatever the slot says.
+                self.assertEqual(rows[5]['scored'], expected)
+                self.assertEqual((rows[5]['status'], rows[5]['workflow_status']),
+                                 ('running' if name == 'stale slot' else 'blocked', 'blocked'))
+                self.assertEqual(rows[5].get('effective_budget_seconds'), 10800 if name == 'spent budget' else None)
+
     def test_each_trial_row_has_the_outcome_of_the_count_it_is_in(self):
         # Catches a trial row whose outcome disagrees with the count that holds it, and a claimed equivalent the suite
         # does not count that does not say why.
@@ -549,7 +597,7 @@ class SuiteAggregateTests(unittest.TestCase):
 
     def test_a_verdict_is_counted_only_from_a_settled_complete_record(self):
         # Catches an equivalent driver counted from a trial the configurator did not settle, or from a record that is
-        # not a complete evaluator grade.
+        # not a complete evaluator grade, and a claimed equivalent that the count refuses but the pass rate counts.
         from generative_driver.benchmark_support.suite_reporting import aggregate_suite, _report_equivalent
         mutations = [lambda t, r: t[0].update(status='completed'),
                      lambda t, r: t[0].update(outcome_category='model'),
@@ -569,6 +617,8 @@ class SuiteAggregateTests(unittest.TestCase):
                 result = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
                 self.assertEqual(result['equivalence']['equivalent'], 0)
                 self.assertNotEqual(result['trials'][0]['verdict'], 'equivalent')
+                self.assertNotEqual(result['trials'][0]['scored'], 'pass')
+                self.assertEqual(result['pass_rate']['passes'], 0)
         suite, trials, reports, experiment = assistive_fixture()
         self.assertTrue(_report_equivalent(reports['r0']))
         self.assertFalse(_report_equivalent({**reports['r0'], 'schema': 'benchmark-report/2'}))
@@ -618,8 +668,8 @@ class SuiteAggregateTests(unittest.TestCase):
                 self.assertFalse(_recorded_equivalence(owner, events, report))
 
     def test_saved_suite_reports_compare_only_within_their_protocol(self):
-        # Catches an assistive suite report compared with a gated one, and a saved assistive report whose count is
-        # not its trials' verdicts.
+        # Catches an assistive suite report compared with a gated one, a saved assistive report whose count is
+        # not its trials' verdicts, and one whose pass rate is not the count of the outcomes its rows store.
         from generative_driver.benchmark_support.suite_reporting import aggregate_suite, compare_suites
         from test_suite_reporting import comparison_fixture
         suite, trials, reports, experiment = assistive_fixture()
@@ -640,17 +690,45 @@ class SuiteAggregateTests(unittest.TestCase):
         for change in (lambda r: r['equivalence'].update(equivalent=2, rate=2 / 9),
                        lambda r: r['trials'][1].update(verdict='equivalent'),
                        lambda r: r.update(schema='benchmark-suite-report/1'),
-                       lambda r: r.pop('protocol')):
+                       lambda r: r.pop('protocol'),
+                       lambda r: r['pass_rate'].update(passes=2),
+                       lambda r: r['pass_rate'].update(rate=1.0),
+                       lambda r: r['trials'][1].update(scored='pass'),
+                       lambda r: r['trials'][1].update(scored='stopped'),
+                       lambda r: r['trials'][1].pop('scored')):
             forged = copy.deepcopy(before); change(forged)
             refused = compare_suites(forged, before)
             self.assertFalse(refused['compatible']); self.assertEqual(refused['reason'], 'Invalid or incomplete saved suite report')
+
+    def test_an_earlier_saved_suite_report_stays_readable_without_a_pass_rate(self):
+        # Catches a saved benchmark-suite-report/2, which stored no outcomes, refused or given a pass rate it never had,
+        # and a saved /3 whose pass rate is taken from the file instead of counted from its rows.
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite, compare_suites, _saved_report
+        suite, trials, reports, experiment = assistive_fixture()
+        current = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+        earlier = copy.deepcopy(current)
+        earlier['schema'] = 'benchmark-suite-report/2'
+        earlier.pop('pass_rate')
+        for row in earlier['trials']:
+            for key in ('scored', 'workflow_status', 'effective_budget_seconds'):
+                row.pop(key, None)
+        saved = _saved_report(earlier)
+        self.assertEqual((saved['schema'], 'pass_rate' in saved), ('benchmark-suite-report/2', False))
+        for before, after in ((earlier, current), (current, earlier), (earlier, earlier)):
+            result = compare_suites(before, after)
+            self.assertTrue(result['compatible'], result)
+            self.assertEqual(result['equivalence_delta'], 0)
+        self.assertEqual(_saved_report(current)['pass_rate'], current['pass_rate'])
+        # A /3 file that names no pass rate has it counted from its rows.
+        nameless = copy.deepcopy(current); nameless.pop('pass_rate')
+        self.assertEqual(_saved_report(nameless)['pass_rate'], current['pass_rate'])
 
 
 class SuiteExportTests(AssistiveFixture):
     def test_an_exported_suite_says_why_each_trial_stands_as_it_does(self):
         # Catches an export that drops why a trial stopped or is unscored: each trial row, and the report it names,
-        # carries the trial's outcome, a reason with no path or expected value, the stage where it stopped and the
-        # repairs it used.
+        # carries the trial's outcome and how it scored, a reason with no path or expected value, the stage where it
+        # stopped and the repairs it used.
         from generative_driver.benchmark_support.suite_reporting import report_suite
         with self.harness(PASS, FAIL, RuntimeError('evaluator host stopped')):
             graded = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
@@ -662,15 +740,17 @@ class SuiteExportTests(AssistiveFixture):
                         'cause': 'runtime_unavailable', 'reason': 'Cannot start configured runtime: ' + str(self.home / 'codex')}
         with self.harness(runtime=stopping):
             stopped = self.drive(manifest=manifest(), executor='codex', options={}, request_id='stopped-child')
-        expected = {graded['suite_id']: [('equivalent', 'Final verdict: equivalent', None, 0),
-                                         ('not_equivalent', 'Final verdict: not equivalent: value mismatch', None, 0),
-                                         ('unscored', 'Unscored: evaluator host fault: RuntimeError', None, 0)],
-                    stopped['suite_id']: [('stopped', 'Cannot start configured runtime: ' + os.path.join('RUN_HOME', 'codex'),
-                                           'probe', 0), ('not_run', None, None, None), ('not_run', None, None, None)]}
+        expected = {graded['suite_id']: [('equivalent', 'pass', 'Final verdict: equivalent', None, 0),
+                                         ('not_equivalent', 'failure', 'Final verdict: not equivalent: value mismatch', None, 0),
+                                         ('unscored', 'fault', 'Unscored: evaluator host fault: RuntimeError', None, 0)],
+                    # A runtime that cannot start is an operator stop within its budget: a fault, not a failure.
+                    stopped['suite_id']: [('stopped', 'fault', 'Cannot start configured runtime: ' + os.path.join('RUN_HOME', 'codex'),
+                                           'probe', 0), ('not_run', 'not_run', None, None, None),
+                                          ('not_run', 'not_run', None, None, None)]}
         for sid, rows in expected.items():
             with self.subTest(suite=sid), self.owner():
                 result = report_suite(sid, home=self.home, output=self.root / sid)
-                self.assertEqual([(row['outcome'], row['reason'], row['stopped_stage'], row['repairs'])
+                self.assertEqual([(row['outcome'], row['scored'], row['reason'], row['stopped_stage'], row['repairs'])
                                   for row in result['trials']], rows)
                 for row in result['trials']:
                     if row['run_id']:
@@ -680,9 +760,10 @@ class SuiteExportTests(AssistiveFixture):
                     self.assertNotIn(str(EXPECTED), path.read_text()); self.assertNotIn(str(self.root), path.read_text())
 
     def test_the_suite_markdown_says_why_from_each_trials_outcome(self):
-        # Catches a report.md that is one count and the keys of the unscored trials: it names the experiment's
-        # dimensions and why the suite stopped, gives each trial's outcome with its reason, stop stage, repairs, time
-        # and tokens, and lists the most frequent failing check ids, with no path or expected value.
+        # Catches a report.md that is one count and the keys of the unscored trials: it leads with the pass line, names
+        # the experiment's dimensions and why the suite stopped, gives each trial's scored outcome and outcome with its
+        # reason, stop stage, repairs, time and tokens, and lists the most frequent failing check ids, with no path or
+        # expected value.
         from generative_driver.benchmark_support.suite_reporting import report_suite
         with self.harness(PASS, FAIL, RuntimeError('evaluator host stopped')):
             record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
@@ -690,21 +771,28 @@ class SuiteExportTests(AssistiveFixture):
         with self.owner():
             result = report_suite(record['suite_id'], home=self.home, output=self.root / 'export')
         text = (self.root / 'export/report.md').read_text()
+        self.assertTrue(text.startswith('# Benchmark suite\n\n1/2 pass, 0 unknown, 1 faults, 3 planned. Protocol: assistive/1,'), text)
         joint = result['equivalent_and_mission']
         self.assertIn(f"Equivalent drivers with successful fresh reuse: {joint['passed']}/{joint['denominator']}", text)
         self.assertEqual(result['reason'], 'Trial entry-000-repeat-002 is unscored: evaluator host fault: RuntimeError')
         self.assertIn('Suite status: blocked: ' + result['reason'], text)
         self.assertIn('runtime `codex`', text)
+        self.assertIn('| Trial | Case | Scored | Outcome | Reason | Stopped stage | Repairs | Wall seconds | Tokens |', text)
         for row in result['trials']:
             line = next(line for line in text.splitlines() if line.startswith('| ' + row['trial_key'] + ' |'))
             cells = [cell.strip() for cell in line.strip().strip('|').split('|')]
-            self.assertEqual(cells[:6], [row['trial_key'], row['case'], row['outcome'], row['reason'], '', str(row['repairs'])])
+            self.assertEqual(cells[:7], [row['trial_key'], row['case'], row['scored'], row['outcome'], row['reason'], '',
+                                         str(row['repairs'])])
         self.assertIn('Most frequent failing checks: `final/effect-1/duty` (1)', text)
+        # The pass line divides by graded trials, so the footer no longer says every planned slot is in the denominator.
+        self.assertIn('The pass rate divides by graded trials; the fresh-reuse count divides by all planned slots.', text)
+        self.assertNotIn('All planned slots remain in the denominator', text)
         self.assertNotIn(str(EXPECTED), text); self.assertNotIn(str(self.root), text)
 
     def test_an_assistive_suite_exports_its_equivalent_drivers_and_regrades_their_sealed_evidence(self):
         # Catches an exported assistive suite counted by gates, an unscored trial hidden or regraded, evidence that does
-        # not cover exactly the graded trials, and an export that carries an expected value.
+        # not cover exactly the graded trials, an export that carries an expected value, and one that does not lead with
+        # the pass rate of its graded trials.
         from generative_driver.benchmark_support.suite_reporting import compare_suites, report_suite
         from test_suite_reporting import comparison_fixture
         with self.harness(PASS, FAIL, RuntimeError('evaluator host stopped')):
@@ -715,15 +803,18 @@ class SuiteExportTests(AssistiveFixture):
         with self.owner():
             result = report_suite(sid, home=self.home, output=self.root / 'export')
         self.assertEqual((result['schema'], result['protocol'], result['qualification'], result['status']),
-                         ('benchmark-suite-report/2', 'assistive/1', 'recorded-controller-verdicts', 'blocked'))
+                         ('benchmark-suite-report/3', 'assistive/1', 'recorded-controller-verdicts', 'blocked'))
         self.assertEqual(result['equivalence'], {'equivalent': 1, 'denominator': 3, 'rate': 1 / 3})
+        self.assertEqual({key: result['pass_rate'][key] for key in ('passes', 'failures', 'unknown', 'faults', 'planned', 'rate')},
+                         {'passes': 1, 'failures': 1, 'unknown': 0, 'faults': 1, 'planned': 3, 'rate': 1 / 2})
+        self.assertEqual([row['scored'] for row in result['trials']], ['pass', 'failure', 'fault'])
         self.assertEqual({key: result['counts'][key] for key in ('equivalent', 'not_equivalent', 'unscored', 'not_run')},
                          {'equivalent': 1, 'not_equivalent': 1, 'unscored': 1, 'not_run': 0})
         self.assertEqual(result['unscored'], [{'trial_key': rows[2]['trial_key'], 'run_id': rows[2]['run_id'],
                                                'equivalence_status': 'unscored'}])
         self.assertEqual([row['verdict'] for row in result['trials']], ['equivalent', 'not equivalent', 'unscored'])
         text = (self.root / 'export/report.md').read_text()
-        self.assertIn('Equivalent drivers: 1/3', text)
+        self.assertTrue(text.startswith('# Benchmark suite\n\n1/2 pass, 0 unknown, 1 faults, 3 planned'), text)
         self.assertIn('Unscored: ' + rows[2]['trial_key'], text)
         for row in result['trials']:
             saved = json.loads((self.root / 'export' / row['report_path']).read_text())
@@ -744,6 +835,7 @@ class SuiteExportTests(AssistiveFixture):
             self.assertEqual((regraded['qualification'], regraded['equivalence']['equivalent']),
                              ('regraded-encrypted-evidence', 1))
             self.assertEqual([row['verdict'] for row in regraded['trials']], ['equivalent', 'not equivalent', 'unscored'])
+            self.assertEqual(regraded['pass_rate'], result['pass_rate'])
             keys = list(trials)
             for label, evidence in (('missing', {keys[0]: graded[keys[0]]}),
                                     ('swapped', {keys[0]: graded[keys[1]], keys[1]: graded[keys[0]]}),

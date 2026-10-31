@@ -100,7 +100,7 @@ Supply either `--suite-id` or `--suite-report`. Omit both for an intake-only rep
 
 | `benchmark-corpus-report/2` field | Meaning |
 |---|---|
-| `measured_success` | Passed / (passed + failed). A pass requires equivalence, a successful fresh mission and all six accepted stage handoffs. A valid final negative/no-driver grade is a failure; an equivalent driver with failed fresh mission counts as failed only with explicit model attribution. Missing evidence and host/operator/unknown mission failures are unscored. |
+| `measured_success` | Passed / (passed + failed), each trial counted once from the `scored` outcome its suite export stored (a `benchmark-suite-report/2` export stored none, so its rows are scored as exported, with no spent budget visible). A pass is a frozen driver the evaluator grades equivalent; fresh reuse and accepted stages are reported beside it, never inside it. A driver graded not equivalent or absent, a spent budget and a stop the system caused (safety, integrity, model) are failures. Host and operator stops, missing and unknown grades, and trials not yet settled appear in `counts`, not here. |
 | `selected_coverage` | Passed / all selected slots, including selected blocked, stopped and unrun slots. |
 | `demonstrated_coverage` | Passed / all catalog slots, including excluded slots. |
 | `counts`, `slots` | Separate excluded, blocked, not run, running, stopped, unqualified, unscored, passed and failed outcomes, with selection/blocker/stop reasons and `fresh_mission_fault` / `fresh_mission_reason` when available. |

@@ -16,7 +16,9 @@ def unavailable_catalog():
     return catalog
 
 
-def measured_fixture():
+def measured_fixture(change=None):
+    """The plan and its saved suite: one equivalent trial, graded and settled. `change(trial, report)` alters the
+    trial's slot or report before the suite is aggregated."""
     from test_assistive_reports import evaluation
     from generative_driver.benchmark_support.corpus import _plan, _availability, lineage_identity, _digest
     from generative_driver.benchmark_support.suites import expand_trials
@@ -52,6 +54,8 @@ def measured_fixture():
         'snapshot_sha256': 'e'*64, 'workflow_status': 'completed', 'verdict': 'equivalent',
         'equivalence': grade, 'equivalence_status': 'graded', 'progress': {'protocol': 'assistive/1'},
         'stages': {s: {'workflow_status': 'accepted', 'attempt_count': 1} for s in plan['slots'][0]['required_stages']}}
+    if change:
+        change(trial, report)
     return plan, aggregate_suite(manifest, [trial], {'toy-run': report}, 'recorded-controller-verdicts', experiment=experiment)
 
 
@@ -95,44 +99,51 @@ class CorpusTests(unittest.TestCase):
 
     def test_missing_negative_grade_never_becomes_a_measured_model_failure(self):
         from generative_driver.benchmark_support.corpus import report_corpus
-        plan, suite = measured_fixture()
-        trial = suite['trials'][0]
-        trial.update(outcome='not_equivalent', verdict='unknown', equivalence=None)
-        suite['equivalence'] = {'equivalent': 0, 'denominator': 1, 'rate': 0}
-        suite.pop('equivalent_and_mission')
+        plan, suite = measured_fixture(lambda trial, report: report.update(
+            verdict='unscored', equivalence=None, equivalence_status='unscored'))
         report = report_corpus(plan, suite)
         self.assertEqual(report['counts']['failed'], 0)
         self.assertEqual(report['counts']['unscored'], 1)
         self.assertIsNone(report['measured_success']['rate'])
 
-    def test_fresh_mission_failure_requires_explicit_model_fault_attribution(self):
+    def test_equivalent_driver_counts_without_fresh_reuse_or_accepted_stages(self):
+        # Catches a pass that also asks for a successful fresh mission and six accepted stages: the evaluator's grade of
+        # the frozen driver is the pass, and fresh reuse is reported beside it.
         from generative_driver.benchmark_support.corpus import report_corpus
-        plan, original = measured_fixture()
+        def change(trial, report):
+            report['equivalence']['mission'].update(passed=False)
+            report['stages']['reuse']['workflow_status'] = 'pending'
+        plan, suite = measured_fixture(change)
+        report = report_corpus(plan, suite)
+        self.assertEqual(report['counts']['passed'], 1)
+        self.assertEqual((report['slots'][-1]['equivalent'], report['slots'][-1]['fresh_mission']), (True, False))
+
+    def test_a_failed_fresh_mission_is_reported_beside_the_pass_whatever_its_fault(self):
+        # Catches a fresh mission failure that moves an equivalent driver out of the pass count, or whose attribution
+        # and reason are dropped from the row.
+        from generative_driver.benchmark_support.corpus import report_corpus
         for fault in ('model', 'host', 'operator', None, 'mixed'):
             with self.subTest(fault=fault):
-                suite = copy.deepcopy(original)
                 mission = {'name': 'fresh_worker_mission', 'passed': False,
                            'reason': 'Fresh reuse could not complete its behavior check.'}
                 if fault is not None:
                     mission['fault'] = fault
-                suite['trials'][0]['equivalence']['mission'] = mission
-                suite.pop('equivalent_and_mission')
+                plan, suite = measured_fixture(lambda trial, report: report['equivalence'].update(mission=mission))
                 report = report_corpus(plan, suite)
                 row = report['slots'][-1]
-                self.assertEqual(report['counts']['failed'], int(fault == 'model'))
-                self.assertEqual(report['counts']['unscored'], int(fault != 'model'))
-                self.assertEqual(report['measured_success']['denominator'], int(fault == 'model'))
-                self.assertEqual(row['fresh_mission_fault'], fault)
-                self.assertEqual(row['fresh_mission_reason'], mission['reason'])
-                if fault != 'model':
-                    self.assertEqual(row['reason'], mission['reason'])
+                self.assertEqual([report['counts'][key] for key in ('passed', 'failed', 'unscored')], [1, 0, 0])
+                self.assertEqual(report['measured_success'], {'passed': 1, 'denominator': 1, 'rate': 1.0})
+                self.assertEqual((row['fresh_mission'], row['fresh_mission_fault'], row['fresh_mission_reason']),
+                                 (False, fault, mission['reason']))
 
     def test_a_host_stop_before_run_creation_stays_visible_without_a_model_failure(self):
         from generative_driver.benchmark_support.corpus import report_corpus
+        from generative_driver.benchmark_support.outcomes import pass_rate
         plan, suite = measured_fixture()
         suite['trials'][0].update(run_id=None, status='blocked', outcome_category='host',
-                                 outcome='not_run', verdict=None, equivalence=None,
+                                 outcome='not_run', scored='not_run', verdict=None, equivalence=None,
                                  reason='Runtime could not start.')
+        suite['pass_rate'] = pass_rate(['not_run'])
         suite['equivalence'] = {'equivalent': 0, 'denominator': 1, 'rate': 0}
         suite.pop('equivalent_and_mission')
         report = report_corpus(plan, suite)
@@ -211,38 +222,50 @@ class CorpusTests(unittest.TestCase):
                 start_corpus(excluded, executor='codex')
             start.assert_not_called()
 
-    def test_only_valid_terminal_negative_grades_and_no_driver_enter_measured_failures(self):
+    def test_a_trial_is_measured_as_the_suite_scored_it(self):
+        # Catches a corpus that derives passes and failures from row fields again instead of counting the outcome the
+        # suite stored: a driver graded not equivalent or absent, a stop the system caused and a spent budget fail; a
+        # host stop, a stop within the budget, a missing grade and a grade the slot has not settled are not measured.
         from generative_driver.benchmark_support.corpus import report_corpus
         from test_assistive_reports import evaluation
-        plan, original = measured_fixture()
         negative = evaluation('f'*64, False)
         no_driver = evaluation(None, False, status='no-driver', checks=[], passed=0, total=0,
             capabilities_sha256=None, diff=[{'id': 'frozen_package', 'reason': 'no driver emitted'}])
         host_mission_negative = evaluation('f'*64, False, mission={
             'name': 'fresh_worker_mission', 'passed': False, 'fault': 'host',
             'reason': 'The reuse runtime lost its connection.'})
-        for grade, status, category, expected in (
-            (negative, 'finished', 'completed', 'failed'),
-            (no_driver, 'finished', 'completed', 'failed'),
-            (host_mission_negative, 'finished', 'completed', 'failed'),
-            ({**negative, 'basis': 'self-evidence'}, 'finished', 'completed', 'unscored'),
-            ({**negative, 'evidence_sha256': None}, 'finished', 'completed', 'unscored'),
-            ({**negative, 'mission': ['malformed']}, 'finished', 'completed', 'unscored'),
-            (['malformed'], 'finished', 'completed', 'unscored'),
-            (negative, 'running', 'unknown', 'running'),
-            (negative, 'finished', 'host', 'stopped'),
+        def graded(grade):
+            return lambda trial, report: report.update(verdict='not equivalent', equivalence=grade,
+                                                       equivalence_status=grade['status'])
+        def stopped(category, **times):
+            def change(trial, report):
+                trial.update(status='blocked', outcome_category=category)
+                report.update(workflow_status='blocked', verdict='unscored', equivalence=None, equivalence_status=None, **times)
+            return change
+        ungraded = lambda trial, report: report.update(verdict='unscored', equivalence=None, equivalence_status='unscored')
+        pending = lambda trial, report: (trial.update(status='completed'),
+                                         report.update(verdict='unscored', equivalence=None, equivalence_status='pending'))
+        unsettled = lambda trial, report: trial.update(status='completed')
+        unconfirmed = lambda trial, report: report.update(verdict='unqualified')
+        for name, change, expected in (
+            ('graded not equivalent', graded(negative), 'failed'),
+            ('no driver emitted', graded(no_driver), 'failed'),
+            ('not equivalent, fresh reuse lost to the host', graded(host_mission_negative), 'failed'),
+            ('safety stop', stopped('safety'), 'failed'),
+            ('spent budget', stopped('operator', elapsed_seconds=10800, effective_budget_seconds=10800), 'failed'),
+            ('host stop', stopped('host'), 'stopped'),
+            ('operator stop within the budget', stopped('operator', elapsed_seconds=5, effective_budget_seconds=10800), 'stopped'),
+            ('no grade', ungraded, 'unscored'),
+            ('equivalent grade the owner records do not confirm', unconfirmed, 'unqualified'),
+            ('grade pending', pending, 'running'),
+            ('equivalent grade, slot not settled', unsettled, 'running'),
         ):
-            with self.subTest(status=status, category=category, grade=grade):
-                suite = copy.deepcopy(original)
-                suite['trials'][0].update(verdict='not equivalent', equivalence=grade,
-                    equivalence_status=grade.get('status') if isinstance(grade, dict) else None,
-                    outcome='unscored', status=status,
-                    outcome_category=category)
-                suite['equivalence'] = {'equivalent': 0, 'denominator': 1, 'rate': 0}
-                suite.pop('equivalent_and_mission')
+            with self.subTest(name):
+                plan, suite = measured_fixture(change)
                 report = report_corpus(plan, suite)
                 self.assertEqual(report['slots'][-1]['status'], expected)
-                self.assertEqual(report['measured_success']['denominator'], int(expected == 'failed'))
+                self.assertEqual((report['counts']['passed'], report['measured_success']['denominator']),
+                                 (0, int(expected == 'failed')))
 
     def test_legacy_frozen_plans_and_saved_suites_keep_their_original_meaning(self):
         from generative_driver.benchmark_support.corpus import _legacy_plan, _digest, report_corpus, validate_plan
@@ -258,7 +281,34 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(report['counts']['passed'], 1)
         self.assertNotIn('selected_coverage', report)
 
-    def test_measured_success_requires_same_trial_mission_and_six_stages_with_frozen_pins(self):
+    def test_a_saved_suite_that_stored_no_outcomes_is_scored_from_its_rows(self):
+        # Catches a benchmark-suite-report/2 export, which stored no outcomes, that scores nothing, or that counts what
+        # the corpus never counted: an equivalent driver of a trial the owner did not complete.
+        from generative_driver.benchmark_support.corpus import report_corpus
+        plan, current = measured_fixture()
+        earlier = copy.deepcopy(current)
+        earlier['schema'] = 'benchmark-suite-report/2'
+        earlier.pop('pass_rate')
+        for row in earlier['trials']:
+            for key in ('scored', 'workflow_status', 'effective_budget_seconds'):
+                row.pop(key, None)
+        self.assertEqual(report_corpus(plan, earlier)['counts']['passed'], 1)
+        earlier['trials'][0]['outcome_category'] = 'host'
+        earlier['equivalence'] = {'equivalent': 0, 'denominator': 1, 'rate': 0}
+        earlier.pop('equivalent_and_mission')
+        report = report_corpus(plan, earlier)
+        self.assertEqual((report['counts']['passed'], report['slots'][-1]['status']), (0, 'stopped'))
+
+    def test_limitations_say_a_pass_is_the_evaluators_grade_with_fresh_reuse_beside_it(self):
+        from generative_driver.benchmark_support.corpus import report_corpus
+        plan, suite = measured_fixture()
+        limitations = report_corpus(plan, suite)['limitations']
+        self.assertIn('Measured success counts a pass when the evaluator grades the frozen driver equivalent; '
+                      'fresh reuse is reported beside it.', limitations)
+        self.assertFalse([line for line in limitations if 'accepted stages' in line or 'fresh mission counts' in line
+                          or 'mission evidence is unscored' in line])
+
+    def test_measured_success_counts_the_graded_trial_of_the_frozen_pins(self):
         from generative_driver.benchmark_support.corpus import report_corpus
         plan, suite = measured_fixture()
         result = report_corpus(plan, suite)
@@ -267,14 +317,6 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(result['measured_success']['rate'], 1)
         self.assertEqual(result['demonstrated_coverage']['rate'], 1/7)
         self.assertEqual(result['areas']['usb-peripherals']['counts']['started'], 0)
-        changed = copy.deepcopy(suite)
-        changed['trials'][0]['stages']['reuse']['workflow_status'] = 'pending'
-        self.assertEqual(report_corpus(plan, changed)['counts']['passed'], 0)
-        changed = copy.deepcopy(suite)
-        changed['trials'][0]['equivalence']['mission']['passed'] = False
-        changed['trials'][0]['equivalence']['mission']['fault'] = 'model'
-        changed.pop('equivalent_and_mission')
-        self.assertEqual(report_corpus(plan, changed)['counts']['failed'], 1)
         for change in (
             lambda s: s['experiment']['comparison_identity']['entry_pins'][0].update(pin_sha256='0'*64),
             lambda s: s['experiment']['dimensions'].update(runtime='replay'),

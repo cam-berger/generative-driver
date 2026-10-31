@@ -16,9 +16,14 @@ def forbidden_paths(forbidden: tuple[str, ...]) -> tuple[str, ...]:
     return forbidden
 
 
-def _normal(text: str) -> str:
-    """A path or command as it is compared: backslashes as slashes, case folded, as on Windows."""
-    return text.replace('\\', '/').casefold()
+def _spellings(text: str) -> tuple[str, str]:
+    """A path or command as it is compared, in the two ways it may be spelled. Case is folded in both. In the first,
+    backslashes become slashes, as on Windows. In the second, a backslash before a space is dropped first, because a
+    shell writes the space of a path that way and the backslash is no separator there. Neither spelling can stand for
+    the other: `dir C:\\Vault\\ /s` keeps its last backslash only in the first."""
+    folded = text.casefold()
+    # For example `/Volumes/Answer\ Vault` is `/volumes/answer vault` in the second spelling.
+    return folded.replace('\\', '/'), folded.replace('\\ ', ' ').replace('\\', '/')
 
 
 def _completed_command(event) -> str | None:
@@ -40,7 +45,7 @@ def audit_commands(run_dir: Path, forbidden: tuple[str, ...]) -> list[dict]:
     the preparation and tool runs of interpretation), in the order of their paths and then of their lines. A line that
     is not a completed command is skipped, whether or not it is JSON."""
     run_dir = Path(run_dir)
-    paths = [_normal(path) for path in forbidden_paths(forbidden)]
+    paths = {spelling for path in forbidden_paths(forbidden) for spelling in _spellings(path)}
     findings = []
     for transcript in sorted(run_dir.rglob(TRANSCRIPT)):
         if not transcript.is_file():
@@ -52,6 +57,6 @@ def audit_commands(run_dir: Path, forbidden: tuple[str, ...]) -> list[dict]:
                     command = _completed_command(json.loads(line))
                 except ValueError:
                     continue
-                if command is not None and any(path in _normal(command) for path in paths):
+                if command is not None and any(path in text for text in _spellings(command) for path in paths):
                     findings.append({'transcript': transcript.relative_to(run_dir).as_posix(), 'command': command[:300]})
     return findings

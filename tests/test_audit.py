@@ -44,6 +44,31 @@ class AuditTests(unittest.TestCase):
         self.write(run / 'work/ground/a2/_agent_events.jsonl', [command('type C:/Vault/GD/key.txt'), command('type c:\\vault\\gd\\key.txt')])
         self.assertEqual(len(audit_commands(run, ('C:\\Vault\\GD',))), 2)
 
+    def test_a_path_with_a_space_is_flagged_as_a_shell_writes_it(self):
+        # Catches the vault's path (`/Volumes/Answer Vault`) going unseen when a worker escapes its space with a
+        # backslash instead of quoting it: bare, inside a shell command and as the words of a list. There the backslash
+        # is no separator, and a command that names nothing forbidden is still left alone.
+        run = self.run_dir
+        escaped = ['cat /Volumes/Answer\\ Vault/x', "/bin/zsh -lc 'ls -la /Volumes/Answer\\ Vault'", ['cat', '/Volumes/Answer\\ Vault/x']]
+        self.write(run / 'work/probe/a1/_agent_events.jsonl', [command(text) for text in escaped] + [command('ls workspace')])
+        self.assertEqual([found['command'] for found in audit_commands(run, ('/Volumes/Answer Vault',))],
+                         ['cat /Volumes/Answer\\ Vault/x', "/bin/zsh -lc 'ls -la /Volumes/Answer\\ Vault'", 'cat /Volumes/Answer\\ Vault/x'])
+
+    def test_a_path_pasted_the_way_a_shell_escapes_it_matches_the_command_in_quotes(self):
+        # Catches an escaped path compared as written: it names the same place as the path in quotes, and a command
+        # may spell it either way.
+        run = self.run_dir
+        self.write(run / 'work/probe/a1/_agent_events.jsonl', [
+            command('cat "/Volumes/Answer Vault/x"'), command('cat /Volumes/Answer\\ Vault/x'), command('ls workspace')])
+        self.assertEqual(len(audit_commands(run, ('/Volumes/Answer\\ Vault',))), 2)
+
+    def test_a_windows_directory_with_a_trailing_backslash_is_not_taken_for_an_escaped_space(self):
+        # Catches a backslash before a space dropped as a shell's escape where it ends a Windows directory: tab
+        # completion writes `C:\Vault\GD\` with its last backslash, and `dir C:\Vault\GD\ /s` names it.
+        run = self.run_dir
+        self.write(run / 'work/ground/a2/_agent_events.jsonl', [command('dir C:\\Vault\\GD\\ /s'), command('dir D:\\Work\\ /s')])
+        self.assertEqual([found['command'] for found in audit_commands(run, ('C:\\Vault\\GD\\',))], ['dir C:\\Vault\\GD\\ /s'])
+
     def test_a_command_naming_any_one_of_the_paths_is_flagged(self):
         # Catches an audit that needs a command to name every forbidden path, or only the last one it is given.
         run = self.run_dir

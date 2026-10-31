@@ -43,10 +43,12 @@ def suite_report(protocol, outcomes, manifest_sha256='a' * 64):
                 'child_budget_seconds': 10800, 'suite_budget_seconds': 86400, 'max_active_children': 1}
     pins, slots, trials, snapshots = [], [], [], []
     for index, (entry, (_, outcome)) in enumerate(zip(entries, pairs)):
-        pins.append({'case_id': entry['case'], 'case_version': '1', 'evaluator_version': '1', 'family': 'generated',
-                     'scenario_id': 'original', 'case_seed': entry['case_seed'], 'execution': 'actual-agent-emulation',
-                     'evidence_track': 'firmware', 'scope': 'full-workflow', 'manifest_sha256': 'c' * 64,
-                     'truth_sha256': 'b' * 64, 'image_hashes': {'image.bin': 'c' * 64}, 'pin_sha256': f'{index:064x}'})
+        pin = {'case_id': entry['case'], 'case_version': '1', 'evaluator_version': '1', 'family': 'generated',
+               'scenario_id': 'original', 'case_seed': entry['case_seed'], 'execution': 'actual-agent-emulation',
+               'evidence_track': 'firmware', 'scope': 'full-workflow', 'manifest_sha256': 'c' * 64,
+               'truth_sha256': 'b' * 64, 'image_hashes': {'image.bin': 'c' * 64}}
+        # A device's pin is the same in every report that ran it, and no other device has it.
+        pins.append({**pin, 'pin_sha256': digest(pin)})
         slot = {**entry, 'ordinal': index, 'entry_index': index, 'repeat_index': 0, 'trial_key': f'entry-{index:03d}-repeat-000'}
         slots.append(slot)
         status, category, verdict = ROWS[outcome]
@@ -82,6 +84,15 @@ def unpaired(protocol='assistive/1', outcomes=None):
     return report
 
 
+def tried_again(report, device, outcome):
+    """The report with one more trial row of `device`, as if its suite repeated the device. The identity is as it was, so
+    the row suits a pairing test and does not read back as a saved report."""
+    row = copy.deepcopy(next(row for row in report['trials'] if row['case'] == device))
+    row.update(scored=outcome, run_id=None if outcome == 'not_run' else 'again', trial_key='again')
+    report['trials'].append(row)
+    return report
+
+
 def grade(protocol, mission=True):
     """A well-formed equivalence/1 record of an equivalent driver, as the harness posts it for a run under `protocol`."""
     return {'schema': 'equivalence/1', 'status': 'graded', 'equivalent': True, 'basis': 'evaluator', 'method': 'fresh-final',
@@ -93,8 +104,14 @@ def grade(protocol, mission=True):
 # What each system must share, and a change to a report that breaks it. The order is the one a refusal names them in.
 SHARED = {'scoring_set': lambda report: identity(report)['scoring_set'].update(registration='generated-set-2'),
           'evaluator_revision': lambda report: identity(report).update(evaluator_revision='c' * 64),
+          'execution': lambda report: identity(report).update(execution='physical-device'),
+          'evidence_track': lambda report: identity(report).update(evidence_track='hardware'),
+          'scope': lambda report: identity(report).update(scope='probe-only'),
+          'entry_pins': lambda report: identity(report)['entry_pins'][0].update(truth_sha256='f' * 64),
+          'time_policy': lambda report: identity(report)['time_policy'].__setitem__(0, {'clock': 'virtual'}),
           'child_budget_seconds': lambda report: identity(report)['budgets']['effective'].update(child_budget_seconds=21600),
           'max_model_repairs': lambda report: identity(report)['intervention_policy'].update(max_model_repairs=3),
+          'scoped_tool_approval': lambda report: identity(report)['intervention_policy'].update(scoped_tool_approval='emulator'),
           'qualification': lambda report: report.update(qualification='regraded-encrypted-evidence')}
 
 
@@ -160,7 +177,7 @@ class DevicePairingTests(ReportCase):
         self.assertTrue(result['compatible'])
         self.assertIn('protocol', result['changed_dimensions'])
         self.assertEqual(result['devices'], {'both': 1, 'neither': 1, 'only_before': 0, 'only_after': 1})
-        self.assertEqual(sorted(result['excluded']), ['d3', 'd4'])
+        self.assertEqual(result['excluded'], {'repeated': 0, 'absent': 1, 'ungraded': 1})
         self.assertEqual(result['mcnemar_p'], 1.0)
 
 
@@ -178,24 +195,65 @@ class DeviceExclusionTests(ReportCase):
                 with self.subTest(outcome=outcome, side=side):
                     result = self.pair(systems['before'], systems['after'])
                     self.assertEqual((result['excluded'], result['devices']),
-                                     (['d1'], {'both': 0, 'neither': 0, 'only_before': 1, 'only_after': 0}))
+                                     ({'repeated': 0, 'absent': 0, 'ungraded': 1},
+                                      {'both': 0, 'neither': 0, 'only_before': 1, 'only_after': 0}))
 
     def test_a_device_one_system_lacks_is_excluded(self):
         result = self.pair({'d0': 'pass', 'd5': 'pass'}, {'d0': 'pass', 'd2': 'failure', 'd1': 'pass'})
         self.assertEqual((result['excluded'], result['devices']),
-                         (['d1', 'd2', 'd5'], {'both': 1, 'neither': 0, 'only_before': 0, 'only_after': 0}))
+                         ({'repeated': 0, 'absent': 3, 'ungraded': 0},
+                          {'both': 1, 'neither': 0, 'only_before': 0, 'only_after': 0}))
 
     def test_a_device_tried_more_than_once_is_excluded_whichever_system_tried_it(self):
         # Catches a device paired from one of its trials, which counts it twice or chooses between its grades: one
         # trial per device per system is the design, and a repeat takes the device out of the pairs.
-        result = self.pair([('d0', 'pass'), ('d0', 'pass'), ('d1', 'pass'), ('d2', 'failure')],
-                           [('d0', 'pass'), ('d1', 'pass'), ('d2', 'failure'), ('d2', 'failure')])
+        before = tried_again(suite_report('assistive/1', {'d0': 'pass', 'd1': 'pass', 'd2': 'failure'}), 'd0', 'pass')
+        after = tried_again(suite_report('assistive/1', {'d0': 'pass', 'd1': 'pass', 'd2': 'failure'}), 'd2', 'failure')
+        result = pairing.paired_comparison(before, after)
         self.assertEqual((result['excluded'], result['devices']),
-                         (['d0', 'd2'], {'both': 1, 'neither': 0, 'only_before': 0, 'only_after': 0}))
-        # Even when the repeats agree with one another, and when the repeat never ran.
-        result = self.pair([('d0', 'failure'), ('d0', 'not_run'), ('d1', 'failure')], {'d0': 'failure', 'd1': 'pass'})
+                         ({'repeated': 2, 'absent': 0, 'ungraded': 0},
+                          {'both': 1, 'neither': 0, 'only_before': 0, 'only_after': 0}))
+        # Even when the repeat never ran.
+        before = tried_again(suite_report('assistive/1', {'d0': 'failure', 'd1': 'failure'}), 'd0', 'not_run')
+        result = pairing.paired_comparison(before, suite_report('assistive/1', {'d0': 'failure', 'd1': 'pass'}))
         self.assertEqual((result['excluded'], result['devices']),
-                         (['d0'], {'both': 0, 'neither': 0, 'only_before': 0, 'only_after': 1}))
+                         ({'repeated': 1, 'absent': 0, 'ungraded': 0},
+                          {'both': 0, 'neither': 0, 'only_before': 0, 'only_after': 1}))
+
+    def test_each_excluded_device_is_counted_once_under_the_first_reason_that_applies(self):
+        # Catches a device counted under two reasons, or under a later one: tried more than once outranks absent, which
+        # outranks ungraded. d0 is repeated and absent; d1 absent and ungraded; d2 ungraded alone; d3 and d4 repeated and
+        # ungraded; d5 pairs.
+        before = suite_report('assistive/1', {'d0': 'pass', 'd1': 'fault', 'd2': 'unknown', 'd3': 'pass', 'd4': 'fault',
+                                              'd5': 'pass'})
+        after = suite_report('assistive/1', {'d2': 'fault', 'd3': 'failure', 'd4': 'unknown', 'd5': 'pass'})
+        result = pairing.paired_comparison(tried_again(tried_again(before, 'd0', 'pass'), 'd4', 'fault'),
+                                           tried_again(after, 'd3', 'unknown'))
+        self.assertEqual((result['excluded'], result['devices']),
+                         ({'repeated': 3, 'absent': 1, 'ungraded': 1},
+                          {'both': 1, 'neither': 0, 'only_before': 0, 'only_after': 0}))
+
+    def test_a_comparison_names_no_device_run_or_trial(self):
+        # Catches a scoring suite's output that names its sealed devices, as `excluded` once did: a comparison carries
+        # aggregates only, and so does every reason it refuses with.
+        import re
+        named = re.compile(r'\b[df][0-9]\b|\br[0-9]+\b|entry-')
+        before = suite_report('assistive/1', [('d0', 'pass'), ('d0', 'pass'), ('d1', 'fault'), ('d2', 'pass'), ('d3', 'failure')])
+        after = suite_report('learning/1', {'d2': 'failure', 'd3': 'failure', 'd4': 'unknown'})
+        fresh = suite_report('learning/1', {'f0': 'pass', 'f1': 'failure'}, manifest_sha256='9' * 64)
+        texts = [json.dumps(pairing.paired_comparison(before, after, leak_check=fresh)),
+                 json.dumps(compare_suites(before, after, leak_check=fresh))]
+        incompatible = copy.deepcopy(after)
+        SHARED['evaluator_revision'](incompatible)
+        texts.append(json.dumps(pairing.paired_comparison(before, incompatible)))
+        for batch in (before, suite_report('assistive/1', {'f0': 'pass'}, manifest_sha256='9' * 64)):
+            with self.assertRaises(ValueError) as caught:
+                pairing.paired_comparison(before, after, leak_check=batch)
+            texts.append(str(caught.exception))
+            texts.append(json.dumps(compare_suites(before, after, leak_check=batch)))
+        for text in texts:
+            with self.subTest(text=text[:60]):
+                self.assertIsNone(named.search(text), text)
 
     def test_mcnemar_counts_the_devices_one_system_passes_and_the_other_fails(self):
         # Catches the two sides counted the wrong way round, which would make a regression read as an improvement.
@@ -221,9 +279,10 @@ class CompatibilityTests(ReportCase):
             with self.assertRaisesRegex(ValueError, 'scoring set'):
                 pairing.paired_comparison(before, after)
 
-    def test_systems_must_share_the_scoring_set_evaluator_limits_and_qualification(self):
-        # Catches a comparison across scoring sets, evaluator revisions, child budgets, repair limits or qualification
-        # modes, and a refusal that names the wrong field.
+    def test_systems_must_share_what_a_comparison_holds_fixed(self):
+        # Catches a comparison across scoring sets, evaluator revisions, kinds of evidence (an emulated suite beside a
+        # physical one), devices, child budgets, repair limits, tool approvals or qualification modes, and a refusal that
+        # names the wrong field.
         for field, change in SHARED.items():
             after = suite_report('assistive/1', {'d0': 'pass'})
             change(after)
@@ -234,7 +293,49 @@ class CompatibilityTests(ReportCase):
         for change in SHARED.values():
             change(everything)
         self.assertEqual(pairing.paired_comparison(suite_report('assistive/1', {'d0': 'pass'}), everything)['incompatible_fields'],
-                         ['scoring_set', 'evaluator_revision', 'child_budget_seconds', 'max_model_repairs', 'qualification'])
+                         ['scoring_set', 'evaluator_revision', 'execution', 'evidence_track', 'scope', 'entry_pins',
+                          'time_policy', 'child_budget_seconds', 'max_model_repairs', 'scoped_tool_approval', 'qualification'])
+
+    def test_the_pins_and_time_policies_are_compared_for_each_case_both_systems_ran(self):
+        # Catches two different devices under one case name paired as one, a swap of two devices' pins that a comparison
+        # of the pins pooled across cases cannot see, and a device only one system ran taken to differ.
+        def both(change):
+            reports = suite_report('assistive/1', {'d0': 'pass', 'd1': 'pass'}), suite_report('assistive/1', {'d0': 'pass', 'd1': 'pass'})
+            change(identity(reports[1]))
+            return pairing.paired_comparison(*reports)['incompatible_fields']
+        def swap(items):
+            items[0], items[1] = items[1], items[0]
+        def distinct_policies(items):
+            items[0], items[1] = {'clock': 'virtual'}, {'clock': 'wall'}
+        self.assertEqual(both(lambda found: swap(found['entry_pins'])), ['entry_pins'])
+        self.assertEqual(both(lambda found: found['entry_pins'][1].update(truth_sha256='f' * 64)), ['entry_pins'])
+        self.assertEqual(both(lambda found: (distinct_policies(found['time_policy']))), ['time_policy'])
+        reports = suite_report('assistive/1', {'d0': 'pass', 'd1': 'pass'}), suite_report('assistive/1', {'d0': 'pass', 'd1': 'pass'})
+        distinct_policies(identity(reports[0])['time_policy'])
+        distinct_policies(identity(reports[1])['time_policy'])
+        self.assertEqual(pairing.paired_comparison(*reports)['incompatible_fields'], [])
+        swap(identity(reports[1])['time_policy'])
+        self.assertEqual(pairing.paired_comparison(*reports)['incompatible_fields'], ['time_policy'])
+        # A case only one system ran is not compared, whatever its pin.
+        before = suite_report('assistive/1', {'d0': 'pass', 'd1': 'pass'})
+        after = suite_report('assistive/1', {'d0': 'pass', 'd5': 'pass'})
+        identity(after)['entry_pins'][1].update(truth_sha256='f' * 64)
+        identity(after)['time_policy'][1] = {'clock': 'virtual'}
+        self.assertEqual(pairing.paired_comparison(before, after)['incompatible_fields'], [])
+
+    def test_the_entries_of_a_case_compare_as_a_sorted_list_whatever_their_order(self):
+        # Catches a device tried twice (two seeds) whose entries one system listed in another order, refused as another
+        # device: the pins of a case are compared as the sorted list of their canonical forms.
+        before = suite_report('assistive/1', [('d0', 'pass'), ('d0', 'failure'), ('d1', 'pass')])
+        after = copy.deepcopy(before)
+        found = identity(after)
+        for items in (found['manifest']['entries'], found['entry_pins'], found['time_policy']):
+            items[0], items[1] = items[1], items[0]
+        found['time_policy'][0] = {'clock': 'virtual'}
+        found['time_policy'][1] = {'clock': 'wall'}
+        identity(before)['time_policy'][0] = {'clock': 'wall'}
+        identity(before)['time_policy'][1] = {'clock': 'virtual'}
+        self.assertEqual(pairing.paired_comparison(before, after)['incompatible_fields'], [])
 
     def test_a_granted_child_budget_override_changes_the_budget(self):
         # Catches a child budget compared by its suite-wide number alone, when a granted override gave a trial more.
@@ -379,6 +480,76 @@ class LeakCheckTests(ReportCase):
         refused(suite_report('learning/1', {'d0': 'pass'}), 'not fresh', 'scoring set')
         refused(copy.deepcopy(after), 'not fresh')
 
+    def test_a_fresh_batch_matches_the_after_system_in_every_condition_pairing_holds_fixed(self):
+        # Catches a "fresh batch" run under other conditions than the scoring set was (another kind of evidence, tool
+        # approval, child budget, repair limit or qualification), whose rate would be no check on the scoring set's, and a
+        # refusal that does not name the condition.
+        before, after = suite_report('assistive/1', {'d0': 'pass'}), suite_report('learning/1', {'d0': 'pass'})
+        def refused(batch, name):
+            with self.assertRaises(ValueError) as caught:
+                pairing.paired_comparison(before, after, leak_check=batch)
+            self.assertIn(name, str(caught.exception))
+            self.assertNotIn('f0', str(caught.exception))
+        for name in ('evaluator_revision', 'execution', 'evidence_track', 'scope', 'child_budget_seconds',
+                     'max_model_repairs', 'scoped_tool_approval', 'qualification'):
+            batch = suite_report('learning/1', {'f0': 'pass'}, manifest_sha256='9' * 64)
+            SHARED[name](batch)
+            with self.subTest(name):
+                refused(batch, name)
+        # An override granted to a trial of the batch changes its child budget too.
+        batch = suite_report('learning/1', {'f0': 'pass'}, manifest_sha256='9' * 64)
+        identity(batch)['budgets']['effective']['child_budget_overrides'] = [
+            {'trial_key': 'entry-000-repeat-000', 'budget_seconds': 21600}]
+        refused(batch, 'child_budget_seconds')
+        # Its own devices' pins and time policies, and its own scoring set, are its own.
+        batch = suite_report('learning/1', {'f0': 'pass'}, manifest_sha256='9' * 64)
+        SHARED['entry_pins'](batch)
+        SHARED['time_policy'](batch)
+        SHARED['scoring_set'](batch)
+        self.assertEqual(pairing.paired_comparison(before, after, leak_check=batch)['leak_check']['fresh_rate'], 1.0)
+
+    def test_a_batch_with_the_after_systems_scoring_set_manifest_is_not_fresh_under_any_registration(self):
+        # Catches a batch that is the scoring set renamed: its manifest hash is the set's.
+        before, after = suite_report('assistive/1', {'d0': 'pass'}), suite_report('learning/1', {'d0': 'pass'})
+        batch = suite_report('learning/1', {'f0': 'pass'})
+        SHARED['scoring_set'](batch)
+        self.assertEqual(identity(batch)['scoring_set'], {'registration': 'generated-set-2', 'manifest_sha256': 'a' * 64})
+        with self.assertRaisesRegex(ValueError, 'not fresh.*scoring set'):
+            pairing.paired_comparison(before, after, leak_check=batch)
+
+    def test_a_batch_that_shares_a_device_with_the_after_system_is_not_fresh(self):
+        # Catches a leak test on a device the system already ran, whatever the batch is called: a device is its pin, not
+        # its case name, and the refusal names the condition and no case.
+        before = suite_report('assistive/1', {'d0': 'pass', 'd1': 'pass'})
+        after = suite_report('learning/1', {'d0': 'pass', 'd1': 'pass'})
+        batch = suite_report('learning/1', {'f0': 'pass', 'd1': 'failure'}, manifest_sha256='9' * 64)
+        with self.assertRaises(ValueError) as caught:
+            pairing.paired_comparison(before, after, leak_check=batch)
+        self.assertIn('not fresh', str(caught.exception))
+        self.assertIn('device', str(caught.exception))
+        self.assertNotIn('d1', str(caught.exception))
+        # The same case name under another pin is another device.
+        batch = suite_report('learning/1', {'f0': 'pass', 'd1': 'failure'}, manifest_sha256='9' * 64)
+        identity(batch)['entry_pins'][1]['pin_sha256'] = '5' * 64
+        self.assertEqual(pairing.paired_comparison(before, after, leak_check=batch)['leak_check']['fresh_rate'], 0.5)
+
+    def test_a_leak_check_that_stores_no_outcomes_is_refused_for_its_schema(self):
+        # Catches an earlier schema's file refused as 'Unknown trial outcome: None', which says nothing of why: a /2 file
+        # stores no outcomes, and a /1 file (no protocol either) is named for its schema before anything else.
+        from test_suite_reporting import comparison_fixture
+        before, after = suite_report('assistive/1', {'d0': 'pass'}), suite_report('assistive/1', {'d0': 'pass'})
+        two = unpaired('assistive/1', {'f0': 'pass'})
+        two['schema'] = 'benchmark-suite-report/2'
+        del two['pass_rate']
+        for row in two['trials']:
+            del row['scored']
+        for batch, schema in ((two, 'benchmark-suite-report/2'), (comparison_fixture(), 'benchmark-suite-report/1')):
+            with self.subTest(schema=schema):
+                result = compare_suites(before, after, leak_check=batch)
+                self.assertEqual((result['schema'], result['compatible']), ('benchmark-suite-comparison/1', False))
+                self.assertIn(schema, result['reason'])
+                self.assertNotIn('Unknown trial outcome', result['reason'])
+
     def test_a_fresh_batch_may_carry_another_scoring_set_or_none(self):
         before = after = suite_report('assistive/1', {'d0': 'pass'})
         batch = suite_report('assistive/1', {'f0': 'failure'}, manifest_sha256='9' * 64)
@@ -419,6 +590,21 @@ class ScoringSetIdentityTests(ReportCase):
             with self.subTest(scoring_set=scoring_set), self.assertRaisesRegex(ValueError, 'scoring set'):
                 _saved_report(report)
 
+    def test_a_scoring_set_needs_the_suite_to_name_its_protocol(self):
+        # Catches a scoring set admitted on a suite that names no protocol: its report would be a benchmark-suite-report/1,
+        # which no reader accepts with a scoring set, so the producer must not write it.
+        from test_suite_reporting import fixture
+        from generative_driver.benchmark_support.suite_reporting import _experiment, aggregate_suite
+        report = suite_report('assistive/1', {'d0': 'pass'})
+        _experiment(report['experiment'])
+        del identity(report)['protocol']
+        with self.assertRaisesRegex(ValueError, 'scoring set'):
+            _experiment(report['experiment'])
+        suite, trials, reports, experiment = fixture()
+        experiment['comparison_identity']['scoring_set'] = {'registration': 'generated-set-1', 'manifest_sha256': 'a' * 64}
+        with self.assertRaisesRegex(ValueError, 'scoring set'):
+            aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+
     def test_only_a_suite_report_3_may_carry_a_scoring_set(self):
         # Catches an earlier report that names a scoring set, which stores no outcome to pair: the same file without
         # the scoring set reads as it did.
@@ -458,6 +644,27 @@ class ScoringSetIdentityTests(ReportCase):
             _saved_report(plain)
         identity(plain)['protocol'] = plain['protocol'] = 'assistive/1'
         self.assertEqual(_saved_report(plain)['protocol'], 'assistive/1')
+
+
+class SavedOutcomeTests(ReportCase):
+    def test_a_row_is_not_run_exactly_when_it_has_no_run(self):
+        # Catches a label that says a started row never ran, and one that says anything else of a row with no run:
+        # `classify` gives `not_run` to a row with no run_id and to no other. Each forgery keeps the pass rate matching its
+        # labels, so only this check can refuse it.
+        from generative_driver.benchmark_support.suite_reporting import _saved_report
+        def forged(outcomes, row, **changes):
+            report = suite_report('assistive/1', outcomes)
+            report['trials'][row].update(changes)
+            report['pass_rate'] = pass_rate([trial['scored'] for trial in report['trials']])
+            return report
+        honest = {'d0': 'pass', 'd1': 'failure', 'd2': 'not_run'}
+        self.assertEqual(_saved_report(suite_report('assistive/1', honest))['pass_rate']['not_run'], 1)
+        for label, report in (('a started row labelled not_run', forged(honest, 1, scored='not_run')),
+                              ('a row with no run labelled fault', forged(honest, 2, scored='fault')),
+                              ('a row with no run labelled failure', forged(honest, 2, scored='failure')),
+                              ('a not_run row given a run', forged(honest, 2, run_id='r2'))):
+            with self.subTest(label), self.assertRaisesRegex(ValueError, 'Saved outcome differs'):
+                _saved_report(report)
 
 
 class ReportProtocolTests(ReportCase):
@@ -640,16 +847,21 @@ class AggregatedReportTests(ReportCase):
         self.assertEqual(result['pass_rate'], {'before': saved['pass_rate'], 'after': saved['pass_rate']})
         self.assertEqual(saved['pass_rate']['planned'], 9)
         self.assertEqual((result['excluded'], result['devices']),
-                         (['parameter-store-v1', 'sampled-sensor-v1', 'tq9-v2'], {'both': 0, 'neither': 0, 'only_before': 0, 'only_after': 0}))
+                         ({'repeated': 3, 'absent': 0, 'ungraded': 0}, {'both': 0, 'neither': 0, 'only_before': 0, 'only_after': 0}))
 
 
 class SkillTests(unittest.TestCase):
     def test_the_client_skill_says_reports_on_a_scoring_set_compare_device_by_device(self):
         # Catches a skill that leaves a client comparing reports of one scoring set as whole suites, or comparing series
-        # that have no scoring set in common.
+        # that have no scoring set in common, and one that uses "scoring set" or "fresh batch" without saying what it is.
         path = Path(__file__).resolve().parents[1] / 'src/generative_driver/resources/client/skills/generative-driver/SKILL.md'
         text = ' '.join(path.read_text(encoding='utf-8').split())
-        self.assertRegex(text, r'scoring set are compared device by device[^.]*`--leak-check`[^.]*; other series stay separate\.')
+        self.assertRegex(text, r'shared scoring set, a fixed, sealed set of devices that every compared system runs, '
+                               r'are compared device by device \(`benchmark suite compare`\); other series stay separate\.')
+        self.assertRegex(text, r'`--leak-check` takes a fresh batch: newly generated devices, run as a leak check\.')
+        # Each term is defined where it first appears.
+        for term in ('scoring set', 'fresh batch'):
+            self.assertEqual(text.index(term), text.index(term + ', a fixed' if term == 'scoring set' else term + ': newly'))
 
 
 if __name__ == '__main__':

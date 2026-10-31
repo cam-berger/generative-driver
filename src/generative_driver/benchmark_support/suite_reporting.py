@@ -63,6 +63,8 @@ def _experiment(value):
         scoring=identity['scoring_set']
         if (not isinstance(scoring,dict) or set(scoring)!={'registration','manifest_sha256'} or not isinstance(scoring['registration'],str)
                 or not scoring['registration'].strip() or not _sha(scoring['manifest_sha256'])):raise ValueError('Invalid scoring set')
+        # Its report is a benchmark-suite-report/3, which names the protocol: without one it would be a /1 that no reader accepts.
+        if 'protocol' not in identity:raise ValueError('A scoring set belongs to a suite that names its protocol')
     manifest=normalize_manifest(identity['manifest']);slots=expand_trials(manifest)
     if identity['manifest_sha256']!=_digest(manifest) or identity['trials']!=slots or identity['repetitions']!=manifest['repetitions']:
         raise ValueError('Frozen suite identity mismatch')
@@ -383,7 +385,8 @@ def _saved_report(value):
     equivalent drivers (benchmark-suite-report/2, or /3, which adds the pass rate and each trial's scored outcome), each
     counted again from its trials' verdicts and, for /3, its pass rate from the outcomes its rows store. Only a /3 file
     stores outcomes: a reader that trusts a stored one under any schema would count a label an earlier file never had,
-    so an earlier file whose rows carry one is refused."""
+    so an earlier file whose rows carry one is refused. A scoring set is read only in a /3 report, which names a protocol.
+    A saved report is checked under its own recorded protocol, never this installation's."""
     report=_read_saved(value)
     assistive=('benchmark-suite-report/2','benchmark-suite-report/3')
     if report.get('schema') not in ('benchmark-suite-report/1',*assistive) or report.get('qualification') not in QUALIFICATIONS:raise ValueError('Unsupported suite report')
@@ -415,8 +418,10 @@ def _saved_report(value):
             rate=pass_rate([t.get('scored') for t in report['trials']])
             # A pass is a counted equivalent driver: the row's own verdict, status and category must show what its label says.
             # A counted driver whose transcripts the audit flagged scores `flagged`, which is no pass, and no other outcome.
+            # A row is `not_run` exactly when it has no run: `classify` gives that outcome to no other.
             if any(t['scored']=='pass' and not counted(t) or counted(t) and t['scored'] not in ('pass','flagged')
-                   for t in report['trials']):raise ValueError('Saved outcome differs from the trial it scores')
+                   or (t['scored']=='not_run')!=(not t.get('run_id')) for t in report['trials']):
+                raise ValueError('Saved outcome differs from the trial it scores')
             if 'pass_rate' in report and report['pass_rate']!=rate:raise ValueError('Saved pass rate differs from trial outcomes')
             report['pass_rate']=rate
     _number(report.get('usage',{}).get('total_tokens'),True)

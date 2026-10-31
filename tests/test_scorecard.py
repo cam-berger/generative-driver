@@ -42,10 +42,28 @@ def seqs(home, run_id, kind, stage):
                                                    (run_id, kind)) if json.loads(payload).get('stage') == stage]
 
 
+def assigned(home, run_id, stage):
+    """The assignments of a stage in order, as its `stage.assigned` events recorded them."""
+    with contextlib.closing(database(home, 'ro')) as db:
+        events = [json.loads(payload) for (payload,) in db.execute(
+            "SELECT payload FROM events WHERE run_id=? AND kind='stage.assigned' ORDER BY seq", (run_id,))]
+    return [event for event in events if event.get('stage') == stage]
+
+
 def retime(home, times):
     """Give events new times, as `{seq: time}`, so a test can say how long a stage took."""
     with contextlib.closing(database(home, 'rw')) as db, db:
         db.executemany('UPDATE events SET created=? WHERE seq=?', [(moment, seq) for seq, moment in times.items()])
+
+
+def write_transcript(folder, *kinds, lines=()):
+    """A worker transcript, `_agent_events.jsonl`, in `folder`: the `lines` as they are (text, or bytes), then a completed
+    action of each of `kinds`."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    actions = [json.dumps({'type': 'item.completed', 'item': {'type': kind}}) for kind in kinds]
+    (folder / '_agent_events.jsonl').write_bytes(
+        b''.join((line if isinstance(line, bytes) else line.encode()) + b'\n' for line in [*lines, *actions]))
 
 
 def probe_result(*entries):
@@ -117,20 +135,28 @@ def repairing(spec, stage, run_dir, workspace, report, accepted, assignment):
 
 
 class TrialMetricsTests(unittest.TestCase):
-    def scripted(self, work=None, *, runtime=completed, toolkit=None, check=accepting, skip=None, **start):
+    def scripted(self, work=None, *, runtime=completed, toolkit=None, check=accepting, skip=None, sealed=False, **start):
         """A scripted six-stage run in a temporary home: no model, tool or device runs. `work(controller, request)` acts
         as a stage's worker, `toolkit(name, arguments)` stands in for the tools it calls, `skip(spec, stage)` names the
-        reason a stage runs no worker, and `start` adds to the run's parameters. Returns the home, the run's id and its
-        result once the run has stopped and its controller is closed."""
+        reason a stage runs no worker, `sealed` runs each interpretation in a workspace of its own outside the run, named
+        attempt<N> as the interpretation tool names it, and `start` adds to the run's parameters. Returns the home, the
+        run's id and its result once the run has stopped and its controller is closed."""
         from generative_driver.configurator import Controller
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         home = Path(directory.name) / 'home'
         controller = Controller(home)
+        interpretations = []
         def prepare(original, spec, stage, run_dir, workspace, accepted):
             reason = skip and skip(spec, stage)
-            return {'skip': reason} if reason else {'inputs': [], 'allowed_tools': (
-                ['probe_run', 'interface_execute'] if stage == 'probe' else [])}
+            if reason:
+                return {'skip': reason}
+            prepared = {'inputs': [], 'allowed_tools': ['probe_run', 'interface_execute'] if stage == 'probe' else []}
+            if sealed and stage == 'interpret':
+                interpretations.append(stage)
+                number = len(interpretations)
+                prepared['work_dir'] = str(Path(directory.name) / 'sealed' / ('candidate-%d' % number) / ('attempt%d' % number))
+            return prepared
         try:
             with scripted_stages(controller, check=check, prepare=prepare, runtime=runtime,
                                  work=work and (lambda request: work(controller, request))), \
@@ -176,7 +202,7 @@ class TrialMetricsTests(unittest.TestCase):
         self.assertEqual((probe['managed_calls'], probe['device']['exchanges'], probe['tokens']['total']),
                          ({'probe_run': 1}, 1, 15))
         self.assertEqual(metrics['stages']['acquire']['attempts'], 1)
-        self.assertEqual(metrics['stages']['acquire']['worker_actions'], NO_ACTIONS)
+        self.assertIsNone(metrics['stages']['acquire']['worker_actions'])  # its worker left no transcript
         self.assertEqual(event_count(home), before)  # read-only: event_count counts events rows over a ?mode=ro connection
 
     def test_a_stages_wall_time_runs_from_its_first_assignment_to_its_last_acceptance_or_skip(self):
@@ -238,9 +264,9 @@ class TrialMetricsTests(unittest.TestCase):
         self.assertEqual(stages['ground']['tokens'], {'input': 20, 'cached_input': 0, 'output': 10, 'reasoning_output': 0, 'total': 30})
         # Time the workers took is a separate report: acquire and interpret reported it although not their tokens.
         self.assertEqual([stages[stage]['worker_seconds'] for stage in STAGES], [2, 4, 4, 4, None, 2])
-        # A stage that ran no worker has nothing to report, and counts nothing.
+        # A stage that ran no worker has nothing a worker left to report, and no call or device exchange to count.
         self.assertEqual(stages['emit'], {'attempts': 0, 'wall_seconds': None, 'worker_seconds': None, 'managed_calls': {},
-                                          'worker_actions': NO_ACTIONS, 'device': NO_DEVICE, 'tokens': UNKNOWN_TOKENS})
+                                          'worker_actions': None, 'device': NO_DEVICE, 'tokens': UNKNOWN_TOKENS})
 
     def test_a_crashed_worker_still_counts_as_an_attempt_and_leaves_its_figures_unknown(self):
         # The probe worker wrote a transcript with a line that is not JSON and died before its runtime returned, so it
@@ -448,35 +474,106 @@ class TrialMetricsTests(unittest.TestCase):
                 self.assertEqual(trial_metrics(home, run)['claim'],
                                  {'claimed_success': None, 'mission_passed': None, 'agrees': None})
 
-    def test_interpretation_also_counts_the_transcripts_frozen_into_its_preparation_and_tool_runs(self):
-        home, run, result = self.scripted()
+    def test_actions_are_unknown_unless_every_attempt_of_the_stage_left_a_transcript(self):
+        # With one repair, probe and ground run twice. Probe's second worker left no transcript, both of ground's did, and
+        # acquire's only worker left none.
+        probes = []
+        def work(controller, request):
+            if request.stage == 'probe':
+                probes.append(request)
+            if request.stage == 'ground' or request.stage == 'probe' and len(probes) == 1:
+                write_transcript(request.workspace, 'command_execution', 'file_change')
+        home, run, result = self.scripted(work, check=repairing)
+        self.assertEqual(result['status'], 'completed')
+        stages = trial_metrics(home, run)['stages']
+        self.assertEqual((stages['probe']['attempts'], stages['ground']['attempts']), (2, 2))
+        self.assertIsNone(stages['probe']['worker_actions'])
+        self.assertEqual(stages['ground']['worker_actions'], {'command_execution': 2, 'mcp_tool_call': 0, 'file_change': 2})
+        self.assertIsNone(stages['acquire']['worker_actions'])
+
+    def test_interpretation_actions_are_matched_to_the_attempts_that_made_them(self):
+        # Interpretation runs twice, each time in a sealed workspace of its own outside the run, attempt1 and attempt2. Its
+        # outputs, and the transcript among them, are frozen into the run when collected: under benchmark/tools for a
+        # benchmark run, by the index of the attempt; under preparation, by the assignment, for another run. A worker that
+        # was never collected leaves nothing in the run, and a transcript that no attempt owns is nobody's.
+        places = {'in a benchmark run': (True, lambda number, assignment: 'benchmark/tools/interpret/attempt%d' % number),
+                  'in another run': (True, lambda number, assignment: 'preparation/%s/interpret/attempt1' % assignment['id']),
+                  'in its work directory': (False, lambda number, assignment: 'work/interpret/%s' % assignment['id'])}
+        for name, (sealed, place) in places.items():
+            with self.subTest(name):
+                home, run, result = self.scripted(check=repairing, sealed=sealed)
+                run_dir = Path(home) / 'runs' / run
+                first, second = assigned(home, run, 'interpret')
+                interpreted = lambda: trial_metrics(home, run)['stages']['interpret']['worker_actions']
+                write_transcript(run_dir / place(1, first), 'command_execution')
+                write_transcript(run_dir / 'benchmark/tools/interpret/attempt3', 'file_change')
+                write_transcript(run_dir / 'preparation/nobody/interpret/attempt1', 'file_change')
+                self.assertIsNone(interpreted())
+                write_transcript(run_dir / place(2, second), 'file_change')
+                self.assertEqual(interpreted(), {'command_execution': 1, 'mcp_tool_call': 0, 'file_change': 1})
+
+    def test_a_transcript_that_holds_no_codex_record_leaves_the_actions_unknown(self):
+        # Nothing says a worker did nothing when its transcript is no Codex stream: the events of another runtime (Goose),
+        # text the runtime printed, which `agents.execute` keeps as unparsed_stdout, and an empty file. The Codex stream of
+        # a worker that took no action does say so.
+        streams = {'acquire': [json.dumps({'type': 'message', 'message': {'role': 'assistant', 'content': []}}),
+                               json.dumps({'type': 'complete', 'total_tokens': 15})],
+                   'interpret': [json.dumps({'type': 'unparsed_stdout', 'text': 'plain text'}), 'not json'],
+                   'probe': [],
+                   'ground': [json.dumps({'type': 'thread.started', 'thread_id': 't'})],
+                   'emit': [json.dumps({'type': 'turn.completed', 'usage': USAGE})]}
+        def work(controller, request):
+            if request.stage in streams:
+                write_transcript(request.workspace, lines=streams[request.stage])
+        home, run, result = self.scripted(work)
+        stages = trial_metrics(home, run)['stages']
+        self.assertEqual([stages[stage]['worker_actions'] for stage in ('acquire', 'interpret', 'probe')], [None] * 3)
+        self.assertEqual([stages[stage]['worker_actions'] for stage in ('ground', 'emit')], [NO_ACTIONS] * 2)
+
+    def test_the_index_of_a_benchmark_attempt_is_read_from_a_workspace_path_recorded_on_any_host(self):
+        # A run recorded on Windows names its sealed workspace with backslashes, and is scored on any host.
+        home, run, result = self.scripted(check=repairing, sealed=True)
+        with contextlib.closing(database(home, 'rw')) as db, db:
+            for number, assignment in enumerate(assigned(home, run, 'interpret'), 1):
+                recorded = {**assignment, 'workspace': 'C:\\Users\\x\\AppData\\Local\\Temp\\gd-candidate-%d\\attempt%d' % (number, number)}
+                db.execute("UPDATE events SET payload=? WHERE run_id=? AND kind='stage.assigned' AND json_extract(payload, '$.id')=?",
+                           (json.dumps(recorded), run, assignment['id']))
         run_dir = Path(home) / 'runs' / run
-        def transcript(place, *kinds, lines=()):
-            """A transcript with a completed action of each of `kinds`, after the other `lines` as they are."""
-            path = run_dir / place / '_agent_events.jsonl'
-            path.parent.mkdir(parents=True)
-            actions = [json.dumps({'type': 'item.completed', 'item': {'type': kind}}) for kind in kinds]
-            path.write_bytes(b''.join((line if isinstance(line, bytes) else line.encode()) + b'\n' for line in [*lines, *actions]))
+        write_transcript(run_dir / 'benchmark/tools/interpret/attempt1', 'command_execution')
+        write_transcript(run_dir / 'benchmark/tools/interpret/attempt2', 'file_change')
+        self.assertEqual(trial_metrics(home, run)['stages']['interpret']['worker_actions'],
+                         {'command_execution': 1, 'mcp_tool_call': 0, 'file_change': 1})
+
+    def test_an_attempt_whose_id_is_not_one_name_matches_no_transcript(self):
+        # An attempt's id is joined to a path, so one that holds a separator names no transcript of its own.
+        def work(controller, request):
+            if request.stage == 'probe':
+                write_transcript(request.workspace, 'command_execution')
+        home, run, result = self.scripted(work)
+        run_dir = Path(home) / 'runs' / run
+        self.assertEqual(trial_metrics(home, run)['stages']['probe']['worker_actions'], {**NO_ACTIONS, 'command_execution': 1})
+        write_transcript(run_dir / 'work/probe-nobody', 'file_change')  # where work/probe/../probe-nobody leads
+        with contextlib.closing(database(home, 'rw')) as db, db:
+            db.execute('INSERT INTO events(run_id,kind,payload,created) VALUES(?,?,?,?)', (
+                run, 'stage.assigned', json.dumps({'id': '../probe-nobody', 'stage': 'probe', 'workspace': '/nowhere'}), time.time()))
+        self.assertIsNone(trial_metrics(home, run)['stages']['probe']['worker_actions'])
+
+    def test_a_transcript_counts_its_completed_actions_and_skips_every_other_line(self):
         # Lines that are not completed actions: one that started, a message, records that are no item, JSON that is no
-        # record, and bytes that are no text.
+        # record, and bytes that are no text. A directory with a transcript's name is no transcript.
         others = [json.dumps({'type': 'item.started', 'item': {'type': 'command_execution'}}),
                   json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'done'}}),
                   json.dumps({'type': 'item.completed', 'item': 'file_change'}), json.dumps({'type': 'item.completed'}),
                   json.dumps({'type': 'turn.completed', 'usage': USAGE}), '[1, 2]', '3', 'not json', b'\xff\xfe not text']
-        transcript('work/interpret/w1', 'command_execution', lines=others)
-        transcript('preparation/p1/interpret/attempt1', 'command_execution', 'file_change')
-        transcript('preparation/p2/interpret/attempt2', 'mcp_tool_call')
-        transcript('benchmark/tools/interpret/attempt3', 'file_change')
-        # Not interpretation's: the same places for another stage, a transcript nowhere a stage keeps one, and a directory
-        # that has a transcript's name.
-        transcript('work/probe/w2', 'command_execution')
-        transcript('preparation/p1/probe/attempt1', 'command_execution')
-        transcript('benchmark/tools/probe/attempt1', 'command_execution')
-        transcript('interpret/attempt1', 'command_execution')
-        (run_dir / 'work/interpret/w3/_agent_events.jsonl').mkdir(parents=True)
+        def work(controller, request):
+            if request.stage == 'probe':
+                write_transcript(request.workspace, 'command_execution', 'mcp_tool_call', 'command_execution', lines=others)
+            if request.stage == 'ground':
+                (Path(request.workspace) / '_agent_events.jsonl').mkdir()
+        home, run, result = self.scripted(work)
         stages = trial_metrics(home, run)['stages']
-        self.assertEqual(stages['interpret']['worker_actions'], {'command_execution': 2, 'mcp_tool_call': 1, 'file_change': 2})
-        self.assertEqual(stages['probe']['worker_actions'], {**NO_ACTIONS, 'command_execution': 1})
+        self.assertEqual(stages['probe']['worker_actions'], {'command_execution': 2, 'mcp_tool_call': 1, 'file_change': 0})
+        self.assertIsNone(stages['ground']['worker_actions'])
 
     def test_the_database_is_opened_read_only(self):
         home, run, result = self.scripted()

@@ -5,13 +5,16 @@ records nothing for it (spec decision 12), so a stored run can be measured again
 database, opened read-only and never through a `Controller`, which writes on start; the Codex transcripts under the run's
 directory; and, when the trial's directory is given, the device provider's journal.
 
-Counts come from events and transcripts, so a stage nothing happened in counts zero. A time or token figure comes from
-the workers' reports and is None unless every attempt of the stage left one: a worker that died leaves no report, and
-a sum over the others would pass for the whole. A transcript is read only where a run keeps it: an interpretation attempt
-that stopped before its outputs were collected leaves its transcript in a workspace outside the run."""
+What the events record is counted exactly, so a stage in which nothing happened counts zero. What the workers left is
+not: their time and tokens (from their reports) and their actions (from their transcripts) are None unless every attempt
+of the stage left them. A worker that died leaves no report, one that left no transcript is not one that did nothing,
+and a sum over the others would pass for the whole. Only a Codex transcript kept in the run is read: an interpretation
+attempt that stopped before its outputs were collected leaves its transcript in a workspace outside the run, and the
+events of another runtime say nothing of Codex actions."""
 import bisect
 import json
 import math
+import re
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -24,6 +27,10 @@ SCHEMA = 'benchmark-trial-metrics/1'
 FINAL = ':final'
 ACTIONS = ('command_execution', 'mcp_tool_call', 'file_change')
 DEVICE = ('exchanges', 'writes', 'refusals', 'resets')
+# What the configurator names an attempt: a path component it may be joined to.
+NAME = re.compile('[0-9A-Za-z_-]+')
+# The events a Codex session prints start with these: `thread.started`, `turn.completed`, `item.completed` and so on.
+CODEX = ('thread.', 'turn.', 'item.')
 # The transcript entries that are exchanges with the device.
 EXCHANGES = ('exchange', 'usb_control')
 # Each token counter and its key in a worker's usage.
@@ -82,28 +89,60 @@ def _exchanges(result):
             sum(bool(entry.get('device_rejected')) for entry in entries))
 
 
-def _actions(run_dir: Path, stage: str) -> dict:
-    """The actions a stage's workers completed, by type, counted in their Codex transcripts: those of the stage's work
-    directories and, for interpretation, those frozen into its preparation and tool runs. A worker that left no
-    transcript adds nothing, and a line that is not a completed action is skipped, whether or not it is JSON."""
-    places = [f'work/{stage}/*/{TRANSCRIPT}']
+def _kept(run_dir: Path, stage: str, assignment: dict):
+    """Where a run keeps the transcript of one attempt, in the order they are tried. A worker leaves it in its work
+    directory, `work/<stage>/<assignment>`. An interpretation works in a sealed workspace outside the run, named
+    `attempt<N>`, and the outputs it collects, the transcript among them, are frozen into a record of the attempt:
+    `preparation/<assignment>/interpret/attempt*` when each interpretation is prepared on its own, and
+    `benchmark/tools/interpret/attempt<N>` in a benchmark run, where the attempts share one tool run and the index in the
+    workspace's name says which attempt it is."""
+    identity = assignment.get('id')
+    if not isinstance(identity, str) or not NAME.fullmatch(identity):
+        return
+    yield run_dir / 'work' / stage / identity / TRANSCRIPT
     if stage == 'interpret':
-        places += [f'preparation/*/interpret/attempt*/{TRANSCRIPT}', f'benchmark/tools/interpret/attempt*/{TRANSCRIPT}']
-    counts = dict.fromkeys(ACTIONS, 0)
-    for place in places:
-        for transcript in run_dir.glob(place):
-            if not transcript.is_file():
+        record = run_dir / 'preparation' / identity / 'interpret'
+        if record.is_dir():
+            yield from (folder / TRANSCRIPT for folder in sorted(record.iterdir()) if folder.name.startswith('attempt'))
+        sealed = str(assignment.get('workspace')).replace('\\', '/').rstrip('/').rsplit('/', 1)[-1]
+        if re.fullmatch('attempt[0-9]+', sealed):
+            yield run_dir / 'benchmark' / 'tools' / 'interpret' / sealed / TRANSCRIPT
+
+
+def _read_actions(transcript: Path):
+    """The actions completed in one transcript, by type, or None when it cannot be read as a Codex stream: it is no file,
+    or no line of it is a Codex event (`thread.*`, `turn.*` or `item.*`), as with an empty file, the events of another
+    runtime or text the runtime printed. A line that is not a completed action is skipped, whether or not it is JSON."""
+    if not transcript.is_file():
+        return None
+    counts, codex = dict.fromkeys(ACTIONS, 0), False
+    with transcript.open(encoding='utf-8', errors='replace') as stream:
+        for line in stream:
+            try:
+                event = json.loads(line)
+            except ValueError:
                 continue
-            with transcript.open(encoding='utf-8', errors='replace') as stream:
-                for line in stream:
-                    try:
-                        event = json.loads(line)
-                    except ValueError:
-                        continue
-                    item = event.get('item') if isinstance(event, dict) and event.get('type') == 'item.completed' else None
-                    if isinstance(item, dict) and item.get('type') in counts:
-                        counts[item['type']] += 1
-    return counts
+            kind = event.get('type') if isinstance(event, dict) else None
+            codex = codex or isinstance(kind, str) and kind.startswith(CODEX)
+            item = event.get('item') if kind == 'item.completed' else None
+            if isinstance(item, dict) and item.get('type') in counts:
+                counts[item['type']] += 1
+    return counts if codex else None
+
+
+def _actions(run_dir: Path, stage: str, assignments: list):
+    """The actions a stage's workers completed, by type, counted in the transcripts of its attempts, or None unless every
+    attempt left one in the run: a stage that ran no worker, an attempt with no transcript, and one that stopped before
+    its outputs were collected, whose transcript stays in a workspace outside the run, are unknown, not zero. A transcript
+    that no attempt of the stage owns is not counted."""
+    total = dict.fromkeys(ACTIONS, 0)
+    for assignment in assignments:
+        counts = next((found for found in map(_read_actions, _kept(run_dir, stage, assignment)) if found is not None), None)
+        if counts is None:
+            return None
+        for action in ACTIONS:
+            total[action] += counts[action]
+    return total if assignments else None
 
 
 def _wall(begun, ended):
@@ -208,8 +247,8 @@ def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None) -> 
 
     - `attempts`: the `stage.assigned` events. `wall_seconds`: from the first of them to the last `stage.accepted` or
       `stage.skipped` event. `worker_seconds` and `tokens`: the workers' reports summed.
-    - `managed_calls`: the `tool.started` events, by tool. `worker_actions`: the completed actions in the workers'
-      transcripts, by type.
+    - `managed_calls`: the `tool.started` events, by tool. `worker_actions`: the completed actions in the attempts'
+      transcripts, by type, or None unless every attempt left a readable one.
     - `device`: the `exchanges` that completed in the transcripts of tool results; the `writes` dispatched (effectful
       `tool.started` events); the `refusals` (`tool.refused` events, calls the runtime refused before it opened the
       device, and replies the device rejected); and the `resets`, each emulator replacement after an uncertain write,
@@ -222,7 +261,7 @@ def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None) -> 
     Raises FileNotFoundError for a `home` with no database and ValueError for a `run_id` the database does not hold."""
     home = Path(home)
     events, reports, handoffs, final, progress = _records(home, run_id)
-    attempts, begun, ended = dict.fromkeys(STAGES, 0), {}, {stage: [] for stage in STAGES}
+    assigned, begun, ended = {stage: [] for stage in STAGES}, {}, {stage: [] for stage in STAGES}
     managed, device = {stage: {} for stage in STAGES}, {stage: dict.fromkeys(DEVICE, 0) for stage in STAGES}
     active, counted = [], set()  # (time, stage) of each assignment or skip; the sessions already counted as resets
     calls = {}
@@ -232,7 +271,7 @@ def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None) -> 
             if kind in ('stage.assigned', 'stage.skipped'):
                 active.append((created, stage))
             if kind == 'stage.assigned':
-                attempts[stage] += 1
+                assigned[stage].append(data)
                 begun.setdefault(stage, created)
             elif kind in ('stage.accepted', 'stage.skipped'):
                 ended[stage].append(created)
@@ -266,11 +305,11 @@ def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None) -> 
     stages = {}
     for stage in STAGES:
         rows = [payload for name, payload in reports if name == stage]
-        stages[stage] = {'attempts': attempts[stage], 'wall_seconds': _wall(begun.get(stage), ended[stage]),
-                         'worker_seconds': _worker_seconds(rows, attempts[stage]),
+        stages[stage] = {'attempts': len(assigned[stage]), 'wall_seconds': _wall(begun.get(stage), ended[stage]),
+                         'worker_seconds': _worker_seconds(rows, len(assigned[stage])),
                          'managed_calls': dict(sorted(managed[stage].items())),
-                         'worker_actions': _actions(home / 'runs' / run_id, stage), 'device': device[stage],
-                         'tokens': _tokens(rows, attempts[stage])}
+                         'worker_actions': _actions(home / 'runs' / run_id, stage, assigned[stage]),
+                         'device': device[stage], 'tokens': _tokens(rows, len(assigned[stage]))}
     repairs = (progress or {}).get('repairs')
     return {'schema': SCHEMA, 'run_id': run_id, 'repairs': repairs if type(repairs) is int else None,
             'claim': _claim(handoffs, reports, final), 'stages': stages}

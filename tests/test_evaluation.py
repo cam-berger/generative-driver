@@ -608,14 +608,18 @@ class HarnessGradingTests(PendingRunFixture):
                 self.assertEqual(equivalence['frozen_artifact_sha256'], None if name == 'no-package' else self.emitted(result))
 
     def test_a_frozen_driver_whose_model_is_missing_or_not_json_fails_without_the_device(self):
-        # Catches a frozen package's unreadable model ending unscored as an evaluator host fault, which would leave the
+        # Catches a frozen package's malformed model ending unscored as an evaluator host fault, which would leave the
         # system's broken driver out of its pass rate. The model is the driver's own bytes: the grade fails it before
         # any truth is unlocked or emulator started.
         from generative_driver.benchmark_support import evaluator
         model = lambda text: lambda package: (package / 'driver/model.json').write_text(text)
+        def not_a_file(package):
+            (package / 'driver/model.json').unlink()
+            (package / 'driver/model.json').mkdir()
         for name, edit in (('not-json', model('{not json')), ('not-an-object', model('[]')),
                            ('too-deep', model('[' * 100000)),
-                           ('missing', lambda package: (package / 'driver/model.json').unlink())):
+                           ('missing', lambda package: (package / 'driver/model.json').unlink()),
+                           ('not-a-file', not_a_file)):
             with self.subTest(model=name), \
                     patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')), \
                     patch.object(evaluator, 'reference_execute', side_effect=AssertionError('device started')):
@@ -628,6 +632,44 @@ class HarnessGradingTests(PendingRunFixture):
                 result = self.controller.call('result', {'run_id': record['run_id']})
                 self.assertEqual((result['equivalence'], equivalence['frozen_artifact_sha256']),
                                  (equivalence, self.emitted(result)))
+
+    def test_a_frozen_model_saved_with_a_byte_order_mark_or_as_utf16_is_graded_normally(self):
+        # Catches a model the configurator, toolkit and package runtime all read as bytes graded not equivalent because
+        # the grader read it as UTF-8 text: one saved with a byte-order mark or as UTF-16 is the driver's own and grades
+        # on the device like any other.
+        from generative_driver.benchmark_support import evaluator
+        for name, codec in (('utf-8-bom', 'utf-8-sig'), ('utf-16', 'utf-16')):
+            calls, unlocked = [], []
+            save = lambda package, codec=codec: (package / 'driver/model.json').write_bytes(json.dumps(self.model).encode(codec))
+            with self.subTest(model=name), \
+                    patch.object(evaluator, 'case_truth', side_effect=self.truth(unlocked)), \
+                    patch.object(evaluator, 'reference_execute', side_effect=reference(PASS, calls)):
+                trial, record = self.trial(name, edit=save)
+                equivalence = record['equivalence']
+                self.assertEqual((record['status'], equivalence['status'], equivalence['equivalent'], equivalence['diff']),
+                                 ('evaluated', 'graded', True, []))
+                self.assertEqual((len(calls), len(unlocked)), (1, 1))
+
+    def test_a_frozen_model_the_grader_cannot_read_is_a_host_fault_not_the_drivers_failure(self):
+        # Catches the grader's own private copy of the model, unreadable for a reason of the host's (here an I/O error),
+        # graded as the driver's failure: only a model that is missing, not a file or not JSON is the driver's, so this
+        # ends unscored, a host fault the harness records.
+        from generative_driver.benchmark_support import evaluator
+        private = self.root / 'bench/unreadable/private'
+        def unreadable(read):
+            def refuse(path, *args, **kwargs):
+                if path.name == 'model.json' and private in path.parents:
+                    raise OSError(5, 'Input/output error')
+                return read(path, *args, **kwargs)
+            return refuse
+        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')), \
+                patch.object(evaluator, 'reference_execute', side_effect=AssertionError('device started')), \
+                patch.object(Path, 'read_text', unreadable(Path.read_text)), \
+                patch.object(Path, 'read_bytes', unreadable(Path.read_bytes)):
+            trial, record = self.trial('unreadable')
+        equivalence = record['equivalence']
+        self.assertEqual((record['status'], equivalence['status'], equivalence['equivalent']), ('unscored', 'unscored', None))
+        self.assertEqual(equivalence['diff'], [{'id': 'evaluation', 'reason': 'evaluator host fault: OSError'}])
 
     def test_a_run_stamped_with_another_evaluator_revision_is_unscored_before_grading(self):
         # Catches a grader edited during a trial sealing a verdict under the revision the run started with: the grade
@@ -1224,6 +1266,22 @@ class PortableModelTests(unittest.TestCase):
             self.assertEqual(adapted, reference_model_bytes(original))
             self.assertEqual(adaptation['adapted_model_sha256'], hashlib.sha256(adapted).hexdigest())
             self.assertNotIn(b'\r', (root / 'model/adaptation.json').read_bytes())
+
+    def test_the_final_phase_reads_a_frozen_model_saved_with_a_byte_order_mark_or_as_utf16(self):
+        # Catches the final phase's invoker reading the frozen model as the host's locale text, which fails a model saved
+        # with a byte-order mark or as UTF-16 although the configurator, toolkit and package runtime parse its bytes.
+        from generative_driver.benchmark_support.emulated_actions import canonical_package_invoker
+        from tq9_workflow_fixture import capabilities, model
+        for name, codec in (('utf-8-bom', 'utf-8-sig'), ('utf-16', 'utf-16')):
+            with self.subTest(model=name), tempfile.TemporaryDirectory() as temporary:
+                package = Path(temporary)
+                (package / 'driver').mkdir()
+                (package / 'driver/model.json').write_bytes(json.dumps(model()).encode(codec))
+                invoke = canonical_package_invoker(package, capabilities(), {'host': '127.0.0.1', 'port': 1})
+                # The model's own bounds refuse this input before any package process starts.
+                result = invoke('set_duty', {'duty': 1001}, ['actuate'])
+                self.assertEqual((result['ok'], result['error']['code'], result['transport_open_attempted']),
+                                 (False, 'capability_mapping', False))
 
 
 if __name__ == '__main__':

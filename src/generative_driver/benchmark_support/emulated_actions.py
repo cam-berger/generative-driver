@@ -192,7 +192,7 @@ def canonical_package_invoker(package, capabilities, binding):
     import json
     from pathlib import Path
     from .behavior import bind_task
-    model = json.loads((Path(package)/'driver/model.json').read_text())
+    model = json.loads((Path(package)/'driver/model.json').read_bytes())
     def invoke(task, inputs, grants):
         try:
             request = bind_task(capabilities, task, inputs, model)

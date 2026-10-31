@@ -275,11 +275,12 @@ def accepted_driver(case_id, trial_dir, run_dir, result):
 def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
     """Grade a completed run's frozen driver once, on a fresh emulator: (public equivalence/1 without its evidence hash,
     the final evaluation for the seal or None). It takes the accepted driver (`accepted_driver`), unlocks the truth and
-    runs the final phase on a fresh emulator; a driver without a capability mapping, or whose model is not a JSON object,
-    fails before either. A final the draft already holds for this run and package is rebuilt and never graded again. A
-    changed record, or a grader other than the evaluator revision the run was stamped with, raises IntegrityError. Every
-    record names the protocol the run's progress names, and a result that names none raises ValueError. Legacy tq9 and
-    bme280 are graded from their recorded reuse by `recorded_grading.grade` instead."""
+    runs the final phase on a fresh emulator; a driver without a capability mapping, or whose model is missing or not a
+    JSON object, fails before either. A final the draft already holds for this run and package is rebuilt and never graded
+    again. A changed record, or a grader other than the evaluator revision the run was stamped with, raises IntegrityError;
+    a model file the grader cannot read raises its OSError, a host fault. Every record names the protocol the run's
+    progress names, and a result that names none raises ValueError. Legacy tq9 and bme280 are graded from their recorded
+    reuse by `recorded_grading.grade` instead."""
     from .case_assets import case_inputs
     protocol = _protocol(result)
     trial_dir, run_dir = Path(trial_dir), Path(run_dir)
@@ -296,13 +297,16 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
     if not isinstance(capabilities, dict):
         return record('graded', False, [], [{'id': 'capability_mapping', 'reason': 'no capability mapping'}], sha,
                       capabilities_sha, checked, protocol=protocol), None
-    try:
-        model = json.loads((package/'driver/model.json').read_text(encoding='utf-8'))
-    except (OSError, ValueError, RecursionError):
-        model = None
+    model_path, model = package/'driver/model.json', None
+    if model_path.is_file():
+        try:
+            model = json.loads(model_path.read_bytes())
+        except (ValueError, RecursionError):
+            pass
     if not isinstance(model, dict):
-        # The model is the driver's own bytes: one that is not a JSON object fails the grade, before any truth is
-        # unlocked or device touched.
+        # The model is the driver's own bytes, parsed as the runtime parses them: one that is missing, not a file or
+        # not a JSON object fails the grade, before any truth is unlocked or device touched. Any other read error is
+        # the host's, since this is the grader's own private copy, and propagates.
         reason = "the frozen driver's model is missing or not JSON"
         return record('graded', False, [], [{'id': 'frozen_package', 'reason': reason}], sha, capabilities_sha, checked,
                       protocol=protocol), None

@@ -26,7 +26,7 @@
 | Trial | One fresh six-stage run. A repetition starts another trial, not another lineage. |
 | Pass / failure | The evaluator grades a trial's frozen driver equivalent / not equivalent, a departure from the original function; a trial that emits no driver fails. Fresh reuse and accepted stages are reported beside a pass, never inside it. |
 | Unknown | A completed grade with no failed step and at least one step the evaluator could not decide; neither pass nor failure. |
-| Pass rate | Passes / (passes + failures), printed with the unknown, fault and planned counts. A trial stopped by a host or operator fault it did not cause, or missing its evidence, is counted but not graded; running out of budget, or a stop the system caused, is a failure. |
+| Pass rate | Passes / (passes + failures), printed with the unknown, fault and planned counts. A trial stopped by a host or operator fault it did not cause, or missing its evidence, is counted but not graded; running out of budget, or a stop the system caused, is a failure. A trial the transcript audit flags (a worker ran a command naming a forbidden path) is also counted but not graded. |
 | Scorecard | Trial metrics computed afterwards from retained records: outcome, step accuracy, stage times, tool and device use, tokens, repairs and claim agreement (the fresh-reuse claim against the grade). The system under test records nothing for it. |
 | Scoring set / development set | Generated devices sealed for comparisons, from which only aggregate scorecards leave the bench harness / devices from the same generator, open for development. |
 | Pinned system | The revision, runtime binary and version, model, reasoning effort and limits that every trial of a baseline shares. |

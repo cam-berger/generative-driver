@@ -1,6 +1,10 @@
-"""Trial metrics: what a finished run's retained records say about each stage, read afterwards and never recorded."""
+"""Trial metrics and the suite scorecard: what a finished run's retained records say about each stage, read afterwards and
+never recorded, and what the trials of a suite add up to."""
 import contextlib
+import copy
+import io
 import json
+import os
 import sqlite3
 import tempfile
 import time
@@ -9,8 +13,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import test_configurator
+from test_assistive_reports import AssistiveFixture
 from test_configurator import gateway_identity, scripted_stages, thermometer_model, wait_stopped
-from generative_driver.benchmark_support.scorecard import trial_metrics
+from test_evaluation import FAIL, PASS
+from test_suite_harness import manifest
+from generative_driver.benchmark_support.outcomes import pass_rate
+from generative_driver.benchmark_support.scorecard import scorecard_markdown, suite_scorecard, trial_metrics
 
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 BINDING = {'host': '127.0.0.1', 'port': 45681}
@@ -593,6 +601,437 @@ class TrialMetricsTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             trial_metrics(elsewhere, run)
         self.assertFalse((elsewhere / 'runs.sqlite3').exists())
+
+    def test_the_hand_made_metrics_of_the_scorecard_tests_have_the_keys_of_a_real_runs(self):
+        # The scorecard tests below feed `suite_scorecard` metrics made by hand (`blank_metrics`); this keeps their keys
+        # to those `trial_metrics` really returns, so a change to its result cannot leave them describing another shape.
+        home, run, result = self.scripted()
+        keys = lambda value: {key: keys(item) for key, item in value.items()} if isinstance(value, dict) else None
+        self.assertEqual(keys(blank_metrics(run)), keys(trial_metrics(home, run)))
+
+
+def tokens(total, **counters):
+    """A stage's token counters: `total` and the `counters` given, every other counter unknown."""
+    return {**UNKNOWN_TOKENS, 'total': total, **counters}
+
+
+def blank_metrics(run_id):
+    """The shape of a `benchmark-trial-metrics/1` for a run nothing was measured of: no stage was assigned and no figure is
+    known, so a test sets the figures it means."""
+    stage = {'attempts': 0, 'wall_seconds': None, 'worker_seconds': None, 'managed_calls': {},
+             'worker_actions': UNKNOWN_ACTIONS, 'device': NO_DEVICE, 'tokens': UNKNOWN_TOKENS}
+    return {'schema': 'benchmark-trial-metrics/1', 'run_id': run_id, 'repairs': None,
+            'claim': {'claimed_success': None, 'mission_passed': None, 'agrees': None},
+            'stages': {name: copy.deepcopy(stage) for name in STAGES}}
+
+
+def probed(run_id, total, **probe):
+    """The metrics of a run whose probe stage was assigned once and used `total` tokens, and `probe` besides."""
+    metrics = blank_metrics(run_id)
+    metrics['stages']['probe'].update(attempts=1, tokens=tokens(total), **probe)
+    return metrics
+
+
+def scoring_report(outcomes, *, scoring=True, **labels):
+    """A `benchmark-suite-report/3` down to what a scorecard reads of the one `report_suite` gives: a trial row for each case of
+    `outcomes` (case -> scored outcome), with run id r<n> unless it was not run, and the scoring set in the comparison
+    identity when `scoring`. `labels` are top-level fields such as `execution`."""
+    rows = [{'trial_key': 'entry-%03d-repeat-000' % number, 'case': case, 'family': 'generated', 'scored': outcome,
+             'run_id': None if outcome == 'not_run' else 'r%d' % number} for number, (case, outcome) in enumerate(outcomes.items())]
+    identity = {'scoring_set': {'registration': 'generated-set-1', 'manifest_sha256': 'a' * 64}} if scoring else {}
+    return {'schema': 'benchmark-suite-report/3', 'experiment': {'comparison_identity': identity}, 'trials': rows, **labels}
+
+
+def three_probed():
+    """The report and the metrics (by run id) of three trials that probed. The first measured every figure; the second has
+    no wall time, no action counts and no cached or reasoning tokens; the third has no worker time and no tokens."""
+    def probe(run_id, **figures):
+        metrics = blank_metrics(run_id)
+        metrics['stages']['probe'].update(figures)
+        return metrics
+    counts = lambda command, mcp, files: {'command_execution': command, 'mcp_tool_call': mcp, 'file_change': files}
+    metrics = {
+        'r0': probe('r0', attempts=1, wall_seconds=10.0, worker_seconds=4, managed_calls={'probe_run': 2},
+                    worker_actions=counts(3, 0, 1), device={'exchanges': 5, 'writes': 1, 'refusals': 0, 'resets': 0},
+                    tokens={'input': 100, 'cached_input': 40, 'output': 20, 'reasoning_output': 5, 'total': 120}),
+        'r1': probe('r1', attempts=2, worker_seconds=6, managed_calls={'probe_run': 1, 'interface_execute': 4},
+                    device={'exchanges': 3, 'writes': 0, 'refusals': 2, 'resets': 1}, tokens=tokens(60, input=50, output=10)),
+        'r2': probe('r2', attempts=1, wall_seconds=30.0, worker_actions=counts(1, 2, 0))}
+    return scoring_report({'d0': 'pass', 'd1': 'failure', 'd2': 'failure'}), metrics
+
+
+def scorecard_of(report, metrics, **arguments):
+    """The scorecard of `report`, with `trial_metrics` answering from `metrics` by run id (so no home is opened)."""
+    with patch('generative_driver.benchmark_support.scorecard.trial_metrics',
+               side_effect=lambda home, run_id, **_: metrics[run_id]):
+        return suite_scorecard(report, home=Path('no-such-home'), **arguments)
+
+
+class SuiteScorecardTests(unittest.TestCase):
+    home = Path('no-such-home')
+
+    def card(self, report, metrics, **arguments):
+        return scorecard_of(report, metrics, **arguments)
+
+    def test_a_scoring_suites_scorecard_has_aggregates_only(self):
+        report = scoring_report({'d0': 'pass', 'd1': 'failure'})
+        card = self.card(report, {'r0': probed('r0', 10), 'r1': probed('r1', 20)})
+        self.assertEqual(card['schema'], 'benchmark-scorecard/1')
+        self.assertNotIn('trials', card)
+        self.assertEqual(card['pass_line'], '1/2 pass, 0 unknown, 0 faults, 2 planned')
+        self.assertEqual(card['stages']['probe']['tokens']['total'], 30)
+
+    def test_a_stage_figure_sums_the_trials_that_measured_it_and_says_how_many_did(self):
+        # See `three_probed`: a figure no trial measured (emit's) is unknown, not zero. Counts that are never unknown
+        # (attempts, managed calls, device) are plain sums.
+        card = self.card(*three_probed())
+        counts = lambda command, mcp, files: {'command_execution': command, 'mcp_tool_call': mcp, 'file_change': files}
+        self.assertEqual(card['stages']['probe'], {
+            'attempts': 4, 'wall_seconds': 40.0, 'worker_seconds': 10, 'managed_calls': {'interface_execute': 4, 'probe_run': 3},
+            'worker_actions': counts(4, 2, 1), 'device': {'exchanges': 8, 'writes': 1, 'refusals': 2, 'resets': 1},
+            'tokens': {'input': 150, 'cached_input': 40, 'output': 30, 'reasoning_output': 5, 'total': 180},
+            'median': {'wall_seconds': 20.0, 'worker_seconds': 5.0,
+                       'tokens': {'input': 75.0, 'cached_input': 40, 'output': 15.0, 'reasoning_output': 5, 'total': 90.0}},
+            'measured': {'wall_seconds': 2, 'worker_seconds': 2, 'worker_actions': counts(2, 2, 2),
+                         'tokens': {'input': 2, 'cached_input': 1, 'output': 2, 'reasoning_output': 1, 'total': 2}}})
+        self.assertEqual(card['stages']['emit'], {
+            'attempts': 0, 'wall_seconds': None, 'worker_seconds': None, 'managed_calls': {}, 'worker_actions': UNKNOWN_ACTIONS,
+            'device': NO_DEVICE, 'tokens': UNKNOWN_TOKENS,
+            'median': {'wall_seconds': None, 'worker_seconds': None, 'tokens': UNKNOWN_TOKENS},
+            'measured': {'wall_seconds': 0, 'worker_seconds': 0, 'worker_actions': dict.fromkeys(UNKNOWN_ACTIONS, 0),
+                         'tokens': dict.fromkeys(UNKNOWN_TOKENS, 0)}})
+        self.assertEqual(list(card['stages']), list(STAGES))
+
+    def test_repairs_are_summed_and_each_claim_figure_is_counted_by_answer(self):
+        # Repairs add up over the trials that gave them. The yes/no figures of the claim are counted as true, false and
+        # unknown, so a trial whose reuse ran no worker or whose run has no mission result is told from one that said no.
+        def run(run_id, repairs, claimed, mission, agrees):
+            metrics = blank_metrics(run_id)
+            metrics.update(repairs=repairs, claim={'claimed_success': claimed, 'mission_passed': mission, 'agrees': agrees})
+            return metrics
+        metrics = {'r0': run('r0', 1, True, True, True), 'r1': run('r1', None, False, True, False),
+                   'r2': run('r2', 2, None, None, None)}
+        card = self.card(scoring_report({'d0': 'pass', 'd1': 'failure', 'd2': 'failure'}), metrics)
+        answers = lambda true, false, unknown: {'true': true, 'false': false, 'unknown': unknown}
+        self.assertEqual(card['run'], {'repairs': 3, 'measured': {'repairs': 2}, 'claim': {
+            'claimed_success': answers(1, 1, 1), 'mission_passed': answers(2, 0, 1), 'agrees': answers(1, 1, 1)}})
+        # No trial gave repairs: unknown, not zero.
+        card = self.card(scoring_report({'d0': 'pass'}), {'r0': blank_metrics('r0')})
+        self.assertEqual((card['run']['repairs'], card['run']['measured']), (None, {'repairs': 0}))
+        self.assertEqual(card['run']['claim']['agrees'], answers(0, 0, 1))
+
+    def test_metrics_come_from_every_trial_with_a_run_whatever_its_outcome(self):
+        # A trial with no run counts in the pass rate alone, and asks for no metrics. The tokens of the faulted, flagged
+        # and unsettled trials are in the totals: the scorecard measures what the system used, not only what it passed.
+        outcomes = {'d0': 'pass', 'd1': 'failure', 'd2': 'unknown', 'd3': 'fault', 'd4': 'flagged', 'd5': 'running',
+                    'd6': 'not_run'}
+        metrics = {'r%d' % number: probed('r%d' % number, 10 * (number + 1)) for number in range(6)}
+        card = self.card(scoring_report(outcomes), metrics)
+        self.assertEqual(card['pass_line'], '1/2 pass, 1 unknown, 1 faults, 7 planned, 1 flagged')
+        self.assertEqual((card['measured_trials'], card['pass_rate']['planned'], card['pass_rate']['not_run']), (6, 7, 1))
+        self.assertEqual(card['stages']['probe']['tokens']['total'], 210)
+        self.assertEqual(card['stages']['probe']['measured']['tokens']['total'], 6)
+        # Nothing ran: the scorecard is the pass rate alone, with nothing measured.
+        card = self.card(scoring_report({'d0': 'not_run'}), {})
+        self.assertEqual((card['measured_trials'], card['stages']['probe']['tokens']['total'], card['run']['repairs']),
+                         (0, None, None))
+
+    def test_groups_give_the_pass_rate_of_each_value_of_each_key_the_rows_carry(self):
+        # `family` is on every row; `level` is on three of these four, one of them with a group of its own, and no row
+        # carries a `framing`. A row without a key, or with none for it, is in none of its groups and a key that no row
+        # carries has none. A group of one trial is kept: a scoring suite shows aggregates only, and its `planned` count
+        # is the size.
+        report = scoring_report({'d0': 'pass', 'd1': 'failure', 'd2': 'fault', 'd3': 'pass', 'd4': 'not_run'})
+        for row, family, level in zip(report['trials'], ('generated', 'generated', 'tq9', 'generated', 'generated'),
+                                      (1, 1, 2, None, None)):
+            row['family'] = family
+            if level:
+                row['level'] = level
+        report['trials'][4]['level'] = None
+        card = self.card(report, {'r%d' % number: blank_metrics('r%d' % number) for number in range(4)})
+        self.assertEqual(card['groups'], {'family': {'generated': pass_rate(['pass', 'failure', 'pass', 'not_run']),
+                                                     'tq9': pass_rate(['fault'])},
+                                          'level': {'1': pass_rate(['pass', 'failure']), '2': pass_rate(['fault'])}})
+        self.assertEqual(card['groups']['family']['tq9']['planned'], 1)
+
+    def test_the_execution_labels_of_the_report_are_carried_when_it_has_them(self):
+        # A replay suite's report says no model ran its trials; a report that says nothing is not made to.
+        plain = self.card(scoring_report({'d0': 'pass'}), {'r0': blank_metrics('r0')})
+        self.assertFalse({'execution', 'model_benchmark'} & set(plain))
+        replayed = self.card(scoring_report({'d0': 'pass'}, execution='replay-emulation', model_benchmark=False),
+                             {'r0': blank_metrics('r0')})
+        self.assertEqual((replayed['execution'], replayed['model_benchmark']), ('replay-emulation', False))
+
+    def test_a_suite_with_no_scoring_set_adds_a_row_for_each_trial_and_never_the_audit(self):
+        # Every planned trial has a row, one with no run included, and a row is its key, outcome and metrics. A flagged
+        # trial's findings quote the worker's raw command: they are in no scorecard.
+        report = scoring_report({'d0': 'pass', 'd1': 'not_run', 'd2': 'flagged'}, scoring=False)
+        command = 'cat "/Volumes/Answer Vault/evaluator/x.password"'
+        report['trials'][2]['audit'] = [{'transcript': 'work/probe/a1/_agent_events.jsonl', 'command': command}]
+        metrics = {'r0': probed('r0', 10), 'r2': probed('r2', 20)}
+        card = self.card(report, metrics)
+        self.assertEqual(card['trials'], [
+            {'trial_key': 'entry-000-repeat-000', 'scored': 'pass', 'metrics': metrics['r0']},
+            {'trial_key': 'entry-001-repeat-000', 'scored': 'not_run', 'metrics': None},
+            {'trial_key': 'entry-002-repeat-000', 'scored': 'flagged', 'metrics': metrics['r2']}])
+        self.assertEqual(card['pass_line'], '1/1 pass, 0 unknown, 0 faults, 3 planned, 1 flagged')
+        self.assertNotIn('Groundtruth', json.dumps(card))
+
+    def test_a_scoring_suites_scorecard_names_no_case_run_or_trial_and_quotes_no_command(self):
+        # The rows of a report carry the case, run id and trial key of each trial and, when an audit ran, findings that
+        # quote worker commands. None reaches the scorecard of a scoring suite, whatever its groups are.
+        report = scoring_report({'secret-device-7': 'flagged', 'secret-device-8': 'pass'})
+        report['trials'][0]['audit'] = [{'transcript': 'work/probe/a1/_agent_events.jsonl', 'command': 'cat /vault/key'}]
+        for row, run_id, level in zip(report['trials'], ('run-5ecret1', 'run-5ecret2'), (1, 2)):
+            row.update(run_id=run_id, level=level)
+        card = self.card(report, {'run-5ecret1': probed('run-5ecret1', 10), 'run-5ecret2': probed('run-5ecret2', 20)})
+        self.assertNotIn('trials', card)
+        text = json.dumps(card) + '\n' + scorecard_markdown(card)
+        for private in ('secret-device', 'run-5ecret', 'entry-00', 'work/probe', 'cat /vault/key', 'audit'):
+            self.assertNotIn(private, text)
+        self.assertEqual(sorted(card['groups']['level']), ['1', '2'])
+
+    def test_a_trial_is_measured_in_its_own_directory_when_it_has_one(self):
+        # The provider's journal in a trial's directory adds the resets the configurator never recorded. A trial the map
+        # leaves out is measured without one, and a key the report does not hold is no trial.
+        asked = []
+        def measure(home, run_id, **arguments):
+            asked.append((home, run_id, arguments.get('trial_dir')))
+            return blank_metrics(run_id)
+        with patch('generative_driver.benchmark_support.scorecard.trial_metrics', side_effect=measure):
+            suite_scorecard(scoring_report({'d0': 'pass', 'd1': 'failure'}), home=self.home,
+                            trial_dirs={'entry-001-repeat-000': Path('trial-one'), 'entry-009-repeat-000': Path('nobody')})
+        self.assertEqual(asked, [(self.home, 'r0', None), (self.home, 'r1', Path('trial-one'))])
+
+    def test_a_report_that_stores_no_scored_outcome_has_no_scorecard(self):
+        # An earlier suite report counts no pass rate; its rows have no outcome to count, so it is refused outright
+        # rather than scored from rows it does not have.
+        for schema in ('benchmark-suite-report/1', 'benchmark-suite-report/2'):
+            with self.subTest(schema):
+                report = {**scoring_report({'d0': 'pass'}), 'schema': schema}
+                for row in report['trials']:
+                    del row['scored']
+                with self.assertRaisesRegex(ValueError, 'benchmark-suite-report/3'):
+                    self.card(report, {'r0': blank_metrics('r0')})
+
+
+class ScorecardMarkdownTests(unittest.TestCase):
+    def markdown(self, report, metrics):
+        return scorecard_markdown(scorecard_of(report, metrics))
+
+    def table(self, text, heading):
+        """The rows of the table under `## heading`, each as its cells, header first and separator line left out."""
+        section = text.split('## ' + heading + '\n', 1)[1].split('\n## ', 1)[0]
+        lines = [line for line in section.splitlines() if line.startswith('|')]
+        return [[cell.strip() for cell in line.strip('|').split('|')] for number, line in enumerate(lines) if number != 1]
+
+    def table_row(self, text, heading, name):
+        """The cells of the row named `name` in the table under `## heading`."""
+        return next(row for row in self.table(text, heading)[1:] if row[0] == name)
+
+    def test_the_markdown_leads_with_the_pass_line_and_a_suite_no_model_ran_says_so_on_its_second_line(self):
+        blank = {'r0': blank_metrics('r0'), 'r1': blank_metrics('r1')}
+        lines = self.markdown(scoring_report({'d0': 'pass', 'd1': 'failure'}), blank).splitlines()
+        self.assertEqual(lines[:2], ['1/2 pass, 0 unknown, 0 faults, 2 planned', ''])
+        report = scoring_report({'d0': 'pass'}, execution='replay-emulation', model_benchmark=False)
+        lines = self.markdown(report, blank).splitlines()
+        self.assertEqual(lines[0], '1/1 pass, 0 unknown, 0 faults, 1 planned')
+        self.assertRegex(lines[1], r'^No model ran these trials \(replay-emulation\): none of these figures is model performance')
+
+    def test_each_group_is_given_as_a_pass_line(self):
+        report = scoring_report({'d0': 'pass', 'd1': 'failure', 'd2': 'pass'})
+        for row, level in zip(report['trials'], (1, 1, 2)):
+            row['level'] = level
+        text = self.markdown(report, {'r%d' % number: blank_metrics('r%d' % number) for number in range(3)})
+        for line in ('- family `generated`: 2/3 pass, 0 unknown, 0 faults, 3 planned',
+                     '- level `1`: 1/2 pass, 0 unknown, 0 faults, 2 planned',
+                     '- level `2`: 1/1 pass, 0 unknown, 0 faults, 1 planned'):
+            self.assertIn('\n' + line + '\n', text)
+
+    def test_a_stage_row_marks_a_figure_that_fewer_trials_measured_and_one_none_did(self):
+        # Of the three trials, two measured probe's wall and worker time, its tokens and its action counts; the plain
+        # counts are exact. Emit was never assigned, so what a worker leaves is unknown there, not zero.
+        text = self.markdown(*three_probed())
+        self.assertEqual(self.table(text, 'Stages')[0], ['Stage', 'Attempts', 'Wall seconds', 'Worker seconds', 'Tokens',
+                         'Shell commands', 'MCP calls', 'File edits', 'Exchanges', 'Writes', 'Refusals', 'Resets'])
+        self.assertEqual([row[0] for row in self.table(text, 'Stages')[1:]], list(STAGES))
+        self.assertEqual(self.table_row(text, 'Stages', 'probe'),
+                         ['probe', '4', '40 (2/3)', '10 (2/3)', '180 (2/3)', '4 (2/3)', '2 (2/3)', '1 (2/3)', '8', '1', '2', '1'])
+        self.assertEqual(self.table_row(text, 'Stages', 'emit'), ['emit', '0'] + ['unknown'] * 6 + ['0'] * 4)
+        # Every trial measured: no count beside the sum, and a half is written as a decimal.
+        text = self.markdown(scoring_report({'d0': 'pass', 'd1': 'failure'}), {'r0': probed('r0', 10), 'r1': probed('r1', 15)})
+        self.assertEqual(self.table_row(text, 'Stages', 'probe')[4], '25')
+        self.assertEqual(self.table_row(text, 'Medians', 'probe')[3], '12.50')
+
+    def test_the_medians_the_managed_calls_and_the_run_figures_are_given_too(self):
+        text = self.markdown(*three_probed())
+        self.assertEqual(self.table_row(text, 'Medians', 'probe'), ['probe', '20 (2/3)', '5 (2/3)', '90 (2/3)'])
+        self.assertEqual(self.table_row(text, 'Medians', 'emit'), ['emit', 'unknown', 'unknown', 'unknown'])
+        self.assertIn('\n- probe: interface_execute 4, probe_run 3\n', text)
+        self.assertNotIn('- emit:', text)
+        report = scoring_report({'d0': 'pass', 'd1': 'failure', 'd2': 'failure'})
+        metrics = {'r%d' % number: blank_metrics('r%d' % number) for number in range(3)}
+        for run_id, repairs, claimed in (('r0', 1, True), ('r1', None, False), ('r2', 2, None)):
+            metrics[run_id].update(repairs=repairs, claim={'claimed_success': claimed, 'mission_passed': None, 'agrees': None})
+        text = self.markdown(report, metrics)
+        self.assertIn('\n- Repairs: 3 (2/3)\n', text)
+        self.assertIn('\n- Fresh-reuse worker claimed success: 1 true, 1 false, 1 unknown\n', text)
+        self.assertIn('\n- Claim agrees with the mission result: 0 true, 0 false, 3 unknown\n', text)
+        self.assertIn('\n- Repairs: unknown\n', self.markdown(scoring_report({'d0': 'pass'}), {'r0': blank_metrics('r0')}))
+
+    def test_a_suite_nothing_of_which_ran_is_unknown_everywhere_and_calls_nothing(self):
+        text = self.markdown(scoring_report({'d0': 'not_run'}), {})
+        self.assertEqual(text.splitlines()[0], '0/0 pass, 0 unknown, 0 faults, 1 planned')
+        self.assertIn('\nFigures cover 0 of 1 planned trials, those with a run.', text)
+        for stage in STAGES:
+            self.assertEqual(self.table_row(text, 'Stages', stage), [stage, '0'] + ['unknown'] * 6 + ['0'] * 4)
+            self.assertEqual(self.table_row(text, 'Medians', stage), [stage] + ['unknown'] * 3)
+        self.assertTrue(text.endswith('\n## Managed calls\n\nnone\n'))
+
+
+class BenchTrialDirectoryTests(unittest.TestCase):
+    def test_a_trial_is_found_by_the_run_its_record_names_under_any_suite_of_the_bench_home(self):
+        # The bench home is a sibling of the configurator home. A suite resumed by a new harness has a suite directory of
+        # its own, and a trial found there is still the trial of its run; a trial that never learnt of a run, one whose
+        # record cannot be read and a run with no directory at all are left out of the map.
+        from generative_driver.benchmark_support.scorecard import bench_trial_dirs
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()  # the bench home is found from the resolved home
+            home = root / 'state'
+            trials = lambda suite: root / 'state-bench' / 'suites' / suite / 'trials'
+            for suite, name, record in (('suite-run-a', 'entry-000-repeat-000-1a2b3c4d', {'run_id': 'r0'}),
+                                        ('suite-run-a', 'entry-001-repeat-000-0badc0de', {'run_id': None}),
+                                        ('suite-run-b', 'entry-001-repeat-000-5e6f7a8b', {'run_id': 'r1'}),
+                                        ('suite-run-b', 'entry-002-repeat-000-00000000', 'not a record')):
+                (trials(suite) / name).mkdir(parents=True)
+                (trials(suite) / name / 'trial.json').write_text(json.dumps(record), encoding='utf-8')
+            report = scoring_report({'d0': 'pass', 'd1': 'failure', 'd2': 'fault', 'd3': 'not_run'})
+            self.assertEqual(bench_trial_dirs(report, home), {
+                'entry-000-repeat-000': trials('suite-run-a') / 'entry-000-repeat-000-1a2b3c4d',
+                'entry-001-repeat-000': trials('suite-run-b') / 'entry-001-repeat-000-5e6f7a8b'})
+            # A home with no bench home beside it has no trial directories.
+            self.assertEqual(bench_trial_dirs(report, root / 'elsewhere'), {})
+
+
+class ScorecardCommandTests(unittest.TestCase):
+    def command(self, report, metrics, *arguments, home='state'):
+        """`benchmark suite scorecard` as the command line runs it, in a home named by the environment as `generative-driver
+        --home` sets it, with `report_suite` returning `report` and `trial_metrics` answering from `metrics` (by run id, or
+        a function of the home and run id): (exit code, the JSON it printed, the call `report_suite` got, the home each
+        `trial_metrics` call got)."""
+        from generative_driver.benchmark import main
+        asked, output = [], io.StringIO()
+        def measure(home, run_id, **_):
+            asked.append(home)
+            return metrics(home, run_id) if callable(metrics) else metrics[run_id]
+        with patch.dict(os.environ, {'GENERATIVE_DRIVER_HOME': str(home)}), \
+                patch('generative_driver.benchmark_support.suite_reporting.report_suite', return_value=report) as export, \
+                patch('generative_driver.benchmark_support.scorecard.trial_metrics', side_effect=measure), \
+                contextlib.redirect_stdout(output):
+            code = main(['suite', 'scorecard', *arguments])
+        return code, json.loads(output.getvalue()), export.call_args, asked
+
+    def test_the_command_writes_the_json_and_the_markdown_and_prints_the_json(self):
+        report = scoring_report({'d0': 'pass', 'd1': 'failure'})
+        metrics = {'r0': probed('r0', 10), 'r1': probed('r1', 20)}
+        with tempfile.TemporaryDirectory() as temporary:
+            home, out = Path(temporary).resolve() / 'state', Path(temporary) / 'score card' / 'one'
+            code, printed, export, asked = self.command(report, metrics, 'S', '--output', str(out), '--audit-path', '/vault',
+                                                        '--audit-path', 'C:\\Generator', home=home)
+            self.assertEqual(code, 0)
+            # Only the aggregate scorecard stays: the export was made in a temporary directory, which is gone.
+            self.assertEqual(sorted(path.name for path in out.iterdir()), ['scorecard.json', 'scorecard.md'])
+            self.assertEqual(export.args, ('S',))
+            self.assertEqual((export.kwargs['home'], export.kwargs['audit_paths']), (home, ('/vault', 'C:\\Generator')))
+            self.assertNotEqual(Path(export.kwargs['output']).resolve(), out.resolve())
+            self.assertFalse(Path(export.kwargs['output']).exists())
+            self.assertEqual(asked, [home, home])
+            written = (out / 'scorecard.json').read_text(encoding='utf-8')
+            self.assertEqual(json.loads(written), printed)
+            self.assertEqual(written, json.dumps(printed, indent=2) + '\n')
+            self.assertEqual(printed['stages']['probe']['tokens']['total'], 30)
+            text = (out / 'scorecard.md').read_text(encoding='utf-8')
+            self.assertTrue(text.startswith('1/2 pass, 0 unknown, 0 faults, 2 planned\n'))
+            self.assertNotIn('d0', text)
+
+    def test_a_scorecard_that_cannot_be_measured_is_an_error_and_writes_nothing(self):
+        # A run the home does not hold would otherwise be a trial that did nothing.
+        def unknown(home, run_id):
+            raise ValueError('Unknown run_id')
+        with tempfile.TemporaryDirectory() as temporary:
+            out = Path(temporary) / 'scorecard'
+            code, printed, export, asked = self.command(scoring_report({'d0': 'pass'}), unknown, 'S', '--output', str(out))
+            self.assertEqual((code, printed), (1, {'ok': False, 'error': 'Unknown run_id'}))
+            self.assertFalse(out.exists())
+
+    def test_a_figure_that_is_not_a_number_is_an_error_and_writes_no_invalid_json(self):
+        nan = probed('r0', 10, wall_seconds=float('nan'))
+        with tempfile.TemporaryDirectory() as temporary:
+            out = Path(temporary) / 'scorecard'
+            code, printed, export, asked = self.command(scoring_report({'d0': 'pass'}), {'r0': nan}, 'S', '--output', str(out))
+            self.assertEqual((code, printed['ok']), (1, False))
+            self.assertFalse(out.exists())
+
+
+class RealSuiteTests(AssistiveFixture):
+    """A suite the bench harness drove against the in-process configurator: an equivalent driver, one graded not equivalent
+    and one whose grade the evaluator's host failed to give. Scripted stages, a toy truth and no model, tool or device;
+    the scorecard reads what the harness and the configurator kept."""
+    VAULT = '/Volumes/Answer Vault'
+    COMMAND = 'cat "' + VAULT + '/evaluator/x.password"'
+
+    def suite(self):
+        """The suite's id and its rows as the configurator keeps them, the first trial's worker having read the vault."""
+        with self.harness(PASS, FAIL, RuntimeError('evaluator host stopped')):
+            record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
+                                request_id='three-children')
+        rows = self.controller.call('suite_result', {'suite_id': record['suite_id']})['trials']
+        write_transcript(self.home / 'runs' / rows[0]['run_id'] / 'work' / 'probe' / 'a1', lines=[json.dumps(
+            {'type': 'item.completed', 'item': {'type': 'command_execution', 'command': self.COMMAND}})])
+        return record['suite_id'], rows
+
+    def test_the_command_measures_each_trial_in_the_directory_its_harness_kept_and_quotes_no_command(self):
+        # Catches a lookup of trial directories that assumes a layout the harness does not keep, a scorecard that leaves
+        # out a flagged trial's metrics, one that quotes the command that flagged it, and a home or export that differs
+        # between the report and the measurement.
+        from generative_driver.benchmark import main
+        sid, rows = self.suite()
+        out, output = self.root / 'scorecard', io.StringIO()
+        with self.owner(), patch.dict(os.environ, {'GENERATIVE_DRIVER_HOME': str(self.home)}), \
+                patch('generative_driver.benchmark_support.scorecard.trial_metrics', wraps=trial_metrics) as measured, \
+                contextlib.redirect_stdout(output):
+            code = main(['suite', 'scorecard', sid, '--output', str(out), '--audit-path', self.VAULT])
+        card = json.loads(output.getvalue())
+        self.assertEqual((code, card['pass_line'], card['measured_trials']),
+                         (0, '0/1 pass, 0 unknown, 1 faults, 3 planned, 1 flagged', 3))
+        self.assertEqual([(row['trial_key'], row['scored'], row['metrics']['run_id']) for row in card['trials']],
+                         [(rows[0]['trial_key'], 'flagged', rows[0]['run_id']), (rows[1]['trial_key'], 'failure', rows[1]['run_id']),
+                          (rows[2]['trial_key'], 'fault', rows[2]['run_id'])])
+        self.assertEqual([card['stages'][stage]['attempts'] for stage in STAGES], [3] * 6)
+        directories = {call.args[1]: call.kwargs['trial_dir'] for call in measured.call_args_list}
+        self.assertEqual(sorted(directories), sorted(row['run_id'] for row in rows))
+        for row in rows:
+            self.assertEqual(json.loads((directories[row['run_id']] / 'trial.json').read_text())['run_id'], row['run_id'])
+            self.assertTrue(directories[row['run_id']].name.startswith(row['trial_key'] + '-'))
+        for name in ('scorecard.json', 'scorecard.md'):
+            self.assertNotIn('Groundtruth', (out / name).read_text(encoding='utf-8'))
+        self.assertNotIn('Groundtruth', output.getvalue())
+
+    def test_a_real_reports_scorecard_names_no_trial_when_its_suite_ran_a_scoring_set(self):
+        # Catches a field of a real report's rows (its keys, runs, cases, reasons and findings) reaching the aggregate.
+        from generative_driver.benchmark_support.scorecard import bench_trial_dirs
+        from generative_driver.benchmark_support.suite_reporting import report_suite
+        sid, rows = self.suite()
+        with self.owner():
+            report = report_suite(sid, home=self.home, output=self.root / 'export', audit_paths=(self.VAULT,))
+        report['experiment']['comparison_identity']['scoring_set'] = {'registration': 'generated-set-1', 'manifest_sha256': 'a' * 64}
+        card = suite_scorecard(report, home=self.home, trial_dirs=bench_trial_dirs(report, self.home))
+        self.assertNotIn('trials', card)
+        self.assertEqual(card['pass_line'], '0/1 pass, 0 unknown, 1 faults, 3 planned, 1 flagged')
+        text = json.dumps(card) + scorecard_markdown(card)
+        for row in rows:
+            for private in (row['run_id'], row['trial_key'], row['case'], self.VAULT, 'password'):
+                self.assertNotIn(private, text)
 
 
 if __name__ == '__main__':

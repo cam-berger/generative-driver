@@ -1,4 +1,5 @@
-"""The metrics of one trial, computed afterwards from the records its run kept.
+"""The metrics of one trial, computed afterwards from the records its run kept, and the scorecard that adds a suite's
+trials up.
 
 Reporting code, outside the grader's identity: it measures what a run recorded and grades nothing. The system under test
 records nothing for it (spec decision 12), so a stored run can be measured again. Its sources are the configurator's
@@ -10,19 +11,27 @@ not: their time, their token counters (from their reports) and their action coun
 unless every attempt of the stage left them. A worker that died leaves no report, one that left no transcript is not
 one that did nothing, and a sum over the others would pass for the whole. Only a Codex transcript kept in the run is
 read: an interpretation attempt that stopped before its outputs were collected leaves its transcript in a workspace
-outside the run, and the events of another runtime say nothing of Codex actions."""
+outside the run, and the events of another runtime say nothing of Codex actions.
+
+A suite's scorecard keeps that rule: a figure that some trials could not measure is summed over the others and counted
+as measured by fewer, never passed off as the whole. The scorecard of a suite that ran a scoring set shows aggregates
+only, since no detail of one scoring trial leaves the bench harness (spec decisions 4 and 21)."""
 import bisect
 import json
 import math
 import re
 import sqlite3
+import statistics
+from collections import namedtuple
 from contextlib import closing
 from pathlib import Path
 
 from .audit import TRANSCRIPT
 from .case_assets import STAGES
+from .outcomes import pass_rate, pass_rate_line
 
 SCHEMA = 'benchmark-trial-metrics/1'
+SUITE_SCHEMA = 'benchmark-scorecard/1'
 # The suffix of the id of a run's final verdict in the configurator's `verdicts` table.
 FINAL = ':final'
 ACTIONS = ('command_execution', 'mcp_tool_call', 'file_change')
@@ -36,6 +45,16 @@ EXCHANGES = ('exchange', 'usb_control')
 # Each token counter and its key in a worker's usage.
 COUNTERS = (('input', 'input_tokens'), ('cached_input', 'cached_input_tokens'), ('output', 'output_tokens'),
             ('reasoning_output', 'reasoning_output_tokens'))
+# The time figures of a stage that can be unknown, and its token figures: the counters, then their total.
+TIMES = ('wall_seconds', 'worker_seconds')
+TOKENS = (*(name for name, _ in COUNTERS), 'total')
+# The yes/no figures of a run's claim, each with its words in the Markdown.
+CLAIM = {'claimed_success': 'Fresh-reuse worker claimed success', 'mission_passed': 'Fresh mission passed (evaluator)',
+         'agrees': 'Claim agrees with the mission result'}
+# The keys of a suite's trial rows that its pass rate is also given by, and the labels of a suite report that say how
+# its trials executed (a replay suite's say that no model ran).
+GROUPS = ('family', 'level', 'framing')
+LABELS = ('execution', 'model_benchmark')
 
 
 def _decoded(payload):
@@ -313,3 +332,172 @@ def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None) -> 
     repairs = (progress or {}).get('repairs')
     return {'schema': SCHEMA, 'run_id': run_id, 'repairs': repairs if type(repairs) is int else None,
             'claim': _claim(handoffs, reports, final), 'stages': stages}
+
+
+_Figure = namedtuple('_Figure', 'total median measured')
+
+
+def _figure(values) -> _Figure:
+    """The sum and the median of the values that are known, and how many are. A value that is None was not measured and
+    is skipped, so a figure no trial gave is None (not zero) with 0 measured, and a sum over some of the trials is told
+    from the whole by that count."""
+    known = [value for value in values if value is not None]
+    return _Figure(sum(known) if known else None, statistics.median(known) if known else None, len(known))
+
+
+def _stage_figures(rows):
+    """One stage's figures over the trials, from `rows`, the stage's entry in each trial's metrics. Each figure sits at
+    the key path it has in a trial. The counts that are never unknown (`attempts`, `managed_calls` by tool, `device`)
+    are plain sums. The others are summed over the trials that gave them (`_figure`), with the medians of the times and
+    tokens under `median` and the number of trials that gave each figure under `measured`."""
+    times = {key: _figure(row[key] for row in rows) for key in TIMES}
+    tokens = {key: _figure(row['tokens'][key] for row in rows) for key in TOKENS}
+    actions = {key: _figure(row['worker_actions'][key] for row in rows) for key in ACTIONS}
+    calls = {}
+    for row in rows:
+        for tool, count in row['managed_calls'].items():
+            calls[tool] = calls.get(tool, 0) + count
+    return {'attempts': sum(row['attempts'] for row in rows), **{key: times[key].total for key in TIMES},
+            'managed_calls': dict(sorted(calls.items())), 'worker_actions': {key: actions[key].total for key in ACTIONS},
+            'device': {key: sum(row['device'][key] for row in rows) for key in DEVICE},
+            'tokens': {key: tokens[key].total for key in TOKENS},
+            'median': {**{key: times[key].median for key in TIMES}, 'tokens': {key: tokens[key].median for key in TOKENS}},
+            'measured': {**{key: times[key].measured for key in TIMES}, 'tokens': {key: tokens[key].measured for key in TOKENS},
+                         'worker_actions': {key: actions[key].measured for key in ACTIONS}}}
+
+
+def _run_figures(metrics):
+    """The run-level figures over the trials: the `repairs` summed over those that gave them, with `measured` their
+    number, and each yes/no figure of the `claim` as how many trials answered true, false and unknown (None)."""
+    repairs = _figure(trial['repairs'] for trial in metrics)
+    claim = {}
+    for key in CLAIM:
+        answers = [trial['claim'][key] for trial in metrics]
+        claim[key] = {'true': sum(answer is True for answer in answers), 'false': sum(answer is False for answer in answers),
+                      'unknown': sum(answer is None for answer in answers)}
+    return {'repairs': repairs.total, 'claim': claim, 'measured': {'repairs': repairs.measured}}
+
+
+def bench_trial_dirs(report: dict, home: Path) -> dict[str, Path]:
+    """Where the bench harness kept the directory of each started trial of a suite report, by trial key: the trial
+    directory, under any suite of the bench home beside `home`, whose `trial.json` names the trial's run, found as the
+    harness finds a trial for a run. A started trial with no directory there is left out, and its resets are then those
+    the configurator recorded, a lower bound."""
+    from .harness import _trial_of, bench_home
+    suites = bench_home(home) / 'suites'
+    found = {row['trial_key']: _trial_of(suites, row['run_id']) for row in report['trials'] if row.get('run_id')}
+    return {key: directory for key, directory in found.items() if directory is not None}
+
+
+def _groups(rows):
+    """The pass rate of each value of each grouping key (`GROUPS`) that the trial rows carry, `{key: {value: rate}}`,
+    each value named by its text. A row with no value for a key is in none of that key's groups, and a key no row
+    carries has no entry."""
+    groups = {}
+    for key in GROUPS:
+        carried = [row for row in rows if row.get(key) is not None]
+        if carried:
+            groups[key] = {value: pass_rate([row['scored'] for row in carried if str(row[key]) == value])
+                           for value in sorted({str(row[key]) for row in carried})}
+    return groups
+
+
+def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | None = None) -> dict:
+    """The scorecard of a suite, schema `benchmark-scorecard/1`, from its `benchmark-suite-report/3` and the records of
+    the runs its trials started: the `pass_rate` of the report's stored `scored` outcomes and its `pass_line`; the
+    `groups`, that pass rate by each value of each of `family`, `level` and `framing` that the trial rows carry; the
+    report's `execution` and `model_benchmark` when it has them, which say that no model ran a replay suite's trials;
+    `measured_trials`; and the figures of `trial_metrics` added up over the trials, under `run` (repairs and claim) and
+    `stages` (each stage).
+
+    Metrics come from every trial with a run, whatever its outcome, read in `home` and, for a trial whose key `trial_dirs`
+    names, its trial directory (`bench_trial_dirs`). A trial with no run counts in the pass rate alone. A figure sits at
+    the key path it has in a trial's metrics, summed over the trials that gave it: a None is skipped, a figure no trial
+    gave is None, and `measured` counts the trials that gave it, so a sum over some trials is never taken for the whole.
+    The medians of times and tokens are under `median`. Counts that are never unknown (attempts, managed calls, device)
+    are plain sums. In `run` the repairs are summed the same way, and each yes/no figure of the claim is how many trials
+    answered true, false and unknown.
+
+    A report that carries a scoring set gives aggregates only: no `trials`, and no case, run id or trial key. Any other
+    adds `trials`, a `{trial_key, scored, metrics}` row for each planned trial, its metrics None without a run. Audit
+    findings quote raw worker commands and are in no scorecard.
+
+    Raises ValueError for a report that is not a `benchmark-suite-report/3`, which alone stores each trial's outcome,
+    and what `trial_metrics` raises for a run that `home` does not hold."""
+    if report.get('schema') != 'benchmark-suite-report/3':
+        raise ValueError("A scorecard needs a benchmark-suite-report/3, which stores each trial's scored outcome")
+    rows, trial_dirs = report['trials'], trial_dirs or {}
+    rate = pass_rate([row.get('scored') for row in rows])
+    metrics = {row['trial_key']: trial_metrics(home, row['run_id'], trial_dir=trial_dirs.get(row['trial_key']))
+               for row in rows if row.get('run_id')}
+    measured = list(metrics.values())
+    stages = {stage: _stage_figures([trial['stages'][stage] for trial in measured]) for stage in STAGES}
+    card = {'schema': SUITE_SCHEMA, **{key: report[key] for key in LABELS if key in report}, 'pass_rate': rate,
+            'pass_line': pass_rate_line(rate), 'groups': _groups(rows), 'measured_trials': len(measured),
+            'run': _run_figures(measured), 'stages': stages}
+    if 'scoring_set' not in report['experiment']['comparison_identity']:
+        card['trials'] = [{'trial_key': row['trial_key'], 'scored': row['scored'], 'metrics': metrics.get(row['trial_key'])}
+                          for row in rows]
+    return card
+
+
+def _cell(figure, measured, trials):
+    """A sum or median over the trials as table text: `unknown` when no trial measured it, else the figure, with how many
+    measured it (`n/N`) when that is not all N of the trials measured at all. A whole number has no decimal point and any
+    other has two places."""
+    if not measured:
+        return 'unknown'
+    text = str(int(figure)) if float(figure).is_integer() else f'{figure:.2f}'
+    return text + (f' ({measured}/{trials})' if measured < trials else '')
+
+
+def _row(*cells):
+    return '| ' + ' | '.join(cells) + ' |'
+
+
+def scorecard_markdown(card: dict) -> str:
+    """A scorecard as Markdown, aggregates only: it names no trial. The first line is the pass line; the second says so
+    when no model ran the trials (`model_benchmark` is False). Then come the pass line of each group, the run figures, a
+    row of sums and one of medians for each stage, and the managed calls by tool. A figure that no trial measured reads
+    `unknown`, and one that only some did is marked with how many (`n/N`)."""
+    trials, stages, run = card['measured_trials'], card['stages'], card['run']
+    lines = [card['pass_line']]
+    if card.get('model_benchmark') is False:
+        label = f" ({card['execution']})" if card.get('execution') else ''
+        lines.append(f'No model ran these trials{label}: none of these figures is model performance.')
+    lines += ['', f"Figures cover {trials} of {card['pass_rate']['planned']} planned trials, those with a run. A sum or "
+              'median that fewer of them measured shows how many (`n/N`); `unknown` means none did.', '']
+    if card['groups']:
+        lines += ['## Groups', '', *(f'- {key} `{value}`: {pass_rate_line(rate)}'
+                                     for key, values in card['groups'].items() for value, rate in values.items()), '']
+    answers = lambda key: ', '.join(f'{run["claim"][key][answer]} {answer}' for answer in ('true', 'false', 'unknown'))
+    lines += ['## Run', '', f"- Repairs: {_cell(run['repairs'], run['measured']['repairs'], trials)}",
+              *(f'- {label}: {answers(key)}' for key, label in CLAIM.items()), '']
+    lines += ['## Stages', '', _row('Stage', 'Attempts', 'Wall seconds', 'Worker seconds', 'Tokens', 'Shell commands', 'MCP calls',
+                                    'File edits', 'Exchanges', 'Writes', 'Refusals', 'Resets'), '|---|' + '---:|' * 11]
+    for name, stage in stages.items():
+        measured = stage['measured']
+        lines.append(_row(name, str(stage['attempts']), _cell(stage['wall_seconds'], measured['wall_seconds'], trials),
+                          _cell(stage['worker_seconds'], measured['worker_seconds'], trials),
+                          _cell(stage['tokens']['total'], measured['tokens']['total'], trials),
+                          *(_cell(stage['worker_actions'][key], measured['worker_actions'][key], trials) for key in ACTIONS),
+                          *(str(stage['device'][key]) for key in DEVICE)))
+    lines += ['', '## Medians', '', _row('Stage', 'Wall seconds', 'Worker seconds', 'Tokens'), '|---|---:|---:|---:|']
+    for name, stage in stages.items():
+        measured, median = stage['measured'], stage['median']
+        lines.append(_row(name, _cell(median['wall_seconds'], measured['wall_seconds'], trials),
+                          _cell(median['worker_seconds'], measured['worker_seconds'], trials),
+                          _cell(median['tokens']['total'], measured['tokens']['total'], trials)))
+    calls = [f'- {name}: ' + ', '.join(f'{tool} {count}' for tool, count in stage['managed_calls'].items())
+             for name, stage in stages.items() if stage['managed_calls']]
+    return '\n'.join([*lines, '', '## Managed calls', '', *(calls or ['none'])]) + '\n'
+
+
+def write_scorecard(card: dict, output: Path) -> None:
+    """Write `scorecard.json` and `scorecard.md` into `output`, creating it if needed, as bytes so that they are the
+    same on every host. Both are encoded before anything is written."""
+    files = {'scorecard.json': json.dumps(card, indent=2, allow_nan=False) + '\n', 'scorecard.md': scorecard_markdown(card)}
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        (output / name).write_bytes(text.encode('utf-8'))

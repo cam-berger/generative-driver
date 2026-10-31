@@ -47,8 +47,8 @@ def classify(trial: dict, report: dict | None, *, flagged: bool = False) -> str:
     Rules 3 and 4 take the run's status from the report's `workflow_status` when it has one, else from the row's
     `status`; rule 4 also counts a stop on the row alone, as a suite report blocks the row of a completed child that
     is still stopping or has an uncertain effect and leaves its report completed. A row a suite report exports can
-    stand for both arguments, but it has no `workflow_status` or `effective_budget_seconds`, so a spent budget does
-    not show in it."""
+    stand for both arguments: a `/3` row carries `workflow_status` and `effective_budget_seconds`, and only a `/2` row
+    lacks them, so only there does a spent budget not show."""
     if not trial.get('run_id'):
         return 'not_run'
     if flagged:

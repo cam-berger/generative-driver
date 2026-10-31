@@ -99,9 +99,9 @@ generative-driver --home /operator/state/benchmark benchmark score reports/trial
 generative-driver --home /operator/state/benchmark benchmark compare reports/before.json reports/after.json
 ```
 
-`benchmark-report/3` records the final `equivalent` verdict. Corpus success additionally requires a successful fresh mission and all six accepted handoffs; absent mission evidence cannot count as success. Score with the trial's `run-evidence.enc` (`benchmark-run-evidence/2`): verify run/snapshot/case, accepted package and single final, then regrade its records offline. Sidecars seal artifact/note hashes, final/mission checks, public verdict and recovery receipts/journal hash. Pending, stopped or unscored runs score `unscored`.
+`benchmark-report/3` records the final `equivalent` verdict, and a pass is that verdict: the evaluator's graded equivalence of the frozen driver. The fresh mission is reported beside it and does not change it; corpus success no longer requires it or the six accepted handoffs. Score with the trial's `run-evidence.enc` (`benchmark-run-evidence/2`): verify run/snapshot/case, accepted package and single final, then regrade its records offline. Sidecars seal artifact/note hashes, final/mission checks, public verdict and recovery receipts/journal hash. Pending, stopped or unscored runs score `unscored`.
 
-Preserve accepted artifacts. Regrade earlier evidence only from its preserved checkout; another evaluator implementation is refused. Earlier `/2` reports and evidence `/1` keep gated semantics. Compare refuses different protocols.
+Preserve accepted artifacts. Regrade earlier evidence only from its preserved checkout; another evaluator implementation is refused. Earlier `/2` reports and evidence `/1` keep gated semantics. Compare refuses different protocols, except suite reports on a shared scoring set, which `suite compare` pairs device by device.
 
 MCP: `driver_benchmark_run` takes `profile`, `executor`, and options `scenario_id`, `case_seed`, `budget_seconds`, `evaluator_password_file`, `renode`, `ghidra_home`, `java_home`, `scoped_tool_approval`. Follow status/events/result with the saved ID. Windows requires a [separately started owner](../docs/setup.md#start-the-configurator).
 
@@ -159,11 +159,11 @@ generative-driver --home /operator/state/suite benchmark suite start --manifest 
 generative-driver --home /operator/state/suite benchmark suite status SUITE_ID
 generative-driver --home /operator/state/suite benchmark suite events SUITE_ID --after 0
 generative-driver --home /operator/state/suite benchmark suite result SUITE_ID --offset 0 --limit 50
-generative-driver --home /operator/state/suite benchmark suite report SUITE_ID --output reports/pilot-approved-1
+generative-driver --home /operator/state/suite benchmark suite report SUITE_ID --output reports/pilot-approved-1 [--audit-path PATH]...
 generative-driver --home /operator/state/suite benchmark suite compare reports/before/suite.json reports/pilot-approved-1/suite.json
 ```
 
-Save `suite_id`; identical request IDs reconnect. The harness provides devices and grades after runs; the configurator settles slots from recorded status/verdict. Unscored/pending grades or stops block the suite. `/2` exports count equivalent/planned, not-equivalent, unscored, stopped-by-category and unrun; rows include scrubbed reason, stopped stage and repairs. Markdown adds frequent failing check IDs; status/events explain stops. Results are paginated; preserve every slot. Physical and gated results stay separate.
+Save `suite_id`; identical request IDs reconnect. The harness provides devices and grades after runs; the configurator settles slots from recorded status/verdict. Unscored/pending grades or stops block the suite. `/3` exports store each trial's `scored` outcome (pass, failure, unknown, fault, flagged, running or not_run) and lead with a pass line such as `7/9 pass, 1 unknown, 2 faults, 12 planned`; `/2` exports keep their old counts (equivalent/planned, not-equivalent, unscored, stopped-by-category and unrun). Rows include scrubbed reason, stopped stage and repairs. Markdown adds frequent failing check IDs; status/events explain stops. `--audit-path PATH` (repeat for each path) reads the worker transcripts in the configurator home: a trial whose worker ran a command naming a forbidden path is flagged and not graded. Results are paginated; preserve every slot. Physical and gated results stay separate.
 
 MCP offers suite start/status/events/result/cancel/resume; CLI exports/compares. Use the same owner for cancel and resume:
 
@@ -175,6 +175,27 @@ generative-driver --home /operator/state/suite benchmark suite resume SUITE_ID -
 After correction, the harness reattaches a stopped child or grades an unscored one once. Resume reads the password/Renode handles for the harness. Pre-harness suites are read-only.
 
 Stopped time counts toward both budgets. Extend suite total with `--suite-budget-seconds`/`--budget-reason`, child total with `--child-budget-seconds`/`--child-budget-reason`; neither extends the other. Preserve prior attempts/costs.
+
+## Scorecard and comparison
+
+A scorecard measures a suite afterwards from the records its runs kept; the system under test records nothing for it, so a stored suite can be measured again. Every trial counts in the pass rate, and every trial with a run is measured, whatever its outcome.
+
+```sh
+generative-driver --home /operator/state/suite benchmark suite scorecard SUITE_ID --output reports/pilot-scorecard [--audit-path PATH]...
+generative-driver --home /operator/state/suite benchmark suite compare reports/before/suite.json reports/after/suite.json [--leak-check reports/fresh/suite.json]
+```
+
+`scorecard` makes the export that `suite report` makes in a temporary folder and writes only `scorecard.json` and `scorecard.md` to `--output`. The Markdown opens with the pass line (and, for a replay suite, a second line saying no model ran), then gives the pass line of each group (`family`, and `level` and `framing` where the rows carry them), the repairs and fresh-reuse claims, and for each stage the attempts, wall and worker seconds, tokens, worker actions, managed calls and device use, summed over the trials, with medians for times and tokens. A sum that only some trials could measure shows how many (`n/N`); `unknown` means none could. A suite that ran a scoring set, a fixed sealed set of generated devices that every compared system runs, gets aggregates only and names no trial, case or run; any other suite adds a row of key, outcome and metrics per trial to `scorecard.json`. No scorecard quotes an audit finding.
+
+`compare` pairs two reports of one scoring set device by device, whatever their protocols; `--leak-check` takes the after system's saved report on a fresh batch of devices (see [leak check](../CONTEXT.md)). Other reports compare as whole suites within one protocol.
+
+Limits:
+
+- After a repair, a stage's `wall_seconds` spans the time of the other stages in between.
+- A stage skipped without an assignment has `wall_seconds` None.
+- Resets without the trial's directory are a lower bound: they come from the configurator's events, plus the device provider's journal where the bench home still holds the directory.
+- Worker actions are read only from Codex transcripts.
+- Reading the configurator database leaves a `-shm` and an empty `-wal` file beside it in a quiescent home.
 
 ## Optional physical trial
 
@@ -198,7 +219,7 @@ generative-driver --home /operator/state/physical benchmark score reports/physic
 
 Reports retain stage attempts/acceptance, final verdict and package/mapping hashes, budgets, runtime/provider/model/settings, toolchain/skill/case/evaluator identities, environment, time, managed calls, usage and interventions. Artifact and notes hashes are sealed in the trial's run evidence; `driver_result` returns the notes. Tool time overlaps worker time; managed counts exclude arbitrary shell calls. Missing usage stays unknown, failed attempts consume resources.
 
-Current assistive run reports record equivalence; repeated acceptance/corpus success also requires the declared fresh mission and six accepted handoffs. Earlier gated results retain their original acceptance rules and remain a separate series. Preserve failures, exclusions, blocked and unrun slots. Corpus measured success uses only graded passes/failures; selected coverage retains all selected slots and demonstrated coverage retains the entire catalog. Match versions, inputs, modes, seeds, time policies and budgets; label multi-dimension changes as system comparisons. Report repetitions, uncertainty and time/usage coverage. [Verification](../docs/verification.md) records the completed three-trials-per-profile baseline and multiline-repair comparison, with model results separate from software/reference evidence.
+Current assistive run reports record equivalence, and a pass is the evaluator's graded equivalence verdict; the fresh mission is reported beside it and does not change it, so corpus success needs neither it nor the six accepted handoffs. Earlier gated results retain their original acceptance rules and remain a separate series. Preserve failures, exclusions, blocked and unrun slots. Corpus measured success uses only graded passes/failures; selected coverage retains all selected slots and demonstrated coverage retains the entire catalog. Match versions, inputs, modes, seeds, time policies and budgets; label multi-dimension changes as system comparisons. Report repetitions, uncertainty and time/usage coverage. [Verification](../docs/verification.md) records the completed three-trials-per-profile baseline and multiline-repair comparison, with model results separate from software/reference evidence.
 
 
 ## Verification evidence

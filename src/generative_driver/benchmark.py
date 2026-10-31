@@ -132,6 +132,13 @@ def main(argv=None):
                            help='A forbidden path: flag a trial whose worker ran a command that names it, and leave '
                            'that trial ungraded. Repeat for each path. The export shows a path only in the commands '
                            'that name it')
+    scorecard = suites.add_parser('scorecard', help='Measure a suite from its retained records: its pass rate and, per stage, '
+                                  'time, tokens, tool and device use; a scoring suite shows aggregates only')
+    scorecard.add_argument('suite_id')
+    scorecard.add_argument('--output', required=True, help='Directory for scorecard.json and scorecard.md')
+    scorecard.add_argument('--audit-path', action='append', metavar='PATH',
+                           help='A forbidden path: flag a trial whose worker ran a command that names it, and leave '
+                           'that trial ungraded. Repeat for each path. The scorecard quotes no command')
     suite_comparing = suites.add_parser('compare')
     suite_comparing.add_argument('before')
     suite_comparing.add_argument('after')
@@ -252,6 +259,16 @@ def main(argv=None):
             elif args.action == 'report':
                 from .benchmark_support.suite_reporting import report_suite
                 result = report_suite(args.suite_id, output=args.output, audit_paths=tuple(args.audit_path or ()))
+            elif args.action == 'scorecard':
+                from .client import default_home
+                from .benchmark_support.scorecard import bench_trial_dirs, suite_scorecard, write_scorecard
+                from .benchmark_support.suite_reporting import report_suite
+                home = Path(default_home()).expanduser().resolve()
+                # The export holds each trial's details, which a scoring suite never shows: only its aggregate stays.
+                with tempfile.TemporaryDirectory(prefix='gd-scorecard-') as temporary:
+                    report = report_suite(args.suite_id, home=home, output=temporary, audit_paths=tuple(args.audit_path or ()))
+                result = suite_scorecard(report, home=home, trial_dirs=bench_trial_dirs(report, home))
+                write_scorecard(result, args.output)
             elif args.action == 'start':
                 from .benchmark_support.suites import start_suite
                 params = {'manifest': json.loads(Path(args.manifest).read_text(encoding='utf-8')),

@@ -669,7 +669,10 @@ class SuiteAggregateTests(unittest.TestCase):
 
     def test_saved_suite_reports_compare_only_within_their_protocol(self):
         # Catches an assistive suite report compared with a gated one, a saved assistive report whose count is
-        # not its trials' verdicts, and one whose pass rate is not the count of the outcomes its rows store.
+        # not its trials' verdicts, one whose pass rate is not the count of the outcomes its rows store, and one whose
+        # rows store a pass that their own verdict, status and category do not show (or hide one that they do), with
+        # the pass rate edited to count it.
+        from generative_driver.benchmark_support.outcomes import pass_rate
         from generative_driver.benchmark_support.suite_reporting import aggregate_suite, compare_suites
         from test_suite_reporting import comparison_fixture
         suite, trials, reports, experiment = assistive_fixture()
@@ -687,18 +690,47 @@ class SuiteAggregateTests(unittest.TestCase):
             self.assertIn('Protocols differ', refused['reason'])
             for key in ('before_success', 'after_success', 'before_equivalence', 'after_equivalence'):
                 self.assertNotIn(key, refused)
-        for change in (lambda r: r['equivalence'].update(equivalent=2, rate=2 / 9),
+        def relabelled(index, scored):
+            """One row's label and the pass rate edited together, so the rate still counts the labels its rows store."""
+            def change(report):
+                report['trials'][index]['scored'] = scored
+                report['pass_rate'] = pass_rate([row['scored'] for row in report['trials']])
+            return change
+        # The joint count reads each row's status and category too, so the next two forgeries leave it out and only the
+        # check under test can refuse them.
+        def unjoined(**changes):
+            """The counted equivalent driver's row changed, the equivalent count left as it was."""
+            def change(report):
+                report['trials'][0].update(changes)
+                report.pop('equivalent_and_mission')
+            return change
+        def uncounted(**changes):
+            """The counted equivalent driver's row changed so that it is no longer counted, with the equivalent count
+            edited to match, while its label still says pass."""
+            def change(report):
+                unjoined(**changes)(report)
+                report['equivalence'].update(equivalent=0, rate=0.0)
+            return change
+        for index, change in enumerate((lambda r: r['equivalence'].update(equivalent=2, rate=2 / 9),
                        lambda r: r['trials'][1].update(verdict='equivalent'),
+                       unjoined(status='completed'), unjoined(outcome_category='model'),
                        lambda r: r.update(schema='benchmark-suite-report/1'),
                        lambda r: r.pop('protocol'),
                        lambda r: r['pass_rate'].update(passes=2),
                        lambda r: r['pass_rate'].update(rate=1.0),
                        lambda r: r['trials'][1].update(scored='pass'),
                        lambda r: r['trials'][1].update(scored='stopped'),
-                       lambda r: r['trials'][1].pop('scored')):
-            forged = copy.deepcopy(before); change(forged)
-            refused = compare_suites(forged, before)
-            self.assertFalse(refused['compatible']); self.assertEqual(refused['reason'], 'Invalid or incomplete saved suite report')
+                       lambda r: r['trials'][1].pop('scored'),
+                       # A driver graded not equivalent, a trial never graded and a counted equivalent driver, each
+                       # relabelled with the pass rate that matches.
+                       relabelled(1, 'pass'), relabelled(3, 'pass'), relabelled(0, 'failure'), relabelled(0, 'fault'),
+                       # A pass whose row is not equivalent, not settled or not completed.
+                       uncounted(verdict='not equivalent'), uncounted(status='completed'),
+                       uncounted(outcome_category='model'))):
+            with self.subTest(index=index):
+                forged = copy.deepcopy(before); change(forged)
+                refused = compare_suites(forged, before)
+                self.assertFalse(refused['compatible']); self.assertEqual(refused['reason'], 'Invalid or incomplete saved suite report')
 
     def test_an_earlier_saved_suite_report_stays_readable_without_a_pass_rate(self):
         # Catches a saved benchmark-suite-report/2, which stored no outcomes, refused or given a pass rate it never had,
@@ -836,6 +868,9 @@ class SuiteExportTests(AssistiveFixture):
                              ('regraded-encrypted-evidence', 1))
             self.assertEqual([row['verdict'] for row in regraded['trials']], ['equivalent', 'not equivalent', 'unscored'])
             self.assertEqual(regraded['pass_rate'], result['pass_rate'])
+            # Each honest export reads back, whichever way its verdicts were qualified.
+            saved_regraded = json.loads((self.root / 'regraded/suite.json').read_text())
+            self.assertTrue(compare_suites(saved_regraded, saved_regraded)['compatible'])
             keys = list(trials)
             for label, evidence in (('missing', {keys[0]: graded[keys[0]]}),
                                     ('swapped', {keys[0]: graded[keys[1]], keys[1]: graded[keys[0]]}),

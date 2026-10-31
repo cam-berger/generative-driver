@@ -299,6 +299,22 @@ class CorpusTests(unittest.TestCase):
         report = report_corpus(plan, earlier)
         self.assertEqual((report['counts']['passed'], report['slots'][-1]['status']), (0, 'stopped'))
 
+    def test_a_saved_pass_that_its_row_does_not_show_is_refused_rather_than_measured(self):
+        # Catches a saved suite whose row label and pass rate were edited together to make a driver graded not equivalent
+        # a measured pass: the corpus counts the label, so the file has to be refused, not counted.
+        from generative_driver.benchmark_support.corpus import report_corpus
+        from generative_driver.benchmark_support.outcomes import pass_rate
+        from test_assistive_reports import evaluation
+        negative = evaluation('f'*64, False)
+        plan, honest = measured_fixture(lambda trial, report: report.update(
+            verdict='not equivalent', equivalence=negative, equivalence_status='graded'))
+        self.assertEqual(report_corpus(plan, honest)['measured_success'], {'passed': 0, 'denominator': 1, 'rate': 0.0})
+        forged = copy.deepcopy(honest)
+        forged['trials'][0]['scored'] = 'pass'
+        forged['pass_rate'] = pass_rate(['pass'])
+        with self.assertRaises(ValueError):
+            report_corpus(plan, forged)
+
     def test_limitations_say_a_pass_is_the_evaluators_grade_with_fresh_reuse_beside_it(self):
         from generative_driver.benchmark_support.corpus import report_corpus
         plan, suite = measured_fixture()

@@ -369,7 +369,8 @@ def _saved_report(value):
     success=report[key];planned=len(report['trials'])
     if type(success.get(win)) is not int or not 0<=success[win]<=planned or success.get('denominator')!=planned or success.get('rate')!=success[win]/planned:
         raise ValueError('Invalid '+key+' denominator')
-    if success[win]!=sum(t.get('verdict')==win and t.get('status')=='finished' and t.get('outcome_category')=='completed' for t in report['trials']):
+    counted=lambda t:t.get('verdict')==win and t.get('status')=='finished' and t.get('outcome_category')=='completed'
+    if success[win]!=sum(counted(t) for t in report['trials']):
         raise ValueError('Saved '+key+' count differs from trial coverage')
     if protocol:
         joint=sum(t.get('status')=='finished' and t.get('outcome_category')=='completed'
@@ -382,6 +383,8 @@ def _saved_report(value):
         if report['schema']=='benchmark-suite-report/3':
             # A forged or missing outcome is no outcome, and `pass_rate` refuses it.
             rate=pass_rate([t.get('scored') for t in report['trials']])
+            # A pass is a counted equivalent driver: the row's own verdict, status and category must show what its label says.
+            if any((t['scored']=='pass')!=counted(t) for t in report['trials']):raise ValueError('Saved outcome differs from the trial it scores')
             if 'pass_rate' in report and report['pass_rate']!=rate:raise ValueError('Saved pass rate differs from trial outcomes')
             report['pass_rate']=rate
     _number(report.get('usage',{}).get('total_tokens'),True)

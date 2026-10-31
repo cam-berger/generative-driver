@@ -2,9 +2,10 @@
 
 Reporting code, outside the grader's identity: it classifies what a run and its grade recorded and grades nothing.
 Passes and failures are the graded trials: the evaluator's grade, a stop the system caused or a spent budget. A trial
-that a host or operator problem, or missing evidence, kept from a grade is a `fault`, counted but not graded; one whose
-grade left a step undecided is `unknown`. The rest are `flagged` (the transcript audit found a worker touching a
-forbidden path), `running` and `not_run`."""
+that a host or operator problem, or missing evidence (no grade, an unscored one, or one the exporter could not
+confirm), kept from a grade is a `fault`, counted but not graded; one whose grade left a step undecided is `unknown`.
+The rest are `flagged` (the transcript audit found a worker touching a forbidden path), `running` (a grade counts only
+once its slot has settled) and `not_run`."""
 import math
 
 # Each outcome, with the key of the count it adds to in `pass_rate`.
@@ -15,6 +16,8 @@ IN_FLIGHT = ('pending', 'launching', 'running', 'queued')
 STOPPED = ('blocked', 'failed', 'cancelled')
 # The stops the system under test causes itself.
 SELF_CAUSED = ('safety', 'integrity', 'model')
+# The equivalence statuses of a grade the evaluator recorded; any other status leaves the trial without one.
+RECORDED = ('graded', 'no-driver', 'unknown')
 
 
 def _budget_spent(report: dict) -> bool:
@@ -33,10 +36,16 @@ def classify(trial: dict, report: dict | None, *, flagged: bool = False) -> str:
     3. `running` while the run is pending, launching, running or queued, or its grade is pending.
     4. A stopped run (blocked, failed or cancelled) is a `failure` when the stop was safety, integrity or model, or
        an operator stop with the budget spent, and otherwise a `fault`.
-    5. By the equivalence status: `graded` is a `pass` when equivalent and else a `failure`, `no-driver` is a
-       `failure`, `unknown` is `unknown`, and `unscored` or no status is a `fault`.
+    5. `fault` when the report's verdict is `unqualified`: the exporter could not confirm the grade.
+    6. By the equivalence status: `graded` is a `pass` when equivalent and else a `failure`, `no-driver` is a
+       `failure` and `unknown` is `unknown`, each only once the row is `finished` (its slot settled) and `running`
+       before that. Any other status (`unscored`, none, or one not named here) is a `fault`, settled or not.
 
-    The run's status is the report's `workflow_status` when it has one, else the row's `status`."""
+    Rules 3 and 4 take the run's status from the report's `workflow_status` when it has one, else from the row's
+    `status`; rule 4 also counts a stop on the row alone, as a suite report blocks the row of a completed child that
+    is still stopping or has an uncertain effect and leaves its report completed. A row a suite report exports can
+    stand for both arguments, but it has no `workflow_status` or `effective_budget_seconds`, so a spent budget does
+    not show in it, and it reads `unqualified` for a graded equivalent driver until its slot settles."""
     if not trial.get('run_id'):
         return 'not_run'
     if flagged:
@@ -46,16 +55,20 @@ def classify(trial: dict, report: dict | None, *, flagged: bool = False) -> str:
     grade = report.get('equivalence_status')
     if status in IN_FLIGHT or grade == 'pending':
         return 'running'
-    if status in STOPPED:
+    if status in STOPPED or trial.get('status') in STOPPED:
         category = trial.get('outcome_category')
         spent = category == 'operator' and _budget_spent(report)
         return 'failure' if category in SELF_CAUSED or spent else 'fault'
+    if report.get('verdict') == 'unqualified':
+        return 'fault'
+    if grade not in RECORDED:
+        return 'fault'
+    if trial.get('status') != 'finished':
+        return 'running'
     if grade == 'graded':
         equivalence = report.get('equivalence')
         return 'pass' if isinstance(equivalence, dict) and equivalence.get('equivalent') is True else 'failure'
-    if grade == 'no-driver':
-        return 'failure'
-    return 'unknown' if grade == 'unknown' else 'fault'
+    return 'unknown' if grade == 'unknown' else 'failure'
 
 
 def pass_rate(outcomes: list[str]) -> dict:

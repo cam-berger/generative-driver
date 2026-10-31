@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from generative_driver.benchmark_support.audit import audit_commands
+from generative_driver.benchmark_support.audit import audit_commands, forbidden_paths
 
 
 def command(text, kind='item.completed'):
@@ -69,6 +69,43 @@ class AuditTests(unittest.TestCase):
         self.write(run / 'work/ground/a2/_agent_events.jsonl', [command('dir C:\\Vault\\GD\\ /s'), command('dir D:\\Work\\ /s')])
         self.assertEqual([found['command'] for found in audit_commands(run, ('C:\\Vault\\GD\\',))], ['dir C:\\Vault\\GD\\ /s'])
 
+    def test_a_path_typed_with_a_trailing_slash_matches_commands_that_name_the_directory_bare(self):
+        # Catches a forbidden path compared as typed: a shell's tab completion writes the vault as
+        # `/Volumes/Answer Vault/`, and the commands a worker types name the directory with no slash after it, quoted,
+        # escaped or inside a shell command.
+        run = self.run_dir
+        named = ['cd "/Volumes/Answer Vault" && cat evaluator/x.password',
+                 "/bin/zsh -lc 'cd /Volumes/Answer\\ Vault && cat evaluator/x.password'",
+                 'ls "/Volumes/Answer Vault"']
+        self.write(run / 'work/probe/a1/_agent_events.jsonl', [command(text) for text in named] + [command('ls workspace')])
+        self.assertEqual([found['command'] for found in audit_commands(run, ('/Volumes/Answer Vault/',))], named)
+
+    def test_a_windows_path_typed_with_a_trailing_backslash_matches_commands_that_name_the_directory_bare(self):
+        # Catches the same miss on Windows, where tab completion writes `C:\Vault\GD\` and a command ends the directory
+        # at a space or a semicolon.
+        run = self.run_dir
+        named = ['dir C:\\Vault\\GD /s', 'cd C:\\Vault\\GD; type key.txt']
+        self.write(run / 'work/ground/a2/_agent_events.jsonl', [command(text) for text in named] + [command('dir D:\\Work /s')])
+        self.assertEqual([found['command'] for found in audit_commands(run, ('C:\\Vault\\GD\\',))], named)
+
+    def test_a_forbidden_path_is_kept_without_surrounding_whitespace_or_trailing_separators(self):
+        self.assertEqual(forbidden_paths(('/Volumes/Answer Vault/', ' C:\\Vault\\GD\\ ', '/generator//', '/a b ', '/vault')),
+                         ('/Volumes/Answer Vault', 'C:\\Vault\\GD', '/generator', '/a b', '/vault'))
+        self.assertEqual(forbidden_paths(()), ())
+
+    def test_a_path_with_nothing_but_separators_is_refused_and_so_is_a_bare_string(self):
+        # Catches the root (`/`, which every absolute path names, once its slash is stripped), a lone backslash or an
+        # escaped space, any of which would flag every command or none; and a bare string, which a tuple of paths would
+        # otherwise split into characters that flag nearly every command.
+        for forbidden in (('/',), ('\\',), ('\\ ',), (' / ',), ('/vault', '//'), ('/vault', '\\\\')):
+            with self.subTest(forbidden=forbidden), self.assertRaises(ValueError):
+                forbidden_paths(forbidden)
+        for forbidden in ('/vault', b'/vault', ''):
+            with self.subTest(forbidden=forbidden), self.assertRaises(TypeError):
+                forbidden_paths(forbidden)
+            with self.subTest(through='audit_commands', forbidden=forbidden), self.assertRaises(TypeError):
+                audit_commands(self.run_dir, forbidden)
+
     def test_a_command_naming_any_one_of_the_paths_is_flagged(self):
         # Catches an audit that needs a command to name every forbidden path, or only the last one it is given.
         run = self.run_dir
@@ -92,6 +129,14 @@ class AuditTests(unittest.TestCase):
         path.write_bytes(b'\xff\xfe cat /vault/key\n' + '\n'.join(odd + [json.dumps(command('cat /vault/key'))]).encode('utf-8') + b'\n')
         self.assertEqual(audit_commands(run, ('/vault',)),
                          [{'transcript': 'work/probe/a1/_agent_events.jsonl', 'command': 'cat /vault/key'}])
+
+    def test_a_line_nested_too_deeply_to_parse_is_a_line_that_is_not_json(self):
+        # Catches an audit that stops on a line `json.loads` gives up on with a RecursionError, which is no ValueError,
+        # so that the flagged command after it goes unseen. A worker's own output can be that deep.
+        run = self.run_dir
+        deep = '[' * 50000 + ']' * 50000
+        self.write(run / 'work/probe/a1/_agent_events.jsonl', [command('cat /vault/key')], extra_line=deep)
+        self.assertEqual([found['command'] for found in audit_commands(run, ('/vault',))], ['cat /vault/key'])
 
     def test_an_empty_path_is_refused_rather_than_matching_every_command(self):
         # Catches an audit path that is empty (an unset shell variable, say) flagging every command of every run: no

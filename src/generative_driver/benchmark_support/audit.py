@@ -9,11 +9,17 @@ TRANSCRIPT = '_agent_events.jsonl'
 
 
 def forbidden_paths(forbidden: tuple[str, ...]) -> tuple[str, ...]:
-    """The paths an audit looks for, as given. An empty path is an error: it is in every command and would flag them all."""
-    forbidden = tuple(forbidden)
-    if any(not isinstance(path, str) or not path.strip() for path in forbidden):
-        raise ValueError('An audit path must not be empty')
-    return forbidden
+    """The paths an audit looks for, each stripped of surrounding whitespace and then of trailing slashes and backslashes.
+    A shell's tab completion types the vault as `/Volumes/Answer Vault/`, while a command names the directory bare, so
+    a path compared as typed would miss it. A path left empty (a blank, `/`, a lone backslash) is in every command and
+    would flag them all: ValueError. The argument is a sequence of paths: a bare `str` or `bytes` would be split into
+    characters that flag nearly every command, so it is a TypeError."""
+    if isinstance(forbidden, (str, bytes, bytearray)):
+        raise TypeError('Audit paths are a sequence of paths, not a single string')
+    paths = tuple(path.strip().rstrip('/\\') if isinstance(path, str) else '' for path in forbidden)
+    if not all(paths):
+        raise ValueError('An audit path must not be empty or only separators')
+    return paths
 
 
 def _spellings(text: str) -> tuple[str, str]:
@@ -43,7 +49,9 @@ def audit_commands(run_dir: Path, forbidden: tuple[str, ...]) -> list[dict]:
     """Every command a worker completed that names a forbidden path, as a finding: the transcript's path in the run and
     the command's first 300 characters. Every `_agent_events.jsonl` under `run_dir` is read (the stage workspaces, and
     the preparation and tool runs of interpretation), in the order of their paths and then of their lines. A line that
-    is not a completed command is skipped, whether or not it is JSON."""
+    is not a completed command is skipped, whether or not it is JSON, and a line nested too deeply for `json` to read is
+    skipped as one that is not. The paths are those of `forbidden_paths`, which refuses a bare string and a path that
+    names nothing."""
     run_dir = Path(run_dir)
     paths = {spelling for path in forbidden_paths(forbidden) for spelling in _spellings(path)}
     findings = []
@@ -55,7 +63,8 @@ def audit_commands(run_dir: Path, forbidden: tuple[str, ...]) -> list[dict]:
             for line in stream:
                 try:
                     command = _completed_command(json.loads(line))
-                except ValueError:
+                except (ValueError, RecursionError):
+                    # Not JSON, or nested too deeply for `json` to read: a line the audit cannot see a command in.
                     continue
                 if command is not None and any(path in text for text in _spellings(command) for path in paths):
                     findings.append({'transcript': transcript.relative_to(run_dir).as_posix(), 'command': command[:300]})

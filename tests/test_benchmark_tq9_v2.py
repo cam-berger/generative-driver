@@ -1489,10 +1489,11 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_reference_gate_refuses_structurally_invalid_mutant_before_native_start(self):
         # Catches recording a malformed model as a measured behavioral rejection.
-        from generative_driver.benchmark_support.evaluator import reference_execute
+        from generative_driver.benchmark_support.reference_calibration import run_reference
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaisesRegex(ValueError,'structurally valid'):
-                reference_execute({'scenario_id':'original'}, {}, {'schema':'invalid'}, {}, renode='/absent',image='/absent',output_dir=Path(temp))
+                run_reference({'scenario_id':'original'}, {}, {'schema':'invalid'}, {}, renode='/absent',image='/absent',
+                              output_dir=Path(temp),phase='final')
 
     def test_action_host_failure_cannot_be_a_behavioral_rejection(self):
         # Synthetic runtime fault: an unavailable channel cannot reject a mutant.

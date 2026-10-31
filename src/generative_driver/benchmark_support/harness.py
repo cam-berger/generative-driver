@@ -280,7 +280,7 @@ def conclude(trial_dir, case_id, run_dir, result, *, password_file, renode=None,
     the configurator's equivalence/1 schema would refuse, or accepted records that no longer match their hashes at the
     seal, are posted unscored: no retry would change them. The plaintext evaluation never outlives this call."""
     from ..configurator import IntegrityError, _evaluation_errors
-    from . import evaluator
+    from . import evaluator, recorded_grading
     if result.get('equivalence') is not None:
         # The configurator already holds this run's verdict: nothing is graded, sealed or posted again. Its seal is the
         # evidence the verdict names, when the trial directory holds exactly that (a harness may have died after the
@@ -304,13 +304,18 @@ def conclude(trial_dir, case_id, run_dir, result, *, password_file, renode=None,
     try:
         if pending and graded:
             try:
-                equivalence, content['final'] = evaluator.grade(case_id, trial_dir, run_dir, result,
-                                                                password_file=password_file, renode=renode)
+                if method == 'recorded-reuse':
+                    # Legacy tq9 and bme280: graded from the fresh reuse the run recorded, outside the grader.
+                    equivalence, content['final'] = recorded_grading.grade(case_id, trial_dir, run_dir, result,
+                                                                          password_file=password_file, protocol=protocol)
+                else:
+                    equivalence, content['final'] = evaluator.grade(case_id, trial_dir, run_dir, result,
+                                                                    password_file=password_file, renode=renode)
                 content['mission'] = equivalence.get('mission')
             except IntegrityError as error:
                 equivalence, content['error'] = evaluator.unscored('integrity: ' + str(error), frozen, method,
                                                                     protocol=protocol), str(error)
-            except evaluator.Unscorable as error:
+            except recorded_grading.Unscorable as error:
                 # Recorded evidence that cannot grade the driver for a reason outside it; its message names no truth.
                 equivalence, content['error'] = evaluator.unscored(str(error), frozen, method, protocol=protocol), str(error)
             except Exception as error:

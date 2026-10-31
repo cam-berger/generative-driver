@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 import generative_driver
-from generative_driver.benchmark_support.grader_identity import grader_closure, grader_identity
+from generative_driver.benchmark_support.grader_identity import SYSTEM_MODULES, grader_closure, grader_identity
 from generative_driver.benchmark_support.snapshots import canonical_digest
 
 
@@ -105,16 +105,16 @@ class GraderClosureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'benchmark_support.zephyr_modbus'):
             grader_closure(root)
 
-    def test_closure_excludes_shared_system_modules(self):
-        shared = ('configurator', 'benchmark', 'reporting', 'replay', 'client', 'setup', 'benchmark_support.cases',
-                  'benchmark_support.emulated', 'benchmark_support.legacy', 'benchmark_support.authoring')
-        root = self.copy_package()
-        # physical (legacy recorded grading) and reference_calibration (the evaluator identity) are still in the closure,
-        # and their own imports hold the shared modules in. They leave it when recorded grading moves out of the
-        # evaluator and admission checks the grader identity, so this checks the rest of the closure without them.
-        for name in ('physical', 'reference_calibration'):
-            (root / 'benchmark_support' / (name + '.py')).write_text('', encoding='utf-8')
-        self.assertEqual([m for m in grader_closure(root) if m in shared], [])
+    def test_closure_excludes_system_modules(self):
+        closure = grader_closure()
+        self.assertEqual([m for m in closure if any(m == s or m.startswith(s + '.') for s in SYSTEM_MODULES)], [])
+
+    def test_system_change_keeps_identity(self):
+        root = self.copy_package(); before = grader_identity(root)['sha256']
+        for name in ('configurator.py', 'toolkit.py', 'benchmark.py', 'benchmark_support/emulated.py',
+                     'benchmark_support/harness.py', 'benchmark_support/reference_calibration.py'):
+            path = root / name; path.write_text(path.read_text(encoding='utf-8') + '\n# changed\n', encoding='utf-8')
+        self.assertEqual(grader_identity(root)['sha256'], before)
 
 
 if __name__ == '__main__':

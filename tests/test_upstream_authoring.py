@@ -37,7 +37,7 @@ class UpstreamAuthoringTests(unittest.TestCase):
                     'grade': {'verdict': 'failed', 'checks': [{'id': 'toy', 'passed': False}]},
                     'model_sha256': 'a'*64, 'capabilities_sha256': 'b'*64, 'package_sha256': None,
                     'runtime_sha256': 'c'*64, 'artifact_execution': 'model-runtime'}
-            with patch('generative_driver.benchmark_support.evaluator.reference_execute', side_effect=reference) as run, \
+            with patch('generative_driver.benchmark_support.reference_calibration.run_reference', side_effect=reference) as run, \
                     patch('generative_driver.benchmark_support.upstream_qualification.subprocess.run', side_effect=command), \
                     patch('generative_driver.benchmark_support.upstream_qualification.subprocess.check_output', return_value='fixture Renode'):
                 record = qualify(truth, manifest, image, output, renode=renode, ghidra_home=ghidra, java_home=java)

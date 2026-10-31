@@ -142,35 +142,6 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
     return records
 
 
-def model_invoker(model_dir, capabilities, binding, output_dir, probes):
-    """Use the toolkit's normal probe operation; retain executable probe evidence."""
-    import json
-    from pathlib import Path
-    from ..toolkit import call_tool
-    from .behavior import bind_task
-    model = json.loads((Path(model_dir)/'model.json').read_text())
-    def invoke(task, inputs, grants):
-        try:
-            request = bind_task(capabilities, task, inputs, model)
-        except ValueError as error:
-            return _binding_failure(task, error)
-        probed = call_tool('probe_run', {'run_dir': str(output_dir), 'model_dir': str(model_dir),
-            **request, 'n': 1, 'binding': binding, 'allow_effects': grants})
-        results = probed.get('results')
-        if not isinstance(results, list) or not results or not isinstance(results[0], dict):
-            return {'ok': False, 'error': {'fault': 'host', 'code': 'probe_execution_unavailable',
-                'message': 'Probe tool returned no runtime execution evidence'},
-                'outputs': {}, 'units': {}, 'transcript': []}
-        if probed.get('probe'):
-            probes.append(probed['probe'])
-        result = results[0]
-        outputs = capabilities['tasks'][task]['outputs']
-        return {**result, 'ok': bool(probed.get('ok') and result.get('ok')),
-            'outputs': {key: result.get('outputs', {}).get(mapping['output']) for key, mapping in outputs.items()},
-            'units': {key: result.get('units', {}).get(mapping['output']) for key, mapping in outputs.items()}}
-    return invoke
-
-
 def package_invoker(package, binding, grants):
     """Normal installed package CLI, isolated from the source checkout."""
     import json

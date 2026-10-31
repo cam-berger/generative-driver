@@ -131,13 +131,14 @@ class RecordedReuseTests(unittest.TestCase):
                               {**self.options,'assignment_id':assignment})
         return checked,handoff('reuse',[Path(p) for p in checked['artifacts']],assignment)
 
-    def grade(self, reuse):
-        from generative_driver.benchmark_support import evaluator
+    def grade(self, reuse, protocol='assistive/1'):
+        from generative_driver.benchmark_support import recorded_grading
         result={'run_id':'run-physical','case_pin':self.pin,'snapshot_sha256':self.snapshot['snapshot_sha256'],'status':'completed',
-                'progress':{'equivalence':'pending','protocol':'assistive/1'},'accepted_handoffs':[*self.accepted,reuse]}
+                'progress':{'equivalence':'pending','protocol':protocol},'accepted_handoffs':[*self.accepted,reuse]}
         trial=self.root/'trial';trial.mkdir(exist_ok=True)
         with patch('generative_driver.benchmark_support.physical._measure',side_effect=AssertionError('the evaluator touched the board')):
-            return evaluator.grade('bme280',trial,self.run_dir,result,password_file=self.secret['evaluator_password_file'])
+            return recorded_grading.grade('bme280',trial,self.run_dir,result,password_file=self.secret['evaluator_password_file'],
+                                          protocol=result['progress']['protocol'])
 
     def test_the_recorded_measurement_is_graded_against_the_operator_reference_after_the_run(self):
         prepared,state=self.prepare()
@@ -171,14 +172,14 @@ class RecordedReuseTests(unittest.TestCase):
                 (self.root/'trial/evaluator-draft.enc').unlink()
 
     def test_final_uses_event_time_even_when_grading_is_delayed(self):
-        from generative_driver.benchmark_support.evaluator import Unscorable
+        from generative_driver.benchmark_support.recorded_grading import Unscorable
         for offset,expected in ((-120,False),(0,True)):
             with self.subTest(offset=offset):
                 prepared,state=self.prepare('worker'+str(offset))
                 measured=self.observed['observed_at']+offset
                 self.measure(state,measured,assignment='reuse'+str(offset))
                 _,reuse=self.observe('worker'+str(offset),'reuse'+str(offset))
-                with patch('generative_driver.benchmark_support.evaluator.time.time',return_value=self.observed['observed_at']+(120 if offset==0 else 0)):
+                with patch('generative_driver.benchmark_support.recorded_grading.time.time',return_value=self.observed['observed_at']+(120 if offset==0 else 0)):
                     if expected:
                         record,final=self.grade(reuse)
                         self.assertTrue(record['equivalent'],record)
@@ -246,13 +247,24 @@ class RecordedReuseTests(unittest.TestCase):
         self.assertEqual(Path(prepared['inputs'][0]).name,'package')
 
     def test_stale_reference_cannot_grade_finite_final_values(self):
-        from generative_driver.benchmark_support.evaluator import Unscorable
+        from generative_driver.benchmark_support.recorded_grading import Unscorable
         prepared,state=self.prepare()
         self.measure(state,self.observed['observed_at']+120)
         _,reuse=self.observe()
         with self.assertRaisesRegex(Unscorable,'operator reference'):
             self.grade(reuse)
         self.assertFalse((self.root/'trial/evaluator-draft.enc').exists())
+
+    def test_a_recorded_grade_names_the_runs_protocol_and_a_run_naming_none_is_not_graded(self):
+        # Catches a recorded-reuse grade stamped with no protocol, as the evaluator's own grade refuses one.
+        prepared,state=self.prepare()
+        self.measure(state,self.observed['observed_at'])
+        _,reuse=self.observe()
+        for protocol in (None,''):
+            with self.subTest(protocol=protocol),self.assertRaisesRegex(ValueError,'protocol'):
+                self.grade(reuse,protocol)
+        self.assertFalse((self.root/'trial/evaluator-draft.enc').exists())
+        self.assertEqual(self.grade(reuse,'learning/1')[0]['protocol'],'learning/1')
 
     def test_reuse_requires_a_finite_event_timestamp(self):
         for measured in (None,True,float('nan'),float('inf')):

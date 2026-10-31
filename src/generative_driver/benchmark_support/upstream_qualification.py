@@ -22,6 +22,7 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
     from .calibration import apply_mutation, execution_input_identity, validate_calibration, REQUIRED_MUTANTS
     from .evaluator import reference_execute
     from .grader_identity import grader_identity
+    from .reference_calibration import run_reference
     from .upstream import hydrate_truth
     from ..toolkit import resources_root
     truth = hydrate_truth(payload)
@@ -90,8 +91,14 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
             print(json.dumps({'reference_calibration': name, 'phase': phase}), file=sys.stderr, flush=True)
             pin = {'case_id': manifest['id'], 'family': manifest['family'], 'scenario_id': 'original',
                    'case_seed': 0, 'revision': 0}
-            result = reference_execute(pin, truth, model, capabilities, renode=paths.get('renode'), image=image,
-                                       output_dir=output/'runs'/name, phase=phase, private_dir=output/'native'/name)
+            result = run_reference(pin, truth, model, capabilities, renode=paths.get('renode'), image=image,
+                                   output_dir=output/'runs'/name, phase=phase, private_dir=output/'native'/name)
+            if phase == 'final':
+                # The grader grades the emitted reference package as it grades a trial's frozen one, on a fresh emulator.
+                result = reference_execute(pin, truth, capabilities, renode=paths.get('renode'), image=image,
+                                           output_dir=output/'runs'/name, package=Path(result['package_dir']),
+                                           expected_package_sha256=result['package_sha256'],
+                                           private_dir=output/'native'/name)
             record['runs'].append({'id': name, 'scenario': 'original', 'phase': phase,
                 'backend': result.get('backend'),
                 'native_process_observed': result['native_process_observed'], 'process': result['process'],

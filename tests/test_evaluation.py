@@ -36,12 +36,12 @@ def contract(sha, revision=0):
 def reference(values, calls=None, before=None, after=None):
     """A scripted final phase in reference_execute's shape: the toy contract, records with `values`, raw evidence and
     the plaintext evaluation output the real one leaves in its output directory. `after` runs once that output exists."""
-    def execute(pin, truth, model, capabilities, *, renode, image, output_dir, phase='final', package=None,
-                expected_package_sha256=None, package_final=True, private_dir=None, healthy_device_failures=False):
+    def execute(pin, truth, capabilities, *, renode, image, output_dir, package, expected_package_sha256,
+                private_dir=None, healthy_device_failures=False):
         if before:
             before()
         if calls is not None:
-            calls.append({'pin': pin, 'model': model, 'capabilities': capabilities, 'image': Path(image), 'phase': phase,
+            calls.append({'pin': pin, 'capabilities': capabilities, 'image': Path(image),
                           'package': Path(package), 'sha': expected_package_sha256, 'output': Path(output_dir),
                           'renode': renode, 'private': Path(private_dir) if private_dir else None,
                           'healthy_device_failures': healthy_device_failures})
@@ -379,8 +379,7 @@ class HarnessGradingTests(PendingRunFixture):
                 self.assertEqual(observed, [('completed', False, 'stopped', True)])
                 self.assertEqual(len(calls), 1); self.assertEqual(len(unlocked), 1)
                 call = calls[0]
-                self.assertEqual((call['phase'], call['sha'], call['capabilities'], call['model']),
-                                 ('final', frozen, self.mapping, self.model))
+                self.assertEqual((call['sha'], call['capabilities']), (frozen, self.mapping))
                 self.assertEqual((call['pin']['case_id'], call['pin']['revision']), ('tq9-v2', 0))
                 self.assertTrue(call['package'].is_relative_to(trial)); self.assertTrue(call['output'].is_relative_to(trial))
                 # The grading session's own files (its log, the monitor commands it rendered) live where grading's
@@ -1013,7 +1012,7 @@ class SealedEvidenceTests(PendingRunFixture):
         run_dir = self.home / 'runs' / run['run_id']
         final = {'run_id': run['run_id'], 'phase': 'final', 'revision': 0, 'frozen_artifact_sha256': frozen,
                  'capabilities_sha256': None, **{k: v for k, v in reference(PASS)(
-                     {'revision': 0}, None, None, None, renode=None, image='x', output_dir=self.root / 'out',
+                     {'revision': 0}, None, None, renode=None, image='x', output_dir=self.root / 'out',
                      expected_package_sha256=frozen, package=self.root).items()}, 'raw': None}
         sealed = evaluator.seal(self.root / 'trial', run_dir, result, password_file=self.password, final=final)
         payload = unlock(self.root / 'trial/run-evidence.enc', self.password.read_text(), sealed['sha256'])

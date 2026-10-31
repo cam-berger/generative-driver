@@ -26,7 +26,7 @@ SYSTEM_MODULES = ('configurator', 'toolkit', '_toolchain', 'agents', 'client', '
                   'benchmark_support.corpus', 'benchmark_support.authoring', 'benchmark_support.adapters',
                   'benchmark_support.family_calibration', 'benchmark_support.asset_build', 'benchmark_support.rehosting',
                   'benchmark_support.reference_calibration', 'benchmark_support.upstream_qualification',
-                  'interface_runtime')
+                  'benchmark_support.recorded_grading', 'interface_runtime')
 _OUTSIDE = 'interface_runtime'  # the top-level package beside generative_driver: listed by name, never read
 
 

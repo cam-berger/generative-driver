@@ -280,13 +280,19 @@ class ReferenceExecutionTests(unittest.TestCase):
         from unittest.mock import patch
         from benchmark_family_fixtures import toy_sample_model
         from generative_driver.benchmark_support.evaluator import reference_execute
+        from generative_driver.benchmark_support.reference_calibration import run_reference
         from generative_driver.configurator import digest
         with self.toy_sensor() as (temp,Session,pin,truth,caps):
-            session=Session()
-            with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=session):
-                result=reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),output_dir=Path(temp)/'good')
+            # As calibration does: the reference's package is emitted, then graded as a frozen one on a fresh emulator.
+            emitter,session=Session(),Session()
+            with patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=[emitter,session]):
+                emitted=run_reference(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
+                    output_dir=Path(temp)/'good',phase='final')
+                result=reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),output_dir=Path(temp)/'good',
+                    package=Path(emitted['package_dir']),expected_package_sha256=emitted['package_sha256'])
+            self.assertIsNone(emitted['grade'])
             self.assertEqual(result['grade']['verdict'],'passed')
-            self.assertTrue(session.stopped)
+            self.assertTrue(emitter.stopped and session.stopped)
             self.assertFalse(result['native_process_observed'])
             original_write=Path.write_text
             def windows_default_write(path,data,*args,**kwargs):
@@ -295,8 +301,8 @@ class ReferenceExecutionTests(unittest.TestCase):
                 return original_write(path,data,*args,**kwargs)
             with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()), \
                  patch.object(Path,'write_text',windows_default_write):
-                modeled=reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
-                    output_dir=Path(temp)/'modeled',package_final=False)
+                modeled=run_reference(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
+                    output_dir=Path(temp)/'modeled',phase='diagnostic')
             self.assertEqual(modeled['grade']['verdict'],'passed')
             from generative_driver.benchmark_support.calibration import execution_input_identity
             expected=execution_input_identity(toy_sample_model(),caps)
@@ -311,7 +317,7 @@ class ReferenceExecutionTests(unittest.TestCase):
             windows=self.emit_toy_package(crlf,Session.binding,b'\r\n')
             self.assertIn(b'\r\n',(windows/'driver/model.json').read_bytes())
             with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()) as native:
-                graded=reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
+                graded=reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),
                     output_dir=crlf/'final',package=windows,expected_package_sha256=digest(windows),private_dir=crlf/'native')
             self.assertEqual(graded['grade']['verdict'],'passed')
             # The grading session keeps its own files where the caller's cleanup reaches them.
@@ -323,14 +329,13 @@ class ReferenceExecutionTests(unittest.TestCase):
             (package/'driver/model.json').write_text('{}')
             with patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=AssertionError('Device accessed')):
                 with self.assertRaisesRegex(ValueError,'Frozen package'):
-                    reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
+                    reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),
                         output_dir=Path(temp)/'bad',package=package,expected_package_sha256=frozen)
 
     def test_package_with_a_different_bundled_runtime_is_graded(self):
         import json
         from pathlib import Path
         from unittest.mock import patch
-        from benchmark_family_fixtures import toy_sample_model
         from generative_driver.benchmark_support.evaluator import reference_execute
         from generative_driver.configurator import digest
         with self.toy_sensor() as (temp,Session,pin,truth,caps):
@@ -345,7 +350,7 @@ class ReferenceExecutionTests(unittest.TestCase):
             (package/'manifest.json').write_text(json.dumps(manifest,indent=2,allow_nan=False)+'\n',encoding='utf-8')
             (package/'manifest.sha256').write_text(sha(package/'manifest.json')+'\n',encoding='utf-8')
             with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()):
-                graded=reference_execute(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
+                graded=reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),
                     output_dir=Path(temp)/'other-runtime',package=package,expected_package_sha256=digest(package))
             self.assertEqual(graded['grade']['verdict'],'passed')
             self.assertEqual((graded['package_sha256'],graded['artifact_execution']),(digest(package),'emitted-package'))
@@ -540,7 +545,7 @@ class StageDispatchTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from benchmark_family_fixtures import toy_sensor_phase,toy_sample_model
-        from generative_driver.benchmark_support.evaluator import reference_execute
+        from generative_driver.benchmark_support.reference_calibration import run_reference
         pin,truth=toy_sensor_phase();pin.update(case_id='sampled-sensor-v1',revision=0)
         phase=truth['phases']['diagnostic'];phase['actions']=[{'kind':'reset','values':{}},
             {'kind':'call','task':'measure','inputs':{},'grants':['write']},
@@ -555,11 +560,11 @@ class StageDispatchTests(unittest.TestCase):
                 def observe(self):return {'values':{'latched_q4':65456,'acquisition_counter':3}}
                 def stop(self):pass
             def invoke(*args):return {'ok':True,'outputs':{'temperature':-5,'sequence':3},'units':{'temperature':'degC','sequence':'count'}}
-            # The evaluator's own fresh emulator and truth: neither comes from the stage adapter.
+            # Calibration's own fresh emulator and truth: neither comes from the stage adapter.
             with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()),patch(
-                'generative_driver.benchmark_support.emulated_actions.model_invoker',return_value=invoke):
-                result=reference_execute(pin,truth,toy_sample_model(),{},renode=Path('/toy'),image=Path('/toy'),
-                                         output_dir=root/'diagnostic',phase='diagnostic',package_final=False)
+                'generative_driver.benchmark_support.reference_calibration.model_invoker',return_value=invoke):
+                result=run_reference(pin,truth,toy_sample_model(),{},renode=Path('/toy'),image=Path('/toy'),
+                                     output_dir=root/'diagnostic',phase='diagnostic')
             self.assertEqual(result['grade']['verdict'],'passed')
             self.assertEqual({r['unit'] for r in result['records']},{'degC','count','boolean'})
 
@@ -567,7 +572,6 @@ class StageDispatchTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from benchmark_family_fixtures import toy_sample_model
         from generative_driver.benchmark_support.evaluator import reference_execute
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
@@ -575,7 +579,7 @@ class StageDispatchTests(unittest.TestCase):
             with patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=AssertionError('Native access')):
                 with self.assertRaisesRegex(ValueError,'Frozen package'):
                     reference_execute({'case_id':'sampled-sensor-v1','scenario_id':'original','revision':0},{'recipe':{}},
-                                      toy_sample_model(),{},renode=Path('/toy'),image=Path('/toy'),output_dir=root/'final',
+                                      {},renode=Path('/toy'),image=Path('/toy'),output_dir=root/'final',
                                       package=package,expected_package_sha256='a'*64)
 
 class TruthBoundaryTests(unittest.TestCase):

@@ -134,6 +134,8 @@ def calibration_run(pin, truth, model, capabilities, *, renode, image, output_di
         return run_reference(pin, truth, model, capabilities, renode=renode, image=image, output_dir=output_dir,
                              phase=phase, private_dir=private_dir)
     from .evaluator import reference_execute
+    # Emission creates the run's directory as its parent; made first, it is as private as every other run's.
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     emitted = run_reference(pin, truth, model, capabilities, renode=renode, image=image, output_dir=output_dir/'emission',
                             phase=phase, private_dir=private_dir.with_name(private_dir.name + '-emission'))
     return reference_execute(pin, truth, capabilities, renode=renode, image=image, output_dir=output_dir,

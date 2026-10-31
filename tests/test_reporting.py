@@ -178,7 +178,13 @@ class ReportTests(unittest.TestCase):
                     manifest = json.loads(manifest_path.read_text())
                     manifest.update(version='exporter-new', evaluator_version='exporter-new', execution='wrong-exporter-track')
                     manifest_path.write_text(json.dumps(manifest))
-                    with patch('generative_driver.client.call', side_effect=lambda method, params, **kwargs: controller.call(method, params)), patch('generative_driver.benchmark_support.integrity.tree_hash', return_value='exporter-new'):
+                    # The exporting installation's own revisions are poisoned, wherever they are bound: a report takes
+                    # them from the snapshot.
+                    with patch('generative_driver.client.call', side_effect=lambda method, params, **kwargs: controller.call(method, params)), \
+                            patch('generative_driver.benchmark_support.integrity.tree_hash', return_value='exporter-new'), \
+                            patch('generative_driver.reporting._tree_hash', return_value='exporter-new'), \
+                            patch('generative_driver.benchmark_support.grader_identity.grader_identity',
+                                  return_value={'sha256': 'exporter-new'}):
                         report = report_run(run['run_id'], home=root / 'home')
                     self.assertEqual(report['case_version'], '2')
                     self.assertEqual(report['evaluator_version'], '2')

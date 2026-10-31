@@ -1,10 +1,11 @@
 """The grader's import closure and identity: the code whose change must void a qualification.
 
 The closure is read from import statements, without importing anything: every module the grading entry modules and
-the registered families import, in function bodies too, and the parent packages whose `__init__.py` runs first.
-Loads that are not import statements (`import_module`, `__import__`) are not followed; list such a module in
-ENTRY_MODULES. An identity over this closure alone lets the system under test change without voiding an admission,
-so SYSTEM_MODULES names what the closure is meant to exclude.
+the registered families import, in function bodies too, and the parent packages below `generative_driver` whose
+`__init__.py` runs first. The top-level `generative_driver/__init__.py` is not part of it. Loads that are not import
+statements (`import_module`, `__import__`) are not followed; list such a module in ENTRY_MODULES. The identity covers
+this closure alone, so the system under test can change without voiding an admission; SYSTEM_MODULES names the
+modules the closure must never reach.
 """
 import ast
 import hashlib
@@ -112,9 +113,10 @@ def _package_root(root):
 
 def grader_closure(root: Path | None = None) -> tuple[str, ...]:
     """Sorted names of every module the grader imports: the entry modules and registered families, then what each
-    imports. `root` is a generative_driver package directory, by default the installed one. The standard library
-    and other third-party imports end the walk; `interface_runtime` modules are listed but not read. Raises
-    ValueError when an entry or family module has no source under `root`."""
+    imports. `root` is a generative_driver package directory, by default the installed one; the families are those the
+    installed `registrations._CASES` names, whatever `root` is. The standard library and other third-party imports end
+    the walk; `interface_runtime` modules are listed but not read. Raises ValueError when an entry or family module has
+    no source under `root`."""
     return tuple(sorted(_walk(_package_root(root))))
 
 

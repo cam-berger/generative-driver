@@ -115,6 +115,10 @@ class UpstreamAuthoringTests(unittest.TestCase):
             self.assertEqual((emitted['package_sha256'], grade['package_sha256']), (final['package_sha256'],) * 2)
             self.assertEqual((emitted['process']['private_dir'], grade['process']['private_dir']),
                              (str(emitter.private_dir), str(grader.private_dir)))
+            # A final run's directory holds the grade's evaluation, so it is private like every other run's.
+            if os.name != 'nt':
+                for name in ('a-diagnostic-original', 'a-final-original'):
+                    self.assertEqual((output/'runs'/name).stat().st_mode & 0o777, 0o700, name)
 
     def test_build_refuses_an_unpinned_source_before_launching_a_compiler(self):
         from generative_driver.benchmark_support.upstream_build import verify_source

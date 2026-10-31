@@ -84,8 +84,10 @@ def execution_input_identity(model, capabilities):
 
 def validate_calibration(manifest, record):
     """Validate measured coverage, not candidate success flags. Local trust only. A record admits only under the
-    grader identity it was measured with; a run's `runtime_sha256` is provenance, not a check."""
+    grader identity it was measured with; a run's `runtime_sha256` is checked only for SHA-256 form. An installation
+    whose grader identity cannot be computed raises, rather than reading as a defect of the record."""
     failures=[]
+    identity=grader_identity()
     try:
         from .execution import artifact_name
         artifact = artifact_name(manifest)
@@ -94,7 +96,7 @@ def validate_calibration(manifest, record):
             'execution':'reference-calibration','backend':'native-sim' if native else 'native-renode',
             'evaluator_version':manifest['evaluator_version'],'images':manifest['images'],
             'input_hashes':manifest['calibration']['input_hashes'],
-            'evaluator_identity':grader_identity(),'native_process_observed':True}
+            'evaluator_identity':identity,'native_process_observed':True}
         for key,value in expected.items():
             if record.get(key)!=value:failures.append('identity:'+key)
         if record.get('native_process_observed') is not True:
@@ -342,3 +344,7 @@ def safe_summary(record):
         'status':record.get('status'),'references':len(record.get('references',[])),
         'mutants':len(record.get('mutants',[])),'evidence_sha256':canonical_digest(
             {k:v for k,v in record.items() if k not in ('ok','failures')})}
+
+
+if __name__=='__main__':
+    raise SystemExit('Family calibration moved: run python -m generative_driver.benchmark_support.family_calibration')

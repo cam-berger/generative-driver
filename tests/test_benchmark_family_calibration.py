@@ -116,6 +116,16 @@ class AdmissionTests(unittest.TestCase):
         for run in record['runs']: run['runtime_sha256'] = 'f' * 64
         self.assertEqual(validate_calibration(manifest, record)['failures'], [])
 
+    def test_a_broken_grader_installation_raises_rather_than_reading_as_malformed_evidence(self):
+        # Catches a grader module missing from the installation reported as a defect of the calibration record.
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.calibration import validate_calibration
+        manifest, record = self.fixture()
+        with patch('generative_driver.benchmark_support.calibration.grader_identity',
+                   side_effect=ValueError('Grader module missing from /installed: benchmark_support.evaluator')), \
+                self.assertRaisesRegex(ValueError, 'Grader module missing'):
+            validate_calibration(manifest, record)
+
     def test_admission_refuses_the_previous_identity_schema(self):
         from generative_driver.benchmark_support.calibration import validate_calibration
         manifest, record = self.fixture()
@@ -294,7 +304,8 @@ class ReferenceExecutionTests(unittest.TestCase):
         from generative_driver.benchmark_support.reference_calibration import run_reference
         from generative_driver.configurator import digest
         with self.toy_sensor() as (temp,Session,pin,truth,caps):
-            # As calibration does: the reference's package is emitted, then graded as a frozen one on a fresh emulator.
+            # The two steps of a final calibration run, here in one directory: the reference's package is emitted, then
+            # graded as a frozen one on a fresh emulator.
             emitter,session=Session(),Session()
             with patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=[emitter,session]):
                 emitted=run_reference(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
@@ -712,6 +723,17 @@ class WrapperTests(unittest.TestCase):
                          '--authoring-dir', '/private/sampled-sensor-v1-authoring', '--renode', '/opt/renode',
                          '--ghidra-home', '/opt/ghidra', '--java-home', '/opt/java'])
         self.assertEqual(code, 1)
+
+    def test_the_old_calibration_module_command_fails_and_names_where_it_moved(self):
+        # Catches `python -m generative_driver.benchmark_support.calibration`, the family calibration command before it
+        # moved, exiting 0 without calibrating anything, which an operator's script would take for success.
+        import os, subprocess, sys
+        from package_env import package_env
+        moved = subprocess.run([sys.executable, '-m', 'generative_driver.benchmark_support.calibration', 'sampled-sensor-v1'],
+                               capture_output=True, text=True, timeout=60, env={**os.environ, **package_env()})
+        self.assertNotEqual(moved.returncode, 0)
+        self.assertIn('generative_driver.benchmark_support.family_calibration', moved.stderr)
+        self.assertEqual(moved.stdout, '')
 
 class SeedEpisodeTests(unittest.TestCase):
     def test_seed_rotates_only_whole_reset_delimited_episodes(self):

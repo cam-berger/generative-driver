@@ -123,8 +123,9 @@ class PendingRunFixture(unittest.TestCase):
         self.controller = Controller(self.home)
         self.addCleanup(lambda: self.controller.close())
 
-    def check(self, *, emit=True, mapping=True, tamper=False, tamper_notes=False):
-        """Scripted stage observations: probe hands on the model and its mapping, emit a package of that model."""
+    def check(self, *, emit=True, mapping=True, edit=None, tamper=False, tamper_notes=False):
+        """Scripted stage observations: probe hands on the model and its mapping, emit a package of that model, which
+        `edit` changes before emit hands it on."""
         def check(spec, stage, run_dir, workspace, report, accepted, assignment):
             if stage == 'probe':
                 folder = workspace / 'model'; folder.mkdir()
@@ -137,6 +138,8 @@ class PendingRunFixture(unittest.TestCase):
                 package = workspace / 'package'; (package / 'driver').mkdir(parents=True)
                 (package / 'manifest.json').write_text(json.dumps({'schema': 'interface-package/1', 'name': 'scripted'}))
                 (package / 'driver/model.json').write_text(json.dumps(self.model, indent=2) + '\n')
+                if edit:
+                    edit(package)
                 return {'artifacts': [str(package)], 'checks': [{'name': 'package_integrity_and_replay', 'passed': True}]}
             if stage == 'reuse' and tamper:
                 # The accepted package changes after its handoff was recorded.
@@ -603,6 +606,28 @@ class HarnessGradingTests(PendingRunFixture):
                     self.assertEqual((record['status'], result['equivalence']), ('evaluated', equivalence))
                     self.assertEqual(result['reason'], 'Final verdict: not equivalent: ' + reason)
                 self.assertEqual(equivalence['frozen_artifact_sha256'], None if name == 'no-package' else self.emitted(result))
+
+    def test_a_frozen_driver_whose_model_is_missing_or_not_json_fails_without_the_device(self):
+        # Catches a frozen package's unreadable model ending unscored as an evaluator host fault, which would leave the
+        # system's broken driver out of its pass rate. The model is the driver's own bytes: the grade fails it before
+        # any truth is unlocked or emulator started.
+        from generative_driver.benchmark_support import evaluator
+        model = lambda text: lambda package: (package / 'driver/model.json').write_text(text)
+        for name, edit in (('not-json', model('{not json')), ('not-an-object', model('[]')),
+                           ('too-deep', model('[' * 100000)),
+                           ('missing', lambda package: (package / 'driver/model.json').unlink())):
+            with self.subTest(model=name), \
+                    patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')), \
+                    patch.object(evaluator, 'reference_execute', side_effect=AssertionError('device started')):
+                trial, record = self.trial(name, edit=edit)
+                equivalence = record['equivalence']
+                self.assertEqual((record['status'], equivalence['status'], equivalence['equivalent']),
+                                 ('evaluated', 'graded', False))
+                self.assertEqual(equivalence['diff'], [{'id': 'frozen_package',
+                                                        'reason': "the frozen driver's model is missing or not JSON"}])
+                result = self.controller.call('result', {'run_id': record['run_id']})
+                self.assertEqual((result['equivalence'], equivalence['frozen_artifact_sha256']),
+                                 (equivalence, self.emitted(result)))
 
     def test_grading_ended_by_any_exit_leaves_no_plaintext_evaluation(self):
         # Catches the private copy and the plaintext evaluation output (the contract with its expected values and the

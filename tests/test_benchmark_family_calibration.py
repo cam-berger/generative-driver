@@ -275,6 +275,17 @@ class ReferenceExecutionTests(unittest.TestCase):
         self.assertTrue(emitted.get('ok'),emitted)
         return Path(emitted['package_dir'])
 
+    def edit_bundled(self,package,relative,edit):
+        """Replace the package file `relative` with `edit` of its bytes, as another system's package would differ: the
+        manifest's file hash and the manifest's own digest follow the edit, so the package stays consistent."""
+        import json
+        sha=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
+        (package/relative).write_bytes(edit((package/relative).read_bytes()))
+        manifest=json.loads((package/'manifest.json').read_text(encoding='utf-8'))
+        manifest['files'][relative]=sha(package/relative)
+        (package/'manifest.json').write_text(json.dumps(manifest,indent=2,allow_nan=False)+'\n',encoding='utf-8')
+        (package/'manifest.sha256').write_text(sha(package/'manifest.json')+'\n',encoding='utf-8')
+
     def test_final_uses_real_emitted_package_and_rejects_frozen_tampering(self):
         from pathlib import Path
         from unittest.mock import patch
@@ -333,27 +344,54 @@ class ReferenceExecutionTests(unittest.TestCase):
                         output_dir=Path(temp)/'bad',package=package,expected_package_sha256=frozen)
 
     def test_package_with_a_different_bundled_runtime_is_graded(self):
-        import json
         from pathlib import Path
         from unittest.mock import patch
         from generative_driver.benchmark_support.evaluator import reference_execute
         from generative_driver.configurator import digest
         with self.toy_sensor() as (temp,Session,pin,truth,caps):
             package=self.emit_toy_package(Path(temp)/'emitted',Session.binding)
-            # Another system's package bundles another runtime. Its manifest and file hashes follow the edit, so the
-            # package is consistent and only its runtime bytes differ from this checkout's.
-            sha=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
-            engine=package/'interface_runtime/engine.py'
-            engine.write_bytes(engine.read_bytes()+b'\n# another runtime\n')
-            manifest=json.loads((package/'manifest.json').read_text(encoding='utf-8'))
-            manifest['files']['interface_runtime/engine.py']=sha(engine)
-            (package/'manifest.json').write_text(json.dumps(manifest,indent=2,allow_nan=False)+'\n',encoding='utf-8')
-            (package/'manifest.sha256').write_text(sha(package/'manifest.json')+'\n',encoding='utf-8')
+            # Another system's package bundles another runtime: only its runtime bytes differ from this checkout's.
+            self.edit_bundled(package,'interface_runtime/engine.py',lambda data:data+b'\n# another runtime\n')
             with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()):
                 graded=reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),
                     output_dir=Path(temp)/'other-runtime',package=package,expected_package_sha256=digest(package))
             self.assertEqual(graded['grade']['verdict'],'passed')
             self.assertEqual((graded['package_sha256'],graded['artifact_execution']),(digest(package),'emitted-package'))
+
+    def test_a_frozen_package_that_crashes_hangs_or_garbles_its_result_fails_on_a_healthy_device(self):
+        # Catches a frozen package's own failure taken for the evaluator host's, which ends the trial unscored and leaves
+        # a crashing system's failures out of its pass rate. The bundled runtime is the system's code: one that raises
+        # at import, outlasts the call limit or prints no result the grader can read on the evaluator's healthy device
+        # is graded not equivalent.
+        import json
+        from pathlib import Path
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.emulated_actions import PACKAGE_CALL_SECONDS
+        from generative_driver.benchmark_support.evaluator import final_record, reference_execute
+        from generative_driver.configurator import digest
+        with self.toy_sensor() as (temp,Session,pin,truth,caps):
+            for name,code,limit,reported in (
+                    ('crash',b'\nraise ImportError("a broken bundled runtime")\n',PACKAGE_CALL_SECONDS,'no_result'),
+                    ('hang',b'\nimport time\ntime.sleep(60)\n',1,'timeout'),
+                    ('garbled',b'\nimport sys\nsys.stdout.buffer.write(b"\\xff\\xfe")\nsys.stdout.flush()\n',
+                     PACKAGE_CALL_SECONDS,'no_result'),
+                    ('too-deep',b'\nimport sys\nsys.stdout.write("[" * 100000)\nsys.stdout.flush()\n',
+                     PACKAGE_CALL_SECONDS,'no_result')):
+                with self.subTest(package=name):
+                    package=self.emit_toy_package(Path(temp)/name,Session.binding)
+                    self.edit_bundled(package,'interface_runtime/package.py',lambda data:data+code)
+                    with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()), \
+                         patch('generative_driver.benchmark_support.emulated_actions.PACKAGE_CALL_SECONDS',limit):
+                        graded=reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),
+                            output_dir=Path(temp)/name/'final',package=package,expected_package_sha256=digest(package),
+                            healthy_device_failures=True)
+                    final={'contract':graded['contract'],'records':graded['records'],'frozen_artifact_sha256':digest(package)}
+                    self.assertIs(final_record(final,protocol='assistive/1')['equivalent'],False)
+                    call=next(e for e in json.loads((Path(temp)/name/'final/raw.json').read_text(encoding='utf-8'))['events']
+                              if e['action']['kind']=='call')
+                    self.assertIs(call['device_healthy'],True)
+                    self.assertEqual({k:call['result']['error'][k] for k in ('fault','reported_fault','code')},
+                                     {'fault':'model','reported_fault':'host','code':reported})
 
     def test_only_the_package_that_was_frozen_is_accepted(self):
         import tempfile

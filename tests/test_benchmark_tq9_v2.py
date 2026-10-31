@@ -1555,32 +1555,44 @@ class TQ9V2Tests(unittest.TestCase):
                         execute_plan(session, lambda *args: dict(no_reply), plan, contract, path, lambda *args: {},
                                      healthy_device_failures=opted)
 
-    def test_a_package_process_that_hangs_or_prints_no_result_is_the_hosts(self):
-        # The package's Python is the evaluator's trusted template and runtime, which enforces every deadline the model
-        # declares: a call that outlasts identity plus the longest operation, or prints nothing, failed on the host. It
-        # is reported, never raised, and never blamed on the driver however healthy the device is.
+    def test_a_package_process_that_cannot_start_or_is_killed_from_outside_is_the_hosts(self):
+        # Every package call is reported, never raised. A package that outlasts identity plus the longest operation, or
+        # exits without a result, failed on its own: its bundled runtime is the system's code, so grading on a healthy
+        # device makes that the driver's failure. A process that could not start, or was killed by a signal the grader
+        # did not send, failed on the host however healthy the device is; and calibration keeps every host fault the host's.
         import socket
         import subprocess
         from unittest.mock import patch
         from generative_driver.benchmark_support.emulated_actions import package_invoker, execute_plan, PACKAGE_CALL_SECONDS
         self.assertGreaterEqual(PACKAGE_CALL_SECONDS, 2 * 120 + 5)
         call = package_invoker('/frozen/package', {'host': '127.0.0.1', 'port': 1}, ['write'])
-        with patch('subprocess.run', side_effect=subprocess.TimeoutExpired(['driver'], PACKAGE_CALL_SECONDS)) as ran:
-            hung = call('read', {})
-        self.assertEqual(ran.call_args.kwargs['timeout'], PACKAGE_CALL_SECONDS)
-        with patch('subprocess.run', return_value=subprocess.CompletedProcess(['driver'], 1, 'Traceback (most recent call last)', '')):
-            silent = call('read', {})
-        for failed, code in ((hung, 'timeout'), (silent, 'no_result')):
+        outcomes = {}
+        for code, source, process in (
+                ('spawn', 'package-process', {'side_effect': OSError('the interpreter could not start')}),
+                ('signal', 'package-process', {'return_value': subprocess.CompletedProcess(['driver'], -9, '', '')}),
+                ('timeout', 'package', {'side_effect': subprocess.TimeoutExpired(['driver'], PACKAGE_CALL_SECONDS)}),
+                ('no_result', 'package', {'return_value': subprocess.CompletedProcess(['driver'], 1, 'Traceback (most recent call last)', '')})):
+            with patch('subprocess.run', **process) as ran:
+                failed = outcomes[code] = call('read', {})
+            self.assertEqual(ran.call_args.kwargs['timeout'], PACKAGE_CALL_SECONDS)
             self.assertEqual((failed['ok'], failed['error']['fault'], failed['error']['source'], failed['error']['code']),
-                             (False, 'host', 'package-process', code))
+                             (False, 'host', source, code))
         channel = socket.socket(); channel.bind(('127.0.0.1', 0)); channel.listen(4); self.addCleanup(channel.close)
         class Session:
             binding = {'host': '127.0.0.1', 'port': channel.getsockname()[1]}
             def set_running(self, value): pass
             def observe(self): return {'values': {}, 'reads': []}
-        with tempfile.TemporaryDirectory() as temp, self.assertRaisesRegex(RuntimeError, 'Host execution failed'):
-            execute_plan(Session(), lambda *args: dict(hung), [{'kind': 'call', 'task': 'read', 'inputs': {}, 'grants': []}],
-                         {'checks': []}, Path(temp)/'raw.json', lambda *args: {}, healthy_device_failures=True)
+        plan = [{'kind': 'call', 'task': 'read', 'inputs': {}, 'grants': []}]
+        with tempfile.TemporaryDirectory() as temp:
+            for code, grading in (('spawn', True), ('signal', True), ('timeout', False), ('no_result', False)):
+                with self.subTest(code=code, grading=grading), self.assertRaisesRegex(RuntimeError, 'Host execution failed'):
+                    execute_plan(Session(), lambda *args: dict(outcomes[code]), plan, {'checks': []}, Path(temp)/'raw.json',
+                                 lambda *args: {}, healthy_device_failures=grading)
+            for code in ('timeout', 'no_result'):
+                execute_plan(Session(), lambda *args: dict(outcomes[code]), plan, {'checks': []}, Path(temp)/'raw.json',
+                             lambda *args: {}, healthy_device_failures=True)
+                event = json.loads((Path(temp)/'raw.json').read_text())['events'][0]
+                self.assertEqual((event['device_healthy'], event['result']['error']['fault']), (True, 'model'))
 
     def test_fresh_reuse_acknowledgements_do_not_substitute_for_a_reading(self):
         # Public adapter seam: actuator ACK outputs alone do not finish the mission, which is a note, never a stop.

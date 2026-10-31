@@ -11,6 +11,12 @@ def graded(equivalent):
             'equivalence': {'status': 'graded', 'equivalent': equivalent}}
 
 
+no_driver = {'workflow_status': 'completed', 'equivalence_status': 'no-driver',
+             'equivalence': {'status': 'no-driver', 'equivalent': False}}
+unknown = {'workflow_status': 'completed', 'equivalence_status': 'unknown',
+           'equivalence': {'status': 'unknown', 'equivalent': None}}
+
+
 def stopped(category):
     return {'run_id': 'r', 'status': 'blocked', 'outcome_category': category}
 
@@ -87,11 +93,16 @@ class ClassifyTests(unittest.TestCase):
         # A stop is judged before the verdict.
         self.assertOutcome(stopped('model'), {'workflow_status': 'blocked', 'verdict': 'unqualified'}, 'failure')
 
+    def test_a_grade_whose_slot_has_not_settled_is_running_even_when_marked_unqualified(self):
+        # The exporter marks a graded equivalent driver unqualified until its slot settles. A settled slot whose grade
+        # the exporter could not confirm stays a fault.
+        for report in (graded(True), graded(False), no_driver, unknown):
+            unconfirmed = {**report, 'verdict': 'unqualified'}
+            with self.subTest(grade=report['equivalence_status'], equivalent=report['equivalence']['equivalent']):
+                self.assertOutcome({**done, 'status': 'completed'}, unconfirmed, 'running')
+                self.assertOutcome(done, unconfirmed, 'fault')
+
     def test_a_recorded_grade_counts_only_once_its_slot_is_settled(self):
-        no_driver = {'workflow_status': 'completed', 'equivalence_status': 'no-driver',
-                     'equivalence': {'status': 'no-driver', 'equivalent': False}}
-        unknown = {'workflow_status': 'completed', 'equivalence_status': 'unknown',
-                   'equivalence': {'status': 'unknown', 'equivalent': None}}
         # Settled, each counts (done is finished).
         for report, expected in ((graded(True), 'pass'), (graded(False), 'failure'), (no_driver, 'failure'),
                                  (unknown, 'unknown')):
@@ -99,19 +110,29 @@ class ClassifyTests(unittest.TestCase):
                 self.assertOutcome(done, report, expected)
         # Not settled: the row says completed, or still running, while its report already holds the grade.
         for status in ('completed', 'running'):
-            slot = {**done, 'status': status}
-            # The row exported for a graded equivalent driver reads unqualified until its slot settles, and an
-            # unqualified row is a fault (the test above), so for that grade only the slot with its report is judged.
-            self.assertEqual(classify(slot, graded(True)), 'running')
-            for report in (graded(False), no_driver, unknown):
-                with self.subTest(status=status, grade=report['equivalence_status']):
-                    self.assertOutcome(slot, report, 'running')
+            for report in (graded(True), graded(False), no_driver, unknown):
+                with self.subTest(status=status, grade=report['equivalence_status'],
+                                  equivalent=report['equivalence']['equivalent']):
+                    self.assertOutcome({**done, 'status': status}, report, 'running')
         # Any other status is a fault, settled or not.
         for status in ('finished', 'completed'):
             for grade in ('unscored', 'unrecognised', None):
                 with self.subTest(status=status, grade=grade):
                     report = {'workflow_status': 'completed', 'equivalence_status': grade, 'equivalence': None}
                     self.assertOutcome({**done, 'status': status}, report, 'fault')
+
+    def test_a_grade_held_on_the_row_alone_keeps_an_unsettled_trial_running(self):
+        # A slot row carries the equivalence_status its suite last read for the child, and a trial may have no report.
+        slot = {**done, 'status': 'completed'}
+        for status in ('graded', 'no-driver', 'unknown'):
+            with self.subTest(status=status):
+                self.assertEqual(classify({**slot, 'equivalence_status': status}, None), 'running')
+        # The report's own status wins when it has one, and any other status is a fault.
+        unscored = {'workflow_status': 'completed', 'equivalence_status': 'unscored', 'equivalence': None}
+        self.assertEqual(classify({**slot, 'equivalence_status': 'graded'}, unscored), 'fault')
+        self.assertEqual(classify({**slot, 'equivalence_status': 'unscored'}, None), 'fault')
+        # A settled slot is counted from its report alone, as aggregate_suite counts an equivalent driver.
+        self.assertEqual(classify({**done, 'equivalence_status': 'graded', 'equivalent': True}, None), 'fault')
 
     def test_the_reports_status_wins_over_a_slot_that_still_says_running(self):
         # A stored suite slot still says running after its child stopped; the report is the run's own account.
@@ -169,6 +190,18 @@ class SuiteExportTests(unittest.TestCase):
         self.assertEqual(pass_rate_line(pass_rate(outcomes)), '1/3 pass, 0 unknown, 4 faults, 9 planned')
         # The exported rows say the same, though they carry no workflow_status and no budget.
         self.assertEqual([classify(row, row) for row in rows], outcomes)
+
+    def test_a_provisional_export_reads_an_unsettled_graded_equivalent_trial_as_running_in_either_call_shape(self):
+        # While a suite runs, or after it stopped, a graded equivalent driver whose slot has not settled is exported as
+        # unqualified; its slot with its report says running, and its row has to say so too.
+        trials, reports, rows = self.trials_and_rows(lambda trials, reports: trials[0].update(status='completed'))
+        self.assertEqual((rows[0]['status'], rows[0]['verdict']), ('completed', 'unqualified'))
+        self.assertEqual((classify(trials[0], reports[0]), classify(rows[0], rows[0])), ('running', 'running'))
+        # A settled slot whose grade the exporter could not confirm stays a fault.
+        trials, reports, rows = self.trials_and_rows(
+            lambda trials, reports: reports['r0'].update(verdict='unqualified'))
+        self.assertEqual((rows[0]['status'], rows[0]['verdict']), ('finished', 'unqualified'))
+        self.assertEqual((classify(trials[0], reports[0]), classify(rows[0], rows[0])), ('fault', 'fault'))
 
     def test_a_trial_blocked_on_its_row_alone_is_a_fault_from_its_report_and_from_its_exported_row(self):
         # report_suite blocks the row of a completed child that is still stopping or has an uncertain effect; its report

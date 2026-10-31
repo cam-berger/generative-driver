@@ -555,6 +555,36 @@ class SuiteAggregateTests(unittest.TestCase):
         # The equivalent drivers the suite counts are its passes.
         self.assertEqual(result['pass_rate']['passes'], result['equivalence']['equivalent'])
 
+    def test_a_trial_the_audit_flagged_is_scored_flagged_whatever_its_grade(self):
+        # Catches a flagged trial that is graded anyway (a pass for an equivalent driver, a failure for another), a
+        # trial the audit found nothing in that is flagged, a row that drops the findings it was flagged for, one that
+        # names an audit nothing ran, and a pass line that hides the flagged count.
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite, _summary
+        suite, trials, reports, experiment = assistive_fixture()
+        findings = [{'transcript': 'work/probe/r0/_agent_events.jsonl', 'command': 'cat /vault/key'}]
+        trials[0]['audit'] = findings
+        trials[1]['audit'] = [{'transcript': 'work/emit/r1/_agent_events.jsonl', 'command': 'ls /vault'}]
+        trials[2]['audit'] = []
+        result = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+        rows = result['trials']
+        self.assertEqual([row['scored'] for row in rows],
+                         ['flagged', 'flagged', 'failure', 'fault', 'running', 'fault', 'fault', 'fault', 'not_run'])
+        self.assertEqual(rows[0]['audit'], findings)
+        self.assertEqual([row['audit'] for row in rows[1:3]], [trials[1]['audit'], []])
+        self.assertTrue(all('audit' not in row for row in rows[3:]))
+        # The equivalent driver is still counted as one; the pass rate leaves it out, and the pass line says so.
+        self.assertEqual(result['equivalence']['equivalent'], 1)
+        self.assertEqual({k: result['pass_rate'][k] for k in ('passes', 'failures', 'faults', 'flagged', 'planned', 'rate')},
+                         {'passes': 0, 'failures': 1, 'faults': 4, 'flagged': 2, 'planned': 9, 'rate': 0.0})
+        self.assertTrue(_summary({**result, 'status': 'completed', 'reason': None}).startswith(
+            '0/1 pass, 0 unknown, 4 faults, 9 planned, 2 flagged'))
+        # An audit that ran and found nothing changes no trial's outcome.
+        for trial in trials:
+            trial['audit'] = []
+        clean = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+        self.assertEqual([row['scored'] for row in clean['trials']],
+                         ['pass', 'failure', 'failure', 'fault', 'running', 'fault', 'fault', 'fault', 'not_run'])
+
     def test_an_exported_row_alone_is_scored_as_its_slot_with_its_report_is(self):
         # Catches a row that drops what its outcome rested on: with the report's own status and its effective budget
         # exported, the row alone gives the outcome that the slot with the full report gave, for a stop on the operator
@@ -732,6 +762,25 @@ class SuiteAggregateTests(unittest.TestCase):
                 refused = compare_suites(forged, before)
                 self.assertFalse(refused['compatible']); self.assertEqual(refused['reason'], 'Invalid or incomplete saved suite report')
 
+    def test_a_saved_suite_with_a_flagged_equivalent_driver_reads_back(self):
+        # Catches an export the audit flagged that cannot be read back: a flagged equivalent driver is still one of the
+        # counted equivalent drivers (its row says equivalent), but its label is `flagged`, and the pass rate leaves it
+        # out. A file that keeps the flagged driver among the passes has the wrong pass rate for its labels.
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite, compare_suites, _saved_report
+        suite, trials, reports, experiment = assistive_fixture()
+        honest = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+        trials[0]['audit'] = [{'transcript': 'work/probe/r0/_agent_events.jsonl', 'command': 'cat /vault/key'}]
+        flagged = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+        self.assertEqual((flagged['trials'][0]['verdict'], flagged['trials'][0]['scored']), ('equivalent', 'flagged'))
+        saved = _saved_report(flagged)
+        self.assertEqual(saved['pass_rate'], flagged['pass_rate'])
+        self.assertEqual((saved['equivalence']['equivalent'], saved['pass_rate']['passes'], saved['pass_rate']['flagged']), (1, 0, 1))
+        self.assertTrue(compare_suites(flagged, flagged)['compatible'])
+        self.assertTrue(compare_suites(honest, flagged)['compatible'])
+        stale = copy.deepcopy(flagged)
+        stale['pass_rate'] = honest['pass_rate']
+        self.assertFalse(compare_suites(stale, flagged)['compatible'])
+
     def test_an_earlier_saved_suite_report_stays_readable_without_a_pass_rate(self):
         # Catches a saved benchmark-suite-report/2, which stored no outcomes, refused or given a pass rate it never had,
         # and a saved /3 whose pass rate is taken from the file instead of counted from its rows.
@@ -754,6 +803,33 @@ class SuiteAggregateTests(unittest.TestCase):
         # A /3 file that names no pass rate has it counted from its rows.
         nameless = copy.deepcopy(current); nameless.pop('pass_rate')
         self.assertEqual(_saved_report(nameless)['pass_rate'], current['pass_rate'])
+
+    def test_an_earlier_saved_suite_report_that_labels_its_rows_is_refused(self):
+        # Catches a saved benchmark-suite-report/2 (or /1), which never stored an outcome, whose rows carry one anyway:
+        # a reader that trusts a stored label under any schema, as the corpus does, would count a pass the rows never
+        # earned, so the file is refused whatever the label says and whether or not the rows bear it out.
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite, compare_suites, _saved_report
+        from test_suite_reporting import comparison_fixture
+        suite, trials, reports, experiment = assistive_fixture()
+        current = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+        earlier = copy.deepcopy(current)
+        earlier['schema'] = 'benchmark-suite-report/2'
+        earlier.pop('pass_rate')
+        for row in earlier['trials']:
+            for key in ('scored', 'workflow_status', 'effective_budget_seconds'):
+                row.pop(key, None)
+        gated = comparison_fixture()
+        for label, honest, index in (('earlier', earlier, 1), ('earlier, the counted driver', earlier, 0), ('gated', gated, 0)):
+            self.assertEqual(_saved_report(honest)['schema'], honest['schema'], label)
+            for scored in ('pass', 'failure', 'fault', 'flagged', None):
+                forged = copy.deepcopy(honest)
+                forged['trials'][index]['scored'] = scored
+                with self.subTest(file=label, scored=scored):
+                    with self.assertRaises(ValueError):
+                        _saved_report(forged)
+                    refused = compare_suites(forged, honest)
+                    self.assertFalse(refused['compatible'])
+                    self.assertEqual(refused['reason'], 'Invalid or incomplete saved suite report')
 
 
 class SuiteExportTests(AssistiveFixture):
@@ -820,6 +896,89 @@ class SuiteExportTests(AssistiveFixture):
         self.assertIn('The pass rate divides by graded trials; the fresh-reuse count divides by all planned slots.', text)
         self.assertNotIn('All planned slots remain in the denominator', text)
         self.assertNotIn(str(EXPECTED), text); self.assertNotIn(str(self.root), text)
+
+    def graded_suite(self):
+        """The suite of three children: an equivalent driver, one graded not equivalent, one whose grade the evaluator's
+        host failed to give. Their transcripts name no forbidden path until a test writes them."""
+        with self.harness(PASS, FAIL, RuntimeError('evaluator host stopped')):
+            record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
+                                request_id='three-children')
+        return record['suite_id'], self.controller.call('suite_result', {'suite_id': record['suite_id']})['trials']
+
+    def worker_commands(self, row, place, *commands):
+        """The transcript a child's worker left in the configurator's home, with a line that is not JSON after its commands."""
+        path = self.home / 'runs' / row['run_id'] / place / '_agent_events.jsonl'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [json.dumps({'type': 'item.completed', 'item': {'type': 'command_execution', 'command': command}})
+                 for command in commands]
+        path.write_text('\n'.join(lines + ['not json']) + '\n', encoding='utf-8')
+
+    def test_a_trial_whose_worker_touched_a_forbidden_path_is_flagged_and_not_graded(self):
+        # Catches an export that grades a trial whose worker ran a command on a path the operator forbade (the
+        # transcripts a run left in the configurator's home are read when the suite is reported), one that flags a
+        # trial whose worker did not, an audit that nothing asked for, a forbidden path anywhere in the export but the
+        # finding's own command, and a flagged export that cannot be read back.
+        from generative_driver.benchmark_support.suite_reporting import compare_suites, report_suite
+        sid, rows = self.graded_suite()
+        vault = '/Volumes/Answer Vault'
+        read = 'cat "' + vault + '/evaluator/x.password"'
+        self.worker_commands(rows[0], 'work/probe/a1', 'ls workspace', read)
+        self.worker_commands(rows[1], 'work/probe/a1', 'ls workspace')
+        with self.owner():
+            unaudited = report_suite(sid, home=self.home, output=self.root / 'unaudited')
+            audited = report_suite(sid, home=self.home, output=self.root / 'audited', audit_paths=(vault,))
+        # Nothing asked for an audit, so nothing was found and no row says one ran.
+        self.assertEqual([row['scored'] for row in unaudited['trials']], ['pass', 'failure', 'fault'])
+        self.assertTrue(all('audit' not in row for row in unaudited['trials']))
+        self.assertEqual([row['scored'] for row in audited['trials']], ['flagged', 'failure', 'fault'])
+        self.assertEqual([row['audit'] for row in audited['trials']],
+                         [[{'transcript': 'work/probe/a1/_agent_events.jsonl', 'command': read}], [], []])
+        self.assertEqual({key: audited['pass_rate'][key] for key in ('passes', 'failures', 'faults', 'flagged', 'planned', 'rate')},
+                         {'passes': 0, 'failures': 1, 'faults': 1, 'flagged': 1, 'planned': 3, 'rate': 0.0})
+        # The flagged driver is still one the evaluator found equivalent, and the suite still counts it so.
+        self.assertEqual((audited['equivalence']['equivalent'], audited['trials'][0]['verdict']), (1, 'equivalent'))
+        text = (self.root / 'audited/report.md').read_text()
+        self.assertTrue(text.startswith('# Benchmark suite\n\n0/1 pass, 0 unknown, 1 faults, 3 planned, 1 flagged. Protocol: assistive/1,'), text)
+        for path in files(self.root / 'audited'):
+            self.assertEqual(path.read_text().count(vault), 1 if path.name == 'suite.json' else 0, path)
+        saved = json.loads((self.root / 'audited/suite.json').read_text())
+        self.assertTrue(compare_suites(saved, saved)['compatible'])
+
+    def test_every_row_of_an_audited_export_has_findings_even_for_a_slot_that_never_started(self):
+        # Catches an audited export whose rows for stopped and never-started slots have no findings to show: a child that
+        # stopped before it left a transcript and the slots the stop kept from starting are audited, with none found.
+        from generative_driver.benchmark_support.suite_reporting import report_suite
+        with self.harness(runtime=self.stopping_probe()):
+            stopped = self.drive(manifest=manifest(), executor='codex', options={}, request_id='stopped-child')
+        with self.owner():
+            result = report_suite(stopped['suite_id'], home=self.home, output=self.root / 'export', audit_paths=('/Volumes/Answer Vault',))
+        self.assertEqual([(row['outcome'], row['scored'], row['audit']) for row in result['trials']],
+                         [('stopped', 'fault', []), ('not_run', 'not_run', []), ('not_run', 'not_run', [])])
+
+    def test_the_suite_report_command_audits_every_path_it_is_given(self):
+        # Catches a `suite report` that cannot be given forbidden paths, one that audits only the last of them, one that
+        # audits when nobody asked, and an empty path that audits nothing instead of being refused.
+        from generative_driver.benchmark import main
+        sid, rows = self.graded_suite()
+        vault, generator = '/Volumes/Answer Vault', 'C:\\GD\\Generator'
+        self.worker_commands(rows[0], 'work/probe/a1', 'cat "' + vault + '/x"')
+        self.worker_commands(rows[1], 'preparation/a2/interpret/attempt1', 'type ' + generator.lower() + '\\key.txt')
+        def report(name, *flags):
+            output = io.StringIO()
+            with self.owner(), patch.dict(os.environ, {'GENERATIVE_DRIVER_HOME': str(self.home)}), contextlib.redirect_stdout(output):
+                code = main(['suite', 'report', sid, '--output', str(self.root / name), *flags])
+            return code, json.loads(output.getvalue())
+        code, result = report('both', '--audit-path', vault, '--audit-path', generator)
+        self.assertEqual((code, [row['scored'] for row in result['trials']]), (0, ['flagged', 'flagged', 'fault']))
+        self.assertEqual(result['pass_rate']['flagged'], 2)
+        code, result = report('last', '--audit-path', generator)
+        self.assertEqual((code, [row['scored'] for row in result['trials']]), (0, ['pass', 'flagged', 'fault']))
+        code, result = report('none')
+        self.assertEqual((code, [row['scored'] for row in result['trials']]), (0, ['pass', 'failure', 'fault']))
+        self.assertNotIn(vault, json.dumps(result))
+        # An empty path is an error, not an audit that flags every command.
+        code, result = report('empty', '--audit-path', '')
+        self.assertEqual((code, result['ok']), (1, False))
 
     def test_an_assistive_suite_exports_its_equivalent_drivers_and_regrades_their_sealed_evidence(self):
         # Catches an exported assistive suite counted by gates, an unscored trial hidden or regraded, evidence that does

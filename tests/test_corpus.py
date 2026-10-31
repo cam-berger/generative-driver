@@ -315,6 +315,41 @@ class CorpusTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             report_corpus(plan, forged)
 
+    def test_a_saved_earlier_suite_that_labels_its_rows_is_refused_rather_than_measured(self):
+        # Catches a benchmark-suite-report/2, which never stored an outcome, relabelled so that the corpus measures a
+        # pass its row never earned: the honest file gives a driver graded not equivalent 0/1, the relabelled one is
+        # refused.
+        from generative_driver.benchmark_support.corpus import report_corpus
+        from test_assistive_reports import evaluation
+        negative = evaluation('f'*64, False)
+        plan, current = measured_fixture(lambda trial, report: report.update(
+            verdict='not equivalent', equivalence=negative, equivalence_status='graded'))
+        earlier = copy.deepcopy(current)
+        earlier['schema'] = 'benchmark-suite-report/2'
+        earlier.pop('pass_rate')
+        for row in earlier['trials']:
+            for key in ('scored', 'workflow_status', 'effective_budget_seconds'):
+                row.pop(key, None)
+        self.assertEqual(report_corpus(plan, earlier)['measured_success'], {'passed': 0, 'denominator': 1, 'rate': 0.0})
+        earlier['trials'][0]['scored'] = 'pass'
+        with self.assertRaises(ValueError):
+            report_corpus(plan, earlier)
+
+    def test_a_flagged_equivalent_driver_is_read_and_measured_neither_as_a_pass_nor_as_a_failure(self):
+        # Catches a saved suite the audit flagged that the corpus cannot read (the driver is still a counted equivalent
+        # one, but its label is `flagged`), and a flagged driver measured as a pass for its grade or a failure for its
+        # label: the audit leaves a trial out of both, and the corpus holds it as an unmeasured slot.
+        from generative_driver.benchmark_support.corpus import report_corpus
+        finding = {'transcript': 'work/probe/a1/_agent_events.jsonl', 'command': 'cat /vault/key'}
+        plan, suite = measured_fixture(lambda trial, report: trial.update(audit=[finding]))
+        self.assertEqual((suite['trials'][0]['verdict'], suite['trials'][0]['scored']), ('equivalent', 'flagged'))
+        self.assertEqual(suite['equivalence']['equivalent'], 1)
+        report = report_corpus(plan, suite)
+        slot = report['slots'][-1]
+        self.assertEqual((slot['run_id'], slot['passed'], slot['equivalent']), ('toy-run', False, False))
+        self.assertEqual((report['counts']['passed'], report['counts']['failed'], report['counts']['started']), (0, 0, 1))
+        self.assertEqual(report['measured_success'], {'passed': 0, 'denominator': 0, 'rate': None})
+
     def test_limitations_say_a_pass_is_the_evaluators_grade_with_fresh_reuse_beside_it(self):
         from generative_driver.benchmark_support.corpus import report_corpus
         plan, suite = measured_fixture()

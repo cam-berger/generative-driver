@@ -128,6 +128,10 @@ def main(argv=None):
     exporting = suites.add_parser('report')
     exporting.add_argument('suite_id')
     exporting.add_argument('--output', required=True)
+    exporting.add_argument('--audit-path', action='append', metavar='PATH',
+                           help='A forbidden path: flag a trial whose worker ran a command that names it, and leave '
+                           'that trial ungraded. Repeat for each path. The export shows a path only in the commands '
+                           'that name it')
     suite_comparing = suites.add_parser('compare')
     suite_comparing.add_argument('before')
     suite_comparing.add_argument('after')
@@ -244,7 +248,7 @@ def main(argv=None):
                 result = compare_suites(args.before, args.after)
             elif args.action == 'report':
                 from .benchmark_support.suite_reporting import report_suite
-                result = report_suite(args.suite_id, output=args.output)
+                result = report_suite(args.suite_id, output=args.output, audit_paths=tuple(args.audit_path or ()))
             elif args.action == 'start':
                 from .benchmark_support.suites import start_suite
                 params = {'manifest': json.loads(Path(args.manifest).read_text(encoding='utf-8')),

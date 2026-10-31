@@ -22,6 +22,7 @@ EXCHANGE = {'operation': 'read_temperature', 'step': 0, 'op': 'exchange', 'tx_he
 DIFF = {'operations': [{'name': 'read_temperature', 'predicted': 21.0, 'observed': 42.0}]}
 UNKNOWN_TOKENS = dict.fromkeys(('input', 'cached_input', 'output', 'reasoning_output', 'total'))
 NO_ACTIONS = dict.fromkeys(('command_execution', 'mcp_tool_call', 'file_change'), 0)
+UNKNOWN_ACTIONS = dict.fromkeys(('command_execution', 'mcp_tool_call', 'file_change'))
 NO_DEVICE = dict.fromkeys(('exchanges', 'writes', 'refusals', 'resets'), 0)
 
 
@@ -202,7 +203,7 @@ class TrialMetricsTests(unittest.TestCase):
         self.assertEqual((probe['managed_calls'], probe['device']['exchanges'], probe['tokens']['total']),
                          ({'probe_run': 1}, 1, 15))
         self.assertEqual(metrics['stages']['acquire']['attempts'], 1)
-        self.assertIsNone(metrics['stages']['acquire']['worker_actions'])  # its worker left no transcript
+        self.assertEqual(metrics['stages']['acquire']['worker_actions'], UNKNOWN_ACTIONS)  # its worker left no transcript
         self.assertEqual(event_count(home), before)  # read-only: event_count counts events rows over a ?mode=ro connection
 
     def test_a_stages_wall_time_runs_from_its_first_assignment_to_its_last_acceptance_or_skip(self):
@@ -266,7 +267,7 @@ class TrialMetricsTests(unittest.TestCase):
         self.assertEqual([stages[stage]['worker_seconds'] for stage in STAGES], [2, 4, 4, 4, None, 2])
         # A stage that ran no worker has nothing a worker left to report, and no call or device exchange to count.
         self.assertEqual(stages['emit'], {'attempts': 0, 'wall_seconds': None, 'worker_seconds': None, 'managed_calls': {},
-                                          'worker_actions': None, 'device': NO_DEVICE, 'tokens': UNKNOWN_TOKENS})
+                                          'worker_actions': UNKNOWN_ACTIONS, 'device': NO_DEVICE, 'tokens': UNKNOWN_TOKENS})
 
     def test_a_crashed_worker_still_counts_as_an_attempt_and_leaves_its_figures_unknown(self):
         # The probe worker wrote a transcript with a line that is not JSON and died before its runtime returned, so it
@@ -487,9 +488,9 @@ class TrialMetricsTests(unittest.TestCase):
         self.assertEqual(result['status'], 'completed')
         stages = trial_metrics(home, run)['stages']
         self.assertEqual((stages['probe']['attempts'], stages['ground']['attempts']), (2, 2))
-        self.assertIsNone(stages['probe']['worker_actions'])
+        self.assertEqual(stages['probe']['worker_actions'], UNKNOWN_ACTIONS)
         self.assertEqual(stages['ground']['worker_actions'], {'command_execution': 2, 'mcp_tool_call': 0, 'file_change': 2})
-        self.assertIsNone(stages['acquire']['worker_actions'])
+        self.assertEqual(stages['acquire']['worker_actions'], UNKNOWN_ACTIONS)
 
     def test_interpretation_actions_are_matched_to_the_attempts_that_made_them(self):
         # Interpretation runs twice, each time in a sealed workspace of its own outside the run, attempt1 and attempt2. Its
@@ -508,7 +509,7 @@ class TrialMetricsTests(unittest.TestCase):
                 write_transcript(run_dir / place(1, first), 'command_execution')
                 write_transcript(run_dir / 'benchmark/tools/interpret/attempt3', 'file_change')
                 write_transcript(run_dir / 'preparation/nobody/interpret/attempt1', 'file_change')
-                self.assertIsNone(interpreted())
+                self.assertEqual(interpreted(), UNKNOWN_ACTIONS)
                 write_transcript(run_dir / place(2, second), 'file_change')
                 self.assertEqual(interpreted(), {'command_execution': 1, 'mcp_tool_call': 0, 'file_change': 1})
 
@@ -527,7 +528,7 @@ class TrialMetricsTests(unittest.TestCase):
                 write_transcript(request.workspace, lines=streams[request.stage])
         home, run, result = self.scripted(work)
         stages = trial_metrics(home, run)['stages']
-        self.assertEqual([stages[stage]['worker_actions'] for stage in ('acquire', 'interpret', 'probe')], [None] * 3)
+        self.assertEqual([stages[stage]['worker_actions'] for stage in ('acquire', 'interpret', 'probe')], [UNKNOWN_ACTIONS] * 3)
         self.assertEqual([stages[stage]['worker_actions'] for stage in ('ground', 'emit')], [NO_ACTIONS] * 2)
 
     def test_the_index_of_a_benchmark_attempt_is_read_from_a_workspace_path_recorded_on_any_host(self):
@@ -556,7 +557,7 @@ class TrialMetricsTests(unittest.TestCase):
         with contextlib.closing(database(home, 'rw')) as db, db:
             db.execute('INSERT INTO events(run_id,kind,payload,created) VALUES(?,?,?,?)', (
                 run, 'stage.assigned', json.dumps({'id': '../probe-nobody', 'stage': 'probe', 'workspace': '/nowhere'}), time.time()))
-        self.assertIsNone(trial_metrics(home, run)['stages']['probe']['worker_actions'])
+        self.assertEqual(trial_metrics(home, run)['stages']['probe']['worker_actions'], UNKNOWN_ACTIONS)
 
     def test_a_transcript_counts_its_completed_actions_and_skips_every_other_line(self):
         # Lines that are not completed actions: one that started, a message, records that are no item, JSON that is no
@@ -573,7 +574,7 @@ class TrialMetricsTests(unittest.TestCase):
         home, run, result = self.scripted(work)
         stages = trial_metrics(home, run)['stages']
         self.assertEqual(stages['probe']['worker_actions'], {'command_execution': 2, 'mcp_tool_call': 1, 'file_change': 0})
-        self.assertIsNone(stages['ground']['worker_actions'])
+        self.assertEqual(stages['ground']['worker_actions'], UNKNOWN_ACTIONS)
 
     def test_the_database_is_opened_read_only(self):
         home, run, result = self.scripted()

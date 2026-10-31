@@ -6,11 +6,11 @@ database, opened read-only and never through a `Controller`, which writes on sta
 directory; and, when the trial's directory is given, the device provider's journal.
 
 What the events record is counted exactly, so a stage in which nothing happened counts zero. What the workers left is
-not: their time and tokens (from their reports) and their actions (from their transcripts) are None unless every attempt
-of the stage left them. A worker that died leaves no report, one that left no transcript is not one that did nothing,
-and a sum over the others would pass for the whole. Only a Codex transcript kept in the run is read: an interpretation
-attempt that stopped before its outputs were collected leaves its transcript in a workspace outside the run, and the
-events of another runtime say nothing of Codex actions."""
+not: their time, their token counters (from their reports) and their action counts (from their transcripts) are None
+unless every attempt of the stage left them. A worker that died leaves no report, one that left no transcript is not
+one that did nothing, and a sum over the others would pass for the whole. Only a Codex transcript kept in the run is
+read: an interpretation attempt that stopped before its outputs were collected leaves its transcript in a workspace
+outside the run, and the events of another runtime say nothing of Codex actions."""
 import bisect
 import json
 import math
@@ -130,19 +130,19 @@ def _read_actions(transcript: Path):
     return counts if codex else None
 
 
-def _actions(run_dir: Path, stage: str, assignments: list):
-    """The actions a stage's workers completed, by type, counted in the transcripts of its attempts, or None unless every
-    attempt left one in the run: a stage that ran no worker, an attempt with no transcript, and one that stopped before
-    its outputs were collected, whose transcript stays in a workspace outside the run, are unknown, not zero. A transcript
-    that no attempt of the stage owns is not counted."""
+def _actions(run_dir: Path, stage: str, assignments: list) -> dict:
+    """The actions a stage's workers completed, by type, counted in the transcripts of its attempts. Every count is None,
+    as the token counters are, unless every attempt left a transcript in the run: a stage that ran no worker, an attempt
+    with no transcript, and one that stopped before its outputs were collected, whose transcript stays in a workspace
+    outside the run, are unknown, not zero. A transcript that no attempt of the stage owns is not counted."""
     total = dict.fromkeys(ACTIONS, 0)
     for assignment in assignments:
         counts = next((found for found in map(_read_actions, _kept(run_dir, stage, assignment)) if found is not None), None)
         if counts is None:
-            return None
+            return dict.fromkeys(ACTIONS)
         for action in ACTIONS:
             total[action] += counts[action]
-    return total if assignments else None
+    return total if assignments else dict.fromkeys(ACTIONS)
 
 
 def _wall(begun, ended):
@@ -248,7 +248,7 @@ def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None) -> 
     - `attempts`: the `stage.assigned` events. `wall_seconds`: from the first of them to the last `stage.accepted` or
       `stage.skipped` event. `worker_seconds` and `tokens`: the workers' reports summed.
     - `managed_calls`: the `tool.started` events, by tool. `worker_actions`: the completed actions in the attempts'
-      transcripts, by type, or None unless every attempt left a readable one.
+      transcripts, by type, each count None unless every attempt left a readable one.
     - `device`: the `exchanges` that completed in the transcripts of tool results; the `writes` dispatched (effectful
       `tool.started` events); the `refusals` (`tool.refused` events, calls the runtime refused before it opened the
       device, and replies the device rejected); and the `resets`, each emulator replacement after an uncertain write,

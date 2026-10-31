@@ -853,6 +853,24 @@ class SuiteAggregateTests(unittest.TestCase):
                     _saved_report(forged)
                 self.assertEqual(compare_suites(forged, honest)['reason'], 'Invalid or incomplete saved suite report')
 
+    def test_a_row_whose_verdict_says_equivalent_but_whose_grade_does_not_is_refused_under_any_label(self):
+        # Catches a counted equivalent driver (its verdict equivalent, its slot finished and completed) that its own row does
+        # not show equivalent, kept by labelling it as the row does show it. The label is then what `classify` gives the row,
+        # and the counts are edited to match, so only the check that a counted driver is a pass or a flagged one refuses it.
+        from generative_driver.benchmark_support.outcomes import pass_rate
+        from generative_driver.benchmark_support.suite_reporting import _saved_report, aggregate_suite
+        suite, trials, reports, experiment = assistive_fixture()
+        honest = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+        for label, change in (('no grade', lambda row: row.pop('equivalence')),
+                              ('graded not equivalent', lambda row: row['equivalence'].update(equivalent=False))):
+            forged = copy.deepcopy(honest)
+            change(forged['trials'][0])
+            forged['trials'][0]['scored'] = 'failure'
+            forged['pass_rate'] = pass_rate([row['scored'] for row in forged['trials']])
+            forged.pop('equivalent_and_mission')
+            with self.subTest(label), self.assertRaisesRegex(ValueError, 'Saved outcome differs'):
+                _saved_report(forged)
+
     def test_a_flagged_label_needs_findings_and_findings_need_the_label(self):
         # Catches a row labelled flagged that holds no finding of the audit, and a row that holds findings but is labelled with
         # its grade: the audit leaves a trial ungraded, and the file has to say so with both.

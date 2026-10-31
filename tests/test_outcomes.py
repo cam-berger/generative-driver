@@ -50,6 +50,10 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(classify(stopped('operator'), spent), 'failure')
         self.assertEqual(classify(stopped('operator'), {**spent, 'elapsed_seconds': 100}), 'fault')
         self.assertEqual(classify(stopped('operator'), {'workflow_status': 'blocked'}), 'fault')
+        # A spent budget excuses nothing but an operator stop: a host or cancelled stop that shows the same times is still
+        # a fault, since the host or the operator ended the run, not the budget.
+        self.assertEqual(classify(stopped('host'), spent), 'fault')
+        self.assertEqual(classify(stopped('cancelled'), spent), 'fault')
 
     def test_self_caused_stops_fail_and_environment_stops_are_faults(self):
         categories = ('safety', 'integrity', 'model', 'host')

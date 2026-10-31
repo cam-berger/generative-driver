@@ -1040,6 +1040,28 @@ class SuiteScorecardTests(unittest.TestCase):
         self.assertNotIn('joint_verdict', bare)
         self.assertNotIn('equivalent_and_mission', bare['trials'][0])
 
+    def test_a_flagged_trial_is_no_joint_success_in_the_scorecard_though_its_driver_was_graded_equivalent(self):
+        # Catches the joint verdict of earlier studies counting a trial the audit flagged. The scorecard carries the suite
+        # report's count and each trial's own flag, built here by the aggregate itself, so a flagged trial is a non-success
+        # in both, as earlier studies counted an integrity stop, and out of the pass line.
+        from test_assistive_reports import assistive_fixture
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        def scorecard(flagged):
+            suite, trials, reports, experiment = assistive_fixture()
+            if flagged:
+                trials[0]['audit'] = [{'transcript': 'work/probe/r0/_agent_events.jsonl', 'command': 'cat /vault/key'}]
+            report = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+            report.update(suite_id='suite-1', status='completed', reason=None)
+            return self.card(report, {row['run_id']: blank_metrics(row['run_id']) for row in report['trials'] if row['run_id']})
+        honest, flagged = scorecard(False), scorecard(True)
+        self.assertEqual(honest['joint_verdict'], {'passed': 1, 'denominator': 9, 'rate': 1 / 9})
+        self.assertEqual([row['equivalent_and_mission'] for row in honest['trials']], [True] + [False] * 8)
+        self.assertEqual(flagged['joint_verdict'], {'passed': 0, 'denominator': 9, 'rate': 0.0})
+        self.assertEqual([row['equivalent_and_mission'] for row in flagged['trials']], [False] * 9)
+        self.assertEqual((flagged['pass_rate']['passes'], flagged['pass_rate']['flagged']), (0, 1))
+        self.assertIn("successful fresh mission): 0 of 9 planned trials.", scorecard_markdown(flagged))
+        self.assertIn("successful fresh mission): 1 of 9 planned trials.", scorecard_markdown(honest))
+
     def test_a_suite_with_no_scoring_set_adds_a_row_for_each_trial_and_never_the_audit(self):
         # Every planned trial has a row, one with no run included, and a row is its key, outcome and metrics. A flagged
         # trial's findings quote the worker's raw command: they are in no scorecard.

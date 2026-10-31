@@ -17,12 +17,23 @@ from generative_driver.benchmark_support.suite_reporting import compare_suites
 # The devices of a scoring set (d) and of a fresh batch (f). A real set registers its devices as cases; each test
 # registers these for its length.
 DEVICES = tuple(prefix + str(number) for prefix in 'df' for number in range(10))
-# What a saved row stores for each outcome: its status, its stop category and its verdict (none before a run). A pass is
-# a counted equivalent driver, a flagged one too, since the transcript audit leaves the grade as it was.
-ROWS = {'pass': ('finished', 'completed', 'equivalent'), 'failure': ('finished', 'completed', 'not equivalent'),
-        'unknown': ('finished', 'completed', 'unscored'), 'fault': ('blocked', 'host', 'unscored'),
-        'flagged': ('finished', 'completed', 'equivalent'), 'running': ('running', 'unknown', 'unscored'),
-        'not_run': ('pending', 'unknown', None)}
+def graded(status, equivalent):
+    """The fields of a row whose run the evaluator graded: the grade's status, and the equivalence record that says it."""
+    return {'equivalence_status': status, 'equivalence': {'status': status, 'equivalent': equivalent}}
+
+
+SETTLED = {'status': 'finished', 'outcome_category': 'completed', 'workflow_status': 'completed'}
+FINDINGS = [{'transcript': 'work/probe/a1/_agent_events.jsonl', 'command': 'cat /vault/key'}]
+# What a saved row stores for each outcome, which is what the label is read from (`outcomes.classify`): its status, stop
+# category, verdict (none before a run), grade and, for a flagged trial, the findings of the audit. A pass is a counted
+# equivalent driver, a flagged one too, since the transcript audit leaves the grade as it was.
+ROWS = {'pass': {**SETTLED, 'verdict': 'equivalent', **graded('graded', True)},
+        'failure': {**SETTLED, 'verdict': 'not equivalent', **graded('graded', False)},
+        'unknown': {**SETTLED, 'verdict': 'unscored', **graded('unknown', None)},
+        'fault': {'status': 'blocked', 'outcome_category': 'host', 'workflow_status': 'blocked', 'verdict': 'unscored'},
+        'flagged': {**SETTLED, 'verdict': 'equivalent', **graded('graded', True), 'audit': FINDINGS},
+        'running': {'status': 'running', 'outcome_category': 'unknown', 'verdict': 'unscored'},
+        'not_run': {'status': 'pending', 'outcome_category': 'unknown'}}
 
 
 def digest(value):
@@ -51,10 +62,9 @@ def suite_report(protocol, outcomes, manifest_sha256='a' * 64):
         pins.append({**pin, 'pin_sha256': digest(pin)})
         slot = {**entry, 'ordinal': index, 'entry_index': index, 'repeat_index': 0, 'trial_key': f'entry-{index:03d}-repeat-000'}
         slots.append(slot)
-        status, category, verdict = ROWS[outcome]
         run_id = None if outcome == 'not_run' else f'r{index}'
-        trials.append({**slot, 'family': 'generated', 'run_id': run_id, 'status': status, 'outcome_category': category,
-                       **({'verdict': verdict} if verdict else {}), 'scored': outcome, 'interventions': []})
+        trials.append({**slot, 'family': 'generated', 'run_id': run_id, **copy.deepcopy(ROWS[outcome]), 'scored': outcome,
+                       'interventions': []})
         snapshots.append({'trial_key': slot['trial_key'], 'snapshot_sha256': 'd' * 64 if run_id else None})
     counted = sum(outcome in ('pass', 'flagged') for _, outcome in pairs)
     budgets = {'child_budget_seconds': 10800, 'suite_budget_seconds': 86400}
@@ -665,6 +675,28 @@ class SavedOutcomeTests(ReportCase):
                               ('a not_run row given a run', forged(honest, 2, run_id='r2'))):
             with self.subTest(label), self.assertRaisesRegex(ValueError, 'Saved outcome differs'):
                 _saved_report(report)
+
+
+    def test_a_label_is_the_outcome_its_row_shows_and_no_other_whatever_it_is_relabelled_to(self):
+        # Catches a label other than pass and not_run that its row does not bear out. Pairing feeds the stored labels into
+        # McNemar and both pass rates, so a failure relabelled fault, unknown, flagged or pass, with the pass rate edited to
+        # match, would change the figures of a comparison. Each outcome relabelled as each of the others is refused by the
+        # reader and by the comparison; the honest report of each reads.
+        from generative_driver.benchmark_support.outcomes import OUTCOMES
+        from generative_driver.benchmark_support.suite_reporting import _saved_report
+        refusal = {'schema': 'benchmark-suite-comparison/1', 'compatible': False, 'reason': 'Invalid or incomplete saved suite report'}
+        for outcome in OUTCOMES:
+            honest = suite_report('assistive/1', {'d0': outcome})
+            self.assertEqual(_saved_report(honest)['pass_rate'], honest['pass_rate'], outcome)
+            for relabelled in OUTCOMES:
+                if relabelled == outcome:
+                    continue
+                forged = copy.deepcopy(honest)
+                forged['trials'][0]['scored'] = relabelled
+                forged['pass_rate'] = pass_rate([relabelled])
+                with self.subTest(outcome=outcome, relabelled=relabelled), self.assertRaises(ValueError):
+                    _saved_report(forged)
+                self.assertEqual(compare_suites(forged, honest), refusal)
 
 
 class ReportProtocolTests(ReportCase):

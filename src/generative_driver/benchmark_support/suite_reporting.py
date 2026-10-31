@@ -274,8 +274,10 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
     of those planned, from benchmark-report/3 reports alone, and leads with its pass rate: each trial's `scored` outcome,
     classified from its slot and its full report, and the rate counted from them (benchmark-suite-report/3). A trial
     that carries `audit` findings (the transcript audit's, which `report_suite` attaches) scores `flagged` and is
-    not graded; the equivalent drivers counted stay those the evaluator found equivalent, flagged or not. An earlier
-    suite keeps its gated success count (benchmark-suite-report/1)."""
+    not graded. The equivalent drivers counted (`equivalence`, `family_equivalence`) stay those the evaluator found
+    equivalent, flagged or not, but a flagged trial is no `equivalent_and_mission` success, as earlier studies counted
+    a trial stopped for integrity a non-success out of all planned trials. An earlier suite keeps its gated success
+    count (benchmark-suite-report/1)."""
     if qualification not in QUALIFICATIONS:raise ValueError('Suite aggregates require qualified trial evidence')
     experiment=_experiment(experiment)
     _validate_trials(manifest,trials,reports,experiment)
@@ -301,7 +303,10 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
         counts,unscored=_outcomes(trials,reports,passed)
         missions=[public_equivalence((reports.get(t.get('run_id')) or {}).get('equivalence')) or {} for t in trials]
         mission=sum((m.get('mission') or {}).get('passed') is True for m in missions)
-        reused=[t for t in passed if (reports[t['run_id']]['equivalence'].get('mission') or {}).get('passed') is True]
+        # A trial the audit flagged is an integrity fault, not graded: earlier studies counted one as no success out of all
+        # planned trials, so it is none here, though the evaluator's own counts above keep its driver.
+        reused=[t for t in passed if not t.get('audit')
+                and (reports[t['run_id']]['equivalence'].get('mission') or {}).get('passed') is True]
         result={'schema':'benchmark-suite-report/3','protocol':protocol,'qualification':qualification,'counts':counts,
             'equivalence':{'equivalent':len(passed),'denominator':len(trials),'rate':len(passed)/len(trials)},'unscored':unscored,
             'provisional':len(finished)!=len(trials),'family_equivalence':rates,'family_macro_equivalence':sum(rates.values())/len(rates),
@@ -383,10 +388,14 @@ def _read_saved(value):
 def _saved_report(value):
     """A saved suite report: an earlier suite's gated success (benchmark-suite-report/1), or an assistive suite's
     equivalent drivers (benchmark-suite-report/2, or /3, which adds the pass rate and each trial's scored outcome), each
-    counted again from its trials' verdicts and, for /3, its pass rate from the outcomes its rows store. Only a /3 file
-    stores outcomes: a reader that trusts a stored one under any schema would count a label an earlier file never had,
-    so an earlier file whose rows carry one is refused. A scoring set is read only in a /3 report, which names a protocol.
-    A saved report is checked under its own recorded protocol, never this installation's."""
+    counted again from its trials' verdicts and, for /3, its pass rate from the outcomes its rows store and its joint
+    count of equivalent drivers with a successful fresh mission from the rows that are not flagged. Only a /3 file stores
+    outcomes: a reader that trusts a stored one under any schema would count a label an earlier file never had, so an
+    earlier file whose rows carry one is refused. A /3 row's label must be the outcome `classify` gives the row alone
+    (its status, category, grade, budget and `audit` findings), whatever the label is: a failure edited to a fault, an
+    unknown or a flagged trial, with the pass rate edited to match, is refused, as is a pass the row does not show. A
+    scoring set is read only in a /3 report, which names a protocol. A saved report is checked under its own recorded
+    protocol, never this installation's."""
     report=_read_saved(value)
     assistive=('benchmark-suite-report/2','benchmark-suite-report/3')
     if report.get('schema') not in ('benchmark-suite-report/1',*assistive) or report.get('qualification') not in QUALIFICATIONS:raise ValueError('Unsupported suite report')
@@ -406,7 +415,8 @@ def _saved_report(value):
     if success[win]!=sum(counted(t) for t in report['trials']):
         raise ValueError('Saved '+key+' count differs from trial coverage')
     if protocol:
-        joint=sum(t.get('status')=='finished' and t.get('outcome_category')=='completed'
+        # A flagged trial is no joint success, as `aggregate_suite` counts. Only a /3 row stores a label, so no other is one.
+        joint=sum(t.get('status')=='finished' and t.get('outcome_category')=='completed' and t.get('scored')!='flagged'
                   and _report_equivalent({**t,'schema':'benchmark-report/3','protocol':protocol,'workflow_status':'completed'},protocol)
                   and ((t.get('equivalence') or {}).get('mission') or {}).get('passed') is True for t in report['trials'])
         metric={'passed':joint,'denominator':planned,'rate':joint/planned}
@@ -416,11 +426,14 @@ def _saved_report(value):
         if report['schema']=='benchmark-suite-report/3':
             # A forged or missing outcome is no outcome, and `pass_rate` refuses it.
             rate=pass_rate([t.get('scored') for t in report['trials']])
-            # A pass is a counted equivalent driver: the row's own verdict, status and category must show what its label says.
+            # Every label is the outcome `classify` gives its row alone, which carries the report's workflow status and
+            # budget and the audit's findings (a row is flagged exactly when it holds some). That includes `not_run`, given
+            # to a row with no run and to no other.
+            # A pass is also a counted equivalent driver: the row's own verdict, status and category must show what its label says.
             # A counted driver whose transcripts the audit flagged scores `flagged`, which is no pass, and no other outcome.
-            # A row is `not_run` exactly when it has no run: `classify` gives that outcome to no other.
-            if any(t['scored']=='pass' and not counted(t) or counted(t) and t['scored'] not in ('pass','flagged')
-                   or (t['scored']=='not_run')!=(not t.get('run_id')) for t in report['trials']):
+            if any(t['scored']!=classify(t,t,flagged=bool(t.get('audit')))
+                   or t['scored']=='pass' and not counted(t) or counted(t) and t['scored'] not in ('pass','flagged')
+                   for t in report['trials']):
                 raise ValueError('Saved outcome differs from the trial it scores')
             if 'pass_rate' in report and report['pass_rate']!=rate:raise ValueError('Saved pass rate differs from trial outcomes')
             report['pass_rate']=rate
@@ -588,7 +601,10 @@ def _summary(result):
     dimensions=', '.join(f'{key} `{value}`' for key,value in result['experiment']['dimensions'].items() if value is not None)
     tallied={}
     for row in rows:tallied[row['outcome']]=tallied.get(row['outcome'],0)+1
-    detail={'not_equivalent':f"{counts['no_driver']} without a driver" if counts['no_driver'] else '',
+    # The equivalent drivers the evaluator found, which the audit's flagged trials are among: they are no pass and no joint success.
+    held=sum(row['outcome']=='equivalent' and row['scored']=='flagged' for row in rows)
+    detail={'equivalent':f'including {held} flagged' if held else '',
+            'not_equivalent':f"{counts['no_driver']} without a driver" if counts['no_driver'] else '',
             'stopped':', '.join(f'{count} {category}' for category,count in counts['stopped'].items())}
     failing={}
     for row in rows:
@@ -599,7 +615,8 @@ def _summary(result):
     lines=[f"{pass_rate_line(result['pass_rate'])}. Protocol: {result['protocol']}, "
            f"a series never compared with earlier gated results. Qualification: {result['qualification']}.",'',
            f"Equivalent drivers with successful fresh reuse: {joint['passed']}/{joint['denominator']}. "
-           'Both conditions must hold for the same trial; missing mission evidence is no success.','',
+           'Both conditions must hold for the same trial; missing mission evidence is no success.'
+           +(' A flagged trial is no success either.' if held else ''),'',
            'Suite status: '+str(result['status'])+(': '+_cell(result['reason']) if result.get('reason') else '')+'.','',
            'Dimensions: '+(dimensions or 'none recorded')+'.','',
            'Outcomes: '+', '.join(f'{count} {outcome}'+(f' ({detail[outcome]})' if detail.get(outcome) else '')

@@ -2,7 +2,7 @@
 
 The project succeeds when a fresh Codex worker can recover an interface from firmware evidence, emit an executable driver, and hand that driver to another fresh worker that completes the requested device mission. A worker's report, a valid model file and a successful replay are insufficient. Independent functional grading and successful fresh reuse must hold for the same trial.
 
-The suite export reports `equivalent_and_mission` alongside `equivalence` and `fresh_mission`. Its denominator includes every planned trial. Unknown or failed mission evidence contributes no success; an equivalent driver with failed reuse remains equivalent but fails the joint criterion. Saved comparisons recount the joint metric from trial evidence, including older assistive exports that lack the field. Replay retains its own label and cannot be compared with model runs.
+The suite export reports `equivalent_and_mission` alongside `equivalence` and `fresh_mission`. Its denominator includes every planned trial. Unknown or failed mission evidence contributes no success; an equivalent driver with failed reuse remains equivalent but fails the joint criterion, and so does one whose trial the transcript audit flagged, since a flagged trial is not graded. Saved comparisons recount the joint metric from trial evidence, including older assistive exports that lack the field. Replay retains its own label and cannot be compared with model runs.
 
 ## Scripted regression lane
 

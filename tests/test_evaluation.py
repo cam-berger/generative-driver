@@ -608,14 +608,18 @@ class HarnessGradingTests(PendingRunFixture):
                 self.assertEqual(equivalence['frozen_artifact_sha256'], None if name == 'no-package' else self.emitted(result))
 
     def test_a_frozen_driver_whose_model_is_missing_or_not_json_fails_without_the_device(self):
-        # Catches a frozen package's unreadable model ending unscored as an evaluator host fault, which would leave the
+        # Catches a frozen package's malformed model ending unscored as an evaluator host fault, which would leave the
         # system's broken driver out of its pass rate. The model is the driver's own bytes: the grade fails it before
         # any truth is unlocked or emulator started.
         from generative_driver.benchmark_support import evaluator
         model = lambda text: lambda package: (package / 'driver/model.json').write_text(text)
+        def not_a_file(package):
+            (package / 'driver/model.json').unlink()
+            (package / 'driver/model.json').mkdir()
         for name, edit in (('not-json', model('{not json')), ('not-an-object', model('[]')),
                            ('too-deep', model('[' * 100000)),
-                           ('missing', lambda package: (package / 'driver/model.json').unlink())):
+                           ('missing', lambda package: (package / 'driver/model.json').unlink()),
+                           ('not-a-file', not_a_file)):
             with self.subTest(model=name), \
                     patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')), \
                     patch.object(evaluator, 'reference_execute', side_effect=AssertionError('device started')):
@@ -628,6 +632,45 @@ class HarnessGradingTests(PendingRunFixture):
                 result = self.controller.call('result', {'run_id': record['run_id']})
                 self.assertEqual((result['equivalence'], equivalence['frozen_artifact_sha256']),
                                  (equivalence, self.emitted(result)))
+
+    def test_a_frozen_model_saved_with_a_byte_order_mark_or_as_utf16_is_graded_normally(self):
+        # Catches a model the configurator and the package runtime read as bytes graded not equivalent because the grader
+        # read it as UTF-8 text: one saved with a byte-order mark or as UTF-16 is the driver's own and grades on the device
+        # like any other. (The toolkit's emit check, `_toolchain/emit.py`, still reads the model as UTF-8 text, so today's
+        # toolkit refuses such a package first; this is tolerance for one a changed system may emit.)
+        from generative_driver.benchmark_support import evaluator
+        for name, codec in (('utf-8-bom', 'utf-8-sig'), ('utf-16', 'utf-16')):
+            calls, unlocked = [], []
+            save = lambda package, codec=codec: (package / 'driver/model.json').write_bytes(json.dumps(self.model).encode(codec))
+            with self.subTest(model=name), \
+                    patch.object(evaluator, 'case_truth', side_effect=self.truth(unlocked)), \
+                    patch.object(evaluator, 'reference_execute', side_effect=reference(PASS, calls)):
+                trial, record = self.trial(name, edit=save)
+                equivalence = record['equivalence']
+                self.assertEqual((record['status'], equivalence['status'], equivalence['equivalent'], equivalence['diff']),
+                                 ('evaluated', 'graded', True, []))
+                self.assertEqual((len(calls), len(unlocked)), (1, 1))
+
+    def test_a_frozen_model_the_grader_cannot_read_is_a_host_fault_not_the_drivers_failure(self):
+        # Catches the grader's own private copy of the model, unreadable for a reason of the host's (here an I/O error),
+        # graded as the driver's failure: only a model that is missing, not a file or not JSON is the driver's, so this
+        # ends unscored, a host fault the harness records.
+        from generative_driver.benchmark_support import evaluator
+        private = self.root / 'bench/unreadable/private'
+        def unreadable(read):
+            def refuse(path, *args, **kwargs):
+                if path.name == 'model.json' and private in path.parents:
+                    raise OSError(5, 'Input/output error')
+                return read(path, *args, **kwargs)
+            return refuse
+        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')), \
+                patch.object(evaluator, 'reference_execute', side_effect=AssertionError('device started')), \
+                patch.object(Path, 'read_text', unreadable(Path.read_text)), \
+                patch.object(Path, 'read_bytes', unreadable(Path.read_bytes)):
+            trial, record = self.trial('unreadable')
+        equivalence = record['equivalence']
+        self.assertEqual((record['status'], equivalence['status'], equivalence['equivalent']), ('unscored', 'unscored', None))
+        self.assertEqual(equivalence['diff'], [{'id': 'evaluation', 'reason': 'evaluator host fault: OSError'}])
 
     def test_a_run_stamped_with_another_evaluator_revision_is_unscored_before_grading(self):
         # Catches a grader edited during a trial sealing a verdict under the revision the run started with: the grade
@@ -1122,6 +1165,59 @@ class RunProtocolTests(unittest.TestCase):
         self.assertEqual(unscored('evaluator host fault: RuntimeError', sha, protocol='learning/1')['protocol'], 'learning/1')
 
 
+class FreshReuseVerdictTests(unittest.TestCase):
+    """Fresh reuse is reported beside the verdict, never inside it: the evaluator grades the driver's behavior alone, and
+    the record's mission says whether a fresh worker used the driver."""
+
+    def test_fresh_reuse_is_reported_beside_the_verdict(self):
+        # Catches the owner's proof of generated MCP reuse, or the fresh worker's mission, entering the verdict as a check:
+        # a driver whose behavior matched graded not equivalent for a reuse that failed.
+        from generative_driver.benchmark_support.evaluator import final_record
+        sha = 'a' * 64
+        checks = contract(sha)['checks']
+        final = {'contract': contract(sha), 'frozen_artifact_sha256': sha,
+                 'records': [{'id': c['id'], 'revision': 0, 'artifact_sha256': sha, 'channel': c['channel'], 'unit': c['unit'],
+                              'value': value} for c, value in zip(checks, PASS)],
+                 'generated_reuse_required': True, 'generated_reuse_verified': False}
+        made = final_record(final, mission={'name': 'fresh_worker_mission', 'passed': True}, protocol='assistive/1')
+        self.assertTrue(made['equivalent'])
+        self.assertNotIn('fresh_worker_mission', [c['id'] for c in made['checks']])
+        self.assertEqual((made['mission']['passed'], made['mission']['reason']),
+                         (False, 'Missing or inconsistent owner proof of generated MCP reuse'))
+        # The verdict holds the behavior checks alone.
+        self.assertEqual([c['id'] for c in made['checks']], [c['id'] for c in checks])
+        self.assertEqual((made['diff'], made['passed'], made['total']), ([], 2, 2))
+        # The mission passes only if the fresh worker's did and the owner's proof holds; a failed proof replaces its reason.
+        failed = {'name': 'fresh_worker_mission', 'passed': False, 'reason': 'Only identity was called', 'fault': 'model'}
+        for case, verified, mission, expected in (
+                ('proof and mission', True, {'name': 'fresh_worker_mission', 'passed': True},
+                 {'name': 'fresh_worker_mission', 'passed': True}),
+                ('mission failed', True, failed, failed),
+                ('mission undecided', True, {'name': 'fresh_worker_mission', 'passed': None, 'reason': 'No mapping'},
+                 {'name': 'fresh_worker_mission', 'passed': None, 'reason': 'No mapping'}),
+                ('no mission', True, None, {'name': 'fresh_worker_mission', 'passed': None}),
+                ('proof failed, mission failed', False, failed,
+                 {'name': 'fresh_worker_mission', 'passed': False,
+                  'reason': 'Missing or inconsistent owner proof of generated MCP reuse'}),
+                ('proof failed, no mission', False, None,
+                 {'name': 'fresh_worker_mission', 'passed': False,
+                  'reason': 'Missing or inconsistent owner proof of generated MCP reuse'})):
+            with self.subTest(case=case):
+                made = final_record({**final, 'generated_reuse_verified': verified}, mission=mission, protocol='assistive/1')
+                self.assertEqual((made['equivalent'], made['mission']), (True, expected))
+                self.assertEqual([c['id'] for c in made['checks']], [c['id'] for c in checks])
+        # A final that needs no generated reuse reports the mission it was given.
+        historical = {k: v for k, v in final.items() if not k.startswith('generated_reuse_')}
+        made = final_record(historical, mission=failed, protocol='assistive/1')
+        self.assertEqual((made['equivalent'], made['mission']), (True, failed))
+        # A wrong driver is not equivalent however its reuse went, and the mission still reports the reuse.
+        wrong = {**final, 'generated_reuse_verified': True,
+                 'records': [{**r, 'value': value} for r, value in zip(final['records'], FAIL)]}
+        made = final_record(wrong, mission={'name': 'fresh_worker_mission', 'passed': True}, protocol='assistive/1')
+        self.assertEqual((made['equivalent'], made['mission']['passed']), (False, True))
+        self.assertEqual([d['id'] for d in made['diff']], ['final/effect-1/duty'])
+
+
 class DurableRecordTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -1171,6 +1267,23 @@ class PortableModelTests(unittest.TestCase):
             self.assertEqual(adapted, reference_model_bytes(original))
             self.assertEqual(adaptation['adapted_model_sha256'], hashlib.sha256(adapted).hexdigest())
             self.assertNotIn(b'\r', (root / 'model/adaptation.json').read_bytes())
+
+    def test_the_final_phase_reads_a_frozen_model_saved_with_a_byte_order_mark_or_as_utf16(self):
+        # Catches the final phase's invoker reading the frozen model as the host's locale text, which fails a model saved
+        # with a byte-order mark or as UTF-16 although the configurator and the package runtime parse its bytes (the
+        # toolkit's emit check reads text, and refuses such a package before it is handed on).
+        from generative_driver.benchmark_support.emulated_actions import canonical_package_invoker
+        from tq9_workflow_fixture import capabilities, model
+        for name, codec in (('utf-8-bom', 'utf-8-sig'), ('utf-16', 'utf-16')):
+            with self.subTest(model=name), tempfile.TemporaryDirectory() as temporary:
+                package = Path(temporary)
+                (package / 'driver').mkdir()
+                (package / 'driver/model.json').write_bytes(json.dumps(model()).encode(codec))
+                invoke = canonical_package_invoker(package, capabilities(), {'host': '127.0.0.1', 'port': 1})
+                # The model's own bounds refuse this input before any package process starts.
+                result = invoke('set_duty', {'duty': 1001}, ['actuate'])
+                self.assertEqual((result['ok'], result['error']['code'], result['transport_open_attempted']),
+                                 (False, 'capability_mapping', False))
 
 
 if __name__ == '__main__':

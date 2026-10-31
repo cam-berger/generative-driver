@@ -24,10 +24,10 @@
 | Execution setup | The case's method, actual executable artifact, substitutions, validated behavior and remaining hardware gaps. Native and MCU binaries have distinct identities. |
 | Public mission | Required task meanings, inputs, output units and the objective for fresh reuse. Hidden vectors remain evaluator-owned. A generated mission states only each task's effect; ranges, refusal conditions, framing and the mapping onto firmware commands stay hidden. |
 | Trial | One fresh six-stage run. A repetition starts another trial, not another lineage. |
-| Pass / failure | The evaluator grades a trial's frozen driver equivalent / not equivalent, a departure from the original function; a trial that emits no driver fails. Fresh reuse and accepted stages are reported beside a pass, never inside it. |
+| Pass / failure | The evaluator grades a trial's frozen driver equivalent / not equivalent, a departure from the original function; a trial that emits no driver fails. Fresh reuse is reported beside a pass, never inside it. |
 | Unknown | A completed grade with no failed step and at least one step the evaluator could not decide; neither pass nor failure. |
-| Pass rate | Passes / (passes + failures), printed with the unknown, fault and planned counts. A trial stopped by a host or operator fault it did not cause, or missing its evidence, is counted but not graded; running out of budget, or a stop the system caused, is a failure. |
-| Scorecard | Trial metrics computed afterwards from retained records: outcome, step accuracy, stage times, tool and device use, tokens, repairs and claim agreement (the fresh-reuse claim against the grade). The system under test records nothing for it. |
+| Pass rate | Passes / (passes + failures), printed with the unknown, fault and planned counts. A trial stopped by a host or operator fault it did not cause, or missing its evidence, is counted but not graded; running out of budget, or a stop the system caused, is a failure. A trial the transcript audit flags (a worker ran a command naming a forbidden path) is also counted but not graded. |
+| Scorecard | Trial metrics computed afterwards from retained records: outcome, step accuracy, stage times, tool and device use, tokens, repairs and claim agreement (the fresh-reuse claim against the grade). The system under test records nothing for it. A trial still running counts in the pass line alone, and a suite not yet settled says it is provisional. |
 | Scoring set / development set | Generated devices sealed for comparisons, from which only aggregate scorecards leave the bench harness / devices from the same generator, open for development. |
 | Pinned system | The revision, runtime binary and version, model, reasoning effort and limits that every trial of a baseline shares. |
 | Baseline | One pinned system's graded trials on the scoring set, stored so later systems are compared with it device by device. |
@@ -45,4 +45,4 @@
 
 Functional compatibility compares required outputs/effects, not source code. Hashes prove identity/integrity, not physical truth or access control. Keep passwords/answers out of candidate inputs; the configurator holds no truth.
 
-Only safety, integrity, operator and host faults stop runs. Model/device differences drive bounded interpretation repair. Operator faults need configuration; host faults need environment repair. After repair budget is spent, continue with the best revision.
+Only safety, integrity, operator and host stops end runs. Model/device differences drive bounded interpretation repair. Operator stops need configuration; host stops need environment repair. After repair budget is spent, continue with the best revision. The pass rate scores safety and integrity stops, like a spent budget, as failures, and other operator stops and host stops as faults.

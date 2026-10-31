@@ -365,9 +365,10 @@ def regrade_v3(report: dict, evidence_path: Path, password_file: Path) -> dict:
     snapshot and executed identity, an installed evaluator of the snapshot's revision, and the run's single final
     evaluation of its accepted emitted driver, the package and mapping the verdict names. The protocol is the one the
     evidence names, whichever that is; the report must name the same. The final's records are graded again:
-    equivalent only when every check passes. A verdict sealed without a final (no driver emitted, no capability
-    mapping, an invalid model) is not equivalent. A report with no recorded verdict (awaiting its grade, unscored or
-    stopped) names no evidence: it stays unscored and nothing is unlocked."""
+    equivalent only when every check passes, with fresh reuse regraded beside that verdict, in the mission, which needs
+    the owner's proof where the package requires generated MCP reuse. A verdict sealed without a final (no driver
+    emitted, no capability mapping, an invalid model) is not equivalent. A report with no recorded verdict (awaiting its
+    grade, unscored or stopped) names no evidence: it stays unscored and nothing is unlocked."""
     from .truth import unlock
     from .evaluator import final_record
     from .behavior import _sha

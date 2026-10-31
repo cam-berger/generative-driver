@@ -6,4 +6,4 @@ Status: proposed in the [benchmark baseline spec](../../.scratch/benchmark-basel
 
 ## Consequences
 
-The protocol refusal in `compare` and the client skill's wording change for scoring-set reports only. A comparison never mixes scoring sets; a replaced scoring set starts a new series with a new baseline.
+The protocol refusal changes in `suite compare` for scoring-set suite reports, and so does the client skill's wording; single-run `benchmark compare` keeps refusing different protocols. A comparison never mixes scoring sets; a replaced scoring set starts a new series with a new baseline.

@@ -15,6 +15,7 @@ from .instruments import family_for
 DRAFT, EVIDENCE = 'evaluator-draft.enc', 'run-evidence.enc'
 SCHEMA = 'equivalence/1'
 TEXT = 300  # The configurator's limit on an equivalence/1 text field.
+OWNER_PROOF = 'Missing or inconsistent owner proof of generated MCP reuse'
 # Cases graded from the fresh reuse their run recorded; every other case is graded on a fresh emulator.
 RECORDED = {'tq9': 'recorded-reuse', 'bme280': 'recorded-reuse'}
 
@@ -187,15 +188,15 @@ def unscored(reason, frozen, method='fresh-final', *, protocol: str):
 
 def reuse_mission(case_id, run_dir, accepted, frozen, capabilities):
     """Whether fresh reuse did the public mission with the frozen package, from the package events the run recorded for
-    its accepted reuse assignment. Required generated reuse must complete this mission; historical evidence retains
-    this as a secondary check beside the grade."""
+    its accepted reuse assignment. The grade reports it beside the verdict, as the record's `mission`; required
+    generated reuse also needs the owner's proof."""
     from .case_assets import reuse_mission as _mission
     from .mcp_reuse import owner_evidence, required, verified
     from .snapshots import read_snapshot
     proof = owner_evidence(run_dir, accepted)
     snapshot = read_snapshot(run_dir) if (Path(run_dir)/'benchmark/execution.json').is_file() else {}
     if required(proof, snapshot) and not verified(proof, frozen):
-        return {'name': 'fresh_worker_mission', 'passed': False, 'reason': 'Missing or inconsistent owner proof of generated MCP reuse'}
+        return {'name': 'fresh_worker_mission', 'passed': False, 'reason': OWNER_PROOF}
     reuse = next((h for h in reversed(accepted) if h.get('stage') == 'reuse' and h.get('artifacts')), None)
     if reuse is None or frozen is None:
         return {'name': 'fresh_worker_mission', 'passed': None, 'reason': 'Fresh reuse did not run the frozen package'}
@@ -274,11 +275,12 @@ def accepted_driver(case_id, trial_dir, run_dir, result):
 def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
     """Grade a completed run's frozen driver once, on a fresh emulator: (public equivalence/1 without its evidence hash,
     the final evaluation for the seal or None). It takes the accepted driver (`accepted_driver`), unlocks the truth and
-    runs the final phase on a fresh emulator; a driver without a capability mapping, or whose model is not a JSON object,
-    fails before either. A final the draft already holds for this run and package is rebuilt and never graded again. A
-    changed record, or a grader other than the evaluator revision the run was stamped with, raises IntegrityError. Every
-    record names the protocol the run's progress names, and a result that names none raises ValueError. Legacy tq9 and
-    bme280 are graded from their recorded reuse by `recorded_grading.grade` instead."""
+    runs the final phase on a fresh emulator; a driver without a capability mapping, or whose model is missing or not a
+    JSON object, fails before either. A final the draft already holds for this run and package is rebuilt and never graded
+    again. A changed record, or a grader other than the evaluator revision the run was stamped with, raises IntegrityError;
+    a model file the grader cannot read raises its OSError, a host fault. Every record names the protocol the run's
+    progress names, and a result that names none raises ValueError. Legacy tq9 and bme280 are graded from their recorded
+    reuse by `recorded_grading.grade` instead."""
     from .case_assets import case_inputs
     protocol = _protocol(result)
     trial_dir, run_dir = Path(trial_dir), Path(run_dir)
@@ -295,13 +297,18 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
     if not isinstance(capabilities, dict):
         return record('graded', False, [], [{'id': 'capability_mapping', 'reason': 'no capability mapping'}], sha,
                       capabilities_sha, checked, protocol=protocol), None
-    try:
-        model = json.loads((package/'driver/model.json').read_text(encoding='utf-8'))
-    except (OSError, ValueError, RecursionError):
-        model = None
+    model_path, model = package/'driver/model.json', None
+    if model_path.is_file():
+        try:
+            model = json.loads(model_path.read_bytes())
+        except (ValueError, RecursionError):
+            pass
     if not isinstance(model, dict):
-        # The model is the driver's own bytes: one that is not a JSON object fails the grade, before any truth is
-        # unlocked or device touched.
+        # The model is the driver's own bytes, parsed from bytes as the runtime parses them (a byte-order mark or UTF-16
+        # reads), but only as far as JSON: the runtime also rejects duplicate keys, non-finite constants and a file over
+        # its size bound, and this check does not. One that is missing, not a file or not a JSON object fails the grade,
+        # before any truth is unlocked or device touched. Any other read error is the host's, since this is the grader's
+        # own private copy, and propagates.
         reason = "the frozen driver's model is missing or not JSON"
         return record('graded', False, [], [{'id': 'frozen_package', 'reason': reason}], sha, capabilities_sha, checked,
                       protocol=protocol), None
@@ -331,24 +338,28 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
     return final_record(final, capabilities_sha, checked, protocol=protocol), final
 
 
+def _generated_mission(mission, proved):
+    """The mission of a final that requires generated MCP reuse: the fresh worker's own result when the owner's proof of
+    that reuse holds, else failed for want of the proof, whatever the worker's result."""
+    found = mission if isinstance(mission, dict) else {}
+    name = found.get('name', 'fresh_worker_mission')
+    if not proved:
+        return {'name': name, 'passed': False, 'reason': OWNER_PROOF}
+    return {'name': name, 'passed': found.get('passed'), **{key: found[key] for key in ('reason', 'fault') if key in found}}
+
+
 def final_record(final, capabilities_sha256=None, mission=None, *, protocol: str):
     """The public equivalence/1 record of a final evaluation, graded from its contract and records: equivalent when every
-    check passed. Grading after the run and an offline regrade of the sealed evidence both build it here, and it names
-    the `protocol` of the run they grade."""
+    behavior check passed. Fresh reuse is reported beside that verdict, never inside it: the record's `mission` is the
+    fresh worker's, and passes only with the owner's proof when the final requires generated MCP reuse. Grading after
+    the run and an offline regrade of the sealed evidence both build it here, and it names the `protocol` of the run they
+    grade."""
     from .behavior import validate_records
     graded = validate_records(final['contract'], final['records'])
     checks = [{'id': str(row['id']), 'passed': row['passed'] is True} for row in graded['checks']]
     diff = [{'id': str(row['id']), 'reason': str(row.get('reason') or 'failed')} for row in graded['checks'] if row['passed'] is not True]
     if final.get('generated_reuse_required'):
-        passed = final.get('generated_reuse_verified') is True
-        checks.append({'id': 'generated_mcp_reuse', 'passed': passed})
-        if not passed:
-            diff.append({'id': 'generated_mcp_reuse', 'reason': 'Missing or inconsistent owner proof of generated MCP reuse'})
-        mission_passed = isinstance(mission, dict) and mission.get('passed') is True
-        checks.append({'id': 'fresh_worker_mission', 'passed': mission_passed})
-        if not mission_passed:
-            diff.append({'id': 'fresh_worker_mission', 'reason': (mission or {}).get('reason')
-                         or 'Fresh generated MCP worker did not complete the required mission'})
+        mission = _generated_mission(mission, final.get('generated_reuse_verified') is True)
     return record('graded', all(c['passed'] for c in checks), checks, diff, final['frozen_artifact_sha256'], capabilities_sha256,
                   mission, final.get('method', 'fresh-final'), protocol=protocol)
 

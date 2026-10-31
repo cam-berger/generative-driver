@@ -4,10 +4,14 @@ import copy
 import hashlib
 import json
 import math
+import re
 import statistics
 from pathlib import PurePosixPath,PureWindowsPath
 from .suites import normalize_manifest,expand_trials
 from .evidence import public_equivalence,public_pin,public_v2_report,public_v3_report,PIN,USAGE
+from .audit import audit_commands,forbidden_paths
+from .outcomes import classify,pass_rate,pass_rate_line
+from .pairing import paired_comparison
 from ..benchmark import STAGES
 
 QUALIFICATIONS={'recorded-controller-verdicts','regraded-encrypted-evidence'}
@@ -20,6 +24,10 @@ def _sha(value):
 
 def _exact(value,keys):
     if not isinstance(value,dict) or set(value)!=set(keys):raise ValueError('Incomplete or unknown experiment fields')
+
+def _protocol_name(value):
+    """Whether `value` is a protocol of the form `<name>/<n>`: a lowercase name and a positive integer."""
+    return isinstance(value,str) and re.fullmatch('[a-z]+/[1-9][0-9]*',value) is not None
 
 def _number(value,integer=False):
     if value is not None and (type(value) not in ((int,) if integer else (int,float)) or not math.isfinite(value) or value<0):
@@ -44,10 +52,19 @@ def _experiment(value):
     _exact(value,('schema','comparison_identity','dimensions','execution_snapshots'))
     if value['schema']!='benchmark-suite-experiment/1':raise ValueError('Unsupported experiment')
     identity=value['comparison_identity']
-    # A suite the bench harness drives names its protocol; one frozen before it names none and keeps its meaning.
+    # A suite the bench harness drives names its protocol; one frozen before it names none and keeps its meaning. A suite
+    # that ran a sealed scoring set names that too.
     _exact(identity,('manifest','manifest_sha256','entry_pins','trials','repetitions','execution','evidence_track','scope','time_policy','evaluator_revision','budgets','intervention_policy')
-           +(('protocol',) if 'protocol' in identity else ()))
-    if 'protocol' in identity and identity['protocol']!='assistive/1':raise ValueError('Unsupported suite protocol')
+           +(('protocol',) if 'protocol' in identity else ())+(('scoring_set',) if 'scoring_set' in identity else ()))
+    # Only a suite that ran a scoring set may name another protocol: it is compared with systems of any protocol, device by device.
+    if 'protocol' in identity and identity['protocol']!='assistive/1' and not ('scoring_set' in identity and _protocol_name(identity['protocol'])):
+        raise ValueError('Unsupported suite protocol')
+    if 'scoring_set' in identity:
+        scoring=identity['scoring_set']
+        if (not isinstance(scoring,dict) or set(scoring)!={'registration','manifest_sha256'} or not isinstance(scoring['registration'],str)
+                or not scoring['registration'].strip() or not _sha(scoring['manifest_sha256'])):raise ValueError('Invalid scoring set')
+        # Its report is a benchmark-suite-report/3, which names the protocol: without one it would be a /1 that no reader accepts.
+        if 'protocol' not in identity:raise ValueError('A scoring set belongs to a suite that names its protocol')
     manifest=normalize_manifest(identity['manifest']);slots=expand_trials(manifest)
     if identity['manifest_sha256']!=_digest(manifest) or identity['trials']!=slots or identity['repetitions']!=manifest['repetitions']:
         raise ValueError('Frozen suite identity mismatch')
@@ -124,6 +141,7 @@ def _experiment(value):
         if snapshot['trial_key']!=slot['trial_key'] or snapshot['snapshot_sha256'] is not None and not _sha(snapshot['snapshot_sha256']):raise ValueError('Invalid snapshot identity')
     return {'schema':'benchmark-suite-experiment/1','comparison_identity':{
         **({'protocol':identity['protocol']} if 'protocol' in identity else {}),
+        **({'scoring_set':{key:identity['scoring_set'][key] for key in ('registration','manifest_sha256')}} if 'scoring_set' in identity else {}),
         'manifest':manifest,'manifest_sha256':identity['manifest_sha256'],'entry_pins':public_pins,
         'trials':slots,'repetitions':manifest['repetitions'],
         **{key:identity[key] for key in ('execution','evidence_track','scope','evaluator_revision')},
@@ -157,14 +175,18 @@ def _report_success(report):
     return (all(any(gate.get('stage')==stage and _counts_ok(gate) for gate in gates) for stage in STAGES)
         and _counts_ok(report.get('final_evaluation',{})))
 
-def _report_equivalent(report):
+def _report_equivalent(report,protocol=None):
     """An assistive report's success: its one recorded verdict, a well-formed evaluator grade of a completed run, holds
-    the frozen driver equivalent."""
+    the frozen driver equivalent. The report and its grade name `protocol`, by default this installation's."""
     from ..configurator import PROTOCOL,_evaluation_errors
+    protocol=protocol or PROTOCOL
     equivalence=report.get('equivalence')
-    return (report.get('schema')=='benchmark-report/3' and report.get('protocol')==PROTOCOL
+    return (report.get('schema')=='benchmark-report/3' and report.get('protocol')==protocol
         and report.get('workflow_status')=='completed' and report.get('verdict')=='equivalent'
-        and isinstance(equivalence,dict) and not _evaluation_errors(equivalence)
+        # A grade names the protocol of its report. The configurator's schema holds a grade to this installation's, so it
+        # checks the rest of the record with that field set to its own.
+        and isinstance(equivalence,dict) and equivalence.get('protocol')==protocol
+        and not _evaluation_errors({**equivalence,'protocol':PROTOCOL})
         and equivalence['status']=='graded' and equivalence['equivalent'] is True)
 
 def _validate_trials(manifest,trials,reports,experiment):
@@ -249,8 +271,13 @@ def _outcomes(trials,reports,equivalent):
 
 def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
     """A suite's measurements. An assistive suite (its frozen identity names the protocol) counts equivalent drivers out
-    of those planned, from benchmark-report/3 reports alone (benchmark-suite-report/2); an earlier suite keeps its gated
-    success count (benchmark-suite-report/1)."""
+    of those planned, from benchmark-report/3 reports alone, and leads with its pass rate: each trial's `scored` outcome,
+    classified from its slot and its full report, and the rate counted from them (benchmark-suite-report/3). A trial
+    that carries `audit` findings (the transcript audit's, which `report_suite` attaches) scores `flagged` and is
+    not graded. The equivalent drivers counted (`equivalence`, `family_equivalence`) stay those the evaluator found
+    equivalent, flagged or not, but a flagged trial is no `equivalent_and_mission` success, as earlier studies counted
+    a trial stopped for integrity a non-success out of all planned trials. An earlier suite keeps its gated success
+    count (benchmark-suite-report/1)."""
     if qualification not in QUALIFICATIONS:raise ValueError('Suite aggregates require qualified trial evidence')
     experiment=_experiment(experiment)
     _validate_trials(manifest,trials,reports,experiment)
@@ -276,8 +303,11 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
         counts,unscored=_outcomes(trials,reports,passed)
         missions=[public_equivalence((reports.get(t.get('run_id')) or {}).get('equivalence')) or {} for t in trials]
         mission=sum((m.get('mission') or {}).get('passed') is True for m in missions)
-        reused=[t for t in passed if (reports[t['run_id']]['equivalence'].get('mission') or {}).get('passed') is True]
-        result={'schema':'benchmark-suite-report/2','protocol':protocol,'qualification':qualification,'counts':counts,
+        # A trial the audit flagged is an integrity fault, not graded: earlier studies counted one as no success out of all
+        # planned trials, so it is none here, though the evaluator's own counts above keep its driver.
+        reused=[t for t in passed if not t.get('audit')
+                and (reports[t['run_id']]['equivalence'].get('mission') or {}).get('passed') is True]
+        result={'schema':'benchmark-suite-report/3','protocol':protocol,'qualification':qualification,'counts':counts,
             'equivalence':{'equivalent':len(passed),'denominator':len(trials),'rate':len(passed)/len(trials)},'unscored':unscored,
             'provisional':len(finished)!=len(trials),'family_equivalence':rates,'family_macro_equivalence':sum(rates.values())/len(rates),
             # Secondary: whether fresh reuse did the public mission with the frozen package; never the verdict.
@@ -308,21 +338,29 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
         # An assistive trial that has no report yet carries no verdict, not even an unscored one.
         safe=(public_v3_report(report) if report else {}) if protocol else public_v2_report(report)
         row={key:trial[key] for key in ('trial_key','ordinal','entry_index','repeat_index','case','family','scenario','case_seed','run_id','status','outcome_category')}
+        # `workflow_status` and `effective_budget_seconds` let the row alone repeat the outcome its report gave.
         row.update({key:safe[key] for key in ('verdict','equivalence','equivalence_status','stages','final_evaluation','elapsed_seconds',
-            'worker_seconds','tool_seconds','usage') if key in safe})
+            'worker_seconds','tool_seconds','usage','workflow_status','effective_budget_seconds') if key in safe})
         if row.get('verdict')==win and trial not in passed:row['verdict']='unqualified'
         if protocol:
             # Why the trial stands as it does: its outcome as its count holds it, the reason its report gives (paths
             # scrubbed by `report_run`), the stage where it stopped and the repairs it used.
-            outcome=_outcome(trial,report,passed);repairs=(safe.get('progress') or {}).get('repairs')
+            outcome=_outcome(trial,report,passed);repairs=(safe.get('progress') or {}).get('repairs');audit=trial.get('audit')
             row.update(equivalent_and_mission=trial in reused,
                        outcome=outcome,reason=UNQUALIFIED if outcome=='unqualified' else safe.get('reason'),
-                       stopped_stage=safe.get('stopped_stage'),repairs=repairs if type(repairs) is int else None)
+                       stopped_stage=safe.get('stopped_stage'),repairs=repairs if type(repairs) is int else None,
+                       # From the slot and the full report, with the verdict the row carries: a claimed equivalent the count
+                       # refuses is unqualified here as in `report_suite`, so its passes are the equivalent drivers counted.
+                       # A trial whose transcripts the audit flagged is not graded, whatever its grade.
+                       scored=classify(trial,{**report,'verdict':row.get('verdict')},flagged=bool(audit)))
+            # The findings of an audit that ran, none when it found nothing; a trial that nothing audited has no key.
+            if audit is not None:row['audit']=[{key:finding[key] for key in ('transcript','command')} for finding in audit]
         row['report_sha256']=_digest(_public_report(report)) if report else None
         row['interventions']=[{key:item[key] for key in ('event_id','kind','time','effect_resolution','scoped_tool_approval','old_budget_seconds','new_budget_seconds','extension_seconds','old_deadline','new_deadline','stage','uncertain_effect','has_observation')
             if key in item and (item[key] is None or type(item[key]) in (str,int,float,bool))} for item in trial.get('interventions',[])]
         public_trials.append(row)
     prefix='first_attempt_'+('equivalent' if protocol else 'success'),'repaired_'+('equivalent' if protocol else 'success')
+    if protocol:result['pass_rate']=pass_rate([row['scored'] for row in public_trials])
     result.update({'experiment':experiment,'trials':public_trials,
         ('case_equivalence' if protocol else 'case_success'):rates_by('case'),
         ('scenario_equivalence' if protocol else 'scenario_success'):rates_by('scenario'),
@@ -349,47 +387,87 @@ def _read_saved(value):
 
 def _saved_report(value):
     """A saved suite report: an earlier suite's gated success (benchmark-suite-report/1), or an assistive suite's
-    equivalent drivers (benchmark-suite-report/2), each counted again from its trials' verdicts."""
+    equivalent drivers (benchmark-suite-report/2, or /3, which adds the pass rate and each trial's scored outcome), each
+    counted again from its trials' verdicts and, for /3, its pass rate from the outcomes its rows store and its joint
+    count of equivalent drivers with a successful fresh mission from the rows that are not flagged. Only a /3 file stores
+    outcomes: a reader that trusts a stored one under any schema would count a label an earlier file never had, so an
+    earlier file whose rows carry one is refused. A /3 row's label must be the outcome `classify` gives the row alone
+    (its status, category, grade, budget and `audit` findings), whatever the label is: a failure edited to a fault, an
+    unknown or a flagged trial, with the pass rate edited to match, is refused, as is a pass the row does not show. A
+    scoring set is read only in a /3 report, which names a protocol. A saved report is checked under its own recorded
+    protocol, never this installation's."""
     report=_read_saved(value)
-    if report.get('schema') not in ('benchmark-suite-report/1','benchmark-suite-report/2') or report.get('qualification') not in QUALIFICATIONS:raise ValueError('Unsupported suite report')
+    assistive=('benchmark-suite-report/2','benchmark-suite-report/3')
+    if report.get('schema') not in ('benchmark-suite-report/1',*assistive) or report.get('qualification') not in QUALIFICATIONS:raise ValueError('Unsupported suite report')
     experiment=_experiment(report['experiment'])
     protocol=experiment['comparison_identity'].get('protocol')
-    if (report['schema']=='benchmark-suite-report/2')!=bool(protocol) or report.get('protocol')!=protocol:raise ValueError('Unsupported suite report')
+    if (report['schema'] in assistive)!=bool(protocol) or report.get('protocol')!=protocol:raise ValueError('Unsupported suite report')
     _validate_trials(experiment['comparison_identity']['manifest'],report['trials'],{},experiment)
+    if report['schema']!='benchmark-suite-report/3' and any('scored' in t for t in report['trials']):
+        raise ValueError('An earlier suite report stores no scored outcome')
+    if report['schema']!='benchmark-suite-report/3' and 'scoring_set' in experiment['comparison_identity']:
+        raise ValueError('An earlier suite report names no scoring set')
     key,win=('equivalence','equivalent') if protocol else ('success','passed')
     success=report[key];planned=len(report['trials'])
     if type(success.get(win)) is not int or not 0<=success[win]<=planned or success.get('denominator')!=planned or success.get('rate')!=success[win]/planned:
         raise ValueError('Invalid '+key+' denominator')
-    if success[win]!=sum(t.get('verdict')==win and t.get('status')=='finished' and t.get('outcome_category')=='completed' for t in report['trials']):
+    counted=lambda t:t.get('verdict')==win and t.get('status')=='finished' and t.get('outcome_category')=='completed'
+    if success[win]!=sum(counted(t) for t in report['trials']):
         raise ValueError('Saved '+key+' count differs from trial coverage')
     if protocol:
-        joint=sum(t.get('status')=='finished' and t.get('outcome_category')=='completed'
-                  and _report_equivalent({**t,'schema':'benchmark-report/3','protocol':protocol,'workflow_status':'completed'})
+        # A flagged trial is no joint success, as `aggregate_suite` counts. Only a /3 row stores a label, so no other is one.
+        joint=sum(t.get('status')=='finished' and t.get('outcome_category')=='completed' and t.get('scored')!='flagged'
+                  and _report_equivalent({**t,'schema':'benchmark-report/3','protocol':protocol,'workflow_status':'completed'},protocol)
                   and ((t.get('equivalence') or {}).get('mission') or {}).get('passed') is True for t in report['trials'])
         metric={'passed':joint,'denominator':planned,'rate':joint/planned}
         if 'equivalent_and_mission' in report and report['equivalent_and_mission']!=metric:
             raise ValueError('Saved joint success count differs from trial evidence')
         report['equivalent_and_mission']=metric
+        if report['schema']=='benchmark-suite-report/3':
+            # A forged or missing outcome is no outcome, and `pass_rate` refuses it.
+            rate=pass_rate([t.get('scored') for t in report['trials']])
+            # Every label is the outcome `classify` gives its row alone, which carries the report's workflow status and
+            # budget and the audit's findings (a row is flagged exactly when it holds some). That includes `not_run`, given
+            # to a row with no run and to no other.
+            # A pass is also a counted equivalent driver: the row's own verdict, status and category must show what its label says.
+            # A counted driver whose transcripts the audit flagged scores `flagged`, which is no pass, and no other outcome.
+            if any(t['scored']!=classify(t,t,flagged=bool(t.get('audit')))
+                   or t['scored']=='pass' and not counted(t) or counted(t) and t['scored'] not in ('pass','flagged')
+                   for t in report['trials']):
+                raise ValueError('Saved outcome differs from the trial it scores')
+            if 'pass_rate' in report and report['pass_rate']!=rate:raise ValueError('Saved pass rate differs from trial outcomes')
+            report['pass_rate']=rate
     _number(report.get('usage',{}).get('total_tokens'),True)
     _number(report.get('latency',{}).get('median'))
     return report
 
 
-def compare_suites(before,after):
-    """Compare saved public data only; this does not authenticate either report."""
+def compare_suites(before,after,*,leak_check=None):
+    """Compare saved public data only; this does not authenticate any report. Reports that both carry a scoring set pair
+    device by device whatever their protocols (`paired_comparison`), with `leak_check`, if given, the after system's fresh
+    batch. Any others compare as whole suites, and only within one protocol; they take no leak check."""
     result={'schema':'benchmark-suite-comparison/1','compatible':False}
     try:
         before=_saved_report(before);after=_saved_report(after)
+        if leak_check is not None:leak_check=_saved_report(leak_check)
     except (ValueError,KeyError,TypeError,OSError) as exc:
         return {**result,'reason':'Invalid or incomplete saved suite report'}
-    protocol=before.get('protocol')
-    if protocol!=after.get('protocol'):
-        # Results of different protocols are separate series: neither count is set beside the other.
-        return {**result,'reason':'Protocols differ: results of different protocols are separate series and are never compared'}
     replayed=lambda report:report['experiment']['dimensions'].get('runtime')=='replay'
     if replayed(before)!=replayed(after):
         # No model ran a replay suite's children: replay suites are a series of their own, never set beside model suites.
         return {**result,'reason':'Replay results and model runs are separate series and are never compared'}
+    ran_scoring_set=lambda report:'scoring_set' in report['experiment']['comparison_identity']
+    if ran_scoring_set(before) and ran_scoring_set(after):
+        try:
+            return paired_comparison(before,after,leak_check=leak_check)
+        except ValueError as exc:
+            return {**result,'reason':str(exc)}
+    if leak_check is not None:
+        return {**result,'reason':'A leak check needs two reports that carry a scoring set'}
+    protocol=before.get('protocol')
+    if protocol!=after.get('protocol'):
+        # Results of different protocols are separate series: neither count is set beside the other.
+        return {**result,'reason':'Protocols differ: results of different protocols are separate series and are never compared'}
     key='equivalence' if protocol else 'success'
     result.update({'before_'+key:before[key],'after_'+key:after[key]})
     if protocol:
@@ -515,15 +593,18 @@ def _cell(value,missing=''):
 
 
 def _summary(result):
-    """An assistive suite's report.md body, built from its trial rows: the count, why the suite stands as it does, its
-    dimensions, each trial's outcome with its reason, stop stage, repairs, time and tokens, and the check ids that failed
-    most often. Expected values and tolerances are in none of these fields."""
-    equivalence,rows,counts=result['equivalence'],result['trials'],result['counts']
+    """An assistive suite's report.md body, built from its trial rows: the pass rate, why the suite stands as it does, its
+    dimensions, each trial's scored outcome and outcome with its reason, stop stage, repairs, time and tokens, and the
+    check ids that failed most often. Expected values and tolerances are in none of these fields."""
+    rows,counts=result['trials'],result['counts']
     joint=result['equivalent_and_mission']
     dimensions=', '.join(f'{key} `{value}`' for key,value in result['experiment']['dimensions'].items() if value is not None)
     tallied={}
     for row in rows:tallied[row['outcome']]=tallied.get(row['outcome'],0)+1
-    detail={'not_equivalent':f"{counts['no_driver']} without a driver" if counts['no_driver'] else '',
+    # The equivalent drivers the evaluator found, which the audit's flagged trials are among: they are no pass and no joint success.
+    held=sum(row['outcome']=='equivalent' and row['scored']=='flagged' for row in rows)
+    detail={'equivalent':f'including {held} flagged' if held else '',
+            'not_equivalent':f"{counts['no_driver']} without a driver" if counts['no_driver'] else '',
             'stopped':', '.join(f'{count} {category}' for category,count in counts['stopped'].items())}
     failing={}
     for row in rows:
@@ -531,30 +612,37 @@ def _summary(result):
             if isinstance(diff,dict) and isinstance(diff.get('id'),str):failing[diff['id']]=failing.get(diff['id'],0)+1
     common=sorted(failing.items(),key=lambda item:(-item[1],item[0]))[:5]
     unscored=', '.join(row['trial_key'] for row in result['unscored'])
-    lines=[f"Equivalent drivers: {equivalence['equivalent']}/{equivalence['denominator']}. Protocol: {result['protocol']}, "
+    lines=[f"{pass_rate_line(result['pass_rate'])}. Protocol: {result['protocol']}, "
            f"a series never compared with earlier gated results. Qualification: {result['qualification']}.",'',
            f"Equivalent drivers with successful fresh reuse: {joint['passed']}/{joint['denominator']}. "
-           'Both conditions must hold for the same trial; missing mission evidence is no success.','',
+           'Both conditions must hold for the same trial; missing mission evidence is no success.'
+           +(' A flagged trial is no success either.' if held else ''),'',
            'Suite status: '+str(result['status'])+(': '+_cell(result['reason']) if result.get('reason') else '')+'.','',
            'Dimensions: '+(dimensions or 'none recorded')+'.','',
            'Outcomes: '+', '.join(f'{count} {outcome}'+(f' ({detail[outcome]})' if detail.get(outcome) else '')
                                   for outcome,count in tallied.items())+'.','',
-           '| Trial | Case | Outcome | Reason | Stopped stage | Repairs | Wall seconds | Tokens |',
-           '|---|---|---|---|---|---:|---:|---:|']
+           '| Trial | Case | Scored | Outcome | Reason | Stopped stage | Repairs | Wall seconds | Tokens |',
+           '|---|---|---|---|---|---|---:|---:|---:|']
     for row in rows:
         # A started trial's missing time or tokens are unknown; a trial never started has none.
         measured=[_cell(value,'unknown' if row['run_id'] else '') for value in (row.get('elapsed_seconds'),(row.get('usage') or {}).get('total_tokens'))]
-        lines.append('| '+' | '.join([*(_cell(value) for value in (row['trial_key'],row['case'],row['outcome'],row['reason'],
+        lines.append('| '+' | '.join([*(_cell(value) for value in (row['trial_key'],row['case'],row['scored'],row['outcome'],row['reason'],
                                                                      row['stopped_stage'],row['repairs'])),*measured])+' |')
     lines+=['','Most frequent failing checks: '+(', '.join(f'`{key}` ({count})' for key,count in common) or 'none recorded')+'.']
     return '\n'.join(lines)+'\n\n'+(f'Unscored: {unscored}.\n\n' if unscored else '')
 
 
-def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_files=None):
+def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_files=None,audit_paths=()):
     """Export a suite's measurements from its configured owner. An earlier suite's regrade needs the sealed evidence of
     every started trial; an assistive suite's, that of exactly the trials whose verdict was recorded (each names its
-    evidence), since an unscored or stopped trial has no verdict to authenticate."""
+    evidence), since an unscored or stopped trial has no verdict to authenticate.
+
+    With `audit_paths` (forbidden paths, private to the operator), each trial's run directory in the owner's home is
+    audited (`audit_commands`): every row of the export carries its `audit` findings, and a trial with any is `flagged`,
+    not graded. A report without `audit_paths` has no `audit` on its rows. The paths are in no output but the commands
+    that name them, which the findings quote."""
     if output is None or not str(output).strip():raise ValueError('Suite export requires an explicit output directory')
+    audit_paths=forbidden_paths(audit_paths)
     from pathlib import Path
     from tempfile import TemporaryDirectory
     from ..client import call,default_home
@@ -584,6 +672,9 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
     if regrading and ((set(evidence_files)-keys if protocol else set(evidence_files)!=keys)
             or set(password_files)-{trial['case'] for trial in trials}):
         raise ValueError('Regrade evidence must cover every started trial exactly')
+    if audit_paths and not protocol:raise ValueError('The transcript audit covers assistive suites only')
+    if audit_paths:
+        for trial in trials:trial['audit']=[]
     reports={};regraded=set()
     with TemporaryDirectory(prefix='gd-suite-report-') as temporary:
         for trial in started:
@@ -632,6 +723,8 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
             if report.get('verdict')==('equivalent' if protocol else 'passed') and not qualified:report={**report,'verdict':'unqualified'}
             trial['outcome_category']=owner.get('outcome_category','unknown')
             if owner.get('stopping') is not False or owner.get('uncertain_effect') is not False:trial['status']='blocked'
+            # The run directory is where the owner keeps what the run's workers left (`runs/<run_id>` in its home).
+            if audit_paths:trial['audit']=audit_commands(root/'runs'/rid,audit_paths)
             reports[rid]=report
         if regrading and protocol and set(evidence_files)!=regraded:
             raise ValueError('Regrade evidence must cover every trial with a recorded verdict exactly')
@@ -639,7 +732,7 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
         result=aggregate_suite(manifest,trials,reports,qualification,experiment=experiment)
         result.update(suite_id=suite_id,status=first['status'],reason=_public(first.get('reason'),root),
             suite_wall_seconds=max(0,first['updated']-first['created']),
-            exporter={'evaluator_revision':_tree_hash(Path(__file__).parent),'toolchain_revision':_tree_hash(Path(__file__).parents[1])},
+            exporter={'benchmark_support_tree_sha256':_tree_hash(Path(__file__).parent),'toolchain_revision':_tree_hash(Path(__file__).parents[1])},
             qualification_meaning='Trusted configured owner records; not cryptographic authentication.' if not regrading else 'Authenticated sidecars; run association comes from the configured owner.')
         destination.mkdir(parents=True,exist_ok=True)
         for trial in result['trials']:
@@ -655,8 +748,10 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
             if result.get('execution'):
                 summary += (f"Execution: {result['execution']}: saved candidates replayed without a model, never model "
                             "performance or a series compared with model suites.\n\n")
+            denominators='The pass rate divides by graded trials; the fresh-reuse count divides by all planned slots.'
         else:
             summary=f"Success: {result['success']['passed']}/{result['success']['denominator']}. Qualification: {qualification}.\n\n"
-        (destination/'report.md').write_text('# Benchmark suite\n\n'+summary+
-            'All planned slots remain in the denominator. Missing resource totals remain unknown. Worker, child wall, suite wall and tool durations overlap.\n',encoding='utf-8')
+            denominators='All planned slots remain in the denominator.'
+        (destination/'report.md').write_text('# Benchmark suite\n\n'+summary+denominators+
+            ' Missing resource totals remain unknown. Worker, child wall, suite wall and tool durations overlap.\n',encoding='utf-8')
     return result

@@ -18,7 +18,7 @@ Use the existing authenticated calibration check in an operator-only preflight. 
 
 Bind native monitor completion and observation values to the submitted command's echo and its following prompt. Decode Telnet controls before matching application text; preserve the raw response bytes in private evidence. A greeting or unrelated reply is not a receipt. Commands are dispatched once, including effectful controls.
 
-Report measured success over graded trials, selected coverage over selected planned slots and demonstrated coverage over the entire catalog. A false fresh mission contributes a measured failure only with trusted model attribution; host, operator and missing attribution stay unscored. An independently validated negative final grade or no-driver record still counts as failure.
+Report measured success as the pass rate over graded trials, selected coverage over selected planned slots and demonstrated coverage over the entire catalog. Running out of budget or a stop the system caused is a failure; host, operator and missing-evidence stops are faults, counted but not graded. The fresh mission sits beside the verdict, and no separate validation of a negative grade is required.
 
 ## Consequences
 

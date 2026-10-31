@@ -105,9 +105,24 @@ class GraderClosureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'benchmark_support.zephyr_modbus'):
             grader_closure(root)
 
+    def beyond_the_boundary(self, closure):
+        """The modules of `closure` that grading code must never reach: the system under test and the reporting code."""
+        return [m for m in closure if any(m == s or m.startswith(s + '.') for s in SYSTEM_MODULES)]
+
     def test_closure_excludes_system_modules(self):
-        closure = grader_closure()
-        self.assertEqual([m for m in closure if any(m == s or m.startswith(s + '.') for s in SYSTEM_MODULES)], [])
+        self.assertEqual(self.beyond_the_boundary(grader_closure()), [])
+
+    def test_a_grading_module_that_imports_reporting_code_crosses_the_boundary(self):
+        # Catches reporting code (the outcomes, the audit, the pairing, the scorecard, the suite report and the corpus) that a
+        # grading module comes to import without the boundary test failing: every change to it would then change the grader's
+        # identity and void a qualification, though it grades nothing.
+        for name in ('outcomes', 'audit', 'pairing', 'scorecard', 'suite_reporting', 'corpus'):
+            with self.subTest(name):
+                root = self.copy_package()
+                self.import_from_grading(root, 'from . import ' + name)
+                closure = grader_closure(root)
+                self.assertIn('benchmark_support.' + name, closure)
+                self.assertIn('benchmark_support.' + name, self.beyond_the_boundary(closure))
 
     def test_system_change_keeps_identity(self):
         root = self.copy_package(); before = grader_identity(root)['sha256']

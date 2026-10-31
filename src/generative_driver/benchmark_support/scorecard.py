@@ -12,7 +12,8 @@ unless every attempt of the stage left them. A worker that died leaves no report
 one that did nothing, and a sum over the others would pass for the whole. Only a Codex transcript kept in the run is
 read: an interpretation attempt that stopped before its outputs were collected leaves its transcript in a workspace
 outside the run, and the events of another runtime say nothing of Codex actions. The exchanges of a package's live test
-are in a record file that the events only name: a stage whose record the run no longer holds has its exchanges None, too.
+are in a record file that the events only name: a stage whose record the run no longer holds has its exchanges None, too,
+as has one with a device call that never finished or a live-test call that left no result (it may have reached the device).
 
 A suite's scorecard keeps that rule: a figure that some trials could not measure is summed over the others and counted
 as measured by fewer, never passed off as the whole. The scorecard of a suite that ran a scoring set shows aggregates
@@ -43,6 +44,10 @@ NAME = re.compile('[0-9A-Za-z_-]+')
 CODEX = ('thread.', 'turn.', 'item.')
 # The transcript entries that are exchanges with the device.
 EXCHANGES = ('exchange', 'usb_control')
+# The tools that connect to the device, whose finished results (or, for `emit_test_live`, live records) hold the exchanges.
+DEVICE_TOOLS = ('probe_run', 'interface_execute', 'emit_test_live', 'benchmark_package_execute')
+# The code the toolchain gives a live-test call whose process could not be started: it reached nothing.
+NOT_STARTED = 'open'
 # Each token counter and its key in a worker's usage.
 COUNTERS = (('input', 'input_tokens'), ('cached_input', 'cached_input_tokens'), ('output', 'output_tokens'),
             ('reasoning_output', 'reasoning_output_tokens'))
@@ -136,15 +141,26 @@ def _live_exchanges(run_dir: Path, run_id: str, result) -> int | None:
     each package call in the live record it names (`live_record`, `emit/live-N.json` in the stage's tool folder), under
     `results[].stdout_json.transcript`, so they are counted there (`_inside` the run). A result that names no record
     reached no device (the tool names one only once it has called the package) and shows none. None when the record cannot
-    be used: it names no usable path, the file is missing or unreadable, or it holds no list of results."""
+    be used: it names no usable path, the file is missing or unreadable, or it holds no list of results; or when one of
+    its calls left no interface-result to count (`stdout_json` is no object: the package printed no JSON, its process timed
+    out, or the host failed around the call), which may already have reached the device. The exception is a call whose
+    process could not be started (`error_code` `open`), which reached none and counts zero."""
     if not isinstance(result, dict) or 'live_record' not in result:
         return 0
     path = _inside(run_dir, run_id, result['live_record'])
     try:
         record = json.loads(path.read_text(encoding='utf-8')) if path else None
         results = record.get('results') if isinstance(record, dict) else None
-        return sum(_exchanges(item.get('stdout_json'))[0] for item in results if isinstance(item, dict)) \
-            if isinstance(results, list) else None
+        if not isinstance(results, list):
+            return None
+        total = 0
+        for item in results:
+            output = item.get('stdout_json') if isinstance(item, dict) else None
+            if isinstance(output, dict):
+                total += _exchanges(output)[0]
+            elif not (isinstance(item, dict) and item.get('error_code') == NOT_STARTED):
+                return None
+        return total
     except (OSError, ValueError, RecursionError):
         return None
 
@@ -172,7 +188,8 @@ def _kept(run_dir: Path, stage: str, assignment: dict):
 def _read_actions(transcript: Path):
     """The actions completed in one transcript, by type, or None when it cannot be read as a Codex stream: it is no file,
     or no line of it is a Codex event (`thread.*`, `turn.*` or `item.*`), as with an empty file, the events of another
-    runtime or text the runtime printed. A line that is not a completed action is skipped, whether or not it is JSON."""
+    runtime or text the runtime printed. A line that is not a completed action is skipped, whether or not it is JSON (a
+    line nested too deeply for `json` to read is skipped as one that is not), and so is an item whose type is no name."""
     if not transcript.is_file():
         return None
     counts, codex = dict.fromkeys(ACTIONS, 0), False
@@ -180,13 +197,16 @@ def _read_actions(transcript: Path):
         for line in stream:
             try:
                 event = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):
+                # Not JSON, or nested too deeply for `json` to read: a line with no action to count.
                 continue
             kind = event.get('type') if isinstance(event, dict) else None
             codex = codex or isinstance(kind, str) and kind.startswith(CODEX)
             item = event.get('item') if kind == 'item.completed' else None
-            if isinstance(item, dict) and item.get('type') in counts:
-                counts[item['type']] += 1
+            action = item.get('type') if isinstance(item, dict) else None
+            # A type that is no name (a list or an object) cannot be looked up, and is no action.
+            if isinstance(action, str) and action in counts:
+                counts[action] += 1
     return counts if codex else None
 
 
@@ -319,12 +339,23 @@ def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None) -> 
     (`probe_diff`, and `emit_check` when it replays) re-reports recorded exchanges without contacting the device, so it
     counts none. An `emit_test_live` result keeps only a summary, so its exchanges are counted in the live record it
     names (`live_record`, `results[].stdout_json.transcript`), found inside the run's directory by its place there
-    whatever home it was recorded in; a result that names no record reached no device. A stage whose record cannot be
-    used (its path leads out of the run, the file is missing or unreadable) has `exchanges` None, never zero and never
-    a partial count, as the worker figures do. A `benchmark_package_execute` result is counted where it holds a
-    transcript, as the package's own result does on the device the bench harness provides; on the physical case it is a
-    measurement row with none, so those exchanges are not counted. The replies a package's live test saw the device
-    reject are in its record too and are not counted as `refusals`.
+    whatever home it was recorded in; a result that names no record reached no device.
+
+    A stage's `exchanges` are None (unknown), as the worker figures are, not a lower bound shown as exact, when
+    - the record of a live test cannot be used: its path leads out of the run, the file is missing or unreadable, or it
+      holds no list of results;
+    - a call in that record left no interface-result to count (the package printed no JSON object, its process timed
+      out, or the host failed around the call), since it may already have reached the device. A call whose process could
+      not be started (`error_code` `open`, in the toolchain's `_live_call`) reached none and counts zero;
+    - a call to a tool that connects to the device (`DEVICE_TOOLS`, unless its start says it did not connect) has a
+      `tool.started` event and no `tool.finished` event, as when its tool raised after the dispatch, since it may have
+      exchanged what no result recorded.
+
+    Two limits remain, and the exchanges of such a stage are exact only apart from them. A `benchmark_package_execute`
+    result is counted where it holds a transcript, as the package's own result does on the device the bench harness
+    provides; on the physical case (bme280) it is a measurement row with none, so those exchanges are not counted, and the
+    stage reads a number that is lower than what the device exchanged. And the replies a package's live test saw the device
+    reject are in its record and are not counted as `refusals` (the other tools' rejected replies are).
 
     A call is its `tool.started` event and its `tool.finished` event, paired by `dispatch_id`; one that never finished,
     as when its tool raised, still counts as a call, and one finished twice counts once.
@@ -336,7 +367,7 @@ def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None) -> 
     assigned, begun, ended = {stage: [] for stage in STAGES}, {}, {stage: [] for stage in STAGES}
     managed, device = {stage: {} for stage in STAGES}, {stage: dict.fromkeys(DEVICE, 0) for stage in STAGES}
     active, counted = [], set()  # (time, stage) of each assignment or skip; the sessions already counted as resets
-    unknown = set()  # the stages with a live record of a package test that cannot be used
+    unknown = set()  # the stages whose exchanges cannot be told (see the docstring)
     calls = {}
     for seq, kind, data, created in events:
         stage = data.get('stage')
@@ -366,6 +397,10 @@ def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None) -> 
             if isinstance(started.get('name'), str):
                 managed[stage][started['name']] = managed[stage].get(started['name'], 0) + 1
             device[stage]['writes'] += bool(started.get('effectful'))
+            if finished is None and started.get('name') in DEVICE_TOOLS and started.get('connected') is not False:
+                # It never finished, as when its tool raised, so it may have reached the device and nothing says what it
+                # exchanged. A replay (`connected` false) never connects.
+                unknown.add(stage)
         if finished is not None:
             exchanged, rejected = _exchanges(finished.get('result'))
             if finished.get('name') == 'emit_test_live':
@@ -470,11 +505,14 @@ def _groups(rows):
 
 def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | None = None) -> dict:
     """The scorecard of a suite, schema `benchmark-scorecard/1`, from its `benchmark-suite-report/3` and the records of
-    the runs its trials started. It says what it measures: the `suite_id`; the `system`, the report's `protocol` and its
-    experiment's dimensions (runtime, model and so on) but for `replay_candidates`, which map cases to candidates; and the
-    `conditions` it ran under, from the experiment's comparison identity (its `scoring_set` when it has one, the
-    evaluator revision, execution, evidence track and scope, the effective child budget and the number of its overrides,
-    which name trial keys, the repair limit, the tool approval) and the report's qualification. None is a per-trial detail.
+    the runs its trials started. It says what it measures: the `suite_id`; whether the suite is still under way or was
+    stopped before its slots settled (the report's `provisional` flag, the suite's `status` and its `reason`, None for a
+    report that gives none; a scoring suite's reason names a trial and why it stopped, so its card has none); the
+    `system`, the report's `protocol` and its experiment's dimensions (runtime, model and so on) but for
+    `replay_candidates`, which map cases to candidates; and the `conditions` it ran under, from the experiment's
+    comparison identity (its `scoring_set` when it has one, the evaluator revision, execution, evidence track and scope,
+    the effective child budget and the number of its overrides, which name trial keys, the repair limit, the tool
+    approval) and the report's qualification. None is a per-trial detail.
     Then come the `pass_rate` of the report's stored `scored` outcomes and its `pass_line`; the `joint_verdict`, the
     report's `equivalent_and_mission` count of equivalent drivers with a successful fresh mission that earlier studies
     reported, when it has one; the `groups`, that pass rate by each value of each of `family`, `level` and `framing`
@@ -482,18 +520,23 @@ def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | N
     ran a replay suite's trials; `measured_trials`; and the figures of `trial_metrics` added up over the trials, under
     `run` (repairs and claim) and `stages` (each stage).
 
-    Metrics come from every trial with a run, whatever its outcome, read in `home` and, for a trial whose key `trial_dirs`
-    names, its trial directory (`bench_trial_dirs`). A trial with no run counts in the pass rate alone. A figure sits at
-    the key path it has in a trial's metrics, summed over the trials that gave it: a None is skipped, a figure no trial
-    gave is None, and `measured` counts the trials that gave it, so a sum over some trials is never taken for the whole.
-    The medians of times and tokens are under `median`. Counts that are never unknown (attempts, managed calls, device)
-    are plain sums. In `run` the repairs are summed the same way, and each yes/no figure of the claim is how many trials
-    answered true, false and unknown.
+    The two `execution` fields differ for a replay suite: the card's own says how its trials were run
+    (`replay-emulation`, from the report), and `conditions.execution` is what the frozen experiment declared
+    (`actual-agent-emulation`), the field pairing compares.
+
+    Metrics come from every trial with a run that is not still running, whatever its outcome, read in `home` and, for a
+    trial whose key `trial_dirs` names, its trial directory (`bench_trial_dirs`). A trial with no run counts in the pass
+    rate alone, and so does one scored `running`: its records are still moving, so they are not read or summed, and it is
+    not among the `measured_trials`. A figure sits at the key path it has in a trial's metrics, summed over the trials
+    that gave it: a None is skipped, a figure no trial gave is None, and `measured` counts the trials that gave it, so a
+    sum over some trials is never taken for the whole. The medians of times and tokens are under `median`. Counts that
+    are never unknown (attempts, managed calls, device) are plain sums. In `run` the repairs are summed the same way, and
+    each yes/no figure of the claim is how many trials answered true, false and unknown.
 
     A report that carries a scoring set gives aggregates only: no `trials`, and no case, run id or trial key. Any other
     adds `trials`, a `{trial_key, scored, equivalent_and_mission, metrics}` row for each planned trial (the flag where
-    the report's row has one), its metrics None without a run. Audit findings quote raw worker commands and are in no
-    scorecard.
+    the report's row has one), its metrics None without a run or while it runs. Audit findings quote raw worker commands
+    and are in no scorecard.
 
     Raises ValueError for a report that is not a `benchmark-suite-report/3`, which alone stores each trial's outcome,
     and what `trial_metrics` raises for a run that `home` does not hold."""
@@ -504,7 +547,7 @@ def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | N
     budget, policy = identity['budgets']['effective'], identity['intervention_policy']
     rate = pass_rate([row.get('scored') for row in rows])
     metrics = {row['trial_key']: trial_metrics(home, row['run_id'], trial_dir=trial_dirs.get(row['trial_key']))
-               for row in rows if row.get('run_id')}
+               for row in rows if row.get('run_id') and row.get('scored') != 'running'}
     measured = list(metrics.values())
     stages = {stage: _stage_figures([trial['stages'][stage] for trial in measured]) for stage in STAGES}
     system = {'protocol': report['protocol'],
@@ -516,7 +559,10 @@ def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | N
                   'max_model_repairs': policy['max_model_repairs'],
                   'scoped_tool_approval': policy['scoped_tool_approval'], 'qualification': report['qualification']}
     joint = {'joint_verdict': dict(report['equivalent_and_mission'])} if 'equivalent_and_mission' in report else {}
-    card = {'schema': SUITE_SCHEMA, 'suite_id': report['suite_id'], 'system': system, 'conditions': conditions,
+    # A scoring suite's reason names a trial and why it stopped: a detail of one scoring trial, which stays inside.
+    reason = None if 'scoring_set' in identity else report.get('reason')
+    card = {'schema': SUITE_SCHEMA, 'suite_id': report['suite_id'], 'provisional': report.get('provisional'),
+            'status': report.get('status'), 'reason': reason, 'system': system, 'conditions': conditions,
             **{key: report[key] for key in LABELS if key in report}, 'pass_rate': rate, 'pass_line': pass_rate_line(rate),
             **joint, 'groups': _groups(rows), 'measured_trials': len(measured), 'run': _run_figures(measured),
             'stages': stages}
@@ -543,20 +589,29 @@ def _row(*cells):
 
 
 def scorecard_markdown(card: dict) -> str:
-    """A scorecard as Markdown, aggregates only: it names no trial. The first line is the pass line; the second says so
-    when no model ran the trials (`model_benchmark` is False). Under them, one line names the system (protocol, runtime
-    and version, model and reasoning effort), one the scoring set (its registration and the first 12 characters of its
-    manifest hash) of a suite that ran one, and one gives the joint verdict of earlier studies. Then come the pass line
-    of each group, the run figures, a row of sums and one of medians for each stage, and the managed calls by tool. A
-    figure that no trial measured reads `unknown`, and one that only some did is marked with how many (`n/N`)."""
+    """A scorecard as Markdown, aggregates only: it names no trial. The first line is the pass line. A suite that is still
+    under way, or stopped before its slots settled, says so on the second (`Provisional: suite <status>`, then its reason
+    when the card has one), and a suite no model ran says so on the next (`model_benchmark` is False). Under them, one
+    line names the system (protocol, runtime and version, model and reasoning effort, and how it executed and on what
+    evidence: the card's own `execution` when it has one, else the conditions', then the evidence track), one the scoring
+    set (its registration and the first 12 characters of its manifest hash) of a suite that ran one, and one gives the
+    joint verdict of earlier studies. Then come the pass line of each group, the run figures, a row of sums and one of
+    medians for each stage, and the managed calls by tool. A figure that no trial measured reads `unknown`, and one that
+    only some did is marked with how many (`n/N`)."""
     trials, stages, run = card['measured_trials'], card['stages'], card['run']
     lines = [card['pass_line']]
+    if card.get('provisional'):
+        reason = ' '.join(str(card['reason']).split()) if card.get('reason') else ''
+        lines.append(f"Provisional: suite {card.get('status') or 'status unknown'}" + (f': {reason}' if reason else ''))
     if card.get('model_benchmark') is False:
         label = f" ({card['execution']})" if card.get('execution') else ''
         lines.append(f'No model ran these trials{label}: none of these figures is model performance.')
     named = [('protocol', card['system'].get('protocol')),
              ('runtime', ' '.join(str(card['system'][key]) for key in ('runtime', 'version') if card['system'].get(key))),
-             ('model', card['system'].get('model')), ('reasoning effort', card['system'].get('reasoning_effort'))]
+             ('model', card['system'].get('model')), ('reasoning effort', card['system'].get('reasoning_effort')),
+             # How the trials were run (a replay suite's own label) before what the frozen experiment declared.
+             ('execution', card.get('execution') or card['conditions'].get('execution')),
+             ('evidence track', card['conditions'].get('evidence_track'))]
     lines.append('System: ' + ', '.join(f'{label} {value}' for label, value in named if value))
     if 'scoring_set' in card['conditions']:
         scoring = card['conditions']['scoring_set']
@@ -565,7 +620,8 @@ def scorecard_markdown(card: dict) -> str:
         joint = card['joint_verdict']
         lines += ['', "Earlier studies' joint verdict (an equivalent driver and a successful fresh mission): "
                       f"{joint['passed']} of {joint['denominator']} planned trials."]
-    lines += ['', f"Figures cover {trials} of {card['pass_rate']['planned']} planned trials, those with a run. A sum or "
+    still = ' that is not still running' if card['pass_rate']['running'] else ''
+    lines += ['', f"Figures cover {trials} of {card['pass_rate']['planned']} planned trials, those with a run{still}. A sum or "
               'median that fewer of them measured shows how many (`n/N`); `unknown` means none did.', '']
     if card['groups']:
         lines += ['## Groups', '', *(f'- {key} `{value}`: {pass_rate_line(rate)}'

@@ -191,7 +191,8 @@ class SuiteExportTests(unittest.TestCase):
         outcomes = [classify(trial, report) for trial, report in zip(trials, reports)]
         self.assertEqual(outcomes, ['pass', 'failure', 'failure', 'fault', 'running',
                                     'fault', 'fault', 'fault', 'not_run'])
-        self.assertEqual(pass_rate_line(pass_rate(outcomes)), '1/3 pass, 0 unknown, 4 faults, 9 planned')
+        # One trial is still running and one never ran, so the line says so after the planned count.
+        self.assertEqual(pass_rate_line(pass_rate(outcomes)), '1/3 pass, 0 unknown, 4 faults, 9 planned, 1 running, 1 not run')
         # The exported rows say the same, though they carry no workflow_status and no budget.
         self.assertEqual([classify(row, row) for row in rows], outcomes)
 
@@ -225,13 +226,25 @@ class PassRateTests(unittest.TestCase):
         self.assertEqual((rate['rate'], pass_rate_line(rate)), (7 / 9, '7/9 pass, 1 unknown, 2 faults, 12 planned'))
 
     def test_flagged_trials_are_named_only_when_there_are_some(self):
-        self.assertEqual(pass_rate_line(pass_rate(['pass', 'flagged', 'running', 'not_run'])),
-                         '1/1 pass, 0 unknown, 0 faults, 4 planned, 1 flagged')
+        self.assertEqual(pass_rate_line(pass_rate(['pass', 'flagged'])), '1/1 pass, 0 unknown, 0 faults, 2 planned, 1 flagged')
         self.assertEqual(pass_rate_line(pass_rate(['pass'])), '1/1 pass, 0 unknown, 0 faults, 1 planned')
+
+    def test_running_and_not_run_trials_are_named_after_the_flagged_ones_only_when_there_are_some(self):
+        # Catches the line of a suite still under way, or stopped before every slot ran, reading as a finished suite's: the
+        # trials that are neither graded nor counted as faults are named, each count only when it is not zero.
+        self.assertEqual(pass_rate_line(pass_rate(['pass', 'flagged', 'running', 'not_run'])),
+                         '1/1 pass, 0 unknown, 0 faults, 4 planned, 1 flagged, 1 running, 1 not run')
+        self.assertEqual(pass_rate_line(pass_rate(['pass', 'failure', 'running', 'running', 'running'])),
+                         '1/2 pass, 0 unknown, 0 faults, 5 planned, 3 running')
+        self.assertEqual(pass_rate_line(pass_rate(['pass', 'not_run', 'not_run'])),
+                         '1/1 pass, 0 unknown, 0 faults, 3 planned, 2 not run')
+        # A finished suite's line is the spec's, as it was.
+        self.assertEqual(pass_rate_line(pass_rate(['pass'] * 7 + ['failure'] * 2 + ['unknown'] + ['fault'] * 2)),
+                         '7/9 pass, 1 unknown, 2 faults, 12 planned')
 
     def test_no_rate_without_a_graded_trial(self):
         rate = pass_rate(['unknown', 'fault', 'running'])
-        self.assertEqual((rate['rate'], pass_rate_line(rate)), (None, '0/0 pass, 1 unknown, 1 faults, 3 planned'))
+        self.assertEqual((rate['rate'], pass_rate_line(rate)), (None, '0/0 pass, 1 unknown, 1 faults, 3 planned, 1 running'))
         self.assertIsNone(pass_rate([])['rate'])
 
     def test_every_planned_trial_is_in_exactly_one_count(self):

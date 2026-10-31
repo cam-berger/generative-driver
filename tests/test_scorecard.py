@@ -87,14 +87,29 @@ def package_output(*entries):
             'transcript': list(entries)}
 
 
+def live_result(number, output):
+    """The entry the tool keeps for one call of a live test (`_live_call` in the toolchain's interface.py). `output` is what
+    the package printed, if that is an interface-result (a dict); a string is the `error_code` of a call that left no
+    process result because the host failed around it (`open`: the process could not be started; `timeout`; `host`: the host
+    failed around the call); anything else is what the package printed when that is no interface-result: None for no
+    JSON, or JSON that is not an object."""
+    entry = {'operation': 'op%d' % number, 'command': ['python', '-I'], 'returncode': 0, 'stdout_json': output, 'stderr': '',
+             'ok': True, 'error_code': None, 'error_message': None, 'fault': None}
+    if isinstance(output, dict):
+        return entry
+    if isinstance(output, str):
+        return {**entry, 'stdout_json': None, 'returncode': None, 'command': None if output == 'host' else entry['command'],
+                'ok': False, 'error_code': output, 'error_message': output + ' (scripted)', 'fault': 'host'}
+    return {**entry, 'ok': False, 'error_code': 'package_output', 'error_message': 'package printed no JSON result',
+            'fault': 'host'}
+
+
 def write_live_record(tools, *outputs, name='live-1.json'):
-    """Write the record emit_test_live keeps in `<tools>/emit/<name>` as the tool does, a result for each of `outputs` (what the
-    package printed for an operation, or None when it printed no JSON), and return its path."""
+    """Write the record emit_test_live keeps in `<tools>/emit/<name>` as the tool does, a result for each of `outputs` (see
+    `live_result`), and return its path."""
     path = Path(tools) / 'emit' / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    results = [{'operation': 'op%d' % number, 'command': ['python', '-I'], 'returncode': 0, 'stdout_json': output, 'stderr': '',
-                'ok': output is not None, 'error_code': None, 'error_message': None, 'fault': None}
-               for number, output in enumerate(outputs)]
+    results = [live_result(number, output) for number, output in enumerate(outputs)]
     path.write_text(json.dumps({'schema': 'interface-live-test/1', 'package_dir': 'package', 'operations': ['op0'],
                                 'results': results, 'passed': len(results), 'failed': 0, 'not_run': [], 'ok': True,
                                 'verdict': 'pass'}), encoding='utf-8')
@@ -394,12 +409,14 @@ class TrialMetricsTests(unittest.TestCase):
         self.assertEqual((result['status'], result['uncertain_effect']), ('blocked', True))
         probe = trial_metrics(home, run)['stages']['probe']
         self.assertEqual(probe['managed_calls'], {'interface_execute': 1})
-        self.assertEqual(probe['device'], {'exchanges': 0, 'writes': 1, 'refusals': 0, 'resets': 0})
+        # The write may have reached the device, and what it exchanged was never recorded: unknown, not none.
+        self.assertEqual(probe['device'], {'exchanges': None, 'writes': 1, 'refusals': 0, 'resets': 0})
 
     def test_exchanges_count_where_a_result_keeps_them_and_a_call_that_raised_is_still_a_call(self):
         # An attempted exchange and a delay are no completed exchange. A probe's results each keep a transcript; a package
-        # call keeps its own and those of the preconditions it checked first. The last call raises after it started, so
-        # it has no finish and no refusal.
+        # call keeps its own and those of the preconditions it checked first. A last call raises after it started, so it
+        # has no finish and no refusal: it is a call, and the stage's exchanges, which may have missed the ones it made, are
+        # unknown instead of the 5 that the finished calls show.
         entry = lambda op, status: {**EXCHANGE, 'op': op, 'status': status}
         results = {
             'probe_run': {'ok': True, '_exit': 0, 'results': [
@@ -413,18 +430,24 @@ class TrialMetricsTests(unittest.TestCase):
             if arguments.get('operation') == 'identify':
                 raise RuntimeError('scripted tool failure')
             return results[name]
-        def work(controller, request):
-            if request.stage == 'probe':
-                call = gateway_call(controller, request)
-                call('probe_run', operation='read_temperature')
-                call('interface_execute', operation='read_temperature')
-                with self.assertRaisesRegex(RuntimeError, 'scripted tool failure'):
-                    call('interface_execute', operation='identify')
-        home, run, result = self.scripted(work, toolkit=tools)
-        self.assertEqual(result['status'], 'completed')
-        probe = trial_metrics(home, run)['stages']['probe']
-        self.assertEqual(probe['managed_calls'], {'interface_execute': 2, 'probe_run': 1})
+        def probed(raising):
+            def work(controller, request):
+                if request.stage == 'probe':
+                    call = gateway_call(controller, request)
+                    call('probe_run', operation='read_temperature')
+                    call('interface_execute', operation='read_temperature')
+                    if raising:
+                        with self.assertRaisesRegex(RuntimeError, 'scripted tool failure'):
+                            call('interface_execute', operation='identify')
+            home, run, result = self.scripted(work, toolkit=tools)
+            self.assertEqual(result['status'], 'completed')
+            return trial_metrics(home, run)['stages']['probe']
+        probe = probed(raising=False)
+        self.assertEqual(probe['managed_calls'], {'interface_execute': 1, 'probe_run': 1})
         self.assertEqual(probe['device'], {'exchanges': 5, 'writes': 0, 'refusals': 0, 'resets': 0})
+        probe = probed(raising=True)
+        self.assertEqual(probe['managed_calls'], {'interface_execute': 2, 'probe_run': 1})
+        self.assertEqual(probe['device'], {'exchanges': None, 'writes': 0, 'refusals': 0, 'resets': 0})
 
     def test_a_replay_of_a_recorded_probe_adds_no_exchange_and_no_refusal(self):
         # probe_diff replays a recorded probe against the model without contacting the device, yet its result holds the
@@ -464,11 +487,11 @@ class TrialMetricsTests(unittest.TestCase):
 
     def test_a_live_package_tests_exchanges_are_counted_from_the_record_its_result_names(self):
         # emit_test_live keeps only a summary in its result; the transcripts of its calls are in emit/live-N.json. Its first
-        # record has three operations, the last of which printed no JSON; an attempted exchange and a delay are no exchange.
+        # record has two operations; an attempted exchange and a delay are no exchange.
         # The reply a test saw the device reject is an exchange; only exchanges are read from the record, so it is no refusal.
         first = lambda tools: live_summary(write_live_record(
             tools, package_output(EXCHANGE, EXCHANGE),
-            package_output(EXCHANGE, {**EXCHANGE, 'status': 'attempted'}, {'op': 'delay', 'status': 'completed'}), None), 3)
+            package_output(EXCHANGE, {**EXCHANGE, 'status': 'attempted'}, {'op': 'delay', 'status': 'completed'})), 2)
         second = lambda tools: live_summary(write_live_record(
             tools, package_output({**EXCHANGE, 'op': 'usb_control'}, {**EXCHANGE, 'device_rejected': True}), name='live-2.json'))
         home, run, metrics = self.live_tested(first, second)
@@ -536,6 +559,73 @@ class TrialMetricsTests(unittest.TestCase):
                 self.assertEqual(reuse['managed_calls'], {'emit_test_live': 2})
                 self.assertEqual(reuse['device'], {'exchanges': None, 'writes': 0, 'refusals': 0, 'resets': 0})
                 self.assertEqual([metrics['stages'][stage]['device']['exchanges'] for stage in STAGES[:-1]], [0] * 5)
+
+    def test_a_call_of_a_live_test_that_left_no_result_of_the_package_leaves_the_exchanges_unknown(self):
+        # Catches a call with no usable result counted as no exchange, which shows a lower bound as the exact figure: the tool's
+        # own comment says that a host failure around a call may already have reached the device, and a package that timed
+        # out or printed something that is no interface-result may have exchanged with it before. A first call counts two
+        # exchanges, and a second call with no result, in a record of its own or among good calls, makes the stage's exchanges
+        # unknown: not 2 and not 0.
+        good = lambda tools: live_summary(write_live_record(tools, package_output(EXCHANGE, EXCHANGE)))
+        cases = {'the package printed no JSON': None, 'the package printed JSON that is no object': [1, 2], 'a number': 7,
+                 'the process timed out': 'timeout', 'the host failed around the call': 'host'}
+        for name, output in cases.items():
+            alone = lambda tools, output=output: live_summary(write_live_record(tools, output, name='live-2.json'))
+            among = lambda tools, output=output: live_summary(write_live_record(
+                tools, package_output(EXCHANGE), output, package_output(EXCHANGE), name='live-2.json'), 3)
+            for where, bad in (('in a record of its own', alone), ('among good calls', among)):
+                with self.subTest(name + ', ' + where):
+                    home, run, metrics = self.live_tested(good, bad)
+                    reuse = metrics['stages']['reuse']
+                    self.assertEqual(reuse['managed_calls'], {'emit_test_live': 2})
+                    self.assertEqual(reuse['device'], {'exchanges': None, 'writes': 0, 'refusals': 0, 'resets': 0})
+                    self.assertEqual([metrics['stages'][stage]['device']['exchanges'] for stage in STAGES[:-1]], [0] * 5)
+
+    def test_a_call_whose_process_never_started_reached_no_device_and_is_an_exact_zero(self):
+        # The toolchain gives the code `open` to a call whose process could not be started (an OSError from the system), which
+        # cannot have exchanged anything, and counts it as failed; the exchanges of the calls around it are still exact. An entry
+        # that gives the code with a result the package printed is read by that result.
+        good = lambda tools: live_summary(write_live_record(tools, package_output(EXCHANGE, EXCHANGE)))
+        never = lambda tools: live_summary(write_live_record(tools, package_output(EXCHANGE), 'open', name='live-2.json'), 2)
+        home, run, metrics = self.live_tested(good, never)
+        self.assertEqual(metrics['stages']['reuse']['device'], {'exchanges': 3, 'writes': 0, 'refusals': 0, 'resets': 0})
+        # The one thing that makes a call with no result certain to have reached nothing is its code: no other is trusted.
+        for code in ('timeout', 'host'):
+            home, run, metrics = self.live_tested(good, lambda tools, code=code: live_summary(
+                write_live_record(tools, package_output(EXCHANGE), code, name='live-2.json'), 2))
+            self.assertIsNone(metrics['stages']['reuse']['device']['exchanges'], code)
+
+    def test_a_device_call_that_started_and_never_finished_leaves_the_stages_exchanges_unknown(self):
+        # Catches a call whose tool raised after it was dispatched counted as no exchange: it may already have reached the
+        # device, and nothing says what it exchanged. Only a call that connects to the device is meant: one to another tool
+        # (emit_package), a replay that never connects (its start says connected false), and a call that finished are
+        # exact. A start with no `connected` fact (an earlier build's) is read by the name of its tool.
+        home, run, before = self.probed_once()
+        def with_unfinished(**fields):
+            """Reuse's metrics with one call that started with `fields` and never finished; the start is taken out again."""
+            with contextlib.closing(database(home, 'rw')) as db, db:
+                db.execute('INSERT INTO events(run_id,kind,payload,created) VALUES(?,?,?,?)', (
+                    run, 'tool.started', json.dumps({'stage': 'reuse', 'effectful': False, **fields}), time.time()))
+            try:
+                return trial_metrics(home, run)
+            finally:
+                with contextlib.closing(database(home, 'rw')) as db, db:
+                    db.execute("DELETE FROM events WHERE run_id=? AND kind='tool.started' "
+                               "AND json_extract(payload, '$.stage')='reuse'", (run,))
+        self.assertEqual(before['stages']['reuse']['device'], NO_DEVICE)
+        for fields in ({'name': 'emit_package'}, {'name': 'probe_diff'}, {'name': 'probe_run', 'connected': False},
+                       {'name': 'interface_execute', 'connected': False}):
+            with self.subTest(fields):
+                reuse = with_unfinished(**fields)['stages']['reuse']
+                self.assertEqual((reuse['device'], reuse['managed_calls']), (NO_DEVICE, {fields['name']: 1}))
+        for name in ('probe_run', 'interface_execute', 'emit_test_live', 'benchmark_package_execute'):
+            for connected in ({}, {'connected': True}):
+                with self.subTest(name, **connected):
+                    after = with_unfinished(name=name, **connected)
+                    self.assertEqual(after['stages']['reuse']['device'], {**NO_DEVICE, 'exchanges': None})
+                    self.assertEqual(after['stages']['reuse']['managed_calls'], {name: 1})
+                    # Only the stage the call was made in is unknown.
+                    self.assertEqual(after['stages']['probe'], before['stages']['probe'])
 
     def test_a_call_that_named_no_record_because_it_reached_no_device_is_an_exact_zero(self):
         # emit_test_live refuses before contact (a binding or grant it refuses, a package that fails its snapshot check) with
@@ -766,12 +856,16 @@ class TrialMetricsTests(unittest.TestCase):
         self.assertEqual(trial_metrics(home, run)['stages']['probe']['worker_actions'], UNKNOWN_ACTIONS)
 
     def test_a_transcript_counts_its_completed_actions_and_skips_every_other_line(self):
-        # Lines that are not completed actions: one that started, a message, records that are no item, JSON that is no
-        # record, and bytes that are no text. A directory with a transcript's name is no transcript.
+        # Lines that are not completed actions: one that started, a message, records that are no item, an item whose type is
+        # no name at all (a list or an object cannot be looked up), JSON that is no record or is nested too deeply to read,
+        # and bytes that are no text. A directory with a transcript's name is no transcript.
         others = [json.dumps({'type': 'item.started', 'item': {'type': 'command_execution'}}),
                   json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'done'}}),
                   json.dumps({'type': 'item.completed', 'item': 'file_change'}), json.dumps({'type': 'item.completed'}),
-                  json.dumps({'type': 'turn.completed', 'usage': USAGE}), '[1, 2]', '3', 'not json', b'\xff\xfe not text']
+                  json.dumps({'type': 'item.completed', 'item': {'type': ['command_execution']}}),
+                  json.dumps({'type': 'item.completed', 'item': {'type': {'command_execution': 1}}}),
+                  json.dumps({'type': 'turn.completed', 'usage': USAGE}), '[1, 2]', '3', 'not json', b'\xff\xfe not text',
+                  '[' * 50000 + ']' * 50000]
         def work(controller, request):
             if request.stage == 'probe':
                 write_transcript(request.workspace, 'command_execution', 'mcp_tool_call', 'command_execution', lines=others)
@@ -957,17 +1051,20 @@ class SuiteScorecardTests(unittest.TestCase):
         self.assertEqual((card['run']['repairs'], card['run']['measured']), (None, {'repairs': 0}))
         self.assertEqual(card['run']['claim']['agrees'], answers(0, 0, 1))
 
-    def test_metrics_come_from_every_trial_with_a_run_whatever_its_outcome(self):
-        # A trial with no run counts in the pass rate alone, and asks for no metrics. The tokens of the faulted, flagged
-        # and unsettled trials are in the totals: the scorecard measures what the system used, not only what it passed.
+    def test_metrics_come_from_every_trial_with_a_run_that_is_not_still_running_whatever_its_outcome(self):
+        # A trial with no run counts in the pass rate alone, and asks for no metrics; neither does a trial still running, whose
+        # records are still moving (so the running trial d5 has none here, and asking for them would fail the test). The
+        # tokens of the faulted and flagged trials are in the totals: the scorecard measures what the system used, not only
+        # what it passed.
         outcomes = {'d0': 'pass', 'd1': 'failure', 'd2': 'unknown', 'd3': 'fault', 'd4': 'flagged', 'd5': 'running',
                     'd6': 'not_run'}
-        metrics = {'r%d' % number: probed('r%d' % number, 10 * (number + 1)) for number in range(6)}
+        metrics = {'r%d' % number: probed('r%d' % number, 10 * (number + 1)) for number in range(5)}
         card = self.card(scoring_report(outcomes), metrics)
-        self.assertEqual(card['pass_line'], '1/2 pass, 1 unknown, 1 faults, 7 planned, 1 flagged')
-        self.assertEqual((card['measured_trials'], card['pass_rate']['planned'], card['pass_rate']['not_run']), (6, 7, 1))
-        self.assertEqual(card['stages']['probe']['tokens']['total'], 210)
-        self.assertEqual(card['stages']['probe']['measured']['tokens']['total'], 6)
+        self.assertEqual(card['pass_line'], '1/2 pass, 1 unknown, 1 faults, 7 planned, 1 flagged, 1 running, 1 not run')
+        self.assertEqual((card['measured_trials'], card['pass_rate']['planned'], card['pass_rate']['running'],
+                          card['pass_rate']['not_run']), (5, 7, 1, 1))
+        self.assertEqual(card['stages']['probe']['tokens']['total'], 150)
+        self.assertEqual(card['stages']['probe']['measured']['tokens']['total'], 5)
         # Nothing ran: the scorecard is the pass rate alone, with nothing measured.
         card = self.card(scoring_report({'d0': 'not_run'}), {})
         self.assertEqual((card['measured_trials'], card['stages']['probe']['tokens']['total'], card['run']['repairs']),
@@ -998,6 +1095,22 @@ class SuiteScorecardTests(unittest.TestCase):
         replayed = self.card(scoring_report({'d0': 'pass'}, execution='replay-emulation', model_benchmark=False),
                              {'r0': blank_metrics('r0')})
         self.assertEqual((replayed['execution'], replayed['model_benchmark']), ('replay-emulation', False))
+
+    def test_a_replay_suites_card_has_its_own_execution_beside_the_one_its_frozen_experiment_declared(self):
+        # Pins a pair the suite report makes: `execution` at the top of the card says how the trials were run, which the
+        # report labels replay-emulation since no model ran them, and `conditions.execution` is what the frozen experiment
+        # declared, the field a comparison matches on. The system line of the Markdown names the first.
+        from test_assistive_reports import assistive_fixture
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        suite, trials, reports, experiment = assistive_fixture()
+        experiment['dimensions'] = {'runtime': 'replay', 'replay_candidates': {entry['case']: 'e' * 64 for entry in suite['entries']}}
+        report = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
+        report.update(suite_id='suite-1', status='completed', reason=None)
+        card = self.card(report, {row['run_id']: blank_metrics(row['run_id']) for row in report['trials'] if row['run_id']})
+        self.assertEqual((card['execution'], card['model_benchmark']), ('replay-emulation', False))
+        self.assertEqual((card['conditions']['execution'], card['conditions']['evidence_track']), ('actual-agent-emulation', 'firmware'))
+        self.assertIn('System: protocol assistive/1, runtime replay, execution replay-emulation, evidence track firmware\n',
+                      scorecard_markdown(card))
 
     def test_the_scorecard_names_its_suite_its_system_and_the_conditions_it_ran_under(self):
         # Suite-level identities, none a per-trial detail: the child budget overrides name trial keys, so only their number is
@@ -1062,6 +1175,49 @@ class SuiteScorecardTests(unittest.TestCase):
         self.assertIn("successful fresh mission): 0 of 9 planned trials.", scorecard_markdown(flagged))
         self.assertIn("successful fresh mission): 1 of 9 planned trials.", scorecard_markdown(honest))
 
+    def test_a_suite_still_under_way_carries_that_and_sums_only_the_trials_that_are_not_running(self):
+        # Catches the scorecard of a running suite reading as a final one's, and a sum over records that are still moving. The
+        # card carries the report's provisional flag, status and reason; the pass line, the groups and `planned` name the
+        # running and unrun trials; and only the trials that are not running are measured, the running trial not even read.
+        report = scoring_report({'d0': 'pass', 'd1': 'failure', 'd2': 'running', 'd3': 'not_run'}, scoring=False,
+                                provisional=True, status='running', reason=None)
+        for row, level in zip(report['trials'], (1, 1, 1, 2)):
+            row['level'] = level
+        metrics, asked = {'r0': probed('r0', 10), 'r1': probed('r1', 20), 'r2': probed('r2', 1000)}, []
+        with patch('generative_driver.benchmark_support.scorecard.trial_metrics',
+                   side_effect=lambda home, run_id, **_: asked.append(run_id) or metrics[run_id]):
+            card = suite_scorecard(report, home=self.home)
+        self.assertEqual(asked, ['r0', 'r1'])
+        self.assertEqual(card['pass_line'], '1/2 pass, 0 unknown, 0 faults, 4 planned, 1 running, 1 not run')
+        self.assertEqual((card['provisional'], card['status'], card['reason']), (True, 'running', None))
+        self.assertEqual(card['groups']['level'], {'1': pass_rate(['pass', 'failure', 'running']), '2': pass_rate(['not_run'])})
+        self.assertEqual(card['measured_trials'], 2)
+        probe = card['stages']['probe']
+        self.assertEqual((probe['attempts'], probe['tokens']['total'], probe['measured']['tokens']['total']), (2, 30, 2))
+        # The trial's own row stays, with nothing measured, like a trial that never ran.
+        self.assertEqual([(row['scored'], row['metrics'] and row['metrics']['run_id']) for row in card['trials']],
+                         [('pass', 'r0'), ('failure', 'r1'), ('running', None), ('not_run', None)])
+
+    def test_a_finished_suite_is_not_provisional_and_a_report_that_says_nothing_is_taken_for_neither(self):
+        # Catches a flag, a status or a reason made up for a report that has none, and a finished suite called provisional.
+        blank = {'r0': blank_metrics('r0')}
+        card = self.card(scoring_report({'d0': 'pass'}, provisional=False, status='completed', reason=None), blank)
+        self.assertEqual((card['provisional'], card['status'], card['reason']), (False, 'completed', None))
+        card = self.card(scoring_report({'d0': 'pass'}), blank)
+        self.assertEqual((card['provisional'], card['status'], card['reason']), (None, None, None))
+
+    def test_a_stopped_suites_reason_is_carried_unless_it_names_a_trial_of_a_scoring_set(self):
+        # Catches a scoring suite's scorecard quoting the reason the configurator gave for a stop, which names the trial and
+        # why it stopped: the aggregate has the status and the flag alone. Any other suite's card carries it.
+        reason = 'Trial entry-001-repeat-000 stopped: Stopped at probe'
+        blank = {'r0': blank_metrics('r0'), 'r1': blank_metrics('r1')}
+        outcomes = {'d0': 'pass', 'd1': 'fault'}
+        plain = self.card(scoring_report(outcomes, scoring=False, provisional=True, status='blocked', reason=reason), blank)
+        self.assertEqual((plain['provisional'], plain['status'], plain['reason']), (True, 'blocked', reason))
+        sealed = self.card(scoring_report(outcomes, provisional=True, status='blocked', reason=reason), blank)
+        self.assertEqual((sealed['provisional'], sealed['status'], sealed['reason']), (True, 'blocked', None))
+        self.assertNotIn('entry-001', json.dumps(sealed) + scorecard_markdown(sealed))
+
     def test_a_suite_with_no_scoring_set_adds_a_row_for_each_trial_and_never_the_audit(self):
         # Every planned trial has a row, one with no run included, and a row is its key, outcome and metrics. A flagged
         # trial's findings quote the worker's raw command: they are in no scorecard.
@@ -1074,7 +1230,7 @@ class SuiteScorecardTests(unittest.TestCase):
             {'trial_key': 'entry-000-repeat-000', 'scored': 'pass', 'metrics': metrics['r0']},
             {'trial_key': 'entry-001-repeat-000', 'scored': 'not_run', 'metrics': None},
             {'trial_key': 'entry-002-repeat-000', 'scored': 'flagged', 'metrics': metrics['r2']}])
-        self.assertEqual(card['pass_line'], '1/1 pass, 0 unknown, 0 faults, 3 planned, 1 flagged')
+        self.assertEqual(card['pass_line'], '1/1 pass, 0 unknown, 0 faults, 3 planned, 1 flagged, 1 not run')
         self.assertNotIn('Groundtruth', json.dumps(card))
 
     def test_a_scoring_suites_scorecard_names_no_case_run_or_trial_and_quotes_no_command(self):
@@ -1141,22 +1297,52 @@ class ScorecardMarkdownTests(unittest.TestCase):
         self.assertEqual(lines[0], '1/1 pass, 0 unknown, 0 faults, 1 planned')
         self.assertRegex(lines[1], r'^No model ran these trials \(replay-emulation\): none of these figures is model performance')
 
+    def test_a_suite_still_under_way_says_so_on_its_second_line_ahead_of_the_replay_and_system_lines(self):
+        # Catches the Markdown of a running or stopped suite reading as a final one's. The second line gives the suite's
+        # status, and its reason when it has one; the line that says no model ran, and the system line, follow it. A finished
+        # suite has no such line. The figures line says that running trials are not among those measured.
+        blank = {'r0': blank_metrics('r0'), 'r1': blank_metrics('r1')}
+        outcomes = {'d0': 'pass', 'd1': 'failure', 'd2': 'running', 'd3': 'not_run'}
+        line = '1/2 pass, 0 unknown, 0 faults, 4 planned, 1 running, 1 not run'
+        text = self.markdown(scoring_report(outcomes, provisional=True, status='running', reason=None), blank)
+        lines = text.splitlines()
+        self.assertEqual(lines[:2], [line, 'Provisional: suite running'])
+        self.assertRegex(lines[2], r'^System: protocol assistive/1, runtime codex')
+        self.assertIn('\nFigures cover 2 of 4 planned trials, those with a run that is not still running.', text)
+        report = scoring_report(outcomes, scoring=False, provisional=True, status='blocked', execution='replay-emulation',
+                                model_benchmark=False, reason='Suite wall-clock budget exhausted\nafter 3 trials')
+        lines = self.markdown(report, blank).splitlines()
+        self.assertEqual(lines[:2], [line, 'Provisional: suite blocked: Suite wall-clock budget exhausted after 3 trials'])
+        self.assertRegex(lines[2], r'^No model ran these trials \(replay-emulation\)')
+        self.assertRegex(lines[3], r'^System: ')
+        # A scoring suite's reason is withheld (see the card), so its line gives the status alone.
+        report = scoring_report(outcomes, provisional=True, status='blocked', reason='Trial entry-001-repeat-000 stopped')
+        self.assertEqual(self.markdown(report, blank).splitlines()[1], 'Provisional: suite blocked')
+        # A finished suite, and a report that says nothing of it, have no such line, and measure every trial with a run.
+        for labels in (dict(provisional=False, status='completed', reason=None), {}):
+            text = self.markdown(scoring_report({'d0': 'pass', 'd1': 'failure'}, **labels), blank)
+            self.assertNotIn('Provisional', text)
+            self.assertIn('\nFigures cover 2 of 2 planned trials, those with a run.', text)
+
     def test_the_markdown_names_the_system_and_a_scoring_set_under_the_pass_line(self):
         blank = {'r0': blank_metrics('r0'), 'r1': blank_metrics('r1')}
-        system = 'System: protocol assistive/1, runtime codex 0.164.0, model toy-model, reasoning effort medium'
+        system = ('System: protocol assistive/1, runtime codex 0.164.0, model toy-model, reasoning effort medium, '
+                  'execution actual-agent-emulation, evidence track firmware')
         lines = self.markdown(scoring_report({'d0': 'pass', 'd1': 'failure'}), blank).splitlines()
         self.assertEqual(lines[:4], ['1/2 pass, 0 unknown, 0 faults, 2 planned', system,
                                      'Scoring set: generated-set-1, manifest abcdef012345', ''])
         # A suite that ran no scoring set names none.
         lines = self.markdown(scoring_report({'d0': 'pass', 'd1': 'failure'}, scoring=False), blank).splitlines()
         self.assertEqual(lines[:3], ['1/2 pass, 0 unknown, 0 faults, 2 planned', system, ''])
-        # A replay suite keeps its label on the second line; the system, which has no model, follows.
+        # A replay suite keeps its label on the second line; the system, which has no model, follows. It names how the trials
+        # executed as the report does (`replay-emulation`), not as the frozen experiment declared (actual-agent-emulation).
         report = scoring_report({'d0': 'pass'}, dimensions={'runtime': 'replay', 'replay_candidates': {'d0': 'e' * 64}},
                                 execution='replay-emulation', model_benchmark=False)
         lines = self.markdown(report, blank).splitlines()
         self.assertRegex(lines[1], r'^No model ran these trials')
-        self.assertEqual(lines[2], 'System: protocol assistive/1, runtime replay')
+        self.assertEqual(lines[2], 'System: protocol assistive/1, runtime replay, execution replay-emulation, evidence track firmware')
         self.assertNotIn('e' * 12, '\n'.join(lines))
+        self.assertNotIn('actual-agent-emulation', '\n'.join(lines))
 
     def test_the_markdown_gives_the_joint_verdict_of_earlier_studies_on_one_line(self):
         blank = {'r%d' % number: blank_metrics('r%d' % number) for number in range(3)}
@@ -1215,7 +1401,7 @@ class ScorecardMarkdownTests(unittest.TestCase):
 
     def test_a_suite_nothing_of_which_ran_is_unknown_everywhere_and_calls_nothing(self):
         text = self.markdown(scoring_report({'d0': 'not_run'}), {})
-        self.assertEqual(text.splitlines()[0], '0/0 pass, 0 unknown, 0 faults, 1 planned')
+        self.assertEqual(text.splitlines()[0], '0/0 pass, 0 unknown, 0 faults, 1 planned, 1 not run')
         self.assertIn('\nFigures cover 0 of 1 planned trials, those with a run.', text)
         for stage in STAGES:
             self.assertEqual(self.table_row(text, 'Stages', stage), [stage, '0'] + ['unknown'] * 7 + ['0'] * 3)
@@ -1344,6 +1530,12 @@ class RealSuiteTests(AssistiveFixture):
         self.assertEqual([card['stages'][stage]['attempts'] for stage in STAGES], [3] * 6)
         self.assertEqual((card['suite_id'], card['system']['protocol'], card['conditions']['qualification']),
                          (sid, 'assistive/1', 'recorded-controller-verdicts'))
+        # The suite stopped at the trial whose grade the evaluator's host failed to give, so the card is provisional, and a
+        # suite that ran no scoring set says why.
+        self.assertEqual((card['provisional'], card['status']), (True, 'blocked'))
+        self.assertIn(rows[2]['trial_key'] + ' is unscored', card['reason'])
+        self.assertEqual(json.loads((out / 'scorecard.json').read_text(encoding='utf-8'))['reason'], card['reason'])
+        self.assertEqual((out / 'scorecard.md').read_text(encoding='utf-8').splitlines()[1], 'Provisional: suite blocked: ' + card['reason'])
         self.assertNotIn('scoring_set', card['conditions'])
         self.assertEqual([type(row['equivalent_and_mission']) for row in card['trials']], [bool] * 3)
         directories = {call.args[1]: call.kwargs['trial_dir'] for call in measured.call_args_list}
@@ -1366,6 +1558,10 @@ class RealSuiteTests(AssistiveFixture):
         card = suite_scorecard(report, home=self.home, trial_dirs=bench_trial_dirs(report, self.home))
         self.assertNotIn('trials', card)
         self.assertEqual(card['pass_line'], '0/1 pass, 0 unknown, 1 faults, 3 planned, 1 flagged')
+        # The suite is blocked at a trial, and its reason names it: the aggregate says only that it is provisional.
+        self.assertIn(rows[2]['trial_key'], report['reason'])
+        self.assertEqual((card['provisional'], card['status'], card['reason']), (True, 'blocked', None))
+        self.assertEqual(scorecard_markdown(card).splitlines()[1], 'Provisional: suite blocked')
         # What the suite says of itself comes through whole: its id, system, conditions and joint count.
         self.assertEqual(card['suite_id'], sid)
         self.assertEqual(card['system'], {'protocol': report['protocol'], **report['experiment']['dimensions']})

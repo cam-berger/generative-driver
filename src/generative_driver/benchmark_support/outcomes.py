@@ -87,10 +87,13 @@ def pass_rate(outcomes: list[str]) -> dict:
 
 
 def pass_rate_line(rate: dict) -> str:
-    """The pass rate on one line, such as `7/9 pass, 1 unknown, 2 faults, 12 planned`, with a flagged count after it
-    when any trial was flagged."""
+    """The pass rate on one line, such as `7/9 pass, 1 unknown, 2 faults, 12 planned`. The trials that are no part of the
+    rate follow the planned count, each only when there are some: those flagged by the audit, those still running and
+    those not run, as in `7/9 pass, 1 unknown, 2 faults, 12 planned, 1 flagged, 1 running, 1 not run`. The line of a
+    finished suite with none flagged is the first form."""
     line = (f"{rate['passes']}/{rate['passes'] + rate['failures']} pass, {rate['unknown']} unknown, "
             f"{rate['faults']} faults, {rate['planned']} planned")
-    if rate['flagged']:
-        line += f", {rate['flagged']} flagged"
+    for key, words in (('flagged', 'flagged'), ('running', 'running'), ('not_run', 'not run')):
+        if rate[key]:
+            line += f", {rate[key]} {words}"
     return line

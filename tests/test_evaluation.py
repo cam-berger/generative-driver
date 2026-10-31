@@ -634,9 +634,10 @@ class HarnessGradingTests(PendingRunFixture):
                                  (equivalence, self.emitted(result)))
 
     def test_a_frozen_model_saved_with_a_byte_order_mark_or_as_utf16_is_graded_normally(self):
-        # Catches a model the configurator, toolkit and package runtime all read as bytes graded not equivalent because
-        # the grader read it as UTF-8 text: one saved with a byte-order mark or as UTF-16 is the driver's own and grades
-        # on the device like any other.
+        # Catches a model the configurator and the package runtime read as bytes graded not equivalent because the grader
+        # read it as UTF-8 text: one saved with a byte-order mark or as UTF-16 is the driver's own and grades on the device
+        # like any other. (The toolkit's emit check, `_toolchain/emit.py`, still reads the model as UTF-8 text, so today's
+        # toolkit refuses such a package first; this is tolerance for one a changed system may emit.)
         from generative_driver.benchmark_support import evaluator
         for name, codec in (('utf-8-bom', 'utf-8-sig'), ('utf-16', 'utf-16')):
             calls, unlocked = [], []
@@ -1269,7 +1270,8 @@ class PortableModelTests(unittest.TestCase):
 
     def test_the_final_phase_reads_a_frozen_model_saved_with_a_byte_order_mark_or_as_utf16(self):
         # Catches the final phase's invoker reading the frozen model as the host's locale text, which fails a model saved
-        # with a byte-order mark or as UTF-16 although the configurator, toolkit and package runtime parse its bytes.
+        # with a byte-order mark or as UTF-16 although the configurator and the package runtime parse its bytes (the
+        # toolkit's emit check reads text, and refuses such a package before it is handed on).
         from generative_driver.benchmark_support.emulated_actions import canonical_package_invoker
         from tq9_workflow_fixture import capabilities, model
         for name, codec in (('utf-8-bom', 'utf-8-sig'), ('utf-16', 'utf-16')):

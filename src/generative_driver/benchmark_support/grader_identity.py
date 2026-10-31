@@ -5,7 +5,9 @@ the registered families import, in function bodies too, and the parent packages 
 `__init__.py` runs first. The top-level `generative_driver/__init__.py` is not part of it. Loads that are not import
 statements (`import_module`, `__import__`) are not followed; list such a module in ENTRY_MODULES. The identity covers
 this closure alone, so the system under test can change without voiding an admission; SYSTEM_MODULES names the
-modules the closure must never reach.
+modules the closure must never reach. It is one tuple for the system under test and for the reporting code that reads
+the results of runs and suites (outcomes, audit, pairing, scorecard, the suite report and the corpus): reporting
+grades nothing, so a grading module that imports any of it fails the boundary test instead of moving the identity.
 """
 import ast
 import hashlib
@@ -18,16 +20,18 @@ from .snapshots import canonical_digest
 # Module names are relative to the generative_driver package.
 ENTRY_MODULES = ('benchmark_support.evaluator', 'benchmark_support.evidence', 'benchmark_support.registry',
                  'benchmark_support.calibration', 'benchmark_support.device_provider')
-# Not grading code: the system under test and the run, suite, authoring and calibration code around it.
+# Not grading code: the system under test and the run, suite, authoring and calibration code around it, and the reporting
+# code that reads what runs and suites recorded (the last row).
 SYSTEM_MODULES = ('configurator', 'toolkit', '_toolchain', 'agents', 'client', 'setup', 'benchmark', 'reporting',
                   'replay', 'device_access', 'analysis',
                   'benchmark_support.emulated', 'benchmark_support.cases', 'benchmark_support.ground',
                   'benchmark_support.physical', 'benchmark_support.legacy', 'benchmark_support.harness',
-                  'benchmark_support.suites', 'benchmark_support.suite_store', 'benchmark_support.suite_reporting',
-                  'benchmark_support.corpus', 'benchmark_support.authoring', 'benchmark_support.adapters',
-                  'benchmark_support.family_calibration', 'benchmark_support.asset_build', 'benchmark_support.rehosting',
-                  'benchmark_support.reference_calibration', 'benchmark_support.upstream_qualification',
-                  'benchmark_support.recorded_grading', 'interface_runtime')
+                  'benchmark_support.suites', 'benchmark_support.suite_store', 'benchmark_support.authoring',
+                  'benchmark_support.adapters', 'benchmark_support.family_calibration', 'benchmark_support.asset_build',
+                  'benchmark_support.rehosting', 'benchmark_support.reference_calibration',
+                  'benchmark_support.upstream_qualification', 'benchmark_support.recorded_grading', 'interface_runtime',
+                  'benchmark_support.outcomes', 'benchmark_support.audit', 'benchmark_support.pairing',
+                  'benchmark_support.scorecard', 'benchmark_support.suite_reporting', 'benchmark_support.corpus')
 _OUTSIDE = 'interface_runtime'  # the top-level package beside generative_driver: listed by name, never read
 
 

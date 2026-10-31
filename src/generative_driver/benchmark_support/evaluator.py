@@ -304,9 +304,11 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
         except (ValueError, RecursionError):
             pass
     if not isinstance(model, dict):
-        # The model is the driver's own bytes, parsed as the runtime parses them: one that is missing, not a file or
-        # not a JSON object fails the grade, before any truth is unlocked or device touched. Any other read error is
-        # the host's, since this is the grader's own private copy, and propagates.
+        # The model is the driver's own bytes, parsed from bytes as the runtime parses them (a byte-order mark or UTF-16
+        # reads), but only as far as JSON: the runtime also rejects duplicate keys, non-finite constants and a file over
+        # its size bound, and this check does not. One that is missing, not a file or not a JSON object fails the grade,
+        # before any truth is unlocked or device touched. Any other read error is the host's, since this is the grader's
+        # own private copy, and propagates.
         reason = "the frozen driver's model is missing or not JSON"
         return record('graded', False, [], [{'id': 'frozen_package', 'reason': reason}], sha, capabilities_sha, checked,
                       protocol=protocol), None

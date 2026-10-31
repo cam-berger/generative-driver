@@ -4,12 +4,14 @@ import copy
 import hashlib
 import json
 import math
+import re
 import statistics
 from pathlib import PurePosixPath,PureWindowsPath
 from .suites import normalize_manifest,expand_trials
 from .evidence import public_equivalence,public_pin,public_v2_report,public_v3_report,PIN,USAGE
 from .audit import audit_commands,forbidden_paths
 from .outcomes import classify,pass_rate,pass_rate_line
+from .pairing import paired_comparison
 from ..benchmark import STAGES
 
 QUALIFICATIONS={'recorded-controller-verdicts','regraded-encrypted-evidence'}
@@ -22,6 +24,10 @@ def _sha(value):
 
 def _exact(value,keys):
     if not isinstance(value,dict) or set(value)!=set(keys):raise ValueError('Incomplete or unknown experiment fields')
+
+def _protocol_name(value):
+    """Whether `value` is a protocol of the form `<name>/<n>`: a lowercase name and a positive integer."""
+    return isinstance(value,str) and re.fullmatch('[a-z]+/[1-9][0-9]*',value) is not None
 
 def _number(value,integer=False):
     if value is not None and (type(value) not in ((int,) if integer else (int,float)) or not math.isfinite(value) or value<0):
@@ -46,10 +52,17 @@ def _experiment(value):
     _exact(value,('schema','comparison_identity','dimensions','execution_snapshots'))
     if value['schema']!='benchmark-suite-experiment/1':raise ValueError('Unsupported experiment')
     identity=value['comparison_identity']
-    # A suite the bench harness drives names its protocol; one frozen before it names none and keeps its meaning.
+    # A suite the bench harness drives names its protocol; one frozen before it names none and keeps its meaning. A suite
+    # that ran a sealed scoring set names that too.
     _exact(identity,('manifest','manifest_sha256','entry_pins','trials','repetitions','execution','evidence_track','scope','time_policy','evaluator_revision','budgets','intervention_policy')
-           +(('protocol',) if 'protocol' in identity else ()))
-    if 'protocol' in identity and identity['protocol']!='assistive/1':raise ValueError('Unsupported suite protocol')
+           +(('protocol',) if 'protocol' in identity else ())+(('scoring_set',) if 'scoring_set' in identity else ()))
+    # Only a suite that ran a scoring set may name another protocol: it is compared with systems of any protocol, device by device.
+    if 'protocol' in identity and identity['protocol']!='assistive/1' and not ('scoring_set' in identity and _protocol_name(identity['protocol'])):
+        raise ValueError('Unsupported suite protocol')
+    if 'scoring_set' in identity:
+        scoring=identity['scoring_set']
+        if (not isinstance(scoring,dict) or set(scoring)!={'registration','manifest_sha256'} or not isinstance(scoring['registration'],str)
+                or not scoring['registration'].strip() or not _sha(scoring['manifest_sha256'])):raise ValueError('Invalid scoring set')
     manifest=normalize_manifest(identity['manifest']);slots=expand_trials(manifest)
     if identity['manifest_sha256']!=_digest(manifest) or identity['trials']!=slots or identity['repetitions']!=manifest['repetitions']:
         raise ValueError('Frozen suite identity mismatch')
@@ -126,6 +139,7 @@ def _experiment(value):
         if snapshot['trial_key']!=slot['trial_key'] or snapshot['snapshot_sha256'] is not None and not _sha(snapshot['snapshot_sha256']):raise ValueError('Invalid snapshot identity')
     return {'schema':'benchmark-suite-experiment/1','comparison_identity':{
         **({'protocol':identity['protocol']} if 'protocol' in identity else {}),
+        **({'scoring_set':{key:identity['scoring_set'][key] for key in ('registration','manifest_sha256')}} if 'scoring_set' in identity else {}),
         'manifest':manifest,'manifest_sha256':identity['manifest_sha256'],'entry_pins':public_pins,
         'trials':slots,'repetitions':manifest['repetitions'],
         **{key:identity[key] for key in ('execution','evidence_track','scope','evaluator_revision')},
@@ -159,14 +173,18 @@ def _report_success(report):
     return (all(any(gate.get('stage')==stage and _counts_ok(gate) for gate in gates) for stage in STAGES)
         and _counts_ok(report.get('final_evaluation',{})))
 
-def _report_equivalent(report):
+def _report_equivalent(report,protocol=None):
     """An assistive report's success: its one recorded verdict, a well-formed evaluator grade of a completed run, holds
-    the frozen driver equivalent."""
+    the frozen driver equivalent. The report and its grade name `protocol`, by default this installation's."""
     from ..configurator import PROTOCOL,_evaluation_errors
+    protocol=protocol or PROTOCOL
     equivalence=report.get('equivalence')
-    return (report.get('schema')=='benchmark-report/3' and report.get('protocol')==PROTOCOL
+    return (report.get('schema')=='benchmark-report/3' and report.get('protocol')==protocol
         and report.get('workflow_status')=='completed' and report.get('verdict')=='equivalent'
-        and isinstance(equivalence,dict) and not _evaluation_errors(equivalence)
+        # A grade names the protocol of its report. The configurator's schema holds a grade to this installation's, so it
+        # checks the rest of the record with that field set to its own.
+        and isinstance(equivalence,dict) and equivalence.get('protocol')==protocol
+        and not _evaluation_errors({**equivalence,'protocol':PROTOCOL})
         and equivalence['status']=='graded' and equivalence['equivalent'] is True)
 
 def _validate_trials(manifest,trials,reports,experiment):
@@ -375,6 +393,8 @@ def _saved_report(value):
     _validate_trials(experiment['comparison_identity']['manifest'],report['trials'],{},experiment)
     if report['schema']!='benchmark-suite-report/3' and any('scored' in t for t in report['trials']):
         raise ValueError('An earlier suite report stores no scored outcome')
+    if report['schema']!='benchmark-suite-report/3' and 'scoring_set' in experiment['comparison_identity']:
+        raise ValueError('An earlier suite report names no scoring set')
     key,win=('equivalence','equivalent') if protocol else ('success','passed')
     success=report[key];planned=len(report['trials'])
     if type(success.get(win)) is not int or not 0<=success[win]<=planned or success.get('denominator')!=planned or success.get('rate')!=success[win]/planned:
@@ -384,7 +404,7 @@ def _saved_report(value):
         raise ValueError('Saved '+key+' count differs from trial coverage')
     if protocol:
         joint=sum(t.get('status')=='finished' and t.get('outcome_category')=='completed'
-                  and _report_equivalent({**t,'schema':'benchmark-report/3','protocol':protocol,'workflow_status':'completed'})
+                  and _report_equivalent({**t,'schema':'benchmark-report/3','protocol':protocol,'workflow_status':'completed'},protocol)
                   and ((t.get('equivalence') or {}).get('mission') or {}).get('passed') is True for t in report['trials'])
         metric={'passed':joint,'denominator':planned,'rate':joint/planned}
         if 'equivalent_and_mission' in report and report['equivalent_and_mission']!=metric:
@@ -404,21 +424,32 @@ def _saved_report(value):
     return report
 
 
-def compare_suites(before,after):
-    """Compare saved public data only; this does not authenticate either report."""
+def compare_suites(before,after,*,leak_check=None):
+    """Compare saved public data only; this does not authenticate any report. Reports that both carry a scoring set pair
+    device by device whatever their protocols (`paired_comparison`), with `leak_check`, if given, the after system's fresh
+    batch. Any others compare as whole suites, and only within one protocol; they take no leak check."""
     result={'schema':'benchmark-suite-comparison/1','compatible':False}
     try:
         before=_saved_report(before);after=_saved_report(after)
+        if leak_check is not None:leak_check=_saved_report(leak_check)
     except (ValueError,KeyError,TypeError,OSError) as exc:
         return {**result,'reason':'Invalid or incomplete saved suite report'}
-    protocol=before.get('protocol')
-    if protocol!=after.get('protocol'):
-        # Results of different protocols are separate series: neither count is set beside the other.
-        return {**result,'reason':'Protocols differ: results of different protocols are separate series and are never compared'}
     replayed=lambda report:report['experiment']['dimensions'].get('runtime')=='replay'
     if replayed(before)!=replayed(after):
         # No model ran a replay suite's children: replay suites are a series of their own, never set beside model suites.
         return {**result,'reason':'Replay results and model runs are separate series and are never compared'}
+    ran_scoring_set=lambda report:'scoring_set' in report['experiment']['comparison_identity']
+    if ran_scoring_set(before) and ran_scoring_set(after):
+        try:
+            return paired_comparison(before,after,leak_check=leak_check)
+        except ValueError as exc:
+            return {**result,'reason':str(exc)}
+    if leak_check is not None:
+        return {**result,'reason':'A leak check needs two reports that carry a scoring set'}
+    protocol=before.get('protocol')
+    if protocol!=after.get('protocol'):
+        # Results of different protocols are separate series: neither count is set beside the other.
+        return {**result,'reason':'Protocols differ: results of different protocols are separate series and are never compared'}
     key='equivalence' if protocol else 'success'
     result.update({'before_'+key:before[key],'after_'+key:after[key]})
     if protocol:

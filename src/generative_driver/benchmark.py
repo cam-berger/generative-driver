@@ -135,6 +135,9 @@ def main(argv=None):
     suite_comparing = suites.add_parser('compare')
     suite_comparing.add_argument('before')
     suite_comparing.add_argument('after')
+    suite_comparing.add_argument('--leak-check', metavar='REPORT',
+                                 help='Saved suite report of the after system on a fresh batch of devices: with two '
+                                 'reports of one scoring set, tests whether the set leaked')
     running = commands.add_parser('run')
     running.add_argument('--case', default='setup-smoke', choices=case_ids())
     running.add_argument('--scenario')
@@ -245,7 +248,7 @@ def main(argv=None):
         if args.command == 'suite':
             if args.action == 'compare':
                 from .benchmark_support.suite_reporting import compare_suites
-                result = compare_suites(args.before, args.after)
+                result = compare_suites(args.before, args.after, leak_check=args.leak_check)
             elif args.action == 'report':
                 from .benchmark_support.suite_reporting import report_suite
                 result = report_suite(args.suite_id, output=args.output, audit_paths=tuple(args.audit_path or ()))

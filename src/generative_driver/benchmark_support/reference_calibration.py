@@ -122,6 +122,25 @@ def run_reference(pin, truth, model, capabilities, *, renode, image, output_dir,
         session.stop()
 
 
+def calibration_run(pin, truth, model, capabilities, *, renode, image, output_dir, private_dir, phase):
+    """One calibration run of a reference or mutant candidate, as both calibration runners make it: its result, whose
+    evidence is `output_dir/evaluation.json`. A diagnostic run executes the model (`run_reference`), its emulator session's
+    files in `private_dir`. A final run emits the model's package in `output_dir/emission`, its session's files in a
+    sibling of `private_dir` named with '-emission', and the grader then grades that package as a trial's frozen one
+    (`evaluator.reference_execute`) in `output_dir`, on a fresh emulator whose files go in `private_dir`; the two sessions
+    share no file."""
+    output_dir, private_dir = Path(output_dir), Path(private_dir)
+    if phase != 'final':
+        return run_reference(pin, truth, model, capabilities, renode=renode, image=image, output_dir=output_dir,
+                             phase=phase, private_dir=private_dir)
+    from .evaluator import reference_execute
+    emitted = run_reference(pin, truth, model, capabilities, renode=renode, image=image, output_dir=output_dir/'emission',
+                            phase=phase, private_dir=private_dir.with_name(private_dir.name + '-emission'))
+    return reference_execute(pin, truth, capabilities, renode=renode, image=image, output_dir=output_dir,
+                             package=Path(emitted['package_dir']), expected_package_sha256=emitted['package_sha256'],
+                             private_dir=private_dir)
+
+
 def calibrate(case_id, options):
     """Build, analyze and execute references/mutants; emit an evaluator-only release.
 
@@ -133,7 +152,6 @@ def calibrate(case_id, options):
     from .authoring import evaluator_directory, build_case
     from .registry import resolve_case, pin_case
     from .emulator import truth_for_case
-    from .evaluator import reference_execute
     from .truth import seal
     from .cases import _write
     from ..benchmark import case_root
@@ -232,13 +250,9 @@ def calibrate(case_id, options):
         def run(model, capabilities, scenario, name, phase='final'):
             image='firmware.bin'
             pin=pin_case(case_id,'original',0)
-            result=run_reference(pin,truth,model,capabilities,renode=tool_paths['renode'],phase=phase,
-                image=build_dir/image,output_dir=output/'runs'/name)
-            if phase=='final':
-                # The grader grades the emitted reference package as it grades a trial's frozen one, on a fresh emulator.
-                result=reference_execute(pin,truth,capabilities,renode=tool_paths['renode'],image=build_dir/image,
-                    output_dir=output/'runs'/name,package=Path(result['package_dir']),
-                    expected_package_sha256=result['package_sha256'])
+            # The run's emulator sessions keep their files in the private output, as qualification's do.
+            result=calibration_run(pin,truth,model,capabilities,renode=tool_paths['renode'],image=build_dir/image,
+                output_dir=output/'runs'/name,private_dir=output/'native'/name,phase=phase)
             record['runs'].append({'id':name,'scenario':scenario,'phase':phase,
                 'native_process_observed':result['native_process_observed'],'process':result['process'],
                 'image_sha256':record['images'][image], 'evidence_sha256':hashlib.sha256((output/'runs'/name/'evaluation.json').read_bytes()).hexdigest(),

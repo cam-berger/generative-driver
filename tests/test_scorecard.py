@@ -1304,11 +1304,18 @@ class ScorecardMarkdownTests(unittest.TestCase):
         blank = {'r0': blank_metrics('r0'), 'r1': blank_metrics('r1')}
         outcomes = {'d0': 'pass', 'd1': 'failure', 'd2': 'running', 'd3': 'not_run'}
         line = '1/2 pass, 0 unknown, 0 faults, 4 planned, 1 running, 1 not run'
-        text = self.markdown(scoring_report(outcomes, provisional=True, status='running', reason=None), blank)
+        report = scoring_report(outcomes, provisional=True, status='running', reason=None)
+        for row, level in zip(report['trials'], (1, 1, 1, 2)):
+            row['level'] = level
+        text = self.markdown(report, blank)
         lines = text.splitlines()
         self.assertEqual(lines[:2], [line, 'Provisional: suite running'])
         self.assertRegex(lines[2], r'^System: protocol assistive/1, runtime codex')
         self.assertIn('\nFigures cover 2 of 4 planned trials, those with a run that is not still running.', text)
+        # The pass line of each group names its running and unrun trials the same way.
+        for group in ('- family `generated`: ' + line, '- level `1`: 1/2 pass, 0 unknown, 0 faults, 3 planned, 1 running',
+                      '- level `2`: 0/0 pass, 0 unknown, 0 faults, 1 planned, 1 not run'):
+            self.assertIn('\n' + group + '\n', text)
         report = scoring_report(outcomes, scoring=False, provisional=True, status='blocked', execution='replay-emulation',
                                 model_benchmark=False, reason='Suite wall-clock budget exhausted\nafter 3 trials')
         lines = self.markdown(report, blank).splitlines()

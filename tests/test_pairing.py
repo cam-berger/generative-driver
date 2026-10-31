@@ -17,6 +17,8 @@ from generative_driver.benchmark_support.suite_reporting import compare_suites
 # The devices of a scoring set (d) and of a fresh batch (f). A real set registers its devices as cases; each test
 # registers these for its length.
 DEVICES = tuple(prefix + str(number) for prefix in 'df' for number in range(10))
+
+
 def graded(status, equivalent):
     """The fields of a row whose run the evaluator graded: the grade's status, and the equivalence record that says it."""
     return {'equivalence_status': status, 'equivalence': {'status': status, 'equivalent': equivalent}}
@@ -675,7 +677,6 @@ class SavedOutcomeTests(ReportCase):
                               ('a not_run row given a run', forged(honest, 2, run_id='r2'))):
             with self.subTest(label), self.assertRaisesRegex(ValueError, 'Saved outcome differs'):
                 _saved_report(report)
-
 
     def test_a_label_is_the_outcome_its_row_shows_and_no_other_whatever_it_is_relabelled_to(self):
         # Catches a label other than pass and not_run that its row does not bear out. Pairing feeds the stored labels into

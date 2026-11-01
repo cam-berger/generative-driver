@@ -22,7 +22,8 @@ def manage(action, case, password_file, output, new_password_file=None, compiler
             if password_file and Path(password_file).expanduser().resolve() != handle:
                 raise ValueError('Family calibration reads its password from ' + case + '.password beside the authoring '
                                  'root; omit --password-file or name that file')
-            from .calibration import calibrate as calibrate_family, safe_summary
+            from .calibration import safe_summary
+            from .family_calibration import calibrate as calibrate_family
             return safe_summary(calibrate_family(case, authoring_root=Path(authoring_dir), renode=Path(renode or ''),
                 ghidra_home=Path(ghidra_home or ''), java_home=Path(java_home or ''), output_dir=Path(output),
                 compiler=Path(compiler) if compiler else None))

@@ -13,37 +13,38 @@ import tempfile
 import time
 from pathlib import Path
 
-STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
+# The evaluator uses these too, so they are defined in a module of its own and imported here under their old names.
+from .benchmark_support.case_assets import STAGES, case_root
 
 
 def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=None):
-    from .benchmark_support.registry import adapter_for
+    from .benchmark_support.adapters import adapter_for
     return adapter_for(case_id).prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
 
 
 def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, options=None):
     """Truth-free stage observation: the checked contract of the configurator's stage loop (artifacts, checks as
     notes, optional stop). It runs no evaluator, grades nothing and records no stage verdict."""
-    from .benchmark_support.registry import adapter_for
+    from .benchmark_support.adapters import adapter_for
     return adapter_for(case_id).observe_stage(case_id, stage, run_dir, workspace, report, accepted, options)
 
 
 def package_call(case_id, run_dir, stage, arguments):
     """A provided device's package call, checked before anything is dispatched; returns the call to run."""
-    from .benchmark_support.registry import adapter_for
+    from .benchmark_support.adapters import adapter_for
     return adapter_for(case_id).package_call(case_id, run_dir, stage, arguments)
 
 
 def record_call(case_id, run_dir, stage, name, arguments, result, before, after, options=None):
     """Journal one live call on a provided device with the instrument readings around it."""
-    from .benchmark_support.registry import adapter_for
+    from .benchmark_support.adapters import adapter_for
     return adapter_for(case_id).record_call(case_id, run_dir, stage, name, arguments, result, before, after, options)
 
 
 def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=None,
                     binding=None, allow_effects=None, options=None):
     """A package call on the operator's bound device (bme280), which the configurator dispatches itself."""
-    from .benchmark_support.registry import adapter_for
+    from .benchmark_support.adapters import adapter_for
     return adapter_for(case_id).package_execute(case_id, run_dir, stage, package_dir,
         operation, parameters, binding, allow_effects, options)
 
@@ -127,9 +128,23 @@ def main(argv=None):
     exporting = suites.add_parser('report')
     exporting.add_argument('suite_id')
     exporting.add_argument('--output', required=True)
+    exporting.add_argument('--audit-path', action='append', metavar='PATH',
+                           help='A forbidden path: flag a trial whose worker ran a command that names it, and leave '
+                           'that trial ungraded. Repeat for each path. The export shows a path only in the commands '
+                           'that name it')
+    scorecard = suites.add_parser('scorecard', help='Measure a suite from its retained records: its pass rate and, per stage, '
+                                  'time, tokens, tool and device use; a scoring suite shows aggregates only')
+    scorecard.add_argument('suite_id')
+    scorecard.add_argument('--output', required=True, help='Directory for scorecard.json and scorecard.md')
+    scorecard.add_argument('--audit-path', action='append', metavar='PATH',
+                           help='A forbidden path: flag a trial whose worker ran a command that names it, and leave '
+                           'that trial ungraded. Repeat for each path. The scorecard quotes no command')
     suite_comparing = suites.add_parser('compare')
     suite_comparing.add_argument('before')
     suite_comparing.add_argument('after')
+    suite_comparing.add_argument('--leak-check', metavar='REPORT',
+                                 help='Saved suite report of the after system on a fresh batch of devices: with two '
+                                 'reports of one scoring set, tests whether the set leaked')
     running = commands.add_parser('run')
     running.add_argument('--case', default='setup-smoke', choices=case_ids())
     running.add_argument('--scenario')
@@ -240,10 +255,20 @@ def main(argv=None):
         if args.command == 'suite':
             if args.action == 'compare':
                 from .benchmark_support.suite_reporting import compare_suites
-                result = compare_suites(args.before, args.after)
+                result = compare_suites(args.before, args.after, leak_check=args.leak_check)
             elif args.action == 'report':
                 from .benchmark_support.suite_reporting import report_suite
-                result = report_suite(args.suite_id, output=args.output)
+                result = report_suite(args.suite_id, output=args.output, audit_paths=tuple(args.audit_path or ()))
+            elif args.action == 'scorecard':
+                from .client import default_home
+                from .benchmark_support.scorecard import bench_trial_dirs, suite_scorecard, write_scorecard
+                from .benchmark_support.suite_reporting import report_suite
+                home = Path(default_home()).expanduser().resolve()
+                # The export holds each trial's details, which a scoring suite never shows: only its aggregate stays.
+                with tempfile.TemporaryDirectory(prefix='gd-scorecard-') as temporary:
+                    report = report_suite(args.suite_id, home=home, output=temporary, audit_paths=tuple(args.audit_path or ()))
+                result = suite_scorecard(report, home=home, trial_dirs=bench_trial_dirs(report, home))
+                write_scorecard(result, args.output)
             elif args.action == 'start':
                 from .benchmark_support.suites import start_suite
                 params = {'manifest': json.loads(Path(args.manifest).read_text(encoding='utf-8')),
@@ -297,22 +322,6 @@ def main(argv=None):
     except (OSError, ValueError, RuntimeError) as error:
         print(json.dumps({'ok': False, 'error': str(error)}))
         return 1
-
-
-def case_root():
-    import os
-    selected = {}
-    for name in ('GENERATIVE_DRIVER_BENCH_ROOT', 'GENERATIVE_DRIVER_CASE_ROOT'):
-        if name in os.environ:
-            path = Path(os.environ[name]).expanduser()
-            if not path.is_absolute() or not path.is_dir():
-                raise ValueError(name + ' must name an existing absolute resource directory')
-            selected[name] = path.resolve()
-    if len(set(selected.values())) > 1:
-        raise ValueError('Conflicting GENERATIVE_DRIVER_BENCH_ROOT and GENERATIVE_DRIVER_CASE_ROOT')
-    if selected:
-        return next(iter(selected.values()))
-    return Path(__file__).resolve().parent / 'resources' / 'bench'
 
 
 def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, autostart=True, wait=False, via_owner=False):
@@ -492,13 +501,13 @@ def score_observations(truth, observations):
 def cleanup(case_id, run_dir, options=None):
     """No stage adapter owns a device. An emulated case's device belongs to the bench harness, which alone stops it, and
     a bound device is the operator's: nothing here may stop or forget it, whatever a run state records."""
-    from .benchmark_support.registry import adapter_for
+    from .benchmark_support.adapters import adapter_for
     adapter_for(case_id)
     raise RuntimeError('The bench harness owns this case\'s device; the configurator holds no ownership to clean up')
 
 
 def score(report, password_file=None, *, evidence_path=None):
-    from .benchmark_support.registry import adapter_for
+    from .benchmark_support.adapters import adapter_for
     data = _read(report)
     if data.get('schema') == 'benchmark-report/3':
         from .benchmark_support.evidence import regrade_v3

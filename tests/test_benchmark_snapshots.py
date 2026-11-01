@@ -1,8 +1,9 @@
 import tempfile
 import unittest
 from pathlib import Path
+from generative_driver.benchmark_support.grader_identity import grader_identity
 from generative_driver.benchmark_support.registry import pin_case
-from generative_driver.benchmark_support.snapshots import snapshot_case, require_snapshot
+from generative_driver.benchmark_support.snapshots import snapshot_case, require_snapshot, execution_provenance
 
 
 class SnapshotTests(unittest.TestCase):
@@ -42,6 +43,18 @@ class SnapshotTests(unittest.TestCase):
             self.assertNotIn('secret-', text)
             self.assertEqual(saved['executed']['runtime_configuration'], {'model': 'scripted'})
 
+    def test_evaluator_revision_is_the_grader_identity(self):
+        self.assertEqual(execution_provenance({})['evaluator_revision'], grader_identity()['sha256'])
+
+    def test_a_system_change_moves_the_toolchain_and_skills_revisions_but_not_the_evaluator_revision(self):
+        from unittest.mock import patch
+        before = execution_provenance({})
+        with patch('generative_driver.benchmark_support.integrity.tree_hash', return_value='0' * 64):
+            after = execution_provenance({})
+        for field in ('toolchain_revision', 'skills_revision'):
+            self.assertNotEqual(after[field], before[field])
+        self.assertEqual(after['evaluator_revision'], before['evaluator_revision'])
+
 def scripted_runtime(home):
     """A configured runtime for runs whose worker launch these tests replace; the configurator launches no other."""
     import json
@@ -80,7 +93,8 @@ class ControllerSnapshotTests(unittest.TestCase):
                 run = controller.start(request)
                 self.wait_stopped(controller, run)
                 config.write_text('invalid edited configuration')
-                with patch('generative_driver.benchmark.case_root', return_value=root / 'unavailable'):
+                with patch('generative_driver.benchmark.case_root', return_value=root / 'unavailable'), \
+                        patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root / 'unavailable'):
                     duplicate = controller.start(dict(request))
                 self.assertEqual(duplicate['run_id'], run['run_id'])
                 self.assertTrue(duplicate['duplicate'])
@@ -185,7 +199,9 @@ class ControllerSnapshotTests(unittest.TestCase):
             def execute(request, config, cancel):
                 observed.append((request.workspace / 'description.bin').read_bytes())
                 return self.blocked_executor(request, config, cancel)
-            with patch('generative_driver.benchmark.case_root', return_value=installed), patch('generative_driver.configurator.execute', execute):
+            with patch('generative_driver.benchmark.case_root', return_value=installed), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=installed), \
+                    patch('generative_driver.configurator.execute', execute):
                 controller = Controller(root / 'home')
                 scripted_runtime(root / 'home')
                 try:
@@ -213,7 +229,7 @@ class ControllerSnapshotTests(unittest.TestCase):
             try:
                 run = controller.start({'goal': 'implementation identity', 'case': 'tq9'})
                 before = self.wait_stopped(controller, run)
-                with patch('generative_driver.reporting._tree_hash', return_value='changed-installation'):
+                with patch('generative_driver.benchmark_support.integrity.tree_hash', return_value='changed-installation'):
                     with self.assertRaisesRegex(ValueError, 'implementation'):
                         controller.call('resume', run)
                 self.assertEqual(controller.call('result', run)['worker_reports'], before['worker_reports'])
@@ -270,7 +286,8 @@ class ControllerSnapshotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             RegistryTests._v2_case(root / 'installed')
-            with patch('generative_driver.benchmark.case_root', return_value=root / 'installed'):
+            with patch('generative_driver.benchmark.case_root', return_value=root / 'installed'), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root / 'installed'):
                 controller = Controller(root / 'home')
                 scripted_runtime(root / 'home')
                 try:

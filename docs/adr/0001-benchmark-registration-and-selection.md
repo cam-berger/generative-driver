@@ -18,7 +18,7 @@ Use the existing authenticated calibration check in an operator-only preflight. 
 
 Bind native monitor completion and observation values to the submitted command's echo and its following prompt. Decode Telnet controls before matching application text; preserve the raw response bytes in private evidence. A greeting or unrelated reply is not a receipt. Commands are dispatched once, including effectful controls.
 
-Report measured success over graded trials, selected coverage over selected planned slots and demonstrated coverage over the entire catalog. A false fresh mission contributes a measured failure only with trusted model attribution; host, operator and missing attribution stay unscored. An independently validated negative final grade or no-driver record still counts as failure.
+Report measured success as the pass rate over graded trials, selected coverage over selected planned slots and demonstrated coverage over the entire catalog. Running out of budget or a stop the system caused is a failure; host, operator and missing-evidence stops are faults, counted but not graded. The fresh mission sits beside the verdict, and no separate validation of a negative grade is required.
 
 ## Consequences
 
@@ -31,4 +31,4 @@ Version 1 plan reconstruction remains explicit for historical compatibility. Its
 
 ## Deferred work
 
-Qualification currently hashes the entire benchmark-support closure; [issue 01](../../.scratch/benchmark-lifecycle/issues/01-scope-qualification-closure.md) asks whether a complete per-case closure can avoid invalidating unrelated admissions. [Issue 02](../../.scratch/benchmark-lifecycle/issues/02-structured-native-monitor.md) retains the structured-monitor prototype and its confinement/single-dispatch prerequisites. [Issue 03](../../.scratch/benchmark-lifecycle/issues/03-expected-refusal-repair.md) records a narrowly witnessed expected-refusal proposal. None is implemented by this decision.
+Qualification pins the grader identity: the modules the grader imports, every registered family and `registrations.py` among them, and the `cryptography` version. Runtime, template, toolkit and report changes no longer void an admission; [issue 01](../../.scratch/benchmark-lifecycle/issues/01-scope-qualification-closure.md) keeps open a per-case closure that would also keep unrelated admissions when a case is added. [Issue 02](../../.scratch/benchmark-lifecycle/issues/02-structured-native-monitor.md) retains the structured-monitor prototype and its confinement/single-dispatch prerequisites. [Issue 03](../../.scratch/benchmark-lifecycle/issues/03-expected-refusal-repair.md) records a narrowly witnessed expected-refusal proposal. None is implemented by this decision.

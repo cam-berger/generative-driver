@@ -20,6 +20,9 @@ from dataclasses import dataclass
 
 from .setup import configured_executor
 from .agents import StageRequest, execute
+# The evaluator uses these too, so they are defined in modules of their own and imported here under their old names.
+from .benchmark_support.integrity import IntegrityError, digest
+from .benchmark_support.labels import equivalence_label, verdict_reason as _verdict_reason
 
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 TERMINAL = {'completed', 'failed', 'cancelled', 'blocked'}
@@ -77,27 +80,6 @@ def _emulated(spec):
 
 def _v2(spec):
     return (spec.get('_case_pin') or {}).get('manifest', {}).get('schema') == 'benchmark-case/2'
-
-
-def digest(path):
-    path = Path(path)
-    if path.is_symlink():
-        raise ValueError('Artifact symlinks are not admissible')
-    if path.is_file():
-        hasher = hashlib.sha256()
-        with path.open('rb') as stream:
-            for block in iter(lambda: stream.read(1024 * 1024), b''):
-                hasher.update(block)
-        return hasher.hexdigest()
-    if path.is_dir():
-        entries = []
-        for item in sorted(path.rglob('*')):
-            if item.is_symlink():
-                raise ValueError('Artifact symlinks are not admissible')
-            if item.is_file():
-                entries.append([item.relative_to(path).as_posix(), digest(item)])
-        return hashlib.sha256(json.dumps(entries, separators=(',', ':')).encode()).hexdigest()
-    raise ValueError('Artifact does not exist: ' + str(path))
 
 
 def _json(value):
@@ -396,10 +378,6 @@ def _refuse_invalid_model(model_dir):
                              'nothing was dispatched: ' + str(candidate['defects']))
 
 
-class IntegrityError(ValueError):
-    """A recorded or observed hash, sealed input or handoff no longer matches: the run stops for integrity."""
-
-
 class SafetyError(ValueError):
     """A device binding conflict: the run stops for safety."""
 
@@ -677,18 +655,6 @@ UNCERTAIN_AWAITING = ('Outstanding effect is uncertain after fresh reuse; reconc
 def _final_verdict(db, run_id):
     row = db.execute('SELECT payload FROM verdicts WHERE id=?', (run_id + FINAL,)).fetchone()
     return json.loads(row['payload']) if row else None
-
-
-def equivalence_label(equivalence):
-    return {True: 'equivalent', False: 'not equivalent'}.get((equivalence or {}).get('equivalent'), 'unscored')
-
-
-def _verdict_reason(equivalence):
-    """The completed run's reason: its verdict and, unless equivalent, the first differences."""
-    label = equivalence_label(equivalence)
-    reasons = [d['reason'] for d in equivalence.get('diff') or [] if isinstance(d, dict) and isinstance(d.get('reason'), str)]
-    detail = '; '.join(reasons[:3]) + ('; ' + str(len(reasons) - 3) + ' more' if len(reasons) > 3 else '')
-    return 'Final verdict: ' + label + (': ' + detail if label != 'equivalent' and reasons else '')
 
 
 # The public evaluation record the bench harness posts after a run: check ids with passed flags and failing ids with a

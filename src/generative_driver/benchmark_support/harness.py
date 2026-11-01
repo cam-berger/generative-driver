@@ -280,7 +280,7 @@ def conclude(trial_dir, case_id, run_dir, result, *, password_file, renode=None,
     the configurator's equivalence/1 schema would refuse, or accepted records that no longer match their hashes at the
     seal, are posted unscored: no retry would change them. The plaintext evaluation never outlives this call."""
     from ..configurator import IntegrityError, _evaluation_errors
-    from . import evaluator
+    from . import evaluator, recorded_grading
     if result.get('equivalence') is not None:
         # The configurator already holds this run's verdict: nothing is graded, sealed or posted again. Its seal is the
         # evidence the verdict names, when the trial directory holds exactly that (a harness may have died after the
@@ -295,6 +295,8 @@ def conclude(trial_dir, case_id, run_dir, result, *, password_file, renode=None,
             done.update(sealed=True, evidence={'path': evaluator.EVIDENCE, 'sha256': named})
         return done
     pending = result.get('status') == 'completed' and (result.get('progress') or {}).get('equivalence') == 'pending'
+    # The protocol the run was under stamps every record built for it; a run that names none is refused by the grade.
+    protocol = (result.get('progress') or {}).get('protocol')
     accepted = result.get('accepted_handoffs') or []
     frozen = (evaluator.emitted(accepted) or (None, None))[1]
     method = evaluator.method_for(case_id)
@@ -302,23 +304,31 @@ def conclude(trial_dir, case_id, run_dir, result, *, password_file, renode=None,
     try:
         if pending and graded:
             try:
-                equivalence, content['final'] = evaluator.grade(case_id, trial_dir, run_dir, result,
-                                                                password_file=password_file, renode=renode)
+                if method == 'recorded-reuse':
+                    # Legacy tq9 and bme280: graded from the fresh reuse the run recorded, outside the grader.
+                    equivalence, content['final'] = recorded_grading.grade(case_id, trial_dir, run_dir, result,
+                                                                          password_file=password_file, protocol=protocol)
+                else:
+                    equivalence, content['final'] = evaluator.grade(case_id, trial_dir, run_dir, result,
+                                                                    password_file=password_file, renode=renode)
                 content['mission'] = equivalence.get('mission')
             except IntegrityError as error:
-                equivalence, content['error'] = evaluator.unscored('integrity: ' + str(error), frozen, method), str(error)
-            except evaluator.Unscorable as error:
+                equivalence, content['error'] = evaluator.unscored('integrity: ' + str(error), frozen, method,
+                                                                    protocol=protocol), str(error)
+            except recorded_grading.Unscorable as error:
                 # Recorded evidence that cannot grade the driver for a reason outside it; its message names no truth.
-                equivalence, content['error'] = evaluator.unscored(str(error), frozen, method), str(error)
+                equivalence, content['error'] = evaluator.unscored(str(error), frozen, method, protocol=protocol), str(error)
             except Exception as error:
                 # The message stays sealed: it may name what only the evaluator holds.
-                equivalence = evaluator.unscored('evaluator host fault: ' + type(error).__name__, frozen, method)
+                equivalence = evaluator.unscored('evaluator host fault: ' + type(error).__name__, frozen, method,
+                                                 protocol=protocol)
                 content['error'] = type(error).__name__ + ': ' + str(error)
             errors = _evaluation_errors({**equivalence, 'evidence_sha256': None if equivalence['status'] == 'unscored'
                                          else '0' * 64})
             if errors:
                 # Every resume would rebuild the same record and have it refused: it is unscored, and why stays sealed.
-                equivalence = evaluator.unscored('evaluator host fault: invalid evaluation record', frozen, method)
+                equivalence = evaluator.unscored('evaluator host fault: invalid evaluation record', frozen, method,
+                                                 protocol=protocol)
                 content = {'error': 'Invalid evaluation record: ' + '; '.join(errors)}
             content['equivalence'] = equivalence
         try:
@@ -330,7 +340,7 @@ def conclude(trial_dir, case_id, run_dir, result, *, password_file, renode=None,
                                                 and equivalence['diff'][0]['reason'].startswith('integrity: ')):
                 # An accepted record changed after acceptance, or the snapshot no longer verifies: no retry seals it, so
                 # the grade is unscored for integrity. An unscored record needs no seal.
-                equivalence = evaluator.unscored('integrity: ' + str(error), frozen, method)
+                equivalence = evaluator.unscored('integrity: ' + str(error), frozen, method, protocol=protocol)
         except Exception as error:
             done.update(sealed=False, sealing_failed=type(error).__name__ + ': ' + str(error))
     finally:

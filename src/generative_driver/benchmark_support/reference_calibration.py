@@ -1,10 +1,11 @@
-"""Measured native reference calibration and local evaluator identity.
+"""Measured native reference calibration, stamped with the grader identity it ran under. Running candidate models and
+emitting reference packages is the system's side of calibration, through this checkout's toolkit and runtime; the
+grader grades each emitted package as a frozen one.
 
 The password holder is the local trust authority; records are not third-party attestation.
 """
 import copy
 import hashlib
-import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -12,105 +13,134 @@ import subprocess
 import sys
 import tempfile
 
+from .grader_identity import grader_identity
 from .snapshots import canonical_digest
-
-REQUIRED_SCENARIOS = ('original',)
-CORE_MUTANTS = ('wrong-scale', 'constant-output', 'wrong-state')
-
-
-# The toolchain tools grading calls (probe_run, emit_package, emit_check and the interface runtime tools), what they
-# execute, and the analysis wrappers calibration runs. The rest of the kit is the candidate's side. Grading also uses a
-# few shared helpers outside this closure (configurator.digest, benchmark.case_root, reporting's tree hash): a change
-# there alters hashes and fails integrity checks rather than changing a grade.
-GRADING_TOOLCHAIN = ('__init__.py', 'core.py', 'runner.py', 'probe.py', 'emit.py', 'interface.py')
-CALIBRATION_ANALYSIS = ('resources/tools/model_exec.py',  # the toolchain runner executes it on import
-                        'resources/tools/workspace/ghidra_run.py',
-                        'resources/toolchain/skills/interpret-firmware-binary/ExportDecomp.java',
-                        'resources/toolchain/skills/interpret-firmware-binary/SeedCortexM.java')
+# The evaluator admits tq9-v2 by these, so they are defined in its calibration module and imported here.
+from .calibration import (CORE_MUTANTS, REQUIRED_SCENARIOS, input_hashes, tq9_candidate, tq9_execution_inputs,
+                          validate_record)
 
 
-def calibration_identity():
-    """The grading closure a calibration qualifies: the evaluator package, the interface runtime, the package template,
-    the toolchain tools grading calls and the analysis wrappers calibration runs, with the cryptography dependency.
-    The configurator, the other toolchain stages, skills and reports are the candidate's kit: changing them never
-    voids admission, so a new kit is measured against the same qualified evaluator. Excludes containing resources."""
+def model_invoker(model_dir, capabilities, binding, output_dir, probes):
+    """Use the toolkit's normal probe operation; retain executable probe evidence."""
+    import json
+    from pathlib import Path
+    from ..toolkit import call_tool
+    from .behavior import bind_task
+    from .emulated_actions import _binding_failure
+    model = json.loads((Path(model_dir)/'model.json').read_text())
+    def invoke(task, inputs, grants):
+        try:
+            request = bind_task(capabilities, task, inputs, model)
+        except ValueError as error:
+            return _binding_failure(task, error)
+        probed = call_tool('probe_run', {'run_dir': str(output_dir), 'model_dir': str(model_dir),
+            **request, 'n': 1, 'binding': binding, 'allow_effects': grants})
+        results = probed.get('results')
+        if not isinstance(results, list) or not results or not isinstance(results[0], dict):
+            return {'ok': False, 'error': {'fault': 'host', 'code': 'probe_execution_unavailable',
+                'message': 'Probe tool returned no runtime execution evidence'},
+                'outputs': {}, 'units': {}, 'transcript': []}
+        if probed.get('probe'):
+            probes.append(probed['probe'])
+        result = results[0]
+        outputs = capabilities['tasks'][task]['outputs']
+        return {**result, 'ok': bool(probed.get('ok') and result.get('ok')),
+            'outputs': {key: result.get('outputs', {}).get(mapping['output']) for key, mapping in outputs.items()},
+            'units': {key: result.get('units', {}).get(mapping['output']) for key, mapping in outputs.items()}}
+    return invoke
+
+
+def run_reference(pin, truth, model, capabilities, *, renode, image, output_dir, phase, private_dir=None):
+    """Run a reference or mutant candidate model on a fresh emulator it starts and stops, through this checkout's toolkit
+    and runtime. The diagnostic phase executes the model with the toolkit's probe operation and grades its records. The
+    final phase probes the model's identity and emits its package with `emit_package`, which calibration then has
+    `evaluator.reference_execute` grade as a frozen package. The result has reference_execute's shape, with `package_dir`
+    and `package_sha256` when it emitted a package; an emission runs no behavior plan, so its contract, records, grade and
+    artifact_execution are None. The emulator session keeps its files in `private_dir` when given."""
+    if pin.get('scenario_id') != 'original':
+        raise ValueError('Unknown case scenario')
+    if phase not in ('diagnostic', 'final'):
+        raise ValueError('Unknown behavior phase')
     import interface_runtime
-    package = Path(__file__).resolve().parents[1]
-    sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
-    files = {}
-    roots = {'benchmark_support': package/'benchmark_support',
-             'interface_runtime': Path(interface_runtime.__file__).parent,
-             'template': package/'resources/toolchain/template'}
-    for label, root in roots.items():
-        for path in sorted(root.rglob('*.py')):
-            files[label+'/'+path.relative_to(root).as_posix()] = sha(path)
-    for name in GRADING_TOOLCHAIN:
-        files['toolchain/'+name] = sha(package/'_toolchain'/name)
-    files['toolkit.py'] = sha(package/'toolkit.py')
-    for name in CALIBRATION_ANALYSIS:
-        files[name] = sha(package/name)
-    dependencies = {'cryptography': importlib.metadata.version('cryptography')}
-    body = {'schema':'benchmark-evaluator-identity/2','files':files,'dependencies':dependencies}
-    return {**body,'sha256':canonical_digest(body)}
-
-
-def input_hashes(truth):
-    return {'source':canonical_digest(truth['source_hashes']), 'contract':canonical_digest(truth['contracts']),
-            'recipe':canonical_digest(truth['recipe']), 'references':canonical_digest(truth['references']),
-            'mutations':canonical_digest(truth['mutations']), 'build':canonical_digest(truth['build']),
-            'analysis':canonical_digest(truth['analysis'])}
-
-
-def tq9_candidate(truth, reference_name, scenario, mutation=None):
-    """Derive the declared legacy reference variant without executing it."""
-    reference=truth['references'][reference_name]
-    if scenario != 'original':raise ValueError('Unknown reference scenario')
-    candidate=copy.deepcopy(reference['model'])
-    caps=copy.deepcopy(reference['capabilities'])
-    if isinstance(mutation,str):
-        task=caps['tasks']['temperature']
-        decoder=candidate['operations'][task['operation']]['outputs'][task['outputs']['temperature']['output']]
-        if mutation=='wrong-scale':decoder['scale']=decoder.get('scale',1)*10
-        elif mutation=='constant-output':decoder.update(scale=0,offset_value=0)
-        elif mutation=='wrong-state':candidate['operations'][caps['tasks']['arm']['operation']]=copy.deepcopy(candidate['operations'][caps['tasks']['disarm']['operation']])
-        else:raise ValueError('Unknown legacy mutation')
-    elif mutation is not None:
-        for patch in mutation['patch']:
-            if patch['op']!='replace':raise ValueError('Unsupported reference mutant patch')
-            parts=patch['path'].split('/')[1:];target=candidate
-            for part in parts[:-1]:target=target[int(part)] if isinstance(target,list) else target[part]
-            target[int(parts[-1]) if isinstance(target,list) else parts[-1]]=copy.deepcopy(patch['value'])
-        for mapping in caps['tasks'].values():
-            for output_mapping in mapping['outputs'].values():
-                output_mapping['unit']=candidate['operations'][mapping['operation']]['outputs'][output_mapping['output']].get('unit')
-    return candidate,caps
-
-
-def tq9_execution_inputs(truth):
-    """Expected identities from authenticated reference and mutation definitions."""
-    from .calibration import execution_input_identity
-    result={}
-    for name in truth['references']:
-        for phase in ('diagnostic','final'):
-            result[name+'-'+phase+'-original']=execution_input_identity(*tq9_candidate(truth,name,'original'))
-    for scenario in REQUIRED_SCENARIOS:
-        for mutation in CORE_MUTANTS:
-            result[mutation+'-'+scenario]=execution_input_identity(*tq9_candidate(truth,'reference-a',scenario,mutation))
-    for mutation in truth['mutations']['mutations']:
-        scenario='original'
-        result[mutation['id']]=execution_input_identity(*tq9_candidate(truth,'reference-a',scenario,mutation))
-    return result
-
-
-def validate_record(manifest, record):
-    from .calibration import validate_calibration
-    checked=validate_calibration({**manifest,'family':'tq9'},record)
+    from interface_runtime.engine import validate_model
+    from ..toolkit import call_tool
+    from .behavior import validate_records
+    from .calibration import reference_model_bytes
+    from .case_assets import write_json
+    from .emulated_actions import execute_plan, run_call
+    from .execution import start_session
+    from .instruments import family_for
+    from .integrity import digest
+    candidate = {**model, 'channel': {'type': 'tcp'}}
+    if not validate_model(candidate)['ok']:
+        raise ValueError('Reference candidates must be structurally valid before native calibration')
+    family = family_for(pin.get('case_id', 'tq9-v2'))
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    model_dir = output/'model'
+    model_dir.mkdir(parents=True, exist_ok=True)
+    # A model with no package is written in the portable form; an emitted package copies these bytes.
+    (model_dir/'model.json').write_bytes(reference_model_bytes(candidate))
+    model_hash = hashlib.sha256((model_dir/'model.json').read_bytes()).hexdigest()
+    probes = []
+    session = start_session(renode=renode, image=image, recipe=truth['recipe'], private_dir=private_dir)
     try:
-        measured={run['id']:{k:run[k] for k in ('model_sha256','capabilities_sha256')} for run in record['runs']}
-        if len(measured)!=len(record['runs']) or measured!=record['execution_inputs']:
-            checked['failures'].append('executed input identities')
-    except (KeyError,TypeError):checked['failures'].append('missing executed input identities')
-    return {'ok':not checked['failures'],'failures':checked['failures']}
+        package = contract = records = grade = None
+        if phase == 'final':
+            probed = run_call(session, lambda operation, parameters: call_tool('probe_run', {
+                'run_dir': str(output/'tools'), 'model_dir': str(model_dir), 'operation': operation,
+                'parameters': {}, 'binding': session.binding, 'n': 1}),
+                {'operation': candidate['identity']['operation'], 'parameters': {}})
+            if not probed.get('ok') or not probed.get('probe'):
+                raise ValueError('Reference identity probe could not support package emission')
+            probes.append(probed['probe'])
+            emitted = call_tool('emit_package', {'run_dir': str(output/'tools'),
+                'model_dir': str(model_dir), 'probe': probed['probe']})
+            if not emitted.get('ok'):raise ValueError('Reference package emission failed')
+            package = Path(emitted['package_dir'])
+        else:
+            invoke = model_invoker(model_dir, capabilities, session.binding, output/'tools', probes)
+            local = {**truth, 'artifact_sha256': model_hash}
+            contract = family.contract(pin, local, phase)
+            records = execute_plan(session, invoke, family.build_plan(pin, local, phase), contract,
+                output/'raw.json', family.observations, truth['contracts']['time_policy']['sample_settle_seconds'])
+            grade = validate_records(contract, records)
+        runtime_root = Path(interface_runtime.__file__).parent
+        runtime_hash = canonical_digest({p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                                         for p in sorted(runtime_root.glob('*.py'))})
+        result = {'execution': 'reference-calibration',
+            'backend': 'native-sim' if truth['recipe'].get('backend') == 'native-sim' else 'native-renode',
+            'native_process_observed': session.process is not None and session.process.poll() is None,
+            'process': session.info, 'contract': contract, 'records': records, 'grade': grade, 'probes': probes,
+            'model_sha256': model_hash, 'capabilities_sha256': canonical_digest(capabilities),
+            'package_sha256': digest(package) if package is not None else None,
+            'artifact_execution': None if package is not None else 'model-runtime',
+            'package_dir': str(package) if package is not None else None, 'runtime_sha256': runtime_hash}
+        write_json(output/'evaluation.json', result)
+        return result
+    finally:
+        session.stop()
+
+
+def calibration_run(pin, truth, model, capabilities, *, renode, image, output_dir, private_dir, phase):
+    """One calibration run of a reference or mutant candidate, as both calibration runners make it: its result, whose
+    evidence is `output_dir/evaluation.json`. A diagnostic run executes the model (`run_reference`), its emulator session's
+    files in `private_dir`. A final run emits the model's package in `output_dir/emission`, its session's files in a
+    sibling of `private_dir` named with '-emission', and the grader then grades that package as a trial's frozen one
+    (`evaluator.reference_execute`) in `output_dir`, on a fresh emulator whose files go in `private_dir`; the two sessions
+    share no file."""
+    output_dir, private_dir = Path(output_dir), Path(private_dir)
+    if phase != 'final':
+        return run_reference(pin, truth, model, capabilities, renode=renode, image=image, output_dir=output_dir,
+                             phase=phase, private_dir=private_dir)
+    from .evaluator import reference_execute
+    # Emission creates the run's directory as its parent; made first, it is as private as every other run's.
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    emitted = run_reference(pin, truth, model, capabilities, renode=renode, image=image, output_dir=output_dir/'emission',
+                            phase=phase, private_dir=private_dir.with_name(private_dir.name + '-emission'))
+    return reference_execute(pin, truth, capabilities, renode=renode, image=image, output_dir=output_dir,
+                             package=Path(emitted['package_dir']), expected_package_sha256=emitted['package_sha256'],
+                             private_dir=private_dir)
 
 
 def calibrate(case_id, options):
@@ -124,7 +154,6 @@ def calibrate(case_id, options):
     from .authoring import evaluator_directory, build_case
     from .registry import resolve_case, pin_case
     from .emulator import truth_for_case
-    from .evaluator import reference_execute
     from .truth import seal
     from .cases import _write
     from ..benchmark import case_root
@@ -146,7 +175,7 @@ def calibrate(case_id, options):
     if output.exists() and any(output.iterdir()):
         raise ValueError('Calibration requires an empty evaluator output directory')
     output.mkdir(parents=True,mode=0o700,exist_ok=True)
-    identity=calibration_identity()
+    identity=grader_identity()
     record={'schema':'benchmark-calibration/1','status':'pending','case':case_id,'evaluator_version':definition.evaluator_version,
         'execution':'reference-calibration','backend':'native-renode','images':definition.manifest['images'],
         'input_hashes':truth['input_hashes'] if family_case else input_hashes(truth),'evaluator_identity':identity,'native_process_observed':False,
@@ -220,11 +249,12 @@ def calibrate(case_id, options):
             record['analysis'][image_name]={'argv':analyze,'returncode':analyzed.returncode,
                 'export_hashes':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in exports.iterdir() if p.is_file()}}
             save()
-        def run(model, capabilities, scenario, name, phase='final', package_final=True):
+        def run(model, capabilities, scenario, name, phase='final'):
             image='firmware.bin'
             pin=pin_case(case_id,'original',0)
-            result=reference_execute(pin,truth,model,capabilities,renode=tool_paths['renode'],phase=phase,package_final=package_final,
-                image=build_dir/image,output_dir=output/'runs'/name)
+            # The run's emulator sessions keep their files in the private output, as qualification's do.
+            result=calibration_run(pin,truth,model,capabilities,renode=tool_paths['renode'],image=build_dir/image,
+                output_dir=output/'runs'/name,private_dir=output/'native'/name,phase=phase)
             record['runs'].append({'id':name,'scenario':scenario,'phase':phase,
                 'native_process_observed':result['native_process_observed'],'process':result['process'],
                 'image_sha256':record['images'][image], 'evidence_sha256':hashlib.sha256((output/'runs'/name/'evaluation.json').read_bytes()).hexdigest(),
@@ -296,7 +326,7 @@ def calibrate(case_id, options):
         if not checked['ok']:record.update(status='pending',failures=checked['failures'])
     except (OSError,ValueError,KeyError,TypeError,RuntimeError,subprocess.SubprocessError) as error:
         record.update(status='pending',failure=type(error).__name__+': '+str(error))
-    if calibration_identity()!=identity:record.update(status='pending',failure='Evaluator implementation changed during calibration')
+    if grader_identity()!=identity:record.update(status='pending',failure='Evaluator implementation changed during calibration')
     save()
     if family_case:
         payload=authoring_payload(author if 'author' in locals() and (author/'AUTHORING.json').exists() else evaluator_directory(options['authoring_root']))

@@ -146,7 +146,8 @@ class RegistryTests(unittest.TestCase):
             home = root / 'owner'
             # A public 'passed' label admits nothing by itself: without a running configurator, a start that may not
             # create one is refused before any harness, device or owner exists (admission is the harness's, later).
-            with patch('generative_driver.benchmark.case_root', return_value=root):
+            with patch('generative_driver.benchmark.case_root', return_value=root), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root):
                 refused = run('tq9-v2', options={'scenario_id': 'original', 'home': str(home)}, autostart=False)
             self.assertFalse(refused['ok'], refused)
             self.assertIn('service start', refused['reason'])
@@ -160,7 +161,8 @@ class RegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._v2_case(root)
-            with patch('generative_driver.benchmark.case_root', return_value=root):
+            with patch('generative_driver.benchmark.case_root', return_value=root), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root):
                 validate_scoped_approval({'case': 'tq9-v2', 'scoped_tool_approval': 'emulator'})
                 with self.assertRaisesRegex(ValueError, 'binding'):
                     validate_scoped_approval({'case': 'tq9-v2', 'scoped_tool_approval': 'emulator',
@@ -273,7 +275,8 @@ class RegistryTests(unittest.TestCase):
             root = Path(temp)
             self._v2_case(root)
             (root / 'cases' / 'tq9-v2' / 'firmware.bin').unlink()
-            with patch('generative_driver.benchmark.case_root', return_value=root):
+            with patch('generative_driver.benchmark.case_root', return_value=root), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root):
                 rows = {row['id']: row for row in case_descriptors()}
                 self.assertEqual(rows['tq9-v2']['status'], 'pending')
                 with self.assertRaises(ValueError):
@@ -333,7 +336,8 @@ class RegistryTests(unittest.TestCase):
             root = Path(temp)
             self._v2_case(root)
             (root / 'cases' / 'tq9-v2' / 'firmware.bin').write_bytes(b'corrupt')
-            with patch('generative_driver.benchmark.case_root', return_value=root):
+            with patch('generative_driver.benchmark.case_root', return_value=root), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root):
                 rows = {row['id']: row for row in case_descriptors()}
             self.assertEqual(rows['tq9-v2']['status'], 'invalid')
             self.assertIn('hash mismatch', rows['tq9-v2']['error'])
@@ -346,7 +350,8 @@ class RegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._v2_case(root)
-            with patch('generative_driver.benchmark.case_root', return_value=root):
+            with patch('generative_driver.benchmark.case_root', return_value=root), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root):
                 row = next(row for row in case_descriptors() if row['id'] == 'tq9-v2')
             self.assertEqual(row['status'], 'pending')
             self.assertEqual(row['calibration'], {'status': 'pending'})
@@ -362,6 +367,7 @@ class RegistryTests(unittest.TestCase):
             manifest = self._v2_case(root)
             manifest['calibration'] = None
             (root / 'cases' / 'tq9-v2' / 'case.json').write_text(json.dumps(manifest))
-            with patch('generative_driver.benchmark.case_root', return_value=root):
+            with patch('generative_driver.benchmark.case_root', return_value=root), \
+                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root):
                 row = next(row for row in case_descriptors() if row['id'] == 'tq9-v2')
             self.assertEqual(row['status'], 'invalid')

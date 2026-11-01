@@ -44,8 +44,10 @@ class SuiteCliTests(unittest.TestCase):
             code = """import sys
 from pathlib import Path
 import generative_driver.benchmark as benchmark
+import generative_driver.benchmark_support.case_assets as case_assets
 resources = Path(sys.argv.pop(1))
 benchmark.case_root = lambda: resources
+case_assets.case_root = lambda: resources
 from generative_driver.cli import main
 raise SystemExit(main())
 """
@@ -106,9 +108,11 @@ raise SystemExit(main())
                 self.assertTrue((root/'export/report.md').is_file())
                 report = json.loads((root/'export/suite.json').read_text(encoding='utf-8'))
                 self.assertTrue(report['provisional'])
-                # Its harness grades every child after its run: the report counts equivalent drivers of the protocol.
-                self.assertEqual((report['schema'], report['protocol']), ('benchmark-suite-report/2', 'assistive/1'))
+                # Its harness grades every child after its run: the report counts equivalent drivers of the protocol, and
+                # leads with the pass rate of the trials graded.
+                self.assertEqual((report['schema'], report['protocol']), ('benchmark-suite-report/3', 'assistive/1'))
                 self.assertEqual(report['equivalence']['equivalent'], 0)
+                self.assertEqual((report['pass_rate']['passes'], report['pass_rate']['rate']), (0, None))
                 self.assertEqual(call('ping', {}, root, autostart=False)['pid'], owner_pid)
             finally:
                 shutdown_owner(root)

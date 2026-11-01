@@ -65,7 +65,7 @@ On Windows, save the Python body above as `recover_inventory.py` (omit the shell
 Remove only the previous `calibration/calibration.json`; preserve all source, recipe, contract, reference, oracle, mutant, license and build bytes. Repeat with store-specific paths, then qualify:
 
 ```sh
-python -m generative_driver.benchmark_support.calibration sampled-sensor-v1 --authoring-root "/private/evaluator/sampled-sensor-v1-authoring" --renode "/absolute/path/to/renode" --ghidra-home "/absolute/path/to/ghidra" --java-home "/absolute/path/to/java-home" --output-dir "/private/evaluator/sampled-calibration"
+python -m generative_driver.benchmark_support.family_calibration sampled-sensor-v1 --authoring-root "/private/evaluator/sampled-sensor-v1-authoring" --renode "/absolute/path/to/renode" --ghidra-home "/absolute/path/to/ghidra" --java-home "/absolute/path/to/java-home" --output-dir "/private/evaluator/sampled-calibration"
 ```
 
 Set `ARM_NONE_EABI_GCC` to the pinned compiler; repeat for store. The new calibration record excludes itself and its enclosing ciphertext from its input commitment.

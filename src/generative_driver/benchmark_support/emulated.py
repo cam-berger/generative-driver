@@ -9,10 +9,9 @@ import json
 from pathlib import Path
 
 from .cases import _state, _write
-from .instruments import family_for
-from .registry import resolve_case
+# The evaluator uses these too, so they are defined in a module of its own and imported here under their old names.
+from .case_assets import REUSE_EVENTS, accepted_artifact as _artifact, case_inputs as _inputs, reuse_mission as _mission
 from .execution import artifact_name
-from .snapshots import read_snapshot
 
 # Instrument readings are device evidence, as a real device's readings would be; workers see them, nothing grades them.
 INSTRUMENT = ('Live interface_execute and probe_run results carry before_observation and observation: instrument '
@@ -84,31 +83,6 @@ Example shape, using placeholder names rather than inferred device facts:
 Run `python validate_capabilities.py <absolute-model-directory> <absolute-capabilities-json>` before submitting. This pure check uses the same binding rules as the controller, without a device or evaluator answer key. Correct capability-file errors here; report `needs_revision` if the immutable model itself needs repair. Do not edit the supplied validator or rules. A passed mapping check establishes structure, not functional behavior.
 ''', encoding='utf-8')
     return [str(helper), str(rules), str(guide)]
-
-
-def _inputs(case_id, run_dir):
-    if (Path(run_dir)/'benchmark/execution.json').exists():
-        saved = read_snapshot(run_dir)
-        from .registry import validate_pinned_workflow
-        validate_pinned_workflow(saved['case_pin'])
-        if saved['case_pin']['case_id'] != case_id:
-            raise ValueError('Execution snapshot case mismatch')
-        return Path(run_dir)/'benchmark/inputs', saved['case_pin']['manifest']
-    case = resolve_case(case_id)
-    return case.root, case.manifest
-
-
-def _named(path, name):
-    prefix, separator, original = Path(path).name.partition('-')
-    return Path(path).name == name or bool(separator) and prefix.isdigit() and original == name
-
-
-def _artifact(handoff, name, sha256=None):
-    """(path, recorded sha256) of `name` in one accepted handoff (with that hash, when given), or None."""
-    for artifact in (handoff or {}).get('artifacts', []):
-        if _named(artifact['path'], name) and sha256 in (None, artifact['sha256']):
-            return Path(artifact['path']), artifact['sha256']
-    return None
 
 
 def _handoff_with(accepted, stages, name, sha256=None):
@@ -387,29 +361,6 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
     raise ValueError('Native stage is not implemented: ' + stage)
 
 
-def _mission(case_id, events, capabilities):
-    """Whether the fresh worker's package calls did the public mission, judged from their outputs and the instrument
-    readings of the emulated device: a note on the reuse stage, never a grade. Failed calls are attributed only on
-    trusted evidence: untyped or mixed failures blame nobody."""
-    try:
-        if case_id == 'tq9':
-            from .cases import mission_done
-            done = mission_done(events, capabilities)
-        else:
-            done = family_for(case_id).reuse_passed(events, capabilities)
-    except (KeyError, TypeError, ValueError, AttributeError, IndexError) as error:
-        return {'name': 'fresh_worker_mission', 'passed': None,
-                'reason': 'The capability mapping cannot judge the mission: ' + type(error).__name__ + ': ' + str(error)}
-    if done:
-        return {'name': 'fresh_worker_mission', 'passed': True}
-    failed = [e['result'] for e in events if e['result'].get('ok') is not True]
-    faults = [r['error'].get('fault') if isinstance(r.get('error'), dict) else None for r in failed]
-    default = None if any(f != 'model' for f in faults) else 'model'
-    fault = next((f for f in faults if f in ('host', 'operator')), default)
-    return {'name': 'fresh_worker_mission', 'passed': False,
-            'reason': 'Fresh worker mission lacks observed reading, requested effect or disarm', **({'fault': fault} if fault else {})}
-
-
 def _mapping_errors(case_id, mapping, model):
     """The structural check of a probe's capability mapping against its model: {ok, errors}. Legacy tq9 maps its
     tasks in the legacy form (`cases.mapping_errors`)."""
@@ -423,7 +374,6 @@ def _mapping_errors(case_id, mapping, model):
 
 # Cases graded after the run from the fresh reuse the run recorded: their reuse hands on that record.
 RECORDED = ('tq9',)
-REUSE_EVENTS = 'reuse-events.jsonl'
 
 
 def _host(result):

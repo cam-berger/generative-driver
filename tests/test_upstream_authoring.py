@@ -1,5 +1,7 @@
+import contextlib
 import copy
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -9,26 +11,38 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
+def qualification_inputs(root):
+    """A synthetic upstream truth, its manifest and image under `root`, the qualification's output directory, fixture
+    Renode, Ghidra and Java installations, and a subprocess stand-in for their version checks and a binary analysis that
+    exports into the output, which runs any other command, such as a package's own CLI, for real:
+    (truth, manifest, image, output, (renode, ghidra, java), command)."""
+    import subprocess
+    from upstream_fixture import payload
+    run = subprocess.run
+    output = root/'qualification'
+    image = root/'firmware.bin'; image.write_bytes(b'synthetic image')
+    truth = payload(); truth['images'] = {'firmware.bin': hashlib.sha256(image.read_bytes()).hexdigest()}
+    truth['build'] = {'tool_versions': {'compiler': 'fixture', 'objcopy': 'fixture'}}
+    manifest = {'id': 'zephyr-modbus-v1', 'family': 'zephyr-modbus', 'evaluator_version': '1', 'images': truth['images']}
+    renode, ghidra, java = root/'renode', root/'ghidra', root/'java'
+    for path in (renode, ghidra/'support/analyzeHeadless', java/'bin/java', java/'bin/java.exe'):
+        path.parent.mkdir(parents=True, exist_ok=True); path.touch()
+    (ghidra/'Ghidra').mkdir(); (ghidra/'Ghidra/application.properties').write_text('application.version=fixture\n')
+    def command(args, **kwargs):
+        if '-version' in args:
+            return SimpleNamespace(returncode=0, stderr='fixture java', stdout='')
+        if '--export-dir' not in args:
+            return run(args, **kwargs)
+        (output/'exports').mkdir(); (output/'exports/functions.json').write_text('{}')
+        return SimpleNamespace(returncode=0, stderr='', stdout=json.dumps({'ok': True}))
+    return truth, manifest, image, output, (renode, ghidra, java), command
+
+
 class UpstreamAuthoringTests(unittest.TestCase):
     def test_qualification_stops_before_mutants_when_a_positive_reference_fails(self):
-        from upstream_fixture import payload
         from generative_driver.benchmark_support.upstream_qualification import qualify
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp); output = root/'qualification'
-            image = root/'firmware.bin'; image.write_bytes(b'synthetic image')
-            truth = payload(); truth['images'] = {'firmware.bin': hashlib.sha256(image.read_bytes()).hexdigest()}
-            truth['build'] = {'tool_versions': {'compiler': 'fixture', 'objcopy': 'fixture'}}
-            manifest = {'id': 'zephyr-modbus-v1', 'family': 'zephyr-modbus',
-                        'evaluator_version': '1', 'images': truth['images']}
-            renode, ghidra, java = root/'renode', root/'ghidra', root/'java'
-            for path in (renode, ghidra/'support/analyzeHeadless', java/'bin/java', java/'bin/java.exe'):
-                path.parent.mkdir(parents=True, exist_ok=True); path.touch()
-            (ghidra/'Ghidra').mkdir(); (ghidra/'Ghidra/application.properties').write_text('application.version=fixture\n')
-            def command(args, **kwargs):
-                if '-version' in args:
-                    return SimpleNamespace(returncode=0, stderr='fixture java', stdout='')
-                (output/'exports').mkdir(); (output/'exports/functions.json').write_text('{}')
-                return SimpleNamespace(returncode=0, stderr='', stdout=json.dumps({'ok': True}))
+            truth, manifest, image, output, (renode, ghidra, java), command = qualification_inputs(Path(temp))
             def reference(*args, **kwargs):
                 destination = kwargs['output_dir']; destination.mkdir(parents=True)
                 (destination/'evaluation.json').write_text('{}')
@@ -37,14 +51,74 @@ class UpstreamAuthoringTests(unittest.TestCase):
                     'grade': {'verdict': 'failed', 'checks': [{'id': 'toy', 'passed': False}]},
                     'model_sha256': 'a'*64, 'capabilities_sha256': 'b'*64, 'package_sha256': None,
                     'runtime_sha256': 'c'*64, 'artifact_execution': 'model-runtime'}
-            with patch('generative_driver.benchmark_support.evaluator.reference_execute', side_effect=reference) as run, \
+            with patch('generative_driver.benchmark_support.reference_calibration.run_reference', side_effect=reference) as run, \
                     patch('generative_driver.benchmark_support.upstream_qualification.subprocess.run', side_effect=command), \
-                    patch('generative_driver.benchmark_support.upstream_qualification.subprocess.check_output', return_value='fixture Renode'):
+                    patch('generative_driver.benchmark_support.upstream_qualification.subprocess.check_output', return_value='fixture Renode'), \
+                    contextlib.redirect_stderr(io.StringIO()):
                 record = qualify(truth, manifest, image, output, renode=renode, ghidra_home=ghidra, java_home=java)
             self.assertEqual(record['status'], 'pending')
             self.assertEqual(run.call_count, 1)
             self.assertEqual(record['mutants'], [])
             self.assertIn('Positive reference failed', record['failure'])
+
+    def test_a_final_run_keeps_its_package_emission_apart_from_its_grade(self):
+        # Catches a final reference run whose package emission and grading share an output or native directory, where
+        # the grade's evaluation.json and the grading session's log would replace or mix with the emission's. The real
+        # runner emits and grades through the toy sensor; only the emulator sessions and the native tools are scripted.
+        from test_benchmark_family_calibration import ReferenceExecutionTests
+        from generative_driver.benchmark_support.upstream_qualification import qualify
+        with ReferenceExecutionTests().toy_sensor() as (temp, toy, _, _, _):
+            truth, manifest, image, output, (renode, ghidra, java), command = qualification_inputs(Path(temp))
+            # The fixture's checked value is the toy sensor's temperature, which its mutants rescale.
+            for reference in truth['references'].values():
+                reference['capabilities'] = {'schema': 'benchmark-capabilities/2', 'tasks': {'sample': {
+                    'operation': 'sample', 'constants': {}, 'inputs': {},
+                    'outputs': {'value': {'output': 'temperature', 'unit': 'degC'}}}}}
+            for phase in truth['phases'].values():
+                phase['contract']['checks'][0]['expected'] = -5.0
+            sessions = []
+            class Emulator:
+                """A native session of the toy sensor: a live process, Zephyr's monitor reading, and its own log in its
+                private directory, which it truncates at start as Renode does."""
+                def __init__(self, private_dir):
+                    self.private_dir = Path(private_dir)
+                    self.private_dir.mkdir(parents=True, exist_ok=True)
+                    (self.private_dir/'renode.log').write_text('session ' + str(len(sessions)) + '\n')
+                    self.binding, self.process = toy.binding, SimpleNamespace(poll=lambda: None)
+                    self.info = {'pid': 4242, 'executable': str(renode), 'image_sha256': truth['images']['firmware.bin'],
+                                 'private_dir': str(self.private_dir)}
+                    sessions.append(self)
+                def set_running(self, value): pass
+                def reset(self, values): return {}
+                def observe(self): return {'values': {**{'register_pair' + str(i): 0 for i in range(4)}, 'gpio_d': 0}}
+                def stop(self): pass
+            with patch('generative_driver.benchmark_support.native.NativeSession.start',
+                       side_effect=lambda **kwargs: Emulator(kwargs['private_dir'])), \
+                    patch('generative_driver.benchmark_support.upstream_qualification.subprocess.run', side_effect=command), \
+                    patch('generative_driver.benchmark_support.upstream_qualification.subprocess.check_output', return_value='fixture Renode'), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                record = qualify(truth, manifest, image, output, renode=renode, ghidra_home=ghidra, java_home=java)
+            self.assertEqual(record['status'], 'passed', record.get('failures') or record.get('failure'))
+            # The final run of reference a emitted its package in one session and was graded in another, each with its
+            # own native directory, and each session's log remains.
+            final = next(run for run in record['runs'] if run['id'] == 'a-final-original')
+            emitter, grader = [s for s in sessions if s.private_dir.name.startswith('a-final-original')]
+            self.assertNotEqual(emitter.private_dir, grader.private_dir)
+            for session in (emitter, grader):
+                self.assertEqual((session.private_dir/'renode.log').read_text(), 'session ' + str(sessions.index(session)) + '\n')
+            # Both evaluations remain: the emission's names the package that was graded, and the record hashes the grade.
+            evaluations = {path: json.loads(path.read_text()) for path in (output/'runs/a-final-original').rglob('evaluation.json')}
+            self.assertEqual(len(evaluations), 2)
+            (graded, grade), = [(path, value) for path, value in evaluations.items() if value['grade'] is not None]
+            emitted, = [value for value in evaluations.values() if value['grade'] is None]
+            self.assertEqual(final['evidence_sha256'], hashlib.sha256(graded.read_bytes()).hexdigest())
+            self.assertEqual((emitted['package_sha256'], grade['package_sha256']), (final['package_sha256'],) * 2)
+            self.assertEqual((emitted['process']['private_dir'], grade['process']['private_dir']),
+                             (str(emitter.private_dir), str(grader.private_dir)))
+            # A final run's directory holds the grade's evaluation, so it is private like every other run's.
+            if os.name != 'nt':
+                for name in ('a-diagnostic-original', 'a-final-original'):
+                    self.assertEqual((output/'runs'/name).stat().st_mode & 0o777, 0o700, name)
 
     def test_build_refuses_an_unpinned_source_before_launching_a_compiler(self):
         from generative_driver.benchmark_support.upstream_build import verify_source

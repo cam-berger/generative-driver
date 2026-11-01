@@ -43,14 +43,24 @@ class SnapshotTests(unittest.TestCase):
             self.assertNotIn('secret-', text)
             self.assertEqual(saved['executed']['runtime_configuration'], {'model': 'scripted'})
 
-    def test_evaluator_revision_is_the_grader_identity(self):
-        self.assertEqual(execution_provenance({})['evaluator_revision'], grader_identity()['sha256'])
+    def test_evaluator_revision_is_the_grader_identity_of_the_case(self):
+        identity = grader_identity(case_id='tq9-v2')['sha256']
+        provenance = execution_provenance({}, case_ids=('tq9-v2',))
+        self.assertEqual(provenance['evaluator_revision'], identity)
+        self.assertEqual(provenance['evaluator_revisions'], {'tq9-v2': identity})
+
+    def test_cases_of_several_families_are_stamped_with_the_digest_of_their_revisions(self):
+        from generative_driver.benchmark_support.snapshots import canonical_digest
+        revisions = {case: grader_identity(case_id=case)['sha256'] for case in ('tq9-v2', 'sampled-sensor-v1')}
+        provenance = execution_provenance({}, case_ids=('tq9-v2', 'sampled-sensor-v1'))
+        self.assertEqual(provenance['evaluator_revision'], canonical_digest(revisions))
+        self.assertEqual(provenance['evaluator_revisions'], revisions)
 
     def test_a_system_change_moves_the_toolchain_and_skills_revisions_but_not_the_evaluator_revision(self):
         from unittest.mock import patch
-        before = execution_provenance({})
+        before = execution_provenance({}, case_ids=('tq9-v2',))
         with patch('generative_driver.benchmark_support.integrity.tree_hash', return_value='0' * 64):
-            after = execution_provenance({})
+            after = execution_provenance({}, case_ids=('tq9-v2',))
         for field in ('toolchain_revision', 'skills_revision'):
             self.assertNotEqual(after[field], before[field])
         self.assertEqual(after['evaluator_revision'], before['evaluator_revision'])

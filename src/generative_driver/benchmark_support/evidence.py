@@ -317,8 +317,9 @@ def _execution_identity(report, payload):
 
 
 def _installed_evaluator(snapshot):
-    """A sealed run regrades under the grader it was sealed under, whatever has changed in the system since."""
-    if snapshot['executed']['evaluator_revision'] != grader_identity()['sha256']:
+    """A sealed run regrades only under its case's grader identity as it was sealed, whatever has changed since in the
+    system, in another family or in another case's registration."""
+    if snapshot['executed']['evaluator_revision'] != grader_identity(case_id=snapshot['case_pin']['case_id'])['sha256']:
         raise ValueError('Installed evaluator implementation hash mismatch')
 
 

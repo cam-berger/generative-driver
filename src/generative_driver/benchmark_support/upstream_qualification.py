@@ -37,7 +37,7 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
         raise ValueError('Qualification image differs from the authenticated upstream image')
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     output.chmod(0o700)
-    identity = grader_identity()
+    identity = grader_identity(case_id=manifest['id'])
     paths = {key: Path(value).expanduser().resolve() for key, value in
              ([('ghidra', ghidra_home), ('java', java_home)] + ([] if native else [('renode', renode)]))}
     java = paths['java'] / 'bin' / ('java.exe' if os.name == 'nt' else 'java')
@@ -137,7 +137,7 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
             record.update(status='pending', failures=checked['failures'])
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError) as error:
         record.update(status='pending', failure=type(error).__name__ + ': ' + str(error))
-    if grader_identity() != identity:
+    if grader_identity(case_id=manifest['id']) != identity:
         record.update(status='pending', failure='Evaluator changed during qualification')
     save()
     return record

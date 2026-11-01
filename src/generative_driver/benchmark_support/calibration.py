@@ -80,10 +80,11 @@ def execution_input_identity(model, capabilities):
 
 def validate_calibration(manifest, record):
     """Validate measured coverage, not candidate success flags. Local trust only. A record admits only under the
-    grader identity it was measured with; a run's `runtime_sha256` is checked only for SHA-256 form. An installation
-    whose grader identity cannot be computed raises, rather than reading as a defect of the record."""
+    grader identity of the manifest's case it was measured with; a run's `runtime_sha256` is checked only for SHA-256
+    form. An unregistered case, or an installation whose grader identity cannot be computed, raises, rather than reading
+    as a defect of the record."""
     failures=[]
-    identity=grader_identity()
+    identity=grader_identity(case_id=manifest['id'])
     try:
         from .execution import artifact_name
         artifact = artifact_name(manifest)

@@ -79,18 +79,19 @@ def snapshot_case(run_dir: Path, pin: dict, provenance: dict) -> dict:
     return require_snapshot(run_dir, pin)
 
 
-def execution_provenance(config: dict, *, reuse_profile=None) -> dict:
-    """Capture implementation identity and nonsecret runtime settings before launch. The toolchain and skills
-    revisions hash the system under test; the evaluator revision is the grader identity, the grading code alone."""
+def execution_provenance(config: dict, *, case_ids, reuse_profile=None) -> dict:
+    """Capture implementation identity and nonsecret runtime settings before launch, for a run or suite of `case_ids`.
+    The toolchain and skills revisions hash the system under test; the evaluator revisions are the grading code alone:
+    `evaluator_revisions` the grader identity of each case, `evaluator_revision` the one they combine into."""
     import platform
-    from .grader_identity import grader_identity  # which imports this module, so not at module level
+    from .grader_identity import case_revisions  # which imports this module, so not at module level
     from .integrity import tree_hash
     package = Path(__file__).resolve().parents[1]
     return {**({'reuse_profile': reuse_profile} if reuse_profile else {}),
             'toolchain_revision': hashlib.sha256(
                 (tree_hash(package) + tree_hash(package.parent / 'interface_runtime')).encode()).hexdigest(),
             'skills_revision': tree_hash(package / 'resources/toolchain/skills'),
-            'evaluator_revision': grader_identity()['sha256'],
+            **case_revisions(case_ids),
             'runtime_configuration': public_configuration(config),
             'environment': {'system': platform.system(), 'release': platform.release(),
                             'architecture': platform.machine(), 'python': platform.python_version()}}

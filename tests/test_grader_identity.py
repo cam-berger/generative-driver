@@ -7,7 +7,7 @@ import shutil
 import tempfile
 import textwrap
 import unittest
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import MappingProxyType
 from unittest.mock import patch
@@ -21,13 +21,16 @@ from generative_driver.benchmark_support.grader_identity import (ENTRY_MODULES, 
 from generative_driver.benchmark_support.snapshots import canonical_digest
 
 
-class GraderClosureTests(unittest.TestCase):
+class PackageCopy:
     def copy_package(self):
+        """A copy of the installed generative_driver package under a temporary root, removed when the test ends."""
         directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
         root = Path(directory.name) / 'generative_driver'
         shutil.copytree(Path(generative_driver.__file__).parent, root, ignore=shutil.ignore_patterns('__pycache__'))
         return root
 
+
+class GraderClosureTests(PackageCopy, unittest.TestCase):
     def add_modules(self, root, *names):
         """Empty modules that exist only in this copy, so a test names what it imports itself."""
         for name in names:
@@ -105,9 +108,13 @@ class GraderClosureTests(unittest.TestCase):
     def test_identity_pins_module_hashes_and_the_cryptography_version(self):
         identity = grader_identity()
         behavior = Path(generative_driver.__file__).parent / 'benchmark_support' / 'behavior.py'
-        self.assertEqual(set(identity), {'schema', 'modules', 'dependencies', 'sha256'})
-        self.assertEqual(identity['schema'], 'benchmark-grader-identity/1')
+        self.assertEqual(set(identity), {'schema', 'scope', 'modules', 'registrations', 'dependencies', 'sha256'})
+        self.assertEqual((identity['schema'], identity['scope']), ('benchmark-grader-identity/2', 'grader'))
         self.assertEqual(identity['modules']['benchmark_support.behavior'], hashlib.sha256(behavior.read_bytes()).hexdigest())
+        # Without a case, it covers every registered family and every registration entry.
+        families = {'benchmark_support.' + case.native_module for case in registrations._CASES if case.native_module}
+        self.assertLessEqual(families, set(identity['modules']))
+        self.assertEqual(identity['registrations'], [asdict(case) for case in registrations._CASES])
         self.assertEqual(identity['dependencies'], {'cryptography': importlib.metadata.version('cryptography')})
         self.assertEqual(identity['sha256'], canonical_digest({k: v for k, v in identity.items() if k != 'sha256'}))
 
@@ -149,6 +156,79 @@ class GraderClosureTests(unittest.TestCase):
                      'benchmark_support/harness.py', 'benchmark_support/reference_calibration.py'):
             path = root / name; path.write_text(path.read_text(encoding='utf-8') + '\n# changed\n', encoding='utf-8')
         self.assertEqual(grader_identity(root)['sha256'], before)
+
+
+class CaseIdentityTests(PackageCopy, unittest.TestCase):
+    """A case's identity covers the shared core, its family's modules and its own registration entry: no other family's
+    code and no other case's entry."""
+
+    def touch(self, path):
+        path.write_text(path.read_text(encoding='utf-8') + '\n# changed\n', encoding='utf-8')
+
+    def rewrite_cases(self, root, change):
+        """Apply `change` to the registration entries of the copy at `root`."""
+        path = root / 'resources' / 'registrations' / 'cases.json'
+        table = json.loads(path.read_text(encoding='utf-8'))
+        change(table['cases'])
+        path.write_text(json.dumps(table, indent=2) + '\n', encoding='utf-8')
+
+    def add_case(self, root, entry):
+        """Register `entry` in the copy, with the defaults of the fields it leaves out."""
+        self.rewrite_cases(root, lambda cases: cases.append(asdict(registrations.CaseRegistration(**entry))))
+
+    def set_version(self, root, case_id, version):
+        def change(cases):
+            next(case for case in cases if case['id'] == case_id)['version'] = version
+        self.rewrite_cases(root, change)
+
+    @staticmethod
+    def hashed(closure):
+        """The modules of `closure` an identity hashes: interface_runtime modules are named but never read."""
+        return {name for name in closure if not name.startswith('interface_runtime')}
+
+    def test_a_case_keeps_its_identity_when_unrelated_code_or_cases_change(self):
+        root = self.copy_package()
+        before = grader_identity(root, case_id='tq9-v2')['sha256']
+        self.add_case(root, {'id': 'unrelated-v1', 'family': 'unrelated', 'version': '1', 'adapter_key': 'emulator-v2',
+                             'schema': 'benchmark-case/2', 'native_module': 'sampled_sensor'})
+        self.touch(root / 'benchmark_support/sampled_sensor.py')
+        self.assertEqual(grader_identity(root, case_id='tq9-v2')['sha256'], before)
+
+    def test_a_case_identity_changes_with_its_family_the_core_or_its_own_entry(self):
+        root = self.copy_package()
+        for name, change in (('family', lambda: self.touch(root / 'benchmark_support/tq9_v2.py')),
+                             ('core', lambda: self.touch(root / 'benchmark_support/evaluator.py')),
+                             ('entry', lambda: self.set_version(root, 'tq9-v2', '6'))):
+            with self.subTest(name):
+                before = grader_identity(root, case_id='tq9-v2')['sha256']
+                change()
+                self.assertNotEqual(grader_identity(root, case_id='tq9-v2')['sha256'], before)
+
+    def test_a_case_without_a_native_module_is_graded_by_the_core_alone(self):
+        root = self.copy_package()
+        identity = grader_identity(root, case_id='tq9')  # the legacy case names no native module
+        self.assertEqual(set(identity['modules']), self.hashed(grader_closure(root, families=())))
+        for name in {case.native_module for case in registrations._CASES if case.native_module}:
+            self.touch(root / 'benchmark_support' / (name + '.py'))
+        self.assertEqual(grader_identity(root, case_id='tq9')['sha256'], identity['sha256'])
+
+    def test_a_case_identity_names_its_case_and_holds_only_its_own_entry(self):
+        identity = grader_identity(case_id='zephyr-modbus-v1')
+        self.assertEqual(set(identity), {'schema', 'scope', 'modules', 'registrations', 'dependencies', 'sha256'})
+        self.assertEqual((identity['schema'], identity['scope']), ('benchmark-grader-identity/2', 'zephyr-modbus-v1'))
+        self.assertEqual(set(identity['modules']), self.hashed(grader_closure(families=('zephyr_modbus',))))
+        self.assertEqual(identity['registrations'], [asdict(registrations.registration_for('zephyr-modbus-v1'))])
+        self.assertEqual(identity['sha256'], canonical_digest({k: v for k, v in identity.items() if k != 'sha256'}))
+        with self.assertRaisesRegex(ValueError, 'Unknown benchmark case'):
+            grader_identity(case_id='unregistered-v1')
+
+    def test_case_revisions_name_each_case_once_and_refuse_no_case(self):
+        from generative_driver.benchmark_support.grader_identity import case_revisions
+        one = grader_identity(case_id='tq9-v2')['sha256']
+        self.assertEqual(case_revisions(('tq9-v2', 'tq9-v2')),
+                         {'evaluator_revision': one, 'evaluator_revisions': {'tq9-v2': one}})
+        with self.assertRaisesRegex(ValueError, 'case'):
+            case_revisions(())
 
 
 class FamilyRoutingTests(unittest.TestCase):
@@ -217,7 +297,7 @@ class FamilyRoutingTests(unittest.TestCase):
                 self.assertEqual(declared, mutants)
 
     def test_qualification_requires_the_mutants_the_family_declares(self):
-        manifest = {'id': 'probe-v1', 'family': 'sampled-sensor', 'evaluator_version': '1',
+        manifest = {'id': 'sampled-sensor-v1', 'family': 'sampled-sensor', 'evaluator_version': '1',
                     'images': {'firmware.bin': 'a' * 64}, 'calibration': {'input_hashes': {}}}
 
         def refuses_the_inventory(declared, listed):

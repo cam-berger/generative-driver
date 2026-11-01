@@ -1,0 +1,101 @@
+{
+  "schema": "benchmark-case-registrations/1",
+  "cases": [
+    {
+      "id": "setup-smoke",
+      "family": "setup-smoke",
+      "version": "1",
+      "adapter_key": "smoke",
+      "schema": null,
+      "native_module": null,
+      "mission_case": null,
+      "truth_schema": null,
+      "build_kind": null,
+      "calibration_kind": null
+    },
+    {
+      "id": "tq9",
+      "family": "tq9",
+      "version": "2",
+      "adapter_key": "legacy-emulator",
+      "schema": "benchmark-case/1",
+      "native_module": null,
+      "mission_case": "tq9-v2",
+      "truth_schema": null,
+      "build_kind": null,
+      "calibration_kind": null
+    },
+    {
+      "id": "bme280",
+      "family": "bme280",
+      "version": "3",
+      "adapter_key": "legacy-physical",
+      "schema": "benchmark-case/1",
+      "native_module": null,
+      "mission_case": null,
+      "truth_schema": null,
+      "build_kind": null,
+      "calibration_kind": null
+    },
+    {
+      "id": "tq9-v2",
+      "family": "tq9",
+      "version": "5",
+      "adapter_key": "emulator-v2",
+      "schema": "benchmark-case/2",
+      "native_module": "tq9_v2",
+      "mission_case": null,
+      "truth_schema": null,
+      "build_kind": null,
+      "calibration_kind": "reference"
+    },
+    {
+      "id": "tq9-v3",
+      "family": "tq9",
+      "version": "1",
+      "adapter_key": "emulator-v2",
+      "schema": "benchmark-case/2",
+      "native_module": "tq9_v2",
+      "mission_case": null,
+      "truth_schema": null,
+      "build_kind": null,
+      "calibration_kind": "reference"
+    },
+    {
+      "id": "sampled-sensor-v1",
+      "family": "sampled-sensor",
+      "version": "5",
+      "adapter_key": "emulator-v2",
+      "schema": "benchmark-case/2",
+      "native_module": "sampled_sensor",
+      "mission_case": null,
+      "truth_schema": "benchmark-family-truth/1",
+      "build_kind": null,
+      "calibration_kind": "family"
+    },
+    {
+      "id": "parameter-store-v1",
+      "family": "parameter-store",
+      "version": "5",
+      "adapter_key": "emulator-v2",
+      "schema": "benchmark-case/2",
+      "native_module": "parameter_store",
+      "mission_case": null,
+      "truth_schema": "benchmark-family-truth/1",
+      "build_kind": null,
+      "calibration_kind": "family"
+    },
+    {
+      "id": "zephyr-modbus-v1",
+      "family": "zephyr-modbus",
+      "version": "1",
+      "adapter_key": "emulator-v2",
+      "schema": "benchmark-case/2",
+      "native_module": "zephyr_modbus",
+      "mission_case": null,
+      "truth_schema": "benchmark-upstream-truth/1",
+      "build_kind": "zephyr-modbus",
+      "calibration_kind": "upstream"
+    }
+  ]
+}

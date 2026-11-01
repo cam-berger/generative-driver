@@ -129,9 +129,9 @@ class UpstreamAuthoringTests(unittest.TestCase):
         from test_benchmark_family_calibration import AdmissionTests
         from generative_driver.benchmark_support.calibration import validate_calibration
         from generative_driver.benchmark_support.zephyr_modbus import REQUIRED_MUTANTS
-        manifest, record = AdmissionTests().fixture()
-        manifest.update(id='zephyr-modbus-v1', family='zephyr-modbus')
-        record.update(case='zephyr-modbus-v1', required_mutants=sorted(REQUIRED_MUTANTS))
+        manifest, record = AdmissionTests().fixture('zephyr-modbus-v1')
+        manifest.update(family='zephyr-modbus')
+        record.update(required_mutants=sorted(REQUIRED_MUTANTS))
         template = record['runs'][-1]
         mutation = record['mutants'][-1]
         record['runs'] = record['runs'][:4]

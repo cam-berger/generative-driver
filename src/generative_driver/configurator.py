@@ -1535,7 +1535,8 @@ class Controller:
                 config={**self._configured_executors().get(executor,{}),'runtime':executor}
                 if executor=='replay':
                     config=_replay_suite_config(manifest,options,self.home)
-                frozen=freeze_suite(manifest,executor,config,options,execution_provenance(config),harness_token_sha256=token)
+                provenance=execution_provenance(config,case_ids=[entry['case'] for entry in manifest['entries']])
+                frozen=freeze_suite(manifest,executor,config,options,provenance,harness_token_sha256=token)
                 saved=self._suites.create(frozen,params.get('request_id'),harness_pid=pid,harness_lock=lock)
                 if not saved['duplicate']:
                     self._suites.set_state(saved['suite_id'],'running')
@@ -1883,7 +1884,8 @@ class Controller:
         for pin in frozen['entry_pins']:
             if pin_case(pin['case_id'],pin['scenario_id'],pin['case_seed']) != pin:
                 raise ValueError('Frozen suite case pin changed')
-        if execution_provenance(frozen['executor_config']) != frozen['provenance']:
+        cases = [entry['case'] for entry in frozen['manifest']['entries']]
+        if execution_provenance(frozen['executor_config'], case_ids=cases) != frozen['provenance']:
             raise ValueError('Frozen suite implementation or execution environment changed')
         for trial in suite['trials']:
             found = self.find_request(trial['child_request_id'])
@@ -2045,6 +2047,9 @@ class Controller:
                 'budgets':{'original':policy,'effective':{**policy,'suite_budget_seconds':suite['budget_seconds'],'child_budget_overrides':overrides}},
                 'intervention_policy':{'scoped_tool_approval':frozen['options'].get('scoped_tool_approval'),
                     'max_model_repairs':2}},
+            # Each case's own revision, which its trials are checked against. A suite frozen before cases had their own
+            # grader identities names one revision, its `evaluator_revision`, for all of them.
+            **({'evaluator_revisions':provenance['evaluator_revisions']} if 'evaluator_revisions' in provenance else {}),
             'dimensions':dimensions,'execution_snapshots':snapshots}
 
     def start(self, params):
@@ -2146,7 +2151,8 @@ class Controller:
                     if executor == 'replay':
                         config = spec['executor_config'] = _copy_candidate(config, self.home / 'runs' / run_id)
                     spec['_case_pin'] = pin
-                    saved = snapshot_case(self.home / 'runs' / run_id, pin, execution_provenance(config))
+                    saved = snapshot_case(self.home / 'runs' / run_id, pin,
+                                          execution_provenance(config, case_ids=(pin['case_id'],)))
                     spec['_snapshot_sha256'] = saved['snapshot_sha256']
                     spec['_execution_run_dir'] = str(self.home / 'runs' / run_id)
                     encoded = _json(spec)
@@ -2596,7 +2602,7 @@ class Controller:
         saved = require_snapshot(run_dir, spec['_case_pin'])
         if saved['snapshot_sha256'] != spec['_snapshot_sha256']:
             raise IntegrityError('Execution snapshot hash differs from saved run')
-        if execution_provenance(spec['executor_config']) != saved['executed']:
+        if execution_provenance(spec['executor_config'], case_ids=(saved['case_pin']['case_id'],)) != saved['executed']:
             raise IntegrityError('Execution snapshot implementation or runtime environment changed; start a new run')
         return saved
 

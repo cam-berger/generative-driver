@@ -1340,9 +1340,8 @@ class TQ9V2Tests(unittest.TestCase):
         from test_benchmark_family_calibration import AdmissionTests
         from generative_driver.benchmark_support.reference_calibration import validate_record
         import copy
-        manifest,record=AdmissionTests().fixture()
-        manifest.update(id='tq9-v2',family='tq9')
-        record.update(case='tq9-v2')
+        manifest,record=AdmissionTests().fixture('tq9-v2')
+        manifest.update(family='tq9')
         names=['wrong-scale','constant-output','wrong-state','unsigned-temperature','wrong-temperature-scale',
                'wrong-temperature-unit','wrong-temperature-byteorder','wrong-crc','wrong-duty-effect']
         template=copy.deepcopy(record['mutants'][0]); measured=copy.deepcopy(record['runs'][4])
@@ -1375,9 +1374,8 @@ class TQ9V2Tests(unittest.TestCase):
         from generative_driver.benchmark_support.reference_calibration import input_hashes, tq9_execution_inputs, CORE_MUTANTS
         from generative_driver.benchmark_support.snapshots import canonical_digest
         import copy
-        manifest,record=AdmissionTests().fixture()
-        manifest.update(id='tq9-v2',family='tq9',schema='benchmark-case/2')
-        record['case']='tq9-v2'
+        manifest,record=AdmissionTests().fixture('tq9-v2')
+        manifest.update(family='tq9',schema='benchmark-case/2')
         model={'operations':{'temp':{'outputs':{'value':{'scale':1,'unit':'degC'}}},'arm':{'toy':1},'disarm':{'toy':0}}}
         caps={'tasks':{'temperature':{'operation':'temp','outputs':{'temperature':{'output':'value','unit':'degC'}}},
                        'arm':{'operation':'arm','outputs':{}},'disarm':{'operation':'disarm','outputs':{}}}}
@@ -1680,6 +1678,9 @@ class TQ9V2Tests(unittest.TestCase):
             record=json.loads((root/'output/calibration-record.json').read_text())
             self.assertFalse(record['runs'])
             self.assertFalse(record['mutants'])
+            # The record is measured under the case's own grader identity, which its admission compares with.
+            from generative_driver.benchmark_support.grader_identity import grader_identity
+            self.assertEqual(record['evaluator_identity'],grader_identity(case_id='tq9-v2'))
 
     def test_grader_identity_names_modules_never_case_assets_or_analysis_tooling(self):
         # Case ciphertext and the static analysis wrappers calibration runs are inputs, not grading code: the identity

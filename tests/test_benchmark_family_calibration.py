@@ -40,7 +40,9 @@ class InventoryTests(unittest.TestCase):
         self.assertIn('calibration/calibration.json',decode_inventory(value))
 
 class AdmissionTests(unittest.TestCase):
-    def fixture(self):
+    def fixture(self, case_id='sampled-sensor-v1'):
+        """A complete measured record of `case_id`, stamped with that case's grader identity and shaped as a
+        sampled-sensor record, and its manifest."""
         from generative_driver.benchmark_support.grader_identity import grader_identity
         h='a'*64
         runs=[]
@@ -59,14 +61,14 @@ class AdmissionTests(unittest.TestCase):
             run=copy.deepcopy(runs[0]); run.update(id=name,passed=False,check_ids=['toy/'+name],checks=[{'id':'toy/'+name,'passed':False,'reason':'value mismatch'}]); runs.append(run)
             mutants.append(dict(id=name,rejected=True,run=name,source_sha256=h,mutated_sha256='b'*64,
                 expected_failed_checks=['toy/'+name],failed_checks=['toy/'+name],execution_input={k:run[k] for k in ('model_sha256','capabilities_sha256')}))
-        record=dict(schema='benchmark-calibration/1',status='passed',case='toy-case',execution='reference-calibration',
+        record=dict(schema='benchmark-calibration/1',status='passed',case=case_id,execution='reference-calibration',
             backend='native-renode',evaluator_version='3',images={'firmware.bin':h},
-            input_hashes={k:h for k in ('source','contract','recipe','references','mutations','build','inventory')},evaluator_identity=grader_identity(),native_process_observed=True,
+            input_hashes={k:h for k in ('source','contract','recipe','references','mutations','build','inventory')},evaluator_identity=grader_identity(case_id=case_id),native_process_observed=True,
             references=refs,mutants=mutants,required_mutants=[r['id'] for r in mutants],runs=runs,
             scenarios={'original':{'passed':True}},
             tools={k:'toy-version' for k in ('compiler','objcopy','renode','ghidra','java')},
             analysis={name:{'returncode':0,'export_hashes':{'decompiled.c':h}} for name in ('firmware.bin',)})
-        manifest=dict(id='toy-case',family='sampled-sensor',evaluator_version='3',images=record['images'],
+        manifest=dict(id=case_id,family='sampled-sensor',evaluator_version='3',images=record['images'],
             calibration={'input_hashes':record['input_hashes']})
         return manifest,record
 
@@ -112,9 +114,23 @@ class AdmissionTests(unittest.TestCase):
         from generative_driver.benchmark_support.calibration import validate_calibration
         from generative_driver.benchmark_support.grader_identity import grader_identity
         manifest, record = self.fixture()
-        record['evaluator_identity'] = grader_identity()
+        record['evaluator_identity'] = grader_identity(case_id=manifest['id'])
         for run in record['runs']: run['runtime_sha256'] = 'f' * 64
         self.assertEqual(validate_calibration(manifest, record)['failures'], [])
+
+    def test_admission_compares_a_record_with_the_identity_of_its_own_case(self):
+        # Catches a record admitted under the whole grader's identity, or another case's: a case is qualified under its
+        # own, which covers the shared core, its family's modules and its own registration entry.
+        from generative_driver.benchmark_support.calibration import validate_calibration
+        from generative_driver.benchmark_support.grader_identity import grader_identity
+        manifest, record = self.fixture()
+        self.assertEqual(validate_calibration(manifest, record)['failures'], [])
+        for other in (grader_identity(), grader_identity(case_id='parameter-store-v1')):
+            record['evaluator_identity'] = other
+            self.assertEqual(validate_calibration(manifest, record)['failures'], ['identity:evaluator_identity'])
+        # The manifest of an unregistered case has no grader identity to compare with, which no record can fix: it raises.
+        with self.assertRaisesRegex(ValueError, 'Unknown benchmark case'):
+            validate_calibration({**manifest, 'id': 'toy-case'}, record)
 
     def test_a_broken_grader_installation_raises_rather_than_reading_as_malformed_evidence(self):
         # Catches a grader module missing from the installation reported as a defect of the calibration record.

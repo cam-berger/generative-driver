@@ -1160,7 +1160,7 @@ class SuiteStartTests(HarnessSuiteFixture):
         from generative_driver.benchmark_support.snapshots import execution_provenance
         from generative_driver.benchmark_support.suites import freeze_suite
         config = {'command': ['scripted-runtime'], 'runtime': 'codex'}
-        frozen = freeze_suite(manifest(), 'codex', config, {}, execution_provenance(config),
+        frozen = freeze_suite(manifest(), 'codex', config, {}, execution_provenance(config, case_ids=('tq9-v2',)),
                               harness_token_sha256=hashlib.sha256(b'old harness').hexdigest())
         old = {key: value for key, value in frozen.items() if key not in ('scheduler', 'harness_token_sha256')}
         handles = {**old, 'options': {'evaluator_password_files': {'tq9-v2': 'old-private-handle'}, 'renode': 'old-renode'}}

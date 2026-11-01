@@ -1,6 +1,6 @@
 # Scope qualification to each case's actual grading dependencies
 
-Status: ready-for-agent
+Status: resolved
 
 The current native calibration identity hashes every Python module in `benchmark_support`. Adding a case registration or a report-only module invalidates all software-case qualification, even when an existing case's grading behavior is unchanged. This refactor explicitly refreshes the supported cases and documents that cost.
 
@@ -20,6 +20,13 @@ The [grader identity plan](../../../docs/superpowers/plans/2026-10-30-grader-ide
 - **Shared policies.** Helpers the grader shared with the system (digests, the tree hash, case roots, labels) moved into closure modules that the system imports. Reference building, stage adapters and legacy recorded grading moved out of the closure.
 - **Historical evidence.** A sealed run regrades only under the grader identity it was sealed under, however the system has changed since. Runs sealed before 7f3b258 carry a whole-tree `evaluator_revision`, so they regrade only from a preserved checkout of their revision and are never paired with later runs. A record of the earlier `benchmark-evaluator-identity/2` fails admission with `identity:evaluator_identity`, so every admitted case is requalified once; the anchors' requalification is a runbook step.
 
-### Still open: a per-family identity
+### Resolved by plan 3: a per-family identity
 
-The closure still covers every registered family and `registrations.py`, so adding or editing a code-registered case still voids every admission and changes `evaluator_revision`, which blocks comparison with every earlier run. The acceptance above, an unrelated case preserving an existing admission, is not met.
+Plan 1's closure still covered every registered family and `registrations.py`, so adding or editing a case voided every admission and blocked comparison with every earlier run. On 2026-11-01 the user chose an identity per family, and the [generated-grader plan](../../../docs/superpowers/plans/2026-11-01-generated-grader.md) scopes each identity to a case.
+
+- **Core.** The core is the closure of the five entry modules. It imports no family: it loads one by name through `registrations`.
+- **Registrations.** Cases are registered in `resources/registrations/cases.json` (`benchmark-case-registrations/1`). This code-owned data is read relative to `registrations.py`, never through `case_root()`, which an environment variable redirects. A duplicate key, an unknown or missing field or a duplicate id is refused.
+- **Case identity.** `grader_identity(case_id=...)` (`benchmark-grader-identity/2`) hashes the core, the closure of the case's native module and the case's own registration entry, plus the `cryptography` version. Without a case it covers every family and every entry.
+- **Stamps and checks.** Admission, reference and upstream qualification, the run stamp, the grade after the run and regrade each use their own case's identity. A suite is stamped with each case's revision (`evaluator_revisions`) and compared by the one they combine into (`evaluator_revision`): that sha256 when the cases share one identity, otherwise the digest of the mapping. Each trial is checked against its own case's revision. A suite or report saved before this change names one revision for every case.
+- **Acceptance.** `test_a_case_keeps_its_identity_when_unrelated_code_or_cases_change` shows that adding a case or editing another family keeps an identity. `test_a_case_identity_changes_with_its_family_the_core_or_its_own_entry` shows that editing the case's family, the core or its own entry changes it.
+- **Historical evidence.** A record under the earlier `benchmark-grader-identity/1` fails admission with `identity:evaluator_identity`, so every admitted case is requalified once more.

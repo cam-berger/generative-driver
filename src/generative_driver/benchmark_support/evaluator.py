@@ -235,11 +235,11 @@ def needs_grading(trial_dir, result, *, password_file):
 
 def accepted_driver(case_id, trial_dir, run_dir, result):
     """The frozen driver a completed run accepted, checked and copied for grading: (snapshot, driver). It checks the
-    run's snapshot and pin, and that the installed grader is the evaluator revision the run was stamped with. Then, when
-    an emit handoff handed a package on, it first deletes `trial_dir/private` and copies into a fresh one the package of
-    the latest such handoff and the mapping of the model it packages, re-hashing both. `driver` is None when no emit
-    handed a package on, else (package copy, recorded sha256, revision, capability mapping or None, mapping sha256 or
-    None). A changed record or grader raises IntegrityError."""
+    run's snapshot and pin, and that the case's installed grader identity is the evaluator revision the run was stamped
+    with. Then, when an emit handoff handed a package on, it first deletes `trial_dir/private` and copies into a fresh
+    one the package of the latest such handoff and the mapping of the model it packages, re-hashing both. `driver` is
+    None when no emit handed a package on, else (package copy, recorded sha256, revision, capability mapping or None,
+    mapping sha256 or None). A changed record or grader raises IntegrityError."""
     from .grader_identity import grader_identity
     from .integrity import IntegrityError
     from .registry import pin_case
@@ -254,7 +254,7 @@ def accepted_driver(case_id, trial_dir, run_dir, result):
         raise IntegrityError('Execution snapshot differs from the run record')
     if pin_case(case_id, pin.get('scenario_id'), pin.get('case_seed', 0)) != pin:
         raise IntegrityError('The installed case differs from the run\'s pinned case')
-    if snapshot['executed'].get('evaluator_revision') != grader_identity()['sha256']:
+    if snapshot['executed'].get('evaluator_revision') != grader_identity(case_id=case_id)['sha256']:
         # A grader edited during the trial never seals a verdict under the revision the run started with.
         raise IntegrityError('The installed grader differs from the evaluator revision the run was stamped with')
     accepted = result.get('accepted_handoffs') or []

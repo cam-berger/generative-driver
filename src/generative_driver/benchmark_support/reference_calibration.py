@@ -175,7 +175,7 @@ def calibrate(case_id, options):
     if output.exists() and any(output.iterdir()):
         raise ValueError('Calibration requires an empty evaluator output directory')
     output.mkdir(parents=True,mode=0o700,exist_ok=True)
-    identity=grader_identity()
+    identity=grader_identity(case_id=case_id)
     record={'schema':'benchmark-calibration/1','status':'pending','case':case_id,'evaluator_version':definition.evaluator_version,
         'execution':'reference-calibration','backend':'native-renode','images':definition.manifest['images'],
         'input_hashes':truth['input_hashes'] if family_case else input_hashes(truth),'evaluator_identity':identity,'native_process_observed':False,
@@ -327,7 +327,7 @@ def calibrate(case_id, options):
         if not checked['ok']:record.update(status='pending',failures=checked['failures'])
     except (OSError,ValueError,KeyError,TypeError,RuntimeError,subprocess.SubprocessError) as error:
         record.update(status='pending',failure=type(error).__name__+': '+str(error))
-    if grader_identity()!=identity:record.update(status='pending',failure='Evaluator implementation changed during calibration')
+    if grader_identity(case_id=case_id)!=identity:record.update(status='pending',failure='Evaluator implementation changed during calibration')
     save()
     if family_case:
         payload=authoring_payload(author if 'author' in locals() and (author/'AUTHORING.json').exists() else evaluator_directory(options['authoring_root']))

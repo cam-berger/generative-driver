@@ -251,13 +251,14 @@ self.assertEqual(child_disposition({'stopping': False, 'uncertain_effect': False
 **Interfaces:**
 - Consumes: undecided records from Task 4; the registrations from Task 2.
 - Produces:
-  - The answer key, schema `generated-answer-key/1`:
-    - `recipe`: a `NativeSession` recipe, with reset commands and observations.
+  - The answer key, schema `generated-answer-key/1`, which `generated.answer_key(truth)` checks strictly (unknown or missing fields are refused):
+    - `nonce`: 64 lowercase hex digits, 32 random bytes, so that the key's digest in the plaintext manifest cannot be confirmed by guessing the key.
+    - `recipe`: a `NativeSession` recipe, with reset commands and observations. The reset commands leave the firmware booted to idle, since Renode keeps RAM across `machine Reset` (for example, they end with `emulation RunFor`).
     - `state`: `{cell: {'address': int, 'width': 8|16|32}}`.
     - `reset`: `{cell: int}`, the state a verified reset leaves.
     - `sequences`: `[{'id', 'steps': [...]}]`. Each step is `{'task', 'inputs', 'grants', 'answer', 'outputs'?, 'refusal_rx_hex'?, 'state'}`, where:
       - `answer` is `'value'`, `'refusal'` or `'no_reply'`;
-      - `outputs` is `{name: {'value', 'tolerance'}}`;
+      - `outputs` is `{name: {'value', 'tolerance', 'unit'}}`, the unit being the one the public mission states (`'1'` when dimensionless);
       - `refusal_rx_hex` is a string;
       - `state` is `{cell: int}`.
     - `mission`: `{'state': {cell: int}}`.
@@ -265,13 +266,16 @@ self.assertEqual(child_disposition({'stopping': False, 'uncertain_effect': False
     - `mutants`: `[{'id', 'model', 'capabilities', 'expected_failed_checks'}]`.
   - `generated.contract(pin, truth, phase) -> dict` is a `benchmark-behavior/1` contract with these check ids:
     - `<sequence>/<step>/answer`, a text check;
-    - `<sequence>/<step>/out:<name>`, a number check, only for a `value` step;
+    - `<sequence>/<step>/out:<name>`, a number check, only for a `value` step. It expects the output's unit, and the record carries the unit the driver reported, so another unit fails;
     - `<sequence>/<step>/state:<cell>`, a number check with tolerance 0 on channel `device-state`.
   - `generated.classify_answer(result: dict, step: dict) -> str` returns one of:
     - `value`: `ok` is true;
-    - `refusal`: either the driver declined before contact, or the device replied the step's `refusal_rx_hex` to the requested operation. Declining before contact means `transport_open_attempted` is false, or no transcript entry exists for the requested operation, with fault `model` or `operator`;
+    - `refusal`: with fault `model` or `operator`, the driver declined on purpose or the device refused. Three cases qualify:
+      - nothing reached the device: `transport_open_attempted` is false and no transcript, top-level or in `observations[*].result`, shows contact. A `capability_mapping` binding failure is this case;
+      - `precondition_failed` after precondition reads that all succeeded with identity verified;
+      - after a verified identity, the device replied the step's `refusal_rx_hex` to the requested operation;
     - `no_reply`: identity was verified and the requested operation timed out with nothing received (field names as `interface_runtime/engine.py` writes them);
-    - `error`: anything else.
+    - `error`: anything else, including a failed identity verification and `precondition_unavailable`.
   - `generated.execute(session, invoke, contract, truth, evidence_path, *, healthy_device_failures) -> list[dict]`:
     - For each sequence it calls `session.reset({})`, then `read_state`. A reset state other than `truth['reset']` makes every record in that sequence undecided (`'unverified reset'`).
     - For each step it calls the task through `run_call` with the step's grants, classifies the answer, reads the state and writes one record per check. An unreadable cell is undecided (`'unreadable state'`).

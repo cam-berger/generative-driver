@@ -38,15 +38,15 @@ def graded_result(session, result, event, *, healthy_device_failures):
     """A call's result as the grader takes it. A call reported as a host fault, while grading a candidate's frozen
     package (`healthy_device_failures`) on a device that still runs, answers its monitor and accepts a connection on the
     driver's channel (`event['device_healthy']`), failed on a healthy device: the driver's failure, graded, with the
-    reported label kept as `reported_fault`. So is a frozen package that hung or exited without a result, since its
-    bundled runtime is the system's code. A package process that could not start, or was killed by a signal the grader
-    did not send (`source: package-process`, which only `package_invoker` writes), is the host's, and so is any host
-    fault while calibrating, where an outage must never pass for a mutant's rejection: RuntimeError, and nothing is
-    graded."""
+    reported label kept as `reported_fault`. So is a frozen package that hung, exited without a result or died from a
+    signal, since its bundled runtime is the system's code and a package can kill itself, abort or crash. Only a package
+    process that could not start (`source: package-process`, `code: spawn`, which only `package_invoker` writes) is the
+    host's whatever the device, and so is any host fault while calibrating, where an outage must never pass for a
+    mutant's rejection: RuntimeError, and nothing is graded."""
     error = result.get('error') if isinstance(result.get('error'), dict) else {}
     if error.get('fault') != 'host':
         return result
-    if healthy_device_failures and error.get('source') != 'package-process':
+    if healthy_device_failures and (error.get('source'), error.get('code')) != ('package-process', 'spawn'):
         event['device_healthy'] = _device_healthy(session)
     if not event.get('device_healthy'):
         raise RuntimeError('Host execution failed; behavioral grading is unavailable')
@@ -57,6 +57,14 @@ def _binding_failure(task, error):
     return {'ok': False, 'error': {'fault': 'model', 'code': 'capability_mapping',
                                  'task': task, 'message': str(error)},
             'outputs': {}, 'units': {}, 'transcript': [], 'transport_open_attempted': False}
+
+
+def _malformed_result(printed, defect):
+    """The driver's failure for a package result that no runtime writes, keeping what the package printed as `printed`
+    for the evidence. The package ran and may have reached the device, so this is never a refusal before contact."""
+    return {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [], 'transport_open_attempted': True,
+            'error': {'fault': 'model', 'code': 'malformed_result', 'message': 'The package result has ' + defect},
+            'printed': printed}
 
 
 def execute_plan(session, invoke, plan, contract, evidence_path, observations, settle_seconds=0, *,
@@ -159,11 +167,14 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
 
 def package_invoker(package, binding, grants):
     """Normal installed package CLI, isolated from the source checkout. A call that ends without a result is reported as
-    a host fault, never raised: from `package` when the package outlasted the call limit or exited without a result
-    (`execute_plan` may grade that as the driver's), from `package-process` when the process could not start or a signal
-    the grader did not send killed it. Only these failures carry a `source`: one the package prints itself is dropped,
-    so that a package cannot pass its own failure off as its process's."""
+    a host fault, never raised: from `package` when the package outlasted the call limit or exited without a result,
+    from `package-process` when the process could not start (`spawn`) or a signal the grader did not send killed it
+    (`signal`); `execute_plan` may grade all but `spawn` as the driver's. Only these failures carry a `source`: one the
+    package prints itself is dropped, so that a package cannot print its way to that label. A result holding a number
+    that is not finite (NaN, an infinity or a float too large to hold), which the honest CLI never prints and the
+    evidence cannot record, is the driver's `malformed_result`, its copy keeping each such number as its text."""
     import json
+    import math
     import subprocess
     import sys
     from pathlib import Path
@@ -186,11 +197,20 @@ def package_invoker(package, binding, grants):
         except OSError as error:
             return failed('package-process', 'spawn', 'The package process could not start: ' + type(error).__name__
                           + ': ' + str(error))
+        not_finite = []
+        def kept(text):
+            not_finite.append(text)
+            return text
+        def number(text):
+            value = float(text)
+            return value if math.isfinite(value) else kept(text)
         try:
-            result = json.loads(completed.stdout)
+            result = json.loads(completed.stdout, parse_constant=kept, parse_float=number)
         except (ValueError, RecursionError):
             result = None
         if isinstance(result, dict):
+            if not_finite:
+                return _malformed_result(result, 'a number that is not finite: ' + ', '.join(not_finite)[:200])
             error = result.get('error')
             if isinstance(error, dict) and 'source' in error:
                 result = {**result, 'error': {key: value for key, value in error.items() if key != 'source'}}
@@ -205,8 +225,9 @@ def package_invoker(package, binding, grants):
 
 def canonical_package_invoker(package, capabilities, binding):
     """The package's calls by canonical task: a task the mapping cannot bind fails before the package runs, and a
-    result whose `outputs`, `units` or `error` is not an object is the driver's failure (`malformed_result`), never an
-    exception; outputs and units are renamed to the task's."""
+    result whose `outputs`, `units` or `error` is not an object, or whose `transcript` is not a list of objects, is the
+    driver's failure (`malformed_result`, keeping what the package printed), never an exception; outputs and units are
+    renamed to the task's."""
     import json
     from pathlib import Path
     from .behavior import bind_task
@@ -217,11 +238,12 @@ def canonical_package_invoker(package, capabilities, binding):
         except ValueError as error:
             return _binding_failure(task, error)
         result = package_invoker(package, binding, grants)(**request)
-        if any(not isinstance(result.get(field, {}), dict) for field in ('outputs', 'units', 'error')):
-            # The package ran, so it may have reached the device: this is no refusal before contact.
-            return {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [], 'transport_open_attempted': True,
-                    'error': {'fault': 'model', 'code': 'malformed_result', 'task': task,
-                              'message': 'The package result has outputs, units or an error that is not an object'}}
+        malformed = [field for field in ('outputs', 'units', 'error') if not isinstance(result.get(field, {}), dict)]
+        transcript = result.get('transcript', [])
+        if not isinstance(transcript, list) or any(not isinstance(entry, dict) for entry in transcript):
+            malformed.append('transcript')
+        if malformed:
+            return _malformed_result(result, 'a malformed ' + ', '.join(malformed))
         mappings = capabilities['tasks'][task]['outputs']
         return {**result,
             'outputs': {key: result.get('outputs', {}).get(mapping['output']) for key, mapping in mappings.items()},

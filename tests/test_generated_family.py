@@ -3,6 +3,7 @@ hand-written fixture device, never generator output, then graded by the evaluato
 device through its Renode-like monitor."""
 import copy
 import json
+import signal
 import tempfile
 import unittest
 from pathlib import Path
@@ -181,11 +182,16 @@ class StepGradingTests(unittest.TestCase):
 
     def test_a_forged_process_label_or_a_malformed_result_is_the_drivers_error(self):
         # Catches a package that escapes its grade by printing the label only the grader writes for a process that could
-        # not start, and one whose malformed result made the grader raise instead of grading it.
+        # not start, and one whose malformed result made the grader raise, or left its evidence unwritable, instead of
+        # grading it. The evidence keeps what the package printed, a number that is not finite as its name.
         for name, printed in (('forged source', FORGED_SOURCE),
                               ('outputs', {'ok': True, 'outputs': 'two', 'units': {}, 'transcript': []}),
                               ('units', {'ok': True, 'outputs': {'mode': 2}, 'units': ['1'], 'transcript': []}),
-                              ('error', {'ok': False, 'error': 'refused', 'transcript': []})):
+                              ('error', {'ok': False, 'error': 'refused', 'transcript': []}),
+                              ('transcript', {'ok': False, 'error': {'fault': 'model'}, 'transcript': 'none'}),
+                              ('transcript entry', {'ok': False, 'error': {'fault': 'model'}, 'transcript': ['ERR']}),
+                              ('not finite', {'ok': True, 'outputs': {'mode': float('nan')}, 'units': {'mode': '1'},
+                                              'transcript': []})):
             with self.subTest(name):
                 graded = self.grade(REFERENCE_A, edit=lambda package: add_to_bundled_runtime(package, prints(printed)),
                                     healthy_device_failures=True)['grade']
@@ -197,7 +203,22 @@ class StepGradingTests(unittest.TestCase):
                     self.assertEqual((calls[0]['device_healthy'], 'source' in calls[0]['result']['error']),
                                      (True, False))
                 else:
-                    self.assertEqual(calls[0]['result']['error']['code'], 'malformed_result')
+                    copy_of_printed = json.loads(json.dumps(printed), parse_constant=str)
+                    self.assertEqual((calls[0]['result']['error']['code'], calls[0]['result']['printed']),
+                                     ('malformed_result', copy_of_printed))
+
+    @unittest.skipUnless(hasattr(signal, 'SIGKILL'), 'a process sends itself SIGKILL on POSIX only')
+    def test_a_package_that_kills_itself_on_a_healthy_device_is_the_drivers_error(self):
+        # Catches a package that escapes its grade by dying from a signal of its own: only a process that could not
+        # start is the host's whatever the device.
+        kills_itself = b'\nimport os, signal\nos.kill(os.getpid(), signal.SIGKILL)\n'
+        graded = self.grade(REFERENCE_A, edit=lambda package: add_to_bundled_runtime(package, kills_itself),
+                            healthy_device_failures=True)['grade']
+        self.assertEqual(graded['verdict'], 'failed')
+        call = next(event for event in self.raw['events'] if 'step' in event)
+        error = call['result']['error']
+        self.assertEqual((call['answer'], call['device_healthy']), ('error', True))
+        self.assertEqual((error['code'], error['source'], error['reported_fault']), ('signal', 'package-process', 'host'))
 
     def run_steps(self, device, invoke):
         """The hidden sequences of the fixture key run on `device` with the scripted package call `invoke`."""

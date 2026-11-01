@@ -388,14 +388,17 @@ class ReferenceExecutionTests(unittest.TestCase):
     def test_a_frozen_package_that_crashes_hangs_or_garbles_its_result_fails_on_a_healthy_device(self):
         # Catches a frozen package's own failure taken for the evaluator host's, which ends the trial unscored and leaves
         # a crashing system's failures out of its pass rate. The bundled runtime is the system's code: one that raises
-        # at import, outlasts the call limit or prints no result the grader can read on the evaluator's healthy device
-        # is graded not equivalent.
+        # at import, outlasts the call limit, prints no result the grader can read or, on POSIX, kills itself on the
+        # evaluator's healthy device is graded not equivalent.
         import json
+        import signal
         from pathlib import Path
         from unittest.mock import patch
         from generative_driver.benchmark_support.emulated_actions import PACKAGE_CALL_SECONDS
         from generative_driver.benchmark_support.evaluator import final_record, reference_execute
         from generative_driver.configurator import digest
+        kills_itself=(('self-kill',b'\nimport os, signal\nos.kill(os.getpid(), signal.SIGKILL)\n',PACKAGE_CALL_SECONDS,
+                       'signal'),) if hasattr(signal,'SIGKILL') else ()
         with self.toy_sensor() as (temp,Session,pin,truth,caps):
             for name,code,limit,reported in (
                     ('crash',b'\nraise ImportError("a broken bundled runtime")\n',PACKAGE_CALL_SECONDS,'no_result'),
@@ -403,7 +406,8 @@ class ReferenceExecutionTests(unittest.TestCase):
                     ('garbled',b'\nimport sys\nsys.stdout.buffer.write(b"\\xff\\xfe")\nsys.stdout.flush()\n',
                      PACKAGE_CALL_SECONDS,'no_result'),
                     ('too-deep',b'\nimport sys\nsys.stdout.write("[" * 100000)\nsys.stdout.flush()\n',
-                     PACKAGE_CALL_SECONDS,'no_result')):
+                     PACKAGE_CALL_SECONDS,'no_result'),
+                    *kills_itself):
                 with self.subTest(package=name):
                     package=self.emit_toy_package(Path(temp)/name,Session.binding)
                     self.edit_bundled(package,'interface_runtime/package.py',lambda data:data+code)
@@ -433,7 +437,11 @@ class ReferenceExecutionTests(unittest.TestCase):
                                                'message': 'printed by the package'}},
                    'outputs': {'ok': True, 'outputs': [-5.0, 3], 'units': {}},
                    'units': {'ok': True, 'outputs': {'temperature': -5.0, 'sequence': 3}, 'units': 'degC'},
-                   'error': {'ok': False, 'outputs': {}, 'units': {}, 'error': 'refused'}}
+                   'error': {'ok': False, 'outputs': {}, 'units': {}, 'error': 'refused'},
+                   'transcript': {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [7],
+                                  'error': {'fault': 'model', 'code': 'execution_error'}},
+                   'not finite': {'ok': True, 'outputs': {'temperature': float('nan'), 'sequence': 3},
+                                  'units': {'temperature': 'degC', 'sequence': 'count'}}}
         with self.toy_sensor() as (temp,Session,pin,truth,caps):
             for name,result in printed.items():
                 with self.subTest(name):
@@ -453,7 +461,10 @@ class ReferenceExecutionTests(unittest.TestCase):
                         self.assertEqual((call['device_healthy'],error['reported_fault'],'source' in error),
                                          (True,'host',False))
                     else:
-                        self.assertEqual((error['fault'],error['code']),('model','malformed_result'))
+                        # The evidence keeps what the package printed, a number that is not finite by its name.
+                        kept=next(e for e in events if e['action']['kind']=='call')['result']['printed']
+                        self.assertEqual((error['fault'],error['code'],kept),
+                                         ('model','malformed_result',json.loads(json.dumps(result),parse_constant=str)))
 
     def test_only_the_package_that_was_frozen_is_accepted(self):
         import tempfile

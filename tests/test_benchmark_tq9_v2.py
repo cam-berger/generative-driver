@@ -1559,11 +1559,12 @@ class TQ9V2Tests(unittest.TestCase):
                         execute_plan(session, lambda *args: dict(no_reply), plan, contract, path, lambda *args: {},
                                      healthy_device_failures=opted)
 
-    def test_a_package_process_that_cannot_start_or_is_killed_from_outside_is_the_hosts(self):
-        # Every package call is reported, never raised. A package that outlasts identity plus the longest operation, or
-        # exits without a result, failed on its own: its bundled runtime is the system's code, so grading on a healthy
-        # device makes that the driver's failure. A process that could not start, or was killed by a signal the grader
-        # did not send, failed on the host however healthy the device is; and calibration keeps every host fault the host's.
+    def test_a_package_process_that_cannot_start_is_the_hosts_and_one_that_dies_is_graded_on_a_healthy_device(self):
+        # Every package call is reported, never raised. A package that outlasts identity plus the longest operation,
+        # exits without a result or dies from a signal (a package can kill itself, abort or segfault) failed on its own:
+        # its bundled runtime is the system's code, so grading on a healthy device makes that the driver's failure. Only
+        # a process that could not start failed on the host however healthy the device is; and calibration keeps every
+        # host fault the host's.
         import socket
         import subprocess
         from unittest.mock import patch
@@ -1588,15 +1589,33 @@ class TQ9V2Tests(unittest.TestCase):
             def observe(self): return {'values': {}, 'reads': []}
         plan = [{'kind': 'call', 'task': 'read', 'inputs': {}, 'grants': []}]
         with tempfile.TemporaryDirectory() as temp:
-            for code, grading in (('spawn', True), ('signal', True), ('timeout', False), ('no_result', False)):
+            for code, grading in (('spawn', True), ('signal', False), ('timeout', False), ('no_result', False)):
                 with self.subTest(code=code, grading=grading), self.assertRaisesRegex(RuntimeError, 'Host execution failed'):
                     execute_plan(Session(), lambda *args: dict(outcomes[code]), plan, {'checks': []}, Path(temp)/'raw.json',
                                  lambda *args: {}, healthy_device_failures=grading)
-            for code in ('timeout', 'no_result'):
+            for code in ('signal', 'timeout', 'no_result'):
                 execute_plan(Session(), lambda *args: dict(outcomes[code]), plan, {'checks': []}, Path(temp)/'raw.json',
                              lambda *args: {}, healthy_device_failures=True)
                 event = json.loads((Path(temp)/'raw.json').read_text())['events'][0]
                 self.assertEqual((event['device_healthy'], event['result']['error']['fault']), (True, 'model'))
+
+    def test_a_printed_number_that_is_not_finite_is_the_drivers_malformed_result(self):
+        # Catches a package that prints NaN, an infinity or a float too large to hold, which the evidence cannot record:
+        # writing it raised, and the trial was left without a grade. The copy keeps each such number as its text.
+        import subprocess
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.emulated_actions import package_invoker
+        call = package_invoker('/frozen/package', {'host': '127.0.0.1', 'port': 1}, [])
+        for text in ('NaN', 'Infinity', '-Infinity', '1e999', '-1e999'):
+            printed = '{"ok": true, "outputs": {"temperature": %s, "sequence": 2.5}, "units": {}}' % text
+            with self.subTest(text=text), \
+                    patch('subprocess.run', return_value=subprocess.CompletedProcess(['driver'], 0, printed, '')):
+                result = call('read', {})
+            self.assertEqual((result['ok'], result['error']['fault'], result['error']['code']),
+                             (False, 'model', 'malformed_result'))
+            self.assertEqual(result['printed'], {'ok': True, 'outputs': {'temperature': text, 'sequence': 2.5},
+                                                 'units': {}})
+            json.dumps(result, allow_nan=False)  # the evidence can record it
 
     def test_fresh_reuse_acknowledgements_do_not_substitute_for_a_reading(self):
         # Public adapter seam: actuator ACK outputs alone do not finish the mission, which is a note, never a stop.

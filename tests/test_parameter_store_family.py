@@ -226,6 +226,45 @@ class ParameterStoreOracleTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 self.assertEqual(validate_records(contract, rows)['verdict'], 'passed' if mode=='complete' else 'failed')
 
+    def test_a_printed_transcript_that_is_no_list_of_objects_fails_the_rejection_instead_of_stopping_the_grade(self):
+        # Catches a package that prints a malformed transcript: the rejection check read its last entry and raised, so
+        # the trial was left without a grade. The evaluator's invoker now makes it the driver's failure, and the
+        # evidence keeps what the package printed.
+        import json
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.emulated_actions import canonical_package_invoker
+        pin, truth = toy_store_phase()
+        contract = parameter_store.contract(pin, truth, 'diagnostic')
+        contract['checks'] = [c for c in contract['checks'] if c['scenario'] == 'rejection']
+        contract.pop('required_scenarios', None)
+        plan = [a for a in truth['phases']['diagnostic']['actions'] if a['episode'] == 'rejection']
+        capabilities = {'schema': 'benchmark-capabilities/2', 'tasks': {
+            'commit': {'operation': 'commit', 'constants': {}, 'inputs': {}, 'outputs': {}}}}
+        device = FourCellStoreDevice([4, 5, 6, 7, 8, 9, 10, 11])
+        class Session:
+            def reset(self, values): device.__init__(values['committed']); return device.observe()
+            def set_running(self, value): pass
+            def observe(self): return device.observe()
+        entry = {'operation': 'commit', 'step': 0, 'op': 'exchange', 'status': 'completed',
+                 'rx_hex': b'ERR:order\nREADY\n'.hex()}
+        with tempfile.TemporaryDirectory() as temp:
+            package = Path(temp)/'package'
+            (package/'driver').mkdir(parents=True)
+            (package/'driver/model.json').write_text(json.dumps(toy_store_model_four_cell()), encoding='utf-8')
+            for transcript in ('none', [entry, 'ERR'], {'0': entry}):
+                printed = {'ok': False, 'operation': 'commit', 'identity_verified': True, 'outputs': {}, 'units': {},
+                           'transcript': transcript, 'error': {'fault': 'model', 'code': 'execution_error'}}
+                with self.subTest(transcript=transcript), \
+                        patch('generative_driver.benchmark_support.emulated_actions.package_invoker',
+                              return_value=lambda operation, parameters: json.loads(json.dumps(printed))):
+                    invoke = canonical_package_invoker(package, capabilities, {'host': '127.0.0.1', 'port': 1})
+                    rows = execute_plan(Session(), invoke, plan, contract, Path(temp)/'evidence.json',
+                                        parameter_store.observations, healthy_device_failures=True)
+                    self.assertEqual(validate_records(contract, rows)['verdict'], 'failed')
+                    events = json.loads((Path(temp)/'evidence.json').read_text(encoding='utf-8'))['events']
+                    result = next(e for e in events if e['action']['kind'] == 'call')['result']
+                    self.assertEqual((result['error']['code'], result['printed']), ('malformed_result', printed))
+
     def test_commit_changes_one_cell_and_generation_once(self):
         initial = [4, 5, 6, 7, 8, 9, 10, 11]
         state = parameter_store.expected_state(initial, [

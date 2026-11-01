@@ -175,9 +175,9 @@ def _protocol(result):
 
 def record(status, equivalent, checks, diff, frozen, capabilities_sha256=None, mission=None, method='fresh-final', *,
            protocol: str):
-    """A public equivalence/1 record: check ids with passed flags and the failing ids with their reasons. Expected values,
-    tolerances, witnesses and raw records stay sealed. Text is held to the configurator's length limit. It names the
-    `protocol` of the run it grades."""
+    """A public equivalence/1 record: check ids with passed flags (None for a check the evaluator could not decide) and
+    the failing and undecided ids with their reasons. Expected values, tolerances, witnesses and raw records stay sealed.
+    Text is held to the configurator's length limit. It names the `protocol` of the run it grades."""
     checks = [{'id': _text(c['id']), 'passed': c['passed']} for c in checks]
     diff = [{'id': _text(d['id']), 'reason': _text(d['reason'], 'failed')} for d in diff]
     return {'schema': SCHEMA, 'status': status, 'equivalent': equivalent, 'basis': 'evaluator', 'method': method,
@@ -354,18 +354,22 @@ def _generated_mission(mission, proved):
 
 def final_record(final, capabilities_sha256=None, mission=None, *, protocol: str):
     """The public equivalence/1 record of a final evaluation, graded from its contract and records: equivalent when every
-    behavior check passed. Fresh reuse is reported beside that verdict, never inside it: the record's `mission` is the
-    fresh worker's, and passes only with the owner's proof when the final requires generated MCP reuse. Grading after
+    behavior check passed and not equivalent when one failed. A check the evaluator could not decide is undecided
+    (`passed` None); a record with no failed check and one undecided is `unknown`, with no verdict, and a failed check
+    outweighs an undecided one. Fresh reuse is reported beside that verdict, never inside it: the record's `mission` is
+    the fresh worker's, and passes only with the owner's proof when the final requires generated MCP reuse. Grading after
     the run and an offline regrade of the sealed evidence both build it here, and it names the `protocol` of the run they
     grade."""
     from .behavior import validate_records
     graded = validate_records(final['contract'], final['records'])
-    checks = [{'id': str(row['id']), 'passed': row['passed'] is True} for row in graded['checks']]
+    checks = [{'id': str(row['id']), 'passed': row['passed']} for row in graded['checks']]
     diff = [{'id': str(row['id']), 'reason': str(row.get('reason') or 'failed')} for row in graded['checks'] if row['passed'] is not True]
     if final.get('generated_reuse_required'):
         mission = _generated_mission(mission, final.get('generated_reuse_verified') is True)
-    return record('graded', all(c['passed'] for c in checks), checks, diff, final['frozen_artifact_sha256'], capabilities_sha256,
-                  mission, final.get('method', 'fresh-final'), protocol=protocol)
+    unknown = graded['verdict'] == 'unknown'
+    return record('unknown' if unknown else 'graded', None if unknown else graded['verdict'] == 'passed', checks, diff,
+                  final['frozen_artifact_sha256'], capabilities_sha256, mission, final.get('method', 'fresh-final'),
+                  protocol=protocol)
 
 
 def evidence(trial_dir, run_dir, result, *, final=None, equivalence=None, mission=None, error=None):

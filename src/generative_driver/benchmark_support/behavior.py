@@ -53,7 +53,18 @@ def _check_contract(contract):
             raise ValueError('Invalid text check')
 
 
+def _undecided(record):
+    """The reason the evaluator left a check undecided (its device state could not be read, or its sequence did not start
+    from a verified reset), from the record it wrote for it; None for a record that decides the check. The reason is a
+    non-empty string of at most 300 characters, the limit of an equivalence/1 text field. It is published in the grade's
+    difference, so it names no expected value."""
+    reason = record.get('undecided')
+    return reason if type(reason) is str and 0 < len(reason) <= 300 else None
+
+
 def _record_reason(check, record, artifact):
+    """Why a check fails against its record, or None when it passes or the record leaves it undecided (`_undecided`). An
+    undecided record is held to the identity of the check like any other, but its value is never judged."""
     if record is None:
         return 'missing evidence'
     if record.get('revision') != check['revision'] or type(record.get('revision')) is not int:
@@ -64,6 +75,8 @@ def _record_reason(check, record, artifact):
         return 'unit mismatch'
     if record.get('channel') != check['channel']:
         return 'channel mismatch'
+    if 'undecided' in record:
+        return None if _undecided(record) else 'invalid evidence'
     value = record.get('value')
     if check['kind'] == 'number':
         try:
@@ -88,6 +101,9 @@ def _record_reason(check, record, artifact):
 
 
 def validate_records(contract: dict, records: list[dict]) -> dict:
+    """Grade the evaluator's records against its contract. A check passes (True), fails (False) or, when its record says
+    the evaluator could not decide it, is undecided (None, with the record's reason). The verdict is `failed` when any
+    check failed, else `unknown` when any is undecided, else `passed`; `passed` counts the checks that passed."""
     _check_contract(contract)
     if type(records) is not list:
         records = []
@@ -103,18 +119,20 @@ def validate_records(contract: dict, records: list[dict]) -> dict:
     for check in contract['checks']:
         found = by_id.get(check['id'], [])
         reason = 'duplicate evidence' if len(found) > 1 else _record_reason(check, found[0] if found else None, contract['artifact_sha256'])
-        result = {'id': check['id'], 'passed': reason is None}
+        undecided = _undecided(found[0]) if found and reason is None else None
+        result = {'id': check['id'], 'passed': None if undecided else reason is None}
         if 'scenario' in check:
             result['scenario'] = check['scenario']
-        if reason:
-            result['reason'] = reason
+        if reason or undecided:
+            result['reason'] = reason or undecided
         results.append(result)
     for identifier, found in by_id.items():
         if identifier not in known:
             extras.extend({'id': identifier, 'passed': False, 'reason': 'unexpected evidence'} for _ in found)
     results.extend(extras)
-    passed = sum(row['passed'] for row in results)
-    return {'verdict': 'passed' if passed == len(results) else 'failed',
+    passed = sum(row['passed'] is True for row in results)
+    failed = any(row['passed'] is False for row in results)
+    return {'verdict': 'failed' if failed else 'passed' if passed == len(results) else 'unknown',
             'passed': passed, 'total': len(results), 'checks': results}
 
 def project_feedback(records: list[dict], grade=None) -> dict:

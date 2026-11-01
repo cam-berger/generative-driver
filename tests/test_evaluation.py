@@ -33,6 +33,39 @@ def contract(sha, revision=0):
          'absolute_tolerance': .002, 'channel': 'independent-monitor', 'unit': 'permille'}]}
 
 
+def contract_of(*checks):
+    """A benchmark-behavior/1 contract of (id, expected) checks: a text check for a string, else a number check."""
+    return {'schema': 'benchmark-behavior/1', 'artifact_sha256': 'a' * 64, 'checks': [
+        {'id': identifier, 'revision': 0, 'kind': 'text', 'expected': expected, 'unit': 'text', 'channel': 'runtime-transcript'}
+        if isinstance(expected, str) else
+        {'id': identifier, 'revision': 0, 'kind': 'number', 'expected': expected, 'absolute_tolerance': 0, 'unit': 'count',
+         'channel': 'independent-monitor'} for identifier, expected in checks]}
+
+
+def record_for(contract, identifier, value):
+    """The evaluator's record of one check of `contract`, observing `value`."""
+    check = next(c for c in contract['checks'] if c['id'] == identifier)
+    return {'id': identifier, 'task_id': identifier.rsplit('/', 1)[-1], 'revision': check['revision'],
+            'artifact_sha256': contract['artifact_sha256'], 'channel': check['channel'], 'unit': check['unit'], 'value': value}
+
+
+def final_of(contract, records):
+    """A final evaluation of the frozen artifact `contract` names, as `final_record` grades it."""
+    return {'contract': contract, 'records': records, 'frozen_artifact_sha256': contract['artifact_sha256']}
+
+
+class Undecided(str):
+    """A scripted value the evaluator could not decide, with its reason: `reference` records it as `undecided`."""
+
+
+def scripted_record(check, value, revision, sha):
+    """The record of one check of the toy contract: its value, or no value and `undecided: <reason>` for an `Undecided`."""
+    undecided = isinstance(value, Undecided)
+    return {'id': check['id'], 'task_id': check['id'].rsplit('/', 1)[-1], 'revision': revision, 'artifact_sha256': sha,
+            'channel': check['channel'], 'unit': check['unit'], 'value': None if undecided else value,
+            **({'undecided': str(value)} if undecided else {})}
+
+
 def reference(values, calls=None, before=None, after=None):
     """A scripted final phase in reference_execute's shape: the toy contract, records with `values`, raw evidence and
     the plaintext evaluation output the real one leaves in its output directory. `after` runs once that output exists."""
@@ -55,8 +88,7 @@ def reference(values, calls=None, before=None, after=None):
         (Path(output_dir) / 'raw.json').write_text(json.dumps({'events': [], 'monitor': EXPECTED}))
         checks = contract(sha, revision)['checks']
         result = {'contract': contract(sha, revision),
-                  'records': [{'id': c['id'], 'task_id': c['id'].rsplit('/', 1)[-1], 'revision': revision, 'artifact_sha256': sha,
-                               'channel': c['channel'], 'unit': c['unit'], 'value': value} for c, value in zip(checks, values)]}
+                  'records': [scripted_record(c, value, revision, sha) for c, value in zip(checks, values)]}
         (Path(output_dir) / 'evaluation.json').write_text(json.dumps(result))
         if after:
             after()
@@ -287,6 +319,53 @@ class RecordEvaluationTests(PendingRunFixture):
         self.assertEqual((status['status'], status['reason']), ('completed', PENDING))
         good = evaluation(self.emitted(result))
         self.assertEqual(self.record(run, good)['reason'], 'Final verdict: equivalent')
+
+    def test_an_unknown_grade_becomes_the_final_verdict_as_a_graded_one_does_and_a_malformed_one_is_refused(self):
+        # Catches an unknown grade the configurator refuses, which would leave its run awaiting a grade it was given, one
+        # it records differently from a graded one, and an unknown record that describes no unknown grade: with a failed
+        # check, a verdict, a null check of a graded driver or no difference for the undecided check.
+        from generative_driver.configurator import Controller, PENDING
+        run, result = self.pending()
+        frozen = self.emitted(result)
+        checks = [{'id': 'final/temperature-0/temperature', 'passed': True}, {'id': 'final/effect-1/duty', 'passed': None}]
+        unknown = evaluation(frozen, status='unknown', equivalent=None, checks=checks, passed=1, total=2,
+                             diff=[{'id': 'final/effect-1/duty', 'reason': 'unreadable state'}])
+        failed = [checks[0], {**checks[1], 'passed': False}]
+        for case, record in (
+                ('a failed check', {**unknown, 'checks': failed}),
+                ('an equivalent verdict', {**unknown, 'equivalent': True}),
+                ('a not equivalent verdict', {**unknown, 'equivalent': False}),
+                ('a null check of a graded driver', {**unknown, 'status': 'graded', 'equivalent': False}),
+                ('no difference', {**unknown, 'diff': []}),
+                ('a difference for another check', {**unknown, 'diff': [{'id': 'final/other', 'reason': 'unreadable state'}]}),
+                ('unsealed', {**unknown, 'evidence_sha256': None})):
+            with self.subTest(case=case), self.assertRaisesRegex(ValueError, 'Invalid evaluation'):
+                self.record(run, record)
+        status = self.controller.call('status', run)
+        self.assertEqual((status['status'], status['reason'], status['equivalence']), ('completed', PENDING, None))
+        self.assertFalse(self.verdicts(run))
+        self.assertFalse(self.events(run, 'run.finalized') + self.events(run, 'evaluation.unscored'))
+        # The unknown grade is the run's one final verdict, recorded as a graded one is.
+        status = self.record(run, unknown)
+        self.assertEqual((status['status'], status['equivalence']), ('completed', unknown))
+        self.assertEqual(status['reason'], 'Final verdict: unknown: unreadable state')
+        expected = [(run['run_id'] + ':final', {'stage': 'finalize', 'equivalence': unknown, 'protocol': 'assistive/1',
+                                                'frozen_artifact_sha256': frozen})]
+        self.assertEqual(self.verdicts(run), expected)
+        result = self.controller.call('result', run)
+        self.assertEqual((result['progress']['equivalence'], result['evaluator_verdicts']), ('unknown', []))
+        self.assertEqual(self.events(run, 'run.finalized'), [{'equivalent': None, 'basis': 'evaluator', 'diff': unknown['diff']}])
+        self.assertFalse(self.events(run, 'evaluation.unscored'))
+        # An identical repeat is idempotent, any other grade is refused and the first stands, and a restart keeps it.
+        self.assertEqual(self.record(run, unknown)['equivalence'], unknown)
+        with self.assertRaisesRegex(ValueError, 'different evaluation'):
+            self.record(run, evaluation(frozen))
+        self.assertEqual(self.verdicts(run), expected)
+        self.assertEqual(len(self.events(run, 'run.finalized')), 1)
+        self.controller.close()
+        reopened = Controller(self.home); self.addCleanup(reopened.close)
+        reopened_status = reopened.call('status', run)
+        self.assertEqual((reopened_status['equivalence'], reopened_status['reason']), (unknown, 'Final verdict: unknown: unreadable state'))
 
 
 class HarnessGradingTests(PendingRunFixture):
@@ -1216,6 +1295,137 @@ class FreshReuseVerdictTests(unittest.TestCase):
         made = final_record(wrong, mission={'name': 'fresh_worker_mission', 'passed': True}, protocol='assistive/1')
         self.assertEqual((made['equivalent'], made['mission']['passed']), (False, True))
         self.assertEqual([d['id'] for d in made['diff']], ['final/effect-1/duty'])
+
+
+class UndecidedCheckTests(unittest.TestCase):
+    """A check the evaluator could not decide (its device state unreadable, its sequence not started from a verified
+    reset) is neither passed nor failed. A grade with no failed check and one undecided is unknown."""
+
+    def test_an_undecided_check_makes_an_unknown_grade_and_a_failure_outweighs_it(self):
+        # Catches an undecided check graded as a failure, so that a device the evaluator could not read counts against the
+        # driver, an unknown grade the configurator refuses, and an undecided check that outweighs a failed one.
+        from generative_driver.benchmark_support.evaluator import final_record
+        from generative_driver.configurator import _evaluation_errors
+        contract = contract_of(('s1/0/answer', 'value'), ('s1/0/state:mode', 2))
+        decided = [record_for(contract, 's1/0/answer', 'value')]
+        undecided = decided + [{**record_for(contract, 's1/0/state:mode', None), 'undecided': 'unreadable state'}]
+        made = final_record(final_of(contract, undecided), protocol='assistive/1')
+        self.assertEqual((made['status'], made['equivalent'], [c['passed'] for c in made['checks']]), ('unknown', None, [True, None]))
+        self.assertEqual((made['passed'], made['total']), (1, 2))
+        self.assertEqual(made['diff'], [{'id': 's1/0/state:mode', 'reason': 'unreadable state'}])
+        self.assertEqual(_evaluation_errors({**made, 'evidence_sha256': 'a' * 64}), [])
+        failed = final_record(final_of(contract, [record_for(contract, 's1/0/answer', 'error')] + undecided[1:]), protocol='assistive/1')
+        self.assertEqual((failed['status'], failed['equivalent']), ('graded', False))
+        self.assertEqual((failed['passed'], [c['passed'] for c in failed['checks']]), (0, [False, None]))
+        self.assertEqual(failed['diff'], [{'id': 's1/0/answer', 'reason': 'value mismatch'},
+                                          {'id': 's1/0/state:mode', 'reason': 'unreadable state'}])
+        # Every check decided is the grade it always was.
+        every = final_record(final_of(contract, decided + [record_for(contract, 's1/0/state:mode', 2)]), protocol='assistive/1')
+        self.assertEqual((every['status'], every['equivalent'], every['diff']), ('graded', True, []))
+
+    def test_an_undecided_record_is_never_judged_by_its_value_and_a_marker_that_is_no_reason_fails(self):
+        # Catches an undecided record also judged as a value mismatch, one that excuses evidence of another artifact,
+        # revision, unit or channel, a marker that is no reason (empty, longer than an equivalence/1 text, not text) taken
+        # for one, and an undecided record that hides a duplicate or an unexpected one.
+        from generative_driver.benchmark_support.behavior import validate_records
+        contract = contract_of(('s1/0/answer', 'value'), ('s1/0/state:mode', 2))
+        contract['checks'][1]['scenario'] = 'original'
+        decided = record_for(contract, 's1/0/answer', 'value')
+        mode = lambda **change: {**record_for(contract, 's1/0/state:mode', None), 'undecided': 'unreadable state', **change}
+        grade = lambda *records: validate_records(contract, [decided, *records])
+        for value in (None, 2, 3, 'text', True):
+            with self.subTest(value=value):
+                undecided = grade(mode(value=value))
+                self.assertEqual((undecided['verdict'], undecided['passed'], undecided['total']), ('unknown', 1, 2))
+                self.assertEqual(undecided['checks'][1], {'id': 's1/0/state:mode', 'passed': None, 'scenario': 'original',
+                                                          'reason': 'unreadable state'})
+        for field, other, reason in (('artifact_sha256', 'b' * 64, 'artifact mismatch'), ('revision', 1, 'revision mismatch'),
+                                     ('unit', 'other', 'unit mismatch'), ('channel', 'runtime-transcript', 'channel mismatch')):
+            with self.subTest(field=field):
+                failed = grade(mode(**{field: other}))
+                self.assertEqual((failed['verdict'], failed['checks'][1]['passed'], failed['checks'][1]['reason']),
+                                 ('failed', False, reason))
+        for marker in ('', 'x' * 301, None, 5, True, ['unreadable state']):
+            with self.subTest(marker=marker):
+                failed = grade(mode(undecided=marker))
+                self.assertEqual((failed['verdict'], failed['checks'][1]['passed'], failed['checks'][1]['reason']),
+                                 ('failed', False, 'invalid evidence'))
+        self.assertEqual(grade(mode(undecided='x' * 300))['checks'][1]['reason'], 'x' * 300)
+        for name, records, row in (('duplicate', [mode(), record_for(contract, 's1/0/state:mode', 2)],
+                                    {'id': 's1/0/state:mode', 'passed': False, 'scenario': 'original', 'reason': 'duplicate evidence'}),
+                                   ('unexpected', [mode(), {**mode(), 'id': 's1/0/other'}],
+                                    {'id': 's1/0/other', 'passed': False, 'reason': 'unexpected evidence'})):
+            with self.subTest(name=name):
+                failed = grade(*records)
+                self.assertEqual((failed['verdict'], failed['checks'][-1]), ('failed', row))
+        # A failed check outweighs an undecided one, and the passed count holds the decided passes alone.
+        mixed = validate_records(contract, [{**decided, 'value': 'error'}, mode()])
+        self.assertEqual((mixed['verdict'], mixed['passed'], mixed['total'], [c['passed'] for c in mixed['checks']]),
+                         ('failed', 0, 2, [False, None]))
+        decided_all = validate_records(contract, [decided, record_for(contract, 's1/0/state:mode', 2)])
+        self.assertEqual((decided_all['verdict'], decided_all['passed'], decided_all['total']), ('passed', 2, 2))
+
+    def test_the_configurator_accepts_an_unknown_record_only_as_the_grade_it_describes(self):
+        # Catches an unknown grade accepted with a failed check, a verdict, no undecided check, a difference that does not
+        # name each undecided check, a count that takes an undecided check for a pass or no sealed evidence, and a check
+        # that passed null in any grade but an unknown one.
+        from generative_driver.benchmark_support.evaluator import final_record
+        from generative_driver.configurator import _evaluation_errors
+        contract = contract_of(('s1/0/answer', 'value'), ('s1/0/state:mode', 2), ('s1/0/state:level', 3))
+        decided = record_for(contract, 's1/0/answer', 'value')
+        mode = {**record_for(contract, 's1/0/state:mode', None), 'undecided': 'unreadable state'}
+        level = {**record_for(contract, 's1/0/state:level', None), 'undecided': 'unverified reset'}
+        sealed = lambda *records: {**final_record(final_of(contract, list(records)), protocol='assistive/1'),
+                                   'evidence_sha256': 'a' * 64}
+        good = sealed(decided, mode, level)
+        self.assertEqual((good['status'], good['equivalent'], good['passed'], good['total']), ('unknown', None, 1, 3))
+        self.assertEqual(_evaluation_errors(good), [])
+        # Every check undecided is as well-formed.
+        every = sealed({**decided, 'value': None, 'undecided': 'unverified reset'}, mode, level)
+        self.assertEqual(([c['passed'] for c in every['checks']], every['passed']), ([None, None, None], 0))
+        self.assertEqual(_evaluation_errors(every), [])
+        checks, diff = good['checks'], good['diff']
+        with_check = lambda index, **change: [{**c, **change} if i == index else c for i, c in enumerate(checks)]
+        for name, record, message in (
+                ('a failed check', {**good, 'checks': with_check(1, passed=False)}, 'unknown grade'),
+                ('no undecided check', {**good, 'checks': [{**c, 'passed': True} for c in checks], 'passed': 3}, 'unknown grade'),
+                ('an equivalent verdict', {**good, 'equivalent': True}, 'equivalent null'),
+                ('a not equivalent verdict', {**good, 'equivalent': False}, 'equivalent null'),
+                ('no difference', {**good, 'diff': []}, 'names its differences'),
+                ('a difference that misses an undecided check', {**good, 'diff': diff[:1]}, 'unknown grade'),
+                ('a difference that names another check', {**good, 'diff': [diff[0], {**diff[1], 'id': 's1/0/other'}]}, 'unknown grade'),
+                ('an undecided check counted as passed', {**good, 'passed': 3}, 'count the checks'),
+                ('no sealed evidence', {**good, 'evidence_sha256': None}, 'evidence'),
+                ('a check that is neither passed, failed nor null', {**good, 'checks': with_check(1, passed='unknown')}, 'checks are'),
+                ('checks that are no list', {**good, 'checks': None}, 'checks are'),
+                ('a difference that is no list', {**good, 'diff': 'unreadable state'}, 'diff is'),
+                ('a difference entry that is no object', {**good, 'diff': [diff[0], 5]}, 'diff is'),
+                ('a difference entry with an id that is no text', {**good, 'diff': [diff[0], {'id': ['s1/0/state:level'], 'reason': 'x'}]},
+                 'diff is'),
+                ('a null check of a graded driver', {**good, 'status': 'graded', 'equivalent': False}, 'checks are'),
+                ('a null check of no driver', {**good, 'status': 'no-driver', 'equivalent': False}, 'checks are'),
+                ('a null check of an unscored one', {**good, 'status': 'unscored', 'evidence_sha256': None}, 'checks are'),
+                ('another status', {**good, 'status': 'undecided'}, 'equivalent null')):
+            with self.subTest(name=name):
+                errors = _evaluation_errors(record)
+                self.assertTrue(errors, 'a malformed record was accepted')
+                self.assertRegex(' | '.join(errors), message)
+
+    def test_an_unknown_grade_reads_unknown_and_its_reason_names_each_undecided_check(self):
+        # Catches an unknown grade labelled unscored, as a grade with no verdict is, or equivalent, which the run's reason,
+        # its report and the dashboard print.
+        from generative_driver.benchmark_support.evaluator import final_record
+        from generative_driver.benchmark_support.labels import equivalence_label, verdict_reason
+        contract = contract_of(('s1/0/answer', 'value'), ('s1/0/state:mode', 2))
+        made = final_record(final_of(contract, [record_for(contract, 's1/0/answer', 'value'),
+                                                {**record_for(contract, 's1/0/state:mode', None), 'undecided': 'unreadable state'}]),
+                            protocol='assistive/1')
+        self.assertEqual((equivalence_label(made), verdict_reason(made)), ('unknown', 'Final verdict: unknown: unreadable state'))
+        # A grade with no verdict and no unknown status, such as a generic run's unscored self-evidence, is still unscored.
+        self.assertEqual(equivalence_label({'equivalent': None, 'basis': 'self-evidence'}), 'unscored')
+        self.assertEqual(equivalence_label({'status': 'unscored', 'equivalent': None}), 'unscored')
+        self.assertEqual((equivalence_label({'status': 'graded', 'equivalent': True}),
+                          equivalence_label({'status': 'no-driver', 'equivalent': False})), ('equivalent', 'not equivalent'))
 
 
 class DurableRecordTests(unittest.TestCase):

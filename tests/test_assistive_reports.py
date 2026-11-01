@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from test_configurator import scripted_stages
-from test_evaluation import EXPECTED, FAIL, PASS, TOKEN, evaluation, files, reference
+from test_evaluation import EXPECTED, FAIL, PASS, TOKEN, Undecided, evaluation, files, reference
 from test_harness import EVIDENCE, unstarted_provider
 from test_suite_harness import EMULATOR, HarnessSuiteFixture, manifest
 
@@ -256,6 +256,65 @@ class ScoreTests(AssistiveFixture):
         with patch('generative_driver.benchmark_support.truth.unlock', side_effect=AssertionError('evidence unlocked')):
             scored = self.score(report, None, None)
         self.assertEqual((scored['verdict'], scored['equivalence'], scored['equivalence_status']), ('unscored', None, 'pending'))
+
+    def test_an_unknown_grade_is_recorded_reported_and_regraded_as_unknown(self):
+        # Catches a driver whose check the evaluator could not decide taken for a failure or a pass: refused by the harness
+        # or the configurator, which would leave its trial awaiting a grade it was given, reported unscored, or regraded
+        # as anything but the unknown grade its sealed final gives.
+        trial, record = self.trial('unknown', (EXPECTED, Undecided('unreadable state')))
+        self.assertEqual(record['status'], 'evaluated')
+        unknown = record['equivalence']
+        self.assertEqual((unknown['status'], unknown['equivalent'], [c['passed'] for c in unknown['checks']],
+                          unknown['passed'], unknown['total']), ('unknown', None, [True, None], 1, 2))
+        self.assertEqual(unknown['diff'], [{'id': 'final/effect-1/duty', 'reason': 'unreadable state'}])
+        result = self.controller.call('result', {'run_id': record['run_id']})
+        self.assertEqual((result['equivalence'], result['reason'], result['progress']['equivalence']),
+                         (unknown, 'Final verdict: unknown: unreadable state', 'unknown'))
+        report = self.report(record['run_id'], 'unknown')
+        self.assertEqual((report['schema'], report['verdict'], report['equivalence_status'], report['workflow_status']),
+                         ('benchmark-report/3', 'unknown', 'unknown', 'completed'))
+        self.assertEqual((report['equivalence'], report['reason']), (unknown, 'Final verdict: unknown: unreadable state'))
+        text = (self.root / 'reports/unknown/report.md').read_text()
+        self.assertIn('Equivalence (evaluator): **unknown**', text)
+        self.assertIn('Independent verdict: **unknown**', text)
+        self.assertIn('Differences: unreadable state', text)
+        # The offline regrade of the sealed final reproduces it, without the configurator or a process.
+        with patch('generative_driver.client.call', side_effect=AssertionError('service invoked')), \
+                patch('subprocess.Popen', side_effect=AssertionError('process invoked')):
+            scored = self.score(report, trial / 'run-evidence.enc')
+        self.assertEqual(scored, report)
+        self.assertEqual((scored['verdict'], scored['equivalence']['equivalent'], scored['equivalence']['checks']),
+                         ('unknown', None, unknown['checks']))
+
+    def test_a_regrade_refuses_a_sealed_status_its_final_does_not_give(self):
+        # Catches a regrade that credits an unknown verdict whose sealed final decides every check, a graded verdict whose
+        # sealed final leaves one undecided, and a report that claims a graded verdict over sealed unknown evidence.
+        from generative_driver.benchmark_support import evaluator
+        from generative_driver.benchmark_support.truth import unlock
+        def resealed(trial, record, name, change):
+            result = self.controller.call('result', {'run_id': record['run_id']})
+            report = self.report(record['run_id'], name)
+            sealed = unlock(trial / 'run-evidence.enc', self.password.read_text(), report['equivalence']['evidence_sha256'])
+            folder = self.root / 'resealed' / name
+            digest = evaluator.seal(folder, self.home / 'runs' / record['run_id'], result, password_file=self.password,
+                                    final=change(copy.deepcopy(sealed['final'])), equivalence=sealed['equivalence'])['sha256']
+            return {**report, 'equivalence': {**report['equivalence'], 'evidence_sha256': digest}}, folder / 'run-evidence.enc'
+        def decide(final):
+            final['records'][1].pop('undecided'); final['records'][1]['value'] = 370
+            return final
+        def undecide(final):
+            final['records'][1].update(value=None, undecided='unreadable state')
+            return final
+        unknown, unknown_record = self.trial('unknown', (EXPECTED, Undecided('unreadable state')))
+        good, good_record = self.trial('good', PASS)
+        with self.assertRaisesRegex(ValueError, 'final'):
+            self.score(*resealed(unknown, unknown_record, 'decided', decide))
+        with self.assertRaisesRegex(ValueError, 'final'):
+            self.score(*resealed(good, good_record, 'undecided', undecide))
+        claimed = self.report(unknown_record['run_id'], 'unknown')
+        claimed['equivalence'].update(status='graded', equivalent=True)
+        with self.assertRaisesRegex(ValueError, 'verdict identity'):
+            self.score(claimed, unknown / 'run-evidence.enc')
 
 
 class ProtocolSeparationTests(unittest.TestCase):
@@ -1089,6 +1148,32 @@ class SuiteExportTests(AssistiveFixture):
         # An empty path is an error, not an audit that flags every command.
         code, result = report('empty', '--audit-path', '')
         self.assertEqual((code, result['ok']), (1, False))
+
+    def test_an_unknown_child_settles_its_slot_and_is_counted_apart_from_passes_and_failures(self):
+        # Catches a suite that blocks on a child whose grade is unknown, so that no later slot runs, and an export that counts
+        # that child as a pass, a failure or a fault, or leaves it out of the pass line's unknown count.
+        from generative_driver.benchmark_support.suite_reporting import compare_suites, report_suite
+        with self.harness(PASS, (EXPECTED, Undecided('unreadable state')), FAIL):
+            record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
+                                request_id='unknown-child')
+        sid = record['suite_id']
+        status = self.controller.call('suite_status', {'suite_id': sid})
+        self.assertEqual((status['status'], status['planned'], status['completed'], status['equivalent']), ('completed', 3, 3, 1))
+        rows = self.controller.call('suite_result', {'suite_id': sid})['trials']
+        self.assertEqual([(row['status'], row['equivalence_status'], row['equivalent']) for row in rows],
+                         [('finished', 'graded', True), ('finished', 'unknown', None), ('finished', 'graded', False)])
+        with self.owner():
+            result = report_suite(sid, home=self.home, output=self.root / 'export')
+        self.assertEqual([(row['scored'], row['verdict']) for row in result['trials']],
+                         [('pass', 'equivalent'), ('unknown', 'unknown'), ('failure', 'not equivalent')])
+        self.assertEqual(result['trials'][1]['reason'], 'Final verdict: unknown: unreadable state')
+        self.assertEqual({key: result['pass_rate'][key] for key in ('passes', 'failures', 'unknown', 'faults', 'planned', 'rate')},
+                         {'passes': 1, 'failures': 1, 'unknown': 1, 'faults': 0, 'planned': 3, 'rate': 1 / 2})
+        self.assertEqual(result['equivalence'], {'equivalent': 1, 'denominator': 3, 'rate': 1 / 3})
+        text = (self.root / 'export/report.md').read_text()
+        self.assertTrue(text.startswith('# Benchmark suite\n\n1/2 pass, 1 unknown, 0 faults, 3 planned. Protocol: assistive/1,'), text)
+        saved = json.loads((self.root / 'export/suite.json').read_text())
+        self.assertTrue(compare_suites(saved, saved)['compatible'])
 
     def test_an_assistive_suite_exports_its_equivalent_drivers_and_regrades_their_sealed_evidence(self):
         # Catches an exported assistive suite counted by gates, an unscored trial hidden or regraded, evidence that does

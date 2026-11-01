@@ -646,8 +646,9 @@ def _final_verdict(db, run_id):
     return json.loads(row['payload']) if row else None
 
 
-# The public evaluation record the bench harness posts after a run: check ids with passed flags and failing ids with a
-# reason. Expected values, tolerances, witnesses and raw records stay sealed, so no other field is accepted.
+# The public evaluation record the bench harness posts after a run: check ids with passed flags (null for a check the
+# evaluator could not decide) and failing and undecided ids with a reason. Expected values, tolerances, witnesses and
+# raw records stay sealed, so no other field is accepted.
 EVALUATION = {'schema', 'status', 'equivalent', 'basis', 'method', 'checks', 'diff', 'passed', 'total', 'mission',
               'frozen_artifact_sha256', 'capabilities_sha256', 'evidence_sha256', 'protocol'}
 
@@ -661,6 +662,8 @@ def _evaluation_errors(record):
     """Why a posted evaluation is not a well-formed equivalence/1 record, or []."""
     sha = lambda value: value is None or isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None
     text = lambda value: isinstance(value, str) and 0 < len(value) <= 300
+    # A check's passed flag is true or false, or null for a check the evaluator could not decide, in an unknown grade alone.
+    passed_flag = lambda value: type(value) is bool or record['status'] == 'unknown' and value is None
     if not isinstance(record, dict) or set(record) != EVALUATION:
         return ['an equivalence/1 record has exactly the fields ' + ', '.join(sorted(EVALUATION))]
     errors = []
@@ -669,24 +672,29 @@ def _evaluation_errors(record):
         errors.append('schema equivalence/1, basis evaluator, method ' + ' or '.join(METHODS) + ' and protocol ' + PROTOCOL
                       + ' are required')
     checks, diff = record['checks'], record['diff']
+    status, equivalent = record['status'], record['equivalent']
     if not isinstance(checks, list) or any(not isinstance(c, dict) or set(c) != {'id', 'passed'} or not text(c['id'])
-                                           or type(c['passed']) is not bool for c in checks):
-        errors.append('checks are [{id, passed}]')
+                                           or not passed_flag(c['passed']) for c in checks):
+        errors.append('checks are [{id, passed}], with passed null only in an unknown grade')
         checks = []
     if not isinstance(diff, list) or any(not isinstance(d, dict) or set(d) != {'id', 'reason'} or not text(d['id'])
                                          or not text(d['reason']) for d in diff):
         errors.append('diff is [{id, reason}]')
+        diff = []
     if any(type(record[key]) is not int for key in ('passed', 'total')) or \
-            (record['passed'], record['total']) != (sum(c['passed'] for c in checks), len(checks)):
+            (record['passed'], record['total']) != (sum(c['passed'] is True for c in checks), len(checks)):
         errors.append('passed and total count the checks')
-    status, equivalent = record['status'], record['equivalent']
-    if (status, type(equivalent)) not in (('graded', bool), ('no-driver', bool), ('unscored', type(None))) or \
-            status == 'no-driver' and equivalent is not False:
-        errors.append('status graded or no-driver with equivalent true or false, or unscored with equivalent null')
+    undecided = {c['id'] for c in checks if c['passed'] is None}
+    if (status, type(equivalent)) not in (('graded', bool), ('no-driver', bool), ('unknown', type(None)),
+                                          ('unscored', type(None))) or status == 'no-driver' and equivalent is not False:
+        errors.append('status graded or no-driver with equivalent true or false, or unscored or unknown with equivalent null')
     elif equivalent is True and (not checks or not all(c['passed'] for c in checks) or diff):
         errors.append('an equivalent driver passed every check, with no difference')
     elif equivalent is not True and not diff:
         errors.append('a driver that is not judged equivalent names its differences')
+    elif status == 'unknown' and (not undecided or any(c['passed'] is False for c in checks)
+                                  or not undecided <= {d['id'] for d in diff}):
+        errors.append('an unknown grade has no failed check, at least one undecided check and a difference for each')
     mission = record['mission']
     if mission is not None and (not isinstance(mission, dict) or not set(mission) <= {'name', 'passed', 'reason', 'fault'}
                                 or type(mission.get('passed')) not in (bool, type(None))
@@ -2867,8 +2875,8 @@ class Controller:
         Only the run's harness may (the sha256 of its evaluation token), only for a completed run with nothing uncertain
         that awaits its evaluation, only under its case's grading method (`fresh-final` for a v2 case, `recorded-reuse`
         for legacy tq9 and bme280), and only about the run's accepted emitted package: the first artifact of its latest
-        emit handoff that handed one on, or none. A graded or no-driver record becomes the run's one final verdict; an
-        identical repeat changes nothing and any other is refused. An unscored one is an event, and the run still awaits."""
+        emit handoff that handed one on, or none. A graded, no-driver or unknown record becomes the run's one final verdict;
+        an identical repeat changes nothing and any other is refused. An unscored one is an event, and the run still awaits."""
         spec = json.loads(self._row(run_id)['spec'])
         if not spec.get('evaluation_token_sha256'):
             raise ValueError('Only a run started by the bench harness can record an evaluation')

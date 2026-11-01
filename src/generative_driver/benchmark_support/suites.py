@@ -284,12 +284,12 @@ def child_identity_differs(frozen: dict, trial: dict, submitted) -> str | None:
 
 def child_disposition(result: dict) -> str:
     """Whether a suite's active child lets the suite advance. Every child is graded once after its run by the bench
-    harness: it advances only once it completed with a graded or no-driver evaluation recorded. An unscored or still
-    pending evaluation, and every safety, integrity, operator, host or other stop, blocks the suite."""
+    harness: it advances only once it completed with a graded, no-driver or unknown evaluation recorded. An unscored or
+    still pending evaluation, and every safety, integrity, operator, host or other stop, blocks the suite."""
     if result.get('stopping') or result.get('status') in ('queued', 'running'):
         return 'wait'
     if result.get('stopping') is not False or result.get('uncertain_effect') is not False:
         return 'block'
     completed = result.get('outcome_category', 'unknown') == 'completed' and result.get('status') == 'completed'
     equivalence = result.get('equivalence') if isinstance(result.get('equivalence'), dict) else {}
-    return 'advance' if completed and equivalence.get('status') in ('graded', 'no-driver') else 'block'
+    return 'advance' if completed and equivalence.get('status') in ('graded', 'no-driver', 'unknown') else 'block'

@@ -109,10 +109,10 @@ def public_equivalence(value):
 def public_v3_report(payload: dict) -> dict:
     """An assistive run's public report, benchmark-report/3: its success is the one equivalence verdict the evaluator
     recorded after the run. Nothing graded its stages, so it carries no gates, stage evaluations or stage verdicts. Its
-    verdict reads the record (equivalent, not equivalent, or unscored while there is none: awaiting its grade, unscored
-    or stopped); a report found unqualified keeps that word. Its reason says why (a stop, the verdict or the unscored
-    grade's reasons, with paths already scrubbed by its exporter) and `stopped_stage` names where a stopped run stopped.
-    It names the protocol its payload names. Unknown fields never cross this boundary."""
+    verdict reads the record (equivalent, not equivalent, unknown, or unscored while there is none: awaiting its grade,
+    unscored or stopped); a report found unqualified keeps that word. Its reason says why (a stop, the verdict or the
+    unscored grade's reasons, with paths already scrubbed by its exporter) and `stopped_stage` names where a stopped run
+    stopped. It names the protocol its payload names. Unknown fields never cross this boundary."""
     from .labels import equivalence_label
     result = public_v2_report(payload)
     for key in ('accepted_gates', 'evaluations', 'final_evaluation', 'evaluator_verdicts'):
@@ -366,10 +366,11 @@ def regrade_v3(report: dict, evidence_path: Path, password_file: Path) -> dict:
     snapshot and executed identity, an installed evaluator of the snapshot's revision, and the run's single final
     evaluation of its accepted emitted driver, the package and mapping the verdict names. The protocol is the one the
     evidence names, whichever that is; the report must name the same. The final's records are graded again:
-    equivalent only when every check passes, with fresh reuse regraded beside that verdict, in the mission, which needs
-    the owner's proof where the package requires generated MCP reuse. A verdict sealed without a final (no driver
-    emitted, no capability mapping, an invalid model) is not equivalent. A report with no recorded verdict (awaiting its
-    grade, unscored or stopped) names no evidence: it stays unscored and nothing is unlocked."""
+    equivalent only when every check passes, unknown when none failed and one is undecided, with fresh reuse regraded
+    beside that verdict, in the mission, which needs the owner's proof where the package requires generated MCP reuse.
+    The regrade must give the status the verdict was sealed with. A verdict sealed without a final (no driver emitted, no
+    capability mapping, an invalid model) is not equivalent. A report with no recorded verdict (awaiting its grade,
+    unscored or stopped) names no evidence: it stays unscored and nothing is unlocked."""
     from .truth import unlock
     from .evaluator import final_record
     from .behavior import _sha
@@ -392,7 +393,7 @@ def regrade_v3(report: dict, evidence_path: Path, password_file: Path) -> dict:
         raise ValueError('Report and sealed run identity mismatch')
     sealed, final = public_equivalence(payload.get('equivalence')), payload.get('final')
     ids = lambda record: [row.get('id') for row in record['checks']]
-    if (sealed is None or sealed.get('status') not in ('graded', 'no-driver') or ids(recorded) != ids(sealed)
+    if (sealed is None or sealed.get('status') not in ('graded', 'no-driver', 'unknown') or ids(recorded) != ids(sealed)
             or any(recorded.get(key) != sealed.get(key) for key in VERDICT_IDENTITY)):
         raise ValueError('Report and sealed verdict identity mismatch')
     if final is None:
@@ -406,7 +407,7 @@ def regrade_v3(report: dict, evidence_path: Path, password_file: Path) -> dict:
             final = {**final, 'generated_reuse_required': True,
                      'generated_reuse_verified': verified(proof, final['frozen_artifact_sha256'])}
         regraded = final_record(final, sealed['capabilities_sha256'], sealed['mission'], protocol=payload['protocol'])
-        if (sealed['status'] != 'graded' or final.get('capabilities_sha256') != sealed['capabilities_sha256']
+        if (sealed['status'] != regraded['status'] or final.get('capabilities_sha256') != sealed['capabilities_sha256']
                 or ids(regraded) != ids(sealed)):
             raise ValueError('Sealed verdict differs from its final evaluation')
     from .labels import verdict_reason

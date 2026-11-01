@@ -279,7 +279,7 @@ self.assertEqual(child_disposition({'stopping': False, 'uncertain_effect': False
   - `generated.execute(session, invoke, contract, truth, evidence_path, *, healthy_device_failures) -> list[dict]`:
     - For each sequence it calls `session.reset({})`, then `read_state`. A reset state other than `truth['reset']` makes every record in that sequence undecided (`'unverified reset'`).
     - For each step it calls the task through `run_call` with the step's grants, classifies the answer, reads the state and writes one record per check. An unreadable cell is undecided (`'unreadable state'`).
-    - A host fault on a healthy device is the driver's `error`. On an unhealthy device it raises, as `execute_plan` does.
+    - A host fault on a healthy device is the driver's `error`, except a package process that could not start (`spawn`), which raises on any device. On an unhealthy device it raises, as `execute_plan` does.
   - `NativeSession.read_state(cells) -> {cell: int | None}` sends one `sysbus ReadByte`, `ReadWord` or `ReadDoubleWord 0x%08x` per cell. A rejected, timed-out or malformed read gives None.
   - `generated.observations` has `monitor_units = {}`.
   - `REQUIRED_MUTANTS = frozenset({'wrong-scale', 'constant-output', 'wrong-state'})`.

@@ -59,9 +59,28 @@ def _binding_failure(task, error):
             'outputs': {}, 'units': {}, 'transcript': [], 'transport_open_attempted': False}
 
 
+def _malformation(result):
+    """What makes a package's parsed result one that no runtime writes, or None: `outputs`, `units` or `error` that is
+    not an object, a `transcript` that is not a list of objects, or a value the evidence cannot record as `write_json`
+    writes it, such as a number that is not finite or nesting deeper than the JSON writer reaches."""
+    import json
+    fields = [field for field in ('outputs', 'units', 'error') if not isinstance(result.get(field, {}), dict)]
+    transcript = result.get('transcript', [])
+    if not isinstance(transcript, list) or any(not isinstance(entry, dict) for entry in transcript):
+        fields.append('transcript')
+    if fields:
+        return 'a malformed ' + ', '.join(fields)
+    try:
+        json.dumps(result, indent=2, allow_nan=False)
+    except (ValueError, RecursionError) as error:
+        return 'a value the evidence cannot record: ' + str(error)[:200]
+    return None
+
+
 def _malformed_result(printed, defect):
-    """The driver's failure for a package result that no runtime writes, keeping what the package printed as `printed`
-    for the evidence. The package ran and may have reached the device, so this is never a refusal before contact."""
+    """The driver's failure for a package result that no runtime writes, keeping the print as the package wrote it as
+    `printed` for the evidence. The package ran and may have reached the device, so this is never a refusal before
+    contact."""
     return {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [], 'transport_open_attempted': True,
             'error': {'fault': 'model', 'code': 'malformed_result', 'message': 'The package result has ' + defect},
             'printed': printed}
@@ -76,7 +95,7 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
     are supplied by that measurement function's optional ``monitor_units`` map.
     With ``healthy_device_failures`` (grading a candidate's frozen package, never calibration), a call reported as a host
     fault on a device that is still healthy is graded as the driver's failure, unless its package process could not
-    start or was killed from outside (`graded_result`).
+    start (`graded_result`).
     """
     # Validate evaluator-owned witnesses before any device access. Candidate receive
     # completion and reject prefixes are diagnostic claims, not protocol truth.
@@ -170,11 +189,11 @@ def package_invoker(package, binding, grants):
     a host fault, never raised: from `package` when the package outlasted the call limit or exited without a result,
     from `package-process` when the process could not start (`spawn`) or a signal the grader did not send killed it
     (`signal`); `execute_plan` may grade all but `spawn` as the driver's. Only these failures carry a `source`: one the
-    package prints itself is dropped, so that a package cannot print its way to that label. A result holding a number
-    that is not finite (NaN, an infinity or a float too large to hold), which the honest CLI never prints and the
-    evidence cannot record, is the driver's `malformed_result`, its copy keeping each such number as its text."""
+    package prints itself is dropped, so that a package cannot print its way to that label. A printed object that no
+    runtime writes (`_malformation`: a field of the wrong type, or a value the evidence cannot record, such as a number
+    that is not finite or nesting too deep), which the honest CLI never prints, is the driver's `malformed_result`,
+    keeping the print as the package wrote it."""
     import json
-    import math
     import subprocess
     import sys
     from pathlib import Path
@@ -197,20 +216,14 @@ def package_invoker(package, binding, grants):
         except OSError as error:
             return failed('package-process', 'spawn', 'The package process could not start: ' + type(error).__name__
                           + ': ' + str(error))
-        not_finite = []
-        def kept(text):
-            not_finite.append(text)
-            return text
-        def number(text):
-            value = float(text)
-            return value if math.isfinite(value) else kept(text)
         try:
-            result = json.loads(completed.stdout, parse_constant=kept, parse_float=number)
+            result = json.loads(completed.stdout)
         except (ValueError, RecursionError):
             result = None
         if isinstance(result, dict):
-            if not_finite:
-                return _malformed_result(result, 'a number that is not finite: ' + ', '.join(not_finite)[:200])
+            defect = _malformation(result)
+            if defect is not None:
+                return _malformed_result(completed.stdout, defect)
             error = result.get('error')
             if isinstance(error, dict) and 'source' in error:
                 result = {**result, 'error': {key: value for key, value in error.items() if key != 'source'}}
@@ -224,10 +237,9 @@ def package_invoker(package, binding, grants):
 
 
 def canonical_package_invoker(package, capabilities, binding):
-    """The package's calls by canonical task: a task the mapping cannot bind fails before the package runs, and a
-    result whose `outputs`, `units` or `error` is not an object, or whose `transcript` is not a list of objects, is the
-    driver's failure (`malformed_result`, keeping what the package printed), never an exception; outputs and units are
-    renamed to the task's."""
+    """The package's calls by canonical task: a task the mapping cannot bind fails before the package runs, and the
+    outputs and units of a result are renamed to the task's. `package_invoker` has already made a result no runtime
+    writes the driver's `malformed_result`, so every result has the shape this reads."""
     import json
     from pathlib import Path
     from .behavior import bind_task
@@ -238,12 +250,6 @@ def canonical_package_invoker(package, capabilities, binding):
         except ValueError as error:
             return _binding_failure(task, error)
         result = package_invoker(package, binding, grants)(**request)
-        malformed = [field for field in ('outputs', 'units', 'error') if not isinstance(result.get(field, {}), dict)]
-        transcript = result.get('transcript', [])
-        if not isinstance(transcript, list) or any(not isinstance(entry, dict) for entry in transcript):
-            malformed.append('transcript')
-        if malformed:
-            return _malformed_result(result, 'a malformed ' + ', '.join(malformed))
         mappings = capabilities['tasks'][task]['outputs']
         return {**result,
             'outputs': {key: result.get('outputs', {}).get(mapping['output']) for key, mapping in mappings.items()},

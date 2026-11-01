@@ -26,10 +26,12 @@ def prints(result):
     return ('\nimport sys\nsys.stdout.write(%r)\nsys.exit(0)\n' % json.dumps(result)).encode()
 
 
-# A package result that labels its own failure the host's, and one that also claims its process could not start.
+# A package result that labels its own failure the host's, and one that claims the label only the grader writes for a
+# process that could not start, the one host fault the grader takes as the host's on any device.
 PRINTED_HOST_FAULT = {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [],
                       'error': {'fault': 'host', 'code': 'io', 'message': 'printed'}}
-FORGED_SOURCE = {**PRINTED_HOST_FAULT, 'error': {**PRINTED_HOST_FAULT['error'], 'source': 'package-process'}}
+FORGED_SOURCE = {**PRINTED_HOST_FAULT,
+                 'error': {**PRINTED_HOST_FAULT['error'], 'source': 'package-process', 'code': 'spawn'}}
 PRINTS_A_HOST_FAULT = prints(PRINTED_HOST_FAULT)
 
 
@@ -183,7 +185,7 @@ class StepGradingTests(unittest.TestCase):
     def test_a_forged_process_label_or_a_malformed_result_is_the_drivers_error(self):
         # Catches a package that escapes its grade by printing the label only the grader writes for a process that could
         # not start, and one whose malformed result made the grader raise, or left its evidence unwritable, instead of
-        # grading it. The evidence keeps what the package printed, a number that is not finite as its name.
+        # grading it. The evidence keeps the print as the package wrote it.
         for name, printed in (('forged source', FORGED_SOURCE),
                               ('outputs', {'ok': True, 'outputs': 'two', 'units': {}, 'transcript': []}),
                               ('units', {'ok': True, 'outputs': {'mode': 2}, 'units': ['1'], 'transcript': []}),
@@ -203,9 +205,8 @@ class StepGradingTests(unittest.TestCase):
                     self.assertEqual((calls[0]['device_healthy'], 'source' in calls[0]['result']['error']),
                                      (True, False))
                 else:
-                    copy_of_printed = json.loads(json.dumps(printed), parse_constant=str)
                     self.assertEqual((calls[0]['result']['error']['code'], calls[0]['result']['printed']),
-                                     ('malformed_result', copy_of_printed))
+                                     ('malformed_result', json.dumps(printed)))
 
     @unittest.skipUnless(hasattr(signal, 'SIGKILL'), 'a process sends itself SIGKILL on POSIX only')
     def test_a_package_that_kills_itself_on_a_healthy_device_is_the_drivers_error(self):

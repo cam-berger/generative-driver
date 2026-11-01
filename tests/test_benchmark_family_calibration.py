@@ -461,10 +461,58 @@ class ReferenceExecutionTests(unittest.TestCase):
                         self.assertEqual((call['device_healthy'],error['reported_fault'],'source' in error),
                                          (True,'host',False))
                     else:
-                        # The evidence keeps what the package printed, a number that is not finite by its name.
+                        # The evidence keeps the print as the package wrote it.
                         kept=next(e for e in events if e['action']['kind']=='call')['result']['printed']
                         self.assertEqual((error['fault'],error['code'],kept),
-                                         ('model','malformed_result',json.loads(json.dumps(result),parse_constant=str)))
+                                         ('model','malformed_result',json.dumps(result)))
+
+    def test_a_print_nested_too_deeply_to_record_fails_on_a_healthy_device(self):
+        # Catches a print that parses but that the grader's JSON writer cannot record: writing the evidence raised
+        # RecursionError and left the trial unscored. CPython 3.12's json.dumps(indent=2) raises beyond about a
+        # thousand levels, 3.13's encodes them and 3.11's json.loads refuses them first. So that the path does not
+        # depend on the running Python, the test makes json.dumps refuse a value nested more than 200 levels deep while
+        # grading, as 3.12 does past its limit, and the package prints 300 levels, which json.loads parses everywhere.
+        import json
+        from pathlib import Path
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.evaluator import final_record, reference_execute
+        from generative_driver.configurator import digest
+        writes=json.dumps
+        def depth(value):
+            deepest,pending=0,[(value,1)]
+            while pending:
+                item,level=pending.pop()
+                deepest=max(deepest,level)
+                children=item.values() if isinstance(item,dict) else item if isinstance(item,list) else ()
+                pending.extend((child,level+1) for child in children)
+            return deepest
+        def dumps(value,*args,**kwargs):
+            if depth(value)>200:
+                raise RecursionError('maximum recursion depth exceeded while encoding a JSON object')
+            return writes(value,*args,**kwargs)
+        nested=[]
+        for _ in range(300):
+            nested=[nested]
+        printed={'outputs':{'ok':True,'outputs':{'temperature':nested,'sequence':3},
+                            'units':{'temperature':'degC','sequence':'count'}},
+                 'an unread field':{'ok':False,'outputs':{},'units':{},'transcript':[],'trace':nested,
+                                    'error':{'fault':'model','code':'execution_error'}}}
+        with self.toy_sensor() as (temp,Session,pin,truth,caps):
+            for name,result in printed.items():
+                with self.subTest(name):
+                    package=self.emit_toy_package(Path(temp)/name,Session.binding)
+                    code=('\nimport sys\nsys.stdout.write(%r)\nsys.exit(0)\n' % writes(result)).encode()
+                    self.edit_bundled(package,'interface_runtime/package.py',lambda data:data+code)
+                    with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()), \
+                            patch('json.dumps',side_effect=dumps):
+                        graded=reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),
+                            output_dir=Path(temp)/name/'final',package=package,expected_package_sha256=digest(package),
+                            healthy_device_failures=True)
+                    final={'contract':graded['contract'],'records':graded['records'],'frozen_artifact_sha256':digest(package)}
+                    self.assertIs(final_record(final,protocol='assistive/1')['equivalent'],False)
+                    events=json.loads((Path(temp)/name/'final/raw.json').read_text(encoding='utf-8'))['events']
+                    call=next(e for e in events if e['action']['kind']=='call')['result']
+                    self.assertEqual((call['error']['code'],call['printed']),('malformed_result',writes(result)))
 
     def test_only_the_package_that_was_frozen_is_accepted(self):
         import tempfile

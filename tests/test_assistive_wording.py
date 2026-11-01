@@ -21,7 +21,10 @@ DOCS = (*CURRENT, 'docs/design.md', 'docs/verification.md')
 CHANGE = (r'assistive/1', r'new series', r'not read-isolated', r'password-based')
 LIMITS = (r'fresh native calibration', r'preserved checkout', r'time_policy\.probe', r'paused between',
           r'configurator[^.]*(holds no|never receives?)[^.]*password', r'instrument readings')
-REQUIRED = {'bench/README.md': CHANGE + LIMITS, 'docs/design.md': CHANGE + LIMITS,
+# Effect grants bound the effects a model declares, which on most transports nothing checks against the request.
+EFFECT_LABELS = (r'`read` label is [^.]*claim', r'interrupted read is never [^.]*uncertain')
+REQUIRED = {'bench/README.md': CHANGE + LIMITS, 'docs/design.md': CHANGE + LIMITS + EFFECT_LABELS,
+            'docs/support.md': EFFECT_LABELS,
             'docs/verification.md': CHANGE[:3] + LIMITS[:2],
             'docs/goose.md': CHANGE + LIMITS[4:], 'docs/codex.md': CHANGE + LIMITS[4:],
             'README.md': CHANGE[2:], SKILL: CHANGE + (r'self-evidence', r'bench harness', r'notes',

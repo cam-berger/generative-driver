@@ -204,6 +204,29 @@ class CaseIdentityTests(PackageCopy, unittest.TestCase):
                 change()
                 self.assertNotEqual(grader_identity(root, case_id='tq9-v2')['sha256'], before)
 
+    def test_a_case_identity_changes_with_the_cryptography_version(self):
+        before = grader_identity(case_id='tq9-v2')['sha256']
+        with patch('generative_driver.benchmark_support.grader_identity.importlib.metadata.version',
+                   return_value='0.0+another-build'):
+            self.assertNotEqual(grader_identity(case_id='tq9-v2')['sha256'], before)
+
+    def test_a_case_keeps_its_identity_when_another_case_of_its_family_changes(self):
+        # tq9-v3 names tq9-v2's family and native module, but its entry is its own.
+        root = self.copy_package()
+        before, sibling = (grader_identity(root, case_id=case)['sha256'] for case in ('tq9-v2', 'tq9-v3'))
+        self.set_version(root, 'tq9-v3', '2')
+        self.assertNotEqual(grader_identity(root, case_id='tq9-v3')['sha256'], sibling)
+        self.assertEqual(grader_identity(root, case_id='tq9-v2')['sha256'], before)
+
+    def test_a_case_keeps_its_identity_when_a_module_only_other_families_import_changes(self):
+        # family_support serves the sampled-sensor, parameter-store and zephyr-modbus families; neither the core nor
+        # tq9_v2 imports it.
+        root = self.copy_package()
+        before, sensor = (grader_identity(root, case_id=case)['sha256'] for case in ('tq9-v2', 'sampled-sensor-v1'))
+        self.touch(root / 'benchmark_support/family_support.py')
+        self.assertNotEqual(grader_identity(root, case_id='sampled-sensor-v1')['sha256'], sensor)
+        self.assertEqual(grader_identity(root, case_id='tq9-v2')['sha256'], before)
+
     def test_a_case_without_a_native_module_is_graded_by_the_core_alone(self):
         root = self.copy_package()
         identity = grader_identity(root, case_id='tq9')  # the legacy case names no native module

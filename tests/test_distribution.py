@@ -16,7 +16,9 @@ class DistributionTests(unittest.TestCase):
             self.assertFalse([n for n in names if n.endswith((".pyc", ".pyo")) or "__pycache__" in n])
             for resource in ("interface_runtime/engine.py", "generative_driver/resources/toolchain/tools.json",
                              "generative_driver/resources/bench/cases/setup-smoke/model.json",
-                             "generative_driver/resources/client/skills/generative-driver/SKILL.md"):
+                             "generative_driver/resources/client/skills/generative-driver/SKILL.md",
+                             # Every import of the registrations reads it.
+                             "generative_driver/resources/registrations/cases.json"):
                 self.assertIn(resource, names)
 
     @unittest.skipUnless(os.environ.get("GD_TEST_SDIST"), "Set GD_TEST_SDIST for the source archive gate")

@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from generated_fixtures import (FIXTURE_ANSWER_KEY, MODE_ADDRESS, MUTANT_ERR_AS_VALUE, REFERENCE_A, REFERENCE_B, STEP,
-                                FixtureDevice, fixture_start)
+from generated_fixtures import (FIXTURE_ANSWER_KEY, MODE_ADDRESS, MODE_UNIT, MUTANT_ERR_AS_VALUE, REFERENCE_A,
+                                REFERENCE_B, STEP, FixtureDevice, fixture_mission, fixture_start)
 from generative_driver.benchmark_support import generated
 from generative_driver.benchmark_support.behavior import validate_records
 from generative_driver.benchmark_support.evaluator import reference_execute
@@ -18,10 +18,52 @@ from generative_driver.benchmark_support.integrity import digest
 from generative_driver.benchmark_support.reference_calibration import run_reference
 
 PIN = {'case_id': 'generated', 'scenario_id': 'original', 'case_seed': 0, 'revision': 0}
-# Appended to a package's bundled runtime: every call then prints a result that labels its fault the host's.
-PRINTS_A_HOST_FAULT = (b'\nimport json, sys\nsys.stdout.write(json.dumps({"ok": False, "outputs": {}, "units": {}, '
-                       b'"transcript": [], "error": {"fault": "host", "code": "io", "message": "printed"}}))\n'
-                       b'sys.exit(0)\n')
+
+
+def prints(result):
+    """Code that, appended to a package's bundled runtime, makes every call of the package print `result` and exit."""
+    return ('\nimport sys\nsys.stdout.write(%r)\nsys.exit(0)\n' % json.dumps(result)).encode()
+
+
+# A package result that labels its own failure the host's, and one that also claims its process could not start.
+PRINTED_HOST_FAULT = {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [],
+                      'error': {'fault': 'host', 'code': 'io', 'message': 'printed'}}
+FORGED_SOURCE = {**PRINTED_HOST_FAULT, 'error': {**PRINTED_HOST_FAULT['error'], 'source': 'package-process'}}
+PRINTS_A_HOST_FAULT = prints(PRINTED_HOST_FAULT)
+
+
+def call_package(candidate, task, inputs, grants, *, preconditions=None, before=None):
+    """One call of `candidate`'s package, as the evaluator's invoker returns it. The package is emitted by the toolkit
+    against a fresh fixture device as `run_reference` emits one, with `preconditions` ({operation: [condition]}) added
+    to its authored driver contract, and called on that device, running, once `before(device)` has run."""
+    from generative_driver.benchmark_support.calibration import reference_model_bytes
+    from generative_driver.benchmark_support.emulated_actions import canonical_package_invoker
+    from generative_driver.toolkit import call_tool
+    from interface_runtime.contracts import from_model
+    device = FixtureDevice()
+    device.running = True
+    try:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            model = {**candidate['model'], 'channel': {'type': 'tcp'}}
+            (root/'model').mkdir()
+            (root/'model/model.json').write_bytes(reference_model_bytes(model))
+            if preconditions:
+                contract, protocol = from_model(model)
+                for operation, conditions in preconditions.items():
+                    contract['operations'][operation]['preconditions'] = conditions
+                for name, document in (('contract.json', contract), ('protocol.json', protocol)):
+                    (root/'model'/name).write_text(json.dumps(document), encoding='utf-8')
+            tools = {'run_dir': str(root/'tools'), 'model_dir': str(root/'model')}
+            probed = call_tool('probe_run', {**tools, 'operation': model['identity']['operation'], 'parameters': {},
+                                             'binding': device.binding, 'n': 1})
+            emitted = call_tool('emit_package', {**tools, 'probe': probed['probe']})
+            if before is not None:
+                before(device)
+            invoke = canonical_package_invoker(Path(emitted['package_dir']), candidate['capabilities'], device.binding)
+            return invoke(task, inputs, grants)
+    finally:
+        device.close()
 
 
 def add_to_bundled_runtime(package, code):
@@ -129,6 +171,34 @@ class StepGradingTests(unittest.TestCase):
             self.grade(REFERENCE_A, healthy_device_failures=True, dies_on='PING')
         self.assertIs(self.raw['incomplete'], True)
 
+    def test_a_driver_that_reports_another_unit_fails_its_output_checks(self):
+        # Catches an output graded by its number alone: the mission states the unit, and the driver must report it.
+        candidate = copy.deepcopy(REFERENCE_A)
+        candidate['model']['operations']['read_mode']['outputs']['mode']['unit'] = 'count'
+        candidate['capabilities']['tasks']['get_mode']['outputs']['mode']['unit'] = 'count'
+        failed = {c['id']: c['reason'] for c in self.grade(candidate)['grade']['checks'] if c['passed'] is False}
+        self.assertEqual(failed, dict.fromkeys(['s1/2/out:mode', 's1/4/out:mode', 's2/3/out:mode'], 'unit mismatch'))
+
+    def test_a_forged_process_label_or_a_malformed_result_is_the_drivers_error(self):
+        # Catches a package that escapes its grade by printing the label only the grader writes for a process that could
+        # not start, and one whose malformed result made the grader raise instead of grading it.
+        for name, printed in (('forged source', FORGED_SOURCE),
+                              ('outputs', {'ok': True, 'outputs': 'two', 'units': {}, 'transcript': []}),
+                              ('units', {'ok': True, 'outputs': {'mode': 2}, 'units': ['1'], 'transcript': []}),
+                              ('error', {'ok': False, 'error': 'refused', 'transcript': []})):
+            with self.subTest(name):
+                graded = self.grade(REFERENCE_A, edit=lambda package: add_to_bundled_runtime(package, prints(printed)),
+                                    healthy_device_failures=True)['grade']
+                self.assertEqual(graded['verdict'], 'failed')
+                calls = [event for event in self.raw['events'] if 'step' in event]
+                self.assertEqual({call['answer'] for call in calls}, {'error'})
+                if name == 'forged source':
+                    # The label reaches the grader stripped, so its health check runs as for any host fault.
+                    self.assertEqual((calls[0]['device_healthy'], 'source' in calls[0]['result']['error']),
+                                     (True, False))
+                else:
+                    self.assertEqual(calls[0]['result']['error']['code'], 'malformed_result')
+
     def run_steps(self, device, invoke):
         """The hidden sequences of the fixture key run on `device` with the scripted package call `invoke`."""
         truth = {**FIXTURE_ANSWER_KEY, 'artifact_sha256': 'a' * 64}
@@ -167,48 +237,87 @@ class StepGradingTests(unittest.TestCase):
 
 
 class AnswerTests(unittest.TestCase):
-    def result(self, **changes):
-        """A runtime result of reference A's write_mode, after its identity: the device replied ERR."""
-        entry = {'operation': 'write_mode', 'step': 0, 'op': 'exchange', 'tx_hex': b'MODE 9\n'.hex(),
-                 'rx_hex': b'ERR\n'.hex(), 'status': 'completed', 'device_rejected': True}
-        return {'ok': False, 'operation': 'write_mode', 'identity_verified': True, 'transport_open_attempted': True,
-                'transcript': [{**entry, 'operation': 'read_mode', 'rx_hex': b'MODE:2\n'.hex()}, entry],
-                'error': {'code': 'execution_error', 'message': 'response expectation mismatch', 'fault': 'model'},
-                **changes}
+    """classify_answer on the results the runtime really returns: each package is emitted by the toolkit and called by
+    the evaluator's invoker on a fixture device. A forged result changes one field of a real one, as a package that
+    misreports would."""
 
-    def test_each_answer_is_classified_from_what_the_runtime_recorded(self):
-        silent = {'operation': 'ping', 'step': 0, 'op': 'exchange', 'tx_hex': b'PING\n'.hex(), 'rx_hex': '',
-                  'status': 'attempted'}
-        timeout = {'code': 'timeout', 'message': 'timed out', 'fault': 'model'}
+    @classmethod
+    def setUpClass(cls):
+        def mode_is(mode, operation='read_mode'):
+            return {'id': operation + '-mode', 'description': 'Mode %d first.' % mode, 'operator': 'eq', 'expected': mode,
+                    'observation': {'operation': operation, 'parameters': {}, 'output': 'mode'}}
+        # Its identity insists on mode 2; another read asks a question the device refuses.
+        strict, guarded = copy.deepcopy(REFERENCE_A), copy.deepcopy(REFERENCE_A)
+        strict['model']['operations']['read_mode']['steps'][0]['expect'] = {'equals_hex': b'MODE:2\n'.hex()}
+        status = copy.deepcopy(guarded['model']['operations']['read_mode'])
+        status['steps'][0]['tx'] = [{'text': 'STATUS?\n'}]
+        guarded['model']['operations']['status'] = status
+        guarded['model']['provenance'].append({'item': 'operations.status', 'source': 'hand-written fixture'})
+        set_one = ('set_mode', {'mode': 1}, ['write'])
+        cls.real = {
+            'value': call_package(REFERENCE_A, 'get_mode', {}, []),
+            'device refusal': call_package(REFERENCE_A, 'set_mode', {'mode': 9}, ['write']),
+            'bound refusal': call_package(REFERENCE_B, 'set_mode', {'mode': 9}, ['write']),
+            'precondition refusal': call_package(REFERENCE_A, *set_one, preconditions={'write_mode': [mode_is(0)]}),
+            'silence': call_package(REFERENCE_A, 'ping', {}, []),
+            'identity mismatch': call_package(strict, *set_one, before=lambda device: setattr(device, 'mode', 1)),
+            'precondition unavailable': call_package(guarded, *set_one,
+                                                     preconditions={'write_mode': [mode_is(2, 'status')]}),
+            'host fault': call_package(REFERENCE_A, 'ping', {}, [],
+                                       before=lambda device: setattr(device, 'running', False))}
+
+    def test_the_real_results_have_the_shapes_the_rules_read(self):
+        # The runtime's own shapes: catches a rule written against a combination it never returns.
+        real, shape = self.real, lambda name, *keys: tuple(self.real[name].get(key) for key in keys)
+        fault = lambda name: (real[name]['error']['code'], real[name]['error']['fault'])
+        self.assertEqual(shape('device refusal', 'identity_verified', 'transport_open_attempted'), (True, True))
+        self.assertEqual(real['device refusal']['transcript'][-1]['rx_hex'], b'ERR\n'.hex())
+        self.assertEqual(shape('bound refusal', 'transport_open_attempted', 'transcript'), (False, []))
+        self.assertEqual(fault('bound refusal'), ('capability_mapping', 'model'))
+        self.assertEqual(fault('precondition refusal'), ('precondition_failed', 'operator'))
+        self.assertEqual(shape('precondition refusal', 'identity_verified', 'transport_open_attempted', 'transcript'),
+                         (False, True, []))
+        self.assertEqual([(o['result']['ok'], o['result']['identity_verified'])
+                          for o in real['precondition refusal']['observations']], [(True, True)])
+        self.assertEqual(fault('silence'), ('timeout', 'model'))
+        self.assertEqual(fault('identity mismatch'), ('execution_error', 'model'))
+        self.assertEqual(shape('identity mismatch', 'identity_verified', 'transport_open_attempted'), (False, True))
+        self.assertEqual({entry['operation'] for entry in real['identity mismatch']['transcript']}, {'read_mode'})
+        self.assertEqual(fault('precondition unavailable'), ('precondition_unavailable', 'model'))
+        self.assertEqual(fault('host fault')[1], 'host')
+
+    def test_each_answer_is_classified_from_what_the_runtime_returned(self):
+        from generative_driver.benchmark_support.emulated_actions import graded_result
+        real = self.real
+        forged = lambda name, **changes: {**real[name], **changes}
+        failed_read = [{**observation, 'result': {**observation['result'], 'ok': False}}
+                       for observation in real['precondition refusal']['observations']]
+        healthy = FixtureDevice()
+        self.addCleanup(healthy.close)
+        rewritten = graded_result(healthy.session(FIXTURE_ANSWER_KEY['recipe']), real['host fault'], {},
+                                  healthy_device_failures=True)
         rows = [
-            ('value', {'ok': True, 'outputs': {'mode': 2}}),
-            ('refusal', self.result()),  # the device's own refusal bytes
-            ('refusal', {'ok': False, 'transcript': [], 'transport_open_attempted': False,  # bind_task's, before I/O
-                         'error': {'fault': 'model', 'code': 'capability_mapping'}}),
-            ('refusal', self.result(transcript=[], error={'fault': 'operator', 'code': 'precondition_failed'})),
-            ('no_reply', self.result(operation='ping', transcript=[self.result()['transcript'][0], silent],
-                                     error=timeout)),
-            ('error', self.result(error={'fault': 'host', 'code': 'io'})),  # a fault the package labels the host's
-            ('error', self.result(transport_open_attempted=False, error={'fault': 'host', 'code': 'binding'})),
-            # An identity that timed out on a device the evaluator found healthy: the driver never sent the request,
-            # but the fault was the host's as the package reported it, so this is no refusal.
-            ('error', self.result(identity_verified=False, transcript=[{**silent, 'operation': 'read_mode'}],
-                                  error={**timeout, 'fault': 'model', 'reported_fault': 'host',
-                                         'classified': 'healthy-device'})),
-            ('error', self.result(transcript=[self.result()['transcript'][0], {**self.result()['transcript'][1],
-                                                                               'rx_hex': b'BUSY\n'.hex()}])),
-            ('error', self.result(transcript=[], operation=None)),  # no requested operation to have declined
-            ('error', self.result(identity_verified=False, operation='read_mode', error=timeout,
-                                  transcript=[{**silent, 'operation': 'read_mode'}])),  # its identity is unverified
-            ('error', self.result(operation='ping', transcript=[silent], error={**timeout, 'code': 'limit'})),
-            ('error', self.result(operation='ping', error=timeout,
-                                  transcript=[{**silent, 'rx_hex': '45', 'status': 'completed'}])),
+            ('value', real['value']),
+            ('refusal', real['device refusal']),  # the device's own ERR, after a verified identity
+            ('refusal', real['bound refusal']),  # declined by its bounds before any contact
+            ('refusal', real['precondition refusal']),  # declined after reading the device's state
+            ('no_reply', real['silence']),
+            ('error', real['identity mismatch']),
+            ('error', real['precondition unavailable']),
+            ('error', real['host fault']),  # a fault the package labels the host's
+            ('error', rewritten),  # the same on a device the evaluator found healthy
+            ('error', forged('device refusal', transport_open_attempted=False)),  # contact all the same
+            ('error', forged('device refusal', identity_verified=False)),
+            ('error', forged('precondition refusal', observations=failed_read)),
+            ('error', forged('bound refusal', observations=real['precondition refusal']['observations'])),
             ('error', {'ok': False}), ('error', {'ok': 'yes', 'error': 'unreadable', 'transcript': 'none'})]
         for expected, result in rows:
             with self.subTest(result=result):
                 self.assertEqual(classify_answer(result, STEP), expected)
+        self.assertEqual(rewritten['error']['reported_fault'], 'host')
         # The device's ERR is a refusal only where the step names it as the device's refusal.
-        self.assertEqual(classify_answer(self.result(), FIXTURE_ANSWER_KEY['sequences'][0]['steps'][2]), 'error')
+        self.assertEqual(classify_answer(real['device refusal'], FIXTURE_ANSWER_KEY['sequences'][0]['steps'][2]),
+                         'error')
 
 
 class AnswerKeyTests(unittest.TestCase):
@@ -222,7 +331,10 @@ class AnswerKeyTests(unittest.TestCase):
                          ['s1/2/answer', 's1/2/out:mode', 's1/2/state:mode'])
         pick = lambda identifier, *keys: tuple(rows[identifier][key] for key in keys)
         self.assertEqual(pick('s2/1/answer', 'kind', 'expected', 'channel'), ('text', 'no_reply', 'runtime-transcript'))
-        self.assertEqual(pick('s1/2/out:mode', 'kind', 'expected', 'absolute_tolerance'), ('number', 2, 0))
+        # An output's check expects the unit the public mission states for it.
+        mission_unit = fixture_mission('d001')['tasks']['get_mode']['outputs']['mode']['unit']
+        self.assertEqual(pick('s1/2/out:mode', 'kind', 'expected', 'absolute_tolerance', 'unit'),
+                         ('number', 2, 0, mission_unit))
         self.assertEqual(pick('s1/3/state:mode', 'kind', 'expected', 'absolute_tolerance', 'channel'),
                          ('number', 1, 0, 'device-state'))
         self.assertTrue(all(check['revision'] == 0 for check in contract['checks']))
@@ -253,10 +365,14 @@ class AnswerKeyTests(unittest.TestCase):
             'a reset beyond its width': lambda key: key['reset'].update(mode=2 ** 32),
             'a step with an unknown field': lambda key: step(key).update(note='x'),
             'an answer that is no answer': lambda key: step(key).update(answer='error'),
-            'outputs on a refusal': lambda key: step(key).update(outputs={'mode': {'value': 2, 'tolerance': 0}}),
+            'outputs on a refusal':
+                lambda key: step(key).update(outputs={'mode': {'value': 2, 'tolerance': 0, 'unit': MODE_UNIT}}),
             'a refusal witness on a value': lambda key: step(key, 1).update(refusal_rx_hex='00'),
             'a witness that is no hex': lambda key: step(key).update(refusal_rx_hex='ERR'),
             'a negative tolerance': lambda key: step(key, 1)['outputs']['mode'].update(tolerance=-1),
+            'an output without a unit': lambda key: step(key, 1)['outputs']['mode'].pop('unit'),
+            'an output with an empty unit': lambda key: step(key, 1)['outputs']['mode'].update(unit=''),
+            'an output with no unit': lambda key: step(key, 1)['outputs']['mode'].update(unit=None),
             'an unknown grant': lambda key: step(key).update(grants=['everything']),
             'an input that is no scalar': lambda key: step(key).update(inputs={'mode': [9]}),
             'a step state beyond its width': lambda key: step(key).update(state={'mode': -1}),
@@ -269,10 +385,11 @@ class AnswerKeyTests(unittest.TestCase):
             'a duplicate mutant': lambda key: key['mutants'].append(copy.deepcopy(key['mutants'][0])),
             'a mission state of no cell': lambda key: key.update(mission={'state': {}})}
         artifact = {'artifact_sha256': 'a' * 64}
+        self.assertIs(generated.answer_key(FIXTURE_ANSWER_KEY), FIXTURE_ANSWER_KEY)
         self.assertEqual(len(generated.contract(PIN, {**FIXTURE_ANSWER_KEY, **artifact}, 'final')['checks']), 17)
         for name, edit in defects.items():
             with self.subTest(name), self.assertRaises(ValueError):
-                generated.contract(PIN, {**change(edit), **artifact}, 'final')
+                generated.answer_key(change(edit))
         with self.assertRaisesRegex(ValueError, 'final'):
             generated.contract(PIN, {**FIXTURE_ANSWER_KEY, **artifact}, 'diagnostic')
 
@@ -280,8 +397,11 @@ class AnswerKeyTests(unittest.TestCase):
 class RegistrationTests(unittest.TestCase):
     def test_the_generated_family_is_registered_unavailable_in_listings_and_shows_workers_no_instrument(self):
         from generative_driver.benchmark_support.instruments import family_for, public_observation
+        from generative_driver.benchmark_support.missions import validate_mission
         from generative_driver.benchmark_support.registrations import CaseRegistration, family_module, registration_for
         from generative_driver.benchmark_support.registry import CURRENT_VERSIONS, case_descriptors
+        # The fixture's public mission is one the mission validator accepts, with the unit of its one output.
+        self.assertEqual(validate_mission(fixture_mission('d001'), 'generated'), fixture_mission('d001'))
         self.assertEqual(registration_for('generated'),
                          CaseRegistration('generated', 'generated', '1', 'emulator-v2', 'benchmark-case/2',
                                           native_module='generated', truth_schema='generated-answer-key/1',

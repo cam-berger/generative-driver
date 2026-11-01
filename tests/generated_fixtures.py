@@ -3,7 +3,7 @@ answer key with two reference drivers and the mutants, and a set of two such dev
 
 The device speaks text lines over its UART. `MODE?` replies `MODE:<n>`; `MODE <n>` sets the mode and replies `OK` when
 0 <= n <= 3, and replies `ERR` otherwise; `PING` is never answered; any other line replies `ERR`. The mode lives at
-0x20000000, and a reset leaves it at 2."""
+0x20000000, and a reset leaves it at 2. Its public mission states the mode's unit, `1` (dimensionless)."""
 import copy
 import re
 import secrets
@@ -17,11 +17,15 @@ PASSWORD = 'synthetic fixture credential'
 FIXTURE_IMAGE = b'fixture firmware image'
 MODE_ADDRESS = 0x20000000
 RESET_MODE = 2
+MODE_UNIT = '1'
 _MASKS = {'ReadByte': 0xff, 'ReadWord': 0xffff, 'ReadDoubleWord': 0xffffffff}
 
 
 class FixtureDevice:
-    """The fixture firmware on a stand-in emulator: its UART and a fake Renode monitor, each on a local socket.
+    """The fixture firmware behind a fault-injecting stand-in for a Renode monitor, each on a local socket. It speaks
+    the monitor's protocol but is not a faithful Renode: it answers an error line where Renode reads an unmapped address
+    as 0, prints values as unpadded hex, boots the firmware at once on `machine Reset` (so its recipe needs no boot
+    interval), and has a stopped-machine mode Renode lacks.
 
     The monitor answers `start` and `pause` (the emulator runs only between them), `machine Reset` (the mode becomes
     `reset_mode`), `cpu PC`, and a `sysbus ReadByte`, `ReadWord` or `ReadDoubleWord` of the mode's address. It answers
@@ -99,11 +103,15 @@ class FixtureDevice:
             return 'Error: cannot read 0x%08x' % address
         return hex(self.mode & _MASKS[read.group(1)])
 
+    @property
+    def binding(self):
+        """The binding of the device's UART."""
+        return {'host': '127.0.0.1', 'port': self.servers[0].server_address[1]}
+
     def session(self, recipe, private_dir=None):
         """A NativeSession attached to this device; stopping the session stops the device."""
         from generative_driver.benchmark_support.native import NativeSession
-        info = {'binding': {'host': '127.0.0.1', 'port': self.servers[0].server_address[1]},
-                'monitor_port': self.servers[1].server_address[1]}
+        info = {'binding': self.binding, 'monitor_port': self.servers[1].server_address[1]}
         if private_dir is not None:
             Path(private_dir).mkdir(parents=True, exist_ok=True)
             info['private_dir'] = str(private_dir)
@@ -142,10 +150,10 @@ def _model(name, identity, operations):
 
 
 def _capabilities(get_mode, set_mode, ping, output):
-    """A mapping of the mission's three tasks onto a driver's operations."""
+    """A mapping of the mission's three tasks onto a driver's operations, its mode in the mission's unit."""
     return {'schema': 'benchmark-capabilities/2', 'tasks': {
         'get_mode': {'operation': get_mode, 'constants': {}, 'inputs': {},
-                     'outputs': {'mode': {'output': output, 'unit': None}}},
+                     'outputs': {'mode': {'output': output, 'unit': MODE_UNIT}}},
         'set_mode': {'operation': set_mode, 'constants': {}, 'inputs': {'mode': {'parameter': 'mode', 'kind': 'copy'}},
                      'outputs': {}},
         'ping': {'operation': ping, 'constants': {}, 'inputs': {}, 'outputs': {}}}}
@@ -159,7 +167,7 @@ MODE_LINE = {'first_line_prefix': 'MODE:', 'reject_line_prefix': ['ERR']}
 REFERENCE_A = {'model': _model('FIXTURE-A', 'read_mode', {
     'read_mode': {'effect': 'read', 'parameters': {},
                   'steps': [_exchange('MODE?\n', 'reply', expect={'prefix_hex': b'MODE:'.hex()})],
-                  'outputs': {'mode': {'from': 'reply', 'kind': 'kv_number', 'key': 'MODE:'}}},
+                  'outputs': {'mode': {'from': 'reply', 'kind': 'kv_number', 'key': 'MODE:', 'unit': MODE_UNIT}}},
     'write_mode': {'effect': 'write', 'parameters': {'mode': {'type': 'integer', 'minimum': 0, 'maximum': 255}},
                    'steps': [_exchange(MODE_COMMAND, 'ack', expect=ACCEPTED)], 'outputs': {}},
     'ping': {'effect': 'read', 'parameters': {}, 'steps': [_exchange('PING\n', 'pong', timeout_ms=300)],
@@ -170,7 +178,7 @@ REFERENCE_A = {'model': _model('FIXTURE-A', 'read_mode', {
 REFERENCE_B = {'model': _model('FIXTURE-B', 'query', {
     'query': {'effect': 'read', 'parameters': {},
               'steps': [_exchange('MODE?\n', 'line', expect=MODE_LINE)],
-              'outputs': {'current': {'from': 'line', 'kind': 'ascii_number', 'prefix': 'MODE:'}}},
+              'outputs': {'current': {'from': 'line', 'kind': 'ascii_number', 'prefix': 'MODE:', 'unit': MODE_UNIT}}},
     'select': {'effect': 'write', 'parameters': {'mode': {'type': 'integer', 'minimum': 0, 'maximum': 3}},
                'steps': [_exchange(MODE_COMMAND, 'ack', expect=ACCEPTED)], 'outputs': {}},
     'listen': {'effect': 'read', 'parameters': {},
@@ -199,7 +207,7 @@ def _step(task, inputs, answer, mode, *, output=None, refusal=None):
     step = {'task': task, 'inputs': inputs, 'grants': ['write'] if task == 'set_mode' else [], 'answer': answer,
             'state': {'mode': mode}}
     if output is not None:
-        step['outputs'] = {'mode': {'value': output, 'tolerance': 0}}
+        step['outputs'] = {'mode': {'value': output, 'tolerance': 0, 'unit': MODE_UNIT}}
     if refusal is not None:
         step['refusal_rx_hex'] = refusal.hex()
     return step
@@ -241,8 +249,15 @@ STEP = FIXTURE_ANSWER_KEY['sequences'][0]['steps'][0]
 
 
 def fixture_mission(device_id):
-    """A small public mission, different for each device so that a test can tell the devices apart."""
-    return {'device': device_id, 'objective': 'Report the mode of the fixture device and set it on request.'}
+    """The public mission of a fixture device (`benchmark-public-mission/1`): each task's effect and each output's
+    unit, and an objective that names the device, so that a test can tell the devices apart."""
+    return {'schema': 'benchmark-public-mission/1', 'case_id': 'generated', 'tasks': {
+        'get_mode': {'meaning': 'Report the mode the device is in.', 'inputs': {},
+                     'outputs': {'mode': {'unit': MODE_UNIT}}},
+        'set_mode': {'meaning': 'Put the device in the requested mode.', 'inputs': {'mode': {'type': 'integer'}},
+                     'outputs': {}},
+        'ping': {'meaning': 'Check that the device listens.', 'inputs': {}, 'outputs': {}}},
+        'reuse_objective': 'Put fixture device ' + device_id + ' in mode 1 and report its mode.'}
 
 
 def write_fixture_set(root):

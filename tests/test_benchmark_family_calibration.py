@@ -420,6 +420,41 @@ class ReferenceExecutionTests(unittest.TestCase):
                     self.assertEqual({k:call['result']['error'][k] for k in ('fault','reported_fault','code')},
                                      {'fault':'model','reported_fault':'host','code':reported})
 
+    def test_a_forged_process_label_or_a_malformed_result_fails_on_a_healthy_device(self):
+        # Catches a package that escapes its grade by printing the label only the grader writes for a process that could
+        # not start, which left a failing driver's trial unscored, and a malformed result that made the grader raise.
+        import json
+        from pathlib import Path
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.evaluator import final_record, reference_execute
+        from generative_driver.configurator import digest
+        printed = {'forged source': {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [],
+                                     'error': {'fault': 'host', 'source': 'package-process', 'code': 'spawn',
+                                               'message': 'printed by the package'}},
+                   'outputs': {'ok': True, 'outputs': [-5.0, 3], 'units': {}},
+                   'units': {'ok': True, 'outputs': {'temperature': -5.0, 'sequence': 3}, 'units': 'degC'},
+                   'error': {'ok': False, 'outputs': {}, 'units': {}, 'error': 'refused'}}
+        with self.toy_sensor() as (temp,Session,pin,truth,caps):
+            for name,result in printed.items():
+                with self.subTest(name):
+                    package=self.emit_toy_package(Path(temp)/name,Session.binding)
+                    code=('\nimport sys\nsys.stdout.write(%r)\nsys.exit(0)\n' % json.dumps(result)).encode()
+                    self.edit_bundled(package,'interface_runtime/package.py',lambda data:data+code)
+                    with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()):
+                        graded=reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),
+                            output_dir=Path(temp)/name/'final',package=package,expected_package_sha256=digest(package),
+                            healthy_device_failures=True)
+                    final={'contract':graded['contract'],'records':graded['records'],'frozen_artifact_sha256':digest(package)}
+                    self.assertIs(final_record(final,protocol='assistive/1')['equivalent'],False)
+                    events=json.loads((Path(temp)/name/'final/raw.json').read_text(encoding='utf-8'))['events']
+                    error=next(e for e in events if e['action']['kind']=='call')['result']['error']
+                    if name=='forged source':
+                        call=next(e for e in events if e['action']['kind']=='call')
+                        self.assertEqual((call['device_healthy'],error['reported_fault'],'source' in error),
+                                         (True,'host',False))
+                    else:
+                        self.assertEqual((error['fault'],error['code']),('model','malformed_result'))
+
     def test_only_the_package_that_was_frozen_is_accepted(self):
         import tempfile
         from pathlib import Path

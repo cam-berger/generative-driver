@@ -34,6 +34,25 @@ def run_call(session, invoke, request):
         session.set_running(False)
 
 
+def graded_result(session, result, event, *, healthy_device_failures):
+    """A call's result as the grader takes it. A call reported as a host fault, while grading a candidate's frozen
+    package (`healthy_device_failures`) on a device that still runs, answers its monitor and accepts a connection on the
+    driver's channel (`event['device_healthy']`), failed on a healthy device: the driver's failure, graded, with the
+    reported label kept as `reported_fault`. So is a frozen package that hung or exited without a result, since its
+    bundled runtime is the system's code. A package process that could not start, or was killed by a signal the grader
+    did not send (`source: package-process`, which only `package_invoker` writes), is the host's, and so is any host
+    fault while calibrating, where an outage must never pass for a mutant's rejection: RuntimeError, and nothing is
+    graded."""
+    error = result.get('error') if isinstance(result.get('error'), dict) else {}
+    if error.get('fault') != 'host':
+        return result
+    if healthy_device_failures and error.get('source') != 'package-process':
+        event['device_healthy'] = _device_healthy(session)
+    if not event.get('device_healthy'):
+        raise RuntimeError('Host execution failed; behavioral grading is unavailable')
+    return {**result, 'error': {**error, 'fault': 'model', 'reported_fault': 'host', 'classified': 'healthy-device'}}
+
+
 def _binding_failure(task, error):
     return {'ok': False, 'error': {'fault': 'model', 'code': 'capability_mapping',
                                  'task': task, 'message': str(error)},
@@ -49,7 +68,7 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
     are supplied by that measurement function's optional ``monitor_units`` map.
     With ``healthy_device_failures`` (grading a candidate's frozen package, never calibration), a call reported as a host
     fault on a device that is still healthy is graded as the driver's failure, unless its package process could not
-    start or was killed from outside.
+    start or was killed from outside (`graded_result`).
     """
     # Validate evaluator-owned witnesses before any device access. Candidate receive
     # completion and reject prefixes are diagnostic claims, not protocol truth.
@@ -79,21 +98,13 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
                                   {'operation': action['task'], 'parameters': inputs})
                 needs_settle = False
                 event['result'] = result
-                error = result.get('error', {})
-                if error.get('fault') == 'host':
-                    # The device was verified healthy before the episode and only this call touched it. If it still runs,
-                    # answers its monitor and accepts a connection, the call failed on a healthy device: the driver's
-                    # failure, graded. So is a frozen package that hung or exited without a result, since its bundled
-                    # runtime is the system's code. A package process that could not start, or was killed by a signal the
-                    # grader did not send, is the host's, and so is any host fault while calibrating, where an outage must
-                    # never pass for a mutant's rejection.
-                    if healthy_device_failures and error.get('source') != 'package-process':
-                        event['device_healthy'] = _device_healthy(session)
-                    if not event.get('device_healthy'):
-                        raw_events.append(event)
-                        raise RuntimeError('Host execution failed; behavioral grading is unavailable')
-                    result = event['result'] = {**result, 'error': {**error, 'fault': 'model', 'reported_fault': 'host',
-                                                                     'classified': 'healthy-device'}}
+                # The device was verified healthy before the episode and only this call touched it.
+                try:
+                    result = event['result'] = graded_result(session, result, event,
+                                                             healthy_device_failures=healthy_device_failures)
+                except RuntimeError:
+                    raw_events.append(event)
+                    raise
             elif kind == 'observe':
                 raw = session.observe()
                 event['raw'] = raw
@@ -150,7 +161,8 @@ def package_invoker(package, binding, grants):
     """Normal installed package CLI, isolated from the source checkout. A call that ends without a result is reported as
     a host fault, never raised: from `package` when the package outlasted the call limit or exited without a result
     (`execute_plan` may grade that as the driver's), from `package-process` when the process could not start or a signal
-    the grader did not send killed it."""
+    the grader did not send killed it. Only these failures carry a `source`: one the package prints itself is dropped,
+    so that a package cannot pass its own failure off as its process's."""
     import json
     import subprocess
     import sys
@@ -179,6 +191,9 @@ def package_invoker(package, binding, grants):
         except (ValueError, RecursionError):
             result = None
         if isinstance(result, dict):
+            error = result.get('error')
+            if isinstance(error, dict) and 'source' in error:
+                result = {**result, 'error': {key: value for key, value in error.items() if key != 'source'}}
             return result
         if completed.returncode < 0:
             # The grader's own kill, at the call limit, ends in TimeoutExpired above.
@@ -189,6 +204,9 @@ def package_invoker(package, binding, grants):
 
 
 def canonical_package_invoker(package, capabilities, binding):
+    """The package's calls by canonical task: a task the mapping cannot bind fails before the package runs, and a
+    result whose `outputs`, `units` or `error` is not an object is the driver's failure (`malformed_result`), never an
+    exception; outputs and units are renamed to the task's."""
     import json
     from pathlib import Path
     from .behavior import bind_task
@@ -199,6 +217,11 @@ def canonical_package_invoker(package, capabilities, binding):
         except ValueError as error:
             return _binding_failure(task, error)
         result = package_invoker(package, binding, grants)(**request)
+        if any(not isinstance(result.get(field, {}), dict) for field in ('outputs', 'units', 'error')):
+            # The package ran, so it may have reached the device: this is no refusal before contact.
+            return {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [], 'transport_open_attempted': True,
+                    'error': {'fault': 'model', 'code': 'malformed_result', 'task': task,
+                              'message': 'The package result has outputs, units or an error that is not an object'}}
         mappings = capabilities['tasks'][task]['outputs']
         return {**result,
             'outputs': {key: result.get('outputs', {}).get(mapping['output']) for key, mapping in mappings.items()},

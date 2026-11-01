@@ -3,11 +3,13 @@
 The closure is read from import statements, without importing anything: every module the grading entry modules and
 the registered families import, in function bodies too, and the parent packages below `generative_driver` whose
 `__init__.py` runs first. The top-level `generative_driver/__init__.py` is not part of it. Loads that are not import
-statements (`import_module`, `__import__`) are not followed; list such a module in ENTRY_MODULES. The identity covers
-this closure alone, so the system under test can change without voiding an admission; SYSTEM_MODULES names the
-modules the closure must never reach. It is one tuple for the system under test and for the reporting code that reads
-the results of runs and suites (outcomes, audit, pairing, scorecard, the suite report and the corpus): reporting
-grades nothing, so a grading module that imports any of it fails the boundary test instead of moving the identity.
+statements (`import_module`, `__import__`) are not followed; list such a module in ENTRY_MODULES. The entry modules
+import no registered family: they reach one through `registrations`, which loads it by name, so the walk seeds each
+family itself and a family's closure is the core's plus its own. The identity covers this closure alone, so the system
+under test can change without voiding an admission; SYSTEM_MODULES names the modules the closure must never reach. It
+is one tuple for the system under test and for the reporting code that reads the results of runs and suites (outcomes,
+audit, pairing, scorecard, the suite report and the corpus): reporting grades nothing, so a grading module that imports
+any of it fails the boundary test instead of moving the identity.
 """
 import ast
 import hashlib
@@ -85,11 +87,13 @@ def _targets(root, tree, package):
                     yield name
 
 
-def _walk(root):
+def _walk(root, families=None):
     """Everything the grader imports as {module name: sha256 of its source}; `interface_runtime` names map to None.
-    Each file is read once, so the hash is of the bytes that were parsed."""
-    pending = list(ENTRY_MODULES) + ['benchmark_support.' + case.native_module
-                                     for case in registrations._CASES if case.native_module]
+    Each file is read once, so the hash is of the bytes that were parsed. `families` names the native modules to seed
+    beside the entry modules, relative to `benchmark_support`: None seeds every registered one."""
+    if families is None:
+        families = [case.native_module for case in registrations._CASES if case.native_module]
+    pending = list(ENTRY_MODULES) + ['benchmark_support.' + name for name in families]
     found = {}
     while pending:
         name = pending.pop()
@@ -115,13 +119,14 @@ def _package_root(root):
     return Path(root) if root is not None else Path(__file__).resolve().parents[1]
 
 
-def grader_closure(root: Path | None = None) -> tuple[str, ...]:
+def grader_closure(root: Path | None = None, *, families: tuple[str, ...] | None = None) -> tuple[str, ...]:
     """Sorted names of every module the grader imports: the entry modules and registered families, then what each
-    imports. `root` is a generative_driver package directory, by default the installed one; the families are those the
-    installed `registrations._CASES` names, whatever `root` is. The standard library and other third-party imports end
-    the walk; `interface_runtime` modules are listed but not read. Raises ValueError when an entry or family module has
-    no source under `root`."""
-    return tuple(sorted(_walk(_package_root(root))))
+    imports. `root` is a generative_driver package directory, by default the installed one. `families` names the native
+    modules to seed (such as 'tq9_v2'): None seeds every one the installed `registrations._CASES` names, whatever `root`
+    is, a tuple only those, and () the entry modules alone. The standard library and other third-party imports end the
+    walk; `interface_runtime` modules are listed but not read. Raises ValueError when an entry or family module has no
+    source under `root`."""
+    return tuple(sorted(_walk(_package_root(root), families)))
 
 
 def grader_identity(root: Path | None = None) -> dict:

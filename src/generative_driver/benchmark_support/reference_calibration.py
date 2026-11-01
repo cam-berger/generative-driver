@@ -159,12 +159,12 @@ def calibrate(case_id, options):
     from ..benchmark import case_root
     from ..toolkit import resources_root
     definition=resolve_case(case_id)
-    from .registrations import registration_for
+    from .registrations import family_module, registration_for
     registration = registration_for(case_id)
     family_case = registration.calibration_kind == 'family'
     if family_case:
         from .calibration import (authoring_payload, hydrate_truth, apply_mutation,
-                                  validate_calibration, REQUIRED_MUTANTS, execution_input_identity)
+                                  validate_calibration, execution_input_identity)
         from .asset_build import build_family, inventory
         truth = hydrate_truth(authoring_payload(evaluator_directory(options['authoring_root'])))
     elif registration.calibration_kind == 'reference':
@@ -179,7 +179,7 @@ def calibrate(case_id, options):
     record={'schema':'benchmark-calibration/1','status':'pending','case':case_id,'evaluator_version':definition.evaluator_version,
         'execution':'reference-calibration','backend':'native-renode','images':definition.manifest['images'],
         'input_hashes':truth['input_hashes'] if family_case else input_hashes(truth),'evaluator_identity':identity,'native_process_observed':False,
-        'references':[],'mutants':[],'scenarios':{},'required_mutants':sorted(REQUIRED_MUTANTS[truth['family']] if family_case else set(CORE_MUTANTS)|set(truth['mutations']['required'])),
+        'references':[],'mutants':[],'scenarios':{},'required_mutants':sorted(family_module(truth['family']).REQUIRED_MUTANTS if family_case else set(CORE_MUTANTS)|set(truth['mutations']['required'])),
         'tools':{},'runs':[]}
     def save():_write(output/'calibration-record.json',record)
     save()
@@ -278,7 +278,8 @@ def calibrate(case_id, options):
                     'passed':all(passes),'runs':run_ids,'execution_inputs':execution_inputs})
                 save()
             mutants=truth['mutations']['mutants']
-            if {m['id'] for m in mutants}!=REQUIRED_MUTANTS[truth['family']] or len(mutants)!=len(REQUIRED_MUTANTS[truth['family']]):
+            required=family_module(truth['family']).REQUIRED_MUTANTS
+            if {m['id'] for m in mutants}!=required or len(mutants)!=len(required):
                 raise ValueError('Private required mutant inventory mismatch')
             for mutation in mutants:
                 reference=truth['references'][mutation['reference']]

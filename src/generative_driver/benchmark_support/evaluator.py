@@ -27,15 +27,19 @@ def method_for(case_id):
 
 def case_truth(case_id, run_dir, options):
     """The case truth, unlocked with the evaluator password file in `options`: the bench harness takes the device recipe
-    from it, and the evaluator grades with it. The manifest is the run's pinned snapshot when `run_dir` holds one."""
+    from it, and the evaluator grades with it. The manifest is the run's pinned snapshot when `run_dir` holds one. The
+    truth is hydrated as the case's registered `truth_schema` says; a truth whose registered schema is none, or one that
+    is hydrated nowhere here, is returned as unlocked."""
     from .case_assets import case_inputs, case_root
     from .emulator import truth_for_case
+    from .registrations import registration_for
     _, manifest = case_inputs(case_id, run_dir)
     truth = truth_for_case(case_root(), manifest, options)
-    if truth.get('schema') == 'benchmark-upstream-truth/1':
+    schema = registration_for(case_id).truth_schema
+    if schema == 'benchmark-upstream-truth/1':
         from .upstream import hydrate_truth
         return hydrate_truth(truth)
-    if case_id in ('sampled-sensor-v1', 'parameter-store-v1'):
+    if schema == 'benchmark-family-truth/1':
         from .calibration import hydrate_truth
         return hydrate_truth(truth)
     return truth

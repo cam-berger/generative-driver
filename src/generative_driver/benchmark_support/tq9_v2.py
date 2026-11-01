@@ -1,5 +1,9 @@
 """TQ9 behavior contracts and plans derived only from evaluator-owned truth."""
 
+REQUIRED_MUTANTS = frozenset({'wrong-scale', 'constant-output', 'wrong-state', 'unsigned-temperature',
+                              'wrong-temperature-scale', 'wrong-temperature-unit', 'wrong-temperature-byteorder',
+                              'wrong-crc', 'wrong-duty-effect'})
+
 
 def _scenario(pin, truth):
     scenarios = truth['contracts']['scenarios']

@@ -7,7 +7,7 @@ pins and reports retain their meaning.
 """
 from dataclasses import dataclass
 from importlib import import_module
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 
 
 @dataclass(frozen=True)
@@ -66,3 +66,15 @@ def native_family_for(case_id: str):
     if registration.native_module is None:
         raise ValueError('Unknown native family: ' + case_id)
     return import_module('.' + registration.native_module, __package__)
+
+
+def family_module(family: str) -> ModuleType:
+    """Load only the one native module that the registered cases of `family` name: tq9-v2 and tq9-v3 both name tq9_v2,
+    and the legacy tq9 names none. The shared grading core reaches a family here, by name, instead of importing it.
+    ValueError when the cases name no native module or several."""
+    names = sorted({case.native_module for case in _CASES if case.family == family and case.native_module})
+    if not names:
+        raise ValueError('No native module registered for family: ' + str(family))
+    if len(names) > 1:
+        raise ValueError('Several native modules registered for family ' + str(family) + ': ' + ', '.join(names))
+    return import_module('.' + names[0], __package__)

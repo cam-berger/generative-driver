@@ -33,7 +33,10 @@ def _check_contract(contract):
         seen.add(check['id'])
         if type(check.get('revision')) is not int or check['revision'] < 0 or check.get('kind') not in ('number', 'boolean', 'text'):
             raise ValueError('Invalid check definition')
-        if type(check.get('unit')) is not str or check.get('channel') not in ('independent-monitor', 'runtime-transcript'):
+        # The evidence of a check: an instrument reading, the driver's runtime result, or the evaluator's own read of a
+        # generated device's state in memory.
+        if (type(check.get('unit')) is not str
+                or check.get('channel') not in ('independent-monitor', 'runtime-transcript', 'device-state')):
             raise ValueError('Invalid check unit or channel')
         _check_rejection_evidence(check)
         kind = check['kind']

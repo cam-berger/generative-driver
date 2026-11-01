@@ -107,7 +107,9 @@ class RegistrationTableTests(unittest.TestCase):
                              calibration_kind='family'),
             CaseRegistration('zephyr-modbus-v1', 'zephyr-modbus', '1', 'emulator-v2', 'benchmark-case/2',
                              native_module='zephyr_modbus', truth_schema='benchmark-upstream-truth/1',
-                             build_kind='zephyr-modbus', calibration_kind='upstream')))
+                             build_kind='zephyr-modbus', calibration_kind='upstream'),
+            CaseRegistration('generated', 'generated', '1', 'emulator-v2', 'benchmark-case/2',
+                             native_module='generated', truth_schema='generated-answer-key/1', calibration_kind='set')))
 
     def test_a_duplicate_key_an_unknown_or_missing_field_or_a_duplicate_id_is_refused(self):
         from dataclasses import asdict

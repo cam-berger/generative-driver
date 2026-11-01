@@ -42,6 +42,17 @@ class NativeTests(unittest.TestCase):
             with self.subTest(command=command), self.assertRaises(ValueError):
                 render_stimuli(bad, {'sample': 1})
 
+    def test_an_invalid_state_cell_is_refused_before_any_read(self):
+        session = NativeSession.attach({'monitor_port': 1, 'binding': {'host': '127.0.0.1', 'port': 2}}, recipe())
+        for cells in ([], {'x': [0x20000000, 32]}, {'x': {'address': -4, 'width': 32}},
+                      {'x': {'address': 2 ** 32, 'width': 32}}, {'x': {'address': True, 'width': 8}},
+                      {'x': {'address': 0, 'width': 64}}, {'x': {'address': 0, 'width': 8.0}},
+                      {'x': {'address': 0, 'width': 8, 'signed': False}}):
+            with self.subTest(cells=cells), patch.object(session, '_monitor') as monitor:
+                with self.assertRaises(ValueError):
+                    session.read_state(cells)
+                monitor.assert_not_called()
+
     def test_recipe_rejects_sources_and_invalid_observation_sizes_before_io(self):
         for extra in ({'source_files': {'../secret.cs': 'text'}},
                       {'observations': {'x': {'command': 'read', 'width': True, 'count': 1}}},
@@ -105,6 +116,7 @@ class MonitorFixture:
                         break
                     reply = 'no value' if self.mode == 'incomplete' else str(self.value)
                     if self.mode == 'ansi': reply = '\x1b[32m' + reply + '\x1b[0m'
+                    if self.mode == 'rejected': reply = 'Error: no peripheral at that address'
                     conn.sendall((command + '\r\n' + reply + '\r\n(device) ').encode())
                     break
 
@@ -141,6 +153,23 @@ class MonitorTests(unittest.TestCase):
         with MonitorFixture('incomplete') as peer:
             with self.assertRaisesRegex(RuntimeError, 'Host fault'):
                 self.session(peer).observe()
+
+    def test_a_state_read_sends_one_read_per_cell_and_a_failed_read_gives_none(self):
+        # Catches a state read that raises, or that takes an error line, a value too wide for its cell, or an answer
+        # that is no value, as the cell's value: the evaluator leaves such a cell's step undecided instead.
+        cells = {'flag': {'address': 0x20000004, 'width': 8}, 'count': {'address': 0x20000008, 'width': 16},
+                 'mode': {'address': 0x20000000, 'width': 32}}
+        stimuli = {'value': {'minimum': 0, 'maximum': 1000, 'command': 'write {value}'}}
+        with MonitorFixture() as peer:
+            session = NativeSession.attach({'monitor_port': peer.port, 'monitor_timeout_seconds': .2,
+                                            'binding': {'host': '127.0.0.1', 'port': 2}}, {'stimuli': stimuli})
+            session.stimulate({'value': 300})
+            self.assertEqual(session.read_state(cells), {'flag': None, 'count': 300, 'mode': 300})
+            self.assertEqual(peer.commands, ['write 300', 'sysbus ReadByte 0x20000004', 'sysbus ReadWord 0x20000008',
+                                             'sysbus ReadDoubleWord 0x20000000'])
+        for mode in ('rejected', 'incomplete', 'timeout', 'closed'):
+            with self.subTest(mode=mode), MonitorFixture(mode) as peer:
+                self.assertEqual(self.session(peer).read_state(cells), dict.fromkeys(cells))
 
     def test_monitor_timeout_and_disconnect_are_host_failures(self):
         for mode in ('timeout', 'closed'):

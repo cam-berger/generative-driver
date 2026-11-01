@@ -96,6 +96,18 @@
       "truth_schema": "benchmark-upstream-truth/1",
       "build_kind": "zephyr-modbus",
       "calibration_kind": "upstream"
+    },
+    {
+      "id": "generated",
+      "family": "generated",
+      "version": "1",
+      "adapter_key": "emulator-v2",
+      "schema": "benchmark-case/2",
+      "native_module": "generated",
+      "mission_case": null,
+      "truth_schema": "generated-answer-key/1",
+      "build_kind": null,
+      "calibration_kind": "set"
     }
   ]
 }

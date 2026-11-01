@@ -331,6 +331,16 @@ class FamilyRoutingTests(unittest.TestCase):
                 self.assertIsInstance(declared, frozenset)
                 self.assertEqual(declared, mutants)
 
+    def test_every_registered_native_module_declares_its_required_mutants_as_a_frozenset(self):
+        # Catches a registered family without REQUIRED_MUTANTS, whose qualification record would read as malformed
+        # calibration evidence instead of naming the missing declaration.
+        for name in sorted({case.native_module for case in registrations._CASES if case.native_module}):
+            with self.subTest(name):
+                declared = getattr(importlib.import_module('generative_driver.benchmark_support.' + name),
+                                   'REQUIRED_MUTANTS', None)
+                self.assertIsInstance(declared, frozenset)
+                self.assertTrue(declared)
+
     def test_qualification_requires_the_mutants_the_family_declares(self):
         manifest = {'id': 'sampled-sensor-v1', 'family': 'sampled-sensor', 'evaluator_version': '1',
                     'images': {'firmware.bin': 'a' * 64}, 'calibration': {'input_hashes': {}}}

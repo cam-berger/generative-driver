@@ -59,8 +59,10 @@ def accept_frozen_package(package, expected_sha256):
 def reference_execute(pin, truth, capabilities, *, renode, image, output_dir, package, expected_package_sha256,
                       private_dir=None, healthy_device_failures=False):
     """Grade a frozen package's final phase on a fresh emulator it starts and stops, through the package's own bundled
-    runtime. The emulator session keeps its files (its log, the monitor commands it rendered) in `private_dir` when given.
-    Candidate models and reference emission run outside the grader (`reference_calibration.run_reference`)."""
+    runtime. A family with its own step executor (`execute`, the generated devices') runs it, every other family's plan
+    runs through `execute_plan`. The emulator session keeps its files (its log, the monitor commands it rendered) in
+    `private_dir` when given. Candidate models and reference emission run outside the grader
+    (`reference_calibration.run_reference`)."""
     if pin.get('scenario_id') != 'original':
         raise ValueError('Unknown case scenario')
     from .execution import start_session
@@ -87,9 +89,13 @@ def reference_execute(pin, truth, capabilities, *, renode, image, output_dir, pa
                                          for p in sorted(runtime_root.glob('*.py'))})
         local = {**truth, 'artifact_sha256': frozen}
         contract = family.contract(pin, local, 'final')
-        records = execute_plan(session, invoke, family.build_plan(pin, local, 'final'), contract,
-            output/'raw.json', family.observations, truth['contracts']['time_policy']['sample_settle_seconds'],
-            healthy_device_failures=healthy_device_failures)
+        if hasattr(family, 'execute'):
+            records = family.execute(session, invoke, contract, local, output/'raw.json',
+                                     healthy_device_failures=healthy_device_failures)
+        else:
+            records = execute_plan(session, invoke, family.build_plan(pin, local, 'final'), contract,
+                output/'raw.json', family.observations, truth['contracts']['time_policy']['sample_settle_seconds'],
+                healthy_device_failures=healthy_device_failures)
         if digest(package) != frozen:
             raise ValueError('Frozen package changed during final episode')
         result = {'execution': 'reference-calibration',

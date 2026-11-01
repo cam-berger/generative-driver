@@ -24,6 +24,10 @@ def _command(value, *, template=False):
     return value
 
 
+# The monitor's read of a state cell of each width.
+_STATE_READS = {8: 'ReadByte', 16: 'ReadWord', 32: 'ReadDoubleWord'}
+
+
 def _validate_recipe(recipe):
     if not isinstance(recipe, dict):
         raise ValueError('Recipe must be an object')
@@ -317,6 +321,32 @@ class NativeSession:
             reads.append({'name': name, 'command': command, 'response': response,
                           'value': value, 'time': time.time()})
         return {'values': values, 'reads': reads, 'time': time.time(), 'physical': False}
+
+    def read_state(self, cells):
+        """The device state in memory: {name: value} for `cells` ({name: {'address', 'width'}}), one monitor read of each
+        cell, `sysbus ReadByte`, `ReadWord` or `ReadDoubleWord` for a width of 8, 16 or 32. A read the monitor rejects,
+        that times out or loses its connection, or whose answer is not one unsigned value of the cell's width, gives
+        None, never an exception: the caller decides what an unread cell means. An invalid cell is a ValueError,
+        raised before any read."""
+        if not isinstance(cells, dict):
+            raise ValueError('State cells must be an object')
+        commands = {}
+        for name, cell in cells.items():
+            if (not isinstance(cell, dict) or set(cell) != {'address', 'width'} or type(cell['address']) is not int
+                    or not 0 <= cell['address'] <= 0xffffffff or type(cell['width']) is not int
+                    or cell['width'] not in _STATE_READS):
+                raise ValueError('Invalid state cell: ' + str(name))
+            commands[name] = 'sysbus %s 0x%08x' % (_STATE_READS[cell['width']], cell['address'])
+        state = {}
+        for name, command in commands.items():
+            try:
+                tail = _monitor_body(command, self._monitor(command)) or ''
+            except RuntimeError:
+                tail = ''
+            number = re.fullmatch(r'0x[0-9a-fA-F]+|[0-9]+', tail)
+            value = int(tail, 16 if tail.startswith('0x') else 10) if number else None
+            state[name] = value if value is not None and value < 2 ** cells[name]['width'] else None
+        return state
 
     def set_running(self, running):
         if type(running) is not bool:

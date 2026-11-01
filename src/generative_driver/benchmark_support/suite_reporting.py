@@ -238,13 +238,15 @@ def _validate_trials(manifest,trials,reports,experiment):
 
 def _outcome(trial,report,equivalent):
     """A planned trial of an assistive suite as its count holds it: not_run, equivalent (settled and qualified),
-    not_equivalent (a recorded grade, or no driver), unqualified (a claimed equivalent that is not counted), unscored (a
-    completed run awaiting or without its grade), stopped or running."""
+    not_equivalent (a recorded grade, or no driver), unknown (a recorded grade with no failed step and an undecided one),
+    unqualified (a claimed equivalent that is not counted), unscored (a completed run awaiting or without its grade),
+    stopped or running."""
     if not trial.get('run_id'):return 'not_run'
     if trial in equivalent:return 'equivalent'
     status=report.get('workflow_status',trial['status']);verdict=report.get('verdict')
     if status in ('blocked','failed','cancelled'):return 'stopped'
     if verdict=='not equivalent':return 'not_equivalent'
+    if verdict=='unknown':return 'unknown'
     if verdict in ('equivalent','unqualified'):return 'unqualified'
     return 'unscored' if status=='completed' else 'running'
 
@@ -257,7 +259,7 @@ def _outcomes(trials,reports,equivalent):
     """Each planned trial of an assistive suite in exactly one count (`_outcome`), stopped trials by their stop
     category; and the unscored trials, listed apart."""
     counts={'planned':len(trials),'started':0,'finished':0,'not_run':0,'equivalent':len(equivalent),'not_equivalent':0,
-            'no_driver':0,'unqualified':0,'unscored':0,'running':0,'stopped':{}}
+            'no_driver':0,'unknown':0,'unqualified':0,'unscored':0,'running':0,'stopped':{}}
     unscored=[]
     for trial in trials:
         counts['finished']+=trial['status']=='finished'
@@ -272,7 +274,7 @@ def _outcomes(trials,reports,equivalent):
         elif outcome=='not_equivalent':
             counts['not_equivalent']+=1
             counts['no_driver']+=(report.get('equivalence') or {}).get('status')=='no-driver'
-        elif outcome in ('unqualified','unscored','running'):
+        elif outcome in ('unknown','unqualified','unscored','running'):
             counts[outcome]+=1
         if outcome=='unscored':
             unscored.append({'trial_key':trial['trial_key'],'run_id':trial['run_id'],'equivalence_status':report.get('equivalence_status')})
@@ -618,8 +620,12 @@ def _summary(result):
             'stopped':', '.join(f'{count} {category}' for category,count in counts['stopped'].items())}
     failing={}
     for row in rows:
-        for diff in (row.get('equivalence') or {}).get('diff') or []:
-            if isinstance(diff,dict) and isinstance(diff.get('id'),str):failing[diff['id']]=failing.get(diff['id'],0)+1
+        grade=row.get('equivalence') or {}
+        # A check the evaluator could not decide (passed null) is named in `diff` with its reason, but it did not fail.
+        undecided={c.get('id') for c in grade.get('checks') or [] if isinstance(c,dict) and 'passed' in c and c['passed'] is None}
+        for diff in grade.get('diff') or []:
+            if isinstance(diff,dict) and isinstance(diff.get('id'),str) and diff['id'] not in undecided:
+                failing[diff['id']]=failing.get(diff['id'],0)+1
     common=sorted(failing.items(),key=lambda item:(-item[1],item[0]))[:5]
     unscored=', '.join(row['trial_key'] for row in result['unscored'])
     lines=[f"{pass_rate_line(result['pass_rate'])}. Protocol: {result['protocol']}, "

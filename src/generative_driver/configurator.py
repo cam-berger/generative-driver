@@ -662,8 +662,6 @@ def _evaluation_errors(record):
     """Why a posted evaluation is not a well-formed equivalence/1 record, or []."""
     sha = lambda value: value is None or isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None
     text = lambda value: isinstance(value, str) and 0 < len(value) <= 300
-    # A check's passed flag is true or false, or null for a check the evaluator could not decide, in an unknown grade alone.
-    passed_flag = lambda value: type(value) is bool or record['status'] == 'unknown' and value is None
     if not isinstance(record, dict) or set(record) != EVALUATION:
         return ['an equivalence/1 record has exactly the fields ' + ', '.join(sorted(EVALUATION))]
     errors = []
@@ -673,9 +671,15 @@ def _evaluation_errors(record):
                       + ' are required')
     checks, diff = record['checks'], record['diff']
     status, equivalent = record['status'], record['equivalent']
+    # A check's passed flag is true or false, or null for a check the evaluator could not decide. An unknown grade holds
+    # such checks beside passed ones, a driver graded not equivalent beside a failed one, and no other record holds one.
+    null_ok = status == 'unknown' or status == 'graded' and equivalent is False and isinstance(checks, list) and any(
+        isinstance(c, dict) and c.get('passed') is False for c in checks)
+    passed_flag = lambda value: type(value) is bool or value is None and null_ok
     if not isinstance(checks, list) or any(not isinstance(c, dict) or set(c) != {'id', 'passed'} or not text(c['id'])
                                            or not passed_flag(c['passed']) for c in checks):
-        errors.append('checks are [{id, passed}], with passed null only in an unknown grade')
+        errors.append('checks are [{id, passed}], with passed null only for an undecided check in an unknown grade or '
+                      'beside a failed one')
         checks = []
     if not isinstance(diff, list) or any(not isinstance(d, dict) or set(d) != {'id', 'reason'} or not text(d['id'])
                                          or not text(d['reason']) for d in diff):
@@ -684,7 +688,7 @@ def _evaluation_errors(record):
     if any(type(record[key]) is not int for key in ('passed', 'total')) or \
             (record['passed'], record['total']) != (sum(c['passed'] is True for c in checks), len(checks)):
         errors.append('passed and total count the checks')
-    undecided = {c['id'] for c in checks if c['passed'] is None}
+    undecided, named = {c['id'] for c in checks if c['passed'] is None}, {d['id'] for d in diff}
     if (status, type(equivalent)) not in (('graded', bool), ('no-driver', bool), ('unknown', type(None)),
                                           ('unscored', type(None))) or status == 'no-driver' and equivalent is not False:
         errors.append('status graded or no-driver with equivalent true or false, or unscored or unknown with equivalent null')
@@ -692,9 +696,10 @@ def _evaluation_errors(record):
         errors.append('an equivalent driver passed every check, with no difference')
     elif equivalent is not True and not diff:
         errors.append('a driver that is not judged equivalent names its differences')
-    elif status == 'unknown' and (not undecided or any(c['passed'] is False for c in checks)
-                                  or not undecided <= {d['id'] for d in diff}):
+    elif status == 'unknown' and (not undecided or any(c['passed'] is False for c in checks) or not undecided <= named):
         errors.append('an unknown grade has no failed check, at least one undecided check and a difference for each')
+    elif status == 'graded' and not undecided <= named:
+        errors.append('a graded driver has a difference for each undecided check')
     mission = record['mission']
     if mission is not None and (not isinstance(mission, dict) or not set(mission) <= {'name', 'passed', 'reason', 'fault'}
                                 or type(mission.get('passed')) not in (bool, type(None))

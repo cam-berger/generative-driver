@@ -355,8 +355,9 @@ def _generated_mission(mission, proved):
 def final_record(final, capabilities_sha256=None, mission=None, *, protocol: str):
     """The public equivalence/1 record of a final evaluation, graded from its contract and records: equivalent when every
     behavior check passed and not equivalent when one failed. A check the evaluator could not decide is undecided
-    (`passed` None); a record with no failed check and one undecided is `unknown`, with no verdict, and a failed check
-    outweighs an undecided one. Fresh reuse is reported beside that verdict, never inside it: the record's `mission` is
+    (`passed` None) and is named in `diff`. A failed check outweighs an undecided one, so the record is `graded` when
+    every check is decided or one failed, with the undecided checks kept; it is `unknown`, with no verdict, when none
+    failed and one is undecided. Fresh reuse is reported beside that verdict, never inside it: the record's `mission` is
     the fresh worker's, and passes only with the owner's proof when the final requires generated MCP reuse. Grading after
     the run and an offline regrade of the sealed evidence both build it here, and it names the `protocol` of the run they
     grade."""

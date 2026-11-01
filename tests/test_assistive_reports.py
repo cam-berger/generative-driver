@@ -316,6 +316,39 @@ class ScoreTests(AssistiveFixture):
         with self.assertRaisesRegex(ValueError, 'verdict identity'):
             self.score(claimed, unknown / 'run-evidence.enc')
 
+    def test_a_failed_check_beside_an_undecided_one_is_graded_not_equivalent_recorded_reported_and_regraded(self):
+        # Catches a grade with a failed check and an undecided one that the configurator refuses, so that the harness posts
+        # an unscored fault in its place and the trial awaits a grade it was given. A failed check outweighs the undecided
+        # one: the driver is graded not equivalent, the null check kept in the record and named in its difference.
+        trial, record = self.trial('failed-and-undecided', (0, Undecided('unreadable state')))
+        self.assertEqual(record['status'], 'evaluated')
+        graded = record['equivalence']
+        self.assertEqual((graded['status'], graded['equivalent'], [c['passed'] for c in graded['checks']],
+                          graded['passed'], graded['total']), ('graded', False, [False, None], 0, 2))
+        self.assertEqual(graded['diff'], [{'id': 'final/temperature-0/temperature', 'reason': 'value mismatch'},
+                                          {'id': 'final/effect-1/duty', 'reason': 'unreadable state'}])
+        result = self.controller.call('result', {'run_id': record['run_id']})
+        self.assertEqual((result['equivalence'], result['reason'], result['progress']['equivalence']),
+                         (graded, 'Final verdict: not equivalent: value mismatch; unreadable state', 'graded'))
+        report = self.report(record['run_id'], 'failed-and-undecided')
+        self.assertEqual((report['verdict'], report['equivalence_status'], report['equivalence']),
+                         ('not equivalent', 'graded', graded))
+        with patch('generative_driver.client.call', side_effect=AssertionError('service invoked')), \
+                patch('subprocess.Popen', side_effect=AssertionError('process invoked')):
+            scored = self.score(report, trial / 'run-evidence.enc')
+        self.assertEqual(scored, report)
+
+    def test_a_marker_that_is_no_reason_leaves_the_run_unscored_and_never_fails_the_driver(self):
+        # Catches an evaluator defect, an undecided record with an empty reason, graded as the driver's failure, which the
+        # sealed verdict would make permanent: it is a host fault, so the trial counts as one and its run awaits a grade.
+        trial, record = self.trial('defect', (EXPECTED, Undecided('')))
+        self.assertEqual(record['status'], 'unscored')
+        self.assertEqual((record['equivalence']['status'], record['equivalence']['equivalent']), ('unscored', None))
+        self.assertEqual(record['equivalence']['diff'], [{'id': 'evaluation', 'reason': 'evaluator host fault: ValueError'}])
+        result = self.controller.call('result', {'run_id': record['run_id']})
+        self.assertEqual((result['status'], result['equivalence'], result['progress']['equivalence']), ('completed', None, 'pending'))
+        self.assertEqual(self.report(record['run_id'], 'defect')['verdict'], 'unscored')
+
 
 class ProtocolSeparationTests(unittest.TestCase):
     """Reports and suite reports of different protocols are separate series: never scored as one another, never
@@ -569,9 +602,9 @@ class SuiteAggregateTests(unittest.TestCase):
         self.assertEqual(result['equivalence'], {'equivalent': 1, 'denominator': 9, 'rate': 1 / 9})
         counts = result['counts']
         self.assertEqual(counts, {'planned': 9, 'started': 8, 'finished': 3, 'not_run': 1, 'equivalent': 1,
-                                  'not_equivalent': 2, 'no_driver': 1, 'unqualified': 0, 'unscored': 2, 'running': 0,
-                                  'stopped': {'operator': 1, 'host': 1, 'cancelled': 1}})
-        self.assertEqual(counts['planned'], sum(counts[key] for key in ('not_run', 'equivalent', 'not_equivalent',
+                                  'not_equivalent': 2, 'no_driver': 1, 'unknown': 0, 'unqualified': 0, 'unscored': 2,
+                                  'running': 0, 'stopped': {'operator': 1, 'host': 1, 'cancelled': 1}})
+        self.assertEqual(counts['planned'], sum(counts[key] for key in ('not_run', 'equivalent', 'not_equivalent', 'unknown',
                          'unqualified', 'unscored', 'running')) + sum(counts['stopped'].values()))
         self.assertEqual(result['unscored'], [{'trial_key': 'entry-000-repeat-001', 'run_id': 'r3', 'equivalence_status': 'unscored'},
                                               {'trial_key': 'entry-001-repeat-001', 'run_id': 'r4', 'equivalence_status': 'pending'}])
@@ -678,7 +711,7 @@ class SuiteAggregateTests(unittest.TestCase):
         rows, counts = result['trials'], result['counts']
         self.assertEqual([row['outcome'] for row in rows], ['unqualified', 'not_equivalent', 'not_equivalent', 'unscored',
                                                            'unscored', 'stopped', 'stopped', 'stopped', 'not_run'])
-        for outcome in ('not_run', 'equivalent', 'not_equivalent', 'unqualified', 'unscored', 'running'):
+        for outcome in ('not_run', 'equivalent', 'not_equivalent', 'unknown', 'unqualified', 'unscored', 'running'):
             self.assertEqual(sum(row['outcome'] == outcome for row in rows), counts[outcome], outcome)
         self.assertEqual(sum(row['outcome'] == 'stopped' for row in rows), sum(counts['stopped'].values()))
         self.assertEqual(rows[0]['reason'], 'Not counted: the equivalent verdict is not a settled, qualified record')
@@ -1151,7 +1184,9 @@ class SuiteExportTests(AssistiveFixture):
 
     def test_an_unknown_child_settles_its_slot_and_is_counted_apart_from_passes_and_failures(self):
         # Catches a suite that blocks on a child whose grade is unknown, so that no later slot runs, and an export that counts
-        # that child as a pass, a failure or a fault, or leaves it out of the pass line's unknown count.
+        # that child as a pass, a failure, a fault or an unscored trial (its outcome, its count, the report's outcome line and
+        # its list of unscored trials), leaves it out of the pass line's unknown count or counts its undecided check as one
+        # that failed, and a saved report from before the unknown count that can no longer be read.
         from generative_driver.benchmark_support.suite_reporting import compare_suites, report_suite
         with self.harness(PASS, (EXPECTED, Undecided('unreadable state')), FAIL):
             record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
@@ -1170,10 +1205,54 @@ class SuiteExportTests(AssistiveFixture):
         self.assertEqual({key: result['pass_rate'][key] for key in ('passes', 'failures', 'unknown', 'faults', 'planned', 'rate')},
                          {'passes': 1, 'failures': 1, 'unknown': 1, 'faults': 0, 'planned': 3, 'rate': 1 / 2})
         self.assertEqual(result['equivalence'], {'equivalent': 1, 'denominator': 3, 'rate': 1 / 3})
+        # Its outcome is unknown, in a count of its own, and it is listed nowhere as unscored.
+        self.assertEqual([row['outcome'] for row in result['trials']], ['equivalent', 'unknown', 'not_equivalent'])
+        self.assertEqual({key: result['counts'][key] for key in ('equivalent', 'not_equivalent', 'unknown', 'unqualified',
+                                                                   'unscored', 'running', 'not_run', 'stopped')},
+                         {'equivalent': 1, 'not_equivalent': 1, 'unknown': 1, 'unqualified': 0, 'unscored': 0, 'running': 0,
+                          'not_run': 0, 'stopped': {}})
+        self.assertEqual(result['unscored'], [])
         text = (self.root / 'export/report.md').read_text()
         self.assertTrue(text.startswith('# Benchmark suite\n\n1/2 pass, 1 unknown, 0 faults, 3 planned. Protocol: assistive/1,'), text)
+        self.assertIn('Outcomes: 1 equivalent, 1 unknown, 1 not_equivalent.', text)
+        self.assertNotIn('nscored', text)
+        # Its undecided check did not fail: only the third trial's did.
+        self.assertIn('Most frequent failing checks: `final/effect-1/duty` (1).', text)
         saved = json.loads((self.root / 'export/suite.json').read_text())
         self.assertTrue(compare_suites(saved, saved)['compatible'])
+        # A saved report from before the unknown count has no such key, which reads as none.
+        older = copy.deepcopy(saved)
+        older['counts'].pop('unknown')
+        self.assertEqual(older['counts'].get('unknown', 0), 0)
+        self.assertTrue(compare_suites(older, older)['compatible'])
+        self.assertTrue(compare_suites(older, saved)['compatible'])
+
+    def test_a_failed_check_beside_an_undecided_one_scores_a_failure_and_its_suite_advances(self):
+        # Catches a driver with a failed check and an undecided one whose grade the configurator refuses, so that the harness
+        # posts an unscored fault in its place: the trial would count as a fault, leave the pass rate and block its suite. A
+        # failed check outweighs the undecided one: graded not equivalent, scored a failure, its suite settles the slot.
+        from generative_driver.benchmark_support.suite_reporting import report_suite
+        with self.harness(PASS, (0, Undecided('unreadable state')), PASS):
+            record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
+                                request_id='failed-and-undecided-child')
+        sid = record['suite_id']
+        status = self.controller.call('suite_status', {'suite_id': sid})
+        self.assertEqual((status['status'], status['planned'], status['completed'], status['equivalent']), ('completed', 3, 3, 2))
+        rows = self.controller.call('suite_result', {'suite_id': sid})['trials']
+        self.assertEqual([(row['status'], row['equivalence_status'], row['equivalent']) for row in rows],
+                         [('finished', 'graded', True), ('finished', 'graded', False), ('finished', 'graded', True)])
+        with self.owner():
+            result = report_suite(sid, home=self.home, output=self.root / 'export')
+        self.assertEqual([(row['scored'], row['outcome']) for row in result['trials']],
+                         [('pass', 'equivalent'), ('failure', 'not_equivalent'), ('pass', 'equivalent')])
+        graded = result['trials'][1]['equivalence']
+        self.assertEqual((graded['status'], graded['equivalent'], [c['passed'] for c in graded['checks']]), ('graded', False, [False, None]))
+        self.assertEqual(result['trials'][1]['reason'], 'Final verdict: not equivalent: value mismatch; unreadable state')
+        self.assertEqual({key: result['pass_rate'][key] for key in ('passes', 'failures', 'unknown', 'faults', 'planned', 'rate')},
+                         {'passes': 2, 'failures': 1, 'unknown': 0, 'faults': 0, 'planned': 3, 'rate': 2 / 3})
+        text = (self.root / 'export/report.md').read_text()
+        self.assertTrue(text.startswith('# Benchmark suite\n\n2/3 pass, 0 unknown, 0 faults, 3 planned. Protocol: assistive/1,'), text)
+        self.assertIn('Most frequent failing checks: `final/temperature-0/temperature` (1).', text)
 
     def test_an_assistive_suite_exports_its_equivalent_drivers_and_regrades_their_sealed_evidence(self):
         # Catches an exported assistive suite counted by gates, an unscored trial hidden or regraded, evidence that does

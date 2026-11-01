@@ -59,7 +59,10 @@ def _event_line(event):
     elif kind == 'run.revision':
         message = f"Repair {data.get('repairs', data.get('revision', 0))}: {data.get('reason', 'revision requested')}"
     elif kind == 'run.finalized':
-        message = f"Final verdict: {equivalence_label(data)} ({data.get('basis', 'unknown basis')})"
+        # The event holds no status. An evaluator's unscored grade never finalizes a run, so its grade with no verdict is an
+        # unknown one; a generic run's self-evidence with none is unscored.
+        grade = {**data, 'status': 'unknown'} if data.get('basis') == 'evaluator' and data.get('equivalent') is None else data
+        message = f"Final verdict: {equivalence_label(grade)} ({data.get('basis', 'unknown basis')})"
     elif kind.startswith('stage.') or kind == 'worker.finished':
         message = f"{stage}: {kind.replace('.', ' ')}"
     else:

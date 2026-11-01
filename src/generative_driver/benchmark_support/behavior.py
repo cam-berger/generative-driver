@@ -55,11 +55,16 @@ def _check_contract(contract):
 
 def _undecided(record):
     """The reason the evaluator left a check undecided (its device state could not be read, or its sequence did not start
-    from a verified reset), from the record it wrote for it; None for a record that decides the check. The reason is a
-    non-empty string of at most 300 characters, the limit of an equivalence/1 text field. It is published in the grade's
-    difference, so it names no expected value."""
-    reason = record.get('undecided')
-    return reason if type(reason) is str and 0 < len(reason) <= 300 else None
+    from a verified reset), from the record it wrote for it; None for a record that carries no `undecided`. The reason is
+    a non-empty string of at most 300 characters, the limit of an equivalence/1 text field, and is published in the grade's
+    difference, so it names no expected value. Anything else under the key, null included, only the evaluator can have
+    written: ValueError, as an invalid contract is, so that its defect is a host fault and never the driver's failure."""
+    if 'undecided' not in record:
+        return None
+    reason = record['undecided']
+    if type(reason) is not str or not 0 < len(reason) <= 300:
+        raise ValueError('Invalid evaluator undecided reason')
+    return reason
 
 
 def _record_reason(check, record, artifact):
@@ -76,7 +81,7 @@ def _record_reason(check, record, artifact):
     if record.get('channel') != check['channel']:
         return 'channel mismatch'
     if 'undecided' in record:
-        return None if _undecided(record) else 'invalid evidence'
+        return None
     value = record.get('value')
     if check['kind'] == 'number':
         try:
@@ -103,7 +108,8 @@ def _record_reason(check, record, artifact):
 def validate_records(contract: dict, records: list[dict]) -> dict:
     """Grade the evaluator's records against its contract. A check passes (True), fails (False) or, when its record says
     the evaluator could not decide it, is undecided (None, with the record's reason). The verdict is `failed` when any
-    check failed, else `unknown` when any is undecided, else `passed`; `passed` counts the checks that passed."""
+    check failed, else `unknown` when any is undecided, else `passed`; `passed` counts the checks that passed. A record
+    whose `undecided` is no reason raises ValueError, whichever check it is for."""
     _check_contract(contract)
     if type(records) is not list:
         records = []
@@ -113,6 +119,7 @@ def validate_records(contract: dict, records: list[dict]) -> dict:
         if type(record) is not dict or type(record.get('id')) is not str:
             extras.append({'id': None, 'passed': False, 'reason': 'invalid evidence'})
             continue
+        _undecided(record)
         by_id.setdefault(record['id'], []).append(record)
     results = []
     known = {check['id'] for check in contract['checks']}

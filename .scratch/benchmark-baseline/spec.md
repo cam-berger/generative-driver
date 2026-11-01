@@ -40,6 +40,15 @@ Build a scorecard and a strong baseline of today's main, then grow the benchmark
 - **Raw images at every level.** Renode cases give workers a raw `firmware.bin`, so stripping symbols would change nothing. My call: every level ships a raw image, and the knob becomes string visibility: command names appear as plain strings at easy levels and are encoded at hard ones.
 - **tq9-v2 should still unlock.** The 2026-10-29 study could not open an older tq9-v2 ciphertext, but the vault notes list a version-5 password and a 2026-10-23 unlock for tq9-v2, which is registered as version 5. Requalification confirms it; if it fails, the anchor uses tq9-v3, as that study did. My call.
 
+## Amended by the user on 2026-11-01
+
+- **Each family has its own grader identity.** Plan 1's final review asked the user to choose between this and freezing the registered families after the baseline, and the user chose per-family identity. A case's identity covers the shared grading code, its family's own modules and its own registration entry. It never covers another family or the list of registered cases. Adding or editing an unrelated case therefore keeps the scoring set's admission and its comparisons with a stored baseline.
+- **The Codex CLI version is not pinned yet** (amends decision 6). In the user's words: "this isn't at the point of research right now, we can update it, as long as it works." Trials use the CLI that `ChatGPT.app` ships, and every trial records the version it ran.
+- **The effect-label fix is [PR #24](https://github.com/cam-berger/generative-driver/pull/24)** (build step 1), with main merged in.
+- **Build steps 4 and 5 are plans 3 and 4.**
+  - Plan 3, [the generated-device grader](../../docs/superpowers/plans/2026-11-01-generated-grader.md), covers per-family identity, set registration, opening one device at a time, step grading with unknown grades, and set qualification.
+  - Plan 4 covers the bench harness and running trials on generated devices.
+
 ## Constraints
 
 - Develop through the benchmark run/score/compare seam: observe each behavior test fail, implement, then observe it pass ([AGENTS.md](../../AGENTS.md)).

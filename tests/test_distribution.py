@@ -18,7 +18,9 @@ class DistributionTests(unittest.TestCase):
                              "generative_driver/resources/bench/cases/setup-smoke/model.json",
                              "generative_driver/resources/client/skills/generative-driver/SKILL.md",
                              # Every import of the registrations reads it.
-                             "generative_driver/resources/registrations/cases.json"):
+                             "generative_driver/resources/registrations/cases.json",
+                             # Every load of a generated set that passes no table of its own reads it.
+                             "generative_driver/resources/registrations/sets.json"):
                 self.assertIn(resource, names)
 
     @unittest.skipUnless(os.environ.get("GD_TEST_SDIST"), "Set GD_TEST_SDIST for the source archive gate")

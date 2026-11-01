@@ -16,6 +16,7 @@ import generative_driver
 from generative_driver.benchmark_support import registrations, sampled_sensor
 from generative_driver.benchmark_support.calibration import hydrate_truth, inventory, validate_calibration
 from generative_driver.benchmark_support.evaluator import case_truth
+from generative_driver.benchmark_support.generated_sets import set_registrations
 from generative_driver.benchmark_support.grader_identity import (ENTRY_MODULES, SYSTEM_MODULES, grader_closure,
                                                                  grader_identity)
 from generative_driver.benchmark_support.snapshots import canonical_digest
@@ -193,6 +194,17 @@ class CaseIdentityTests(PackageCopy, unittest.TestCase):
                              'schema': 'benchmark-case/2', 'native_module': 'sampled_sensor'})
         self.touch(root / 'benchmark_support/sampled_sensor.py')
         self.assertEqual(grader_identity(root, case_id='tq9-v2')['sha256'], before)
+
+    def test_registering_a_generated_set_keeps_every_identity(self):
+        # Set registrations are data outside every identity (ADR 0003): a new set or leak-check batch voids no admission.
+        root = self.copy_package()
+        table = root / 'resources' / 'registrations' / 'sets.json'
+        self.assertTrue(table.is_file())  # the copy holds the shipped table, which this replaces
+        table.write_text(json.dumps({'schema': 'generated-set-registrations/1', 'sets': {'generated-scoring-v1': 'a' * 64}},
+                                    indent=2) + '\n', encoding='utf-8')
+        self.assertEqual(set_registrations(table), {'generated-scoring-v1': 'a' * 64})  # a genuine registration
+        self.assertEqual(grader_identity(root)['sha256'], grader_identity()['sha256'])
+        self.assertEqual(grader_identity(root, case_id='tq9-v2')['sha256'], grader_identity(case_id='tq9-v2')['sha256'])
 
     def test_a_case_identity_changes_with_its_family_the_core_or_its_own_entry(self):
         root = self.copy_package()

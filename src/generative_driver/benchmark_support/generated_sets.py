@@ -28,6 +28,9 @@ _REGISTRATIONS_SCHEMA = 'generated-set-registrations/1'
 _SETS_FILE = Path(__file__).resolve().parents[1] / 'resources' / 'registrations' / 'sets.json'
 _LEVELS = (1, 2, 3, 4, 5)
 _ID = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
+# Windows reads these names, with any extension, as devices: devices/nul.inputs.enc would be the NUL device, not a file.
+_WINDOWS_DEVICES = frozenset(['con', 'prn', 'aux', 'nul']
+                             + [name + str(number) for name in ('com', 'lpt') for number in range(1, 10)])
 _SHA256 = re.compile(r'[0-9a-f]{64}')
 _ENTRY_FIELDS = {'id', 'level', 'framing', 'image_sha256', 'mission_sha256', 'answer_key_sha256', 'inputs', 'answer'}
 
@@ -53,7 +56,8 @@ def _is_sha256(value):
 def set_registrations(path: Path | None = None) -> dict[str, str]:
     """Registered set name -> manifest SHA-256, from the table at `path`, by default the code-owned one. The table is
     `{"schema": "generated-set-registrations/1", "sets": {name: sha256}}`. ValueError for a duplicate key, another schema,
-    an unknown or missing field, or a pin that is not 64 lowercase hexadecimal characters."""
+    an unknown or missing field, or a pin that is not 64 lowercase hexadecimal characters; a table that cannot be read
+    raises OSError."""
     file = _SETS_FILE if path is None else Path(path)
     table = _read_json(file.read_bytes(), 'generated set registrations ' + str(file))
     if (not isinstance(table, dict) or set(table) != {'schema', 'sets'} or table['schema'] != _REGISTRATIONS_SCHEMA
@@ -85,6 +89,8 @@ def _check_identity(device):
     identity, level, framing = device.get('id'), device.get('level'), device.get('framing')
     if not isinstance(identity, str) or not _ID.fullmatch(identity):
         raise ValueError('Invalid device id: ' + repr(identity))
+    if identity in _WINDOWS_DEVICES:
+        raise ValueError('Invalid device id: ' + repr(identity) + ' is a reserved Windows device name')
     if type(level) is not int or level not in _LEVELS:  # a bool is not a level
         raise ValueError('Invalid level of device ' + identity + ': ' + repr(level))
     if framing not in FRAMINGS:
@@ -112,6 +118,8 @@ def _check_manifest(set_root, manifest, registration):
         raise ValueError('Unsupported generated set manifest')
     if manifest['set'] != registration:
         raise ValueError('The manifest names set ' + repr(manifest['set']) + ', not ' + repr(registration))
+    if not manifest['devices']:  # an empty set would qualify vacuously
+        raise ValueError('The manifest of set ' + repr(registration) + ' lists no device')
     for entry in manifest['devices']:
         _check_entry(set_root, entry)
     ids = [entry['id'] for entry in manifest['devices']]
@@ -122,7 +130,9 @@ def _check_manifest(set_root, manifest, registration):
 def seal_device(set_root: Path, device: dict, *, image: bytes, mission: dict, answer_key: dict, password: str) -> dict:
     """Seal one device under `set_root/devices/`, creating it: its public inputs `{"image_base64", "mission"}` and its
     answer key, each through `truth.seal`. `device` names the `id`, `level` (1 to 5) and `framing` (one of FRAMINGS).
-    Returns the device's manifest entry. ValueError before anything is written for an invalid device or content."""
+    Returns the device's manifest entry. Before anything is written: ValueError for an invalid device, an image that is
+    not bytes, a mission or answer key that is not an object, or an unusable password; and, from `canonical_digest`,
+    TypeError for content that JSON cannot carry (a set, bytes) and ValueError for NaN or text that cannot be encoded."""
     _check_identity(device)
     if not isinstance(image, bytes):
         raise ValueError('The image of a device is bytes')
@@ -155,8 +165,9 @@ def write_manifest(set_root: Path, registration: str, devices: list[dict]) -> st
 
 def load_set(set_root: Path, registration: str, *, registrations: dict | None = None) -> dict:
     """The manifest of set `registration` under `set_root`, with `manifest_sha256` added, once the SHA-256 of its bytes is
-    the one `registrations` pins (by default `set_registrations()`) and it is well formed: its schema and set name,
-    unique ids, valid levels and framings, and every path inside `set_root`. ValueError otherwise."""
+    the one `registrations` pins (by default `set_registrations()`) and it is well formed: its schema and set name, at
+    least one device, unique ids, valid levels and framings, and every path inside `set_root`. ValueError otherwise; a
+    manifest that cannot be read raises OSError."""
     pins = set_registrations() if registrations is None else registrations
     if registration not in pins:
         raise ValueError('Generated set not registered: ' + str(registration))

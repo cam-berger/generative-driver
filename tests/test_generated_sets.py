@@ -16,6 +16,9 @@ from generative_driver.benchmark_support.generated_sets import (FRAMINGS, load_s
 from generative_driver.benchmark_support.snapshots import canonical_digest
 
 SET = 'fixture-v1'
+# Windows reads these names, with any extension, as devices: devices/nul.inputs.enc is the NUL device, not a file.
+WINDOWS_DEVICES = ('con', 'prn', 'aux', 'nul') + tuple(
+    name + str(number) for name in ('com', 'lpt') for number in range(1, 10))
 
 
 class RegistrationTableTests(unittest.TestCase):
@@ -28,6 +31,7 @@ class RegistrationTableTests(unittest.TestCase):
         return path
 
     def test_the_shipped_table_registers_no_set_yet(self):
+        # A deliberate tripwire: the first real registration updates this test.
         shipped = Path(generated_sets.__file__).resolve().parents[1] / 'resources' / 'registrations' / 'sets.json'
         self.assertEqual(json.loads(shipped.read_text(encoding='utf-8')),
                          {'schema': 'generated-set-registrations/1', 'sets': {}})
@@ -155,16 +159,29 @@ class SetBundleTests(unittest.TestCase):
             ('an unknown file field', lambda m: device(m)['inputs'].update(note='x'), 'inputs file'),
             ('a file that is no object', lambda m: device(m).update(inputs='devices/d001.inputs.enc'), 'inputs file')])
 
+    def test_a_set_without_a_device_is_refused(self):
+        # It would qualify vacuously, whatever its mutants.
+        self.write()
+        self.assert_refused([('a manifest that lists no device', lambda m: m.update(devices=[]), 'lists no device')])
+        (self.root / 'manifest.json').unlink()
+        with self.assertRaisesRegex(ValueError, 'lists no device'):
+            write_manifest(self.root, SET, [])
+        self.assertFalse((self.root / 'manifest.json').exists())
+
     def test_a_device_id_a_level_and_a_framing_are_checked(self):
         self.write()
         self.assertEqual(FRAMINGS, ('text-lines', 'binary-frames', 'register-access'))
-        # The longest id, an id that starts with a digit, the highest level and each framing are accepted.
-        for changes in [{'id': 'a' * 64}, {'id': '0-z'}, {'level': 5}] + [{'framing': framing} for framing in FRAMINGS]:
+        # The longest id, an id that starts with a digit, the highest level and each framing are accepted, and so is an id
+        # that only contains or begins with the name of a Windows device.
+        accepted = [{'id': 'a' * 64}, {'id': '0-z'}, {'level': 5}] + [{'framing': framing} for framing in FRAMINGS]
+        accepted += [{'id': value} for value in ('console', 'com10', 'lpt10', 'nul-1', 'aux2')]
+        for changes in accepted:
             with self.subTest(changes):
                 load_set(self.root, SET, registrations=self.alter(lambda m: m['devices'][0].update(changes)))
         # A trailing newline does not make an id; a bool, a float and a string are no level.
         rows = ([('the id ' + repr(value), {'id': value}, 'device id')
                  for value in ('D001', 'd_001', 'd 001', '-d001', 'd001\n', '', 'a' * 65, '../d001', 7, None)]
+                + [('the Windows device ' + value, {'id': value}, 'reserved') for value in WINDOWS_DEVICES]
                 + [('the level ' + repr(value), {'level': value}, 'level') for value in (0, 6, -1, True, 1.0, '1', None)]
                 + [('the framing ' + repr(value), {'framing': value}, 'framing')
                    for value in ('morse', 'TEXT-LINES', '', None, ['text-lines'])])
@@ -186,8 +203,9 @@ class SetBundleTests(unittest.TestCase):
     def test_a_path_that_leaves_the_set_is_refused(self):
         self.write()
         paths = ['../d001.inputs.enc', '/etc/hosts', 'devices\\d001.inputs.enc', 'C:/Windows/win.ini', 'C:win.ini',
-                 'devices/../../d001.inputs.enc', './devices/d001.inputs.enc', 'devices//d001.inputs.enc', 'devices/', '',
-                 'devices/d001.inputs.enc\x00', 5, None]
+                 '//server/share/x', 'devices/d001.inputs.enc:stream', 'devices/../../d001.inputs.enc',
+                 './devices/d001.inputs.enc', 'devices//d001.inputs.enc', 'devices/', '', 'devices/d001.inputs.enc\x00',
+                 5, None]
         self.assert_refused([(name + ' ' + repr(path), lambda m, n=name, p=path: m['devices'][0][n].update(path=p), 'set path')
                              for path in paths for name in ('inputs', 'answer')])
 
@@ -228,6 +246,19 @@ class SetBundleTests(unittest.TestCase):
         manifest = load_set(self.root, SET, registrations=self.write())
         (self.root / 'devices' / 'd001.answer.enc').unlink()
         self.assertEqual(sorted(open_device(self.root, manifest, 'd001', PASSWORD)), ['image', 'mission'])
+
+    def test_a_file_that_cannot_be_read_is_an_os_error_not_a_refusal(self):
+        # ValueError says the bytes are wrong. OSError says they could not be read, as when a volume is not mounted, and
+        # the harness and the qualification treat that as a problem of the host.
+        registrations = self.write()
+        manifest = load_set(self.root, SET, registrations=registrations)
+        for name in ('devices/d001.answer.enc', 'devices/d002.inputs.enc', 'manifest.json'):
+            (self.root / name).unlink()
+        for name, read in (('the manifest', lambda: load_set(self.root, SET, registrations=registrations)),
+                           ('an answer file', lambda: open_device(self.root, manifest, 'd001', PASSWORD, answer=True)),
+                           ('an inputs file', lambda: open_device(self.root, manifest, 'd002', PASSWORD))):
+            with self.subTest(name), self.assertRaises(OSError):
+                read()
 
     def test_a_device_the_manifest_does_not_list_is_refused(self):
         manifest = load_set(self.root, SET, registrations=self.write())
@@ -292,6 +323,7 @@ class SetBundleTests(unittest.TestCase):
         content = {'image': FIXTURE_IMAGE, 'mission': {}, 'answer_key': {}, 'password': PASSWORD}
         rows = [('a path for an id', {**good, 'id': '../escape'}, {}, 'Invalid device id'),
                 ('an uppercase id', {**good, 'id': 'D001'}, {}, 'Invalid device id'),
+                ('the name of a Windows device', {**good, 'id': 'nul'}, {}, 'reserved'),
                 ('no id', {'level': 1, 'framing': 'text-lines'}, {}, 'Invalid device id'),
                 ('level 0', {**good, 'level': 0}, {}, 'level'), ('a bool level', {**good, 'level': True}, {}, 'level'),
                 ('level 6', {**good, 'level': 6}, {}, 'level'),
@@ -302,6 +334,15 @@ class SetBundleTests(unittest.TestCase):
             with self.subTest(name), self.assertRaisesRegex(ValueError, pattern):
                 seal_device(self.root, device, **{**content, **changes})
         self.assertEqual(list(self.root.rglob('*')), [])  # nothing was written
+
+    def test_content_that_json_cannot_carry_is_refused_before_anything_is_written(self):
+        good = {'id': 'd001', 'level': 1, 'framing': 'text-lines'}
+        content = {'image': FIXTURE_IMAGE, 'mission': {}, 'answer_key': {}, 'password': PASSWORD}
+        for name, changes in (('a set in the mission', {'mission': {'tasks': {1, 2}}}),
+                              ('a set in the answer key', {'answer_key': {'cells': {1, 2}}})):
+            with self.subTest(name), self.assertRaises(TypeError):
+                seal_device(self.root, good, **{**content, **changes})
+        self.assertEqual(list(self.root.rglob('*')), [])
 
     def test_the_manifest_is_written_with_a_trailing_newline_and_its_hash_returned(self):
         sha = write_fixture_set(self.root)

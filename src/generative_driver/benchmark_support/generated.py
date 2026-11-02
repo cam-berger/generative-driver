@@ -69,9 +69,13 @@ def _step(step, cells, where):
             _require(_named(name) and _finite(output['value']) and _finite(output['tolerance'])
                      and output['tolerance'] >= 0 and isinstance(output['unit'], str) and bool(output['unit']),
                      where + ' outputs are named values with a tolerance and a unit')
+    # A driver that forwards the request on a refusal step receives the device's refusal, which reads as a refusal only
+    # against the step's record of it.
+    _require(('refusal_rx_hex' in step) == (step['answer'] == 'refusal'),
+             where + ' has refusal_rx_hex exactly when its answer is a refusal')
     if 'refusal_rx_hex' in step:
-        _require(step['answer'] == 'refusal' and isinstance(step['refusal_rx_hex'], str)
-                 and _HEX.fullmatch(step['refusal_rx_hex']) is not None, where + ' refusal_rx_hex is a refusal in hex')
+        _require(isinstance(step['refusal_rx_hex'], str) and _HEX.fullmatch(step['refusal_rx_hex']) is not None,
+                 where + ' refusal_rx_hex is a refusal in hex')
     _state(step['state'], cells, where + ' state')
 
 
@@ -90,7 +94,9 @@ def answer_key(truth):
     - `sequences`: [{'id', 'steps'}]. A step is {'task', 'inputs', 'grants', 'answer' ('value', 'refusal' or
       'no_reply'), 'state'}, with `outputs` ({name: {'value', 'tolerance', 'unit'}}, the unit the public mission states
       and '1' for a dimensionless output) only on a value step, and `refusal_rx_hex` (the device's refusal in lowercase
-      hex) only on a refusal step.
+      hex) on every refusal step and no other, so that a driver that forwards the request and receives the device's
+      refusal answers a refusal. A timed-out exchange records none of the bytes it received, so a partial reply
+      followed by silence reads as no reply: a `no_reply` step cannot tell the two apart.
     - `references` a and b, and `mutants` [{'id', 'model', 'capabilities', 'expected_failed_checks'}], whose expected
       failures are checks of the key's own contract."""
     from .native import _validate_recipe
@@ -211,7 +217,8 @@ def classify_answer(result: dict, step: dict) -> str:
 
     A fault the package labels the host's is no evidence of trouble on the host, so it is an error: the evaluator's own
     health check alone tells the host's faults from the driver's (`emulated_actions.graded_result`), and a result it
-    found on a healthy device keeps the label as `reported_fault`."""
+    found on a healthy device keeps the label as `reported_fault`. A package process that could not start (`spawn`) is
+    the host's whatever the device: `graded_result` raises before such a result reaches this classification."""
     if result.get('ok') is True:
         return 'value'
     error = result.get('error') if isinstance(result.get('error'), dict) else {}
@@ -250,9 +257,9 @@ def execute(session, invoke, contract, truth, evidence_path, *, healthy_device_f
     undecided ('unreadable state'). Only these observations of the evaluator's leave a record undecided, never what the
     package returned. An output's record carries the unit the driver reported. A call reported as a host fault is
     graded as `execute_plan` grades it (`emulated_actions.graded_result`): the driver's error while grading a frozen
-    package (`healthy_device_failures`) on a device that is still healthy, otherwise RuntimeError, and nothing is
-    graded. A failed read is undecided only on a healthy device too. The raw evidence is written to `evidence_path` as
-    the steps run."""
+    package (`healthy_device_failures`) on a device that is still healthy, unless its package process could not start
+    (`spawn`); otherwise, and for `spawn` on any device, RuntimeError, and nothing is graded. A failed read is undecided
+    only on a healthy device too. The raw evidence is written to `evidence_path` as the steps run."""
     from .behavior import _check_contract
     from .case_assets import write_json
     from .emulated_actions import _device_healthy, graded_result, run_call

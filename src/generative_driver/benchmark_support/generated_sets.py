@@ -27,7 +27,7 @@ FRAMINGS = ('text-lines', 'binary-frames', 'register-access')
 QUALIFICATION_SCHEMA = 'generated-set-qualification/1'
 _QUALIFICATION_FILE = 'qualification.enc'
 _QUALIFICATION_FIELDS = {'schema', 'registration', 'manifest_sha256', 'grader_identity', 'status', 'devices', 'sample',
-                         'mutants', 'failures', 'seconds'}
+                         'mutants', 'failures', 'seconds', 'runs'}
 _MANIFEST_FILE = 'manifest.json'
 _MANIFEST_SCHEMA = 'generated-set-manifest/1'
 _REGISTRATIONS_SCHEMA = 'generated-set-registrations/1'

@@ -203,12 +203,13 @@ WRONG_STATE = _mutant(lambda operations, tasks: tasks['set_mode']['inputs'].upda
 
 
 def _step(task, inputs, answer, mode, *, output=None, refusal=None):
-    """A hidden step: the task call, the reference's answer and the mode the device holds afterwards."""
+    """A hidden step: the task call, the reference's answer and the mode the device holds afterwards, with the mode a
+    value step reports (`output`) and, on every refusal step, the bytes with which the device refuses (`refusal`)."""
     step = {'task': task, 'inputs': inputs, 'grants': ['write'] if task == 'set_mode' else [], 'answer': answer,
             'state': {'mode': mode}}
     if output is not None:
         step['outputs'] = {'mode': {'value': output, 'tolerance': 0, 'unit': MODE_UNIT}}
-    if refusal is not None:
+    if answer == 'refusal':
         step['refusal_rx_hex'] = refusal.hex()
     return step
 

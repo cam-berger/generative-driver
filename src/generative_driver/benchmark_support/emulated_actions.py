@@ -7,6 +7,13 @@ from .case_assets import write_json
 # after a 5 s connect and the process start. A package that outlasts this failed on its own, as one that exits without a
 # result does: grading on a healthy device counts that against the driver (`execute_plan`).
 PACKAGE_CALL_SECONDS = 300
+# How deep a package result may nest objects and arrays, the result itself being the first level. The runtime's own
+# results nest at most about 7 levels (a precondition read's transcript entries), and the evidence nests a result up to
+# 6 levels deeper (the raw evidence 3, the sealed draft and run evidence 5 to 6), far within the JSON reader's and
+# writer's reach on every supported Python.
+MAX_RESULT_DEPTH = 64
+# How much of a print that no runtime writes the evidence keeps, beside the whole print's length and SHA-256.
+PRINTED_PREFIX_CHARACTERS = 4096
 
 
 def _device_healthy(session):
@@ -59,10 +66,25 @@ def _binding_failure(task, error):
             'outputs': {}, 'units': {}, 'transcript': [], 'transport_open_attempted': False}
 
 
+def _deeper_than(value, levels):
+    """Whether `value` nests objects and arrays more than `levels` deep, `value` itself being the first level. It walks
+    the value without recursion, so no nesting can exhaust the stack."""
+    pending = [(value, 1)] if isinstance(value, (dict, list)) else []
+    while pending:
+        item, level = pending.pop()
+        if level > levels:
+            return True
+        pending.extend((child, level + 1) for child in (item.values() if isinstance(item, dict) else item)
+                       if isinstance(child, (dict, list)))
+    return False
+
+
 def _malformation(result):
     """What makes a package's parsed result one that no runtime writes, or None: `outputs`, `units` or `error` that is
-    not an object, a `transcript` that is not a list of objects, or a value the evidence cannot record as `write_json`
-    writes it, such as a number that is not finite or nesting deeper than the JSON writer reaches."""
+    not an object, a `transcript` that is not a list of objects, objects or arrays nested more than MAX_RESULT_DEPTH
+    levels deep, or a value `write_json` cannot write, such as a number that is not finite. A trial write of the result
+    shows nothing about the evidence, which nests the result deeper; the cap keeps every write of the evidence within
+    the JSON writer's reach on every Python."""
     import json
     fields = [field for field in ('outputs', 'units', 'error') if not isinstance(result.get(field, {}), dict)]
     transcript = result.get('transcript', [])
@@ -70,20 +92,25 @@ def _malformation(result):
         fields.append('transcript')
     if fields:
         return 'a malformed ' + ', '.join(fields)
+    if _deeper_than(result, MAX_RESULT_DEPTH):
+        return 'objects or arrays nested more than %d levels deep' % MAX_RESULT_DEPTH
     try:
         json.dumps(result, indent=2, allow_nan=False)
-    except (ValueError, RecursionError) as error:
+    except ValueError as error:
         return 'a value the evidence cannot record: ' + str(error)[:200]
     return None
 
 
 def _malformed_result(printed, defect):
-    """The driver's failure for a package result that no runtime writes, keeping the print as the package wrote it as
-    `printed` for the evidence. The package ran and may have reached the device, so this is never a refusal before
-    contact."""
+    """The driver's failure for a package result that no runtime writes. The evidence keeps the print as `printed`:
+    its first PRINTED_PREFIX_CHARACTERS characters (`prefix`), its length in characters (`characters`) and the SHA-256
+    of its UTF-8 text as the grader read it (`sha256`). The package ran and may have reached the device, so this is
+    never a refusal before contact."""
+    import hashlib
     return {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [], 'transport_open_attempted': True,
             'error': {'fault': 'model', 'code': 'malformed_result', 'message': 'The package result has ' + defect},
-            'printed': printed}
+            'printed': {'prefix': printed[:PRINTED_PREFIX_CHARACTERS], 'characters': len(printed),
+                        'sha256': hashlib.sha256(printed.encode('utf-8')).hexdigest()}}
 
 
 def execute_plan(session, invoke, plan, contract, evidence_path, observations, settle_seconds=0, *,
@@ -190,9 +217,9 @@ def package_invoker(package, binding, grants):
     from `package-process` when the process could not start (`spawn`) or a signal the grader did not send killed it
     (`signal`); `execute_plan` may grade all but `spawn` as the driver's. Only these failures carry a `source`: one the
     package prints itself is dropped, so that a package cannot print its way to that label. A printed object that no
-    runtime writes (`_malformation`: a field of the wrong type, or a value the evidence cannot record, such as a number
-    that is not finite or nesting too deep), which the honest CLI never prints, is the driver's `malformed_result`,
-    keeping the print as the package wrote it."""
+    runtime writes (`_malformation`: a field of the wrong type, objects or arrays nested more than MAX_RESULT_DEPTH
+    levels deep, or a number that is not finite), which the honest CLI never prints, is the driver's `malformed_result`,
+    keeping the start of the print with its length and SHA-256 (`_malformed_result`)."""
     import json
     import subprocess
     import sys

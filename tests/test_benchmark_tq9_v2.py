@@ -1601,7 +1601,8 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_a_printed_number_that_is_not_finite_is_the_drivers_malformed_result(self):
         # Catches a package that prints NaN, an infinity or a float too large to hold, which the evidence cannot record:
-        # writing it raised, and the trial was left without a grade. The evidence keeps the print as written.
+        # writing it raised, and the trial was left without a grade. The evidence keeps the start of the print, its length
+        # and its SHA-256.
         import subprocess
         from unittest.mock import patch
         from generative_driver.benchmark_support.emulated_actions import package_invoker
@@ -1612,7 +1613,8 @@ class TQ9V2Tests(unittest.TestCase):
                     patch('subprocess.run', return_value=subprocess.CompletedProcess(['driver'], 0, printed, '')):
                 result = call('read', {})
             self.assertEqual((result['ok'], result['error']['fault'], result['error']['code'], result['printed']),
-                             (False, 'model', 'malformed_result', printed))
+                             (False, 'model', 'malformed_result', {'prefix': printed, 'characters': len(printed),
+                              'sha256': hashlib.sha256(printed.encode('utf-8')).hexdigest()}))
             json.dumps(result, indent=2, allow_nan=False)  # the evidence can record it
 
     def test_fresh_reuse_acknowledgements_do_not_substitute_for_a_reading(self):

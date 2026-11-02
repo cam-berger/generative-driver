@@ -7,6 +7,7 @@ import copy
 import hashlib
 import io
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -64,6 +65,9 @@ class QualifiedSetTests(Workspace, unittest.TestCase):
         directory = tempfile.TemporaryDirectory(); cls.addClassCleanup(directory.cleanup)
         cls.root, cls.out = Path(directory.name) / 'set', Path(directory.name) / 'qualification'
         cls.root.mkdir()
+        # The output exists already, empty, in a mode that lets others read it.
+        cls.out.mkdir()
+        cls.out.chmod(0o755)
         cls.registered = {SET: write_fixture_set(cls.root)}
         cls.before = files(cls.root)
         cls.record = run_qualify(cls.root, cls.registered, cls.out)
@@ -111,6 +115,22 @@ class QualifiedSetTests(Workspace, unittest.TestCase):
         # Each device's decrypted image was removed after its runs.
         images = [path for path in self.out.rglob('*') if path.is_file() and path.read_bytes() == FIXTURE_IMAGE]
         self.assertEqual(images, [])
+
+    def test_each_run_records_its_backend_and_whether_a_native_emulator_process_ran(self):
+        # Catches a record made on test fixtures that reads like one made under Renode: every run here was graded on an
+        # attached fixture session, so no native emulator process was observed.
+        self.assertEqual(self.record['runs'], {run: {'backend': 'native-renode', 'native_process_observed': False}
+                                               for run in self.record['seconds']})
+
+    def test_the_output_and_the_run_directories_in_it_are_private(self):
+        # Catches the reference drivers and hidden checks left readable by other users: an existing empty output kept
+        # its mode, and runs/, native/ and each device's directory in them took the default one.
+        made = ('d001', 'd002', *self.record['seconds'])  # each device's directory, then each run's
+        directories = ['.', 'runs', 'native', *(top + '/' + name for top in ('runs', 'native') for name in made)]
+        self.assertTrue(all((self.out / name).is_dir() for name in directories))
+        if os.name == 'posix':
+            self.assertEqual({name: (self.out / name).stat().st_mode & 0o777 for name in directories},
+                             dict.fromkeys(directories, 0o700))
 
     def test_admission_needs_the_registered_manifest_and_the_current_family_identity(self):
         current = grader_identity(case_id='generated')
@@ -225,6 +245,9 @@ class PendingSetTests(Workspace, unittest.TestCase):
         self.assertEqual(invalid, {'device': 'd001', 'id': 'invalid-model', 'rejected': False, 'failed_checks': []})
         self.assertEqual(list(record['seconds']), ['d001/reference-a', 'd001/reference-b', 'd001/mutant-offset-two',
                                                    'd001/mutant-invalid-model'])
+        # A run that raised left no result to say how it ran.
+        self.assertEqual((list(record['runs']), record['runs']['d001/mutant-invalid-model']),
+                         (list(record['seconds']), {'backend': None, 'native_process_observed': None}))
 
     def test_a_device_short_of_the_required_mutants_or_of_two_distinct_references_leaves_the_set_pending(self):
         # d001 and d002, the sample of (level 1, text lines), list no mutant, and d001's reference b is a copy of a.
@@ -242,8 +265,9 @@ class PendingSetTests(Workspace, unittest.TestCase):
                          ([], [device + '/reference-' + name for device in ('d001', 'd002', 'd003') for name in 'ab']))
 
     def test_a_grader_change_while_the_set_qualifies_leaves_it_pending(self):
-        # The grader's modules load as the runs need them: a change that lands during the runs and is undone before
-        # they end would otherwise seal a passed record under an identity that graded only part of them.
+        # The grader's modules load as the runs need them, so a change that lands during the runs can grade the later
+        # runs with code the identity stamped at the start does not describe; that identity must still be the grader's
+        # at the end. Only the two ends are compared, so a change undone before the end goes unseen.
         identity = grader_identity(case_id='generated')
         root, out = self.workspace()
         registered = write_set(root, {'d001': FIXTURE_ANSWER_KEY})
@@ -321,6 +345,27 @@ class PendingSetTests(Workspace, unittest.TestCase):
                 qualify(malformed, SET, PASSWORD, renode=Path('/toy'), output_dir=out, registrations=registered)
             start.assert_not_called()
             self.assertFalse((malformed / 'qualification.enc').exists())
+
+    def test_nothing_runs_or_is_sealed_for_a_set_inside_the_repository_or_a_workers_directory(self):
+        # Catches a set root that qualification never placed, though the sealed record is written into it: the root is
+        # held to the output's placement, outside the repository, the installed package and known candidate roots, such
+        # as a worker's work directory, which holds `_report_schema.json`.
+        base, out = self.workspace()
+        work = base.with_name('work')
+        work.mkdir()
+        (work / '_report_schema.json').write_text('{}', encoding='utf-8')
+        in_work = work / 'set'
+        in_work.mkdir()
+        registered = write_set(in_work, {'d001': FIXTURE_ANSWER_KEY})
+        in_package = Path(generative_driver.__file__).resolve().parent / 'generated-set'
+        for name, root in (('a worker\'s directory', in_work), ('the installed package', in_package)):
+            with self.subTest(name), patch(START) as start:
+                with self.assertRaisesRegex(ValueError, 'set must lie outside the repository'):
+                    qualify(root, SET, PASSWORD, renode=Path('/toy'), output_dir=out, registrations=registered)
+                start.assert_not_called()
+        self.assertFalse((in_work / 'qualification.enc').exists())
+        self.assertFalse(in_package.exists())
+        self.assertFalse(out.exists())
 
 
 class CommandTests(Workspace, unittest.TestCase):

@@ -229,7 +229,8 @@ class ParameterStoreOracleTests(unittest.TestCase):
     def test_a_printed_transcript_that_is_no_list_of_objects_fails_the_rejection_instead_of_stopping_the_grade(self):
         # Catches a package that prints a malformed transcript: the rejection check read its last entry and raised, so
         # the trial was left without a grade. The evaluator's invoker now makes it the driver's failure, and the
-        # evidence keeps the print as the package wrote it. Only the package process is scripted.
+        # evidence keeps the start of the print, its length and its SHA-256. Only the package process is scripted.
+        import hashlib
         import json
         import subprocess
         from unittest.mock import patch
@@ -263,8 +264,10 @@ class ParameterStoreOracleTests(unittest.TestCase):
                     self.assertEqual(validate_records(contract, rows)['verdict'], 'failed')
                     events = json.loads((Path(temp)/'evidence.json').read_text(encoding='utf-8'))['events']
                     result = next(e for e in events if e['action']['kind'] == 'call')['result']
+                    text = json.dumps(printed)
                     self.assertEqual((result['error']['code'], result['printed']),
-                                     ('malformed_result', json.dumps(printed)))
+                                     ('malformed_result', {'prefix': text, 'characters': len(text),
+                                                           'sha256': hashlib.sha256(text.encode('utf-8')).hexdigest()}))
 
     def test_commit_changes_one_cell_and_generation_once(self):
         initial = [4, 5, 6, 7, 8, 9, 10, 11]

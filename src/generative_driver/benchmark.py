@@ -149,7 +149,8 @@ def main(argv=None):
     qualifying = set_actions.add_parser('qualify', help='Qualify a registered generated set once: both references on '
                                         'every device and the mutants on a sample; seal the record beside the set')
     qualifying.add_argument('--set', required=True, help='The set\'s registered name')
-    qualifying.add_argument('--root', required=True, help='The set\'s directory')
+    qualifying.add_argument('--root', required=True, help='The set\'s directory, outside the repository; it receives '
+                            'the sealed record')
     qualifying.add_argument('--password-file', required=True, help='The set\'s password; read once, never printed')
     qualifying.add_argument('--renode', required=True)
     qualifying.add_argument('--output', required=True, help='A new or empty evaluator-private directory outside the '

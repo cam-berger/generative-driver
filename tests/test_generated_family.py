@@ -2,6 +2,7 @@
 hand-written fixture device, never generator output, then graded by the evaluator's reference_execute on a fresh fixture
 device through its Renode-like monitor."""
 import copy
+import hashlib
 import json
 import signal
 import tempfile
@@ -185,15 +186,24 @@ class StepGradingTests(unittest.TestCase):
     def test_a_forged_process_label_or_a_malformed_result_is_the_drivers_error(self):
         # Catches a package that escapes its grade by printing the label only the grader writes for a process that could
         # not start, and one whose malformed result made the grader raise, or left its evidence unwritable, instead of
-        # grading it. The evidence keeps the print as the package wrote it.
+        # grading it. The evidence keeps the first 4096 characters of the print, its length and its SHA-256, however
+        # long the print.
+        from generative_driver.benchmark_support.emulated_actions import MAX_RESULT_DEPTH
+        # One level beyond the cap: the result is the first level, its outputs the second, and arrays fill the rest.
+        too_deep = []
+        for _ in range(MAX_RESULT_DEPTH - 2):
+            too_deep = [too_deep]
         for name, printed in (('forged source', FORGED_SOURCE),
                               ('outputs', {'ok': True, 'outputs': 'two', 'units': {}, 'transcript': []}),
+                              ('a long print', {'ok': True, 'outputs': 'two' * 2000, 'units': {}, 'transcript': []}),
                               ('units', {'ok': True, 'outputs': {'mode': 2}, 'units': ['1'], 'transcript': []}),
                               ('error', {'ok': False, 'error': 'refused', 'transcript': []}),
                               ('transcript', {'ok': False, 'error': {'fault': 'model'}, 'transcript': 'none'}),
                               ('transcript entry', {'ok': False, 'error': {'fault': 'model'}, 'transcript': ['ERR']}),
                               ('not finite', {'ok': True, 'outputs': {'mode': float('nan')}, 'units': {'mode': '1'},
-                                              'transcript': []})):
+                                              'transcript': []}),
+                              ('nested beyond the cap', {'ok': True, 'outputs': {'mode': too_deep},
+                                                         'units': {'mode': '1'}, 'transcript': []})):
             with self.subTest(name):
                 graded = self.grade(REFERENCE_A, edit=lambda package: add_to_bundled_runtime(package, prints(printed)),
                                     healthy_device_failures=True)['grade']
@@ -205,8 +215,12 @@ class StepGradingTests(unittest.TestCase):
                     self.assertEqual((calls[0]['device_healthy'], 'source' in calls[0]['result']['error']),
                                      (True, False))
                 else:
+                    text = json.dumps(printed)
                     self.assertEqual((calls[0]['result']['error']['code'], calls[0]['result']['printed']),
-                                     ('malformed_result', json.dumps(printed)))
+                                     ('malformed_result', {'prefix': text[:4096], 'characters': len(text),
+                                                           'sha256': hashlib.sha256(text.encode('utf-8')).hexdigest()}))
+                    if name == 'a long print':
+                        self.assertGreater(len(text), 4096)
 
     @unittest.skipUnless(hasattr(signal, 'SIGKILL'), 'a process sends itself SIGKILL on POSIX only')
     def test_a_package_that_kills_itself_on_a_healthy_device_is_the_drivers_error(self):
@@ -390,6 +404,9 @@ class AnswerKeyTests(unittest.TestCase):
             'outputs on a refusal':
                 lambda key: step(key).update(outputs={'mode': {'value': 2, 'tolerance': 0, 'unit': MODE_UNIT}}),
             'a refusal witness on a value': lambda key: step(key, 1).update(refusal_rx_hex='00'),
+            # A driver that forwards the request on a refusal step receives the device's refusal; without the step's
+            # record of it, that correct answer reads as an error.
+            'a refusal without its witness': lambda key: step(key).pop('refusal_rx_hex'),
             'a witness that is no hex': lambda key: step(key).update(refusal_rx_hex='ERR'),
             'a negative tolerance': lambda key: step(key, 1)['outputs']['mode'].update(tolerance=-1),
             'an output without a unit': lambda key: step(key, 1)['outputs']['mode'].pop('unit'),

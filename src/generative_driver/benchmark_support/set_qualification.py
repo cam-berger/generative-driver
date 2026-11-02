@@ -35,21 +35,28 @@ def sample(devices: list[dict]) -> list[str]:
     return sorted(identity for ids in groups.values() for identity in ids[:2])
 
 
+def _private(directory, *, exist_ok=False):
+    """Make `directory` readable by its owner only, whatever the umask. Without `exist_ok`, one already there raises."""
+    directory.mkdir(mode=0o700, exist_ok=exist_ok)
+    directory.chmod(0o700)
+
+
 def _run(key, candidate, run, *, renode, image, output):
-    """(grade, None) of one run of the candidate {'model', 'capabilities'} on the device whose answer key is `key`:
-    the evaluator's grade of the package emitted from it. (None, error) when the run raised. The run's evidence is
-    kept in `output/runs/<run>`, and its two emulator sessions' files in `output/native/<run>/session` (grading) and
-    `session-emission`."""
+    """(result, None) of one run of the candidate {'model', 'capabilities'} on the device whose answer key is `key`:
+    the evaluator's result for the package emitted from it (`evaluator.reference_execute`), with its grade. (None,
+    error) when the run raised. The run's evidence is kept in `output/runs/<run>`, and its two emulator sessions' files
+    in `output/native/<run>/session` (grading) and `session-emission`."""
     from .reference_calibration import calibration_run
     try:
         evidence, sessions = output / 'runs' / run, output / 'native' / run
-        # Made here, never found: a run whose name meets another's, as ids that differ only in case do on a file system
-        # that ignores case, fails instead of sharing that run's files.
         for directory in (evidence, sessions):
-            directory.mkdir(parents=True, mode=0o700)
+            _private(directory.parent, exist_ok=True)  # the device's directory
+            # Made here, never found: a run whose name meets another's, as ids that differ only in case do on a file
+            # system that ignores case, fails instead of sharing that run's files.
+            _private(directory)
         result = calibration_run(PIN, key, candidate['model'], candidate['capabilities'], renode=renode, image=image,
                                  output_dir=evidence, private_dir=sessions / 'session', phase='final')
-        return result['grade'], None
+        return result, None
     except _RUN_ERRORS as error:
         return None, error
 
@@ -67,12 +74,17 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
     """Qualify the set `registration` under `set_root` once and return its record (`generated-set-qualification/1`):
     {schema, registration, manifest_sha256, grader_identity (the generated family's, whole), status 'passed' or
     'pending', devices {id: {'a': bool, 'b': bool}}, sample [ids], mutants [{device, id, rejected, failed_checks}],
-    failures [str], seconds {run: float}}. It is sealed with `password` beside the manifest
+    failures [str], seconds {run: float}, runs {run: {'backend', 'native_process_observed'}}}. `runs` holds the
+    evaluator's own account of each run: the backend the device's recipe names, and whether the grading session's own
+    emulator process was still running when grading ended, False for an attached session such as a test fixture's. A
+    run that raised has None for both. The record is sealed with `password` beside the manifest
     (`generated_sets.seal_qualification`), and a plaintext copy is written to `output_dir/qualification.json`.
 
-    Nothing runs before these checks: `output_dir` is new or empty and outside the repository; `load_set` accepts the
-    manifest that `registrations` (by default `set_registrations()`) pins; and every device opens with `password` and
-    holds a valid answer key. A failed check raises, and nothing is sealed, so a wrong password never replaces a record.
+    Nothing runs before these checks: `set_root`, which receives the sealed record, and `output_dir` both lie outside
+    the repository, the installed package and known candidate roots (`authoring.evaluator_directory`); `output_dir` is
+    new or empty; `load_set` accepts the manifest that `registrations` (by default `set_registrations()`) pins; and
+    every device opens with `password` and holds a valid answer key. A failed check raises, and nothing is sealed, so a
+    wrong password never replaces a record.
 
     Then, device by device in id order, references `a` and `b` run, then every mutant on a sampled device (`sample`).
     A reference passes with the verdict `passed`. A mutant is rejected when its verdict is `failed` and its
@@ -88,26 +100,35 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
     The set is pending too, with `grader identity changed during qualification`, when the generated family's grader
     identity at the end is not the one stamped at the start: the grading modules load as the runs need them.
 
-    A run is named `<device>/reference-<a|b>` or `<device>/mutant-<id>`: its seconds go under that name, its evidence
-    in `output_dir/runs/<name>` and its emulator sessions' files in `output_dir/native/<name>`. The output holds the
-    reference drivers and the hidden checks, so keep it with the answer vault. Each device's decrypted image lies in a
-    private directory under `output_dir` (`image-*`) during its runs only."""
+    A run is named `<device>/reference-<a|b>` or `<device>/mutant-<id>`: its seconds and its execution go under that
+    name, its evidence in `output_dir/runs/<name>` and its emulator sessions' files in `output_dir/native/<name>`. The
+    output holds the reference drivers and the hidden checks, so keep it with the answer vault: the output, `runs`,
+    `native` and each device's and run's directory in them are made readable by their owner only. Each device's
+    decrypted image lies in a private directory under `output_dir` (`image-*`) during its runs only."""
     from .authoring import evaluator_directory
     from .case_assets import write_json
+    try:
+        root = evaluator_directory(set_root)
+    except ValueError as error:
+        raise ValueError('A generated set must lie outside the repository, the installed package and known candidate '
+                         'roots') from error
     output = evaluator_directory(output_dir)
     if output.exists() and any(output.iterdir()):
         raise ValueError('Set qualification requires a new or empty output directory')
-    manifest = load_set(set_root, registration, registrations=registrations)
+    manifest = load_set(root, registration, registrations=registrations)
     identity = grader_identity(case_id='generated')
     devices = {}
     for entry in sorted(manifest['devices'], key=lambda entry: entry['id']):
-        devices[entry['id']] = opened = open_device(set_root, manifest, entry['id'], password, answer=True)
+        devices[entry['id']] = opened = open_device(root, manifest, entry['id'], password, answer=True)
         generated.answer_key(opened['answer_key'])
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    output.chmod(0o700)  # an output that already existed, empty, keeps its own mode otherwise
+    for name in ('runs', 'native'):
+        _private(output / name)
     sampled = sample(manifest['devices'])
     record = {'schema': QUALIFICATION_SCHEMA, 'registration': registration,
               'manifest_sha256': manifest['manifest_sha256'], 'grader_identity': identity, 'status': 'pending',
-              'devices': {}, 'sample': sampled, 'mutants': [], 'failures': [], 'seconds': {}}
+              'devices': {}, 'sample': sampled, 'mutants': [], 'failures': [], 'seconds': {}, 'runs': {}}
     failures = record['failures']
     for device_id, opened in devices.items():
         key = opened['answer_key']
@@ -122,10 +143,13 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
             image.write_bytes(opened['image'])
 
             def run(name, candidate):
-                started = time.monotonic()
-                outcome = _run(key, candidate, device_id + '/' + name, renode=renode, image=image, output=output)
-                record['seconds'][device_id + '/' + name] = round(time.monotonic() - started, 3)
-                return outcome
+                """(grade, None) of the device's run `name` of `candidate`, or (None, error) when it raised."""
+                named, started = device_id + '/' + name, time.monotonic()
+                result, error = _run(key, candidate, named, renode=renode, image=image, output=output)
+                record['seconds'][named] = round(time.monotonic() - started, 3)
+                record['runs'][named] = {field: None if result is None else result[field]
+                                         for field in ('backend', 'native_process_observed')}
+                return (None if result is None else result['grade']), error
 
             passed = record['devices'][device_id] = {}
             for name in ('a', 'b'):
@@ -156,5 +180,5 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
         failures.append('grader identity changed during qualification')
     record['status'] = 'pending' if failures else 'passed'
     write_json(output / 'qualification.json', record)
-    seal_qualification(set_root, record, password)
+    seal_qualification(root, record, password)
     return record

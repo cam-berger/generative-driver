@@ -34,7 +34,8 @@ SYSTEM_MODULES = ('configurator', 'toolkit', '_toolchain', 'agents', 'client', '
                   'benchmark_support.suites', 'benchmark_support.suite_store', 'benchmark_support.authoring',
                   'benchmark_support.adapters', 'benchmark_support.family_calibration', 'benchmark_support.asset_build',
                   'benchmark_support.rehosting', 'benchmark_support.reference_calibration',
-                  'benchmark_support.upstream_qualification', 'benchmark_support.recorded_grading', 'interface_runtime',
+                  'benchmark_support.set_qualification', 'benchmark_support.upstream_qualification',
+                  'benchmark_support.recorded_grading', 'interface_runtime',
                   'benchmark_support.outcomes', 'benchmark_support.audit', 'benchmark_support.pairing',
                   'benchmark_support.scorecard', 'benchmark_support.suite_reporting', 'benchmark_support.corpus')
 _OUTSIDE = 'interface_runtime'  # the top-level package beside generative_driver: listed by name, never read

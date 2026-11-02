@@ -3,6 +3,7 @@
 A set is a directory that the operator keeps outside the repository and the installed package (ADR 0003):
 
     manifest.json             plaintext; lists every device, and its SHA-256 is what the set's registration pins
+    qualification.enc         sealed qualification record (`set_qualification.qualify`), which `admitted` reads
     devices/<id>.inputs.enc   sealed {"image_base64", "mission"}: the public inputs of a trial
     devices/<id>.answer.enc   sealed answer key: opened only by grading and qualification
 
@@ -19,9 +20,14 @@ import re
 from pathlib import Path
 
 from . import truth
+from .grader_identity import grader_identity
 from .snapshots import canonical_digest
 
 FRAMINGS = ('text-lines', 'binary-frames', 'register-access')
+QUALIFICATION_SCHEMA = 'generated-set-qualification/1'
+_QUALIFICATION_FILE = 'qualification.enc'
+_QUALIFICATION_FIELDS = {'schema', 'registration', 'manifest_sha256', 'grader_identity', 'status', 'devices', 'sample',
+                         'mutants', 'failures', 'seconds'}
 _MANIFEST_FILE = 'manifest.json'
 _MANIFEST_SCHEMA = 'generated-set-manifest/1'
 _REGISTRATIONS_SCHEMA = 'generated-set-registrations/1'
@@ -205,3 +211,58 @@ def open_device(set_root: Path, manifest: dict, device_id: str, password: str, *
             raise ValueError('The answer key of device ' + device_id + ' does not match its manifest hash')
         opened['answer_key'] = key
     return opened
+
+
+def seal_qualification(set_root: Path, record: dict, password: str) -> str:
+    """Seal a set's qualification record with the set's password into `set_root/qualification.enc` and return the SHA-256
+    of the file written. The record lies beside the manifest, never inside a device's answer key: sealing is not
+    deterministic, so a record there would change the manifest hash each time the set is qualified. No pin fixes the
+    file's hash; the AES-GCM tag under the set's password authenticates it."""
+    return truth.seal(record, Path(set_root) / _QUALIFICATION_FILE, password)
+
+
+def _named(error):
+    """The class an admission reason names for `error`: an OSError's own (FileNotFoundError: never qualified), and
+    ValueError for every ValueError, whose subclass tells only where corrupt bytes broke the parse."""
+    return type(error).__name__ if isinstance(error, OSError) else 'ValueError'
+
+
+def admitted(set_root: Path, registration: str, device_id: str, password: str, *,
+             registrations: dict | None = None) -> list[str]:
+    """The reasons device `device_id` of set `registration` under `set_root` may not run a trial, or [] when it may. Its
+    set's qualification record must decrypt with `password`, name `registration` and the manifest that `registrations`
+    (by default `set_registrations()`) pins for it, which `load_set` must accept, carry the generated family's current
+    grader identity (`grader_identity(case_id='generated')`, the whole identity) and the status `passed`, and show both
+    references passed on the device. A record that cannot be read or decrypted gives that one reason. An OSError or a
+    ValueError is never raised: it is a reason, named by its class, so that a caller reports a refusal."""
+    path = Path(set_root) / _QUALIFICATION_FILE
+    try:
+        # The tag under the set's password authenticates the record, so its hash is that of the bytes found.
+        record = truth.unlock(path, password, hashlib.sha256(path.read_bytes()).hexdigest())
+    except (OSError, ValueError) as error:
+        return ['qualification unreadable: ' + _named(error)]
+    if (not isinstance(record, dict) or set(record) != _QUALIFICATION_FIELDS or record['schema'] != QUALIFICATION_SCHEMA
+            or not isinstance(record['devices'], dict)):
+        return ['qualification malformed']
+    reasons = []
+    if record['registration'] != registration:
+        reasons.append('qualification of another registration')
+    try:
+        pins = set_registrations() if registrations is None else registrations
+        manifest = load_set(set_root, registration, registrations=pins)
+    except (OSError, ValueError) as error:
+        reasons.append('manifest refused: ' + _named(error))
+    else:
+        recorded = record['manifest_sha256']
+        if recorded != pins[registration] or recorded != manifest['manifest_sha256']:
+            reasons.append('qualification of another manifest')
+    try:
+        if record['grader_identity'] != grader_identity(case_id='generated'):
+            reasons.append('qualification under another grader identity')
+    except (OSError, ValueError) as error:
+        reasons.append('grader identity unavailable: ' + _named(error))
+    if record['status'] != 'passed':
+        reasons.append('qualification pending')
+    if record['devices'].get(device_id) != {'a': True, 'b': True}:
+        reasons.append('references not passed:' + str(device_id))
+    return reasons

@@ -88,6 +88,31 @@ The system under test (configurator, toolkit, stage tools, interface runtime, pa
 
 List the whole closure with `python -c "from generative_driver.benchmark_support.grader_identity import grader_closure; print(*grader_closure(), sep=chr(10))"`; pass `families=('tq9_v2',)` for the core and one family, or `families=()` for the core alone. A module loaded by `import_module` is not followed: name it in `ENTRY_MODULES` of `grader_identity.py`. The core loads families by name through `registrations`, and the closure seeds them itself.
 
+## Generated sets
+
+A generated set is a batch of devices that the private device generator writes as one bundle, kept outside the repository and the installed package ([ADR 0003](adr/0003-generated-devices-register-by-set.md)). Each device is a case of the code-owned `generated` family, which grades it from the device's own decrypted answer key. The bundle holds:
+
+| Path | Content |
+|---|---|
+| `manifest.json` | Plaintext: each device's id, difficulty level (1–5) and framing (`text-lines`, `binary-frames` or `register-access`), with the hashes of its image, mission, answer key and sealed files. |
+| `devices/<id>.inputs.enc` | The device's image and public mission, sealed with the set's password. |
+| `devices/<id>.answer.enc` | The device's answer key, sealed with the set's password: its emulator recipe, state cells, hidden sequences, two reference drivers and mutants. |
+| `qualification.enc` | The set's qualification record, sealed with the set's password. |
+
+**Register** a set by adding its name and the SHA-256 of its `manifest.json` bytes to `sets` in `src/generative_driver/resources/registrations/sets.json`. A set opens only while its manifest has that hash, so a changed device needs a new manifest and registration. Set registrations lie outside every grader identity: registering a set voids no admission.
+
+**Qualify** a registered set once, with the answer vault mounted and no worker running:
+
+```sh
+python -m generative_driver benchmark set qualify --set generated-development-v1 \
+  --root /path/to/set --password-file /path/to/set.password \
+  --renode /path/to/renode --output /path/to/vault/set-qualification
+```
+
+The command emits and grades both reference drivers on every device, and every mutant on a sample: the first two devices by id of each level and framing. The set passes when every reference grades `passed` and every sampled mutant grades `failed` on at least the checks it targets. Each device must also hold two references with different models and the mutants `wrong-scale`, `constant-output` and `wrong-state`. An `unknown` grade, with undecided checks, neither passes a reference nor rejects a mutant. The command prints the status, the failures and each run's seconds, and exits 1 unless the set passed; qualify a small development set first to time a full one. It seals the record into `qualification.enc`, so requalifying never changes the manifest hash. `--output` must be new or empty and outside the repository. It receives a plaintext copy of the record and each run's evidence, which includes the reference drivers and the hidden checks, so keep it in the answer vault. Qualification runs reference and mutant drivers on the emulator; it measures no model.
+
+`generated_sets.admitted` admits a device for a trial only when the set's record decrypts, names the set and the manifest hash its registration pins, carries the `generated` case's current grader identity and status `passed`, and shows both references passed on that device. Otherwise it returns the reasons.
+
 ## Add, unselect or retire
 
 **Add** a lineage by updating a versioned catalog, with blockers until admission is complete; implement and qualify its registered case before claiming execution. Never substitute a synthetic development case for an upstream lineage.

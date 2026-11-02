@@ -151,6 +151,15 @@ class GraderClosureTests(PackageCopy, unittest.TestCase):
                 self.assertIn('benchmark_support.' + name, closure)
                 self.assertIn('benchmark_support.' + name, self.beyond_the_boundary(closure))
 
+    def test_a_grading_module_that_imports_set_qualification_crosses_the_boundary(self):
+        # Set qualification runs the grader, as reference calibration does, and grades nothing itself. A grading module
+        # that came to import it would move every generated device's identity on each change to it.
+        root = self.copy_package()
+        self.import_from_grading(root, 'from . import set_qualification')
+        closure = grader_closure(root)
+        self.assertIn('benchmark_support.set_qualification', closure)
+        self.assertIn('benchmark_support.set_qualification', self.beyond_the_boundary(closure))
+
     def test_system_change_keeps_identity(self):
         root = self.copy_package(); before = grader_identity(root)['sha256']
         for name in ('configurator.py', 'toolkit.py', 'benchmark.py', 'benchmark_support/emulated.py',

@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from shutil import rmtree
 
 from . import generated
 from .generated_sets import QUALIFICATION_SCHEMA, load_set, open_device, seal_qualification
@@ -37,13 +38,17 @@ def sample(devices: list[dict]) -> list[str]:
 def _run(key, candidate, run, *, renode, image, output):
     """(grade, None) of one run of the candidate {'model', 'capabilities'} on the device whose answer key is `key`:
     the evaluator's grade of the package emitted from it. (None, error) when the run raised. The run's evidence is
-    kept in `output/runs/<run>` and its emulator sessions' files in `output/native/<run>`."""
+    kept in `output/runs/<run>`, and its two emulator sessions' files in `output/native/<run>/session` (grading) and
+    `session-emission`."""
     from .reference_calibration import calibration_run
     try:
-        directory = output / 'runs' / run
-        directory.mkdir(parents=True, mode=0o700)  # never another run's: ids that differ only in case meet here
+        evidence, sessions = output / 'runs' / run, output / 'native' / run
+        # Made here, never found: a run whose name meets another's, as ids that differ only in case do on a file system
+        # that ignores case, fails instead of sharing that run's files.
+        for directory in (evidence, sessions):
+            directory.mkdir(parents=True, mode=0o700)
         result = calibration_run(PIN, key, candidate['model'], candidate['capabilities'], renode=renode, image=image,
-                                 output_dir=directory, private_dir=output / 'native' / run, phase='final')
+                                 output_dir=evidence, private_dir=sessions / 'session', phase='final')
         return result['grade'], None
     except _RUN_ERRORS as error:
         return None, error
@@ -78,11 +83,15 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
       `mutant <id> missed expected checks:<device>` for a mutant not rejected. A run that raised gives
       `<run> error:<device> (<what it raised>)`;
     - `mutant inventory:<device>` when the device's mutants do not include the family's REQUIRED_MUTANTS;
-    - `references not distinct:<device>` when its two references have the same model.
+    - `references not distinct:<device>` when its two references have the same model;
+    - `decrypted image not removed:<device>` when the device's image is still on disk after its runs.
+    The set is pending too, with `grader identity changed during qualification`, when the generated family's grader
+    identity at the end is not the one stamped at the start: the grading modules load as the runs need them.
 
-    A run is named `<device>/reference-<a|b>` or `<device>/mutant-<id>`: its seconds go under that name, and its
-    evidence in `output_dir/runs/<name>`. The output holds the reference drivers and the hidden checks, so keep it with
-    the answer vault. Each device's decrypted image lies in a private file under `output_dir` during its runs only."""
+    A run is named `<device>/reference-<a|b>` or `<device>/mutant-<id>`: its seconds go under that name, its evidence
+    in `output_dir/runs/<name>` and its emulator sessions' files in `output_dir/native/<name>`. The output holds the
+    reference drivers and the hidden checks, so keep it with the answer vault. Each device's decrypted image lies in a
+    private directory under `output_dir` (`image-*`) during its runs only."""
     from .authoring import evaluator_directory
     from .case_assets import write_json
     output = evaluator_directory(output_dir)
@@ -107,8 +116,9 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
             failures.append('mutant inventory:' + device_id)
         if canonical_digest(references['a']['model']) == canonical_digest(references['b']['model']):
             failures.append('references not distinct:' + device_id)
-        with tempfile.TemporaryDirectory(prefix='image-', dir=output, ignore_cleanup_errors=True) as private:
-            image = Path(private) / 'image'
+        private = Path(tempfile.mkdtemp(prefix='image-', dir=output))
+        try:
+            image = private / 'image'
             image.write_bytes(opened['image'])
 
             def run(name, candidate):
@@ -137,6 +147,13 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
                         failures.append('mutant %s missed expected checks:%s' % (mutant['id'], device_id))
                     else:
                         failures.append(_failure('mutant ' + mutant['id'], device_id, grade, error))
+        finally:
+            rmtree(private, ignore_errors=True)
+        if private.exists():  # a decrypted image left on disk, as on Windows while a process holds it, is reported
+            failures.append('decrypted image not removed:' + device_id)
+    # The grader's modules load as the runs need them, so the identity stamped before them must still be the grader's.
+    if grader_identity(case_id='generated') != identity:
+        failures.append('grader identity changed during qualification')
     record['status'] = 'pending' if failures else 'passed'
     write_json(output / 'qualification.json', record)
     seal_qualification(set_root, record, password)

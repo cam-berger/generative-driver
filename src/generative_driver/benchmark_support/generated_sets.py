@@ -221,10 +221,15 @@ def seal_qualification(set_root: Path, record: dict, password: str) -> str:
     return truth.seal(record, Path(set_root) / _QUALIFICATION_FILE, password)
 
 
+# What reading a file can raise for its content or its absence, which admission reports as a reason: JSON nested deeper
+# than the parser reaches raises RecursionError.
+_UNREADABLE = (OSError, ValueError, RecursionError)
+
+
 def _named(error):
-    """The class an admission reason names for `error`: an OSError's own (FileNotFoundError: never qualified), and
-    ValueError for every ValueError, whose subclass tells only where corrupt bytes broke the parse."""
-    return type(error).__name__ if isinstance(error, OSError) else 'ValueError'
+    """The class an admission reason names for `error`: an OSError's own (FileNotFoundError: never qualified),
+    RecursionError, and ValueError for every ValueError, whose subclass tells only where corrupt bytes broke the parse."""
+    return type(error).__name__ if isinstance(error, (OSError, RecursionError)) else 'ValueError'
 
 
 def admitted(set_root: Path, registration: str, device_id: str, password: str, *,
@@ -233,13 +238,14 @@ def admitted(set_root: Path, registration: str, device_id: str, password: str, *
     set's qualification record must decrypt with `password`, name `registration` and the manifest that `registrations`
     (by default `set_registrations()`) pins for it, which `load_set` must accept, carry the generated family's current
     grader identity (`grader_identity(case_id='generated')`, the whole identity) and the status `passed`, and show both
-    references passed on the device. A record that cannot be read or decrypted gives that one reason. An OSError or a
-    ValueError is never raised: it is a reason, named by its class, so that a caller reports a refusal."""
+    references passed (`True`, never a number equal to it) on the device. A record that cannot be read or decrypted
+    gives that one reason. No OSError, ValueError or RecursionError, whatever a file holds, is raised: it is a reason,
+    named by its class, so that a caller reports a refusal."""
     path = Path(set_root) / _QUALIFICATION_FILE
     try:
         # The tag under the set's password authenticates the record, so its hash is that of the bytes found.
         record = truth.unlock(path, password, hashlib.sha256(path.read_bytes()).hexdigest())
-    except (OSError, ValueError) as error:
+    except _UNREADABLE as error:
         return ['qualification unreadable: ' + _named(error)]
     if (not isinstance(record, dict) or set(record) != _QUALIFICATION_FIELDS or record['schema'] != QUALIFICATION_SCHEMA
             or not isinstance(record['devices'], dict)):
@@ -250,7 +256,7 @@ def admitted(set_root: Path, registration: str, device_id: str, password: str, *
     try:
         pins = set_registrations() if registrations is None else registrations
         manifest = load_set(set_root, registration, registrations=pins)
-    except (OSError, ValueError) as error:
+    except _UNREADABLE as error:
         reasons.append('manifest refused: ' + _named(error))
     else:
         recorded = record['manifest_sha256']
@@ -259,10 +265,12 @@ def admitted(set_root: Path, registration: str, device_id: str, password: str, *
     try:
         if record['grader_identity'] != grader_identity(case_id='generated'):
             reasons.append('qualification under another grader identity')
-    except (OSError, ValueError) as error:
+    except _UNREADABLE as error:
         reasons.append('grader identity unavailable: ' + _named(error))
     if record['status'] != 'passed':
         reasons.append('qualification pending')
-    if record['devices'].get(device_id) != {'a': True, 'b': True}:
+    passed = record['devices'].get(device_id)
+    if (not isinstance(passed, dict) or set(passed) != {'a', 'b'}
+            or passed['a'] is not True or passed['b'] is not True):
         reasons.append('references not passed:' + str(device_id))
     return reasons

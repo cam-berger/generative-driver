@@ -17,7 +17,7 @@ import generative_driver
 from generated_fixtures import (FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, MUTANT_ERR_AS_VALUE, PASSWORD, REFERENCE_A,
                                 fixture_mission, fixture_start, write_fixture_set)
 from generative_driver.benchmark import main
-from generative_driver.benchmark_support import generated_sets, truth
+from generative_driver.benchmark_support import generated_sets, set_qualification, truth
 from generative_driver.benchmark_support.grader_identity import grader_identity
 from generative_driver.benchmark_support.set_qualification import qualify, sample
 
@@ -113,9 +113,13 @@ class QualifiedSetTests(Workspace, unittest.TestCase):
         self.assertEqual(images, [])
 
     def test_admission_needs_the_registered_manifest_and_the_current_family_identity(self):
-        another = {**grader_identity(case_id='generated'), 'sha256': 'f' * 64}
-        with patch.object(generated_sets, 'grader_identity', return_value=another):
-            self.assertEqual(self.admitted(), ['qualification under another grader identity'])
+        current = grader_identity(case_id='generated')
+        # The whole identity counts, not its sha256 alone.
+        for name, another in (('another sha256', {**current, 'sha256': 'f' * 64}),
+                              ('another module under the same sha256',
+                               {**current, 'modules': {**current['modules'], 'benchmark_support.generated': '0' * 64}})):
+            with self.subTest(name), patch.object(generated_sets, 'grader_identity', return_value=another):
+                self.assertEqual(self.admitted(), ['qualification under another grader identity'])
         self.assertEqual(self.admitted(registrations={SET: '0' * 64}), ['manifest refused: ValueError'])
         # The same manifest in other bytes, registered anew, is another manifest than the one qualified.
         root = self.copy()
@@ -131,21 +135,35 @@ class QualifiedSetTests(Workspace, unittest.TestCase):
         sealed = bytearray((changed / 'qualification.enc').read_bytes())
         sealed[len(sealed) // 2] ^= 1
         (changed / 'qualification.enc').write_bytes(bytes(sealed))
+        # JSON nested deeper than the parser reaches, as the sealed record and as a manifest registered by its hash.
+        nested = b'[' * 100000 + b']' * 100000
+        nested_record, nested_manifest = self.copy(), self.copy()
+        (nested_record / 'qualification.enc').write_bytes(nested)
+        (nested_manifest / 'manifest.json').write_bytes(nested)
         resealed = {}
         for name, record in (('another schema', {**self.record, 'schema': 'generated-set-qualification/2'}),
                              ('a missing field', {k: v for k, v in self.record.items() if k != 'seconds'}),
                              ('devices that are no map', {**self.record, 'devices': ['d001']}),
                              ('no object', ['d001']),
-                             ('another registration', {**self.record, 'registration': 'other-v1'})):
+                             ('another registration', {**self.record, 'registration': 'other-v1'}),
+                             ('references that pass as numbers',
+                              {**self.record, 'devices': {**self.record['devices'], 'd001': {'a': 1, 'b': 1.0}}})):
             resealed[name] = self.copy()
             generated_sets.seal_qualification(resealed[name], record, PASSWORD)
         malformed = ('another schema', 'a missing field', 'devices that are no map', 'no object')
         rows = [('no qualification', {'root': unqualified}, ['qualification unreadable: FileNotFoundError']),
                 ('another password', {'password': 'another credential'}, ['qualification unreadable: ValueError']),
                 ('a changed byte', {'root': changed}, ['qualification unreadable: ValueError']),
+                ('a nested record', {'root': nested_record}, ['qualification unreadable: RecursionError']),
+                ('a nested registered manifest',
+                 {'root': nested_manifest, 'registrations': {SET: hashlib.sha256(nested).hexdigest()}},
+                 ['manifest refused: RecursionError']),
                 *((name, {'root': resealed[name]}, ['qualification malformed']) for name in malformed),
                 ('another registration', {'root': resealed['another registration']},
                  ['qualification of another registration']),
+                # A reference passed only when the record says True, never a number equal to it.
+                ('references that pass as numbers', {'root': resealed['references that pass as numbers']},
+                 ['references not passed:d001']),
                 ('a device the set does not hold', {'device_id': 'd009'}, ['references not passed:d009'])]
         for name, arguments, reasons in rows:
             with self.subTest(name):
@@ -222,6 +240,51 @@ class PendingSetTests(Workspace, unittest.TestCase):
                           ['mutant inventory:d001', 'references not distinct:d001', 'mutant inventory:d002']))
         self.assertEqual((record['mutants'], list(record['seconds'])),
                          ([], [device + '/reference-' + name for device in ('d001', 'd002', 'd003') for name in 'ab']))
+
+    def test_a_grader_change_while_the_set_qualifies_leaves_it_pending(self):
+        # The grader's modules load as the runs need them: a change that lands during the runs and is undone before
+        # they end would otherwise seal a passed record under an identity that graded only part of them.
+        identity = grader_identity(case_id='generated')
+        root, out = self.workspace()
+        registered = write_set(root, {'d001': FIXTURE_ANSWER_KEY})
+        with patch.object(set_qualification, 'grader_identity', side_effect=[identity, {**identity, 'sha256': 'e' * 64}]):
+            record = run_qualify(root, registered, out)
+        self.assertEqual((record['status'], record['failures'], record['grader_identity']),
+                         ('pending', ['grader identity changed during qualification'], identity))
+        self.assertEqual(generated_sets.admitted(root, SET, 'd001', PASSWORD, registrations=registered),
+                         ['qualification pending'])
+
+    def test_a_decrypted_image_the_qualification_could_not_remove_leaves_the_set_pending(self):
+        # A removal that fails, as on Windows while another process holds the file, is one that removes nothing here.
+        # The device's key lists no mutant, which only adds the inventory failure.
+        root, out = self.workspace()
+        registered = write_set(root, {'d001': {**copy.deepcopy(FIXTURE_ANSWER_KEY), 'mutants': []}})
+        with patch.object(set_qualification, 'rmtree'):
+            record = run_qualify(root, registered, out)
+        self.assertEqual(record['failures'], ['mutant inventory:d001', 'decrypted image not removed:d001'])
+        self.assertEqual([path.read_bytes() for path in out.glob('image-*/image')], [FIXTURE_IMAGE])
+
+    def test_each_run_keeps_its_emulator_sessions_in_a_directory_of_its_own(self):
+        # A run's emission session once lay beside its grading session, under the run's name with '-emission' added,
+        # so mutant X's emission and the grading of mutant X-emission shared one directory.
+        wrong_scale = copy.deepcopy(FIXTURE_ANSWER_KEY['mutants'][0])
+        key = {**copy.deepcopy(FIXTURE_ANSWER_KEY),
+               'mutants': [wrong_scale, {**copy.deepcopy(wrong_scale), 'id': wrong_scale['id'] + '-emission'}]}
+        root, out = self.workspace()
+        registered = write_set(root, {'d001': key})
+        sessions, start = [], fixture_start()
+
+        def recording(**arguments):
+            sessions.append(Path(arguments['private_dir']))
+            return start(**arguments)
+
+        with patch(START, side_effect=recording):
+            record = qualify(root, SET, PASSWORD, renode=Path('/toy'), output_dir=out, registrations=registered)
+        self.assertEqual([row['rejected'] for row in record['mutants']], [True, True])
+        expected = [out.resolve() / 'native' / run / name for run in record['seconds']
+                    for name in ('session', 'session-emission')]
+        self.assertEqual(sorted(sessions), sorted(expected))
+        self.assertEqual(len(set(sessions)), len(sessions))
 
     def test_the_sample_is_the_first_two_devices_by_id_of_each_level_and_framing(self):
         devices = [{'id': identity, 'level': level, 'framing': framing} for identity, level, framing in (

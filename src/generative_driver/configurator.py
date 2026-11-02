@@ -321,14 +321,16 @@ def _model_channel(name, arguments):
     return _model_json(path).get('channel', {})
 
 
-def operation_effects(name, arguments):
-    """Read declared operation effects before opening an operator-owned binding."""
-    model_dir=arguments.get('model_dir')
-    if model_dir:
-        model_path=Path(model_dir)/'model.json'
-    else:
-        model_path=Path(arguments['package_dir'])/'driver/model.json'
-    model=_model_json(model_path)
+def operation_effects(name, arguments, model=None):
+    """Read declared operation effects before opening an operator-owned binding, from `model` when the gateway has
+    already read the bytes that will run."""
+    if model is None:
+        model_dir=arguments.get('model_dir')
+        if model_dir:
+            model_path=Path(model_dir)/'model.json'
+        else:
+            model_path=Path(arguments['package_dir'])/'driver/model.json'
+        model=_model_json(model_path)
     operations=model.get('operations',{})
     if model.get('schema')=='interface-model/1':
         steps=[step for group in operations.values() for step in group]+model.get('state',[])
@@ -339,6 +341,15 @@ def operation_effects(name, arguments):
     if not names or any(item not in operations for item in names):
         raise ValueError('Select existing named operations before device dispatch')
     return {operations[item].get('effect','actuate') for item in names}
+
+
+def _copy_model(source, target):
+    """Copy a model directory for one dispatch, so its digest still names the source. A symlink would read the worker's
+    file again, so it is refused, as `digest` refuses one."""
+    shutil.copytree(source, target, symlinks=True)
+    for folder, folders, files in os.walk(target):
+        if any(os.path.islink(os.path.join(folder, item)) for item in (*folders, *files)):
+            raise ValueError('model_dir holds a symlink, which the configurator does not copy; nothing was dispatched')
 
 
 def _refuse_invalid_model(model_dir):
@@ -3387,6 +3398,9 @@ class Controller:
                     'assignment_id': marker['assignment']['id'], 'name': params.get('name'), 'reason': str(error),
                     **({'fault': fault} if fault in ('operator', 'host') else {}), 'actor': 'worker'})
             raise
+        finally:
+            if 'snapshot' in marker:
+                shutil.rmtree(marker['snapshot'], ignore_errors=True)
 
     def _dispatch(self, method, params, run, marker):
         from .toolkit import list_tools, call_tool
@@ -3458,6 +3472,33 @@ class Controller:
         if 'inputs' in arguments:
             if not isinstance(arguments['inputs'],dict) or any(not isinstance(p,str) or not Path(p).is_absolute() or not Path(p).resolve().is_relative_to(workspace) for p in arguments['inputs'].values()):
                 raise ValueError('Every tool input must be inside this stage workspace')
+        if name in ('probe_run', 'interface_execute') and not arguments.get('replay') and arguments.get('model_dir') is not None:
+            # The gateway reads the model to classify, validate and hash the dispatch, and the tool reads it again. Both
+            # read the configurator's copy, outside the workspace, so a model the worker rewrites meanwhile never runs.
+            snapshots = self.home / 'runs' / run['id'] / 'snapshots'; snapshots.mkdir(parents=True, exist_ok=True)
+            marker['snapshot'] = Path(tempfile.mkdtemp(dir=snapshots))
+            copied = marker['snapshot'] / 'model'
+            try:
+                _copy_model(arguments['model_dir'], copied)
+            except OSError as error:
+                raise ValueError('The configurator cannot copy model_dir to dispatch it; nothing was dispatched: '
+                                 + type(error).__name__ + ': ' + str(error)) from None
+            arguments['model_dir'] = str(copied)
+        classified = None
+        if name == 'emit_test_live' and not arguments.get('replay') and arguments.get('package_dir') is not None:
+            # The tool copies the package and verifies its copy against the package's own manifest. The gateway reads
+            # that manifest and the package's model once each and pins the manifest, so the package that runs has the
+            # model the gateway classified; a manifest that names no model verifies no package.
+            from interface_runtime.evidence import read_json_hashed
+            package = Path(arguments['package_dir'])
+            manifest, pin = read_json_hashed(package / 'manifest.json', 1048576)
+            classified = read_json_hashed(package / 'driver' / 'model.json', 1048576)
+            files = manifest.get('files') if isinstance(manifest, dict) else None
+            if isinstance(files, dict) and files.get('driver/model.json') not in (None, classified[1]):
+                raise ValueError('The package manifest names other model bytes than the gateway read; nothing was dispatched')
+            if arguments.get('expected_manifest_sha256') not in (None, pin):
+                raise ValueError('expected_manifest_sha256 is not the manifest of this package; nothing was dispatched')
+            arguments['expected_manifest_sha256'] = pin
         binding = assignment.get('binding') or {}
         selfdescribing = name == 'acquire_selfdescription' or (name == 'acquire_classify' and arguments.get('transports') is not None)
         if selfdescribing:
@@ -3475,7 +3516,8 @@ class Controller:
         if name in ('acquire_serial_listen','acquire_flash') and not serial_binding:
             raise ValueError('No operator-owned serial binding for this stage')
         if serial_binding and (serial_tool or model_tool):
-            model_channel = _model_channel(name, arguments) if model_tool else None
+            model_channel = ((classified[0].get('channel', {}) if classified else _model_channel(name, arguments))
+                             if model_tool else None)
             granted = 'reset' in assignment['effects']
             state = self._binding_state(run['id'])
             # A USB identity may name a native USB device whose transport never opens a serial port.
@@ -3506,7 +3548,7 @@ class Controller:
                 raise ValueError('No operator-owned device binding for this stage')
             arguments['binding'] = assignment['binding']
             arguments['allow_effects'] = assignment['effects']
-        effects=operation_effects(name,arguments) if connected else set()
+        effects=operation_effects(name,arguments,classified and classified[0]) if connected else set()
         if effects-{'read'}-set(assignment['effects']):
             raise ValueError('Operation requires an effect grant the operator has not supplied')
         effectful=bool(effects & {'write','actuate'})

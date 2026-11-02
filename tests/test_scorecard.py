@@ -17,6 +17,7 @@ from test_assistive_reports import AssistiveFixture
 from test_configurator import gateway_identity, scripted_stages, thermometer_model, wait_stopped
 from test_evaluation import FAIL, PASS
 from test_suite_harness import manifest
+from interface_runtime.package import package_files
 from generative_driver.benchmark_support.outcomes import pass_rate
 from generative_driver.benchmark_support.scorecard import scorecard_markdown, suite_scorecard, trial_metrics
 
@@ -478,6 +479,8 @@ class TrialMetricsTests(unittest.TestCase):
                 package = Path(request.workspace) / 'package'
                 (package / 'driver').mkdir(parents=True)
                 (package / 'driver' / 'model.json').write_text(json.dumps(thermometer_model()), encoding='utf-8')
+                # The gateway pins the manifest of a live test's package, so the package carries one naming its model.
+                (package / 'manifest.json').write_text(json.dumps({'files': package_files(package)}), encoding='utf-8')
                 for _ in range(count):
                     controller.call('tool', {**gateway_identity(request), 'name': 'emit_test_live',
                                              'arguments': {'package_dir': str(package)}})

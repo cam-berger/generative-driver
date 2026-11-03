@@ -45,6 +45,36 @@ class ValidDeviceTests(unittest.TestCase):
             ('operating conditions', lambda m: m.update(operating_conditions=['Keep it cool.']), 'operating conditions'),
             ('a sampling requirement', lambda m: task(m, 'get_mode').update(sampling='acquire'), 'sampling')])
 
+    def test_the_answer_key_agrees_with_the_mission(self):
+        step = lambda key, sequence=0, index=0: key['sequences'][sequence]['steps'][index]
+        mapping = lambda candidate: candidate['capabilities']['tasks']
+
+        def without_output(key):
+            # The mutants expect its check to fail, and a key's mutants expect only checks it has.
+            step(key, 0, 1).pop('outputs')
+            for mutant in key['mutants']:
+                mutant['expected_failed_checks'] = [check for check in mutant['expected_failed_checks']
+                                                    if check != 's1/2/out:mode']
+        self.assert_refused([
+            ('a step that calls a task the mission lacks', lambda key: step(key).update(task='reboot'), 'steps call'),
+            # The fixture's one ping step now reads the mode, so no step calls ping.
+            ('a mission task that no step calls', lambda key: step(key, 1, 0).update(task='get_mode'), 'steps call'),
+            ('an input the task does not declare', lambda key: step(key).update(inputs={'mode': 9, 'speed': 1}),
+             'declared inputs'),
+            ('a missing input', lambda key: step(key).update(inputs={}), 'declared inputs'),
+            ('a number for an integer input', lambda key: step(key).update(inputs={'mode': 9.5}), 'declared inputs'),
+            ('a string input', lambda key: step(key).update(inputs={'mode': '9'}), 'declared inputs'),
+            ('an output the task does not declare',
+             lambda key: step(key, 0, 1)['outputs'].update(speed={'value': 1, 'tolerance': 0, 'unit': '1'}),
+             'declared outputs'),
+            ('a value step without its task\'s output', without_output, 'declared outputs'),
+            ('an output in another unit', lambda key: step(key, 0, 1)['outputs']['mode'].update(unit='count'),
+             'declared outputs'),
+            ('a reference that maps fewer tasks', lambda key: mapping(key['references']['b']).pop('ping'),
+             'maps exactly'),
+            ('a mutant that maps another task',
+             lambda key: mapping(key['mutants'][0]).update(reboot=mapping(key['mutants'][0])['ping']), 'maps exactly')])
+
     def test_cells_and_sequences_carry_no_design_in_their_names(self):
         # A verdict publishes check ids built from these names, so they are numbered.
         def swap(key):

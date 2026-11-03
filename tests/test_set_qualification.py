@@ -224,13 +224,15 @@ class PendingSetTests(Workspace, unittest.TestCase):
         # The device cannot read its mode while in mode 3. Both references set mode 3, so two of their state checks are
         # undecided: an unknown grade, which is no pass. offset-two sets the mode two above the one asked, so its run
         # fails, but s1/3/state:c1, a check it targets, is undecided, never failed. invalid-model never reaches a
-        # device: its run raises. The device lists no required mutant, which only adds the inventory failure.
+        # device: its run raises, since its model is empty though it maps the mission's tasks. The device lists no required
+        # mutant, which only adds the inventory failure.
         offset_two = copy.deepcopy(REFERENCE_A)
         offset_two['capabilities']['tasks']['set_mode']['inputs']['mode'] = {'parameter': 'mode', 'kind': 'affine',
                                                                              'scale': 1, 'offset': 2}
         key = {**copy.deepcopy(FIXTURE_ANSWER_KEY), 'mutants': [
             {'id': 'offset-two', **offset_two, 'expected_failed_checks': ['s1/3/state:c1', 's1/4/out:mode']},
-            {'id': 'invalid-model', 'model': {}, 'capabilities': {}, 'expected_failed_checks': ['s1/1/answer']}]}
+            {'id': 'invalid-model', 'model': {}, 'capabilities': copy.deepcopy(REFERENCE_A['capabilities']),
+             'expected_failed_checks': ['s1/1/answer']}]}
         root, out = self.workspace()
         record = run_qualify(root, write_set(root, {'0000d001': key}), out, unreadable_in_mode=3)
         self.assertEqual((record['status'], record['devices']), ('pending', {'0000d001': {'a': False, 'b': False}}))

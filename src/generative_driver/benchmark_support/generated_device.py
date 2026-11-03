@@ -207,10 +207,42 @@ def _mission(mission):
                     'task %s output %s has a unit and no other key' % (name, item))
 
 
+def _typed(value, kind):
+    """Whether `value` has the public input type `kind`: an integer, or a finite number of either kind."""
+    return type(value) is int if kind == 'integer' else type(value) in (int, float) and _finite(value)
+
+
+def _agreement(key, mission):
+    """ValueError unless the answer `key` agrees with its device's public `mission`: its steps call exactly the
+    mission's tasks, each with the task's declared inputs, and each value step reports the task's declared outputs in
+    the mission's units; every reference and mutant maps exactly the mission's tasks."""
+    tasks = mission['tasks']
+    steps = [('%s/%d' % (sequence['id'], number), step) for sequence in key['sequences']
+             for number, step in enumerate(sequence['steps'], 1)]
+    _require({step['task'] for _, step in steps} == set(tasks), 'the steps call exactly the mission\'s tasks')
+    for where, step in steps:
+        task = tasks[step['task']]
+        _require(set(step['inputs']) == set(task['inputs'])
+                 and all(_typed(step['inputs'][name], spec['type']) for name, spec in task['inputs'].items()),
+                 'step %s inputs are its task\'s declared inputs, with their types' % where)
+        if step['answer'] == 'value':
+            outputs = step.get('outputs', {})
+            _require(set(outputs) == set(task['outputs'])
+                     and all(outputs[name]['unit'] == spec['unit'] for name, spec in task['outputs'].items()),
+                     'step %s outputs are its task\'s declared outputs, in the mission\'s units' % where)
+    drivers = [('reference ' + name, reference) for name, reference in key['references'].items()]
+    drivers += [('mutant ' + mutant['id'], mutant) for mutant in key['mutants']]
+    for name, driver in drivers:
+        mapped = driver['capabilities'].get('tasks')
+        _require(isinstance(mapped, dict) and set(mapped) == set(tasks), name + ' maps exactly the mission\'s tasks')
+
+
 def validate_device(device, *, image, mission, key=None):
     """Nothing, once the plaintext device is valid: `device`, the identity part of its manifest entry, its `image`, its
-    public `mission` and, given one, its answer `key`. ValueError names the first defect."""
+    public `mission` and, given one, its answer `key` and the key's agreement with the mission. ValueError names the
+    first defect."""
     validate_identity(device)
     _mission(mission)
     if key is not None:
         answer_key(key)
+        _agreement(key, mission)

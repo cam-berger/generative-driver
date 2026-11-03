@@ -5,9 +5,10 @@ its manifest entry, its image, its public mission and, given one, its answer key
 a grader that holds only the key, and `checks` derives the key's check ids. Each raises ValueError naming the first
 defect. The module holds no device's design, so the private generator may import it (ADR 0005).
 """
+import json
 import re
 
-from .capabilities import numeric_value
+from .capabilities import bind_task, numeric_value
 from .missions import validate_mission
 
 FRAMINGS = ('text-lines', 'binary-frames', 'register-access')
@@ -192,6 +193,39 @@ def answer_key(truth):
     return truth
 
 
+def _identity_request(model):
+    """What the `model`'s identity operation sends first: the bytes of its first exchange when its parts are text and
+    hex, otherwise those parts. ValueError for a model whose identity operation sends nothing."""
+    try:
+        operation = model['operations'][model['identity']['operation']]
+        parts = next(step for step in operation['steps'] if step.get('op') == 'exchange')['tx']
+        if all('text' in part or 'hex' in part for part in parts):
+            return b''.join(part['text'].encode('utf-8') if 'text' in part else bytes.fromhex(part['hex'])
+                            for part in parts)
+        return json.dumps(parts, sort_keys=True)
+    except (KeyError, TypeError, ValueError, StopIteration, AttributeError) as error:
+        raise ValueError('Invalid generated answer key: a reference\'s identity operation sends no request') from error
+
+
+def _references(key):
+    """ValueError unless the two references show what qualification's reference runs must: both forward every request
+    a refusal step makes, within their parameter bounds, so the runs see the device's refusal bytes and not a driver's
+    own bounds; and their identity operations, which the runtime runs before every call, send different commands."""
+    references = key['references']
+    for sequence in key['sequences']:
+        for number, step in enumerate(sequence['steps'], 1):
+            for name, reference in references.items():
+                if step['answer'] != 'refusal':
+                    continue
+                try:
+                    bind_task(reference['capabilities'], step['task'], step['inputs'], reference['model'])
+                except ValueError as error:
+                    raise ValueError('Invalid generated answer key: reference %s forwards the request of refusal step '
+                                     '%s/%d within its parameter bounds' % (name, sequence['id'], number)) from error
+    _require(_identity_request(references['a']['model']) != _identity_request(references['b']['model']),
+             'the references\' identity operations send different commands')
+
+
 def _driver(candidate):
     _require(isinstance(candidate['model'], dict) and isinstance(candidate['capabilities'], dict),
              'a driver is a model and its capabilities')
@@ -285,15 +319,33 @@ def _agreement(key, mission):
         _require(isinstance(mapped, dict) and set(mapped) == set(tasks), name + ' maps exactly the mission\'s tasks')
 
 
+def _reply_mode(reference, task):
+    """How `reference` reads the reply to `task`'s request: the receive mode of the last exchange of the operation it maps
+    the task to, `until` only on a line feed. None for a mapping or model without one."""
+    try:
+        operation = reference['model']['operations'][reference['capabilities']['tasks'][task]['operation']]
+        rx = [step for step in operation['steps'] if step.get('op') == 'exchange'][-1]['rx']
+        return rx['mode'] if rx['mode'] != 'until' or rx.get('delimiter_hex') == '0a' else None
+    except (KeyError, TypeError, IndexError, AttributeError):
+        return None
+
+
 def _framing(key, framing):
-    """ValueError unless the answer `key` suits its device's `framing`: every correct driver must capture a refusal as
-    the same bytes, so a text-lines device's refusal replies end with a line feed."""
+    """ValueError unless the answer `key` suits its device's `framing`. Every correct driver must capture a refusal as
+    the same bytes, so a text-lines device's refusal replies end with a line feed, and its two references read each
+    refusing task's reply with `until` on the line feed and with `lines`: qualification then shows two capture styles
+    see the bytes the key records. A correct driver must read a whole binary reply anyway."""
     if framing != 'text-lines':
         return
     for sequence in key['sequences']:
         for number, step in enumerate(sequence['steps'], 1):
             _require(step.get('refusal_rx_hex', '0a').endswith('0a'),
                      'step %s/%d: a text-lines refusal ends with a line feed' % (sequence['id'], number))
+    refusing = {step['task'] for sequence in key['sequences'] for step in sequence['steps']
+                if step['answer'] == 'refusal'}
+    for task in sorted(refusing):
+        _require({_reply_mode(reference, task) for reference in key['references'].values()} == {'until', 'lines'},
+                 'the references read the reply of refusing task %s with until and with lines' % task)
 
 
 def validate_device(device, *, image, mission, key=None):
@@ -305,4 +357,5 @@ def validate_device(device, *, image, mission, key=None):
     if key is not None:
         answer_key(key)
         _agreement(key, mission)
+        _references(key)
         _framing(key, device['framing'])

@@ -19,7 +19,7 @@ def retake(key, identifier, **changes):
             if step['transition'] == identifier:
                 step.update(changes)
                 if step['answer'] == 'refusal':
-                    step.setdefault('refusal_rx_hex', b'ERR\n'.hex())
+                    step.setdefault('refusal_rx_hex', b'MODE ERR\n'.hex())
                 else:
                     step.pop('refusal_rx_hex', None)
 
@@ -152,8 +152,8 @@ class ValidDeviceTests(unittest.TestCase):
                                                   'to': 'm2'})
             key['sequences'][0]['steps'].append({'task': 'set_mode', 'inputs': {'mode': 9}, 'grants': ['write'],
                                                  'answer': 'refusal', 'state': {'c1': 2}, 'transition': 't9',
-                                                 'refusal_rx_hex': b'ERR\n'.hex()})
-        no_line_feed = lambda key: key['sequences'][0]['steps'][0].update(refusal_rx_hex=b'ERR'.hex())
+                                                 'refusal_rx_hex': b'MODE ERR\n'.hex()})
+        no_line_feed = lambda key: key['sequences'][0]['steps'][0].update(refusal_rx_hex=b'MODE ERR'.hex())
         self.assert_refused([
             # Hidden sequences include out-of-range values, so passing on the device's refusals is graded.
             ('no refusal step', lambda key: retake(key, 't1', answer='value'), 'refusal step'),
@@ -163,6 +163,28 @@ class ValidDeviceTests(unittest.TestCase):
             ('a text refusal without its line feed', no_line_feed, 'line feed')])
         key = copy.deepcopy(FIXTURE_ANSWER_KEY)
         no_line_feed(key)  # only text lines end with a line feed
+        validate_device({**DEVICE, 'framing': 'binary-frames'}, image=FIXTURE_IMAGE,
+                        mission=fixture_mission(DEVICE['id']), key=key)
+
+    def test_the_references_forward_refused_requests_and_differ_in_identity_and_capture(self):
+        model = lambda key, name: key['references'][name]['model']
+
+        def b_declines(key):
+            # B's own bounds refuse mode 9, so it would never show what the device sends back.
+            model(key, 'b')['operations']['select']['parameters']['mode']['maximum'] = 3
+
+        def one_receive_mode(key):
+            model(key, 'b')['operations']['select']['steps'][0]['rx'] = {'mode': 'until', 'delimiter_hex': '0a',
+                                                                         'max_bytes': 32}
+        self.assert_refused([
+            ('a reference that declines a refused request', b_declines, 'forwards'),
+            # B identifies the device with the read A identifies it with, so only one read command is shown harmless.
+            ('one identity command', lambda key: model(key, 'b')['identity'].update(operation='query'), 'identity'),
+            ('two references alike', lambda key: key['references'].update(b=copy.deepcopy(key['references']['a'])),
+             'identity'),
+            ('one receive mode for a refused request', one_receive_mode, 'until and with lines')])
+        key = copy.deepcopy(FIXTURE_ANSWER_KEY)
+        one_receive_mode(key)  # a correct driver must read a whole binary reply anyway
         validate_device({**DEVICE, 'framing': 'binary-frames'}, image=FIXTURE_IMAGE,
                         mission=fixture_mission(DEVICE['id']), key=key)
 

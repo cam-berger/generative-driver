@@ -1,10 +1,10 @@
 """A hand-written generated device for tests, never generator output: the firmware stand-in behind local sockets, its
 answer key with two reference drivers and the mutants, and a set of two such devices sealed under a synthetic password.
 
-The device speaks text lines over its UART. `MODE?` replies `MODE:<n>`; `MODE <n>` sets the mode and replies `OK` when
-0 <= n <= 3, and replies `ERR` otherwise; `PING` replies `PONG` in mode 3 and is never answered in another mode; any
-other line replies `ERR`. The mode lives at
-0x20000000, and a reset leaves it at 2. Its public mission states the mode's unit, `1` (dimensionless)."""
+The device speaks text lines over its UART. `MODE?` replies `MODE:<n>`; `MODE <n>` sets the mode and replies `MODE OK`
+when 0 <= n <= 3, and replies `MODE ERR` otherwise, so both its replies begin with the command's word; `ID?` replies
+`ID:FIXTURE`; `PING` replies `PONG` in mode 3 and is never answered in another mode; any other line replies `ERR`. The
+mode lives at 0x20000000, and a reset leaves it at 2. Its public mission states the mode's unit, `1` (dimensionless)."""
 import copy
 import re
 import secrets
@@ -78,11 +78,13 @@ class FixtureDevice:
             return 'MODE:%d' % self.mode
         if line == 'PING':
             return 'PONG' if self.mode == 3 else None
+        if line == 'ID?':
+            return 'ID:FIXTURE'
         command, _, argument = line.partition(' ')
         if command == 'MODE' and re.fullmatch(r'-?[0-9]+', argument) and 0 <= int(argument) <= 3:
             self.mode = int(argument)
-            return 'OK'
-        return 'ERR'
+            return 'MODE OK'
+        return 'MODE ERR' if command == 'MODE' else 'ERR'
 
     def monitor(self, command):
         """The monitor's answer to one command."""
@@ -161,10 +163,11 @@ def _capabilities(get_mode, set_mode, ping, output):
 
 
 MODE_COMMAND = [{'text': 'MODE '}, {'arg': 'mode', 'format': 'ascii'}, {'text': '\n'}]
-ACCEPTED = {'final_line_equals': 'OK', 'reject_line_prefix': ['ERR']}
+ACCEPTED = {'final_line_equals': 'MODE OK', 'reject_line_prefix': ['MODE ERR']}
 MODE_LINE = {'first_line_prefix': 'MODE:', 'reject_line_prefix': ['ERR']}
 
-# Reference A sends any mode up to 255 and reports the device's ERR as a refusal.
+# Reference A sends any mode up to 255, reads the reply until its line feed and reports the device's MODE ERR as a
+# refusal.
 REFERENCE_A = {'model': _model('FIXTURE-A', 'read_mode', {
     'read_mode': {'effect': 'read', 'parameters': {},
                   'steps': [_exchange('MODE?\n', 'reply', expect={'prefix_hex': b'MODE:'.hex()})],
@@ -175,17 +178,26 @@ REFERENCE_A = {'model': _model('FIXTURE-A', 'read_mode', {
              'outputs': {}}}),
     'capabilities': _capabilities('read_mode', 'write_mode', 'ping', 'mode')}
 
-# Reference B bounds the mode to 0..3, so it declines 9 before contact, and decodes the reply another way.
-REFERENCE_B = {'model': _model('FIXTURE-B', 'query', {
+# Reference B identifies the device by another read, forwards any mode up to 255 as A does but reads the reply as the
+# first line that begins with MODE, and decodes the mode another way.
+REFERENCE_B = {'model': _model('FIXTURE-B', 'identify', {
+    'identify': {'effect': 'read', 'parameters': {},
+                 'steps': [_exchange('ID?\n', 'id', expect={'prefix_hex': b'ID:'.hex()})], 'outputs': {}},
     'query': {'effect': 'read', 'parameters': {},
               'steps': [_exchange('MODE?\n', 'line', expect=MODE_LINE)],
               'outputs': {'current': {'from': 'line', 'kind': 'ascii_number', 'prefix': 'MODE:', 'unit': MODE_UNIT}}},
-    'select': {'effect': 'write', 'parameters': {'mode': {'type': 'integer', 'minimum': 0, 'maximum': 3}},
-               'steps': [_exchange(MODE_COMMAND, 'ack', expect=ACCEPTED)], 'outputs': {}},
+    'select': {'effect': 'write', 'parameters': {'mode': {'type': 'integer', 'minimum': 0, 'maximum': 255}},
+               'steps': [_exchange(MODE_COMMAND, 'ack', expect=ACCEPTED,
+                                   rx={'mode': 'lines', 'max_bytes': 32, 'end': {'line_token': 'MODE'}})],
+               'outputs': {}},
     'listen': {'effect': 'read', 'parameters': {},
                'steps': [_exchange('PING\n', 'pong', timeout_ms=250, rx={'mode': 'up_to', 'max_bytes': 16})],
                'outputs': {}}}),
     'capabilities': _capabilities('query', 'select', 'listen', 'current')}
+
+# A correct driver that bounds the mode to 0..3, so it declines 9 before any contact with the device.
+BOUNDED = copy.deepcopy(REFERENCE_A)
+BOUNDED['model']['operations']['write_mode']['parameters']['mode']['maximum'] = 3
 
 
 def _mutant(change):
@@ -238,7 +250,7 @@ def fixture_answer_key():
                     'transitions': [{'id': identifier, 'from': start, 'task': task, 'answer': answer, 'to': end}
                                     for identifier, (start, task, answer, end) in _TRANSITIONS.items()]},
         'sequences': [
-            {'id': 's1', 'steps': [_step('t1', {'mode': 9}, refusal=b'ERR\n'), _step('t2', {}, output=2),
+            {'id': 's1', 'steps': [_step('t1', {'mode': 9}, refusal=b'MODE ERR\n'), _step('t2', {}, output=2),
                                    _step('t3', {'mode': 1}), _step('t4', {}, output=1)]},
             {'id': 's2', 'steps': [_step('t5', {}), _step('t6', {'mode': 3}), _step('t7', {}, output=3),
                                    _step('t8', {})]}],

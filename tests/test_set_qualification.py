@@ -15,8 +15,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import generative_driver
-from generated_fixtures import (FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, MUTANT_ERR_AS_VALUE, PASSWORD, REFERENCE_A,
-                                fixture_mission, fixture_start, write_fixture_set)
+from generated_fixtures import (FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, PASSWORD, REFERENCE_A, fixture_mission,
+                                fixture_start, write_fixture_set)
 from generative_driver.benchmark import main
 from generative_driver.benchmark_support import generated_sets, set_qualification, truth
 from generative_driver.benchmark_support.grader_identity import grader_identity
@@ -198,8 +198,9 @@ class QualifiedSetTests(Workspace, unittest.TestCase):
 
 class PendingSetTests(Workspace, unittest.TestCase):
     def test_a_failing_reference_or_a_passing_mutant_leaves_the_set_pending(self):
-        reference_b_fails = copy.deepcopy(FIXTURE_ANSWER_KEY)
-        reference_b_fails['references']['b'] = copy.deepcopy(MUTANT_ERR_AS_VALUE)
+        reference_b_fails = copy.deepcopy(FIXTURE_ANSWER_KEY)  # its reference b reports the mode in another unit
+        reference_b_fails['references']['b']['model']['operations']['query']['outputs']['current']['unit'] = 'count'
+        reference_b_fails['references']['b']['capabilities']['tasks']['get_mode']['outputs']['mode']['unit'] = 'count'
         a_mutant_passes = copy.deepcopy(FIXTURE_ANSWER_KEY)
         a_mutant_passes['mutants'].append({'id': 'copy-of-a', **copy.deepcopy(REFERENCE_A),
                                            'expected_failed_checks': ['s1/1/answer']})
@@ -251,18 +252,16 @@ class PendingSetTests(Workspace, unittest.TestCase):
         self.assertEqual((list(record['runs']), record['runs']['0000d001/mutant-invalid-model']),
                          (list(record['seconds']), {'backend': None, 'native_process_observed': None}))
 
-    def test_a_device_short_of_the_required_mutants_or_of_two_distinct_references_leaves_the_set_pending(self):
-        # 0000d001 and 0000d002, the sample of (level 1, text lines), list no mutant, and 0000d001's reference b is a copy of a.
-        # 0000d003 lists every mutant but lies outside the sample, so none of them runs.
+    def test_a_device_short_of_the_required_mutants_leaves_the_set_pending(self):
+        # 0000d001 and 0000d002, the sample of (level 1, text lines), list no mutant. 0000d003 lists every mutant but lies
+        # outside the sample, so none of them runs. Two references alike never get this far: their identity operations
+        # send the same command, which the validator refuses.
         no_mutants = {**copy.deepcopy(FIXTURE_ANSWER_KEY), 'mutants': []}
-        same_references = copy.deepcopy(no_mutants)
-        same_references['references']['b'] = copy.deepcopy(REFERENCE_A)
         root, out = self.workspace()
-        registered = write_set(root, {'0000d001': same_references, '0000d002': no_mutants, '0000d003': FIXTURE_ANSWER_KEY})
+        registered = write_set(root, {'0000d001': no_mutants, '0000d002': no_mutants, '0000d003': FIXTURE_ANSWER_KEY})
         record = run_qualify(root, registered, out)
         self.assertEqual((record['status'], record['sample'], record['failures']),
-                         ('pending', ['0000d001', '0000d002'],
-                          ['mutant inventory:0000d001', 'references not distinct:0000d001', 'mutant inventory:0000d002']))
+                         ('pending', ['0000d001', '0000d002'], ['mutant inventory:0000d001', 'mutant inventory:0000d002']))
         self.assertEqual((record['mutants'], list(record['seconds'])),
                          ([], [device + '/reference-' + name for device in ('0000d001', '0000d002', '0000d003') for name in 'ab']))
 

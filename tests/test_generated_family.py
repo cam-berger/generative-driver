@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from generated_fixtures import (FIXTURE_ANSWER_KEY, MODE_ADDRESS, MODE_UNIT, MUTANT_ERR_AS_VALUE, REFERENCE_A,
+from generated_fixtures import (BOUNDED, FIXTURE_ANSWER_KEY, MODE_ADDRESS, MODE_UNIT, MUTANT_ERR_AS_VALUE, REFERENCE_A,
                                 REFERENCE_B, STEP, FixtureDevice, fixture_mission, fixture_start)
 from generative_driver.benchmark_support import generated, generated_device
 from generative_driver.benchmark_support.behavior import validate_records
@@ -111,7 +111,11 @@ class StepGradingTests(unittest.TestCase):
         self.assertEqual(self.grade(REFERENCE_A)['grade']['verdict'], 'passed')
 
     def test_a_driver_that_declines_an_out_of_range_mode_before_sending_matches_the_devices_refusal(self):
-        # REFERENCE_B bounds mode to 0..3 in its capabilities, so bind_task refuses 9 without I/O and the mode stays 2.
+        # BOUNDED bounds mode to 0..3 in its model, so bind_task refuses 9 without I/O and the mode stays 2.
+        self.assertEqual(self.grade(BOUNDED)['grade']['verdict'], 'passed')
+
+    def test_a_driver_that_reads_the_devices_refusal_as_a_line_matches_it_too(self):
+        # REFERENCE_B forwards 9 and reads the reply as lines: it captures the same MODE ERR as A's read until a line feed.
         self.assertEqual(self.grade(REFERENCE_B)['grade']['verdict'], 'passed')
 
     def test_a_driver_that_reports_the_devices_refusal_as_a_value_fails_that_step(self):
@@ -294,7 +298,7 @@ class AnswerTests(unittest.TestCase):
         cls.real = {
             'value': call_package(REFERENCE_A, 'get_mode', {}, []),
             'device refusal': call_package(REFERENCE_A, 'set_mode', {'mode': 9}, ['write']),
-            'bound refusal': call_package(REFERENCE_B, 'set_mode', {'mode': 9}, ['write']),
+            'bound refusal': call_package(BOUNDED, 'set_mode', {'mode': 9}, ['write']),
             'precondition refusal': call_package(REFERENCE_A, *set_one, preconditions={'write_mode': [mode_is(0)]}),
             'silence': call_package(REFERENCE_A, 'ping', {}, []),
             'identity mismatch': call_package(strict, *set_one, before=lambda device: setattr(device, 'mode', 1)),
@@ -308,7 +312,7 @@ class AnswerTests(unittest.TestCase):
         real, shape = self.real, lambda name, *keys: tuple(self.real[name].get(key) for key in keys)
         fault = lambda name: (real[name]['error']['code'], real[name]['error']['fault'])
         self.assertEqual(shape('device refusal', 'identity_verified', 'transport_open_attempted'), (True, True))
-        self.assertEqual(real['device refusal']['transcript'][-1]['rx_hex'], b'ERR\n'.hex())
+        self.assertEqual(real['device refusal']['transcript'][-1]['rx_hex'], b'MODE ERR\n'.hex())
         self.assertEqual(shape('bound refusal', 'transport_open_attempted', 'transcript'), (False, []))
         self.assertEqual(fault('bound refusal'), ('capability_mapping', 'model'))
         self.assertEqual(fault('precondition refusal'), ('precondition_failed', 'operator'))

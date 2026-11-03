@@ -24,7 +24,8 @@ class DeviceClientTests(unittest.TestCase):
                     'address': address, 'family': family, 'authkey': key.hex()}))
 
                 def peer():
-                    while not stop.is_set():
+                    # Stop only after answering a connection, so the cleanup ping always gets a reply.
+                    while True:
                         with listener.accept() as connection:
                             request = json.loads(connection.recv_bytes())
                             if request['method'] == 'device_execute':
@@ -32,6 +33,8 @@ class DeviceClientTests(unittest.TestCase):
                                 if len(received) == 1:
                                     continue  # Request accepted, response lost.
                             connection.send_bytes(b'{"ok":true}')
+                        if stop.is_set():
+                            return
 
                 thread = threading.Thread(target=peer, daemon=True)
                 thread.start()

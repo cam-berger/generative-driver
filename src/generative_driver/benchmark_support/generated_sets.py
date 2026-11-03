@@ -192,8 +192,10 @@ def load_set(set_root: Path, registration: str, *, registrations: dict | None = 
 def open_device(set_root: Path, manifest: dict, device_id: str, password: str, *, answer: bool = False) -> dict:
     """One device of a loaded set: `{'image': bytes, 'mission': dict}`, and `'answer_key'` when `answer` is true. Without
     it the answer file is never read, let alone decrypted. Each file goes through `truth.unlock` with its manifest hash,
-    and the image, the mission and the answer key are checked against their content hashes. ValueError for any mismatch,
-    the wrong password or an unknown device, before anything is returned; a file that cannot be read raises OSError."""
+    and the image, the mission and the answer key are checked against their content hashes, then against the
+    generated-device interface (`generated_device.validate_device`), the inputs alone without `answer`. ValueError for
+    any mismatch or broken rule, the wrong password or an unknown device, before anything is returned; a file that
+    cannot be read raises OSError."""
     entry = next((listed for listed in manifest['devices'] if listed.get('id') == device_id), None)
     if entry is None:
         raise ValueError('Unknown generated device: ' + str(device_id))
@@ -213,6 +215,8 @@ def open_device(set_root: Path, manifest: dict, device_id: str, password: str, *
         if not isinstance(key, dict) or canonical_digest(key) != entry['answer_key_sha256']:
             raise ValueError('The answer key of device ' + device_id + ' does not match its manifest hash')
         opened['answer_key'] = key
+    validate_device({name: entry[name] for name in ('id', 'level', 'framing')}, image=image,
+                    mission=opened['mission'], key=opened.get('answer_key'))
     return opened
 
 

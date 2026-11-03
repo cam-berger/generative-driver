@@ -342,6 +342,16 @@ class SetBundleTests(unittest.TestCase):
                         mission=fixture_mission('d001'), answer_key=key, password=PASSWORD)
         self.assertEqual(list(self.root.rglob('*')), [])  # nothing was written
 
+    def test_a_device_whose_answer_key_breaks_the_interface_does_not_open(self):
+        with patch.object(generated_sets, 'validate_device'):  # a set written without the validator
+            entry = seal_device(self.root, {'id': 'd001', 'level': 1, 'framing': 'text-lines'}, image=FIXTURE_IMAGE,
+                                mission=fixture_mission('d001'),
+                                answer_key={**FIXTURE_ANSWER_KEY, 'note': 'a field the interface does not define'},
+                                password=PASSWORD)
+        manifest = load_set(self.root, SET, registrations={SET: write_manifest(self.root, SET, [entry])})
+        with self.assertRaisesRegex(ValueError, 'Invalid generated answer key'):
+            open_device(self.root, manifest, 'd001', PASSWORD, answer=True)
+
     def test_content_that_json_cannot_carry_is_refused_before_anything_is_written(self):
         good = {'id': 'd001', 'level': 1, 'framing': 'text-lines'}
         content = {'image': FIXTURE_IMAGE, 'mission': {}, 'answer_key': {}, 'password': PASSWORD}

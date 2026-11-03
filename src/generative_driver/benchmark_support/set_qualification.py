@@ -83,8 +83,8 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
     Nothing runs before these checks: `set_root`, which receives the sealed record, and `output_dir` both lie outside
     the repository, the installed package and known candidate roots (`authoring.evaluator_directory`); `output_dir` is
     new or empty; `load_set` accepts the manifest that `registrations` (by default `set_registrations()`) pins; and
-    every device opens with `password` and holds a valid answer key. A failed check raises, and nothing is sealed, so a
-    wrong password never replaces a record.
+    every device opens with `password`, which checks it against the generated-device interface. A failed check raises,
+    and nothing is sealed, so a wrong password never replaces a record.
 
     Then, device by device in id order, references `a` and `b` run, then every mutant on a sampled device (`sample`).
     A reference passes with the verdict `passed`. A mutant is rejected when its verdict is `failed` and its
@@ -119,8 +119,7 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
     identity = grader_identity(case_id='generated')
     devices = {}
     for entry in sorted(manifest['devices'], key=lambda entry: entry['id']):
-        devices[entry['id']] = opened = open_device(root, manifest, entry['id'], password, answer=True)
-        generated_device.answer_key(opened['answer_key'])
+        devices[entry['id']] = open_device(root, manifest, entry['id'], password, answer=True)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     output.chmod(0o700)  # an output that already existed, empty, keeps its own mode otherwise
     for name in ('runs', 'native'):

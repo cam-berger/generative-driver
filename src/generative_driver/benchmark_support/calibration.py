@@ -1,7 +1,6 @@
 """Strict evaluator-only family inventory and measured qualification boundary."""
 import base64
 import binascii
-import copy
 import hashlib
 import json
 from .grader_identity import grader_identity

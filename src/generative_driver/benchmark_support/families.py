@@ -1,8 +1,8 @@
 """The family seam: the one way the grader closure reaches a family's code, so that the grading core names no case or
 family and editing one family's code moves only the identities of the cases that use it (Feature 01, family-seam).
 
-A family module declares a module-level `HOOKS`, family hook name to value; a family hook is one thing the core asks of a
-family. `family_for` loads the module a case's registration names and `family_from` checks what it declares and fills
+A family module declares a module-level `HOOKS`, family hook name to value; a family hook is one thing the core asks of
+a family. `family_for` loads the module a case's registration names and `family_from` checks what it declares and fills
 what it omits. `docs/benchmark-case-authoring.md` holds the table of hooks. This is the only module of the closure that
 loads code by name: `grader_identity` seeds each case's module itself, because the walk does not follow such a load.
 """

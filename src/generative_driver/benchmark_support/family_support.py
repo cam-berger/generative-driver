@@ -47,7 +47,7 @@ def private_phase(pin, truth, phase):
 
 
 def hydrate_family_truth(truth):
-    """The family-truth inventory projected into the evaluator engine, by calibration, which only a grading path loads."""
+    """The family-truth inventory projected into the evaluator engine, by `calibration`, loaded only when grading."""
     from .calibration import hydrate_truth
     return hydrate_truth(truth)
 
@@ -82,14 +82,15 @@ def admission_valid(pin, truth, record):
     for reference in record['references']:
         source = truth['references'][reference['id']]
         for name in reference['runs']:
-            runs[name]
-            valid = (valid and reference['execution_inputs'][name] == execution_input_identity(source['model'], source['capabilities']))
+            runs[name]  # A reference naming a run the record lacks is refused by its KeyError.
+            valid = (valid and reference['execution_inputs'][name]
+                     == execution_input_identity(source['model'], source['capabilities']))
     for row in record['mutants']:
         valid = valid and row['execution_input'] == mutant_inputs[row['id']]
     for run in runs.values():
         artifact = run['package_sha256'] or run['model_sha256']
-        contract = family.contract({'family': manifest['family'], 'scenario_id': run['scenario'], 'case_seed': 0, 'revision': 0},
-                                   {**truth, 'artifact_sha256': artifact}, run['phase'])
+        contract = family.contract({'family': manifest['family'], 'scenario_id': run['scenario'], 'case_seed': 0,
+                                    'revision': 0}, {**truth, 'artifact_sha256': artifact}, run['phase'])
         valid = (valid and canonical_digest(contract) == run['contract_sha256']
                  and [c['id'] for c in contract['checks']] == run['check_ids'])
     rows = {r['id']: r for r in record['mutants']}

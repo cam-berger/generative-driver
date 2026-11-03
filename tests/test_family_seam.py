@@ -113,7 +113,7 @@ class FamilyInterfaceTests(unittest.TestCase):
         self.assertIsNone(family.validate_execution({}, truth))
 
     def required_calls(self, family):
-        """Each required hook of `family` as a call, and its plan and step executor, for what a case without them does."""
+        """Each required hook of `family`, its plan and its step executor as a call,."""
         return {'contract': lambda: family.contract({}, {}, 'final'),
                 'observations': lambda: family.observations({}, {}, {}),
                 'reuse_passed': lambda: family.reuse_passed([], {}),
@@ -146,7 +146,7 @@ class FamilyInterfaceTests(unittest.TestCase):
 
 
 class ToySession:
-    """An emulator session of a fixture device: what `execute_plan` and the evaluator ask of one, and nothing on a wire."""
+    """An emulator session of a fixture device: what `execute_plan` and the evaluator ask of one, with no wire."""
     process, info, binding, stopped = None, {'fixture': True}, {}, False
 
     def reset(self, values):
@@ -166,7 +166,8 @@ def toy_invoke(calls):
     """A package call that answers as the toy sensor's correct driver would, keeping each task in `calls`."""
     def invoke(task, inputs, grants):
         calls.append(task)
-        return {'ok': True, 'outputs': {'temperature': -5, 'sequence': 3}, 'units': {'temperature': 'degC', 'sequence': 'count'}}
+        return {'ok': True, 'outputs': {'temperature': -5, 'sequence': 3},
+                'units': {'temperature': 'degC', 'sequence': 'count'}}
     return invoke
 
 
@@ -228,15 +229,15 @@ class FamilyExecutionTests(unittest.TestCase):
                 calls, direct = [], []
                 records = family.execute(ToySession(), toy_invoke(calls), pin, contract, truth, self.root / 'raw.json',
                                          phase=phase, healthy_device_failures=False)
-                expected = execute_plan(ToySession(), toy_invoke(direct), family.build_plan(pin, truth, phase), contract,
-                                        self.root / 'direct.json', family.observations, 0)
+                expected = execute_plan(ToySession(), toy_invoke(direct), family.build_plan(pin, truth, phase),
+                                        contract, self.root / 'direct.json', family.observations, 0)
                 self.assertEqual(records, expected)
                 self.assertEqual((calls, direct), ([phase + '-task'], [phase + '-task']))
 
     def test_01_B5_a_family_that_declares_execute_runs_its_own(self):
         own = lambda *call, **options: 'its own'
-        family = family_from(graded_case(), {**{key: value for key, value in complete_hooks().items() if key != 'build_plan'},
-                                             'execute': own})
+        hooks = {key: value for key, value in complete_hooks().items() if key != 'build_plan'}
+        family = family_from(graded_case(), {**hooks, 'execute': own})
         self.assertIs(family.execute, own)
 
     def test_01_B5_grading_and_the_diagnostic_path_have_one_call_path(self):
@@ -244,7 +245,8 @@ class FamilyExecutionTests(unittest.TestCase):
         from generative_driver.benchmark_support.reference_calibration import run_reference
         for module in (evaluator, reference_calibration):
             tree = ast.parse(Path(module.__file__).read_text(encoding='utf-8'))
-            calls = [node.func.id for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)]
+            calls = [node.func.id for node in ast.walk(tree)
+                     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)]
             self.assertNotIn('hasattr', calls)
         pin, truth = toy_plan_case()
         seen = []
@@ -283,16 +285,16 @@ NATIVE_MANIFEST = {'execution_setup': {'method': 'native-sim', 'artifact': 'firm
 class FamilySessionTests(unittest.TestCase):
     SESSION_CLASSES = ('generative_driver.benchmark_support.native.NativeSession.start',
                        'generative_driver.benchmark_support.native_firmware.NativeFirmwareSession.start')
+    PLACE = {'image': Path('/toy'), 'renode': None, 'private_dir': None}
 
     def started(self, case_id, recipe):
         """Which session class `case_id`'s family starts for `recipe`, with both mocked, since native sessions need
         Linux."""
         with patch(self.SESSION_CLASSES[0], return_value='renode') as renode, \
                 patch(self.SESSION_CLASSES[1], return_value='native') as native:
-            session = family_for(case_id).start_session(recipe=recipe, image=Path('/toy'), renode=None, private_dir=None)
+            session = family_for(case_id).start_session(recipe=recipe, **self.PLACE)
         called = renode if session == 'renode' else native
-        self.assertEqual(called.call_args.kwargs, {'recipe': recipe, 'image': Path('/toy'), 'renode': None,
-                                                   'private_dir': None})
+        self.assertEqual(called.call_args.kwargs, {'recipe': recipe, **self.PLACE})
         return session
 
     def test_01_B16_the_default_starts_renode_and_refuses_any_other_backend(self):
@@ -300,8 +302,7 @@ class FamilySessionTests(unittest.TestCase):
             self.assertEqual(self.started('sampled-sensor-v1', recipe), 'renode')
         for backend in ('native-sim', 'elsewhere'):
             with self.subTest(backend), self.assertRaisesRegex(ValueError, backend):
-                family_for('sampled-sensor-v1').start_session(recipe={'backend': backend}, image=Path('/toy'), renode=None,
-                                                              private_dir=None)
+                family_for('sampled-sensor-v1').start_session(recipe={'backend': backend}, **self.PLACE)
 
     def test_01_B16_the_default_validate_execution_refuses_a_native_sim_manifest(self):
         family = family_for('sampled-sensor-v1')
@@ -313,8 +314,7 @@ class FamilySessionTests(unittest.TestCase):
         self.assertEqual(self.started('zephyr-modbus-v1', {'backend': 'native-sim'}), 'native')
         self.assertEqual(self.started('zephyr-modbus-v1', {}), 'renode')
         with self.assertRaisesRegex(ValueError, 'elsewhere'):
-            family_for('zephyr-modbus-v1').start_session(recipe={'backend': 'elsewhere'}, image=Path('/toy'), renode=None,
-                                                         private_dir=None)
+            family_for('zephyr-modbus-v1').start_session(recipe={'backend': 'elsewhere'}, **self.PLACE)
         with self.assertRaisesRegex(ValueError, 'native/Renode comparison'):
             family_for('zephyr-modbus-v1').validate_execution(NATIVE_MANIFEST, {})
         self.assertIsNone(family_for('zephyr-modbus-v1').validate_execution({}, {}))
@@ -358,7 +358,8 @@ class InstrumentTests(unittest.TestCase):
         self.assertEqual(instruments.units('tq9'), {'duty': 'fraction'})
         for case_id in ('tq9-v2', 'tq9-v3'):
             self.assertEqual(instruments.units(case_id), {'duty': 'permille', 'temperature_reference': 'degC'})
-        self.assertEqual(instruments.units('sampled-sensor-v1'), {'reference_temperature': 'degC', 'monitor_sequence': 'count'})
+        self.assertEqual(instruments.units('sampled-sensor-v1'),
+                         {'reference_temperature': 'degC', 'monitor_sequence': 'count'})
         self.assertEqual(instruments.public_observation('tq9', self.TQ9_RAW),
                          {'values': {'duty': 0.37}, 'units': {'duty': 'fraction'}})
         self.assertEqual(instruments.public_observation('tq9-v2', self.TQ9_RAW),
@@ -372,10 +373,11 @@ class InstrumentTests(unittest.TestCase):
     def test_01_B11_the_units_and_the_observation_come_from_the_familys_hooks(self):
         for module in (tq9_legacy, tq9_v2):
             case_id = 'tq9' if module is tq9_legacy else 'tq9-v2'
+            projected = {'values': {'toy': 1}, 'units': {'toy': 'unit'}}
             with patch.dict(module.HOOKS, {'instrument_units': lambda: {'toy': 'unit'},
-                                           'public_observation': lambda raw: {'values': raw, 'units': {'toy': 'unit'}}}):
+                                           'public_observation': lambda raw: projected}):
                 self.assertEqual(instruments.units(case_id), {'toy': 'unit'})
-                self.assertEqual(instruments.public_observation(case_id, {'toy': 1}), {'values': {'toy': 1}, 'units': {'toy': 'unit'}})
+                self.assertEqual(instruments.public_observation(case_id, {}), projected)
 
     def test_01_B11_reuse_missions_are_todays(self):
         passed = {'name': 'fresh_worker_mission', 'passed': True}
@@ -387,8 +389,8 @@ class InstrumentTests(unittest.TestCase):
         self.assertEqual(reuse_mission('tq9', duty, legacy), passed)
         self.assertEqual(reuse_mission('tq9', duty[:1], legacy), failed)
         current = {'tasks': {'temperature': {'operation': 'read', 'outputs': {'temperature': {'output': 'reading'}}}}}
-        permille = [{'operation': 'read', 'result': {'ok': True, 'outputs': {'reading': 25}}, 'observation': {'duty': value}}
-                    for value in (370, 0)]
+        permille = [{'operation': 'read', 'result': {'ok': True, 'outputs': {'reading': 25}},
+                     'observation': {'duty': value}} for value in (370, 0)]
         self.assertEqual(reuse_mission('tq9-v2', permille, current), passed)
         self.assertEqual(reuse_mission('tq9-v2', permille[:1], current), failed)
         sensor = {'tasks': {'measure': {'operation': 'm', 'outputs': {'temperature': {'output': 't'},
@@ -399,7 +401,8 @@ class InstrumentTests(unittest.TestCase):
         self.assertEqual(reuse_mission('sampled-sensor-v1', samples[:1], sensor), failed)
         self.assertEqual(reuse_mission('bme280', duty, legacy),
                          {'name': 'fresh_worker_mission', 'passed': None,
-                          'reason': 'The capability mapping cannot judge the mission: ValueError: Unknown native family: bme280'})
+                          'reason': 'The capability mapping cannot judge the mission: ValueError: '
+                                    'Unknown native family: bme280'})
 
     def test_01_B11_the_reuse_mission_comes_from_the_familys_hook(self):
         for module, case_id in ((tq9_legacy, 'tq9'), (tq9_v2, 'tq9-v2'), (sampled_sensor, 'sampled-sensor-v1')):
@@ -410,7 +413,8 @@ class InstrumentTests(unittest.TestCase):
 class DevelopmentConditionTests(unittest.TestCase):
     CATALOG = {'schema': 'development-conditions/1', 'conditions': [
         {'id': name, 'reference': {'value': value, 'unit': 'degC'}}
-        for name, value in (('low', -12.0), ('high', 32.0), ('zero', 0.0), ('fractional', 7.5), ('fine_fraction', 18.5625))]}
+        for name, value in (('low', -12.0), ('high', 32.0), ('zero', 0.0), ('fractional', 7.5),
+                            ('fine_fraction', 18.5625))]}
     STIMULI = {'stimuli': {'source_q4': {'command': 'c', 'minimum': -8192, 'maximum': 8191}}}
 
     def provider(self, case_id, recipe):
@@ -432,10 +436,11 @@ class DevelopmentConditionTests(unittest.TestCase):
 
 
 TQ9_TIME_POLICY = {'probe': 'continuous emulator virtual time',
-                   'package_calls': 'paused between calls, running inside each call; model timing must hold inside each operation',
+                   'package_calls': 'paused between calls, running inside each call; model timing must hold inside '
+                                    'each operation',
                    'clock': 'firmware reset-clock SysTick frequency configured by encrypted reference recipe',
-                   'limitation': 'Agent thinking time is excluded from device watchdog time during reuse; this is not a '
-                                 'real-time control benchmark'}
+                   'limitation': 'Agent thinking time is excluded from device watchdog time during reuse; this is '
+                                 'not a real-time control benchmark'}
 TQ9_IMAGE = 'c1e9ab72e497c13d1e8037a9773c8b229adf6eb63665c3a8f750894c65d92d51'
 DESCRIBED = {'availability_basis': 'public-metadata', 'authenticated_admission': 'not-checked', 'status': 'available'}
 
@@ -449,39 +454,43 @@ class UnbranchedCaseTests(unittest.TestCase):
 
     def test_01_B10_resolve_case_returns_todays_definitions(self):
         self.assert_definition('tq9', id='tq9', family='tq9', version='2', evaluator_version='2',
-                               execution='actual-agent-emulation', evidence_track='firmware', adapter_key='legacy-emulator',
-                               approval_scope='emulator', default_effects=('write', 'actuate'),
+                               execution='actual-agent-emulation', evidence_track='firmware',
+                               adapter_key='legacy-emulator', approval_scope='emulator', default_effects=('write', 'actuate'),
                                manifest_sha256='fa1d971100f646cc950e7af5eb5b96b82ff4a85950ecbbd7121305603a3c74b1')
         self.assert_definition('bme280', id='bme280', family='bme280', version='3', evaluator_version='3',
-                               execution='actual-agent-physical', evidence_track='physical', adapter_key='legacy-physical',
-                               approval_scope='bound-device', default_effects=('write',),
+                               execution='actual-agent-physical', evidence_track='physical',
+                               adapter_key='legacy-physical', approval_scope='bound-device', default_effects=('write',),
                                manifest_sha256='8b7b2abfb883e6b61d64f8ffbcb4201084d30c5b263691fbadfde39eaaa2b4d3')
-        self.assert_definition('setup-smoke', id='setup-smoke', family='setup-smoke', version='1', evaluator_version='1',
-                               execution='scripted-replay', evidence_track='recorded-replay', adapter_key='smoke',
+        self.assert_definition('setup-smoke', id='setup-smoke', family='setup-smoke', version='1',
+                               evaluator_version='1', execution='scripted-replay', evidence_track='recorded-replay', adapter_key='smoke',
                                approval_scope=None, default_effects=(), manifest={}, manifest_sha256='')
 
     def test_01_B10_pin_case_returns_todays_pins(self):
         common = {'schema': 'benchmark-case-pin/1', 'case_seed': 0, 'calibration': {'status': 'legacy-not-required'}}
         expected = {
-            'tq9': {**common, 'case': 'tq9', 'case_id': 'tq9', 'case_version': '2', 'evaluator_version': '2', 'family': 'tq9',
-                    'scenario_id': 'original', 'manifest_sha256': 'fa1d971100f646cc950e7af5eb5b96b82ff4a85950ecbbd7121305603a3c74b1',
+            'tq9': {**common, 'case': 'tq9', 'case_id': 'tq9', 'case_version': '2', 'evaluator_version': '2',
+                    'family': 'tq9', 'scenario_id': 'original',
+                    'manifest_sha256': 'fa1d971100f646cc950e7af5eb5b96b82ff4a85950ecbbd7121305603a3c74b1',
                     'image_hashes': {'firmware.bin': TQ9_IMAGE},
                     'truth_sha256': '4de3c5c251f68ead6567c9b140b41654c6dbc49f1ec85eb943eba00693792b2d',
                     'execution': 'actual-agent-emulation', 'evidence_track': 'firmware', 'scope': 'full-workflow',
                     'time_policy': TQ9_TIME_POLICY},
             'bme280': {**common, 'case': 'bme280', 'case_id': 'bme280', 'case_version': '3', 'evaluator_version': '3',
                        'family': 'bme280', 'scenario_id': 'original',
-                       'manifest_sha256': '8b7b2abfb883e6b61d64f8ffbcb4201084d30c5b263691fbadfde39eaaa2b4d3', 'image_hashes': {},
+                       'manifest_sha256': '8b7b2abfb883e6b61d64f8ffbcb4201084d30c5b263691fbadfde39eaaa2b4d3',
+                       'image_hashes': {},
                        'truth_sha256': '0eaaca4a7dcd6ffe7ee1eb638857966e3152d1c7be420b4aa691e2e76844f82c',
                        'execution': 'actual-agent-physical', 'evidence_track': 'physical', 'scope': 'full-workflow',
                        'time_policy': {'physical': 'Real elapsed device time; no timing pause'}},
             'setup-smoke': {**common, 'case': 'setup-smoke', 'case_id': 'setup-smoke', 'case_version': '1',
-                            'evaluator_version': '1', 'family': 'setup-smoke', 'scenario_id': None, 'manifest_sha256': '',
+                            'evaluator_version': '1', 'family': 'setup-smoke', 'scenario_id': None,
+                            'manifest_sha256': '',
                             'image_hashes': {}, 'truth_sha256': None, 'execution': 'scripted-replay',
                             'evidence_track': 'recorded-replay', 'scope': 'installation', 'time_policy': {}}}
         for case_id, pin in expected.items():
             with self.subTest(case_id):
-                self.assertEqual({key: value for key, value in pin_case(case_id, None, 0).items() if key != 'manifest'}, pin)
+                pinned = pin_case(case_id, None, 0)
+                self.assertEqual({key: value for key, value in pinned.items() if key != 'manifest'}, pin)
                 with self.assertRaisesRegex(ValueError, 'Legacy case does not support'):
                     pin_case(case_id, None, 1)
 
@@ -496,8 +505,8 @@ class UnbranchedCaseTests(unittest.TestCase):
         self.assertEqual(rows['bme280'], {**DESCRIBED, 'id': 'bme280', 'family': 'bme280', 'version': '3',
                                           'execution': 'actual-agent-physical', 'evidence_track': 'physical',
                                           'scenarios': ['original']})
-        self.assertEqual(rows['setup-smoke'], {**DESCRIBED, 'id': 'setup-smoke', 'family': 'setup-smoke', 'version': '1',
-                                               'execution': 'scripted-replay', 'evidence_track': 'recorded-replay',
+        self.assertEqual(rows['setup-smoke'], {**DESCRIBED, 'id': 'setup-smoke', 'family': 'setup-smoke',
+                                               'version': '1', 'execution': 'scripted-replay', 'evidence_track': 'recorded-replay',
                                                'scenarios': []})
 
     def register_like(self, source, case_id):
@@ -581,7 +590,8 @@ class AdmissionTests(unittest.TestCase):
         """Admission of `pin` when its sealed truth unlocks and hydrates to `truth`."""
         with patch('generative_driver.benchmark_support.registry.pin_case', return_value=pin), \
                 patch('generative_driver.benchmark_support.emulator.truth_for_case', return_value=truth), \
-                patch('generative_driver.benchmark_support.calibration.hydrate_truth', side_effect=lambda unlocked: unlocked):
+                patch('generative_driver.benchmark_support.calibration.hydrate_truth',
+                      side_effect=lambda unlocked: unlocked):
             return require_calibration(pin, {})
 
     def test_01_B14_a_tq9_shaped_record_is_admitted_and_refused_as_today(self):
@@ -618,7 +628,7 @@ class AdmissionTests(unittest.TestCase):
 
 class CalibrationRuleTests(unittest.TestCase):
     def fixture(self, case_id, family='a family name no rule reads'):
-        """A record and manifest of `case_id`. The manifest names another family: only the hooks of its case can apply."""
+        """A record and manifest of `case_id`. The manifest names another family: only its case's hooks can apply."""
         from test_benchmark_family_calibration import AdmissionTests as Fixture
         manifest, record = Fixture().fixture(case_id)
         return {**manifest, 'family': family}, record
@@ -654,8 +664,9 @@ class CalibrationRuleTests(unittest.TestCase):
         record['input_hashes'] = {name: 'a' * 64 for name in names}
         manifest['calibration'] = {'input_hashes': record['input_hashes']}
         self.assertNotIn(commitment, self.failures(manifest, record))
-        self.assertIn(commitment, self.failures({**self.fixture('sampled-sensor-v1')[0], 'calibration': manifest['calibration']},
-                                                {**self.fixture('sampled-sensor-v1')[1], 'input_hashes': record['input_hashes']}))
+        sensor, measured = self.fixture('sampled-sensor-v1')
+        self.assertIn(commitment, self.failures({**sensor, 'calibration': manifest['calibration']},
+                                                {**measured, 'input_hashes': record['input_hashes']}))
 
     def test_01_B15_the_extra_inventory_file_comes_from_the_hook(self):
         extra = 'native/SampleSource.cs'
@@ -799,8 +810,8 @@ class ProviderTests(unittest.TestCase):
         loaded = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True, check=True, timeout=60,
                                 env={**os.environ, **package_env()})
         modules = {name.rsplit('.', 1)[-1] for name in json.loads(loaded.stdout)}
-        self.assertLessEqual({'tq9_v2', 'tq9_legacy', 'sampled_sensor', 'parameter_store', 'zephyr_modbus', 'generated'},
-                             modules)
+        self.assertLessEqual({'tq9_v2', 'tq9_legacy', 'sampled_sensor', 'parameter_store', 'zephyr_modbus',
+                              'generated'}, modules)
         self.assertEqual(modules & DECRYPTING_MODULES, set())
 
 

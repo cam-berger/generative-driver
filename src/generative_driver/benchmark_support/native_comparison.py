@@ -48,7 +48,8 @@ def compare_executions(native, reference):
                 check(prefix+'/state/'+name, isinstance(state, dict) and type(state.get(name)) is int
                       and state[name] == expected)
     failed = [c['id'] for c in checks if not c['passed']]
-    scripted = any(r.get('execution') != 'firmware-reference-exercise' for r in (native, reference) if isinstance(r, dict))
+    scripted = any(r.get('execution') != 'firmware-reference-exercise'
+                   for r in (native, reference) if isinstance(r, dict))
     return {'schema': 'firmware-rehosting-comparison/1', 'case': plan['case'],
             'execution': 'scripted-test' if scripted else 'firmware-rehosting-validation', 'model_benchmark': False,
             'verdict': 'failed' if failed else 'passed', 'checks': checks, 'failed_checks': failed,

@@ -311,8 +311,8 @@ class FamilyRoutingTests(unittest.TestCase):
 
     def test_each_family_declares_the_mutants_its_qualification_requires(self):
         required = {
-            'tq9-v2': {'wrong-scale', 'constant-output', 'wrong-state', 'unsigned-temperature', 'wrong-temperature-scale',
-                    'wrong-temperature-unit', 'wrong-temperature-byteorder', 'wrong-crc', 'wrong-duty-effect'},
+            'tq9-v2': {'wrong-scale', 'constant-output', 'wrong-state', 'unsigned-temperature',
+                       'wrong-temperature-scale', 'wrong-temperature-unit', 'wrong-temperature-byteorder', 'wrong-crc', 'wrong-duty-effect'},
             'sampled-sensor-v1': {'constant', 'scale', 'signedness', 'stale'},
             'parameter-store-v1': {'constant', 'scale', 'order', 'wrong-bank', 'abort', 'idle-only-update',
                                 'short-rejection-frame'},

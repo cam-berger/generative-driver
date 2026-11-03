@@ -245,8 +245,9 @@ class StepGradingTests(unittest.TestCase):
         truth = {**FIXTURE_ANSWER_KEY, 'artifact_sha256': 'a' * 64}
         self.addCleanup(device.close)
         with tempfile.TemporaryDirectory() as temp:
-            return generated.execute(device.session(truth['recipe']), invoke, PIN, generated.contract(PIN, truth, 'final'),
-                                     truth, Path(temp)/'raw.json', phase='final', healthy_device_failures=True)
+            return generated.execute(device.session(truth['recipe']), invoke, PIN,
+                                     generated.contract(PIN, truth, 'final'), truth, Path(temp)/'raw.json',
+                                     phase='final', healthy_device_failures=True)
 
     def test_a_package_process_that_could_not_start_is_the_hosts_even_on_a_healthy_device(self):
         spawn = {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [],

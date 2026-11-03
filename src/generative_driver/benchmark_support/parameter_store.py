@@ -167,5 +167,6 @@ def validate_phase(phase):
 
 
 HOOKS = {'contract': contract, 'build_plan': build_plan, 'observations': observations, 'reuse_passed': reuse_passed,
-         'required_mutants': REQUIRED_MUTANTS, 'hydrate_truth': hydrate_family_truth, 'admission_valid': admission_valid,
+         'required_mutants': REQUIRED_MUTANTS, 'hydrate_truth': hydrate_family_truth,
+         'admission_valid': admission_valid,
          'validate_phase': validate_phase, 'required_scenarios': REQUIRED_SCENARIOS}

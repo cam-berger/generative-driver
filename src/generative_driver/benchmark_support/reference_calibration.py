@@ -179,7 +179,9 @@ def calibrate(case_id, options):
     record={'schema':'benchmark-calibration/1','status':'pending','case':case_id,'evaluator_version':definition.evaluator_version,
         'execution':'reference-calibration','backend':'native-renode','images':definition.manifest['images'],
         'input_hashes':truth['input_hashes'] if family_case else input_hashes(truth),'evaluator_identity':identity,'native_process_observed':False,
-        'references':[],'mutants':[],'scenarios':{},'required_mutants':sorted(family_for(case_id).required_mutants if family_case else set(CORE_MUTANTS)|set(truth['mutations']['required'])),
+        'references':[],'mutants':[],'scenarios':{},
+        'required_mutants':sorted(family_for(case_id).required_mutants if family_case
+                                  else set(CORE_MUTANTS)|set(truth['mutations']['required'])),
         'tools':{},'runs':[]}
     def save():_write(output/'calibration-record.json',record)
     save()

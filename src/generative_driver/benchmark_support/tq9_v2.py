@@ -1,5 +1,5 @@
-"""TQ9 behavior contracts and plans derived only from evaluator-owned truth, and its admission: the mutants a record must
-cover, the input identities it must carry and its check."""
+"""TQ9 behavior contracts and plans derived only from evaluator-owned truth, and its admission: the mutants a record
+must cover, the input identities it must carry and its check."""
 import copy
 
 REQUIRED_MUTANTS = frozenset({'wrong-scale', 'constant-output', 'wrong-state', 'unsigned-temperature',
@@ -102,7 +102,9 @@ def tq9_candidate(truth, reference_name, scenario, mutation=None):
         decoder=candidate['operations'][task['operation']]['outputs'][task['outputs']['temperature']['output']]
         if mutation=='wrong-scale':decoder['scale']=decoder.get('scale',1)*10
         elif mutation=='constant-output':decoder.update(scale=0,offset_value=0)
-        elif mutation=='wrong-state':candidate['operations'][caps['tasks']['arm']['operation']]=copy.deepcopy(candidate['operations'][caps['tasks']['disarm']['operation']])
+        elif mutation=='wrong-state':
+            candidate['operations'][caps['tasks']['arm']['operation']]=copy.deepcopy(
+                candidate['operations'][caps['tasks']['disarm']['operation']])
         else:raise ValueError('Unknown legacy mutation')
     elif mutation is not None:
         for patch in mutation['patch']:
@@ -112,7 +114,8 @@ def tq9_candidate(truth, reference_name, scenario, mutation=None):
             target[int(parts[-1]) if isinstance(target,list) else parts[-1]]=copy.deepcopy(patch['value'])
         for mapping in caps['tasks'].values():
             for output_mapping in mapping['outputs'].values():
-                output_mapping['unit']=candidate['operations'][mapping['operation']]['outputs'][output_mapping['output']].get('unit')
+                output_mapping['unit']=(candidate['operations'][mapping['operation']]['outputs']
+                                        [output_mapping['output']].get('unit'))
     return candidate,caps
 
 
@@ -125,7 +128,8 @@ def tq9_execution_inputs(truth):
             result[name+'-'+phase+'-original']=execution_input_identity(*tq9_candidate(truth,name,'original'))
     for scenario in REQUIRED_SCENARIOS:
         for mutation in CORE_MUTANTS:
-            result[mutation+'-'+scenario]=execution_input_identity(*tq9_candidate(truth,'reference-a',scenario,mutation))
+            result[mutation+'-'+scenario]=execution_input_identity(
+                *tq9_candidate(truth,'reference-a',scenario,mutation))
     for mutation in truth['mutations']['mutations']:
         scenario='original'
         result[mutation['id']]=execution_input_identity(*tq9_candidate(truth,'reference-a',scenario,mutation))
@@ -144,8 +148,9 @@ def validate_record(manifest, record):
 
 
 def _admission_valid(pin, truth, record):
-    """Whether `record` is the measured evidence of `truth`: its digest, inputs, images, mutants, executed inputs and every
-    run's contract must be the ones `truth` and the pinned manifest commit to, and `validate_record` must accept it."""
+    """Whether `record` is the measured evidence of `truth`: its digest, inputs, images, mutants, executed inputs and
+    every run's contract must be the ones `truth` and the pinned manifest commit to, and `validate_record` must accept
+    it."""
     from .calibration import input_hashes
     from .snapshots import canonical_digest
     manifest = pin['manifest']
@@ -171,11 +176,12 @@ def _instrument_units():
 
 
 def _public_observation(raw):
-    return {'values': {'duty': observations(raw, {}, {})['duty'], 'temperature_reference': raw['values']['temperature']},
-            'units': _instrument_units()}
+    return {'values': {'duty': observations(raw, {}, {})['duty'],
+                       'temperature_reference': raw['values']['temperature']}, 'units': _instrument_units()}
 
 
 HOOKS = {'contract': contract, 'build_plan': build_plan, 'observations': observations, 'reuse_passed': reuse_passed,
-         'required_mutants': REQUIRED_MUTANTS, 'admission_valid': _admission_valid, 'instrument_units': _instrument_units,
-         'public_observation': _public_observation,
-         'input_commitments': frozenset({'source', 'contract', 'recipe', 'references', 'mutations', 'build', 'analysis'})}
+         'required_mutants': REQUIRED_MUTANTS, 'admission_valid': _admission_valid,
+         'instrument_units': _instrument_units, 'public_observation': _public_observation,
+         'input_commitments': frozenset({'source', 'contract', 'recipe', 'references', 'mutations', 'build',
+                                         'analysis'})}

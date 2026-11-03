@@ -20,7 +20,8 @@ def _mission_done(events, capabilities):
     percent output and disarm, judged from the package results and the instrument's duty readings after them. A note on
     the reuse stage, never a grade."""
     spec = capabilities['temperature']
-    duties = [e['observation']['duty'] for e in events if e['result'].get('ok') is True and isinstance(e.get('observation'), dict)]
+    duties = [e['observation']['duty'] for e in events
+              if e['result'].get('ok') is True and isinstance(e.get('observation'), dict)]
     read = any(e.get('operation') == spec['operation'] and e['result'].get('ok') is True
                and type(e['result'].get('outputs', {}).get(spec['output'])) in (int, float) for e in events)
     return read and bool(duties) and any(abs(d - REQUESTED) <= .002 for d in duties) and duties[-1] == 0

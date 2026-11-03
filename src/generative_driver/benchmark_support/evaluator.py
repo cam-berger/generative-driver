@@ -20,8 +20,8 @@ OWNER_PROOF = 'Missing or inconsistent owner proof of generated MCP reuse'
 
 
 def method_for(case_id):
-    """How the evaluator grades a case's frozen driver, as its registration says: from the fresh reuse its run recorded or
-    on a fresh emulator, which is also how a run that names no registered case would be graded."""
+    """How the evaluator grades a case's frozen driver, as its registration says: from the fresh reuse its run recorded
+    or on a fresh emulator, which is also how a run that names no registered case would be graded."""
     return registration_for(case_id).grading_method if case_id in registered_case_ids() else 'fresh-final'
 
 
@@ -49,8 +49,8 @@ def accept_frozen_package(package, expected_sha256):
 def reference_execute(pin, truth, capabilities, *, renode, image, output_dir, package, expected_package_sha256,
                       private_dir=None, healthy_device_failures=False):
     """Grade a frozen package's final phase on a fresh emulator it starts and stops, through the package's own bundled
-    runtime, by the family's `execute`. The emulator session keeps its files (its log, the monitor commands it rendered) in
-    `private_dir` when given. Candidate models and reference emission run outside the grader
+    runtime, by the family's `execute`. The emulator session keeps its files (its log, the monitor commands it rendered)
+    in `private_dir` when given. Candidate models and reference emission run outside the grader
     (`reference_calibration.run_reference`)."""
     if pin.get('scenario_id') != 'original':
         raise ValueError('Unknown case scenario')

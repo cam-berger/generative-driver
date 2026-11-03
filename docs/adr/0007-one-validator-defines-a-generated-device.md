@@ -7,8 +7,9 @@ The interface review of 2026-11-02 settled that one validator in this repository
 ## Decision
 
 A new module, `benchmark_support/generated_device.py`, is the executable form of the interface document and nothing else. It has two entry points:
-- `validate_device(device, *, image, mission, key=None)` checks every rule over the plaintext device: the identity part of its manifest entry (`id`, `level`, `framing`), the image, the public mission and, with a key, the key's own rules and its agreement with the mission and the framing.
+- `validate_device(device, *, image, mission, key=None)` checks every rule over the plaintext device: the identity part of its manifest entry (`id`, `level`, `framing`), the image, the public mission and, with a key, the key's own rules, its agreement with the mission and the framing, and what its references must show.
 - `answer_key(key)` checks the key's own rules, for a grader that holds only the key, and the module derives the key's check ids.
+- `validate_identity(device)` checks the identity part alone, which the manifest checks share.
 
 Both raise ValueError naming the first defect. `seal_device` runs `validate_device` before writing anything. `open_device` runs it after decrypting; without `answer=True` it covers the inputs alone. `qualify` relies on `open_device` and keeps only the checks that need emulator runs. `generated.py` imports `answer_key` and the check ids from the new module, so the validator lies inside the generated family's grader identity.
 

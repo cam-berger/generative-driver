@@ -1,6 +1,6 @@
 # Generated-device interface
 
-Status: specified on 2026-11-02 from the interface review in the [benchmark baseline spec](../.scratch/benchmark-baseline/spec.md). The validator, `seal_device`, `open_device` and the test fixture move to it together; until then the code accepts version 1 of the answer key. The bench harness's part, under [What a trial and a verdict reveal](#what-a-trial-and-a-verdict-reveal), comes with the harness.
+Status: specified on 2026-11-02 from the interface review in the [benchmark baseline spec](../.scratch/benchmark-baseline/spec.md), and enforced by `generated_device` ([ADR 0007](adr/0007-one-validator-defines-a-generated-device.md)), whose validator `seal_device` and `open_device` run. The bench harness's part, under [What a trial and a verdict reveal](#what-a-trial-and-a-verdict-reveal), comes with the harness.
 
 This is what the private device generator must hand over for a generated device to be sealed, graded and admitted. Each rule is checked in one of three places:
 - by the validator in `generative_driver.benchmark_support`, which `seal_device` runs before writing anything and `open_device` runs before returning a device;
@@ -123,7 +123,7 @@ A step passes when its answer, its outputs and every cell after it match. Receiv
 - It forwards every request a refusal step makes, so qualification checks the device's refusal bytes, not the driver's own bounds.
 - Its identity operation is a read that sends a command the other reference's does not.
 
-On a `text-lines` device, one reference reads each refusing task's reply with `until` on the line feed and the other with `lines`, ending on the first line. Devices with the other two framings have no such rule, since a correct driver must read a whole binary reply to check it.
+On a `text-lines` device, one reference reads each refusing task's reply with `until` on the line feed and the other with `lines`, ending on the first line. A `lines` read ends on a line that matches one non-empty word or prefix, so every reply to a command begins with one word, such as the command's: the test fixture replies `MODE OK` and `MODE ERR`. Devices with the other two framings have no such rule, since a correct driver must read a whole binary reply to check it.
 
 ## Rules the validator checks
 
@@ -178,4 +178,4 @@ They show no expected value, input or state name.
 
 ## Versions and the worked example
 
-From this version on, a change to any rule here changes the version of the schema it touches. Version 1 of the answer key is refused. The manifest keeps version 1 with the eight-digit id, since no set was written before it. The public test fixture, [tests/generated_fixtures.py](../tests/generated_fixtures.py), is the worked example: it is rewritten to version 2 together with the validator, which must accept it.
+From this version on, a change to any rule here changes the version of the schema it touches. Version 1 of the answer key is refused. The manifest keeps version 1 with the eight-digit id, since no set was written before it. The public test fixture, [tests/generated_fixtures.py](../tests/generated_fixtures.py), is the worked example, and the validator accepts it.

@@ -75,6 +75,7 @@ An interface review settles what the private generator must produce, one decisio
   - `mission.state` lists only the cells the objective determines, whatever state the device started in.
   - The recipe needs `setup`, and its last reset command is `emulation RunFor`.
   - The firmware applies every state change before it replies and sends nothing unprompted.
+  - Found while building the validator: a `lines` read ends on a line that matches one non-empty word or prefix, so a text-lines device's replies to one command begin with one word, such as the command's.
 
 ## Constraints
 

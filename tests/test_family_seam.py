@@ -113,7 +113,7 @@ class FamilyInterfaceTests(unittest.TestCase):
         self.assertIsNone(family.validate_execution({}, truth))
 
     def required_calls(self, family):
-        """Each required hook of `family`, its plan and its step executor as a call,."""
+        """Each required hook of `family`, its plan and its step executor, as a call."""
         return {'contract': lambda: family.contract({}, {}, 'final'),
                 'observations': lambda: family.observations({}, {}, {}),
                 'reuse_passed': lambda: family.reuse_passed([], {}),
@@ -455,14 +455,16 @@ class UnbranchedCaseTests(unittest.TestCase):
     def test_01_B10_resolve_case_returns_todays_definitions(self):
         self.assert_definition('tq9', id='tq9', family='tq9', version='2', evaluator_version='2',
                                execution='actual-agent-emulation', evidence_track='firmware',
-                               adapter_key='legacy-emulator', approval_scope='emulator', default_effects=('write', 'actuate'),
+                               adapter_key='legacy-emulator', approval_scope='emulator',
+                               default_effects=('write', 'actuate'),
                                manifest_sha256='fa1d971100f646cc950e7af5eb5b96b82ff4a85950ecbbd7121305603a3c74b1')
         self.assert_definition('bme280', id='bme280', family='bme280', version='3', evaluator_version='3',
                                execution='actual-agent-physical', evidence_track='physical',
                                adapter_key='legacy-physical', approval_scope='bound-device', default_effects=('write',),
                                manifest_sha256='8b7b2abfb883e6b61d64f8ffbcb4201084d30c5b263691fbadfde39eaaa2b4d3')
         self.assert_definition('setup-smoke', id='setup-smoke', family='setup-smoke', version='1',
-                               evaluator_version='1', execution='scripted-replay', evidence_track='recorded-replay', adapter_key='smoke',
+                               evaluator_version='1', execution='scripted-replay', evidence_track='recorded-replay',
+                               adapter_key='smoke',
                                approval_scope=None, default_effects=(), manifest={}, manifest_sha256='')
 
     def test_01_B10_pin_case_returns_todays_pins(self):
@@ -506,7 +508,8 @@ class UnbranchedCaseTests(unittest.TestCase):
                                           'execution': 'actual-agent-physical', 'evidence_track': 'physical',
                                           'scenarios': ['original']})
         self.assertEqual(rows['setup-smoke'], {**DESCRIBED, 'id': 'setup-smoke', 'family': 'setup-smoke',
-                                               'version': '1', 'execution': 'scripted-replay', 'evidence_track': 'recorded-replay',
+                                               'version': '1', 'execution': 'scripted-replay',
+                                               'evidence_track': 'recorded-replay',
                                                'scenarios': []})
 
     def register_like(self, source, case_id):

@@ -1,5 +1,5 @@
 """The legacy tq9 case's family: its instrument and its fresh-reuse mission. It is graded from the fresh reuse its run
-recorded (`recorded_grading`), so it declares no contract or plan."""
+recorded (`recorded_grading`), so it declares no contract or plan (Feature 01, family-seam)."""
 
 # The public reuse mission requests 37 percent output, then disarm; the instrument reads the duty as a fraction.
 REQUESTED = .37

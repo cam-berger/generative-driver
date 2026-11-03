@@ -20,6 +20,7 @@ import re
 from pathlib import Path
 
 from . import truth
+from .generated_device import validate_device
 from .grader_identity import grader_identity
 from .snapshots import canonical_digest
 
@@ -137,8 +138,9 @@ def seal_device(set_root: Path, device: dict, *, image: bytes, mission: dict, an
     """Seal one device under `set_root/devices/`, creating it: its public inputs `{"image_base64", "mission"}` and its
     answer key, each through `truth.seal`. `device` names the `id`, `level` (1 to 5) and `framing` (one of FRAMINGS).
     Returns the device's manifest entry. Before anything is written: ValueError for an invalid device, an image that is
-    not bytes, a mission or answer key that is not an object, or an unusable password; and, from `canonical_digest`,
-    TypeError for content that JSON cannot carry (a set, bytes) and ValueError for NaN or text that cannot be encoded."""
+    not bytes, a mission or answer key that is not an object, a device that breaks the generated-device interface
+    (`generated_device.validate_device`) or an unusable password; and, from `canonical_digest`, TypeError for content
+    that JSON cannot carry (a set, bytes) and ValueError for NaN or text that cannot be encoded."""
     _check_identity(device)
     if not isinstance(image, bytes):
         raise ValueError('The image of a device is bytes')
@@ -150,6 +152,7 @@ def seal_device(set_root: Path, device: dict, *, image: bytes, mission: dict, an
     entry = {'id': identity, 'level': device['level'], 'framing': device['framing'],
              'image_sha256': hashlib.sha256(image).hexdigest(), 'mission_sha256': canonical_digest(mission),
              'answer_key_sha256': canonical_digest(answer_key)}
+    validate_device(device, image=image, mission=mission, key=answer_key)
     sealed = {'inputs': {'image_base64': base64.b64encode(image).decode('ascii'), 'mission': mission},
               'answer': answer_key}
     for name, content in sealed.items():

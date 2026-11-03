@@ -301,8 +301,7 @@ class SetBundleTests(unittest.TestCase):
 
     def test_sealing_a_device_writes_two_encrypted_files_and_returns_its_manifest_entry(self):
         root = self.base / 'new' / 'set'  # neither it nor its devices folder exists
-        image, mission = b'\x00image bytes', {'objective': 'Report the mode.'}
-        answer_key = {'schema': 'generated-answer-key/1', 'secret': 'the answer'}
+        image, mission, answer_key = b'\x00image bytes', fixture_mission('d007'), FIXTURE_ANSWER_KEY
         entry = seal_device(root, {'id': 'd007', 'level': 3, 'framing': 'register-access'}, image=image,
                             mission=mission, answer_key=answer_key, password=PASSWORD)
         files = {name: (root / 'devices' / ('d007.' + name + '.enc')).read_bytes() for name in ('inputs', 'answer')}
@@ -312,7 +311,7 @@ class SetBundleTests(unittest.TestCase):
             'mission_sha256': canonical_digest(mission), 'answer_key_sha256': canonical_digest(answer_key),
             'inputs': {'path': 'devices/d007.inputs.enc', 'sha256': hashlib.sha256(files['inputs']).hexdigest()},
             'answer': {'path': 'devices/d007.answer.enc', 'sha256': hashlib.sha256(files['answer']).hexdigest()}})
-        for name, secret in (('inputs', b'Report the mode'), ('answer', b'the answer')):
+        for name, secret in (('inputs', b'reuse_objective'), ('answer', answer_key['nonce'].encode())):
             self.assertNotIn(secret, files[name])
         sha = write_manifest(root, SET, [entry])  # a sealed device opens under its own manifest entry
         opened = open_device(root, load_set(root, SET, registrations={SET: sha}), 'd007', PASSWORD, answer=True)
@@ -320,7 +319,8 @@ class SetBundleTests(unittest.TestCase):
 
     def test_a_device_that_a_manifest_could_not_list_is_not_sealed(self):
         good = {'id': 'd001', 'level': 1, 'framing': 'text-lines'}
-        content = {'image': FIXTURE_IMAGE, 'mission': {}, 'answer_key': {}, 'password': PASSWORD}
+        content = {'image': FIXTURE_IMAGE, 'mission': fixture_mission('d001'), 'answer_key': FIXTURE_ANSWER_KEY,
+                   'password': PASSWORD}
         rows = [('a path for an id', {**good, 'id': '../escape'}, {}, 'Invalid device id'),
                 ('an uppercase id', {**good, 'id': 'D001'}, {}, 'Invalid device id'),
                 ('the name of a Windows device', {**good, 'id': 'nul'}, {}, 'reserved'),
@@ -333,6 +333,13 @@ class SetBundleTests(unittest.TestCase):
         for name, device, changes, pattern in rows:
             with self.subTest(name), self.assertRaisesRegex(ValueError, pattern):
                 seal_device(self.root, device, **{**content, **changes})
+        self.assertEqual(list(self.root.rglob('*')), [])  # nothing was written
+
+    def test_a_device_whose_answer_key_breaks_the_interface_is_not_sealed(self):
+        key = {**copy.deepcopy(FIXTURE_ANSWER_KEY), 'note': 'a field the interface does not define'}
+        with self.assertRaisesRegex(ValueError, 'Invalid generated answer key'):
+            seal_device(self.root, {'id': 'd001', 'level': 1, 'framing': 'text-lines'}, image=FIXTURE_IMAGE,
+                        mission=fixture_mission('d001'), answer_key=key, password=PASSWORD)
         self.assertEqual(list(self.root.rglob('*')), [])  # nothing was written
 
     def test_content_that_json_cannot_carry_is_refused_before_anything_is_written(self):
@@ -355,7 +362,7 @@ class SetBundleTests(unittest.TestCase):
 
     def test_a_manifest_that_load_set_would_refuse_is_not_written(self):
         entry = seal_device(self.root, {'id': 'd001', 'level': 1, 'framing': 'text-lines'}, image=FIXTURE_IMAGE,
-                            mission={}, answer_key={}, password=PASSWORD)
+                            mission=fixture_mission('d001'), answer_key=FIXTURE_ANSWER_KEY, password=PASSWORD)
         for name, devices, pattern in (('a duplicate id', [entry, entry], 'Duplicate device id'),
                                        ('a path out of the set',
                                         [{**entry, 'inputs': {**entry['inputs'], 'path': '../d001.inputs.enc'}}], 'set path')):

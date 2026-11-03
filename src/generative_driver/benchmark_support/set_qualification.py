@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from shutil import rmtree
 
-from . import generated
+from . import generated_device
 from .generated_sets import QUALIFICATION_SCHEMA, load_set, open_device, seal_qualification
 from .grader_identity import grader_identity
 from .snapshots import canonical_digest
@@ -120,7 +120,7 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
     devices = {}
     for entry in sorted(manifest['devices'], key=lambda entry: entry['id']):
         devices[entry['id']] = opened = open_device(root, manifest, entry['id'], password, answer=True)
-        generated.answer_key(opened['answer_key'])
+        generated_device.answer_key(opened['answer_key'])
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     output.chmod(0o700)  # an output that already existed, empty, keeps its own mode otherwise
     for name in ('runs', 'native'):
@@ -133,7 +133,7 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
     for device_id, opened in devices.items():
         key = opened['answer_key']
         references = key['references']
-        if not generated.REQUIRED_MUTANTS <= {mutant['id'] for mutant in key['mutants']}:
+        if not generated_device.REQUIRED_MUTANTS <= {mutant['id'] for mutant in key['mutants']}:
             failures.append('mutant inventory:' + device_id)
         if canonical_digest(references['a']['model']) == canonical_digest(references['b']['model']):
             failures.append('references not distinct:' + device_id)

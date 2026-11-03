@@ -340,7 +340,9 @@ class PendingSetTests(Workspace, unittest.TestCase):
         self.assertFalse(inside.exists())
         with self.subTest('a malformed answer key'):
             malformed, out = self.workspace()
-            registered = write_set(malformed, {'d001': {**FIXTURE_ANSWER_KEY, 'nonce': 'not hexadecimal'}})
+            # Sealing refuses such a key, so the set stands for one written without the validator.
+            with patch.object(generated_sets, 'validate_device'):
+                registered = write_set(malformed, {'d001': {**FIXTURE_ANSWER_KEY, 'nonce': 'not hexadecimal'}})
             with patch(START) as start, self.assertRaisesRegex(ValueError, 'Invalid generated answer key'):
                 qualify(malformed, SET, PASSWORD, renode=Path('/toy'), output_dir=out, registrations=registered)
             start.assert_not_called()

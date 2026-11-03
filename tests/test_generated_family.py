@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from generated_fixtures import (FIXTURE_ANSWER_KEY, MODE_ADDRESS, MODE_UNIT, MUTANT_ERR_AS_VALUE, REFERENCE_A,
                                 REFERENCE_B, STEP, FixtureDevice, fixture_mission, fixture_start)
-from generative_driver.benchmark_support import generated
+from generative_driver.benchmark_support import generated, generated_device
 from generative_driver.benchmark_support.behavior import validate_records
 from generative_driver.benchmark_support.evaluator import reference_execute
 from generative_driver.benchmark_support.generated import classify_answer
@@ -453,7 +453,7 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(rows['generated']['status'], 'pending')
         # Workers see only a generated device's UART: its monitor reads project to nothing.
         self.assertEqual(public_observation('generated', {'values': {'pc': 0x08000100}}), {'values': {}, 'units': {}})
-        self.assertEqual(generated.REQUIRED_MUTANTS, frozenset({'wrong-scale', 'constant-output', 'wrong-state'}))
+        self.assertEqual(generated_device.REQUIRED_MUTANTS, frozenset({'wrong-scale', 'constant-output', 'wrong-state'}))
         self.assertIsNone(generated.reuse_passed([], {}))
 
     def test_the_generated_identity_covers_the_core_and_the_generated_family(self):
@@ -461,7 +461,9 @@ class RegistrationTests(unittest.TestCase):
         core = {name for name in grader_closure(families=()) if not name.startswith('interface_runtime')}
         identity = grader_identity(case_id='generated')
         self.assertEqual(identity['scope'], 'generated')
-        self.assertEqual(set(identity['modules']), core | {'benchmark_support.generated'})
+        # The family's grading module and the validator that defines a valid generated device (ADR 0007).
+        self.assertEqual(set(identity['modules']),
+                         core | {'benchmark_support.generated', 'benchmark_support.generated_device'})
 
 
 if __name__ == '__main__':

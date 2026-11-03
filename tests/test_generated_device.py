@@ -211,6 +211,18 @@ class ValidDeviceTests(unittest.TestCase):
         self.assert_refused([('no ' + identifier, without(identifier), 'mutants include')
                              for identifier in ('wrong-scale', 'constant-output', 'wrong-state')])
 
+    def test_the_recipe_boots_the_firmware_from_its_own_setup(self):
+        recipe = lambda key: key['recipe']
+        self.assert_refused([
+            ('no setup', lambda key: recipe(key).pop('setup'), 'setup'),
+            ('a setup that is no source', lambda key: recipe(key).update(setup='other.resc'), 'setup'),
+            ('an include that is no source', lambda key: recipe(key).update(includes=['board.repl']), 'setup'),
+            # Renode keeps RAM across machine Reset, and the evaluator reads the reset state as soon as the reset
+            # commands return: without a boot interval, it would read the previous run's RAM.
+            ('a reset without a boot interval', lambda key: recipe(key).update(reset_commands=['machine Reset']),
+             'RunFor'),
+            ('stimuli', lambda key: recipe(key).update(stimuli={}), 'stimuli')])
+
     def test_cells_and_sequences_carry_no_design_in_their_names(self):
         # A verdict publishes check ids built from these names, so they are numbered.
         def swap(key):

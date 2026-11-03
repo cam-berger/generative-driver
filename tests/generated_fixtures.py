@@ -25,11 +25,12 @@ _MASKS = {'ReadByte': 0xff, 'ReadWord': 0xffff, 'ReadDoubleWord': 0xffffffff}
 class FixtureDevice:
     """The fixture firmware behind a fault-injecting stand-in for a Renode monitor, each on a local socket. It speaks
     the monitor's protocol but is not a faithful Renode: it answers an error line where Renode reads an unmapped address
-    as 0, prints values as unpadded hex, boots the firmware at once on `machine Reset` (so its recipe needs no boot
-    interval), and has a stopped-machine mode Renode lacks.
+    as 0, prints values as unpadded hex, boots the firmware at once on `machine Reset` (so its recipe's boot interval
+    changes nothing), and has a stopped-machine mode Renode lacks.
 
     The monitor answers `start` and `pause` (the emulator runs only between them), `machine Reset` (the mode becomes
-    `reset_mode`), `cpu PC`, and a `sysbus ReadByte`, `ReadWord` or `ReadDoubleWord` of the mode's address. It answers
+    `reset_mode`), `emulation RunFor`, `cpu PC`, and a `sysbus ReadByte`, `ReadWord` or `ReadDoubleWord` of the mode's
+    address. It answers
     with an error line a read of any other address, of an address in `unreadable`, or of any address while the mode is
     `unreadable_in_mode`. A UART line sent while the emulator is paused is dropped with its connection. On the UART line
     `dies_on` the machine stops: its UART hangs up on every line from then on, and its monitor still starts and pauses
@@ -95,6 +96,8 @@ class FixtureDevice:
             return 'Error: the machine stopped'
         if command == 'machine Reset':
             self.mode = self.reset_mode
+            return ''
+        if command.startswith('emulation RunFor '):
             return ''
         if command == 'cpu PC':
             return '0x08000100'
@@ -242,7 +245,9 @@ def fixture_answer_key():
     """The answer key of the fixture device (`generated-answer-key/2`), with a fresh random nonce."""
     return {
         'schema': 'generated-answer-key/2', 'nonce': secrets.token_hex(32),
-        'recipe': {'reset_commands': ['machine Reset'],
+        # Tests attach to a FixtureDevice and never start Renode, so the setup is a placeholder.
+        'recipe': {'source_files': {'fixture.resc': '# The fixture device runs behind local sockets.\n'},
+                   'setup': 'fixture.resc', 'reset_commands': ['machine Reset', 'emulation RunFor "00:00:00.1"'],
                    'observations': {'pc': {'command': 'cpu PC', 'width': 32, 'count': 1}}},
         'state': {'c1': {'address': MODE_ADDRESS, 'width': 32}},
         'reset': {'c1': RESET_MODE},

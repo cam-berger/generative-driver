@@ -254,9 +254,10 @@ class StepGradingTests(unittest.TestCase):
         device = FixtureDevice()
         with self.assertRaisesRegex(RuntimeError, 'behavioral grading is unavailable'):
             self.run_steps(device, lambda *call: dict(spawn))
-        # A reset, its observation and one read of the state, then the call's window; no health check follows.
-        self.assertEqual(device.commands, ['pause', 'machine Reset', 'cpu PC', 'sysbus ReadDoubleWord 0x20000000',
-                                           'start', 'pause'])
+        # A reset with its boot interval, its observation and one read of the state, then the call's window; no health
+        # check follows.
+        self.assertEqual(device.commands, ['pause', 'machine Reset', 'emulation RunFor "00:00:00.1"', 'cpu PC',
+                                           'sysbus ReadDoubleWord 0x20000000', 'start', 'pause'])
 
     def test_a_device_that_stops_before_its_state_is_read_leaves_no_grade(self):
         # Catches a dead evaluator device taken for an unreadable cell, which would leave an unknown grade that settles

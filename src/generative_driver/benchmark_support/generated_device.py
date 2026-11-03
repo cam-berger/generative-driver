@@ -119,6 +119,15 @@ def answer_key(truth):
     _validate_recipe(recipe)
     _require(bool(recipe.get('reset_commands')) and bool(recipe.get('observations'))
              and recipe.get('backend', 'renode') == 'renode', 'the recipe resets and observes a Renode emulator')
+    sources, setup, includes = recipe.get('source_files', {}), recipe.get('setup'), recipe.get('includes', [])
+    _require(isinstance(setup, str) and setup.endswith('.resc') and setup in sources and isinstance(includes, list)
+             and all(isinstance(name, str) and name in sources for name in includes),
+             'the recipe\'s setup and includes are among its source files')
+    # Renode keeps RAM across `machine Reset`, and the evaluator reads the reset state as soon as the reset commands
+    # return: they end with a boot interval, so that the firmware's startup code has run.
+    _require(recipe['reset_commands'][-1].split()[:2] == ['emulation', 'RunFor'],
+             'the recipe\'s last reset command is emulation RunFor over a boot interval')
+    _require('stimuli' not in recipe, 'a generated recipe has no stimuli')
     cells = truth['state']
     _require(isinstance(cells, dict) and bool(cells), 'the state names its cells')
     for name, cell in cells.items():

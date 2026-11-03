@@ -12,6 +12,7 @@
 | Driver contract | Authoritative public operations, meanings, value schemas, units, scoped caveats and preconditions. |
 | Declarative protocol | Wire exchanges and decoders implementing the public contract through a versioned shared runtime. |
 | Precondition | Driver-declared requirement checked from fresh read observations before the requested command. |
+| Effect grant | Permission for a driver call to write, actuate or reset; reads need none. The operator grants a run's effects and the grader each hidden step's; a call needing an ungranted effect is refused before any device I/O. |
 | Application MCP layer | Separately authored tools composing public managed-driver operations through the supported SDK. |
 | Semantic uncertainty | Missing or weakly supported operation or field meaning; retained as a scoped warning. |
 | Package | Contract, protocol, executable model projection, generated MCP catalog, runtime, reference, evidence and integrity manifest. |
@@ -31,10 +32,11 @@
 | Scoring set / development set | Generated devices sealed for comparisons, from which only aggregate scorecards leave the bench harness / devices from the same generator, open for development. |
 | Pinned system | The revision, runtime binary and version, model, reasoning effort and limits that every trial of a baseline shares. |
 | Baseline | One pinned system's graded trials on the scoring set, stored so later systems are compared with it device by device. |
-| Hidden sequence / step | An evaluator-owned task sequence that starts from a verified reset / one task call in it, which passes when both the driver's answer (a value, a refusal, no reply or an error) and the device state match the reference. A refusal counts whether the device or the driver made it. |
+| Hidden sequence / step | An evaluator-owned task sequence that starts from a verified reset / one task call in it, which passes when both the driver's answer (a value, a refusal, no reply or an error) and the device state match the reference. A refusal counts whether the device or the driver made it. A generated device's hidden sequences together take every transition of the state machine its answer key declares. |
 | Framing | How a generated device's commands and replies travel over UART: text lines, binary frames with length and checksum, or register access. A case's family is its registered evaluator, not its framing. |
-| Answer vault / generator volume | The encrypted volume holding passwords, answer keys, each set's secret seed and sealed scoring trials / the one holding the generator's repository. Neither is mounted while workers run. |
+| Answer vault / generator volume | The encrypted volume holding passwords, answer keys, every generated set, each set's secret seed and sealed scoring trials / the one holding the generator's repository. Neither is mounted while workers run. |
 | Device generator | The private tool, kept in its own encrypted volume outside this repository, that writes each generated device's firmware, mission, answer key, reference drivers and mutants from a sampled design. |
+| Generated-device interface | The written rules every generated device meets: what its manifest entry, image, public mission and answer key hold, and how they agree. One validator in this repository checks them when the generator seals a device and when the evaluator opens it; rules that only an emulator run can show are checked when its set is qualified. |
 | Difficulty level | One of five generator settings, easy to hard, that raise state, refusal rules, composite tasks, hidden triggers, value encoding and binary obfuscation together. |
 | Comparison | Two systems' per-device results on one admitted scoring set under the same evaluator revision and limits, naming every changed dimension. Reports outside a scoring set stay separate series. |
 | Anchor | Today's admitted hand-made and upstream cases, run with each pinned system and reported apart from the scoring set; never pooled into its pass rate or comparisons. |

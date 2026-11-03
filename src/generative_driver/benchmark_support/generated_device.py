@@ -9,6 +9,7 @@ import re
 
 from .capabilities import numeric_value
 
+FRAMINGS = ('text-lines', 'binary-frames', 'register-access')
 SCHEMA = 'generated-answer-key/1'
 REQUIRED_MUTANTS = frozenset({'wrong-scale', 'constant-output', 'wrong-state'})
 ANSWERS = ('value', 'refusal', 'no_reply')
@@ -17,6 +18,8 @@ _STEP_FIELDS = ('task', 'inputs', 'grants', 'answer', 'state')
 _GRANTS = ('read', 'write', 'actuate', 'reset')
 _NAME = re.compile(r'[A-Za-z0-9_-]{1,64}')
 _HEX = re.compile(r'(?:[0-9a-f]{2})+')
+_DEVICE_ID = re.compile(r'[0-9a-f]{8}')
+_LEVELS = (1, 2, 3, 4, 5)
 
 
 def _require(condition, defect):
@@ -164,8 +167,24 @@ def checks(key, revision):
     return found
 
 
+def validate_identity(device):
+    """Nothing, once `device` names a valid `id`, `level` and `framing`: eight lowercase hexadecimal digits, which carry
+    no design and never name a Windows device, a level from 1 to 5 and one of FRAMINGS. ValueError names the first
+    defect."""
+    if not isinstance(device, dict):
+        raise ValueError('A generated device is an object')
+    identity, level, framing = device.get('id'), device.get('level'), device.get('framing')
+    if not isinstance(identity, str) or not _DEVICE_ID.fullmatch(identity):
+        raise ValueError('Invalid device id: ' + repr(identity))
+    if type(level) is not int or level not in _LEVELS:  # a bool is not a level
+        raise ValueError('Invalid level of device ' + identity + ': ' + repr(level))
+    if framing not in FRAMINGS:
+        raise ValueError('Invalid framing of device ' + identity + ': ' + repr(framing))
+
+
 def validate_device(device, *, image, mission, key=None):
     """Nothing, once the plaintext device is valid: `device`, the identity part of its manifest entry, its `image`, its
     public `mission` and, given one, its answer `key`. ValueError names the first defect."""
+    validate_identity(device)
     if key is not None:
         answer_key(key)

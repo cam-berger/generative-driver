@@ -262,9 +262,9 @@ def fixture_mission(device_id):
 
 
 def write_fixture_set(root):
-    """Seal devices d001 and d002 (level 1, text lines), each the fixture device with FIXTURE_ANSWER_KEY, under `root`,
+    """Seal devices 0000d001 and 0000d002 (level 1, text lines), each the fixture device with FIXTURE_ANSWER_KEY, under `root`,
     write the manifest of set fixture-v1 beside them and return the SHA-256 of that manifest, which a test registers."""
     devices = [seal_device(root, {'id': device_id, 'level': 1, 'framing': 'text-lines'}, image=FIXTURE_IMAGE,
                            mission=fixture_mission(device_id), answer_key=FIXTURE_ANSWER_KEY, password=PASSWORD)
-               for device_id in ('d001', 'd002')]
+               for device_id in ('0000d001', '0000d002')]
     return write_manifest(root, 'fixture-v1', devices)

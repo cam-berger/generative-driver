@@ -20,11 +20,10 @@ import re
 from pathlib import Path
 
 from . import truth
-from .generated_device import validate_device
+from .generated_device import validate_device, validate_identity
 from .grader_identity import grader_identity
 from .snapshots import canonical_digest
 
-FRAMINGS = ('text-lines', 'binary-frames', 'register-access')
 QUALIFICATION_SCHEMA = 'generated-set-qualification/1'
 _QUALIFICATION_FILE = 'qualification.enc'
 _QUALIFICATION_FIELDS = {'schema', 'registration', 'manifest_sha256', 'grader_identity', 'status', 'devices', 'sample',
@@ -33,11 +32,6 @@ _MANIFEST_FILE = 'manifest.json'
 _MANIFEST_SCHEMA = 'generated-set-manifest/1'
 _REGISTRATIONS_SCHEMA = 'generated-set-registrations/1'
 _SETS_FILE = Path(__file__).resolve().parents[1] / 'resources' / 'registrations' / 'sets.json'
-_LEVELS = (1, 2, 3, 4, 5)
-_ID = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
-# Windows reads these names, with any extension, as devices: devices/nul.inputs.enc would be the NUL device, not a file.
-_WINDOWS_DEVICES = frozenset(['con', 'prn', 'aux', 'nul']
-                             + [name + str(number) for name in ('com', 'lpt') for number in range(1, 10)])
 _SHA256 = re.compile(r'[0-9a-f]{64}')
 _ENTRY_FIELDS = {'id', 'level', 'framing', 'image_sha256', 'mission_sha256', 'answer_key_sha256', 'inputs', 'answer'}
 
@@ -89,26 +83,11 @@ def _inside(set_root, relative):
     return path
 
 
-def _check_identity(device):
-    """ValueError unless `device` names a valid id, level and framing."""
-    if not isinstance(device, dict):
-        raise ValueError('A generated device is an object')
-    identity, level, framing = device.get('id'), device.get('level'), device.get('framing')
-    if not isinstance(identity, str) or not _ID.fullmatch(identity):
-        raise ValueError('Invalid device id: ' + repr(identity))
-    if identity in _WINDOWS_DEVICES:
-        raise ValueError('Invalid device id: ' + repr(identity) + ' is a reserved Windows device name')
-    if type(level) is not int or level not in _LEVELS:  # a bool is not a level
-        raise ValueError('Invalid level of device ' + identity + ': ' + repr(level))
-    if framing not in FRAMINGS:
-        raise ValueError('Invalid framing of device ' + identity + ': ' + repr(framing))
-
-
 def _check_entry(set_root, entry):
     """ValueError unless `entry` names every field of a device, validly, and its two files lie inside the set."""
     if not isinstance(entry, dict) or set(entry) != _ENTRY_FIELDS:
         raise ValueError('Unknown or missing device fields')
-    _check_identity(entry)
+    validate_identity(entry)
     if not all(_is_sha256(entry[name]) for name in ('image_sha256', 'mission_sha256', 'answer_key_sha256')):
         raise ValueError('Invalid content hash of device ' + entry['id'])
     for name in ('inputs', 'answer'):
@@ -136,12 +115,13 @@ def _check_manifest(set_root, manifest, registration):
 
 def seal_device(set_root: Path, device: dict, *, image: bytes, mission: dict, answer_key: dict, password: str) -> dict:
     """Seal one device under `set_root/devices/`, creating it: its public inputs `{"image_base64", "mission"}` and its
-    answer key, each through `truth.seal`. `device` names the `id`, `level` (1 to 5) and `framing` (one of FRAMINGS).
+    answer key, each through `truth.seal`. `device` names the `id` (eight lowercase hexadecimal digits), `level` (1 to 5)
+    and `framing` (one of `generated_device.FRAMINGS`).
     Returns the device's manifest entry. Before anything is written: ValueError for an invalid device, an image that is
     not bytes, a mission or answer key that is not an object, a device that breaks the generated-device interface
     (`generated_device.validate_device`) or an unusable password; and, from `canonical_digest`, TypeError for content
     that JSON cannot carry (a set, bytes) and ValueError for NaN or text that cannot be encoded."""
-    _check_identity(device)
+    validate_identity(device)
     if not isinstance(image, bytes):
         raise ValueError('The image of a device is bytes')
     if not isinstance(mission, dict):

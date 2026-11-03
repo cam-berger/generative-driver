@@ -11,14 +11,12 @@ from unittest.mock import patch
 
 from generated_fixtures import FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, PASSWORD, fixture_mission, write_fixture_set
 from generative_driver.benchmark_support import generated_sets, truth
-from generative_driver.benchmark_support.generated_sets import (FRAMINGS, load_set, open_device, seal_device,
-                                                                set_registrations, write_manifest)
+from generative_driver.benchmark_support.generated_device import FRAMINGS
+from generative_driver.benchmark_support.generated_sets import (load_set, open_device, seal_device, set_registrations,
+                                                                write_manifest)
 from generative_driver.benchmark_support.snapshots import canonical_digest
 
 SET = 'fixture-v1'
-# Windows reads these names, with any extension, as devices: devices/nul.inputs.enc is the NUL device, not a file.
-WINDOWS_DEVICES = ('con', 'prn', 'aux', 'nul') + tuple(
-    name + str(number) for name in ('com', 'lpt') for number in range(1, 10))
 
 
 class RegistrationTableTests(unittest.TestCase):
@@ -114,7 +112,7 @@ class SetBundleTests(unittest.TestCase):
         sha = write_fixture_set(self.root)
         manifest = load_set(self.root, SET, registrations={SET: sha})
         self.assertEqual(manifest['manifest_sha256'], sha)
-        self.assertEqual((manifest['set'], [device['id'] for device in manifest['devices']]), (SET, ['d001', 'd002']))
+        self.assertEqual((manifest['set'], [device['id'] for device in manifest['devices']]), (SET, ['0000d001', '0000d002']))
         with self.assertRaisesRegex(ValueError, 'not the registered manifest'):
             load_set(self.root, SET, registrations={SET: '0' * 64})
 
@@ -149,15 +147,15 @@ class SetBundleTests(unittest.TestCase):
             ('an unknown field', lambda m: m.update(note='x'), 'Unsupported'),
             ('a missing field', lambda m: m.pop('devices'), 'Unsupported'),
             ('devices that are no list', lambda m: m.update(devices={}), 'Unsupported'),
-            ('a duplicate id', lambda m: m['devices'][1].update(id='d001'), 'Duplicate device id'),
+            ('a duplicate id', lambda m: m['devices'][1].update(id='0000d001'), 'Duplicate device id'),
             ('an unknown device field', lambda m: device(m).update(note='x'), 'device fields'),
             ('a missing device field', lambda m: device(m).pop('framing'), 'device fields'),
-            ('a device that is no object', lambda m: m['devices'].append('d003'), 'device fields'),
+            ('a device that is no object', lambda m: m['devices'].append('0000d003'), 'device fields'),
             ('an uppercase content hash', lambda m: device(m).update(image_sha256='F' * 64), 'content hash'),
             ('a short content hash', lambda m: device(m).update(mission_sha256='a' * 63), 'content hash'),
             ('a file hash that is no hash', lambda m: device(m)['answer'].update(sha256='f' * 65), 'answer file'),
             ('an unknown file field', lambda m: device(m)['inputs'].update(note='x'), 'inputs file'),
-            ('a file that is no object', lambda m: device(m).update(inputs='devices/d001.inputs.enc'), 'inputs file')])
+            ('a file that is no object', lambda m: device(m).update(inputs='devices/0000d001.inputs.enc'), 'inputs file')])
 
     def test_a_set_without_a_device_is_refused(self):
         # It would qualify vacuously, whatever its mutants.
@@ -171,17 +169,16 @@ class SetBundleTests(unittest.TestCase):
     def test_a_device_id_a_level_and_a_framing_are_checked(self):
         self.write()
         self.assertEqual(FRAMINGS, ('text-lines', 'binary-frames', 'register-access'))
-        # The longest id, an id that starts with a digit, the highest level and each framing are accepted, and so is an id
-        # that only contains or begins with the name of a Windows device.
-        accepted = [{'id': 'a' * 64}, {'id': '0-z'}, {'level': 5}] + [{'framing': framing} for framing in FRAMINGS]
-        accepted += [{'id': value} for value in ('console', 'com10', 'lpt10', 'nul-1', 'aux2')]
+        # An id is eight lowercase hexadecimal digits, so it carries no design and never names a Windows device.
+        accepted = ([{'id': value} for value in ('0a1b2c3d', 'ffffffff', '00000000')] + [{'level': 5}]
+                    + [{'framing': framing} for framing in FRAMINGS])
         for changes in accepted:
             with self.subTest(changes):
                 load_set(self.root, SET, registrations=self.alter(lambda m: m['devices'][0].update(changes)))
         # A trailing newline does not make an id; a bool, a float and a string are no level.
         rows = ([('the id ' + repr(value), {'id': value}, 'device id')
-                 for value in ('D001', 'd_001', 'd 001', '-d001', 'd001\n', '', 'a' * 65, '../d001', 7, None)]
-                + [('the Windows device ' + value, {'id': value}, 'reserved') for value in WINDOWS_DEVICES]
+                 for value in ('d001', '0A1B2C3D', '0a1b2c3', '0a1b2c3d0', 'g0000000', '0a1b-c3d', 'l4-frame', 'nul',
+                               '0a1b2c3d\n', '', '../0a1b2', 7, None)]
                 + [('the level ' + repr(value), {'level': value}, 'level') for value in (0, 6, -1, True, 1.0, '1', None)]
                 + [('the framing ' + repr(value), {'framing': value}, 'framing')
                    for value in ('morse', 'TEXT-LINES', '', None, ['text-lines'])])
@@ -202,9 +199,9 @@ class SetBundleTests(unittest.TestCase):
 
     def test_a_path_that_leaves_the_set_is_refused(self):
         self.write()
-        paths = ['../d001.inputs.enc', '/etc/hosts', 'devices\\d001.inputs.enc', 'C:/Windows/win.ini', 'C:win.ini',
-                 '//server/share/x', 'devices/d001.inputs.enc:stream', 'devices/../../d001.inputs.enc',
-                 './devices/d001.inputs.enc', 'devices//d001.inputs.enc', 'devices/', '', 'devices/d001.inputs.enc\x00',
+        paths = ['../0000d001.inputs.enc', '/etc/hosts', 'devices\\0000d001.inputs.enc', 'C:/Windows/win.ini', 'C:win.ini',
+                 '//server/share/x', 'devices/0000d001.inputs.enc:stream', 'devices/../../0000d001.inputs.enc',
+                 './devices/0000d001.inputs.enc', 'devices//0000d001.inputs.enc', 'devices/', '', 'devices/0000d001.inputs.enc\x00',
                  5, None]
         self.assert_refused([(name + ' ' + repr(path), lambda m, n=name, p=path: m['devices'][0][n].update(path=p), 'set path')
                              for path in paths for name in ('inputs', 'answer')])
@@ -213,9 +210,9 @@ class SetBundleTests(unittest.TestCase):
         manifest = load_set(self.root, SET, registrations=self.write())
         for name in ('inputs', 'answer'):
             changed = copy.deepcopy(manifest)
-            changed['devices'][0][name]['path'] = '../d001.' + name + '.enc'
+            changed['devices'][0][name]['path'] = '../0000d001.' + name + '.enc'
             with self.subTest(name), self.assertRaisesRegex(ValueError, 'set path'):
-                open_device(self.root, changed, 'd001', PASSWORD, answer=True)
+                open_device(self.root, changed, '0000d001', PASSWORD, answer=True)
 
     def test_a_symlink_that_leads_out_of_the_set_is_refused(self):
         registrations = self.write()
@@ -228,102 +225,102 @@ class SetBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'set path'):
             load_set(self.root, SET, registrations=registrations)
         with self.assertRaisesRegex(ValueError, 'set path'):  # a link made after the set loaded
-            open_device(self.root, manifest, 'd001', PASSWORD)
+            open_device(self.root, manifest, '0000d001', PASSWORD)
 
     def test_a_device_opens_alone_and_its_answer_key_only_when_asked(self):
         manifest = load_set(self.root, SET, registrations=self.write())
-        device = open_device(self.root, manifest, 'd001', PASSWORD)
+        device = open_device(self.root, manifest, '0000d001', PASSWORD)
         self.assertEqual((device['image'], sorted(device)), (FIXTURE_IMAGE, ['image', 'mission']))
-        self.assertIn('answer_key', open_device(self.root, manifest, 'd001', PASSWORD, answer=True))
+        self.assertIn('answer_key', open_device(self.root, manifest, '0000d001', PASSWORD, answer=True))
         # Each device has its own content, and the key is the one that was sealed.
-        self.assertEqual(device['mission'], fixture_mission('d001'))
-        self.assertEqual(open_device(self.root, manifest, 'd002', PASSWORD)['mission'], fixture_mission('d002'))
-        self.assertEqual(open_device(self.root, manifest, 'd002', PASSWORD, answer=True),
-                         {'image': FIXTURE_IMAGE, 'mission': fixture_mission('d002'), 'answer_key': FIXTURE_ANSWER_KEY})
+        self.assertEqual(device['mission'], fixture_mission('0000d001'))
+        self.assertEqual(open_device(self.root, manifest, '0000d002', PASSWORD)['mission'], fixture_mission('0000d002'))
+        self.assertEqual(open_device(self.root, manifest, '0000d002', PASSWORD, answer=True),
+                         {'image': FIXTURE_IMAGE, 'mission': fixture_mission('0000d002'), 'answer_key': FIXTURE_ANSWER_KEY})
 
     def test_a_device_opens_without_its_answer_file(self):
         # Starting a trial needs the inputs alone, so the answer file is never read: it can be gone.
         manifest = load_set(self.root, SET, registrations=self.write())
-        (self.root / 'devices' / 'd001.answer.enc').unlink()
-        self.assertEqual(sorted(open_device(self.root, manifest, 'd001', PASSWORD)), ['image', 'mission'])
+        (self.root / 'devices' / '0000d001.answer.enc').unlink()
+        self.assertEqual(sorted(open_device(self.root, manifest, '0000d001', PASSWORD)), ['image', 'mission'])
 
     def test_a_file_that_cannot_be_read_is_an_os_error_not_a_refusal(self):
         # ValueError says the bytes are wrong. OSError says they could not be read, as when a volume is not mounted, and
         # the harness and the qualification treat that as a problem of the host.
         registrations = self.write()
         manifest = load_set(self.root, SET, registrations=registrations)
-        for name in ('devices/d001.answer.enc', 'devices/d002.inputs.enc', 'manifest.json'):
+        for name in ('devices/0000d001.answer.enc', 'devices/0000d002.inputs.enc', 'manifest.json'):
             (self.root / name).unlink()
         for name, read in (('the manifest', lambda: load_set(self.root, SET, registrations=registrations)),
-                           ('an answer file', lambda: open_device(self.root, manifest, 'd001', PASSWORD, answer=True)),
-                           ('an inputs file', lambda: open_device(self.root, manifest, 'd002', PASSWORD))):
+                           ('an answer file', lambda: open_device(self.root, manifest, '0000d001', PASSWORD, answer=True)),
+                           ('an inputs file', lambda: open_device(self.root, manifest, '0000d002', PASSWORD))):
             with self.subTest(name), self.assertRaises(OSError):
                 read()
 
     def test_a_device_the_manifest_does_not_list_is_refused(self):
         manifest = load_set(self.root, SET, registrations=self.write())
-        for device_id in ('d003', '', None):
+        for device_id in ('0000d003', '', None):
             with self.subTest(device_id), self.assertRaisesRegex(ValueError, 'Unknown generated device'):
                 open_device(self.root, manifest, device_id, PASSWORD)
 
     def test_a_changed_file_or_the_wrong_password_is_refused_before_plaintext(self):
         manifest = load_set(self.root, SET, registrations=self.write())
-        self.flip_a_byte('devices/d002.inputs.enc')
+        self.flip_a_byte('devices/0000d002.inputs.enc')
         with self.assertRaisesRegex(ValueError, 'pinned hash'):
-            open_device(self.root, manifest, 'd002', PASSWORD)
-        self.assertEqual(open_device(self.root, manifest, 'd001', PASSWORD)['image'], FIXTURE_IMAGE)  # d001 is untouched
+            open_device(self.root, manifest, '0000d002', PASSWORD)
+        self.assertEqual(open_device(self.root, manifest, '0000d001', PASSWORD)['image'], FIXTURE_IMAGE)  # 0000d001 is untouched
         for password in ('wrong', ''):
             for answer in (False, True):
                 with self.subTest(password=password, answer=answer), self.assertRaisesRegex(ValueError, 'password'):
-                    open_device(self.root, manifest, 'd001', password, answer=answer)
-        self.flip_a_byte('devices/d001.answer.enc')
+                    open_device(self.root, manifest, '0000d001', password, answer=answer)
+        self.flip_a_byte('devices/0000d001.answer.enc')
         with self.assertRaisesRegex(ValueError, 'pinned hash'):  # nothing is returned, not even the inputs that were fine
-            open_device(self.root, manifest, 'd001', PASSWORD, answer=True)
+            open_device(self.root, manifest, '0000d001', PASSWORD, answer=True)
 
     def test_a_file_sealed_again_is_not_the_pinned_file(self):
         manifest = load_set(self.root, SET, registrations=self.write())
-        inputs = {'image_base64': base64.b64encode(FIXTURE_IMAGE).decode('ascii'), 'mission': fixture_mission('d001')}
-        self.assertEqual(open_device(self.root, manifest, 'd001', PASSWORD)['mission'], inputs['mission'])
-        truth.seal(inputs, self.root / 'devices' / 'd001.inputs.enc', PASSWORD)  # the same content, another salt and nonce
+        inputs = {'image_base64': base64.b64encode(FIXTURE_IMAGE).decode('ascii'), 'mission': fixture_mission('0000d001')}
+        self.assertEqual(open_device(self.root, manifest, '0000d001', PASSWORD)['mission'], inputs['mission'])
+        truth.seal(inputs, self.root / 'devices' / '0000d001.inputs.enc', PASSWORD)  # the same content, another salt and nonce
         with self.assertRaisesRegex(ValueError, 'pinned hash'):
-            open_device(self.root, manifest, 'd001', PASSWORD)
+            open_device(self.root, manifest, '0000d001', PASSWORD)
 
     def test_content_that_differs_from_the_manifest_is_refused(self):
         self.write()
-        for field, pattern in (('image_sha256', 'image of device d001'), ('mission_sha256', 'mission of device d001'),
-                               ('answer_key_sha256', 'answer key of device d001')):
+        for field, pattern in (('image_sha256', 'image of device 0000d001'), ('mission_sha256', 'mission of device 0000d001'),
+                               ('answer_key_sha256', 'answer key of device 0000d001')):
             with self.subTest(field):
                 manifest = load_set(self.root, SET, registrations=self.alter(lambda m: m['devices'][0].update({field: '0' * 64})))
                 with self.assertRaisesRegex(ValueError, pattern):
-                    open_device(self.root, manifest, 'd001', PASSWORD, answer=True)
+                    open_device(self.root, manifest, '0000d001', PASSWORD, answer=True)
                 if field == 'answer_key_sha256':  # the key is not decrypted, so not compared, unless it is asked for
-                    self.assertEqual(sorted(open_device(self.root, manifest, 'd001', PASSWORD)), ['image', 'mission'])
+                    self.assertEqual(sorted(open_device(self.root, manifest, '0000d001', PASSWORD)), ['image', 'mission'])
 
     def test_sealing_a_device_writes_two_encrypted_files_and_returns_its_manifest_entry(self):
         root = self.base / 'new' / 'set'  # neither it nor its devices folder exists
-        image, mission, answer_key = b'\x00image bytes', fixture_mission('d007'), FIXTURE_ANSWER_KEY
-        entry = seal_device(root, {'id': 'd007', 'level': 3, 'framing': 'register-access'}, image=image,
+        image, mission, answer_key = b'\x00image bytes', fixture_mission('0000d007'), FIXTURE_ANSWER_KEY
+        entry = seal_device(root, {'id': '0000d007', 'level': 3, 'framing': 'register-access'}, image=image,
                             mission=mission, answer_key=answer_key, password=PASSWORD)
-        files = {name: (root / 'devices' / ('d007.' + name + '.enc')).read_bytes() for name in ('inputs', 'answer')}
-        self.assertEqual(sorted(path.name for path in (root / 'devices').iterdir()), ['d007.answer.enc', 'd007.inputs.enc'])
+        files = {name: (root / 'devices' / ('0000d007.' + name + '.enc')).read_bytes() for name in ('inputs', 'answer')}
+        self.assertEqual(sorted(path.name for path in (root / 'devices').iterdir()), ['0000d007.answer.enc', '0000d007.inputs.enc'])
         self.assertEqual(entry, {
-            'id': 'd007', 'level': 3, 'framing': 'register-access', 'image_sha256': hashlib.sha256(image).hexdigest(),
+            'id': '0000d007', 'level': 3, 'framing': 'register-access', 'image_sha256': hashlib.sha256(image).hexdigest(),
             'mission_sha256': canonical_digest(mission), 'answer_key_sha256': canonical_digest(answer_key),
-            'inputs': {'path': 'devices/d007.inputs.enc', 'sha256': hashlib.sha256(files['inputs']).hexdigest()},
-            'answer': {'path': 'devices/d007.answer.enc', 'sha256': hashlib.sha256(files['answer']).hexdigest()}})
+            'inputs': {'path': 'devices/0000d007.inputs.enc', 'sha256': hashlib.sha256(files['inputs']).hexdigest()},
+            'answer': {'path': 'devices/0000d007.answer.enc', 'sha256': hashlib.sha256(files['answer']).hexdigest()}})
         for name, secret in (('inputs', b'reuse_objective'), ('answer', answer_key['nonce'].encode())):
             self.assertNotIn(secret, files[name])
         sha = write_manifest(root, SET, [entry])  # a sealed device opens under its own manifest entry
-        opened = open_device(root, load_set(root, SET, registrations={SET: sha}), 'd007', PASSWORD, answer=True)
+        opened = open_device(root, load_set(root, SET, registrations={SET: sha}), '0000d007', PASSWORD, answer=True)
         self.assertEqual(opened, {'image': image, 'mission': mission, 'answer_key': answer_key})
 
     def test_a_device_that_a_manifest_could_not_list_is_not_sealed(self):
-        good = {'id': 'd001', 'level': 1, 'framing': 'text-lines'}
-        content = {'image': FIXTURE_IMAGE, 'mission': fixture_mission('d001'), 'answer_key': FIXTURE_ANSWER_KEY,
+        good = {'id': '0000d001', 'level': 1, 'framing': 'text-lines'}
+        content = {'image': FIXTURE_IMAGE, 'mission': fixture_mission('0000d001'), 'answer_key': FIXTURE_ANSWER_KEY,
                    'password': PASSWORD}
         rows = [('a path for an id', {**good, 'id': '../escape'}, {}, 'Invalid device id'),
-                ('an uppercase id', {**good, 'id': 'D001'}, {}, 'Invalid device id'),
-                ('the name of a Windows device', {**good, 'id': 'nul'}, {}, 'reserved'),
+                ('an uppercase id', {**good, 'id': '0000D001'}, {}, 'Invalid device id'),
+                ('an id that is no eight hexadecimal digits', {**good, 'id': 'nul'}, {}, 'Invalid device id'),
                 ('no id', {'level': 1, 'framing': 'text-lines'}, {}, 'Invalid device id'),
                 ('level 0', {**good, 'level': 0}, {}, 'level'), ('a bool level', {**good, 'level': True}, {}, 'level'),
                 ('level 6', {**good, 'level': 6}, {}, 'level'),
@@ -338,22 +335,22 @@ class SetBundleTests(unittest.TestCase):
     def test_a_device_whose_answer_key_breaks_the_interface_is_not_sealed(self):
         key = {**copy.deepcopy(FIXTURE_ANSWER_KEY), 'note': 'a field the interface does not define'}
         with self.assertRaisesRegex(ValueError, 'Invalid generated answer key'):
-            seal_device(self.root, {'id': 'd001', 'level': 1, 'framing': 'text-lines'}, image=FIXTURE_IMAGE,
-                        mission=fixture_mission('d001'), answer_key=key, password=PASSWORD)
+            seal_device(self.root, {'id': '0000d001', 'level': 1, 'framing': 'text-lines'}, image=FIXTURE_IMAGE,
+                        mission=fixture_mission('0000d001'), answer_key=key, password=PASSWORD)
         self.assertEqual(list(self.root.rglob('*')), [])  # nothing was written
 
     def test_a_device_whose_answer_key_breaks_the_interface_does_not_open(self):
         with patch.object(generated_sets, 'validate_device'):  # a set written without the validator
-            entry = seal_device(self.root, {'id': 'd001', 'level': 1, 'framing': 'text-lines'}, image=FIXTURE_IMAGE,
-                                mission=fixture_mission('d001'),
+            entry = seal_device(self.root, {'id': '0000d001', 'level': 1, 'framing': 'text-lines'}, image=FIXTURE_IMAGE,
+                                mission=fixture_mission('0000d001'),
                                 answer_key={**FIXTURE_ANSWER_KEY, 'note': 'a field the interface does not define'},
                                 password=PASSWORD)
         manifest = load_set(self.root, SET, registrations={SET: write_manifest(self.root, SET, [entry])})
         with self.assertRaisesRegex(ValueError, 'Invalid generated answer key'):
-            open_device(self.root, manifest, 'd001', PASSWORD, answer=True)
+            open_device(self.root, manifest, '0000d001', PASSWORD, answer=True)
 
     def test_content_that_json_cannot_carry_is_refused_before_anything_is_written(self):
-        good = {'id': 'd001', 'level': 1, 'framing': 'text-lines'}
+        good = {'id': '0000d001', 'level': 1, 'framing': 'text-lines'}
         content = {'image': FIXTURE_IMAGE, 'mission': {}, 'answer_key': {}, 'password': PASSWORD}
         for name, changes in (('a set in the mission', {'mission': {'tasks': {1, 2}}}),
                               ('a set in the answer key', {'answer_key': {'cells': {1, 2}}})):
@@ -368,14 +365,14 @@ class SetBundleTests(unittest.TestCase):
         self.assertTrue(data.endswith(b'}\n'))
         manifest = json.loads(data)
         self.assertEqual((manifest['schema'], manifest['set'], [device['id'] for device in manifest['devices']]),
-                         ('generated-set-manifest/1', SET, ['d001', 'd002']))
+                         ('generated-set-manifest/1', SET, ['0000d001', '0000d002']))
 
     def test_a_manifest_that_load_set_would_refuse_is_not_written(self):
-        entry = seal_device(self.root, {'id': 'd001', 'level': 1, 'framing': 'text-lines'}, image=FIXTURE_IMAGE,
-                            mission=fixture_mission('d001'), answer_key=FIXTURE_ANSWER_KEY, password=PASSWORD)
+        entry = seal_device(self.root, {'id': '0000d001', 'level': 1, 'framing': 'text-lines'}, image=FIXTURE_IMAGE,
+                            mission=fixture_mission('0000d001'), answer_key=FIXTURE_ANSWER_KEY, password=PASSWORD)
         for name, devices, pattern in (('a duplicate id', [entry, entry], 'Duplicate device id'),
                                        ('a path out of the set',
-                                        [{**entry, 'inputs': {**entry['inputs'], 'path': '../d001.inputs.enc'}}], 'set path')):
+                                        [{**entry, 'inputs': {**entry['inputs'], 'path': '../0000d001.inputs.enc'}}], 'set path')):
             with self.subTest(name), self.assertRaisesRegex(ValueError, pattern):
                 write_manifest(self.root, SET, devices)
             self.assertFalse((self.root / 'manifest.json').exists())

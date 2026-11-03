@@ -368,7 +368,7 @@ class AnswerKeyTests(unittest.TestCase):
         pick = lambda identifier, *keys: tuple(rows[identifier][key] for key in keys)
         self.assertEqual(pick('s2/1/answer', 'kind', 'expected', 'channel'), ('text', 'no_reply', 'runtime-transcript'))
         # An output's check expects the unit the public mission states for it.
-        mission_unit = fixture_mission('d001')['tasks']['get_mode']['outputs']['mode']['unit']
+        mission_unit = fixture_mission('0000d001')['tasks']['get_mode']['outputs']['mode']['unit']
         self.assertEqual(pick('s1/2/out:mode', 'kind', 'expected', 'absolute_tolerance', 'unit'),
                          ('number', 2, 0, mission_unit))
         self.assertEqual(pick('s1/3/state:mode', 'kind', 'expected', 'absolute_tolerance', 'channel'),
@@ -440,7 +440,7 @@ class RegistrationTests(unittest.TestCase):
         from generative_driver.benchmark_support.registrations import CaseRegistration, family_module, registration_for
         from generative_driver.benchmark_support.registry import CURRENT_VERSIONS, case_descriptors
         # The fixture's public mission is one the mission validator accepts, with the unit of its one output.
-        self.assertEqual(validate_mission(fixture_mission('d001'), 'generated'), fixture_mission('d001'))
+        self.assertEqual(validate_mission(fixture_mission('0000d001'), 'generated'), fixture_mission('0000d001'))
         self.assertEqual(registration_for('generated'),
                          CaseRegistration('generated', 'generated', '1', 'emulator-v2', 'benchmark-case/2',
                                           native_module='generated', truth_schema='generated-answer-key/1',

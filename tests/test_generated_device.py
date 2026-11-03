@@ -133,6 +133,15 @@ class ValidDeviceTests(unittest.TestCase):
             ('a transition that no step takes', lambda key: machine(key)['transitions'].append(
                 {'id': 't9', 'from': 'm1', 'task': 'set_mode', 'answer': 'value', 'to': 'm2'}), 'every transition')])
 
+    def test_a_read_task_never_changes_the_state(self):
+        # The runtime runs a driver's identity operation, a read, before every call: a read that changed the state would
+        # shift every later one.
+        def reading_moves(key):
+            # get_mode, a read task, now takes mode 1 to mode 2.
+            next(t for t in key['machine']['transitions'] if t['id'] == 't4').update(to='m2')
+            key['sequences'][0]['steps'][3]['state'] = {'c1': 2}
+        self.assert_refused([('a read that moves the device', reading_moves, 'same state')])
+
     def test_cells_and_sequences_carry_no_design_in_their_names(self):
         # A verdict publishes check ids built from these names, so they are numbered.
         def swap(key):

@@ -162,6 +162,13 @@ def answer_key(truth):
         _require(len({frozenset(step['grants']) for step in steps}) == 1, 'the steps of task %s carry the same grants' % task)
         _require(any(step['answer'] == 'value' for step in steps),
                  'task %s has a value step, which proves its grants and replies' % task)
+    # The runtime runs a driver's identity operation, a read, before every call: a read that changed the state would
+    # shift every later one. A read task's steps grant nothing beyond reading, and its steps agree on their grants.
+    reads = {task for task, steps in by_task.items() if set(steps[0]['grants']) <= {'read'}}
+    for transition in transitions.values():
+        _require(transition['task'] not in reads or transition['from'] == transition['to'],
+                 'transition %s of read task %s starts and ends in the same state'
+                 % (transition['id'], transition['task']))
     references = truth['references']
     _require(isinstance(references, dict) and set(references) == {'a', 'b'}, 'the references are a and b')
     for reference in references.values():

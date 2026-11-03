@@ -5,7 +5,7 @@ import copy
 import hashlib
 import json
 import re
-from .registrations import registered_case_ids, registration_for
+from .registrations import native_family_for, registered_case_ids, registration_for
 
 
 @dataclass(frozen=True)
@@ -341,7 +341,7 @@ def require_calibration(pin: dict, options: dict) -> dict:
                      and {r['id']: r['expected_failed_checks'] for r in record['mutants']} ==
                          truth['mutations']['expected_failed_checks']
                      and validate_record(manifest, record)['ok'])
-            from .tq9_v2 import contract as tq9_contract
+            tq9_contract = native_family_for(manifest['id']).contract
             for run in record['runs']:
                 artifact=run['package_sha256'] or run['model_sha256']
                 contract=tq9_contract({'scenario_id':run['scenario'],'case_seed':0,'revision':0},

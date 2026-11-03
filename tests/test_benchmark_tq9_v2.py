@@ -1340,9 +1340,8 @@ class TQ9V2Tests(unittest.TestCase):
         from test_benchmark_family_calibration import AdmissionTests
         from generative_driver.benchmark_support.reference_calibration import validate_record
         import copy
-        manifest,record=AdmissionTests().fixture()
-        manifest.update(id='tq9-v2',family='tq9')
-        record.update(case='tq9-v2')
+        manifest,record=AdmissionTests().fixture('tq9-v2')
+        manifest.update(family='tq9')
         names=['wrong-scale','constant-output','wrong-state','unsigned-temperature','wrong-temperature-scale',
                'wrong-temperature-unit','wrong-temperature-byteorder','wrong-crc','wrong-duty-effect']
         template=copy.deepcopy(record['mutants'][0]); measured=copy.deepcopy(record['runs'][4])
@@ -1375,9 +1374,8 @@ class TQ9V2Tests(unittest.TestCase):
         from generative_driver.benchmark_support.reference_calibration import input_hashes, tq9_execution_inputs, CORE_MUTANTS
         from generative_driver.benchmark_support.snapshots import canonical_digest
         import copy
-        manifest,record=AdmissionTests().fixture()
-        manifest.update(id='tq9-v2',family='tq9',schema='benchmark-case/2')
-        record['case']='tq9-v2'
+        manifest,record=AdmissionTests().fixture('tq9-v2')
+        manifest.update(family='tq9',schema='benchmark-case/2')
         model={'operations':{'temp':{'outputs':{'value':{'scale':1,'unit':'degC'}}},'arm':{'toy':1},'disarm':{'toy':0}}}
         caps={'tasks':{'temperature':{'operation':'temp','outputs':{'temperature':{'output':'value','unit':'degC'}}},
                        'arm':{'operation':'arm','outputs':{}},'disarm':{'operation':'disarm','outputs':{}}}}
@@ -1561,11 +1559,12 @@ class TQ9V2Tests(unittest.TestCase):
                         execute_plan(session, lambda *args: dict(no_reply), plan, contract, path, lambda *args: {},
                                      healthy_device_failures=opted)
 
-    def test_a_package_process_that_cannot_start_or_is_killed_from_outside_is_the_hosts(self):
-        # Every package call is reported, never raised. A package that outlasts identity plus the longest operation, or
-        # exits without a result, failed on its own: its bundled runtime is the system's code, so grading on a healthy
-        # device makes that the driver's failure. A process that could not start, or was killed by a signal the grader
-        # did not send, failed on the host however healthy the device is; and calibration keeps every host fault the host's.
+    def test_a_package_process_that_cannot_start_is_the_hosts_and_one_that_dies_is_graded_on_a_healthy_device(self):
+        # Every package call is reported, never raised. A package that outlasts identity plus the longest operation,
+        # exits without a result or dies from a signal (a package can kill itself, abort or segfault) failed on its own:
+        # its bundled runtime is the system's code, so grading on a healthy device makes that the driver's failure. Only
+        # a process that could not start failed on the host however healthy the device is; and calibration keeps every
+        # host fault the host's.
         import socket
         import subprocess
         from unittest.mock import patch
@@ -1590,15 +1589,33 @@ class TQ9V2Tests(unittest.TestCase):
             def observe(self): return {'values': {}, 'reads': []}
         plan = [{'kind': 'call', 'task': 'read', 'inputs': {}, 'grants': []}]
         with tempfile.TemporaryDirectory() as temp:
-            for code, grading in (('spawn', True), ('signal', True), ('timeout', False), ('no_result', False)):
+            for code, grading in (('spawn', True), ('signal', False), ('timeout', False), ('no_result', False)):
                 with self.subTest(code=code, grading=grading), self.assertRaisesRegex(RuntimeError, 'Host execution failed'):
                     execute_plan(Session(), lambda *args: dict(outcomes[code]), plan, {'checks': []}, Path(temp)/'raw.json',
                                  lambda *args: {}, healthy_device_failures=grading)
-            for code in ('timeout', 'no_result'):
+            for code in ('signal', 'timeout', 'no_result'):
                 execute_plan(Session(), lambda *args: dict(outcomes[code]), plan, {'checks': []}, Path(temp)/'raw.json',
                              lambda *args: {}, healthy_device_failures=True)
                 event = json.loads((Path(temp)/'raw.json').read_text())['events'][0]
                 self.assertEqual((event['device_healthy'], event['result']['error']['fault']), (True, 'model'))
+
+    def test_a_printed_number_that_is_not_finite_is_the_drivers_malformed_result(self):
+        # Catches a package that prints NaN, an infinity or a float too large to hold, which the evidence cannot record:
+        # writing it raised, and the trial was left without a grade. The evidence keeps the start of the print, its length
+        # and its SHA-256.
+        import subprocess
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.emulated_actions import package_invoker
+        call = package_invoker('/frozen/package', {'host': '127.0.0.1', 'port': 1}, [])
+        for text in ('NaN', 'Infinity', '-Infinity', '1e999', '-1e999'):
+            printed = '{"ok": true, "outputs": {"temperature": %s, "sequence": 2.5}, "units": {}}' % text
+            with self.subTest(text=text), \
+                    patch('subprocess.run', return_value=subprocess.CompletedProcess(['driver'], 0, printed, '')):
+                result = call('read', {})
+            self.assertEqual((result['ok'], result['error']['fault'], result['error']['code'], result['printed']),
+                             (False, 'model', 'malformed_result', {'prefix': printed, 'characters': len(printed),
+                              'sha256': hashlib.sha256(printed.encode('utf-8')).hexdigest()}))
+            json.dumps(result, indent=2, allow_nan=False)  # the evidence can record it
 
     def test_fresh_reuse_acknowledgements_do_not_substitute_for_a_reading(self):
         # Public adapter seam: actuator ACK outputs alone do not finish the mission, which is a note, never a stop.
@@ -1680,6 +1697,9 @@ class TQ9V2Tests(unittest.TestCase):
             record=json.loads((root/'output/calibration-record.json').read_text())
             self.assertFalse(record['runs'])
             self.assertFalse(record['mutants'])
+            # The record is measured under the case's own grader identity, which its admission compares with.
+            from generative_driver.benchmark_support.grader_identity import grader_identity
+            self.assertEqual(record['evaluator_identity'],grader_identity(case_id='tq9-v2'))
 
     def test_grader_identity_names_modules_never_case_assets_or_analysis_tooling(self):
         # Case ciphertext and the static analysis wrappers calibration runs are inputs, not grading code: the identity

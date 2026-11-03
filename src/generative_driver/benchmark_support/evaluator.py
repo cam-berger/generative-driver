@@ -27,15 +27,19 @@ def method_for(case_id):
 
 def case_truth(case_id, run_dir, options):
     """The case truth, unlocked with the evaluator password file in `options`: the bench harness takes the device recipe
-    from it, and the evaluator grades with it. The manifest is the run's pinned snapshot when `run_dir` holds one."""
+    from it, and the evaluator grades with it. The manifest is the run's pinned snapshot when `run_dir` holds one. The
+    truth is hydrated as the case's registered `truth_schema` says; a truth whose registered schema is none, or one that
+    is hydrated nowhere here, is returned as unlocked."""
     from .case_assets import case_inputs, case_root
     from .emulator import truth_for_case
+    from .registrations import registration_for
     _, manifest = case_inputs(case_id, run_dir)
     truth = truth_for_case(case_root(), manifest, options)
-    if truth.get('schema') == 'benchmark-upstream-truth/1':
+    schema = registration_for(case_id).truth_schema
+    if schema == 'benchmark-upstream-truth/1':
         from .upstream import hydrate_truth
         return hydrate_truth(truth)
-    if case_id in ('sampled-sensor-v1', 'parameter-store-v1'):
+    if schema == 'benchmark-family-truth/1':
         from .calibration import hydrate_truth
         return hydrate_truth(truth)
     return truth
@@ -55,8 +59,10 @@ def accept_frozen_package(package, expected_sha256):
 def reference_execute(pin, truth, capabilities, *, renode, image, output_dir, package, expected_package_sha256,
                       private_dir=None, healthy_device_failures=False):
     """Grade a frozen package's final phase on a fresh emulator it starts and stops, through the package's own bundled
-    runtime. The emulator session keeps its files (its log, the monitor commands it rendered) in `private_dir` when given.
-    Candidate models and reference emission run outside the grader (`reference_calibration.run_reference`)."""
+    runtime. A family with its own step executor (`execute`, the generated devices') runs it, every other family's plan
+    runs through `execute_plan`. The emulator session keeps its files (its log, the monitor commands it rendered) in
+    `private_dir` when given. Candidate models and reference emission run outside the grader
+    (`reference_calibration.run_reference`)."""
     if pin.get('scenario_id') != 'original':
         raise ValueError('Unknown case scenario')
     from .execution import start_session
@@ -83,9 +89,13 @@ def reference_execute(pin, truth, capabilities, *, renode, image, output_dir, pa
                                          for p in sorted(runtime_root.glob('*.py'))})
         local = {**truth, 'artifact_sha256': frozen}
         contract = family.contract(pin, local, 'final')
-        records = execute_plan(session, invoke, family.build_plan(pin, local, 'final'), contract,
-            output/'raw.json', family.observations, truth['contracts']['time_policy']['sample_settle_seconds'],
-            healthy_device_failures=healthy_device_failures)
+        if hasattr(family, 'execute'):
+            records = family.execute(session, invoke, contract, local, output/'raw.json',
+                                     healthy_device_failures=healthy_device_failures)
+        else:
+            records = execute_plan(session, invoke, family.build_plan(pin, local, 'final'), contract,
+                output/'raw.json', family.observations, truth['contracts']['time_policy']['sample_settle_seconds'],
+                healthy_device_failures=healthy_device_failures)
         if digest(package) != frozen:
             raise ValueError('Frozen package changed during final episode')
         result = {'execution': 'reference-calibration',
@@ -171,9 +181,9 @@ def _protocol(result):
 
 def record(status, equivalent, checks, diff, frozen, capabilities_sha256=None, mission=None, method='fresh-final', *,
            protocol: str):
-    """A public equivalence/1 record: check ids with passed flags and the failing ids with their reasons. Expected values,
-    tolerances, witnesses and raw records stay sealed. Text is held to the configurator's length limit. It names the
-    `protocol` of the run it grades."""
+    """A public equivalence/1 record: check ids with passed flags (None for a check the evaluator could not decide) and
+    the failing and undecided ids with their reasons. Expected values, tolerances, witnesses and raw records stay sealed.
+    Text is held to the configurator's length limit. It names the `protocol` of the run it grades."""
     checks = [{'id': _text(c['id']), 'passed': c['passed']} for c in checks]
     diff = [{'id': _text(d['id']), 'reason': _text(d['reason'], 'failed')} for d in diff]
     return {'schema': SCHEMA, 'status': status, 'equivalent': equivalent, 'basis': 'evaluator', 'method': method,
@@ -231,11 +241,11 @@ def needs_grading(trial_dir, result, *, password_file):
 
 def accepted_driver(case_id, trial_dir, run_dir, result):
     """The frozen driver a completed run accepted, checked and copied for grading: (snapshot, driver). It checks the
-    run's snapshot and pin, and that the installed grader is the evaluator revision the run was stamped with. Then, when
-    an emit handoff handed a package on, it first deletes `trial_dir/private` and copies into a fresh one the package of
-    the latest such handoff and the mapping of the model it packages, re-hashing both. `driver` is None when no emit
-    handed a package on, else (package copy, recorded sha256, revision, capability mapping or None, mapping sha256 or
-    None). A changed record or grader raises IntegrityError."""
+    run's snapshot and pin, and that the case's installed grader identity is the evaluator revision the run was stamped
+    with. Then, when an emit handoff handed a package on, it first deletes `trial_dir/private` and copies into a fresh
+    one the package of the latest such handoff and the mapping of the model it packages, re-hashing both. `driver` is
+    None when no emit handed a package on, else (package copy, recorded sha256, revision, capability mapping or None,
+    mapping sha256 or None). A changed record or grader raises IntegrityError."""
     from .grader_identity import grader_identity
     from .integrity import IntegrityError
     from .registry import pin_case
@@ -250,7 +260,7 @@ def accepted_driver(case_id, trial_dir, run_dir, result):
         raise IntegrityError('Execution snapshot differs from the run record')
     if pin_case(case_id, pin.get('scenario_id'), pin.get('case_seed', 0)) != pin:
         raise IntegrityError('The installed case differs from the run\'s pinned case')
-    if snapshot['executed'].get('evaluator_revision') != grader_identity()['sha256']:
+    if snapshot['executed'].get('evaluator_revision') != grader_identity(case_id=case_id)['sha256']:
         # A grader edited during the trial never seals a verdict under the revision the run started with.
         raise IntegrityError('The installed grader differs from the evaluator revision the run was stamped with')
     accepted = result.get('accepted_handoffs') or []
@@ -350,18 +360,23 @@ def _generated_mission(mission, proved):
 
 def final_record(final, capabilities_sha256=None, mission=None, *, protocol: str):
     """The public equivalence/1 record of a final evaluation, graded from its contract and records: equivalent when every
-    behavior check passed. Fresh reuse is reported beside that verdict, never inside it: the record's `mission` is the
-    fresh worker's, and passes only with the owner's proof when the final requires generated MCP reuse. Grading after
+    behavior check passed and not equivalent when one failed. A check the evaluator could not decide is undecided
+    (`passed` None) and is named in `diff`. A failed check outweighs an undecided one, so the record is `graded` when
+    every check is decided or one failed, with the undecided checks kept; it is `unknown`, with no verdict, when none
+    failed and one is undecided. Fresh reuse is reported beside that verdict, never inside it: the record's `mission` is
+    the fresh worker's, and passes only with the owner's proof when the final requires generated MCP reuse. Grading after
     the run and an offline regrade of the sealed evidence both build it here, and it names the `protocol` of the run they
     grade."""
     from .behavior import validate_records
     graded = validate_records(final['contract'], final['records'])
-    checks = [{'id': str(row['id']), 'passed': row['passed'] is True} for row in graded['checks']]
+    checks = [{'id': str(row['id']), 'passed': row['passed']} for row in graded['checks']]
     diff = [{'id': str(row['id']), 'reason': str(row.get('reason') or 'failed')} for row in graded['checks'] if row['passed'] is not True]
     if final.get('generated_reuse_required'):
         mission = _generated_mission(mission, final.get('generated_reuse_verified') is True)
-    return record('graded', all(c['passed'] for c in checks), checks, diff, final['frozen_artifact_sha256'], capabilities_sha256,
-                  mission, final.get('method', 'fresh-final'), protocol=protocol)
+    unknown = graded['verdict'] == 'unknown'
+    return record('unknown' if unknown else 'graded', None if unknown else graded['verdict'] == 'passed', checks, diff,
+                  final['frozen_artifact_sha256'], capabilities_sha256, mission, final.get('method', 'fresh-final'),
+                  protocol=protocol)
 
 
 def evidence(trial_dir, run_dir, result, *, final=None, equivalence=None, mission=None, error=None):

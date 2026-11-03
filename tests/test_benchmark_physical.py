@@ -105,8 +105,8 @@ class RecordedReuseTests(unittest.TestCase):
         from generative_driver.benchmark_support.registry import pin_case
         from generative_driver.benchmark_support.snapshots import snapshot_case
         self.run_dir=self.root/'run';self.pin=pin_case('bme280',None,0)
-        # Stamped as a run is, with the installed grader's revision, which the grade checks.
-        self.snapshot=snapshot_case(self.run_dir,self.pin,{'evaluator_revision':grader_identity()['sha256']})
+        # Stamped as a run of this case is, with its grader identity's revision, which the grade checks.
+        self.snapshot=snapshot_case(self.run_dir,self.pin,{'evaluator_revision':grader_identity(case_id='bme280')['sha256']})
         accepted=self.root/'accepted';(accepted/'probe').mkdir(parents=True)
         for name,content in (('model.json','{}'),('convert.py','# scripted converter\n'),('capabilities.json',json.dumps(MAPPING))):
             (accepted/'probe'/name).write_text(content)

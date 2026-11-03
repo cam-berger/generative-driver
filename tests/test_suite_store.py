@@ -34,6 +34,22 @@ class StoreTests(unittest.TestCase):
                 self.assertEqual(reopened.trials(suite['suite_id'])['trials'][0]['run_id'],started['run_id'])
             finally:controller.close()
 
+    def test_a_suite_frozen_before_per_case_revisions_reads_under_its_one_revision(self):
+        # Catches a suite frozen before each case had its own grader identity, whose provenance names one evaluator
+        # revision and no per-case revisions, failing to read.
+        from generative_driver.benchmark_support.suites import freeze_suite
+        from generative_driver.benchmark_support.suite_reporting import _experiment
+        with tempfile.TemporaryDirectory() as temporary:
+            home=Path(temporary);controller=Controller(home)
+            try:
+                provenance={'evaluator_revision':'e'*64,'toolchain_revision':'c'*64,'skills_revision':'b'*64}
+                frozen=freeze_suite(legacy_manifest(),'codex',{'command':['scripted']},{},provenance,harness_token_sha256=TOKEN)
+                sid=controller._suites.create(frozen,'frozen-before')['suite_id']
+                experiment=controller.call('suite_result',{'suite_id':sid})['experiment']
+                self.assertNotIn('evaluator_revisions',experiment)
+                self.assertEqual(_experiment(experiment)['comparison_identity']['evaluator_revision'],'e'*64)
+            finally:controller.close()
+
     def test_duplicate_request_returns_original_frozen_inputs_and_conflicts_refuse(self):
         from copy import deepcopy
         from generative_driver.benchmark_support.suites import freeze_suite
@@ -262,7 +278,9 @@ class ControllerStorageTests(unittest.TestCase):
                 first=controller.call('suite_result',{'suite_id':sid,'limit':1})
                 experiment=first['experiment']
                 self.assertEqual(experiment['schema'],'benchmark-suite-experiment/1')
-                self.assertEqual(set(experiment),{'schema','comparison_identity','dimensions','execution_snapshots'})
+                self.assertEqual(set(experiment),{'schema','comparison_identity','evaluator_revisions','dimensions','execution_snapshots'})
+                # Each case's frozen revision, against which each of its trials is checked.
+                self.assertEqual(experiment['evaluator_revisions'],frozen['provenance']['evaluator_revisions'])
                 identity=experiment['comparison_identity']
                 # Its harness drives it and grades every child after its run, legacy tq9 included: the suite names the
                 # assistive protocol and counts equivalent drivers.

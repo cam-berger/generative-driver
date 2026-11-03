@@ -19,9 +19,10 @@ def _write(path, value):
 
 def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home):
     from .authoring import evaluator_directory
-    from .calibration import apply_mutation, execution_input_identity, validate_calibration, REQUIRED_MUTANTS
+    from .calibration import apply_mutation, execution_input_identity, validate_calibration
     from .grader_identity import grader_identity
     from .reference_calibration import calibration_run
+    from .registrations import family_module
     from .upstream import hydrate_truth
     from ..toolkit import resources_root
     truth = hydrate_truth(payload)
@@ -36,7 +37,7 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
         raise ValueError('Qualification image differs from the authenticated upstream image')
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     output.chmod(0o700)
-    identity = grader_identity()
+    identity = grader_identity(case_id=manifest['id'])
     paths = {key: Path(value).expanduser().resolve() for key, value in
              ([('ghidra', ghidra_home), ('java', java_home)] + ([] if native else [('renode', renode)]))}
     java = paths['java'] / 'bin' / ('java.exe' if os.name == 'nt' else 'java')
@@ -54,7 +55,7 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
         'evaluator_version': manifest['evaluator_version'], 'execution': 'reference-calibration',
         'backend': 'native-sim' if native else 'native-renode', 'images': manifest['images'], 'input_hashes': truth['input_hashes'],
         'evaluator_identity': identity, 'native_process_observed': False, 'references': [], 'mutants': [],
-        'scenarios': {}, 'required_mutants': sorted(REQUIRED_MUTANTS[truth['family']]),
+        'scenarios': {}, 'required_mutants': sorted(family_module(truth['family']).REQUIRED_MUTANTS),
         'tools': tools, 'runs': [], 'analysis': {}}
     def save():
         _write(output/'calibration-record.json', record)
@@ -136,7 +137,7 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
             record.update(status='pending', failures=checked['failures'])
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError) as error:
         record.update(status='pending', failure=type(error).__name__ + ': ' + str(error))
-    if grader_identity() != identity:
+    if grader_identity(case_id=manifest['id']) != identity:
         record.update(status='pending', failure='Evaluator changed during qualification')
     save()
     return record

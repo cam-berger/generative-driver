@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 from .grader_identity import grader_identity
+from .registrations import family_module, registered_case_ids, registration_for
 from .snapshots import canonical_digest
 
 BUILD_FILES = {'build/build-report.json', 'build/firmware.elf', 'build/firmware.bin'}
@@ -13,7 +14,9 @@ _INPUT_FILES = {'AUTHORING.json', 'LICENSE', 'source/startup.c', 'source/board_u
     'native/platform.repl', 'native/device.resc', 'native/observation-map.json',
     'diagnostic/episodes.json', 'final/episodes.json', 'oracle/vectors.json', 'mutants/manifest.json',
     *{f'reference-{ref}/{name}.json' for ref in ('a', 'b') for name in ('model', 'capabilities', 'replies')}}
-_FAMILIES = {'sampled-sensor', 'parameter-store'}
+# The families calibrated from a private authoring inventory: those registered with calibration kind 'family'.
+_FAMILIES = {registration.family for registration in map(registration_for, registered_case_ids())
+             if registration.calibration_kind == 'family'}
 
 
 def inventory(family, *, qualified=False):
@@ -56,13 +59,6 @@ def decode_inventory(payload):
     except (KeyError, TypeError, binascii.Error) as error:
         raise ValueError('Malformed family inventory') from error
 
-REQUIRED_MUTANTS = {
-    'tq9': {'wrong-scale','constant-output','wrong-state','unsigned-temperature','wrong-temperature-scale',
-            'wrong-temperature-unit','wrong-temperature-byteorder','wrong-crc','wrong-duty-effect'},
-    'sampled-sensor': {'constant','scale','signedness','stale'},
-    'parameter-store': {'constant','scale','order','wrong-bank','abort','idle-only-update','short-rejection-frame'},
-    'zephyr-modbus': {'constant-read', 'wrong-byteorder', 'wrong-register', 'wrong-coil', 'omit-write', 'wrong-request-crc'},
-}
 _REFERENCE_PHASES = {('diagnostic','original'), ('final','original')}
 
 
@@ -84,10 +80,11 @@ def execution_input_identity(model, capabilities):
 
 def validate_calibration(manifest, record):
     """Validate measured coverage, not candidate success flags. Local trust only. A record admits only under the
-    grader identity it was measured with; a run's `runtime_sha256` is checked only for SHA-256 form. An installation
-    whose grader identity cannot be computed raises, rather than reading as a defect of the record."""
+    grader identity of the manifest's case it was measured with; a run's `runtime_sha256` is checked only for SHA-256
+    form. An unregistered case, or an installation whose grader identity cannot be computed, raises, rather than reading
+    as a defect of the record."""
     failures=[]
-    identity=grader_identity()
+    identity=grader_identity(case_id=manifest['id'])
     try:
         from .execution import artifact_name
         artifact = artifact_name(manifest)
@@ -107,7 +104,8 @@ def validate_calibration(manifest, record):
                 ({'analysis'} if manifest['family']=='tq9' else {'inventory'}))
                 or any(not _sha(v) for v in record['input_hashes'].values())):
             failures.append('input commitment inventory')
-        required=REQUIRED_MUTANTS[manifest['family']]
+        family=family_module(manifest['family'])
+        required=family.REQUIRED_MUTANTS
         if set(record['required_mutants'])!=required or len(record['required_mutants'])!=len(required):
             failures.append('family mutant inventory')
         runs={r['id']:r for r in record['runs']}
@@ -117,8 +115,7 @@ def validate_calibration(manifest, record):
             if native and (run.get('backend') != 'native-sim' or process.get('backend') != 'native-sim'):
                 failures.append('run execution backend:'+run['id'])
             if manifest['family']=='parameter-store':
-                from .parameter_store import REQUIRED_SCENARIOS
-                if not REQUIRED_SCENARIOS <= {c.get('scenario') for c in run['checks']}:
+                if not family.REQUIRED_SCENARIOS <= {c.get('scenario') for c in run['checks']}:
                     failures.append('transaction scenario coverage:'+run['id'])
             expected_image=manifest['images'][artifact]
             if (run['phase'],run['scenario']) not in _REFERENCE_PHASES or type(run['passed']) is not bool:
@@ -302,8 +299,7 @@ def hydrate_truth(payload):
     for selected in scenario_phases.values():
         for phase in selected.values():
             if payload['family']=='parameter-store':
-                from .parameter_store import validate_phase
-                validate_phase(phase)
+                family_module(payload['family']).validate_phase(phase)
             actions=phase['actions']; checks=phase['contract']['checks']
             required={c['id'] for c in checks}; observed=[i for a in actions if a['kind']=='observe' for i in a['checks']]
             if (not required or set(observed)!=required or len(observed)!=len(set(observed))

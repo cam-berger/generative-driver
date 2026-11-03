@@ -1,6 +1,9 @@
 """Evaluator-owned volatile parameter-store transaction oracle."""
 from .family_support import integer, integer_vector, private_phase, signed16
 
+REQUIRED_MUTANTS = frozenset({"constant", "scale", "order", "wrong-bank", "abort", "idle-only-update",
+                              "short-rejection-frame"})
+
 
 def contract(pin, truth, phase):
     selected = private_phase(pin, truth, phase)

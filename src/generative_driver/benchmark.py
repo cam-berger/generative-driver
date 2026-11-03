@@ -145,6 +145,16 @@ def main(argv=None):
     suite_comparing.add_argument('--leak-check', metavar='REPORT',
                                  help='Saved suite report of the after system on a fresh batch of devices: with two '
                                  'reports of one scoring set, tests whether the set leaked')
+    set_actions = commands.add_parser('set', help='Generated device sets').add_subparsers(dest='action', required=True)
+    qualifying = set_actions.add_parser('qualify', help='Qualify a registered generated set once: both references on '
+                                        'every device and the mutants on a sample; seal the record beside the set')
+    qualifying.add_argument('--set', required=True, help='The set\'s registered name')
+    qualifying.add_argument('--root', required=True, help='The set\'s directory, outside the repository; it receives '
+                            'the sealed record')
+    qualifying.add_argument('--password-file', required=True, help='The set\'s password; read once, never printed')
+    qualifying.add_argument('--renode', required=True)
+    qualifying.add_argument('--output', required=True, help='A new or empty evaluator-private directory outside the '
+                            'repository for each run\'s evidence and a plaintext copy of the record')
     running = commands.add_parser('run')
     running.add_argument('--case', default='setup-smoke', choices=case_ids())
     running.add_argument('--scenario')
@@ -292,6 +302,14 @@ def main(argv=None):
                 result = call('suite_' + args.action, params)
             print(json.dumps(result, indent=2, allow_nan=False))
             return 0 if result.get('ok', result.get('compatible', True)) else 1
+        if args.command == 'set':
+            from .benchmark_support.set_qualification import qualify
+            # Read once and stripped, as every benchmark command reads a password file.
+            password = Path(args.password_file).read_text(encoding='utf-8').strip()
+            record = qualify(Path(args.root), args.set, password, renode=Path(args.renode), output_dir=Path(args.output))
+            print(json.dumps({'ok': record['status'] == 'passed', 'status': record['status'],
+                              'failures': record['failures'], 'seconds': record['seconds']}, indent=2, allow_nan=False))
+            return 0 if record['status'] == 'passed' else 1
         if args.command == 'cases':
             result = case_descriptors()
         elif args.command == 'run':

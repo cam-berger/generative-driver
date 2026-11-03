@@ -59,7 +59,7 @@ class SealedEvidenceFixture:
             'manifest':{'schema':'benchmark-case/2','id':'tq9-v2','version':'5','evaluator_version':'5',
                 'scenarios':['original'], 'images':{'firmware.bin':'e'*64}, 'required_stages':stages}}
         snapshot = {'schema':'benchmark-execution-snapshot/1','case_pin':pin,
-            'public_files':{}, 'executed':execution_provenance({'runtime':'scripted-contract-fixture'})}
+            'public_files':{}, 'executed':execution_provenance({'runtime':'scripted-contract-fixture'}, case_ids=(pin['case_id'],))}
         snapshot['snapshot_sha256'] = canonical_digest(snapshot)
         revision = 1 if repaired else 0
         digest = 'b'*64 if repaired else 'a'*64
@@ -227,7 +227,7 @@ class SealedEvidenceTests(SealedEvidenceFixture, unittest.TestCase):
         report, path = self.sealed(payload)
         # A changed system moves the toolchain revision and leaves the grader: the sealed run still regrades.
         with patch('generative_driver.benchmark_support.integrity.tree_hash', return_value='0' * 64):
-            self.assertNotEqual(execution_provenance({})['toolchain_revision'],
+            self.assertNotEqual(execution_provenance({}, case_ids=('tq9-v2',))['toolchain_revision'],
                                 payload['execution_snapshot']['executed']['toolchain_revision'])
             self.assertEqual(evidence.regrade_v2(report, path, self.password)['verdict'], 'passed')
         # A changed grader is refused, whatever the system.

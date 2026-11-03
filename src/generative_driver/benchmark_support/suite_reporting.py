@@ -10,6 +10,7 @@ from pathlib import PurePosixPath,PureWindowsPath
 from .suites import normalize_manifest,expand_trials
 from .evidence import public_equivalence,public_pin,public_v2_report,public_v3_report,PIN,USAGE
 from .audit import audit_commands,forbidden_paths
+from .grader_identity import combined_revision
 from .outcomes import classify,pass_rate,pass_rate_line
 from .pairing import paired_comparison
 from ..benchmark import STAGES
@@ -49,7 +50,10 @@ def _intervention_measurements(rows):
             _number(row.get(key))
 
 def _experiment(value):
-    _exact(value,('schema','comparison_identity','dimensions','execution_snapshots'))
+    # A suite frozen since cases had their own grader identities also names each case's revision (`evaluator_revisions`),
+    # which combine into its `evaluator_revision`; one frozen before names that one revision alone.
+    _exact(value,('schema','comparison_identity','dimensions','execution_snapshots')
+           +(('evaluator_revisions',) if 'evaluator_revisions' in value else ()))
     if value['schema']!='benchmark-suite-experiment/1':raise ValueError('Unsupported experiment')
     identity=value['comparison_identity']
     # A suite the bench harness drives names its protocol; one frozen before it names none and keeps its meaning. A suite
@@ -69,6 +73,11 @@ def _experiment(value):
     if identity['manifest_sha256']!=_digest(manifest) or identity['trials']!=slots or identity['repetitions']!=manifest['repetitions']:
         raise ValueError('Frozen suite identity mismatch')
     if not _sha(identity['evaluator_revision']):raise ValueError('Missing evaluator identity')
+    revisions=value.get('evaluator_revisions')
+    if 'evaluator_revisions' in value and (not isinstance(revisions,dict)
+            or set(revisions)!={entry['case'] for entry in manifest['entries']} or not all(map(_sha,revisions.values()))
+            or combined_revision(revisions)!=identity['evaluator_revision']):
+        raise ValueError('Invalid evaluator revisions')
     for key in ('execution','evidence_track','scope'):
         if not isinstance(identity[key],str) or not identity[key].strip():raise ValueError('Invalid experiment scope')
     pins=identity['entry_pins']
@@ -150,6 +159,7 @@ def _experiment(value):
             'effective':{**{key:effective[key] for key in ('child_budget_seconds','suite_budget_seconds')},
                 'child_budget_overrides':[{'trial_key':row['trial_key'],'budget_seconds':row['budget_seconds']} for row in effective['child_budget_overrides']]}},
         'intervention_policy':{key:policy[key] for key in ('scoped_tool_approval','max_model_repairs')}},
+        **({'evaluator_revisions':dict(revisions)} if 'evaluator_revisions' in value else {}),
         'dimensions':{key:copy.deepcopy(dimensions[key]) for key in dimension_fields if key in dimensions},
         'execution_snapshots':[{'trial_key':row['trial_key'],'snapshot_sha256':row['snapshot_sha256']} for row in value['execution_snapshots']]}
 
@@ -228,13 +238,15 @@ def _validate_trials(manifest,trials,reports,experiment):
 
 def _outcome(trial,report,equivalent):
     """A planned trial of an assistive suite as its count holds it: not_run, equivalent (settled and qualified),
-    not_equivalent (a recorded grade, or no driver), unqualified (a claimed equivalent that is not counted), unscored (a
-    completed run awaiting or without its grade), stopped or running."""
+    not_equivalent (a recorded grade, or no driver), unknown (a recorded grade with no failed step and an undecided one),
+    unqualified (a claimed equivalent that is not counted), unscored (a completed run awaiting or without its grade),
+    stopped or running."""
     if not trial.get('run_id'):return 'not_run'
     if trial in equivalent:return 'equivalent'
     status=report.get('workflow_status',trial['status']);verdict=report.get('verdict')
     if status in ('blocked','failed','cancelled'):return 'stopped'
     if verdict=='not equivalent':return 'not_equivalent'
+    if verdict=='unknown':return 'unknown'
     if verdict in ('equivalent','unqualified'):return 'unqualified'
     return 'unscored' if status=='completed' else 'running'
 
@@ -247,7 +259,7 @@ def _outcomes(trials,reports,equivalent):
     """Each planned trial of an assistive suite in exactly one count (`_outcome`), stopped trials by their stop
     category; and the unscored trials, listed apart."""
     counts={'planned':len(trials),'started':0,'finished':0,'not_run':0,'equivalent':len(equivalent),'not_equivalent':0,
-            'no_driver':0,'unqualified':0,'unscored':0,'running':0,'stopped':{}}
+            'no_driver':0,'unknown':0,'unqualified':0,'unscored':0,'running':0,'stopped':{}}
     unscored=[]
     for trial in trials:
         counts['finished']+=trial['status']=='finished'
@@ -262,7 +274,7 @@ def _outcomes(trials,reports,equivalent):
         elif outcome=='not_equivalent':
             counts['not_equivalent']+=1
             counts['no_driver']+=(report.get('equivalence') or {}).get('status')=='no-driver'
-        elif outcome in ('unqualified','unscored','running'):
+        elif outcome in ('unknown','unqualified','unscored','running'):
             counts[outcome]+=1
         if outcome=='unscored':
             unscored.append({'trial_key':trial['trial_key'],'run_id':trial['run_id'],'equivalence_status':report.get('equivalence_status')})
@@ -608,8 +620,12 @@ def _summary(result):
             'stopped':', '.join(f'{count} {category}' for category,count in counts['stopped'].items())}
     failing={}
     for row in rows:
-        for diff in (row.get('equivalence') or {}).get('diff') or []:
-            if isinstance(diff,dict) and isinstance(diff.get('id'),str):failing[diff['id']]=failing.get(diff['id'],0)+1
+        grade=row.get('equivalence') or {}
+        # A check the evaluator could not decide (passed null) is named in `diff` with its reason, but it did not fail.
+        undecided={c.get('id') for c in grade.get('checks') or [] if isinstance(c,dict) and 'passed' in c and c['passed'] is None}
+        for diff in grade.get('diff') or []:
+            if isinstance(diff,dict) and isinstance(diff.get('id'),str) and diff['id'] not in undecided:
+                failing[diff['id']]=failing.get(diff['id'],0)+1
     common=sorted(failing.items(),key=lambda item:(-item[1],item[0]))[:5]
     unscored=', '.join(row['trial_key'] for row in result['unscored'])
     lines=[f"{pass_rate_line(result['pass_rate'])}. Protocol: {result['protocol']}, "
@@ -695,7 +711,9 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
             report=report_run(rid,home=root,output=Path(temporary)/trial['trial_key']/'report.json',autostart=False)
             _validate_trials(manifest,trials,{rid:report},experiment)
             executed=report.get('executed',{})
-            if executed.get('evaluator_revision')!=identity['evaluator_revision']:
+            # Each trial ran under its own case's revision; a suite frozen before cases had their own, under its one.
+            revisions=experiment.get('evaluator_revisions')
+            if executed.get('evaluator_revision')!=(revisions[trial['case']] if revisions else identity['evaluator_revision']):
                 raise ValueError('Executed evaluator differs from frozen experiment')
             dimensions=experiment['dimensions'];runtime=executed.get('runtime_configuration',{})
             for key,value in dimensions.items():

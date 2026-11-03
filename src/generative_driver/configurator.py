@@ -657,8 +657,9 @@ def _final_verdict(db, run_id):
     return json.loads(row['payload']) if row else None
 
 
-# The public evaluation record the bench harness posts after a run: check ids with passed flags and failing ids with a
-# reason. Expected values, tolerances, witnesses and raw records stay sealed, so no other field is accepted.
+# The public evaluation record the bench harness posts after a run: check ids with passed flags (null for a check the
+# evaluator could not decide) and failing and undecided ids with a reason. Expected values, tolerances, witnesses and
+# raw records stay sealed, so no other field is accepted.
 EVALUATION = {'schema', 'status', 'equivalent', 'basis', 'method', 'checks', 'diff', 'passed', 'total', 'mission',
               'frozen_artifact_sha256', 'capabilities_sha256', 'evidence_sha256', 'protocol'}
 
@@ -680,24 +681,36 @@ def _evaluation_errors(record):
         errors.append('schema equivalence/1, basis evaluator, method ' + ' or '.join(METHODS) + ' and protocol ' + PROTOCOL
                       + ' are required')
     checks, diff = record['checks'], record['diff']
+    status, equivalent = record['status'], record['equivalent']
+    # A check's passed flag is true or false, or null for a check the evaluator could not decide. An unknown grade holds
+    # such checks beside passed ones, a driver graded not equivalent beside a failed one, and no other record holds one.
+    null_ok = status == 'unknown' or status == 'graded' and equivalent is False and isinstance(checks, list) and any(
+        isinstance(c, dict) and c.get('passed') is False for c in checks)
+    passed_flag = lambda value: type(value) is bool or value is None and null_ok
     if not isinstance(checks, list) or any(not isinstance(c, dict) or set(c) != {'id', 'passed'} or not text(c['id'])
-                                           or type(c['passed']) is not bool for c in checks):
-        errors.append('checks are [{id, passed}]')
+                                           or not passed_flag(c['passed']) for c in checks):
+        errors.append('checks are [{id, passed}], with passed null only for an undecided check in an unknown grade or '
+                      'beside a failed one')
         checks = []
     if not isinstance(diff, list) or any(not isinstance(d, dict) or set(d) != {'id', 'reason'} or not text(d['id'])
                                          or not text(d['reason']) for d in diff):
         errors.append('diff is [{id, reason}]')
+        diff = []
     if any(type(record[key]) is not int for key in ('passed', 'total')) or \
-            (record['passed'], record['total']) != (sum(c['passed'] for c in checks), len(checks)):
+            (record['passed'], record['total']) != (sum(c['passed'] is True for c in checks), len(checks)):
         errors.append('passed and total count the checks')
-    status, equivalent = record['status'], record['equivalent']
-    if (status, type(equivalent)) not in (('graded', bool), ('no-driver', bool), ('unscored', type(None))) or \
-            status == 'no-driver' and equivalent is not False:
-        errors.append('status graded or no-driver with equivalent true or false, or unscored with equivalent null')
+    undecided, named = {c['id'] for c in checks if c['passed'] is None}, {d['id'] for d in diff}
+    if (status, type(equivalent)) not in (('graded', bool), ('no-driver', bool), ('unknown', type(None)),
+                                          ('unscored', type(None))) or status == 'no-driver' and equivalent is not False:
+        errors.append('status graded or no-driver with equivalent true or false, or unscored or unknown with equivalent null')
     elif equivalent is True and (not checks or not all(c['passed'] for c in checks) or diff):
         errors.append('an equivalent driver passed every check, with no difference')
     elif equivalent is not True and not diff:
         errors.append('a driver that is not judged equivalent names its differences')
+    elif status == 'unknown' and (not undecided or any(c['passed'] is False for c in checks) or not undecided <= named):
+        errors.append('an unknown grade has no failed check, at least one undecided check and a difference for each')
+    elif status == 'graded' and not undecided <= named:
+        errors.append('a graded driver has a difference for each undecided check')
     mission = record['mission']
     if mission is not None and (not isinstance(mission, dict) or not set(mission) <= {'name', 'passed', 'reason', 'fault'}
                                 or type(mission.get('passed')) not in (bool, type(None))
@@ -1546,7 +1559,8 @@ class Controller:
                 config={**self._configured_executors().get(executor,{}),'runtime':executor}
                 if executor=='replay':
                     config=_replay_suite_config(manifest,options,self.home)
-                frozen=freeze_suite(manifest,executor,config,options,execution_provenance(config),harness_token_sha256=token)
+                provenance=execution_provenance(config,case_ids=[entry['case'] for entry in manifest['entries']])
+                frozen=freeze_suite(manifest,executor,config,options,provenance,harness_token_sha256=token)
                 saved=self._suites.create(frozen,params.get('request_id'),harness_pid=pid,harness_lock=lock)
                 if not saved['duplicate']:
                     self._suites.set_state(saved['suite_id'],'running')
@@ -1894,7 +1908,8 @@ class Controller:
         for pin in frozen['entry_pins']:
             if pin_case(pin['case_id'],pin['scenario_id'],pin['case_seed']) != pin:
                 raise ValueError('Frozen suite case pin changed')
-        if execution_provenance(frozen['executor_config']) != frozen['provenance']:
+        cases = [entry['case'] for entry in frozen['manifest']['entries']]
+        if execution_provenance(frozen['executor_config'], case_ids=cases) != frozen['provenance']:
             raise ValueError('Frozen suite implementation or execution environment changed')
         for trial in suite['trials']:
             found = self.find_request(trial['child_request_id'])
@@ -2056,6 +2071,9 @@ class Controller:
                 'budgets':{'original':policy,'effective':{**policy,'suite_budget_seconds':suite['budget_seconds'],'child_budget_overrides':overrides}},
                 'intervention_policy':{'scoped_tool_approval':frozen['options'].get('scoped_tool_approval'),
                     'max_model_repairs':2}},
+            # Each case's own revision, which its trials are checked against. A suite frozen before cases had their own
+            # grader identities names one revision, its `evaluator_revision`, for all of them.
+            **({'evaluator_revisions':provenance['evaluator_revisions']} if 'evaluator_revisions' in provenance else {}),
             'dimensions':dimensions,'execution_snapshots':snapshots}
 
     def start(self, params):
@@ -2157,7 +2175,8 @@ class Controller:
                     if executor == 'replay':
                         config = spec['executor_config'] = _copy_candidate(config, self.home / 'runs' / run_id)
                     spec['_case_pin'] = pin
-                    saved = snapshot_case(self.home / 'runs' / run_id, pin, execution_provenance(config))
+                    saved = snapshot_case(self.home / 'runs' / run_id, pin,
+                                          execution_provenance(config, case_ids=(pin['case_id'],)))
                     spec['_snapshot_sha256'] = saved['snapshot_sha256']
                     spec['_execution_run_dir'] = str(self.home / 'runs' / run_id)
                     encoded = _json(spec)
@@ -2607,7 +2626,7 @@ class Controller:
         saved = require_snapshot(run_dir, spec['_case_pin'])
         if saved['snapshot_sha256'] != spec['_snapshot_sha256']:
             raise IntegrityError('Execution snapshot hash differs from saved run')
-        if execution_provenance(spec['executor_config']) != saved['executed']:
+        if execution_provenance(spec['executor_config'], case_ids=(saved['case_pin']['case_id'],)) != saved['executed']:
             raise IntegrityError('Execution snapshot implementation or runtime environment changed; start a new run')
         return saved
 
@@ -2872,8 +2891,8 @@ class Controller:
         Only the run's harness may (the sha256 of its evaluation token), only for a completed run with nothing uncertain
         that awaits its evaluation, only under its case's grading method (`fresh-final` for a v2 case, `recorded-reuse`
         for legacy tq9 and bme280), and only about the run's accepted emitted package: the first artifact of its latest
-        emit handoff that handed one on, or none. A graded or no-driver record becomes the run's one final verdict; an
-        identical repeat changes nothing and any other is refused. An unscored one is an event, and the run still awaits."""
+        emit handoff that handed one on, or none. A graded, no-driver or unknown record becomes the run's one final verdict;
+        an identical repeat changes nothing and any other is refused. An unscored one is an event, and the run still awaits."""
         spec = json.loads(self._row(run_id)['spec'])
         if not spec.get('evaluation_token_sha256'):
             raise ValueError('Only a run started by the bench harness can record an evaluation')

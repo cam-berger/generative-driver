@@ -54,6 +54,20 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(child_disposition(dict(completed,stopping=True,equivalence=graded)), 'wait')
         self.assertEqual(child_disposition(dict(completed,status='running',equivalence=None)), 'wait')
 
+    def test_an_unknown_grade_settles_its_slot(self):
+        # Catches a suite that blocks on a child whose grade has no failed step and one the evaluator could not decide:
+        # an unknown grade is a result, so its slot settles and the suite moves on, while a stop still blocks it.
+        from generative_driver.benchmark_support.suites import child_disposition
+        self.assertEqual(child_disposition({'stopping': False, 'uncertain_effect': False, 'status': 'completed',
+                                            'outcome_category': 'completed', 'equivalence': {'status': 'unknown'}}), 'advance')
+        completed = {'status':'completed','stopping':False,'uncertain_effect':False,'outcome_category':'completed'}
+        unknown = {'status':'unknown','equivalent':None}
+        self.assertEqual(child_disposition(dict(completed,equivalence=unknown)), 'advance')
+        for status,category in (('blocked','safety'),('blocked','operator'),('failed','model'),('cancelled','cancelled')):
+            self.assertEqual(child_disposition(dict(completed,status=status,outcome_category=category,equivalence=unknown)), 'block')
+        self.assertEqual(child_disposition(dict(completed,uncertain_effect=True,equivalence=unknown)), 'block')
+        self.assertEqual(child_disposition(dict(completed,stopping=True,equivalence=unknown)), 'wait')
+
 
 def wait_child(controller, run_id):
     deadline = time.monotonic()+10

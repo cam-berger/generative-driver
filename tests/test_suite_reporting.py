@@ -79,6 +79,25 @@ class AggregateTests(unittest.TestCase):
         m,t,r,e=fixture()
         with self.assertRaises(ValueError):aggregate_suite(m,t,r,'worker-says-passed',experiment=e)
 
+    def test_per_case_revisions_are_read_only_beside_the_revision_they_combine_into(self):
+        # Catches per-case revisions that miss one of the suite's cases or are not those its comparison identity names:
+        # trials would be checked against revisions the suite is not compared by. A suite without them is read as before.
+        from generative_driver.benchmark_support.snapshots import canonical_digest
+        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        manifest,trials,reports,experiment=fixture()
+        revisions={entry['case']:str(index+1)*64 for index,entry in enumerate(manifest['entries'])}
+        experiment['comparison_identity']['evaluator_revision']=canonical_digest(revisions)
+        experiment['evaluator_revisions']=revisions
+        result=aggregate_suite(manifest,trials,reports,'recorded-controller-verdicts',experiment=copy.deepcopy(experiment))
+        self.assertEqual(result['experiment']['evaluator_revisions'],revisions)
+        for name,change in (('combined',lambda e:e['comparison_identity'].update(evaluator_revision='9'*64)),
+                            ('missing case',lambda e:e['evaluator_revisions'].pop('tq9-v2')),
+                            ('other case',lambda e:e['evaluator_revisions'].update({'other-v1':'9'*64})),
+                            ('digest',lambda e:e['evaluator_revisions'].update({'tq9-v2':'not-a-digest'}))):
+            changed=copy.deepcopy(experiment);change(changed)
+            with self.subTest(name),self.assertRaisesRegex(ValueError,'evaluator revisions'):
+                aggregate_suite(manifest,trials,reports,'recorded-controller-verdicts',experiment=changed)
+
     def test_bare_verdict_or_incomplete_final_gates_never_earns_success(self):
         from generative_driver.benchmark_support.suite_reporting import aggregate_suite
         for field in ('stages','accepted_gates','final_evaluation'):
@@ -264,11 +283,15 @@ class ExportTests(unittest.TestCase):
                 with self.subTest(paths=paths),self.assertRaisesRegex(ValueError,'audit path'):report_suite('suite',output='out',audit_paths=paths)
 
 
-def export_fixture(root):
-    """Two sealed toy trials served through a fake external IPC boundary; real report/seal/regrade code."""
+def export_fixture(root,per_case=True):
+    """Two sealed toy trials of two families served through a fake external IPC boundary; real report/seal/regrade
+    code. Each child is stamped with its own case's revision, and the suite freezes them beside the revision they
+    combine into. With `per_case` false, the suite is one frozen before cases had their own grader identities: every
+    child is stamped with its one revision."""
     from pathlib import Path
     from test_benchmark_v2_evidence import SealedEvidenceTests
     from generative_driver.benchmark_support.evidence import seal_run_evidence,public_pin,public_v2_report
+    from generative_driver.benchmark_support.grader_identity import case_revisions
     from generative_driver.benchmark_support.snapshots import canonical_digest
     manifest,trials,_,experiment=fixture()
     manifest['entries']=manifest['entries'][:2]
@@ -281,7 +304,10 @@ def export_fixture(root):
         rid=f'r{index+1}';payload=SealedEvidenceTests().payload()
         pin=payload['case_pin'];pin.update(case_id=entry['case'],family='toy-family',scope='full-workflow',evidence_track='firmware',execution='actual-agent-emulation')
         pin['manifest'].update(id=entry['case'],version='5',evaluator_version='5',execution='actual-agent-emulation')
-        snapshot=payload['execution_snapshot'];snapshot['snapshot_sha256']=canonical_digest({k:v for k,v in snapshot.items() if k!='snapshot_sha256'})
+        snapshot=payload['execution_snapshot']
+        if per_case:snapshot['executed'].update(case_revisions((entry['case'],)))
+        else:snapshot['executed'].pop('evaluator_revisions')
+        snapshot['snapshot_sha256']=canonical_digest({k:v for k,v in snapshot.items() if k!='snapshot_sha256'})
         private=root/'runs'/rid/'benchmark';private.mkdir(parents=True)
         (private/'execution.json').write_text(json.dumps(snapshot),encoding='utf-8')
         password=root/f'{rid}.password';password.write_text('test-only password',encoding='utf-8')
@@ -309,7 +335,11 @@ def export_fixture(root):
         experiment['execution_snapshots'].append({'trial_key':slot['trial_key'],'snapshot_sha256':snapshot['snapshot_sha256']})
         slots.append({**{k:v for k,v in slot.items() if k!='entry_index'},'status':'finished','outcome_category':'completed','run_id':rid,'interventions':[]})
         evidence_files[slot['trial_key']]=private/'run-evidence.enc';password_files[entry['case']]=password
-    experiment['comparison_identity']['evaluator_revision']=snapshot['executed']['evaluator_revision']
+    if per_case:
+        frozen=case_revisions([entry['case'] for entry in manifest['entries']])
+        experiment['comparison_identity']['evaluator_revision']=frozen['evaluator_revision']
+        experiment['evaluator_revisions']=frozen['evaluator_revisions']
+    else:experiment['comparison_identity']['evaluator_revision']=snapshot['executed']['evaluator_revision']
     experiment['dimensions']={'runtime':'scripted-contract-fixture','skills_revision':snapshot['executed']['skills_revision'],'toolchain_revision':snapshot['executed']['toolchain_revision']}
     calls=[]
     def call(method,params,**kwargs):
@@ -359,6 +389,42 @@ class ExportIntegrationTests(unittest.TestCase):
                 report_suite('suite-toy',home=root,output=root/'wrong-evaluator')
             owners['r1']['snapshot_sha256']='0'*64
             with patch('generative_driver.client.call',side_effect=call),self.assertRaises(ValueError):report_suite('suite-toy',home=root,output=root/'refused')
+
+    def test_each_trial_is_compared_with_the_frozen_revision_of_its_own_case(self):
+        # Catches a trial checked against the suite's combined revision, which no child of a suite of several families is
+        # stamped with, or against another case's revision.
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.snapshots import canonical_digest
+        from generative_driver.benchmark_support.suite_reporting import report_suite
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);call,_,_,_,_=export_fixture(root)
+            with patch('generative_driver.client.call',side_effect=call):
+                self.assertEqual(report_suite('suite-toy',home=root,output=root/'export')['success']['passed'],2)
+            def swapped(method,params,**kwargs):
+                # The two cases' frozen revisions trade places, still combined into the revision the suite names.
+                response=call(method,params,**kwargs)
+                if method=='suite_result':
+                    response=copy.deepcopy(response);experiment=response['experiment']
+                    revisions=experiment['evaluator_revisions'];first,second=sorted(revisions)
+                    revisions[first],revisions[second]=revisions[second],revisions[first]
+                    experiment['comparison_identity']['evaluator_revision']=canonical_digest(revisions)
+                return response
+            with patch('generative_driver.client.call',side_effect=swapped),self.assertRaisesRegex(ValueError,'Executed evaluator differs'):
+                report_suite('suite-toy',home=root,output=root/'swapped')
+
+    def test_a_suite_frozen_before_per_case_revisions_compares_each_trial_with_its_one_revision(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.suite_reporting import report_suite
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);call,_,_,_,_=export_fixture(root,per_case=False)
+            with patch('generative_driver.client.call',side_effect=call):
+                result=report_suite('suite-toy',home=root,output=root/'export')
+            self.assertEqual(result['success']['passed'],2)
+            self.assertNotIn('evaluator_revisions',result['experiment'])
 
     def test_an_earlier_suite_is_not_exported_with_an_audit_it_cannot_apply(self):
         # Catches a gated suite exported with forbidden paths to audit that audits nothing and says nothing: only an

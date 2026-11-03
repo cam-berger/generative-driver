@@ -40,7 +40,9 @@ class InventoryTests(unittest.TestCase):
         self.assertIn('calibration/calibration.json',decode_inventory(value))
 
 class AdmissionTests(unittest.TestCase):
-    def fixture(self):
+    def fixture(self, case_id='sampled-sensor-v1'):
+        """A complete measured record of `case_id`, stamped with that case's grader identity and shaped as a
+        sampled-sensor record, and its manifest."""
         from generative_driver.benchmark_support.grader_identity import grader_identity
         h='a'*64
         runs=[]
@@ -59,14 +61,14 @@ class AdmissionTests(unittest.TestCase):
             run=copy.deepcopy(runs[0]); run.update(id=name,passed=False,check_ids=['toy/'+name],checks=[{'id':'toy/'+name,'passed':False,'reason':'value mismatch'}]); runs.append(run)
             mutants.append(dict(id=name,rejected=True,run=name,source_sha256=h,mutated_sha256='b'*64,
                 expected_failed_checks=['toy/'+name],failed_checks=['toy/'+name],execution_input={k:run[k] for k in ('model_sha256','capabilities_sha256')}))
-        record=dict(schema='benchmark-calibration/1',status='passed',case='toy-case',execution='reference-calibration',
+        record=dict(schema='benchmark-calibration/1',status='passed',case=case_id,execution='reference-calibration',
             backend='native-renode',evaluator_version='3',images={'firmware.bin':h},
-            input_hashes={k:h for k in ('source','contract','recipe','references','mutations','build','inventory')},evaluator_identity=grader_identity(),native_process_observed=True,
+            input_hashes={k:h for k in ('source','contract','recipe','references','mutations','build','inventory')},evaluator_identity=grader_identity(case_id=case_id),native_process_observed=True,
             references=refs,mutants=mutants,required_mutants=[r['id'] for r in mutants],runs=runs,
             scenarios={'original':{'passed':True}},
             tools={k:'toy-version' for k in ('compiler','objcopy','renode','ghidra','java')},
             analysis={name:{'returncode':0,'export_hashes':{'decompiled.c':h}} for name in ('firmware.bin',)})
-        manifest=dict(id='toy-case',family='sampled-sensor',evaluator_version='3',images=record['images'],
+        manifest=dict(id=case_id,family='sampled-sensor',evaluator_version='3',images=record['images'],
             calibration={'input_hashes':record['input_hashes']})
         return manifest,record
 
@@ -112,9 +114,23 @@ class AdmissionTests(unittest.TestCase):
         from generative_driver.benchmark_support.calibration import validate_calibration
         from generative_driver.benchmark_support.grader_identity import grader_identity
         manifest, record = self.fixture()
-        record['evaluator_identity'] = grader_identity()
+        record['evaluator_identity'] = grader_identity(case_id=manifest['id'])
         for run in record['runs']: run['runtime_sha256'] = 'f' * 64
         self.assertEqual(validate_calibration(manifest, record)['failures'], [])
+
+    def test_admission_compares_a_record_with_the_identity_of_its_own_case(self):
+        # Catches a record admitted under the whole grader's identity, or another case's: a case is qualified under its
+        # own, which covers the shared core, its family's modules and its own registration entry.
+        from generative_driver.benchmark_support.calibration import validate_calibration
+        from generative_driver.benchmark_support.grader_identity import grader_identity
+        manifest, record = self.fixture()
+        self.assertEqual(validate_calibration(manifest, record)['failures'], [])
+        for other in (grader_identity(), grader_identity(case_id='parameter-store-v1')):
+            record['evaluator_identity'] = other
+            self.assertEqual(validate_calibration(manifest, record)['failures'], ['identity:evaluator_identity'])
+        # The manifest of an unregistered case has no grader identity to compare with, which no record can fix: it raises.
+        with self.assertRaisesRegex(ValueError, 'Unknown benchmark case'):
+            validate_calibration({**manifest, 'id': 'toy-case'}, record)
 
     def test_a_broken_grader_installation_raises_rather_than_reading_as_malformed_evidence(self):
         # Catches a grader module missing from the installation reported as a defect of the calibration record.
@@ -372,14 +388,17 @@ class ReferenceExecutionTests(unittest.TestCase):
     def test_a_frozen_package_that_crashes_hangs_or_garbles_its_result_fails_on_a_healthy_device(self):
         # Catches a frozen package's own failure taken for the evaluator host's, which ends the trial unscored and leaves
         # a crashing system's failures out of its pass rate. The bundled runtime is the system's code: one that raises
-        # at import, outlasts the call limit or prints no result the grader can read on the evaluator's healthy device
-        # is graded not equivalent.
+        # at import, outlasts the call limit, prints no result the grader can read or, on POSIX, kills itself on the
+        # evaluator's healthy device is graded not equivalent.
         import json
+        import signal
         from pathlib import Path
         from unittest.mock import patch
         from generative_driver.benchmark_support.emulated_actions import PACKAGE_CALL_SECONDS
         from generative_driver.benchmark_support.evaluator import final_record, reference_execute
         from generative_driver.configurator import digest
+        kills_itself=(('self-kill',b'\nimport os, signal\nos.kill(os.getpid(), signal.SIGKILL)\n',PACKAGE_CALL_SECONDS,
+                       'signal'),) if hasattr(signal,'SIGKILL') else ()
         with self.toy_sensor() as (temp,Session,pin,truth,caps):
             for name,code,limit,reported in (
                     ('crash',b'\nraise ImportError("a broken bundled runtime")\n',PACKAGE_CALL_SECONDS,'no_result'),
@@ -387,7 +406,8 @@ class ReferenceExecutionTests(unittest.TestCase):
                     ('garbled',b'\nimport sys\nsys.stdout.buffer.write(b"\\xff\\xfe")\nsys.stdout.flush()\n',
                      PACKAGE_CALL_SECONDS,'no_result'),
                     ('too-deep',b'\nimport sys\nsys.stdout.write("[" * 100000)\nsys.stdout.flush()\n',
-                     PACKAGE_CALL_SECONDS,'no_result')):
+                     PACKAGE_CALL_SECONDS,'no_result'),
+                    *kills_itself):
                 with self.subTest(package=name):
                     package=self.emit_toy_package(Path(temp)/name,Session.binding)
                     self.edit_bundled(package,'interface_runtime/package.py',lambda data:data+code)
@@ -403,6 +423,90 @@ class ReferenceExecutionTests(unittest.TestCase):
                     self.assertIs(call['device_healthy'],True)
                     self.assertEqual({k:call['result']['error'][k] for k in ('fault','reported_fault','code')},
                                      {'fault':'model','reported_fault':'host','code':reported})
+
+    def test_a_forged_process_label_or_a_malformed_result_fails_on_a_healthy_device(self):
+        # Catches a package that escapes its grade by printing the label only the grader writes for a process that could
+        # not start, which left a failing driver's trial unscored, and a malformed result that made the grader raise.
+        import json
+        from pathlib import Path
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.evaluator import final_record, reference_execute
+        from generative_driver.configurator import digest
+        printed = {'forged source': {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [],
+                                     'error': {'fault': 'host', 'source': 'package-process', 'code': 'spawn',
+                                               'message': 'printed by the package'}},
+                   'outputs': {'ok': True, 'outputs': [-5.0, 3], 'units': {}},
+                   'units': {'ok': True, 'outputs': {'temperature': -5.0, 'sequence': 3}, 'units': 'degC'},
+                   'error': {'ok': False, 'outputs': {}, 'units': {}, 'error': 'refused'},
+                   'transcript': {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [7],
+                                  'error': {'fault': 'model', 'code': 'execution_error'}},
+                   'not finite': {'ok': True, 'outputs': {'temperature': float('nan'), 'sequence': 3},
+                                  'units': {'temperature': 'degC', 'sequence': 'count'}}}
+        with self.toy_sensor() as (temp,Session,pin,truth,caps):
+            for name,result in printed.items():
+                with self.subTest(name):
+                    package=self.emit_toy_package(Path(temp)/name,Session.binding)
+                    code=('\nimport sys\nsys.stdout.write(%r)\nsys.exit(0)\n' % json.dumps(result)).encode()
+                    self.edit_bundled(package,'interface_runtime/package.py',lambda data:data+code)
+                    with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()):
+                        graded=reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),
+                            output_dir=Path(temp)/name/'final',package=package,expected_package_sha256=digest(package),
+                            healthy_device_failures=True)
+                    final={'contract':graded['contract'],'records':graded['records'],'frozen_artifact_sha256':digest(package)}
+                    self.assertIs(final_record(final,protocol='assistive/1')['equivalent'],False)
+                    events=json.loads((Path(temp)/name/'final/raw.json').read_text(encoding='utf-8'))['events']
+                    error=next(e for e in events if e['action']['kind']=='call')['result']['error']
+                    if name=='forged source':
+                        call=next(e for e in events if e['action']['kind']=='call')
+                        self.assertEqual((call['device_healthy'],error['reported_fault'],'source' in error),
+                                         (True,'host',False))
+                    else:
+                        # The evidence keeps the start of the print, its length and its SHA-256.
+                        kept=next(e for e in events if e['action']['kind']=='call')['result']['printed']
+                        text=json.dumps(result)
+                        self.assertEqual((error['fault'],error['code'],kept),
+                                         ('model','malformed_result',{'prefix':text[:4096],'characters':len(text),
+                                          'sha256':hashlib.sha256(text.encode('utf-8')).hexdigest()}))
+
+    def test_a_print_nested_beyond_the_cap_fails_on_a_healthy_device_and_one_at_the_cap_is_graded(self):
+        # Catches a print that parses but that the evidence cannot record once it nests the print deeper. The check
+        # wrote the print at its own depth, so on CPython 3.13, whose JSON reader and writer reach about ten thousand
+        # levels, a print a few levels short of that passed it, then broke the write of the raw evidence and left the
+        # trial unscored. Objects and arrays nested beyond MAX_RESULT_DEPTH levels are the driver's malformed_result on
+        # every Python. A print at the cap is graded on its merits: here an honest reading with a deep unread field.
+        import json
+        from pathlib import Path
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.emulated_actions import MAX_RESULT_DEPTH
+        from generative_driver.benchmark_support.evaluator import final_record, reference_execute
+        from generative_driver.configurator import digest
+        def nested(levels):
+            """`levels` arrays, each inside the one before."""
+            value=[]
+            for _ in range(levels-1):
+                value=[value]
+            return value
+        reading={'ok':True,'outputs':{'temperature':-5.0,'sequence':3},'units':{'temperature':'degC','sequence':'count'}}
+        # The result is the first level, a field of it the second and a value of `outputs` the third.
+        printed={'an unread field at the cap':({**reading,'trace':nested(MAX_RESULT_DEPTH-1)},True),
+                 'an unread field beyond it':({**reading,'trace':nested(MAX_RESULT_DEPTH)},False),
+                 'an output beyond it':({**reading,'outputs':{'temperature':nested(MAX_RESULT_DEPTH-1),'sequence':3}},
+                                        False)}
+        with self.toy_sensor() as (temp,Session,pin,truth,caps):
+            for name,(result,equivalent) in printed.items():
+                with self.subTest(name):
+                    package=self.emit_toy_package(Path(temp)/name,Session.binding)
+                    code=('\nimport sys\nsys.stdout.write(%r)\nsys.exit(0)\n' % json.dumps(result)).encode()
+                    self.edit_bundled(package,'interface_runtime/package.py',lambda data:data+code)
+                    with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()):
+                        graded=reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),
+                            output_dir=Path(temp)/name/'final',package=package,expected_package_sha256=digest(package),
+                            healthy_device_failures=True)
+                    final={'contract':graded['contract'],'records':graded['records'],'frozen_artifact_sha256':digest(package)}
+                    self.assertIs(final_record(final,protocol='assistive/1')['equivalent'],equivalent)
+                    events=json.loads((Path(temp)/name/'final/raw.json').read_text(encoding='utf-8'))['events']
+                    call=next(e for e in events if e['action']['kind']=='call')['result']
+                    self.assertEqual(call.get('error',{}).get('code'),None if equivalent else 'malformed_result')
 
     def test_only_the_package_that_was_frozen_is_accepted(self):
         import tempfile

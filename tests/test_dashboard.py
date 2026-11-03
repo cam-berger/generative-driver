@@ -172,6 +172,23 @@ print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text
         running = self.dashboard().project_run({**result, 'status': 'running', 'equivalence': None}, now=30)
         self.assertIsNone(running['equivalence'])
 
+    def test_the_activity_line_of_a_final_verdict_names_an_unknown_grade_unknown(self):
+        # Catches an evaluator's unknown grade printed as unscored in the activity feed, beside a panel that says unknown. The
+        # event holds no status; an evaluator's unscored grade never finalizes a run, so an evaluator verdict with no
+        # verdict is unknown, while a generic run's self-evidence with none is still unscored.
+        dashboard = self.dashboard()
+        line = lambda **data: dashboard._event_line({'id': 7, 'time': 1, 'kind': 'run.finalized', 'data': {'diff': [], **data}})
+        self.assertEqual(line(equivalent=None, basis='evaluator')['message'], 'Final verdict: unknown (evaluator)')
+        self.assertEqual(line(equivalent=None, basis='self-evidence')['message'], 'Final verdict: unscored (self-evidence)')
+        for basis in ('evaluator', 'self-evidence'):
+            self.assertEqual(line(equivalent=True, basis=basis)['message'], f'Final verdict: equivalent ({basis})')
+            self.assertEqual(line(equivalent=False, basis=basis)['message'], f'Final verdict: not equivalent ({basis})')
+        # The panel is given the whole record, which says it.
+        unknown = {'status': 'unknown', 'equivalent': None, 'basis': 'evaluator', 'diff': [{'id': 'a', 'reason': 'unreadable state'}]}
+        result = {'run_id': 'run-unknown', 'status': 'completed', 'stage': 'finalize', 'created': 1, 'updated': 2,
+                  'progress': {'revision': 0, 'repairs': 0}, 'accepted_handoffs': [], 'worker_reports': [], 'equivalence': unknown}
+        self.assertEqual(dashboard.project_run(result, now=3)['equivalence']['label'], 'unknown')
+
     def test_finished_worker_stays_in_checking_until_its_handoff_is_accepted(self):
         result = {'run_id': 'run-checking', 'status': 'running', 'stage': 'probe',
                   'created': 10, 'updated': 20, 'progress': {'revision': 1},

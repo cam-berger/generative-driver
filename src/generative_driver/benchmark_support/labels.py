@@ -5,7 +5,12 @@ RUNTIME = 'replay'  # the runtime name of the replay executor
 
 
 def equivalence_label(equivalence):
-    return {True: 'equivalent', False: 'not equivalent'}.get((equivalence or {}).get('equivalent'), 'unscored')
+    """A verdict in words: equivalent, not equivalent, unknown (a grade with no failed step and an undecided one) or,
+    for any other record without a verdict, unscored."""
+    equivalence = equivalence or {}
+    if equivalence.get('status') == 'unknown':
+        return 'unknown'
+    return {True: 'equivalent', False: 'not equivalent'}.get(equivalence.get('equivalent'), 'unscored')
 
 
 def verdict_reason(equivalence):

@@ -1,6 +1,8 @@
 """Sampled sensor checks from independent latched source and acquisition counter."""
 from .family_support import integer, private_phase, signed16
 
+REQUIRED_MUTANTS = frozenset({"constant", "scale", "signedness", "stale"})
+
 
 def contract(pin, truth, phase):
     return private_phase(pin, truth, phase)["contract"]

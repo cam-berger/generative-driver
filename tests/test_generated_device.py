@@ -11,7 +11,8 @@ DEVICE = {'id': '0000d001', 'level': 1, 'framing': 'text-lines'}
 
 def retake(key, identifier, **changes):
     """Change the task or answer of transition `identifier` of `key` and of every step that takes it alike, so that only
-    the rule a test aims at breaks. A step that becomes a refusal records the fixture's refusal."""
+    the rule a test aims at breaks. A step that becomes a refusal records the fixture's refusal, and one that stops
+    being a refusal drops it."""
     next(transition for transition in key['machine']['transitions'] if transition['id'] == identifier).update(changes)
     for sequence in key['sequences']:
         for step in sequence['steps']:
@@ -19,6 +20,8 @@ def retake(key, identifier, **changes):
                 step.update(changes)
                 if step['answer'] == 'refusal':
                     step.setdefault('refusal_rx_hex', b'ERR\n'.hex())
+                else:
+                    step.pop('refusal_rx_hex', None)
 
 
 class ValidDeviceTests(unittest.TestCase):
@@ -141,6 +144,27 @@ class ValidDeviceTests(unittest.TestCase):
             next(t for t in key['machine']['transitions'] if t['id'] == 't4').update(to='m2')
             key['sequences'][0]['steps'][3]['state'] = {'c1': 2}
         self.assert_refused([('a read that moves the device', reading_moves, 'same state')])
+
+    def test_a_device_refuses_something_and_a_refusal_changes_nothing(self):
+        def refusing_moves(key):
+            # A last set_mode in s1 takes mode 1 back to mode 2, though the device refuses it.
+            key['machine']['transitions'].append({'id': 't9', 'from': 'm1', 'task': 'set_mode', 'answer': 'refusal',
+                                                  'to': 'm2'})
+            key['sequences'][0]['steps'].append({'task': 'set_mode', 'inputs': {'mode': 9}, 'grants': ['write'],
+                                                 'answer': 'refusal', 'state': {'c1': 2}, 'transition': 't9',
+                                                 'refusal_rx_hex': b'ERR\n'.hex()})
+        no_line_feed = lambda key: key['sequences'][0]['steps'][0].update(refusal_rx_hex=b'ERR'.hex())
+        self.assert_refused([
+            # Hidden sequences include out-of-range values, so passing on the device's refusals is graded.
+            ('no refusal step', lambda key: retake(key, 't1', answer='value'), 'refusal step'),
+            # A refusal matches whether the device or the driver made it, and a driver's own refusal sends nothing.
+            ('a refusal that changes the state', refusing_moves, 'refusal transition t9'),
+            # Every correct driver must capture the same bytes, so a reply is self-delimiting.
+            ('a text refusal without its line feed', no_line_feed, 'line feed')])
+        key = copy.deepcopy(FIXTURE_ANSWER_KEY)
+        no_line_feed(key)  # only text lines end with a line feed
+        validate_device({**DEVICE, 'framing': 'binary-frames'}, image=FIXTURE_IMAGE,
+                        mission=fixture_mission(DEVICE['id']), key=key)
 
     def test_cells_and_sequences_carry_no_design_in_their_names(self):
         # A verdict publishes check ids built from these names, so they are numbered.

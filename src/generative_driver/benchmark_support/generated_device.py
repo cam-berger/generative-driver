@@ -169,6 +169,12 @@ def answer_key(truth):
         _require(transition['task'] not in reads or transition['from'] == transition['to'],
                  'transition %s of read task %s starts and ends in the same state'
                  % (transition['id'], transition['task']))
+        # A refusal matches whether the device or the driver made it, and a driver's own refusal sends nothing.
+        _require(transition['answer'] != 'refusal' or transition['from'] == transition['to'],
+                 'refusal transition %s starts and ends in the same state' % transition['id'])
+    # Hidden sequences include out-of-range values, so passing on the device's refusals is graded.
+    _require(any(transition['answer'] == 'refusal' for transition in transitions.values()),
+             'the hidden sequences take a refusal step')
     references = truth['references']
     _require(isinstance(references, dict) and set(references) == {'a', 'b'}, 'the references are a and b')
     for reference in references.values():
@@ -279,6 +285,17 @@ def _agreement(key, mission):
         _require(isinstance(mapped, dict) and set(mapped) == set(tasks), name + ' maps exactly the mission\'s tasks')
 
 
+def _framing(key, framing):
+    """ValueError unless the answer `key` suits its device's `framing`: every correct driver must capture a refusal as
+    the same bytes, so a text-lines device's refusal replies end with a line feed."""
+    if framing != 'text-lines':
+        return
+    for sequence in key['sequences']:
+        for number, step in enumerate(sequence['steps'], 1):
+            _require(step.get('refusal_rx_hex', '0a').endswith('0a'),
+                     'step %s/%d: a text-lines refusal ends with a line feed' % (sequence['id'], number))
+
+
 def validate_device(device, *, image, mission, key=None):
     """Nothing, once the plaintext device is valid: `device`, the identity part of its manifest entry, its `image`, its
     public `mission` and, given one, its answer `key` and the key's agreement with the mission. ValueError names the
@@ -288,3 +305,4 @@ def validate_device(device, *, image, mission, key=None):
     if key is not None:
         answer_key(key)
         _agreement(key, mission)
+        _framing(key, device['framing'])

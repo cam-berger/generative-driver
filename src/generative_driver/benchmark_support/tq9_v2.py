@@ -88,5 +88,15 @@ def reuse_passed(events, capabilities):
     return read and any(abs(value - 370) <= 2 for value in duties) and bool(duties) and duties[-1] == 0
 
 
+def _instrument_units():
+    return {'duty': 'permille', 'temperature_reference': 'degC'}
+
+
+def _public_observation(raw):
+    return {'values': {'duty': observations(raw, {}, {})['duty'], 'temperature_reference': raw['values']['temperature']},
+            'units': _instrument_units()}
+
+
 HOOKS = {'contract': contract, 'build_plan': build_plan, 'observations': observations, 'reuse_passed': reuse_passed,
-         'required_mutants': REQUIRED_MUTANTS}
+         'required_mutants': REQUIRED_MUTANTS, 'instrument_units': _instrument_units,
+         'public_observation': _public_observation}

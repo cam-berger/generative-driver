@@ -19,9 +19,6 @@ from .families import family_for
 
 DESCRIPTOR = 'device-descriptor/1'
 RECEIPT = 'emulator-recovery/2'
-# Public development inputs, selected independently of the evaluator's final cases.
-SENSOR_CONDITIONS = (('low', -12.0), ('high', 32.0), ('zero', 0.0),
-                     ('fractional', 7.5), ('fine_fraction', 18.5625))
 # Keys of a decrypted case truth (a legacy one's too) or a credential; a provider is given the device recipe and nothing
 # else.
 TRUTH_KEYS = ('recipe', 'contracts', 'phases', 'scenarios', 'images', 'references', 'input_hashes',
@@ -146,10 +143,7 @@ class DeviceProvider:
 
     def development_conditions(self):
         """A fixed public catalog of environmental inputs, with no register coordinates or commands."""
-        if self.case_id != 'sampled-sensor-v1' or 'source_q4' not in self.recipe.get('stimuli', {}):
-            return None
-        return {'schema': 'development-conditions/1', 'conditions': [
-            {'id': name, 'reference': {'value': value, 'unit': 'degC'}} for name, value in SENSOR_CONDITIONS]}
+        return family_for(self.case_id).development_conditions(self.recipe)
 
     def select_condition(self, condition_id, expected_session_id):
         """Set a catalog input between calls. This neither acquires a sample nor resets device state."""

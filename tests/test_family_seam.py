@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import generative_driver
 from benchmark_family_fixtures import toy_sample_model, toy_sensor_phase
-from generative_driver.benchmark_support import sampled_sensor
+from generative_driver.benchmark_support import instruments, sampled_sensor, tq9_legacy, tq9_v2
 from generative_driver.benchmark_support.case_assets import reuse_mission
 from generative_driver.benchmark_support.emulated_actions import execute_plan
 from generative_driver.benchmark_support.families import Family, family_for, family_from
@@ -337,6 +337,86 @@ class FamilySessionTests(unittest.TestCase):
         # `validate_setup` asks the case's family about a native-sim method, after what any method must satisfy.
         with self.assertRaisesRegex(ValueError, 'sampled-sensor-v1'):
             validate_setup({'id': 'sampled-sensor-v1', **NATIVE_MANIFEST}, {'recipe': {'backend': 'native-sim'}})
+
+
+class InstrumentTests(unittest.TestCase):
+    TQ9_RAW = {'values': {'compare': 37, 'reload': 99, 'temperature': 21.5}}
+
+    def test_01_B11_units_and_public_observations_are_todays(self):
+        self.assertEqual(instruments.units('tq9'), {'duty': 'fraction'})
+        for case_id in ('tq9-v2', 'tq9-v3'):
+            self.assertEqual(instruments.units(case_id), {'duty': 'permille', 'temperature_reference': 'degC'})
+        self.assertEqual(instruments.units('sampled-sensor-v1'), {'reference_temperature': 'degC', 'monitor_sequence': 'count'})
+        self.assertEqual(instruments.public_observation('tq9', self.TQ9_RAW),
+                         {'values': {'duty': 0.37}, 'units': {'duty': 'fraction'}})
+        self.assertEqual(instruments.public_observation('tq9-v2', self.TQ9_RAW),
+                         {'values': {'duty': 370.0, 'temperature_reference': 21.5},
+                          'units': {'duty': 'permille', 'temperature_reference': 'degC'}})
+        self.assertEqual(instruments.public_observation('sampled-sensor-v1',
+                                                        {'values': {'latched_q4': 400, 'acquisition_counter': 2}}),
+                         {'values': {'reference_temperature': 25.0, 'monitor_sequence': 2},
+                          'units': {'reference_temperature': 'degC', 'monitor_sequence': 'count'}})
+
+    def test_01_B11_the_units_and_the_observation_come_from_the_familys_hooks(self):
+        for module in (tq9_legacy, tq9_v2):
+            case_id = 'tq9' if module is tq9_legacy else 'tq9-v2'
+            with patch.dict(module.HOOKS, {'instrument_units': lambda: {'toy': 'unit'},
+                                           'public_observation': lambda raw: {'values': raw, 'units': {'toy': 'unit'}}}):
+                self.assertEqual(instruments.units(case_id), {'toy': 'unit'})
+                self.assertEqual(instruments.public_observation(case_id, {'toy': 1}), {'values': {'toy': 1}, 'units': {'toy': 'unit'}})
+
+    def test_01_B11_reuse_missions_are_todays(self):
+        passed = {'name': 'fresh_worker_mission', 'passed': True}
+        failed = {'name': 'fresh_worker_mission', 'passed': False, 'fault': 'model',
+                  'reason': 'Fresh worker mission lacks observed reading, requested effect or disarm'}
+        legacy = {'temperature': {'operation': 'read', 'output': 't'}}
+        duty = [{'operation': 'read', 'result': {'ok': True, 'outputs': {'t': 25}}, 'observation': {'duty': .37}},
+                {'operation': 'off', 'result': {'ok': True}, 'observation': {'duty': 0}}]
+        self.assertEqual(reuse_mission('tq9', duty, legacy), passed)
+        self.assertEqual(reuse_mission('tq9', duty[:1], legacy), failed)
+        current = {'tasks': {'temperature': {'operation': 'read', 'outputs': {'temperature': {'output': 'reading'}}}}}
+        permille = [{'operation': 'read', 'result': {'ok': True, 'outputs': {'reading': 25}}, 'observation': {'duty': value}}
+                    for value in (370, 0)]
+        self.assertEqual(reuse_mission('tq9-v2', permille, current), passed)
+        self.assertEqual(reuse_mission('tq9-v2', permille[:1], current), failed)
+        sensor = {'tasks': {'measure': {'operation': 'm', 'outputs': {'temperature': {'output': 't'},
+                                                                       'sequence': {'output': 's'}}}}}
+        samples = [{'operation': 'm', 'result': {'ok': True, 'outputs': {'t': 25, 's': value}},
+                    'observation': {'reference_temperature': 25, 'monitor_sequence': value}} for value in (1, 2)]
+        self.assertEqual(reuse_mission('sampled-sensor-v1', samples, sensor), passed)
+        self.assertEqual(reuse_mission('sampled-sensor-v1', samples[:1], sensor), failed)
+        self.assertEqual(reuse_mission('bme280', duty, legacy),
+                         {'name': 'fresh_worker_mission', 'passed': None,
+                          'reason': 'The capability mapping cannot judge the mission: ValueError: Unknown native family: bme280'})
+
+    def test_01_B11_the_reuse_mission_comes_from_the_familys_hook(self):
+        for module, case_id in ((tq9_legacy, 'tq9'), (tq9_v2, 'tq9-v2'), (sampled_sensor, 'sampled-sensor-v1')):
+            with self.subTest(case_id), patch.dict(module.HOOKS, {'reuse_passed': lambda events, capabilities: True}):
+                self.assertIs(reuse_mission(case_id, [], {})['passed'], True)
+
+
+class DevelopmentConditionTests(unittest.TestCase):
+    CATALOG = {'schema': 'development-conditions/1', 'conditions': [
+        {'id': name, 'reference': {'value': value, 'unit': 'degC'}}
+        for name, value in (('low', -12.0), ('high', 32.0), ('zero', 0.0), ('fractional', 7.5), ('fine_fraction', 18.5625))]}
+    STIMULI = {'stimuli': {'source_q4': {'command': 'c', 'minimum': -8192, 'maximum': 8191}}}
+
+    def provider(self, case_id, recipe):
+        from generative_driver.benchmark_support.device_provider import DeviceProvider
+        return DeviceProvider(case_id, Path('/toy'), recipe, None, Path('/toy'))
+
+    def test_01_B12_only_the_sensor_with_a_source_stimulus_offers_development_conditions(self):
+        self.assertEqual(self.provider('sampled-sensor-v1', self.STIMULI).development_conditions(), self.CATALOG)
+        self.assertIsNone(self.provider('sampled-sensor-v1', {'stimuli': {}}).development_conditions())
+        self.assertIsNone(self.provider('sampled-sensor-v1', {}).development_conditions())
+        for case_id in registered_case_ids():
+            if case_id not in ('sampled-sensor-v1', 'bme280', 'setup-smoke'):
+                with self.subTest(case_id):
+                    self.assertIsNone(self.provider(case_id, self.STIMULI).development_conditions())
+
+    def test_01_B12_the_catalog_comes_from_the_familys_hook(self):
+        with patch.dict(sampled_sensor.HOOKS, {'development_conditions': lambda recipe: 'catalog of the hook'}):
+            self.assertEqual(self.provider('sampled-sensor-v1', {}).development_conditions(), 'catalog of the hook')
 
 
 if __name__ == '__main__':

@@ -218,7 +218,7 @@ class MutationTests(unittest.TestCase):
 
 class DispatchTests(unittest.TestCase):
     def test_family_dispatch_uses_family_phase_and_measured_oracle(self):
-        from generative_driver.benchmark_support.instruments import family_for
+        from generative_driver.benchmark_support.families import family_for
         sensor=family_for('sampled-sensor-v1')
         result=sensor.observations({'values':{'latched_q4':65520,'acquisition_counter':8}},
             {'ok':True,'outputs':{'temperature':-1,'sequence':8}}, {})

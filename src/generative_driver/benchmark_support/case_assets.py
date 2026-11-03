@@ -3,7 +3,7 @@ here so the evaluator imports neither the benchmark module nor the stage adapter
 import json
 from pathlib import Path
 
-from .instruments import family_for
+from .families import family_for
 from .registry import resolve_case, validate_pinned_workflow
 from .snapshots import read_snapshot
 
@@ -11,8 +11,6 @@ STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 # The record of the package calls of a fresh reuse, which the reuse stage hands on.
 REUSE_EVENTS = 'reuse-events.jsonl'
 TASKS = ('temperature', 'arm', 'set_duty', 'disarm')
-# The public reuse mission requests 37 percent output, then disarm; the instrument reads the duty as a fraction.
-REQUESTED = .37
 
 
 def case_root():
@@ -85,26 +83,12 @@ def mapping_errors(mapping, model):
     return errors
 
 
-def mission_done(events, capabilities):
-    """Whether fresh reuse did the public legacy mission with the frozen package: a temperature read, the requested 37
-    percent output and disarm, judged from the package results and the instrument's duty readings after them. A note on
-    the reuse stage, never a grade."""
-    spec = capabilities['temperature']
-    duties = [e['observation']['duty'] for e in events if e['result'].get('ok') is True and isinstance(e.get('observation'), dict)]
-    read = any(e.get('operation') == spec['operation'] and e['result'].get('ok') is True
-               and type(e['result'].get('outputs', {}).get(spec['output'])) in (int, float) for e in events)
-    return read and bool(duties) and any(abs(d - REQUESTED) <= .002 for d in duties) and duties[-1] == 0
-
-
 def reuse_mission(case_id, events, capabilities):
     """Whether the fresh worker's package calls did the public mission, judged from their outputs and the instrument
     readings of the emulated device: a note on the reuse stage, never a grade. Failed calls are attributed only on
     trusted evidence: untyped or mixed failures blame nobody."""
     try:
-        if case_id == 'tq9':
-            done = mission_done(events, capabilities)
-        else:
-            done = family_for(case_id).reuse_passed(events, capabilities)
+        done = family_for(case_id).reuse_passed(events, capabilities)
     except (KeyError, TypeError, ValueError, AttributeError, IndexError) as error:
         return {'name': 'fresh_worker_mission', 'passed': None,
                 'reason': 'The capability mapping cannot judge the mission: ' + type(error).__name__ + ': ' + str(error)}

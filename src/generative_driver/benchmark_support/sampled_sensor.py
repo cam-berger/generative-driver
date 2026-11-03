@@ -2,6 +2,8 @@
 from .family_support import integer, private_phase, signed16
 
 REQUIRED_MUTANTS = frozenset({"constant", "scale", "signedness", "stale"})
+# Public development inputs, selected independently of the evaluator's final cases.
+CONDITIONS = (('low', -12.0), ('high', 32.0), ('zero', 0.0), ('fractional', 7.5), ('fine_fraction', 18.5625))
 
 
 def contract(pin, truth, phase):
@@ -40,5 +42,13 @@ def reuse_passed(events, capabilities):
     return len(readings)>=2 and any(b>a for a,b in zip(readings,readings[1:]))
 
 
+def _development_conditions(recipe):
+    """The fixed catalog of a device whose recipe can set the sensor's source, or None."""
+    if 'source_q4' not in recipe.get('stimuli', {}):
+        return None
+    return {'schema': 'development-conditions/1', 'conditions': [
+        {'id': name, 'reference': {'value': value, 'unit': 'degC'}} for name, value in CONDITIONS]}
+
+
 HOOKS = {'contract': contract, 'build_plan': build_plan, 'observations': observations, 'reuse_passed': reuse_passed,
-         'required_mutants': REQUIRED_MUTANTS}
+         'required_mutants': REQUIRED_MUTANTS, 'development_conditions': _development_conditions}

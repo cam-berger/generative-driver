@@ -11,6 +11,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from generative_driver.benchmark_support.families import family_for
+
 RECIPE = {'observations': {'compare': {'command': 'compare', 'width': 32, 'count': 1},
                            'reload': {'command': 'reload', 'width': 32, 'count': 1},
                            'temperature': {'kind': 'scalar', 'command': 'temperature', 'unit': 'degC'}}}
@@ -202,7 +204,7 @@ class DeviceProviderTests(ProviderFixture):
                 provider = self.provider(case_id, recipe, start=lambda **kwargs: Raw(kwargs['recipe'], values))
                 provider.start()
                 observed = provider.observe()
-                named = dict(instruments.family_for(case_id).observations.monitor_units)
+                named = dict(family_for(case_id).observations.monitor_units)
                 self.assertEqual(set(observed), {'schema', 'session_id', 'values', 'units', 'time'})
                 self.assertEqual((set(observed['values']), observed['units']), (set(named), named))
                 self.assertEqual(provider.start()['instrument']['units'], named)

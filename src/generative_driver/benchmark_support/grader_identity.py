@@ -3,9 +3,9 @@
 The closure is read from import statements, without importing anything: every module the grading entry modules and
 the seeded families import, in function bodies too, and the parent packages below `generative_driver` whose
 `__init__.py` runs first. The top-level `generative_driver/__init__.py` is not part of it. Loads that are not import
-statements (`import_module`, `__import__`) are not followed; list such a module in ENTRY_MODULES. The core is the
-closure of ENTRY_MODULES alone. It imports no registered family: it reaches one through `registrations`, which loads it
-by name, so the walk seeds each family itself and a family's closure is the core's plus its own. A case's identity
+statements (`import_module`, `__import__`) are not followed. The core is the closure of ENTRY_MODULES alone. It imports
+no registered family: it reaches one through `families`, the only module of the closure that loads code by name, so the
+walk seeds each family itself and a family's closure is the core's plus its own. A case's identity
 hashes the core, its own family's closure and its own registration entry, so another family's code or another case's
 entry can change without voiding its admission. The identity covers the closure alone, so the system under test can
 change without voiding an admission either; SYSTEM_MODULES names the modules the closure must never reach. It is one

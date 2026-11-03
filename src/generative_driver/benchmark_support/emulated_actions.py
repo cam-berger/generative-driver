@@ -1,4 +1,6 @@
 """Private evaluator action execution; no service, worker gateway or process owner."""
+import time
+
 from .behavior import _check_rejection_evidence
 from .case_assets import write_json
 
@@ -146,7 +148,7 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
                 task = action['task']
                 def operation(task, values):
                     if needs_settle:
-                        __import__('time').sleep(settle_seconds)
+                        time.sleep(settle_seconds)
                     return invoke(task, values, action['grants'])
                 result = run_call(session, operation,
                                   {'operation': action['task'], 'parameters': inputs})

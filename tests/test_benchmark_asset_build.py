@@ -52,7 +52,7 @@ class FamilyBuildPipelineTests(unittest.TestCase):
         from generative_driver.benchmark_support import asset_build
         author = root / 'toy author'
         author.mkdir()
-        inputs = asset_build.inventory('parameter-store') - asset_build.BUILD_FILES
+        inputs = asset_build.inventory('parameter-store-v1') - asset_build.BUILD_FILES
         for relative in inputs:
             path = author / relative; path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('{}\n' if path.suffix == '.json' else 'toy input\n')
@@ -123,7 +123,7 @@ else:
             self.assertEqual(manifest['required_stages'], ['acquire','interpret','probe','ground','emit','reuse'])
             self.assertNotIn(str(author), json.dumps(manifest))
             unlocked = truth.unlock(release / manifest['truth']['path'], password.read_text(), manifest['truth']['sha256'])
-            self.assertEqual(set(unlocked['inventory']), asset_build.inventory('parameter-store'))
+            self.assertEqual(set(unlocked['inventory']), asset_build.inventory('parameter-store-v1'))
             entry = unlocked['inventory']['build/firmware.bin']
             self.assertEqual(base64.b64decode(entry['base64']), b'toy BINoriginal')
             self.assertEqual(entry['sha256'], hashlib.sha256(b'toy BINoriginal').hexdigest())

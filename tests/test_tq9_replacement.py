@@ -44,9 +44,9 @@ class Tq9ReplacementTests(unittest.TestCase):
             self.assertIn('Native Renode, Ghidra and Java paths are required', record['failure'])
 
     def test_replacement_uses_registered_native_adapter_and_public_mission(self):
-        from generative_driver.benchmark_support.registrations import native_family_for
+        from generative_driver.benchmark_support.families import family_for
         from generative_driver.benchmark_support.missions import load_mission
-        self.assertIs(native_family_for('tq9-v3'), native_family_for('tq9-v2'))
+        self.assertIs(family_for('tq9-v3').contract, family_for('tq9-v2').contract)
         self.assertEqual(load_mission('tq9-v3')['tasks'], load_mission('tq9-v2')['tasks'])
         self.assertEqual(load_mission('tq9-v3')['case_id'], 'tq9-v3')
 

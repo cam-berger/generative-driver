@@ -19,6 +19,9 @@ RECIPE = {'observations': {'compare': {'command': 'compare', 'width': 32, 'count
 MONITOR = {'reads', 'command', 'commands', 'response', 'responses', 'monitor_port', 'private_dir', 'argv', 'pid',
            'compare', 'reload', 'temperature', 'controls'}
 SOURCE = Path(__file__).resolve().parents[1]/'src/generative_driver/benchmark_support'
+# Modules that decrypt a truth or lead to one: the device provider must load none of them.
+DECRYPTING_MODULES = {'truth', 'emulator', 'calibration', 'reference_calibration', 'evidence', 'emulated_evidence',
+                      'evaluator', 'emulated', 'emulated_recovery', 'registry', 'cases', 'configurator'}
 
 
 def keys(value):
@@ -384,8 +387,7 @@ class DeviceProviderTests(ProviderFixture):
         self.assertEqual(provider.stop(), {'stopped': True, 'confirmed': True})
 
     def test_the_provider_imports_nothing_that_decrypts_truth(self):
-        forbidden = {'truth', 'emulator', 'calibration', 'reference_calibration', 'evidence', 'emulated_evidence', 'evaluator',
-                     'emulated', 'emulated_recovery', 'registry', 'cases', 'configurator'}
+        forbidden = DECRYPTING_MODULES
         for name in ('device_provider.py', 'instruments.py'):
             tree = ast.parse((SOURCE/name).read_text(encoding='utf-8'))
             imported = set()

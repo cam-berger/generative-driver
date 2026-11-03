@@ -20,8 +20,8 @@ Paths below are relative to the repository. Add or update only the files needed 
 | File | Required change |
 |---|---|
 | [src/generative_driver/resources/bench/corpora/seven-area-pilot.json](../src/generative_driver/resources/bench/corpora/seven-area-pilot.json) or a versioned custom catalog | Add the lineage using the validator's exact fields/enums and this public catalog as a template. Start with `case: null` and explicit blockers until executable evidence exists. A custom catalog is selected with `corpus plan --catalog PATH`. |
-| `src/generative_driver/resources/registrations/cases.json` | Add an entry naming every `CaseRegistration` field: `id`, `family`, `version`, `adapter_key`, `schema`, `native_module`, `mission_case`, `truth_schema`, `build_kind` and `calibration_kind`, with `null` where none applies. A duplicate key, an unknown or missing field or a duplicate id is refused. The public manifest must agree with its trusted identity. |
-| `src/generative_driver/benchmark_support/<family>.py` | Implement `contract(pin, truth, phase)`, `build_plan(pin, truth, phase)`, `observations(raw, canonical_task_result, inputs)` with `monitor_units` and any `runtime_units`, and `reuse_passed(events, capabilities)`. Declare `REQUIRED_MUTANTS`, the `frozenset` of mutant IDs that a qualification record must list exactly and show rejected. Validate unavailable/malformed observations. A family that runs its own steps, as `generated.py` does, implements `execute(session, invoke, contract, truth, evidence_path, *, healthy_device_failures)` instead of `build_plan`, and the evaluator's final grading runs it in place of `execute_plan`. |
+| `src/generative_driver/resources/registrations/cases.json` | Add an entry naming every `CaseRegistration` field: `id`, `family`, `version`, `adapter_key`, `schema`, `native_module`, `mission_case`, `truth_schema`, `build_kind`, `calibration_kind`, `grading_method`, `execution`, `evidence_track`, `approval_scope`, `default_effects`, `default_scope`, `requires_calibration`, `has_case_file` and `single_image`, with `null` where none applies. A new case uses `fresh-final`, `null` for the four manifest fields, `full-workflow` and `true` for the last three. A duplicate key, an unknown or missing field or a duplicate id is refused. The public manifest must agree with its trusted identity. |
+| `src/generative_driver/benchmark_support/<family>.py` | Declare a module-level `HOOKS` dict, one entry per [family hook](#family-interface) the family needs, with helpers private to the module. Validate unavailable/malformed observations. Import anything that decrypts a truth inside the hook function that needs it, since the device provider loads this module. |
 | `src/generative_driver/benchmark.py` and dispatchers in `src/generative_driver/benchmark_support/` | Inspect `registry.py`, `adapters.py`, `emulated.py`, `emulator.py`, `evaluator.py`, `evaluator_cli.py`, `upstream_build.py`, `upstream_qualification.py`, `reference_calibration.py`, `calibration.py` and the affected runtime/provider for unsupported behavior. `emulator-v2` uses `emulated.py`'s `prepare_stage`, `observe_stage`, `package_call`, `record_call` and `score`; use it only when that lifecycle fits. New adapter/build/calibration keys need trusted implementations, not just strings in registration. |
 | `src/generative_driver/resources/bench/missions/<case-id>.json` | New `emulator-v2` cases must provide a mission under their own case ID for interpret/probe/ground task contracts and instrument evidence. Declare canonical task names, inputs, units, fresh objective and any supplied `operating_conditions`; avoid case-name branches in prompts. Registration's `mission_case` selects only the existing fresh-reuse objective path (legacy `tq9` uses `tq9-v2`); it is not an all-stage mission alias. |
 | `src/generative_driver/resources/bench/cases/<case-id>/case.json` and `firmware.bin` | Publish reviewed identity, one original image, provenance, scenario `original`, all six required stages, effects, time policy, limitations and calibrated ciphertext/evidence hashes. |
@@ -72,6 +72,31 @@ manifest["calibration"] = {"status": "pending"}
 
 Copy the pending pair and its matching image into a complete operator asset tree; select that tree to run the implemented native qualifier. Keep its catalog lineage blocked until qualification succeeds. The allowlisted synthetic authoring format instead uses [`asset_build.inventory` and `assemble_release`](../src/generative_driver/benchmark_support/asset_build.py); that emitter currently supports sampled-sensor and parameter-store, so another family needs reviewed trusted support. There is no asset-defined plugin or universal new-protocol bootstrap command.
 
+## Family interface
+
+A family hook is one thing the grading core asks of a family. A family module declares `HOOKS`, hook name to value, and the core reads it only through `families.family_for(case_id)`, which returns a frozen `Family` with one attribute per hook. A graded case is one whose `adapter_key` is `emulator-v2`. `families.family_from` refuses, naming the case and the hook, an unknown hook name, a graded case that lacks a required hook, and a graded case that declares both `execute` and `build_plan`, or neither. A case with no module gets every default, and using a required hook of a case that does not declare it raises `ValueError` naming the case.
+
+| Hook | Graded case | Default |
+|---|---|---|
+| `contract(pin, truth, phase)` | required | raises |
+| `observations(raw, canonical_task_result, inputs)`, with `monitor_units` and any `runtime_units` | required | raises |
+| `reuse_passed(events, capabilities)` | required | raises |
+| `required_mutants`, the `frozenset` of mutant IDs a qualification record must list exactly and show rejected | required | raises on read |
+| `execute(session, invoke, pin, contract, truth, evidence_path, *, phase, healthy_device_failures)` | this or `build_plan` | runs `build_plan` through `execute_plan` |
+| `build_plan(pin, truth, phase)` | this or `execute` | raises |
+| `hydrate_truth(truth)` | optional | returns `truth` |
+| `admission_valid(pin, truth, record)`, a bool; `family_support.admission_valid` serves a family qualified from an authenticated inventory | optional | `False`, so the case is refused admission |
+| `validate_phase(phase)` | optional | does nothing |
+| `required_scenarios`, a `frozenset` every run's checks must cover | optional | `frozenset()` |
+| `mutant_checks_may_exceed_expected`, a bool | optional | `False`: a mutant fails exactly its expected checks |
+| `input_commitments`, the `frozenset` of a record's `input_hashes` names | optional | `source`, `contract`, `recipe`, `references`, `mutations`, `build`, `inventory` |
+| `inventory_files`, a `frozenset` of authoring files beyond the shared ones | optional | `frozenset()` |
+| `instrument_units()` | optional | `observations.monitor_units` |
+| `public_observation(raw)`, `{values, units}` | optional | projects `observations` onto the units |
+| `development_conditions(recipe)` | optional | `None` |
+| `start_session(*, recipe, **arguments)` | optional | Renode; refuses any other recipe backend |
+| `validate_execution(manifest, truth)` | optional | refuses a `native-sim` manifest |
+
 ## Qualify, activate, then measure
 
 1. Record immutable source/license evidence and build twice to the same firmware bytes. Verify backend startup/reset and independent observations. Define separate diagnostic and final episodes and their complete ending-state checks; do not infer an oracle from the candidate's own replies.
@@ -88,9 +113,7 @@ A qualification pins its case's grader identity (`benchmark-grader-identity/2`).
 
 The system under test (configurator, toolkit, stage tools, interface runtime, package template, reports and suites) is outside every identity: changing it voids no qualification and blocks no regrade, and a run's `runtime_sha256` is provenance only. A change to a core module, `registrations.py` included, changes every case's identity. A change to any other grading module changes only the identities of the cases whose closure holds it: a family module changes its own family's, and `family_support` those of the three families that import it. A registration entry changes only its own case's identity. Adding a case or editing another family's own modules therefore keeps a case's identity. Requalify before running the default development suite; a record of an earlier identity schema fails admission with `identity:evaluator_identity`. `corpus check` authenticates only the selected upstream cases.
 
-As built, the core still holds some families' code, so editing that code changes every case's identity, the generated family's included. That code is the branches naming a case or family in `calibration.py`, `registry.py`, `instruments.py`, `device_provider.py`, `case_assets.py` and `evaluator.py`, plus two modules: `upstream.py` (the upstream cases' truth validation, imported by `evaluator.py`) and `native_firmware.py` (the Linux native-simulator session, imported by `execution.py`). It moves behind family hooks before a scoring set is admitted.
-
-List the whole closure with `python -c "from generative_driver.benchmark_support.grader_identity import grader_closure; print(*grader_closure(), sep=chr(10))"`; pass `families=('tq9_v2',)` for the core and one family, or `families=()` for the core alone. A module loaded by `import_module` is not followed: name it in `ENTRY_MODULES` of `grader_identity.py`. The core loads families by name through `registrations`, and the closure seeds them itself.
+List the whole closure with `python -c "from generative_driver.benchmark_support.grader_identity import grader_closure; print(*grader_closure(), sep=chr(10))"`; pass `families=('tq9_v2',)` for the core and one family, or `families=()` for the core alone. The core names no case or family and loads a family only through `families.py`, the one closure module that calls `import_module`; the walk does not follow that load, so the closure seeds each family itself.
 
 ## Generated sets
 

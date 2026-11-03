@@ -441,9 +441,10 @@ class AnswerKeyTests(unittest.TestCase):
 
 class RegistrationTests(unittest.TestCase):
     def test_the_generated_family_is_registered_unavailable_in_listings_and_shows_workers_no_instrument(self):
-        from generative_driver.benchmark_support.instruments import family_for, public_observation
+        from generative_driver.benchmark_support.families import family_for
+        from generative_driver.benchmark_support.instruments import public_observation
         from generative_driver.benchmark_support.missions import validate_mission
-        from generative_driver.benchmark_support.registrations import CaseRegistration, family_module, registration_for
+        from generative_driver.benchmark_support.registrations import CaseRegistration, registration_for
         from generative_driver.benchmark_support.registry import CURRENT_VERSIONS, case_descriptors
         # The fixture's public mission is one the mission validator accepts, with the unit of its one output.
         self.assertEqual(validate_mission(fixture_mission('0000d001'), 'generated'), fixture_mission('0000d001'))
@@ -451,8 +452,7 @@ class RegistrationTests(unittest.TestCase):
                          CaseRegistration('generated', 'generated', '1', 'emulator-v2', 'benchmark-case/2',
                                           native_module='generated', truth_schema='generated-answer-key/2',
                                           calibration_kind='set'))
-        self.assertIs(family_for('generated'), generated)
-        self.assertIs(family_module('generated'), generated)
+        self.assertIs(family_for('generated').execute, generated.execute)
         self.assertEqual(CURRENT_VERSIONS['generated'], '1')
         rows = {row['id']: row for row in case_descriptors()}
         self.assertEqual({**rows['generated'], 'id': None}, {**rows['tq9-v3'], 'id': None})
@@ -469,7 +469,8 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(identity['scope'], 'generated')
         # The family's grading module and the validator that defines a valid generated device (ADR 0007).
         self.assertEqual(set(identity['modules']),
-                         core | {'benchmark_support.generated', 'benchmark_support.generated_device'})
+                         core | {'benchmark_support.generated', 'benchmark_support.generated_device',
+                                 'benchmark_support.missions'})
 
 
 if __name__ == '__main__':

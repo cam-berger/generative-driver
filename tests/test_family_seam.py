@@ -3,7 +3,11 @@ moves only the identities of the cases that use it."""
 import ast
 import dataclasses
 import json
+import os
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -12,6 +16,8 @@ from unittest.mock import patch
 
 import generative_driver
 from benchmark_family_fixtures import toy_sample_model, toy_sensor_phase
+from package_env import package_env
+from test_grader_identity import PackageCopy
 from generative_driver.benchmark_support import (instruments, parameter_store, registrations, registry, sampled_sensor,
                                                   tq9_legacy, tq9_v2)
 from generative_driver.benchmark_support.calibration import inventory, validate_calibration
@@ -19,6 +25,7 @@ from generative_driver.benchmark_support.case_assets import reuse_mission
 from generative_driver.benchmark_support.emulated_actions import execute_plan
 from generative_driver.benchmark_support.evaluator import case_truth, method_for
 from generative_driver.benchmark_support.families import Family, family_for, family_from
+from generative_driver.benchmark_support.grader_identity import grader_closure, grader_identity
 from generative_driver.benchmark_support.registrations import registered_case_ids, registration_for
 from generative_driver.benchmark_support.registry import case_descriptors, pin_case, require_calibration, resolve_case
 from generative_driver.benchmark_support.snapshots import canonical_digest
@@ -28,7 +35,6 @@ HOOKS = ('contract', 'observations', 'reuse_passed', 'required_mutants', 'execut
          'input_commitments', 'inventory_files', 'instrument_units', 'public_observation', 'development_conditions',
          'start_session', 'validate_execution')
 REQUIRED = ('contract', 'observations', 'reuse_passed', 'required_mutants')
-SOURCE = Path(generative_driver.__file__).parent / 'benchmark_support'
 INVENTORY_SET = frozenset({'source', 'contract', 'recipe', 'references', 'mutations', 'build', 'inventory'})
 
 
@@ -666,6 +672,136 @@ class CalibrationRuleTests(unittest.TestCase):
             self.assertIn('family mutant inventory', self.failures(manifest, record))
             record['required_mutants'] = ['alpha']
             self.assertNotIn('family mutant inventory', self.failures(manifest, record))
+
+
+# Backends, not names, stay allowed; `generated` is an ordinary word in this codebase, so it matches by equality only.
+EQUALITY_ONLY = {'generated'}
+
+
+def core_names():
+    """Every registered case's and family's name and native module, each also in its underscore form."""
+    names = set()
+    for case_id in registered_case_ids():
+        row = registration_for(case_id)
+        names |= {row.id, row.family} | ({row.native_module} if row.native_module else set())
+    return names | {name.replace('-', '_') for name in names}
+
+
+def docstrings(tree):
+    return {id(node.body[0].value) for node in ast.walk(tree)
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)}
+
+
+def identifiers(node):
+    """The names `node` itself binds or reads, which are not string constants: every string among its fields."""
+    for field in node._fields:
+        value = getattr(node, field, None)
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, str):
+                yield item
+
+
+def named_in(source, names):
+    """Each string constant or identifier of `source` that names one of `names`: equal to it, or holding it unless it
+    matches by equality only. Docstrings are not read."""
+    tree = ast.parse(source)
+    skipped = docstrings(tree)
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant):
+            texts = [node.value] if isinstance(node.value, str) and id(node) not in skipped else []
+        else:
+            texts = list(identifiers(node))
+        found += [text for text in texts for name in names
+                  if text == name or (name not in EQUALITY_ONLY and name in text)]
+    return found
+
+
+def module_source(root, name):
+    path = root.joinpath(*name.split('.'))
+    return path.with_suffix('.py') if path.with_suffix('.py').is_file() else path / '__init__.py'
+
+
+class GradingCoreTests(PackageCopy, unittest.TestCase):
+    PACKAGE = Path(generative_driver.__file__).parent
+
+    def identities(self, root):
+        return {case_id: grader_identity(root, case_id=case_id)['sha256'] for case_id in registered_case_ids()}
+
+    def changed_by_editing(self, *modules):
+        """The cases whose identity moves when `modules` of a copied package are edited."""
+        root = self.copy_package()
+        before = self.identities(root)
+        for module in modules:
+            path = root / 'benchmark_support' / module
+            path.write_text(path.read_text(encoding='utf-8') + '\n# changed\n', encoding='utf-8')
+        after = self.identities(root)
+        return {case_id for case_id in before if before[case_id] != after[case_id]}
+
+    def test_01_B6_the_check_finds_a_name_in_constants_and_identifiers_but_not_docstrings(self):
+        names = {'tq9', 'tq9_v2', 'generated', 'zephyr-modbus-v1'}
+        planted = {"x = 'tq9'": ['tq9'], "x = 'the tq9 device'": ['the tq9 device'], "tq9_helper = 1": ['tq9_helper'],
+                   "x.tq9_attribute": ['tq9_attribute'], "def f(tq9_argument): pass": ['tq9_argument'],
+                   "from .tq9_v2 import y": ['tq9_v2', 'tq9_v2'], "x = 'generated'": ['generated'],
+                   "generated = 1": ['generated'], "generated_mcp_reuse = 'generated_reuse'": [],
+                   '"""A docstring of tq9."""': [], 'def f():\n    """Of tq9."""\n': []}
+        for source, expected in planted.items():
+            with self.subTest(source):
+                self.assertEqual(sorted(set(named_in(source, names))), sorted(set(expected)))
+
+    def test_01_B6_no_module_in_the_core_names_a_registered_case_or_family(self):
+        names = core_names()
+        self.assertLessEqual({'tq9', 'tq9-v2', 'tq9_v2', 'bme280', 'setup-smoke', 'setup_smoke', 'sampled-sensor-v1',
+                              'sampled_sensor', 'parameter-store', 'zephyr_modbus', 'tq9_legacy', 'generated'}, names)
+        offenders = {name: named_in(module_source(self.PACKAGE, name).read_text(encoding='utf-8'), names)
+                     for name in grader_closure(families=()) if not name.startswith('interface_runtime')}
+        self.assertEqual({name: found for name, found in offenders.items() if found}, {})
+
+    def test_01_B7_upstream_and_native_code_lie_outside_the_core_and_move_only_the_modbus_identity(self):
+        outside = ('upstream.py', 'native_firmware.py', 'native_comparison.py')
+        core = grader_closure(families=())
+        for module in outside:
+            with self.subTest(module):
+                self.assertNotIn('benchmark_support.' + module.removesuffix('.py'), core)
+                self.assertEqual(self.changed_by_editing(module), {'zephyr-modbus-v1'})
+
+    def test_01_B8_the_legacy_module_moves_only_its_case_and_the_seam_moves_every_case(self):
+        self.assertEqual(self.changed_by_editing('tq9_legacy.py'), {'tq9'})
+        self.assertEqual(self.changed_by_editing('families.py'), set(registered_case_ids()))
+
+    def test_01_B9_only_the_seam_loads_code_by_name(self):
+        loaders = {}
+        for name in grader_closure():
+            if name.startswith('interface_runtime'):
+                continue
+            tree = ast.parse(module_source(self.PACKAGE, name).read_text(encoding='utf-8'))
+            calls = [node.func.id if isinstance(node.func, ast.Name) else node.func.attr for node in ast.walk(tree)
+                     if isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute))]
+            if {'import_module', '__import__'} & set(calls):
+                loaders[name] = sorted({'import_module', '__import__'} & set(calls))
+        self.assertEqual(loaders, {'benchmark_support.families': ['import_module']})
+
+
+class ProviderTests(unittest.TestCase):
+    def test_01_B17_the_provider_and_every_family_load_nothing_that_decrypts(self):
+        from test_device_provider import DECRYPTING_MODULES
+        script = textwrap.dedent("""\
+            import json, sys
+            import generative_driver.benchmark_support.device_provider
+            from generative_driver.benchmark_support.families import family_for
+            from generative_driver.benchmark_support.registrations import registered_case_ids
+            for case_id in registered_case_ids():
+                family_for(case_id)
+            print(json.dumps(sorted(name for name in sys.modules if name.startswith('generative_driver'))))
+        """)
+        loaded = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True, check=True, timeout=60,
+                                env={**os.environ, **package_env()})
+        modules = {name.rsplit('.', 1)[-1] for name in json.loads(loaded.stdout)}
+        self.assertLessEqual({'tq9_v2', 'tq9_legacy', 'sampled_sensor', 'parameter_store', 'zephyr_modbus', 'generated'},
+                             modules)
+        self.assertEqual(modules & DECRYPTING_MODULES, set())
 
 
 if __name__ == '__main__':

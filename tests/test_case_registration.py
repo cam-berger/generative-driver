@@ -92,9 +92,15 @@ class RegistrationTableTests(unittest.TestCase):
         # Catches a registration lost or changed when the table moved from code into data, tq9-v3 (no resources) included.
         from generative_driver.benchmark_support.registrations import CaseRegistration, _CASES
         self.assertEqual(_CASES, (
-            CaseRegistration('setup-smoke', 'setup-smoke', '1', 'smoke', None),
-            CaseRegistration('tq9', 'tq9', '2', 'legacy-emulator', 'benchmark-case/1', mission_case='tq9-v2'),
-            CaseRegistration('bme280', 'bme280', '3', 'legacy-physical', 'benchmark-case/1'),
+            CaseRegistration('setup-smoke', 'setup-smoke', '1', 'smoke', None, execution='scripted-replay',
+                             evidence_track='recorded-replay', default_effects=[], default_scope='installation',
+                             requires_calibration=False, has_case_file=False),
+            CaseRegistration('tq9', 'tq9', '2', 'legacy-emulator', 'benchmark-case/1', native_module='tq9_legacy',
+                             mission_case='tq9-v2', grading_method='recorded-reuse', evidence_track='firmware',
+                             approval_scope='emulator', default_effects=['write', 'actuate'], requires_calibration=False),
+            CaseRegistration('bme280', 'bme280', '3', 'legacy-physical', 'benchmark-case/1',
+                             grading_method='recorded-reuse', evidence_track='physical', approval_scope='bound-device',
+                             default_effects=['write'], requires_calibration=False, single_image=False),
             CaseRegistration('tq9-v2', 'tq9', '5', 'emulator-v2', 'benchmark-case/2',
                              native_module='tq9_v2', calibration_kind='reference'),
             CaseRegistration('tq9-v3', 'tq9', '1', 'emulator-v2', 'benchmark-case/2',

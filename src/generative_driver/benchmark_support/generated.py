@@ -96,8 +96,10 @@ def classify_answer(result: dict, step: dict) -> str:
 def execute(session, invoke, pin, contract, truth, evidence_path, *, phase, healthy_device_failures):
     """Run the answer key's hidden sequences on the evaluator's device and return one record per check of `contract`.
 
-    `contract` holds the final phase's checks already, the only phase of a generated device, so neither `pin` nor `phase`
-    selects anything here. Each sequence starts with `session.reset({})` and a read of the state. A state other than the key's `reset` leaves
+    `contract` already holds the final phase's checks, the only phase of a generated device, so neither `pin` nor `phase`
+    selects anything here.
+
+    Each sequence starts with `session.reset({})` and a read of the state. A state other than the key's `reset` leaves
     every record of the sequence undecided ('unverified reset') and its steps uncalled. Each step calls its task through
     `run_call` with its grants, classifies the answer and reads the state; a cell that cannot be read leaves its record
     undecided ('unreadable state'). Only these observations of the evaluator's leave a record undecided, never what the

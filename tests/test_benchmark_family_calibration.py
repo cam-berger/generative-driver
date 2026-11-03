@@ -12,13 +12,13 @@ class InventoryTests(unittest.TestCase):
     def fixture(self):
         entries = {name: {'sha256': hashlib.sha256(b'{}').hexdigest(),
                           'base64': base64.b64encode(b'{}').decode()}
-                   for name in inventory('sampled-sensor')}
+                   for name in inventory('sampled-sensor-v1')}
         return {'schema': 'benchmark-family-truth/1', 'case_id': 'sampled-sensor-v1',
                 'family': 'sampled-sensor', 'inventory_state': 'pending', 'inventory': entries,
                 'inventory_sha256': canonical_digest({k:v['sha256'] for k,v in entries.items()})}
 
     def test_exact_authenticated_inventory_decodes(self):
-        self.assertEqual(set(decode_inventory(self.fixture())), inventory('sampled-sensor'))
+        self.assertEqual(set(decode_inventory(self.fixture())), inventory('sampled-sensor-v1'))
 
     def test_invalid_inventory_cannot_be_used(self):
         for defect in ('extra','missing','base64','hash','commitment','state','entry'):
@@ -74,7 +74,7 @@ class AdmissionTests(unittest.TestCase):
 
     def test_store_qualification_requires_named_scenario_evidence(self):
         from generative_driver.benchmark_support.calibration import validate_calibration
-        manifest, record = self.fixture()
+        manifest, record = self.fixture('parameter-store-v1')
         manifest['family'] = 'parameter-store'
         names = ['constant','scale','order','wrong-bank','abort','idle-only-update','short-rejection-frame']
         base = copy.deepcopy(record['mutants'][0])
@@ -870,7 +870,7 @@ class FailedProducerTests(unittest.TestCase):
                           {'kind':'observe','checks':[c['id'] for c in phase['contract']['checks']]}]
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);author=root/'author';author.mkdir();password=root/'password';password.write_text('toy-password')
-            for name in inventory('sampled-sensor'):
+            for name in inventory('sampled-sensor-v1'):
                 path=author/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('{}')
             values={'AUTHORING.json':{'schema':'benchmark-authoring/1','id':'sampled-sensor-v1',
                 'family':'sampled-sensor','execution':'reference-build'},

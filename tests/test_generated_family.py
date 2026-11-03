@@ -131,7 +131,7 @@ class StepGradingTests(unittest.TestCase):
         evaluation = self.grade(REFERENCE_A)
         answers = {(e['sequence'], e['step']): e['answer'] for e in self.raw['events'] if 'step' in e}
         self.assertEqual(answers, {('s1', 1): 'refusal', ('s1', 2): 'value', ('s1', 3): 'value', ('s1', 4): 'value',
-                                   ('s2', 1): 'no_reply', ('s2', 2): 'value', ('s2', 3): 'value'})
+                                   ('s2', 1): 'no_reply', ('s2', 2): 'value', ('s2', 3): 'value', ('s2', 4): 'value'})
         self.assertEqual(len(evaluation['records']), len(evaluation['contract']['checks']))
         self.assertTrue(all('undecided' not in record for record in evaluation['records']))
 
@@ -165,7 +165,8 @@ class StepGradingTests(unittest.TestCase):
         failed = sorted(c['id'] for c in graded['checks'] if c['passed'] is False)
         self.assertEqual(failed, ['s1/1/answer', 's1/2/answer', 's1/2/out:mode', 's1/3/answer', 's1/3/state:c1',
                                   's1/4/answer', 's1/4/out:mode', 's1/4/state:c1', 's2/1/answer', 's2/2/answer',
-                                  's2/2/state:c1', 's2/3/answer', 's2/3/out:mode', 's2/3/state:c1'])
+                                  's2/2/state:c1', 's2/3/answer', 's2/3/out:mode', 's2/3/state:c1', 's2/4/answer',
+                                  's2/4/state:c1'])
         call = next(e for e in self.raw['events'] if 'step' in e)
         self.assertEqual((call['device_healthy'], call['result']['error']['reported_fault']), (True, 'host'))
         # Calibration never takes an outage for a driver's failure, and a device that died during a call is no grade.
@@ -361,7 +362,7 @@ class AnswerKeyTests(unittest.TestCase):
         contract = generated.contract(PIN, {**FIXTURE_ANSWER_KEY, 'artifact_sha256': 'a' * 64}, 'final')
         rows = {check['id']: check for check in contract['checks']}
         self.assertEqual((contract['schema'], contract['artifact_sha256'], len(rows)),
-                         ('benchmark-behavior/1', 'a' * 64, 17))
+                         ('benchmark-behavior/1', 'a' * 64, 19))
         self.assertEqual([i for i in rows if i.startswith('s1/1/')], ['s1/1/answer', 's1/1/state:c1'])
         self.assertEqual([i for i in rows if i.startswith('s1/2/')],
                          ['s1/2/answer', 's1/2/out:mode', 's1/2/state:c1'])
@@ -425,7 +426,7 @@ class AnswerKeyTests(unittest.TestCase):
             'a mission state of no cell': lambda key: key.update(mission={'state': {}})}
         artifact = {'artifact_sha256': 'a' * 64}
         self.assertIs(generated.answer_key(FIXTURE_ANSWER_KEY), FIXTURE_ANSWER_KEY)
-        self.assertEqual(len(generated.contract(PIN, {**FIXTURE_ANSWER_KEY, **artifact}, 'final')['checks']), 17)
+        self.assertEqual(len(generated.contract(PIN, {**FIXTURE_ANSWER_KEY, **artifact}, 'final')['checks']), 19)
         for name, edit in defects.items():
             with self.subTest(name), self.assertRaises(ValueError):
                 generated.answer_key(change(edit))

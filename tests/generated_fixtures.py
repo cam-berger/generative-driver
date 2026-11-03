@@ -2,7 +2,8 @@
 answer key with two reference drivers and the mutants, and a set of two such devices sealed under a synthetic password.
 
 The device speaks text lines over its UART. `MODE?` replies `MODE:<n>`; `MODE <n>` sets the mode and replies `OK` when
-0 <= n <= 3, and replies `ERR` otherwise; `PING` is never answered; any other line replies `ERR`. The mode lives at
+0 <= n <= 3, and replies `ERR` otherwise; `PING` replies `PONG` in mode 3 and is never answered in another mode; any
+other line replies `ERR`. The mode lives at
 0x20000000, and a reset leaves it at 2. Its public mission states the mode's unit, `1` (dimensionless)."""
 import copy
 import re
@@ -76,7 +77,7 @@ class FixtureDevice:
         if line == 'MODE?':
             return 'MODE:%d' % self.mode
         if line == 'PING':
-            return None
+            return 'PONG' if self.mode == 3 else None
         command, _, argument = line.partition(' ')
         if command == 'MODE' and re.fullmatch(r'-?[0-9]+', argument) and 0 <= int(argument) <= 3:
             self.mode = int(argument)
@@ -229,7 +230,8 @@ def fixture_answer_key():
                                    _step('get_mode', {}, 'value', 1, output=1)]},
             {'id': 's2', 'steps': [_step('ping', {}, 'no_reply', 2),
                                    _step('set_mode', {'mode': 3}, 'value', 3),
-                                   _step('get_mode', {}, 'value', 3, output=3)]}],
+                                   _step('get_mode', {}, 'value', 3, output=3),
+                                   _step('ping', {}, 'value', 3)]}],
         'mission': {'state': {'c1': 1}},
         'references': {'a': copy.deepcopy(REFERENCE_A), 'b': copy.deepcopy(REFERENCE_B)},
         'mutants': [
@@ -239,7 +241,8 @@ def fixture_answer_key():
              'expected_failed_checks': ['s1/2/out:mode', 's1/4/out:mode', 's2/3/out:mode']},
             {'id': 'wrong-state', **copy.deepcopy(WRONG_STATE),
              'expected_failed_checks': ['s1/3/state:c1', 's1/4/out:mode', 's1/4/state:c1', 's2/2/answer',
-                                        's2/2/state:c1', 's2/3/out:mode', 's2/3/state:c1']},
+                                        's2/2/state:c1', 's2/3/out:mode', 's2/3/state:c1', 's2/4/answer',
+                                        's2/4/state:c1']},
             {'id': 'refusal-as-value', **copy.deepcopy(MUTANT_ERR_AS_VALUE),
              'expected_failed_checks': ['s1/1/answer']}]}
 

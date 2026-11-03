@@ -127,6 +127,16 @@ def answer_key(truth):
         _require(isinstance(sequence['steps'], list) and bool(sequence['steps']), 'a sequence has steps')
         for number, step in enumerate(sequence['steps'], 1):
             _step(step, cells, 'step %s/%d' % (sequence['id'], number))
+    by_task = {}
+    for sequence in sequences:
+        for step in sequence['steps']:
+            by_task.setdefault(step['task'], []).append(step)
+    for task, steps in by_task.items():
+        # The runtime refuses an ungranted effect before sending, which grades as a matching refusal: a refusal step
+        # without its task's grant would pass any driver. A value step lets the reference runs prove the grants.
+        _require(len({frozenset(step['grants']) for step in steps}) == 1, 'the steps of task %s carry the same grants' % task)
+        _require(any(step['answer'] == 'value' for step in steps),
+                 'task %s has a value step, which proves its grants and replies' % task)
     references = truth['references']
     _require(isinstance(references, dict) and set(references) == {'a', 'b'}, 'the references are a and b')
     for reference in references.values():

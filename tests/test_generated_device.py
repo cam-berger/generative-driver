@@ -56,9 +56,11 @@ class ValidDeviceTests(unittest.TestCase):
                 mutant['expected_failed_checks'] = [check for check in mutant['expected_failed_checks']
                                                     if check != 's1/2/out:mode']
         self.assert_refused([
-            ('a step that calls a task the mission lacks', lambda key: step(key).update(task='reboot'), 'steps call'),
-            # The fixture's one ping step now reads the mode, so no step calls ping.
-            ('a mission task that no step calls', lambda key: step(key, 1, 0).update(task='get_mode'), 'steps call'),
+            ('a step that calls a task the mission lacks', lambda key: step(key, 0, 1).update(task='reboot'),
+             'steps call'),
+            # The fixture's two ping steps now read the mode, so no step calls ping.
+            ('a mission task that no step calls',
+             lambda key: [step(key, 1, index).update(task='get_mode') for index in (0, 3)], 'steps call'),
             ('an input the task does not declare', lambda key: step(key).update(inputs={'mode': 9, 'speed': 1}),
              'declared inputs'),
             ('a missing input', lambda key: step(key).update(inputs={}), 'declared inputs'),
@@ -74,6 +76,22 @@ class ValidDeviceTests(unittest.TestCase):
              'maps exactly'),
             ('a mutant that maps another task',
              lambda key: mapping(key['mutants'][0]).update(reboot=mapping(key['mutants'][0])['ping']), 'maps exactly')])
+
+    def test_a_tasks_steps_share_grants_and_a_refusal_or_silence_has_a_value_beside_it(self):
+        step = lambda key, sequence=0, index=0: key['sequences'][sequence]['steps'][index]
+
+        def refusals_only(key):
+            # Every set_mode step a refusal: no value step proves its grants.
+            for sequence, index in ((0, 2), (1, 1)):
+                step(key, sequence, index).update(answer='refusal', refusal_rx_hex=b'ERR\n'.hex())
+        self.assert_refused([
+            # The runtime refuses an ungranted effect before sending, which grades as a matching refusal: without its
+            # task's grant, this refusal step would pass any driver.
+            ('a refusal step without its task\'s grant', lambda key: step(key).update(grants=[]), 'same grants'),
+            ('steps of one task with other grants', lambda key: step(key, 0, 2).update(grants=['write', 'actuate']),
+             'same grants'),
+            ('a task that only refuses', refusals_only, 'value step'),
+            ('a task that is only silent', lambda key: step(key, 1, 3).update(answer='no_reply'), 'value step')])
 
     def test_cells_and_sequences_carry_no_design_in_their_names(self):
         # A verdict publishes check ids built from these names, so they are numbered.

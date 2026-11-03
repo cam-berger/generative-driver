@@ -57,6 +57,11 @@ def _refusal(registration, hook):
     return refuse
 
 
+def _renode(*, recipe, **arguments):
+    from .execution import start_renode
+    return start_renode(recipe=recipe, **arguments)
+
+
 def _check(registration, hooks):
     case_id = registration.id
     for hook in hooks:
@@ -101,6 +106,10 @@ def family_from(registration: CaseRegistration, hooks: dict[str, Any]) -> Family
                             truth['contracts']['time_policy']['sample_settle_seconds'],
                             healthy_device_failures=healthy_device_failures)
 
+    def refuse_native_execution(manifest, truth):
+        if manifest.get('execution_setup', {}).get('method') == 'native-sim':
+            raise ValueError('Family validates no native-sim execution of case: ' + registration.id)
+
     mutants = hooks['required_mutants'] if 'required_mutants' in hooks else None
     return Family(
         contract=declared('contract'), observations=observations, reuse_passed=declared('reuse_passed'),
@@ -115,8 +124,8 @@ def family_from(registration: CaseRegistration, hooks: dict[str, Any]) -> Family
         inventory_files=hooks.get('inventory_files', frozenset()),
         instrument_units=units, public_observation=hooks.get('public_observation', default_projection),
         development_conditions=hooks.get('development_conditions', lambda recipe: None),
-        start_session=declared('start_session'),
-        validate_execution=hooks.get('validate_execution', lambda manifest, truth: None))
+        start_session=hooks.get('start_session', _renode),
+        validate_execution=hooks.get('validate_execution', refuse_native_execution))
 
 
 def family_for(case_id: str) -> Family:

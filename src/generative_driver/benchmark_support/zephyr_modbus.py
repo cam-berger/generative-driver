@@ -67,5 +67,34 @@ def reuse_passed(events, capabilities):
     return saw_read and saw_on and last.get('coil0') == 0 and last.get('register3') == 4660
 
 
+def _start_session(*, recipe, **arguments):
+    """The Linux native-simulator session for a native-sim recipe; any other recipe starts as any family's does."""
+    if recipe.get('backend') == 'native-sim':
+        from .native_firmware import NativeFirmwareSession
+        return NativeFirmwareSession.start(recipe=recipe, **arguments)
+    from .execution import start_renode
+    return start_renode(recipe=recipe, **arguments)
+
+
+def _validate_execution(manifest, truth):
+    """Bind a native-sim method to its measured native and Renode comparison evidence. ValueError when that evidence is
+    missing, incomplete, stale or names different images."""
+    if manifest.get('execution_setup', {}).get('method') != 'native-sim':
+        return
+    from .execution import artifact_name
+    from .native_comparison import compare_executions
+    artifact = artifact_name(manifest)
+    proof = truth.get('build', {}).get('execution_validation', {})
+    if not isinstance(proof, dict) or not {'native', 'renode'} <= proof.keys():
+        raise ValueError('Native admission requires measured native/Renode comparison evidence')
+    comparison = compare_executions(proof['native'], proof['renode'])
+    if (comparison['verdict'] != 'passed' or comparison['execution'] != 'firmware-rehosting-validation'
+            or comparison['image_hashes'].get('native-sim') != manifest['images'][artifact]
+            or comparison['image_hashes'].get('renode') != proof.get('reference_image_sha256')
+            or manifest['execution_setup']['validated_behavior'] != [r['id'] for r in proof['native']['records']]):
+        raise ValueError('Native execution comparison evidence is incomplete, stale or names different images')
+
+
 HOOKS = {'contract': contract, 'build_plan': build_plan, 'observations': observations, 'reuse_passed': reuse_passed,
-         'required_mutants': REQUIRED_MUTANTS}
+         'required_mutants': REQUIRED_MUTANTS, 'start_session': _start_session,
+         'validate_execution': _validate_execution}

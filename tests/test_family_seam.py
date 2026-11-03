@@ -171,6 +171,22 @@ def toy_plan_case():
     return pin, truth
 
 
+def grade_frozen(root, pin, truth, calls):
+    """`reference_execute` of a frozen package under `root` on a toy session, its package calls kept in `calls`."""
+    from generative_driver.benchmark_support.evaluator import reference_execute
+    from generative_driver.benchmark_support.integrity import digest
+    package = root / 'package'
+    (package / 'driver').mkdir(parents=True)
+    (package / 'interface_runtime').mkdir()
+    (package / 'driver' / 'model.json').write_text('{}\n', encoding='utf-8')
+    (package / 'interface_runtime' / 'engine.py').write_text('# runtime\n', encoding='utf-8')
+    with patch('generative_driver.benchmark_support.native.NativeSession.start', return_value=ToySession()), \
+            patch('generative_driver.benchmark_support.emulated_actions.canonical_package_invoker',
+                  return_value=toy_invoke(calls)):
+        return reference_execute(pin, truth, {}, renode=Path('/toy'), image=Path('/toy'), output_dir=root / 'final',
+                                 package=package, expected_package_sha256=digest(package), healthy_device_failures=True)
+
+
 class FamilyExecutionTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -187,24 +203,8 @@ class FamilyExecutionTests(unittest.TestCase):
         hooks = {key: value for key, value in sampled_sensor.HOOKS.items() if key != 'build_plan'}
         return patch.dict(sampled_sensor.HOOKS, {**hooks, 'execute': execute}, clear=True)
 
-    def frozen_package(self):
-        package = self.root / 'package'
-        (package / 'driver').mkdir(parents=True)
-        (package / 'interface_runtime').mkdir()
-        (package / 'driver' / 'model.json').write_text('{}\n', encoding='utf-8')
-        (package / 'interface_runtime' / 'engine.py').write_text('# runtime\n', encoding='utf-8')
-        return package
-
     def grade_frozen(self, pin, truth, calls):
-        from generative_driver.benchmark_support.evaluator import reference_execute
-        from generative_driver.benchmark_support.integrity import digest
-        package = self.frozen_package()
-        with patch('generative_driver.benchmark_support.native.NativeSession.start', return_value=ToySession()), \
-                patch('generative_driver.benchmark_support.emulated_actions.canonical_package_invoker',
-                      return_value=toy_invoke(calls)):
-            return reference_execute(pin, truth, {}, renode=Path('/toy'), image=Path('/toy'), output_dir=self.root / 'final',
-                                     package=package, expected_package_sha256=digest(package),
-                                     healthy_device_failures=True)
+        return grade_frozen(self.root, pin, truth, calls)
 
     def test_01_B5_a_plan_family_runs_its_plan_for_the_phase_through_execute_plan(self):
         pin, truth = toy_plan_case()
@@ -262,6 +262,81 @@ class FamilyExecutionTests(unittest.TestCase):
                           'toy/measure/operation_ok': (True, 'boolean')})
         self.assertEqual(json.loads((self.root / 'final' / 'raw.json').read_text(encoding='utf-8'))['schema'],
                          'benchmark-action-evidence/1')
+
+
+NATIVE_MANIFEST = {'execution_setup': {'method': 'native-sim', 'artifact': 'firmware.elf', 'substitutions': [],
+                                       'validated_behavior': [], 'hardware_gaps': []}}
+
+
+class FamilySessionTests(unittest.TestCase):
+    SESSION_CLASSES = ('generative_driver.benchmark_support.native.NativeSession.start',
+                       'generative_driver.benchmark_support.native_firmware.NativeFirmwareSession.start')
+
+    def started(self, case_id, recipe):
+        """Which session class `case_id`'s family starts for `recipe`, with both mocked, since native sessions need
+        Linux."""
+        with patch(self.SESSION_CLASSES[0], return_value='renode') as renode, \
+                patch(self.SESSION_CLASSES[1], return_value='native') as native:
+            session = family_for(case_id).start_session(recipe=recipe, image=Path('/toy'), renode=None, private_dir=None)
+        called = renode if session == 'renode' else native
+        self.assertEqual(called.call_args.kwargs, {'recipe': recipe, 'image': Path('/toy'), 'renode': None,
+                                                   'private_dir': None})
+        return session
+
+    def test_01_B16_the_default_starts_renode_and_refuses_any_other_backend(self):
+        for recipe in ({}, {'backend': 'renode'}):
+            self.assertEqual(self.started('sampled-sensor-v1', recipe), 'renode')
+        for backend in ('native-sim', 'elsewhere'):
+            with self.subTest(backend), self.assertRaisesRegex(ValueError, backend):
+                family_for('sampled-sensor-v1').start_session(recipe={'backend': backend}, image=Path('/toy'), renode=None,
+                                                              private_dir=None)
+
+    def test_01_B16_the_default_validate_execution_refuses_a_native_sim_manifest(self):
+        family = family_for('sampled-sensor-v1')
+        with self.assertRaisesRegex(ValueError, 'sampled-sensor-v1'):
+            family.validate_execution(NATIVE_MANIFEST, {})
+        self.assertIsNone(family.validate_execution({'execution_setup': {'method': 'renode'}}, {}))
+
+    def test_01_B16_the_modbus_case_with_a_native_sim_recipe_starts_the_native_firmware_session(self):
+        self.assertEqual(self.started('zephyr-modbus-v1', {'backend': 'native-sim'}), 'native')
+        self.assertEqual(self.started('zephyr-modbus-v1', {}), 'renode')
+        with self.assertRaisesRegex(ValueError, 'elsewhere'):
+            family_for('zephyr-modbus-v1').start_session(recipe={'backend': 'elsewhere'}, image=Path('/toy'), renode=None,
+                                                         private_dir=None)
+        with self.assertRaisesRegex(ValueError, 'native/Renode comparison'):
+            family_for('zephyr-modbus-v1').validate_execution(NATIVE_MANIFEST, {})
+        self.assertIsNone(family_for('zephyr-modbus-v1').validate_execution({}, {}))
+
+    def test_01_B16_each_caller_starts_its_session_through_the_family(self):
+        from generative_driver.benchmark_support.device_provider import DeviceProvider
+        from generative_driver.benchmark_support.execution import validate_setup
+        from generative_driver.benchmark_support.reference_calibration import run_reference
+        from test_device_provider import Raw
+        recipe = {'observations': {'latched_q4': {'command': 'private-latched', 'width': 16, 'count': 1},
+                                   'acquisition_counter': {'command': 'private-counter', 'width': 32, 'count': 1}}}
+        values = {'latched_q4': 400, 'acquisition_counter': 2}
+        pin, truth = toy_plan_case()
+        starts = []
+
+        def start(*, recipe, **arguments):
+            starts.append(sorted(arguments))
+            return Raw(recipe, values) if recipe.get('observations') else ToySession()
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(sampled_sensor.HOOKS, {'start_session': start}), \
+                patch('generative_driver.benchmark_support.reference_calibration.model_invoker',
+                      return_value=toy_invoke([])):
+            root = Path(temp)
+            (root / 'image').write_bytes(b'image')
+            provider = DeviceProvider('sampled-sensor-v1', root / 'image', recipe, None, root / 'device')
+            provider.start()
+            provider.stop()
+            run_reference(pin, truth, toy_sample_model(), {}, renode=Path('/toy'), image=Path('/toy'),
+                          output_dir=root / 'diagnostic', phase='diagnostic')
+            grade_frozen(root, pin, truth, [])
+        self.assertEqual(starts, [['image', 'private_dir', 'renode']] * 3)
+        # `validate_setup` asks the case's family about a native-sim method, after what any method must satisfy.
+        with self.assertRaisesRegex(ValueError, 'sampled-sensor-v1'):
+            validate_setup({'id': 'sampled-sensor-v1', **NATIVE_MANIFEST}, {'recipe': {'backend': 'native-sim'}})
 
 
 if __name__ == '__main__':

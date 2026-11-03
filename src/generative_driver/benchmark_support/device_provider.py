@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 
 from . import instruments
+from .families import family_for
 
 DESCRIPTOR = 'device-descriptor/1'
 RECEIPT = 'emulator-recovery/2'
@@ -77,8 +78,7 @@ class DeviceProvider:
         self.image_sha256 = actual
         start = self._start
         if start is None:
-            from .execution import start_session
-            start = start_session
+            start = family_for(self.case_id).start_session
         session_id = uuid.uuid4().hex
         private = self._session_dir(session_id)
         private.mkdir(parents=True, mode=0o700)

@@ -8,8 +8,8 @@ import socket
 import time
 
 from .snapshots import canonical_digest
-# The evaluator admits a native-sim case by this comparison, so it is defined with its execution setup and imported here.
-from .execution import compare_executions, load_plan
+# The family admits a native-sim case by this comparison, so it is defined apart from this tool and imported here.
+from .native_comparison import compare_executions, load_plan
 
 
 def exercise_execution(case_id, password_file, output, *, renode=None):

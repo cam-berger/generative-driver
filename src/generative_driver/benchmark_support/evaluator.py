@@ -64,7 +64,6 @@ def reference_execute(pin, truth, capabilities, *, renode, image, output_dir, pa
     (`reference_calibration.run_reference`)."""
     if pin.get('scenario_id') != 'original':
         raise ValueError('Unknown case scenario')
-    from .execution import start_session
     from .emulated_actions import canonical_package_invoker
     from .behavior import validate_records
     from .snapshots import canonical_digest
@@ -79,7 +78,7 @@ def reference_execute(pin, truth, capabilities, *, renode, image, output_dir, pa
     # A frozen package's model is its own bytes, whatever newline convention the host that wrote them used.
     (model_dir/'model.json').write_bytes((Path(package)/'driver/model.json').read_bytes())
     model_hash = hashlib.sha256((model_dir/'model.json').read_bytes()).hexdigest()
-    session = start_session(renode=renode, image=image, recipe=truth['recipe'], private_dir=private_dir)
+    session = family.start_session(renode=renode, image=image, recipe=truth['recipe'], private_dir=private_dir)
     try:
         frozen = accept_frozen_package(package, expected_package_sha256)
         invoke = canonical_package_invoker(package, capabilities, session.binding)

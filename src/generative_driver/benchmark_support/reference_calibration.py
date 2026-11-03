@@ -68,7 +68,6 @@ def run_reference(pin, truth, model, capabilities, *, renode, image, output_dir,
     from .calibration import reference_model_bytes
     from .case_assets import write_json
     from .emulated_actions import run_call
-    from .execution import start_session
     from .families import family_for
     from .integrity import digest
     candidate = {**model, 'channel': {'type': 'tcp'}}
@@ -83,7 +82,7 @@ def run_reference(pin, truth, model, capabilities, *, renode, image, output_dir,
     (model_dir/'model.json').write_bytes(reference_model_bytes(candidate))
     model_hash = hashlib.sha256((model_dir/'model.json').read_bytes()).hexdigest()
     probes = []
-    session = start_session(renode=renode, image=image, recipe=truth['recipe'], private_dir=private_dir)
+    session = family.start_session(renode=renode, image=image, recipe=truth['recipe'], private_dir=private_dir)
     try:
         package = contract = records = grade = None
         if phase == 'final':

@@ -196,7 +196,7 @@ def prepare_execution(build_dir, password_file, output, *, native_record=None, r
     from .execution import artifact_name
     from .emulator import truth_for_case
     from .truth import seal
-    from .rehosting import compare_executions
+    from .native_comparison import compare_executions
     build_dir = Path(build_dir).resolve()
     record = json.loads((build_dir/'build-report.json').read_text(encoding='utf-8'))
     image = build_dir/'firmware.elf'

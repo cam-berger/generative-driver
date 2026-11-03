@@ -5,7 +5,8 @@ import copy
 import hashlib
 import json
 import re
-from .registrations import native_family_for, registered_case_ids, registration_for
+from .families import family_for
+from .registrations import registered_case_ids, registration_for
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ def validate_workflow_manifest(manifest):
     if scenarios != ['original']:
         raise ValueError('Unsupported case scenario inventory: original is required')
     from .execution import artifact_name
-    if case_id != 'bme280' and list(manifest.get('images', {})) != [artifact_name(manifest)]:
+    if registration_for(case_id).single_image and list(manifest.get('images', {})) != [artifact_name(manifest)]:
         raise ValueError('Stable case requires one original firmware image')
 
 
@@ -75,13 +76,14 @@ def case_descriptors() -> list[dict]:
     root = case_root()
     rows = []
     for case_id in case_ids():
-        if case_id != 'setup-smoke' and not (root/'cases'/case_id/'case.json').is_file():
+        registration = registration_for(case_id)
+        if registration.has_case_file and not (root/'cases'/case_id/'case.json').is_file():
             rows.append({'id': case_id, 'status': 'pending'})
             continue
         try:
             case = resolve_case(case_id)
         except ValueError as error:
-            if case_id in ('tq9', 'bme280'):
+            if not registration.requires_calibration:
                 raise
             rows.append({'id': case_id, 'status': 'pending' if isinstance(error, PendingCaseError) else 'invalid',
                          'error': str(error)})
@@ -100,12 +102,14 @@ def case_descriptors() -> list[dict]:
 
 
 def resolve_case(case_id: str) -> CaseDefinition:
-    registration_for(case_id)
+    registration = registration_for(case_id)
     from .case_assets import case_root
     root = case_root()
-    if case_id == 'setup-smoke':
-        return CaseDefinition(case_id, 'setup-smoke', '1', '1', 'scripted-replay', 'recorded-replay',
-                              'smoke', None, (), root/'cases'/case_id, {}, '')
+    if not registration.has_case_file:
+        return CaseDefinition(case_id, registration.family, registration.version, registration.version,
+                              registration.execution, registration.evidence_track, registration.adapter_key,
+                              registration.approval_scope, tuple(registration.default_effects), root/'cases'/case_id,
+                              {}, '')
     path = root/'cases'/case_id/'case.json'
     if not path.is_file():
         raise PendingCaseError('Benchmark case is pending: ' + case_id)
@@ -215,10 +219,9 @@ def load_definition(path: Path, *, resource_root: Path) -> CaseDefinition:
             raise PendingCaseError('Case truth is unbuilt')
         if hashlib.sha256(truth_path.read_bytes()).hexdigest() != truth['sha256']:
             raise ValueError('Case truth hash mismatch')
-    if case_id == 'tq9':
-        family, track, approval, effects = 'tq9', 'firmware', 'emulator', ('write', 'actuate')
-    elif case_id == 'bme280':
-        family, track, approval, effects = 'bme280', 'physical', 'bound-device', ('write',)
+    if not registration.requires_calibration:
+        family, track = registration.family, registration.evidence_track
+        approval, effects = registration.approval_scope, tuple(registration.default_effects)
     else:
         family = manifest.get('family')
         track = manifest.get('evidence_track')
@@ -235,8 +238,9 @@ def pin_case(case_id: str, scenario_id: str | None, case_seed: int) -> dict:
     if scenario_id not in (None, 'original'):
         raise ValueError('Unknown case scenario')
     definition = resolve_case(case_id)
-    if definition.id in ('tq9', 'bme280', 'setup-smoke'):
-        default = None if definition.id == 'setup-smoke' else 'original'
+    registration = registration_for(case_id)
+    if not registration.requires_calibration:
+        default = 'original' if registration.has_case_file else None
         if scenario_id not in (None, default) or case_seed != 0:
             raise ValueError('Legacy case does not support the selected scenario or seed')
         scenario_id = default
@@ -257,7 +261,7 @@ def pin_case(case_id: str, scenario_id: str | None, case_seed: int) -> dict:
             'image_hashes': copy.deepcopy(manifest.get('images', {})),
             'truth_sha256': manifest.get('truth', {}).get('sha256'),
             'execution': definition.execution, 'evidence_track': definition.evidence_track,
-            'scope': manifest.get('scope', 'full-workflow' if definition.id == 'tq9' else 'installation' if definition.id == 'setup-smoke' else 'full-workflow'),
+            'scope': manifest.get('scope', registration.default_scope),
             'time_policy': copy.deepcopy(manifest.get('time_policy', {})),
             'calibration': copy.deepcopy(calibration)}
 
@@ -273,81 +277,18 @@ def require_calibration(pin: dict, options: dict) -> dict:
         raise ValueError('V2 case requires independently validated passed calibration before a run')
     from .case_assets import case_root
     from .emulator import truth_for_case
-    from .calibration import input_hashes, validate_record, CORE_MUTANTS, tq9_execution_inputs
+    from .execution import validate_setup
     from .snapshots import canonical_digest
     manifest = pin['manifest']
+    family = family_for(pin['case_id'])
     try:
-        truth = truth_for_case(case_root(), manifest, options)
-        if truth.get('schema') == 'benchmark-family-truth/1':
-            from .calibration import hydrate_truth
-            truth = hydrate_truth(truth)
-        elif truth.get('schema') == 'benchmark-upstream-truth/1':
-            from .upstream import hydrate_truth
-            truth = hydrate_truth(truth)
+        truth = family.hydrate_truth(truth_for_case(case_root(), manifest, options))
     except (OSError, ValueError) as error:
         raise ValueError('Authenticated calibration evidence requires the evaluator password file') from error
     record = truth.get('calibration', {})
-    from .execution import validate_setup
     validate_setup(manifest, truth)
     try:
-        if registration_for(pin['case_id']).truth_schema in ('benchmark-family-truth/1', 'benchmark-upstream-truth/1'):
-            from .calibration import validate_calibration, apply_mutation, execution_input_identity
-            expected = {r['id']: r['expected_failed_checks'] for r in truth['mutations']['mutants']}
-            changes = {}
-            mutant_inputs = {}
-            for mutation in truth['mutations']['mutants']:
-                source = truth['references'][mutation['reference']]
-                changed = apply_mutation(source['model'], source['capabilities'], mutation)
-                mutant_inputs[mutation['id']]=execution_input_identity(changed['model'],changed['capabilities'])
-                changes[mutation['id']] = (changed['source_sha256'], changed['mutated_sha256'])
-            valid = (truth.get('inventory_state') == 'qualified'
-                     and canonical_digest(record) == manifest['calibration']['evidence_sha256']
-                     and truth['input_hashes'] == record['input_hashes']
-                     and truth['images'] == manifest['images']
-                     and {r['id']: r['expected_failed_checks'] for r in record['mutants']} == expected
-                     and {r['id']: (r['source_sha256'], r['mutated_sha256']) for r in record['mutants']} == changes
-                     and {r['id']: r['model_sha256'] for r in record['references']} ==
-                         {name: canonical_digest(ref['model']) for name, ref in truth['references'].items()}
-                     and validate_calibration(manifest, record)['ok'])
-            from .instruments import family_for
-            family=family_for(pin['case_id'])
-            runs={r['id']:r for r in record['runs']}
-            for reference in record['references']:
-                source=truth['references'][reference['id']]
-                for name in reference['runs']:
-                    run=runs[name];model=source['model']
-                    valid = (valid and reference['execution_inputs'][name]==execution_input_identity(model,source['capabilities']))
-            for row in record['mutants']:
-                valid = (valid and row['execution_input']==mutant_inputs[row['id']])
-            for run in runs.values():
-                scenario=run['scenario']
-                artifact=run['package_sha256'] or run['model_sha256']
-                contract=family.contract({'family':manifest['family'],'scenario_id':scenario,'case_seed':0,'revision':0},
-                    {**truth,'artifact_sha256':artifact},run['phase'])
-                valid = (valid and canonical_digest(contract)==run['contract_sha256']
-                         and [c['id'] for c in contract['checks']]==run['check_ids'])
-            rows={r['id']:r for r in record['mutants']}
-            for mutation in truth['mutations']['mutants']:
-                run=runs[rows[mutation['id']]['run']]
-                valid = (valid and run['phase']==mutation['phase']
-                         and run['scenario']==mutation.get('scenario','original'))
-
-        else:
-            valid = (canonical_digest(record) == manifest['calibration']['evidence_sha256']
-                     and input_hashes(truth) == record['input_hashes']
-                     and truth['images'] == manifest['images']
-                     and set(record['required_mutants']) == set(CORE_MUTANTS) | set(truth['mutations']['required'])
-                     and record['execution_inputs']==tq9_execution_inputs(truth)
-                     and {r['id']: r['expected_failed_checks'] for r in record['mutants']} ==
-                         truth['mutations']['expected_failed_checks']
-                     and validate_record(manifest, record)['ok'])
-            tq9_contract = native_family_for(manifest['id']).contract
-            for run in record['runs']:
-                artifact=run['package_sha256'] or run['model_sha256']
-                contract=tq9_contract({'scenario_id':run['scenario'],'case_seed':0,'revision':0},
-                    {**truth,'artifact_sha256':artifact},run['phase'])
-                valid = (valid and canonical_digest(contract)==run['contract_sha256']
-                         and [c['id'] for c in contract['checks']]==run['check_ids'])
+        valid = family.admission_valid(pin, truth, record)
     except (KeyError, TypeError, ValueError):
         valid = False
     if not valid:

@@ -22,7 +22,7 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
     from .calibration import apply_mutation, execution_input_identity, validate_calibration
     from .grader_identity import grader_identity
     from .reference_calibration import calibration_run
-    from .registrations import family_module
+    from .families import family_for
     from .upstream import hydrate_truth
     from ..toolkit import resources_root
     truth = hydrate_truth(payload)
@@ -55,7 +55,7 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
         'evaluator_version': manifest['evaluator_version'], 'execution': 'reference-calibration',
         'backend': 'native-sim' if native else 'native-renode', 'images': manifest['images'], 'input_hashes': truth['input_hashes'],
         'evaluator_identity': identity, 'native_process_observed': False, 'references': [], 'mutants': [],
-        'scenarios': {}, 'required_mutants': sorted(family_module(truth['family']).REQUIRED_MUTANTS),
+        'scenarios': {}, 'required_mutants': sorted(family_for(manifest['id']).required_mutants),
         'tools': tools, 'runs': [], 'analysis': {}}
     def save():
         _write(output/'calibration-record.json', record)

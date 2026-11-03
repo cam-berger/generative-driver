@@ -15,9 +15,9 @@ import tempfile
 
 from .grader_identity import grader_identity
 from .snapshots import canonical_digest
-# The evaluator admits tq9-v2 by these, so they are defined in its calibration module and imported here.
-from .calibration import (CORE_MUTANTS, REQUIRED_SCENARIOS, input_hashes, tq9_candidate, tq9_execution_inputs,
-                          validate_record)
+from .calibration import REQUIRED_SCENARIOS, input_hashes
+# The evaluator admits tq9-v2 by these, so they are defined in its family and imported here.
+from .tq9_v2 import CORE_MUTANTS, tq9_candidate, tq9_execution_inputs, validate_record
 
 
 def model_invoker(model_dir, capabilities, binding, output_dir, probes):
@@ -158,7 +158,8 @@ def calibrate(case_id, options):
     from ..benchmark import case_root
     from ..toolkit import resources_root
     definition=resolve_case(case_id)
-    from .registrations import family_module, registration_for
+    from .families import family_for
+    from .registrations import registration_for
     registration = registration_for(case_id)
     family_case = registration.calibration_kind == 'family'
     if family_case:
@@ -178,7 +179,7 @@ def calibrate(case_id, options):
     record={'schema':'benchmark-calibration/1','status':'pending','case':case_id,'evaluator_version':definition.evaluator_version,
         'execution':'reference-calibration','backend':'native-renode','images':definition.manifest['images'],
         'input_hashes':truth['input_hashes'] if family_case else input_hashes(truth),'evaluator_identity':identity,'native_process_observed':False,
-        'references':[],'mutants':[],'scenarios':{},'required_mutants':sorted(family_module(truth['family']).REQUIRED_MUTANTS if family_case else set(CORE_MUTANTS)|set(truth['mutations']['required'])),
+        'references':[],'mutants':[],'scenarios':{},'required_mutants':sorted(family_for(case_id).required_mutants if family_case else set(CORE_MUTANTS)|set(truth['mutations']['required'])),
         'tools':{},'runs':[]}
     def save():_write(output/'calibration-record.json',record)
     save()
@@ -197,7 +198,7 @@ def calibrate(case_id, options):
         author=output/'authoring';author.mkdir()
         if family_case:
             source = evaluator_directory(options['authoring_root'])
-            for name in sorted(inventory(truth['family'])):
+            for name in sorted(inventory(case_id)):
                 target = author/name; target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source/name,target)
             built=build_family(author,Path(compiler),output/'build')
@@ -277,7 +278,7 @@ def calibrate(case_id, options):
                     'passed':all(passes),'runs':run_ids,'execution_inputs':execution_inputs})
                 save()
             mutants=truth['mutations']['mutants']
-            required=family_module(truth['family']).REQUIRED_MUTANTS
+            required=family_for(case_id).required_mutants
             if {m['id'] for m in mutants}!=required or len(mutants)!=len(required):
                 raise ValueError('Private required mutant inventory mismatch')
             for mutation in mutants:

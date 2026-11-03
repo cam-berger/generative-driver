@@ -11,38 +11,28 @@ from pathlib import Path
 
 from .case_assets import write_json
 from .families import family_for
+from .registrations import registered_case_ids, registration_for
 
 DRAFT, EVIDENCE = 'evaluator-draft.enc', 'run-evidence.enc'
 SCHEMA = 'equivalence/1'
 TEXT = 300  # The configurator's limit on an equivalence/1 text field.
 OWNER_PROOF = 'Missing or inconsistent owner proof of generated MCP reuse'
-# Cases graded from the fresh reuse their run recorded; every other case is graded on a fresh emulator.
-RECORDED = {'tq9': 'recorded-reuse', 'bme280': 'recorded-reuse'}
 
 
 def method_for(case_id):
-    """How the evaluator grades a case's frozen driver."""
-    return RECORDED.get(case_id, 'fresh-final')
+    """How the evaluator grades a case's frozen driver, as its registration says: from the fresh reuse its run recorded or
+    on a fresh emulator, which is also how a run that names no registered case would be graded."""
+    return registration_for(case_id).grading_method if case_id in registered_case_ids() else 'fresh-final'
 
 
 def case_truth(case_id, run_dir, options):
     """The case truth, unlocked with the evaluator password file in `options`: the bench harness takes the device recipe
     from it, and the evaluator grades with it. The manifest is the run's pinned snapshot when `run_dir` holds one. The
-    truth is hydrated as the case's registered `truth_schema` says; a truth whose registered schema is none, or one that
-    is hydrated nowhere here, is returned as unlocked."""
+    truth is hydrated by the case's family; one that declares no `hydrate_truth` gets it back as unlocked."""
     from .case_assets import case_inputs, case_root
     from .emulator import truth_for_case
-    from .registrations import registration_for
     _, manifest = case_inputs(case_id, run_dir)
-    truth = truth_for_case(case_root(), manifest, options)
-    schema = registration_for(case_id).truth_schema
-    if schema == 'benchmark-upstream-truth/1':
-        from .upstream import hydrate_truth
-        return hydrate_truth(truth)
-    if schema == 'benchmark-family-truth/1':
-        from .calibration import hydrate_truth
-        return hydrate_truth(truth)
-    return truth
+    return family_for(case_id).hydrate_truth(truth_for_case(case_root(), manifest, options))
 
 
 def accept_frozen_package(package, expected_sha256):

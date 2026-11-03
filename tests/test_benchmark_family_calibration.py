@@ -522,9 +522,8 @@ class ReferenceExecutionTests(unittest.TestCase):
                 accept_frozen_package(package,frozen)
 
 class FamilyAdmissionBoundaryTests(unittest.TestCase):
-    def test_registry_admission_consumes_family_validator_and_authenticated_inputs(self):
-        from unittest.mock import patch
-        from generative_driver.benchmark_support.registry import require_calibration
+    def family_admission_fixture(self):
+        """(manifest, record, truth, pin, phase) of a family-truth case whose evidence admits it."""
         manifest,record=AdmissionTests().fixture()
         manifest.update(schema='benchmark-case/2')
         manifest['calibration'].update(status='passed',evidence_sha256=canonical_digest(record))
@@ -568,8 +567,15 @@ class FamilyAdmissionBoundaryTests(unittest.TestCase):
             measured['checks']=[failed.get(name,{'id':name,'passed':True}) for name in identifiers]
             measured['contract_sha256']=canonical_digest({**phase['contract'],'artifact_sha256':measured['package_sha256'] or measured['model_sha256']})
         manifest['calibration']['evidence_sha256']=canonical_digest(record)
+        return manifest,record,truth,pin,phase
+
+    def test_registry_admission_consumes_family_validator_and_authenticated_inputs(self):
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.registry import require_calibration
+        manifest,record,truth,pin,phase=self.family_admission_fixture()
         with patch('generative_driver.benchmark_support.registry.pin_case',return_value=pin),patch(
-                'generative_driver.benchmark_support.emulator.truth_for_case',return_value=truth):
+                'generative_driver.benchmark_support.emulator.truth_for_case',return_value=truth),patch(
+                'generative_driver.benchmark_support.calibration.hydrate_truth',side_effect=lambda unlocked:unlocked):
             self.assertTrue(require_calibration(pin,{})['ok'])
             for index in (0,2,4,7):
                 measured=record['runs'][index]

@@ -7,15 +7,21 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 from unittest.mock import patch
 
 import generative_driver
 from benchmark_family_fixtures import toy_sample_model, toy_sensor_phase
-from generative_driver.benchmark_support import instruments, sampled_sensor, tq9_legacy, tq9_v2
+from generative_driver.benchmark_support import (instruments, parameter_store, registrations, registry, sampled_sensor,
+                                                  tq9_legacy, tq9_v2)
+from generative_driver.benchmark_support.calibration import inventory, validate_calibration
 from generative_driver.benchmark_support.case_assets import reuse_mission
 from generative_driver.benchmark_support.emulated_actions import execute_plan
+from generative_driver.benchmark_support.evaluator import case_truth, method_for
 from generative_driver.benchmark_support.families import Family, family_for, family_from
 from generative_driver.benchmark_support.registrations import registered_case_ids, registration_for
+from generative_driver.benchmark_support.registry import case_descriptors, pin_case, require_calibration, resolve_case
+from generative_driver.benchmark_support.snapshots import canonical_digest
 
 HOOKS = ('contract', 'observations', 'reuse_passed', 'required_mutants', 'execute', 'build_plan', 'hydrate_truth',
          'admission_valid', 'validate_phase', 'required_scenarios', 'mutant_checks_may_exceed_expected',
@@ -417,6 +423,249 @@ class DevelopmentConditionTests(unittest.TestCase):
     def test_01_B12_the_catalog_comes_from_the_familys_hook(self):
         with patch.dict(sampled_sensor.HOOKS, {'development_conditions': lambda recipe: 'catalog of the hook'}):
             self.assertEqual(self.provider('sampled-sensor-v1', {}).development_conditions(), 'catalog of the hook')
+
+
+TQ9_TIME_POLICY = {'probe': 'continuous emulator virtual time',
+                   'package_calls': 'paused between calls, running inside each call; model timing must hold inside each operation',
+                   'clock': 'firmware reset-clock SysTick frequency configured by encrypted reference recipe',
+                   'limitation': 'Agent thinking time is excluded from device watchdog time during reuse; this is not a '
+                                 'real-time control benchmark'}
+TQ9_IMAGE = 'c1e9ab72e497c13d1e8037a9773c8b229adf6eb63665c3a8f750894c65d92d51'
+DESCRIBED = {'availability_basis': 'public-metadata', 'authenticated_admission': 'not-checked', 'status': 'available'}
+
+
+class UnbranchedCaseTests(unittest.TestCase):
+    """What the core branched on by a legacy case's name comes from its registration row, with today's values."""
+
+    def assert_definition(self, case_id, **expected):
+        definition = resolve_case(case_id)
+        self.assertEqual({key: getattr(definition, key) for key in expected}, expected)
+
+    def test_01_B10_resolve_case_returns_todays_definitions(self):
+        self.assert_definition('tq9', id='tq9', family='tq9', version='2', evaluator_version='2',
+                               execution='actual-agent-emulation', evidence_track='firmware', adapter_key='legacy-emulator',
+                               approval_scope='emulator', default_effects=('write', 'actuate'),
+                               manifest_sha256='fa1d971100f646cc950e7af5eb5b96b82ff4a85950ecbbd7121305603a3c74b1')
+        self.assert_definition('bme280', id='bme280', family='bme280', version='3', evaluator_version='3',
+                               execution='actual-agent-physical', evidence_track='physical', adapter_key='legacy-physical',
+                               approval_scope='bound-device', default_effects=('write',),
+                               manifest_sha256='8b7b2abfb883e6b61d64f8ffbcb4201084d30c5b263691fbadfde39eaaa2b4d3')
+        self.assert_definition('setup-smoke', id='setup-smoke', family='setup-smoke', version='1', evaluator_version='1',
+                               execution='scripted-replay', evidence_track='recorded-replay', adapter_key='smoke',
+                               approval_scope=None, default_effects=(), manifest={}, manifest_sha256='')
+
+    def test_01_B10_pin_case_returns_todays_pins(self):
+        common = {'schema': 'benchmark-case-pin/1', 'case_seed': 0, 'calibration': {'status': 'legacy-not-required'}}
+        expected = {
+            'tq9': {**common, 'case': 'tq9', 'case_id': 'tq9', 'case_version': '2', 'evaluator_version': '2', 'family': 'tq9',
+                    'scenario_id': 'original', 'manifest_sha256': 'fa1d971100f646cc950e7af5eb5b96b82ff4a85950ecbbd7121305603a3c74b1',
+                    'image_hashes': {'firmware.bin': TQ9_IMAGE},
+                    'truth_sha256': '4de3c5c251f68ead6567c9b140b41654c6dbc49f1ec85eb943eba00693792b2d',
+                    'execution': 'actual-agent-emulation', 'evidence_track': 'firmware', 'scope': 'full-workflow',
+                    'time_policy': TQ9_TIME_POLICY},
+            'bme280': {**common, 'case': 'bme280', 'case_id': 'bme280', 'case_version': '3', 'evaluator_version': '3',
+                       'family': 'bme280', 'scenario_id': 'original',
+                       'manifest_sha256': '8b7b2abfb883e6b61d64f8ffbcb4201084d30c5b263691fbadfde39eaaa2b4d3', 'image_hashes': {},
+                       'truth_sha256': '0eaaca4a7dcd6ffe7ee1eb638857966e3152d1c7be420b4aa691e2e76844f82c',
+                       'execution': 'actual-agent-physical', 'evidence_track': 'physical', 'scope': 'full-workflow',
+                       'time_policy': {'physical': 'Real elapsed device time; no timing pause'}},
+            'setup-smoke': {**common, 'case': 'setup-smoke', 'case_id': 'setup-smoke', 'case_version': '1',
+                            'evaluator_version': '1', 'family': 'setup-smoke', 'scenario_id': None, 'manifest_sha256': '',
+                            'image_hashes': {}, 'truth_sha256': None, 'execution': 'scripted-replay',
+                            'evidence_track': 'recorded-replay', 'scope': 'installation', 'time_policy': {}}}
+        for case_id, pin in expected.items():
+            with self.subTest(case_id):
+                self.assertEqual({key: value for key, value in pin_case(case_id, None, 0).items() if key != 'manifest'}, pin)
+                with self.assertRaisesRegex(ValueError, 'Legacy case does not support'):
+                    pin_case(case_id, None, 1)
+
+    def test_01_B10_method_for_and_the_catalog_rows_are_todays(self):
+        self.assertEqual({case_id: method_for(case_id) for case_id in ('tq9', 'bme280', 'setup-smoke', 'tq9-v2', None)},
+                         {'tq9': 'recorded-reuse', 'bme280': 'recorded-reuse', 'setup-smoke': 'fresh-final',
+                          'tq9-v2': 'fresh-final', None: 'fresh-final'})
+        rows = {row['id']: row for row in case_descriptors()}
+        self.assertEqual(rows['tq9'], {**DESCRIBED, 'id': 'tq9', 'family': 'tq9', 'version': '2',
+                                       'execution': 'actual-agent-emulation', 'evidence_track': 'firmware',
+                                       'scenarios': ['original']})
+        self.assertEqual(rows['bme280'], {**DESCRIBED, 'id': 'bme280', 'family': 'bme280', 'version': '3',
+                                          'execution': 'actual-agent-physical', 'evidence_track': 'physical',
+                                          'scenarios': ['original']})
+        self.assertEqual(rows['setup-smoke'], {**DESCRIBED, 'id': 'setup-smoke', 'family': 'setup-smoke', 'version': '1',
+                                               'execution': 'scripted-replay', 'evidence_track': 'recorded-replay',
+                                               'scenarios': []})
+
+    def register_like(self, source, case_id):
+        """Register `case_id` with the row of `source`, its family and version too, until the test ends."""
+        row = replace(registration_for(source), id=case_id)
+        for patcher in (patch.object(registrations, '_REGISTRATIONS',
+                                     MappingProxyType({**registrations._REGISTRATIONS, case_id: row})),
+                        patch.dict(registry.CURRENT_VERSIONS, {case_id: row.version})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def setUp(self):
+        self.installed = {case_id: resolve_case(case_id).manifest for case_id in ('tq9', 'bme280')}
+
+    def case_file(self, source, case_id, **changes):
+        """A public case tree whose only case is `case_id`, with `source`'s manifest and `changes`; the case root until
+        the test ends."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        manifest = {**self.installed[source], 'id': case_id, 'truth': {}, 'images': {}, **changes}
+        (root / 'cases' / case_id).mkdir(parents=True)
+        (root / 'cases' / case_id / 'case.json').write_text(json.dumps(manifest), encoding='utf-8')
+        patcher = patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_01_B10_those_values_come_from_the_row_not_the_case_id(self):
+        self.register_like('bme280', 'another-physical')
+        self.case_file('bme280', 'another-physical')
+        self.assertEqual(method_for('another-physical'), 'recorded-reuse')
+        self.assert_definition('another-physical', family='bme280', evidence_track='physical',
+                               approval_scope='bound-device', default_effects=('write',))
+        self.assertEqual(pin_case('another-physical', None, 0)['calibration'], {'status': 'legacy-not-required'})
+        self.register_like('tq9', 'another-emulated')
+        self.case_file('tq9', 'another-emulated')
+        with self.assertRaisesRegex(ValueError, 'one original firmware image'):
+            resolve_case('another-emulated')
+        self.register_like('setup-smoke', 'another-smoke')
+        self.assert_definition('another-smoke', family='setup-smoke', execution='scripted-replay',
+                               evidence_track='recorded-replay', approval_scope=None, default_effects=(), manifest={})
+        self.assertEqual(pin_case('another-smoke', None, 0)['scope'], 'installation')
+        self.assertEqual(method_for('another-smoke'), 'fresh-final')
+
+
+class HydrationTests(unittest.TestCase):
+    FAMILY_TRUTH = {'schema': 'benchmark-family-truth/1', 'recipe': {}}
+
+    def unlocked(self, truth):
+        return patch('generative_driver.benchmark_support.emulator.truth_for_case', return_value=truth)
+
+    def never_hydrated(self):
+        return patch('generative_driver.benchmark_support.calibration.hydrate_truth',
+                     side_effect=AssertionError('hydrated by the schema the truth names'))
+
+    def test_01_B13_a_family_truth_of_a_case_with_no_hydrate_truth_comes_back_unlocked(self):
+        with self.unlocked(self.FAMILY_TRUTH), self.never_hydrated(), \
+                patch('generative_driver.benchmark_support.case_assets.case_inputs', return_value=(Path('inputs'), {})):
+            self.assertIs(case_truth('tq9-v2', Path('run'), {}), self.FAMILY_TRUTH)
+
+    def test_01_B13_admission_hydrates_from_the_family_never_from_the_truths_schema(self):
+        pin = pin_case('tq9-v2', 'original', 0)
+        pin['manifest'].update(calibration={'status': 'passed'})
+        pin['calibration'] = {'status': 'passed'}
+        with self.unlocked(self.FAMILY_TRUTH), self.never_hydrated(), \
+                patch('generative_driver.benchmark_support.registry.pin_case', return_value=pin), \
+                self.assertRaisesRegex(ValueError, 'missing, stale, or incomplete'):
+            require_calibration(pin, {})
+
+    def test_01_B13_a_case_hydrates_with_its_familys_hook(self):
+        hydrated = {'hydrated': True}
+        with self.unlocked(self.FAMILY_TRUTH), patch.dict(tq9_v2.HOOKS, {'hydrate_truth': lambda truth: hydrated}), \
+                patch('generative_driver.benchmark_support.case_assets.case_inputs', return_value=(Path('inputs'), {})):
+            self.assertIs(case_truth('tq9-v2', Path('run'), {}), hydrated)
+
+
+class AdmissionTests(unittest.TestCase):
+    REFUSED = 'missing, stale, or incomplete'
+
+    def admit(self, pin, truth):
+        """Admission of `pin` when its sealed truth unlocks and hydrates to `truth`."""
+        with patch('generative_driver.benchmark_support.registry.pin_case', return_value=pin), \
+                patch('generative_driver.benchmark_support.emulator.truth_for_case', return_value=truth), \
+                patch('generative_driver.benchmark_support.calibration.hydrate_truth', side_effect=lambda unlocked: unlocked):
+            return require_calibration(pin, {})
+
+    def test_01_B14_a_tq9_shaped_record_is_admitted_and_refused_as_today(self):
+        from test_benchmark_tq9_v2 import TQ9V2Tests
+        manifest, record, truth, pin = TQ9V2Tests().tq9_admission_fixture()
+        self.assertEqual(self.admit(pin, truth), {'ok': True, 'evidence_sha256': canonical_digest(record)})
+        with patch.dict(tq9_v2.HOOKS, {'admission_valid': lambda pin, truth, record: False}), \
+                self.assertRaisesRegex(ValueError, self.REFUSED):
+            self.admit(pin, truth)
+        record['execution_inputs'] = {}
+        manifest['calibration']['evidence_sha256'] = canonical_digest(record)
+        with self.assertRaisesRegex(ValueError, self.REFUSED):
+            self.admit(pin, truth)
+
+    def test_01_B14_a_family_truth_record_is_admitted_and_refused_as_today(self):
+        from test_benchmark_family_calibration import FamilyAdmissionBoundaryTests
+        manifest, record, truth, pin, _ = FamilyAdmissionBoundaryTests().family_admission_fixture()
+        self.assertEqual(self.admit(pin, truth), {'ok': True, 'evidence_sha256': canonical_digest(record)})
+        with patch.dict(sampled_sensor.HOOKS, {'admission_valid': lambda pin, truth, record: False}), \
+                self.assertRaisesRegex(ValueError, self.REFUSED):
+            self.admit(pin, truth)
+        record['mutants'][0]['source_sha256'] = 'e' * 64
+        manifest['calibration']['evidence_sha256'] = canonical_digest(record)
+        with self.assertRaisesRegex(ValueError, self.REFUSED):
+            self.admit(pin, truth)
+
+    def test_01_B14_a_family_with_the_default_admission_is_refused(self):
+        from test_benchmark_family_calibration import FamilyAdmissionBoundaryTests
+        _, _, truth, pin, _ = FamilyAdmissionBoundaryTests().family_admission_fixture()
+        hooks = {key: value for key, value in sampled_sensor.HOOKS.items() if key != 'admission_valid'}
+        with patch.dict(sampled_sensor.HOOKS, hooks, clear=True), self.assertRaisesRegex(ValueError, self.REFUSED):
+            self.admit(pin, truth)
+
+
+class CalibrationRuleTests(unittest.TestCase):
+    def fixture(self, case_id, family='a family name no rule reads'):
+        """A record and manifest of `case_id`. The manifest names another family: only the hooks of its case can apply."""
+        from test_benchmark_family_calibration import AdmissionTests as Fixture
+        manifest, record = Fixture().fixture(case_id)
+        return {**manifest, 'family': family}, record
+
+    def failures(self, manifest, record):
+        return validate_calibration(manifest, record)['failures']
+
+    def test_01_B15_required_scenarios_come_from_the_hook(self):
+        coverage = 'transaction scenario coverage:a-diagnostic-original'
+        self.assertIn(coverage, self.failures(*self.fixture('parameter-store-v1')))
+        self.assertNotIn(coverage, self.failures(*self.fixture('sampled-sensor-v1', 'parameter-store')))
+        with patch.dict(sampled_sensor.HOOKS, {'required_scenarios': frozenset({'another'})}):
+            self.assertIn(coverage, self.failures(*self.fixture('sampled-sensor-v1')))
+
+    def test_01_B15_a_mutants_extra_failed_checks_are_allowed_by_the_hook(self):
+        def exceeding():
+            manifest, record = self.fixture('sampled-sensor-v1')
+            run = next(row for row in record['runs'] if row['id'] == 'constant')
+            run['check_ids'] = ['toy/constant', 'toy/extra']
+            run['checks'].append({'id': 'toy/extra', 'passed': False, 'reason': 'value mismatch'})
+            record['mutants'][0]['failed_checks'] = ['toy/constant', 'toy/extra']
+            return manifest, record
+        self.assertIn('mutant evidence:constant', self.failures(*exceeding()))
+        with patch.dict(sampled_sensor.HOOKS, {'mutant_checks_may_exceed_expected': True}):
+            self.assertNotIn('mutant evidence:constant', self.failures(*exceeding()))
+        self.assertIs(family_for('zephyr-modbus-v1').mutant_checks_may_exceed_expected, True)
+
+    def test_01_B15_input_commitments_come_from_the_hook(self):
+        commitment = 'input commitment inventory'
+        manifest, record = self.fixture('tq9-v2')
+        self.assertIn(commitment, self.failures(manifest, record))
+        names = {'source', 'contract', 'recipe', 'references', 'mutations', 'build', 'analysis'}
+        record['input_hashes'] = {name: 'a' * 64 for name in names}
+        manifest['calibration'] = {'input_hashes': record['input_hashes']}
+        self.assertNotIn(commitment, self.failures(manifest, record))
+        self.assertIn(commitment, self.failures({**self.fixture('sampled-sensor-v1')[0], 'calibration': manifest['calibration']},
+                                                {**self.fixture('sampled-sensor-v1')[1], 'input_hashes': record['input_hashes']}))
+
+    def test_01_B15_the_extra_inventory_file_comes_from_the_hook(self):
+        extra = 'native/SampleSource.cs'
+        self.assertIn(extra, inventory('sampled-sensor-v1'))
+        self.assertNotIn(extra, inventory('parameter-store-v1'))
+        with patch.dict(parameter_store.HOOKS, {'inventory_files': frozenset({'native/Another.cs'})}):
+            self.assertIn('native/Another.cs', inventory('parameter-store-v1'))
+        with self.assertRaisesRegex(ValueError, 'Unsupported family'):
+            inventory('tq9-v2')
+
+    def test_01_B15_required_mutants_come_from_the_hook(self):
+        with patch.dict(sampled_sensor.HOOKS, {'required_mutants': frozenset({'alpha'})}):
+            manifest, record = self.fixture('sampled-sensor-v1')
+            self.assertIn('family mutant inventory', self.failures(manifest, record))
+            record['required_mutants'] = ['alpha']
+            self.assertNotIn('family mutant inventory', self.failures(manifest, record))
 
 
 if __name__ == '__main__':

@@ -1,5 +1,5 @@
 """Sampled sensor checks from independent latched source and acquisition counter."""
-from .family_support import integer, private_phase, signed16
+from .family_support import admission_valid, hydrate_family_truth, integer, private_phase, signed16
 
 REQUIRED_MUTANTS = frozenset({"constant", "scale", "signedness", "stale"})
 # Public development inputs, selected independently of the evaluator's final cases.
@@ -51,4 +51,5 @@ def _development_conditions(recipe):
 
 
 HOOKS = {'contract': contract, 'build_plan': build_plan, 'observations': observations, 'reuse_passed': reuse_passed,
-         'required_mutants': REQUIRED_MUTANTS, 'development_conditions': _development_conditions}
+         'required_mutants': REQUIRED_MUTANTS, 'hydrate_truth': hydrate_family_truth, 'admission_valid': admission_valid,
+         'inventory_files': frozenset({'native/SampleSource.cs'}), 'development_conditions': _development_conditions}

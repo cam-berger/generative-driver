@@ -1,5 +1,5 @@
 """Zephyr's upstream RTU server: observe memory and GPIO independently of replies."""
-from .family_support import integer, private_phase
+from .family_support import admission_valid, integer, private_phase
 
 REQUIRED_MUTANTS = frozenset({'constant-read', 'wrong-byteorder', 'wrong-register',
                               'wrong-coil', 'omit-write', 'wrong-request-crc'})
@@ -67,6 +67,11 @@ def reuse_passed(events, capabilities):
     return saw_read and saw_on and last.get('coil0') == 0 and last.get('register3') == 4660
 
 
+def _hydrate_truth(truth):
+    from .upstream import hydrate_truth
+    return hydrate_truth(truth)
+
+
 def _start_session(*, recipe, **arguments):
     """The Linux native-simulator session for a native-sim recipe; any other recipe starts as any family's does."""
     if recipe.get('backend') == 'native-sim':
@@ -96,5 +101,6 @@ def _validate_execution(manifest, truth):
 
 
 HOOKS = {'contract': contract, 'build_plan': build_plan, 'observations': observations, 'reuse_passed': reuse_passed,
-         'required_mutants': REQUIRED_MUTANTS, 'start_session': _start_session,
+         'required_mutants': REQUIRED_MUTANTS, 'hydrate_truth': _hydrate_truth, 'admission_valid': admission_valid,
+         'mutant_checks_may_exceed_expected': True, 'start_session': _start_session,
          'validate_execution': _validate_execution}

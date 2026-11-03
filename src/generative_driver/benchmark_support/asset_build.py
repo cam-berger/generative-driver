@@ -61,11 +61,11 @@ def _author(root, *, complete):
     root = require_private_root(root, [])
     metadata = _json(root / 'AUTHORING.json')
     family = metadata.get('family')
-    if (metadata.get('schema') != 'benchmark-authoring/1' or family not in _FAMILIES
-            or metadata.get('id') != family + '-v1'
+    if (metadata.get('schema') != 'benchmark-authoring/1' or metadata.get('id') not in _FAMILIES
+            or metadata.get('id') != f'{family}-v1'
             or metadata.get('execution') not in ('reference-build', 'scripted-contract-fixture')):
         raise ValueError('Invalid family authoring metadata')
-    expected = inventory(family)
+    expected = inventory(metadata['id'])
     actual = _files(root)
     if actual != expected and (complete or actual != expected - BUILD_FILES):
         raise ValueError('Authoring inventory differs from the exact pending inventory')
@@ -96,7 +96,7 @@ def build_family(authoring_root, compiler, output_dir):
             or set(recipe.get('variants', {})) != {'firmware'}
             or any(not isinstance(v, list) for v in recipe['variants'].values())):
         raise ValueError('Invalid family build recipe')
-    inputs = inventory(metadata['family']) - BUILD_FILES
+    inputs = inventory(metadata['id']) - BUILD_FILES
     source_hashes = {name: _hash(root / name) for name in sorted(inputs)}
     steps = []
     for variant in ('firmware',):
@@ -160,9 +160,9 @@ def assemble_release(authoring_root, build_report, password_file, output_dir):
         raise ValueError('Release requires the successful reproducible private build report')
     require_toolchain(report['tool_versions']['compiler'], report['tool_versions']['objcopy'])
     for name, digest in report['source_hashes'].items():
-        if name not in inventory(metadata['family']) - BUILD_FILES or _hash(root / name) != digest:
+        if name not in inventory(metadata['id']) - BUILD_FILES or _hash(root / name) != digest:
             raise ValueError('Authoring changed after native build')
-    if set(report['source_hashes']) != inventory(metadata['family']) - BUILD_FILES:
+    if set(report['source_hashes']) != inventory(metadata['id']) - BUILD_FILES:
         raise ValueError('Incomplete source inventory')
     for name in ('firmware.bin', 'firmware.elf'):
         if _hash(root / 'build' / name) != report['images'][name]:
@@ -176,7 +176,7 @@ def assemble_release(authoring_root, build_report, password_file, output_dir):
         if existing.exists() and _hash(existing) != report['images'][name]:
             raise ValueError('Release would replace a different pinned image')
     entries = {name: {'sha256': _hash(root / name), 'base64': base64.b64encode((root / name).read_bytes()).decode('ascii')}
-               for name in sorted(inventory(metadata['family']))}
+               for name in sorted(inventory(metadata['id']))}
     hashes = {name: entry['sha256'] for name, entry in entries.items()}
     input_hashes = {'source': _canonical({name: value for name, value in hashes.items() if name.startswith('source/')}),
         'contract': _canonical({name: value for name, value in hashes.items() if name.startswith(('diagnostic/', 'final/', 'oracle/'))})}

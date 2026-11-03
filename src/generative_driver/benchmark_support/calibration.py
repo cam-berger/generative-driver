@@ -5,7 +5,8 @@ import copy
 import hashlib
 import json
 from .grader_identity import grader_identity
-from .registrations import family_module, registered_case_ids, registration_for
+from .families import family_for
+from .registrations import registered_case_ids, registration_for
 from .snapshots import canonical_digest
 
 BUILD_FILES = {'build/build-report.json', 'build/firmware.elf', 'build/firmware.bin'}
@@ -14,15 +15,15 @@ _INPUT_FILES = {'AUTHORING.json', 'LICENSE', 'source/startup.c', 'source/board_u
     'native/platform.repl', 'native/device.resc', 'native/observation-map.json',
     'diagnostic/episodes.json', 'final/episodes.json', 'oracle/vectors.json', 'mutants/manifest.json',
     *{f'reference-{ref}/{name}.json' for ref in ('a', 'b') for name in ('model', 'capabilities', 'replies')}}
-# The families calibrated from a private authoring inventory: those registered with calibration kind 'family'.
-_FAMILIES = {registration.family for registration in map(registration_for, registered_case_ids())
+# The cases calibrated from a private authoring inventory: those registered with calibration kind 'family'.
+_FAMILIES = {registration.id for registration in map(registration_for, registered_case_ids())
              if registration.calibration_kind == 'family'}
 
 
-def inventory(family, *, qualified=False):
-    if family not in _FAMILIES:
+def inventory(case_id, *, qualified=False):
+    if case_id not in _FAMILIES:
         raise ValueError('Unsupported family')
-    return (_INPUT_FILES | BUILD_FILES | ({'native/SampleSource.cs'} if family == 'sampled-sensor' else set())
+    return (_INPUT_FILES | BUILD_FILES | family_for(case_id).inventory_files
             | ({'calibration/calibration.json'} if qualified else set()))
 
 
@@ -43,7 +44,7 @@ def decode_inventory(payload):
         entries = payload['inventory']
         if (payload['schema'] != 'benchmark-family-truth/1' or payload['case_id'] != family + '-v1'
                 or state not in ('pending', 'qualified')
-                or set(entries) != inventory(family, qualified=state == 'qualified')):
+                or set(entries) != inventory(payload['case_id'], qualified=state == 'qualified')):
             raise ValueError('Invalid family inventory identity')
         decoded = {}
         for name, entry in entries.items():
@@ -100,12 +101,11 @@ def validate_calibration(manifest, record):
             failures.append('native process type')
         if set(manifest['images'])!={artifact}:
             failures.append('image inventory')
-        if (set(record['input_hashes'])!=({'source','contract','recipe','references','mutations','build'} |
-                ({'analysis'} if manifest['family']=='tq9' else {'inventory'}))
+        family=family_for(manifest['id'])
+        if (set(record['input_hashes'])!=family.input_commitments
                 or any(not _sha(v) for v in record['input_hashes'].values())):
             failures.append('input commitment inventory')
-        family=family_module(manifest['family'])
-        required=family.REQUIRED_MUTANTS
+        required=family.required_mutants
         if set(record['required_mutants'])!=required or len(record['required_mutants'])!=len(required):
             failures.append('family mutant inventory')
         runs={r['id']:r for r in record['runs']}
@@ -114,9 +114,8 @@ def validate_calibration(manifest, record):
             process=run['process']
             if native and (run.get('backend') != 'native-sim' or process.get('backend') != 'native-sim'):
                 failures.append('run execution backend:'+run['id'])
-            if manifest['family']=='parameter-store':
-                if not family.REQUIRED_SCENARIOS <= {c.get('scenario') for c in run['checks']}:
-                    failures.append('transaction scenario coverage:'+run['id'])
+            if not family.required_scenarios <= {c.get('scenario') for c in run['checks']}:
+                failures.append('transaction scenario coverage:'+run['id'])
             expected_image=manifest['images'][artifact]
             if (run['phase'],run['scenario']) not in _REFERENCE_PHASES or type(run['passed']) is not bool:
                 failures.append('run phase:'+run['id'])
@@ -154,7 +153,7 @@ def validate_calibration(manifest, record):
             if row['execution_input']!={k:run[k] for k in ('model_sha256','capabilities_sha256')}:
                 failures.append('mutant execution inputs:'+row['id'])
             if (row['rejected'] is not True or not row['expected_failed_checks']
-                    or not (set(row['expected_failed_checks']) <= failed if manifest['family'] == 'zephyr-modbus'
+                    or not (set(row['expected_failed_checks']) <= failed if family.mutant_checks_may_exceed_expected
                             else set(row['expected_failed_checks']) == set(row['failed_checks']))
                     or len(row['expected_failed_checks'])!=len(set(row['expected_failed_checks']))
                     or len(row['failed_checks'])!=len(set(row['failed_checks']))
@@ -183,9 +182,7 @@ def validate_calibration(manifest, record):
     return {'ok':not failures,'failures':failures}
 
 
-# Admission of tq9-v2: the mutants a record must cover, the input identities it must carry and its check.
 REQUIRED_SCENARIOS = ('original',)
-CORE_MUTANTS = ('wrong-scale', 'constant-output', 'wrong-state')
 
 
 def input_hashes(truth):
@@ -193,56 +190,6 @@ def input_hashes(truth):
             'recipe':canonical_digest(truth['recipe']), 'references':canonical_digest(truth['references']),
             'mutations':canonical_digest(truth['mutations']), 'build':canonical_digest(truth['build']),
             'analysis':canonical_digest(truth['analysis'])}
-
-
-def tq9_candidate(truth, reference_name, scenario, mutation=None):
-    """Derive the declared legacy reference variant without executing it."""
-    reference=truth['references'][reference_name]
-    if scenario != 'original':raise ValueError('Unknown reference scenario')
-    candidate=copy.deepcopy(reference['model'])
-    caps=copy.deepcopy(reference['capabilities'])
-    if isinstance(mutation,str):
-        task=caps['tasks']['temperature']
-        decoder=candidate['operations'][task['operation']]['outputs'][task['outputs']['temperature']['output']]
-        if mutation=='wrong-scale':decoder['scale']=decoder.get('scale',1)*10
-        elif mutation=='constant-output':decoder.update(scale=0,offset_value=0)
-        elif mutation=='wrong-state':candidate['operations'][caps['tasks']['arm']['operation']]=copy.deepcopy(candidate['operations'][caps['tasks']['disarm']['operation']])
-        else:raise ValueError('Unknown legacy mutation')
-    elif mutation is not None:
-        for patch in mutation['patch']:
-            if patch['op']!='replace':raise ValueError('Unsupported reference mutant patch')
-            parts=patch['path'].split('/')[1:];target=candidate
-            for part in parts[:-1]:target=target[int(part)] if isinstance(target,list) else target[part]
-            target[int(parts[-1]) if isinstance(target,list) else parts[-1]]=copy.deepcopy(patch['value'])
-        for mapping in caps['tasks'].values():
-            for output_mapping in mapping['outputs'].values():
-                output_mapping['unit']=candidate['operations'][mapping['operation']]['outputs'][output_mapping['output']].get('unit')
-    return candidate,caps
-
-
-def tq9_execution_inputs(truth):
-    """Expected identities from authenticated reference and mutation definitions."""
-    result={}
-    for name in truth['references']:
-        for phase in ('diagnostic','final'):
-            result[name+'-'+phase+'-original']=execution_input_identity(*tq9_candidate(truth,name,'original'))
-    for scenario in REQUIRED_SCENARIOS:
-        for mutation in CORE_MUTANTS:
-            result[mutation+'-'+scenario]=execution_input_identity(*tq9_candidate(truth,'reference-a',scenario,mutation))
-    for mutation in truth['mutations']['mutations']:
-        scenario='original'
-        result[mutation['id']]=execution_input_identity(*tq9_candidate(truth,'reference-a',scenario,mutation))
-    return result
-
-
-def validate_record(manifest, record):
-    checked=validate_calibration({**manifest,'family':'tq9'},record)
-    try:
-        measured={run['id']:{k:run[k] for k in ('model_sha256','capabilities_sha256')} for run in record['runs']}
-        if len(measured)!=len(record['runs']) or measured!=record['execution_inputs']:
-            checked['failures'].append('executed input identities')
-    except (KeyError,TypeError):checked['failures'].append('missing executed input identities')
-    return {'ok':not checked['failures'],'failures':checked['failures']}
 
 
 def apply_mutation(model, capabilities, mutation):
@@ -298,8 +245,7 @@ def hydrate_truth(payload):
     scenario_phases={'original':deepcopy(phases)}
     for selected in scenario_phases.values():
         for phase in selected.values():
-            if payload['family']=='parameter-store':
-                family_module(payload['family']).validate_phase(phase)
+            family_for(payload['case_id']).validate_phase(phase)
             actions=phase['actions']; checks=phase['contract']['checks']
             required={c['id'] for c in checks}; observed=[i for a in actions if a['kind']=='observe' for i in a['checks']]
             if (not required or set(observed)!=required or len(observed)!=len(set(observed))
@@ -321,9 +267,10 @@ def authoring_payload(root):
     root=Path(root)
     metadata=json.loads((root/'AUTHORING.json').read_text())
     family=metadata['family']
+    case_id=f'{family}-v1'
     actual=_files(root)
-    qualified=actual==inventory(family,qualified=True)
-    if (actual!=inventory(family) and not qualified) or metadata.get('id')!=family+'-v1':
+    qualified=actual==inventory(case_id,qualified=True)
+    if (actual!=inventory(case_id) and not qualified) or metadata.get('id')!=case_id:
         raise ValueError('Invalid private family authoring inventory')
     if metadata.get('schema')!='benchmark-authoring/1' or metadata.get('execution')!='reference-build':
         raise ValueError('Native calibration requires independently authored native assets')

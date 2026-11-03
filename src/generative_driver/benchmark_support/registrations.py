@@ -8,9 +8,8 @@ their meaning.
 """
 import json
 from dataclasses import dataclass, fields
-from importlib import import_module
 from pathlib import Path
-from types import MappingProxyType, ModuleType
+from types import MappingProxyType
 
 
 @dataclass(frozen=True)
@@ -25,6 +24,20 @@ class CaseRegistration:
     truth_schema: str | None = None
     build_kind: str | None = None
     calibration_kind: str | None = None
+    # How the evaluator grades the case's frozen driver: 'fresh-final' or 'recorded-reuse'.
+    grading_method: str = 'fresh-final'
+    # What a case's manifest states, for a case whose manifest does not: None defers to the manifest.
+    execution: str | None = None
+    evidence_track: str | None = None
+    approval_scope: str | None = None
+    default_effects: list[str] | None = None
+    # The pin's scope when the manifest names none.
+    default_scope: str = 'full-workflow'
+    # Whether a pin needs a passed calibration, and takes any scenario or seed its manifest offers.
+    requires_calibration: bool = True
+    # Whether the case has a `case.json`, and whether that must name exactly one firmware image.
+    has_case_file: bool = True
+    single_image: bool = True
 
 
 def cases_file(package: Path) -> Path:
@@ -72,23 +85,3 @@ def registered_case_ids() -> tuple[str, ...]:
 def build_case_ids() -> tuple[str, ...]:
     """Cases with an upstream rebuild command, without loading native adapters."""
     return tuple(case.id for case in _CASES if case.build_kind is not None)
-
-
-def native_family_for(case_id: str):
-    """Load only this case's trusted family, independently of unused families."""
-    registration = registration_for(case_id)
-    if registration.native_module is None:
-        raise ValueError('Unknown native family: ' + case_id)
-    return import_module('.' + registration.native_module, __package__)
-
-
-def family_module(family: str) -> ModuleType:
-    """Load only the one native module that the registered cases of `family` name: tq9-v2 and tq9-v3 both name tq9_v2,
-    and the legacy tq9 names none. The shared grading core reaches a family here, by name, instead of importing it.
-    ValueError when the cases name no native module or several."""
-    names = sorted({case.native_module for case in _CASES if case.family == family and case.native_module})
-    if not names:
-        raise ValueError('No native module registered for family: ' + str(family))
-    if len(names) > 1:
-        raise ValueError('Several native modules registered for family ' + str(family) + ': ' + ', '.join(names))
-    return import_module('.' + names[0], __package__)

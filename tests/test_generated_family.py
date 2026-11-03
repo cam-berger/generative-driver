@@ -145,8 +145,8 @@ class StepGradingTests(unittest.TestCase):
         # The mode cannot be read while the device is in mode 1: steps 3 and 4 of s1, after a verified reset.
         graded = self.grade(REFERENCE_A, unreadable_in_mode=1)['grade']
         undecided = {c['id']: c['reason'] for c in graded['checks'] if c['passed'] is None}
-        self.assertEqual((graded['verdict'], undecided), ('unknown', {'s1/3/state:mode': 'unreadable state',
-                                                                      's1/4/state:mode': 'unreadable state'}))
+        self.assertEqual((graded['verdict'], undecided), ('unknown', {'s1/3/state:c1': 'unreadable state',
+                                                                      's1/4/state:c1': 'unreadable state'}))
 
     def test_a_driver_that_changes_the_state_before_it_reports_the_devices_refusal_fails_that_steps_state(self):
         # Its set first sends MODE 0, so the device's ERR to MODE 9 is a refusal, but the mode is no longer 2.
@@ -154,7 +154,7 @@ class StepGradingTests(unittest.TestCase):
         steps = candidate['model']['operations']['write_mode']['steps']
         steps.insert(0, {**steps[0], 'tx': [{'text': 'MODE 0\n'}], 'capture': 'first'})
         checks = {c['id']: c['passed'] for c in self.grade(candidate)['grade']['checks']}
-        self.assertEqual((checks['s1/1/answer'], checks['s1/1/state:mode']), (True, False))
+        self.assertEqual((checks['s1/1/answer'], checks['s1/1/state:c1']), (True, False))
 
     def test_a_printed_host_fault_on_a_healthy_device_fails_the_driver_and_a_dead_device_leaves_no_grade(self):
         # Catches a package that escapes its grade by labelling its own failure the host's, and a dead evaluator device
@@ -163,9 +163,9 @@ class StepGradingTests(unittest.TestCase):
         graded = self.grade(REFERENCE_A, edit=printed, healthy_device_failures=True)['grade']
         self.assertEqual(graded['verdict'], 'failed')
         failed = sorted(c['id'] for c in graded['checks'] if c['passed'] is False)
-        self.assertEqual(failed, ['s1/1/answer', 's1/2/answer', 's1/2/out:mode', 's1/3/answer', 's1/3/state:mode',
-                                  's1/4/answer', 's1/4/out:mode', 's1/4/state:mode', 's2/1/answer', 's2/2/answer',
-                                  's2/2/state:mode', 's2/3/answer', 's2/3/out:mode', 's2/3/state:mode'])
+        self.assertEqual(failed, ['s1/1/answer', 's1/2/answer', 's1/2/out:mode', 's1/3/answer', 's1/3/state:c1',
+                                  's1/4/answer', 's1/4/out:mode', 's1/4/state:c1', 's2/1/answer', 's2/2/answer',
+                                  's2/2/state:c1', 's2/3/answer', 's2/3/out:mode', 's2/3/state:c1'])
         call = next(e for e in self.raw['events'] if 'step' in e)
         self.assertEqual((call['device_healthy'], call['result']['error']['reported_fault']), (True, 'host'))
         # Calibration never takes an outage for a driver's failure, and a device that died during a call is no grade.
@@ -362,16 +362,16 @@ class AnswerKeyTests(unittest.TestCase):
         rows = {check['id']: check for check in contract['checks']}
         self.assertEqual((contract['schema'], contract['artifact_sha256'], len(rows)),
                          ('benchmark-behavior/1', 'a' * 64, 17))
-        self.assertEqual([i for i in rows if i.startswith('s1/1/')], ['s1/1/answer', 's1/1/state:mode'])
+        self.assertEqual([i for i in rows if i.startswith('s1/1/')], ['s1/1/answer', 's1/1/state:c1'])
         self.assertEqual([i for i in rows if i.startswith('s1/2/')],
-                         ['s1/2/answer', 's1/2/out:mode', 's1/2/state:mode'])
+                         ['s1/2/answer', 's1/2/out:mode', 's1/2/state:c1'])
         pick = lambda identifier, *keys: tuple(rows[identifier][key] for key in keys)
         self.assertEqual(pick('s2/1/answer', 'kind', 'expected', 'channel'), ('text', 'no_reply', 'runtime-transcript'))
         # An output's check expects the unit the public mission states for it.
         mission_unit = fixture_mission('0000d001')['tasks']['get_mode']['outputs']['mode']['unit']
         self.assertEqual(pick('s1/2/out:mode', 'kind', 'expected', 'absolute_tolerance', 'unit'),
                          ('number', 2, 0, mission_unit))
-        self.assertEqual(pick('s1/3/state:mode', 'kind', 'expected', 'absolute_tolerance', 'channel'),
+        self.assertEqual(pick('s1/3/state:c1', 'kind', 'expected', 'absolute_tolerance', 'channel'),
                          ('number', 1, 0, 'device-state'))
         self.assertTrue(all(check['revision'] == 0 for check in contract['checks']))
         # The device-state channel is one the grader accepts; a channel it does not know is still refused.
@@ -394,11 +394,11 @@ class AnswerKeyTests(unittest.TestCase):
             'no reset commands': lambda key: key['recipe'].update(reset_commands=[]),
             'no observations': lambda key: key['recipe'].update(observations={}),
             'another backend': lambda key: key['recipe'].update(backend='native-sim'),
-            'a 64-bit cell': lambda key: key['state']['mode'].update(width=64),
-            'a negative address': lambda key: key['state']['mode'].update(address=-4),
-            'a cell with an extra field': lambda key: key['state']['mode'].update(signed=False),
+            'a 64-bit cell': lambda key: key['state']['c1'].update(width=64),
+            'a negative address': lambda key: key['state']['c1'].update(address=-4),
+            'a cell with an extra field': lambda key: key['state']['c1'].update(signed=False),
             'a reset that misses a cell': lambda key: key.update(reset={}),
-            'a reset beyond its width': lambda key: key['reset'].update(mode=2 ** 32),
+            'a reset beyond its width': lambda key: key['reset'].update(c1=2 ** 32),
             'a step with an unknown field': lambda key: step(key).update(note='x'),
             'an answer that is no answer': lambda key: step(key).update(answer='error'),
             'outputs on a refusal':
@@ -414,7 +414,7 @@ class AnswerKeyTests(unittest.TestCase):
             'an output with no unit': lambda key: step(key, 1)['outputs']['mode'].update(unit=None),
             'an unknown grant': lambda key: step(key).update(grants=['everything']),
             'an input that is no scalar': lambda key: step(key).update(inputs={'mode': [9]}),
-            'a step state beyond its width': lambda key: step(key).update(state={'mode': -1}),
+            'a step state beyond its width': lambda key: step(key).update(state={'c1': -1}),
             'a duplicate sequence': lambda key: key['sequences'].append(copy.deepcopy(key['sequences'][0])),
             'a sequence without steps': lambda key: key['sequences'][1].update(steps=[]),
             'a sequence id with a slash': lambda key: key['sequences'][1].update(id='s/2'),

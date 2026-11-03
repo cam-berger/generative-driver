@@ -206,7 +206,7 @@ def _step(task, inputs, answer, mode, *, output=None, refusal=None):
     """A hidden step: the task call, the reference's answer and the mode the device holds afterwards, with the mode a
     value step reports (`output`) and, on every refusal step, the bytes with which the device refuses (`refusal`)."""
     step = {'task': task, 'inputs': inputs, 'grants': ['write'] if task == 'set_mode' else [], 'answer': answer,
-            'state': {'mode': mode}}
+            'state': {'c1': mode}}
     if output is not None:
         step['outputs'] = {'mode': {'value': output, 'tolerance': 0, 'unit': MODE_UNIT}}
     if answer == 'refusal':
@@ -220,8 +220,8 @@ def fixture_answer_key():
         'schema': 'generated-answer-key/1', 'nonce': secrets.token_hex(32),
         'recipe': {'reset_commands': ['machine Reset'],
                    'observations': {'pc': {'command': 'cpu PC', 'width': 32, 'count': 1}}},
-        'state': {'mode': {'address': MODE_ADDRESS, 'width': 32}},
-        'reset': {'mode': RESET_MODE},
+        'state': {'c1': {'address': MODE_ADDRESS, 'width': 32}},
+        'reset': {'c1': RESET_MODE},
         'sequences': [
             {'id': 's1', 'steps': [_step('set_mode', {'mode': 9}, 'refusal', 2, refusal=b'ERR\n'),
                                    _step('get_mode', {}, 'value', 2, output=2),
@@ -230,7 +230,7 @@ def fixture_answer_key():
             {'id': 's2', 'steps': [_step('ping', {}, 'no_reply', 2),
                                    _step('set_mode', {'mode': 3}, 'value', 3),
                                    _step('get_mode', {}, 'value', 3, output=3)]}],
-        'mission': {'state': {'mode': 1}},
+        'mission': {'state': {'c1': 1}},
         'references': {'a': copy.deepcopy(REFERENCE_A), 'b': copy.deepcopy(REFERENCE_B)},
         'mutants': [
             {'id': 'wrong-scale', **copy.deepcopy(WRONG_SCALE),
@@ -238,8 +238,8 @@ def fixture_answer_key():
             {'id': 'constant-output', **copy.deepcopy(CONSTANT_OUTPUT),
              'expected_failed_checks': ['s1/2/out:mode', 's1/4/out:mode', 's2/3/out:mode']},
             {'id': 'wrong-state', **copy.deepcopy(WRONG_STATE),
-             'expected_failed_checks': ['s1/3/state:mode', 's1/4/out:mode', 's1/4/state:mode', 's2/2/answer',
-                                        's2/2/state:mode', 's2/3/out:mode', 's2/3/state:mode']},
+             'expected_failed_checks': ['s1/3/state:c1', 's1/4/out:mode', 's1/4/state:c1', 's2/2/answer',
+                                        's2/2/state:c1', 's2/3/out:mode', 's2/3/state:c1']},
             {'id': 'refusal-as-value', **copy.deepcopy(MUTANT_ERR_AS_VALUE),
              'expected_failed_checks': ['s1/1/answer']}]}
 

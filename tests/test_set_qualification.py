@@ -223,13 +223,13 @@ class PendingSetTests(Workspace, unittest.TestCase):
     def test_undecided_checks_and_run_errors_neither_pass_a_reference_nor_reject_a_mutant(self):
         # The device cannot read its mode while in mode 3. Both references set mode 3, so two of their state checks are
         # undecided: an unknown grade, which is no pass. offset-two sets the mode two above the one asked, so its run
-        # fails, but s1/3/state:mode, a check it targets, is undecided, never failed. invalid-model never reaches a
+        # fails, but s1/3/state:c1, a check it targets, is undecided, never failed. invalid-model never reaches a
         # device: its run raises. The device lists no required mutant, which only adds the inventory failure.
         offset_two = copy.deepcopy(REFERENCE_A)
         offset_two['capabilities']['tasks']['set_mode']['inputs']['mode'] = {'parameter': 'mode', 'kind': 'affine',
                                                                              'scale': 1, 'offset': 2}
         key = {**copy.deepcopy(FIXTURE_ANSWER_KEY), 'mutants': [
-            {'id': 'offset-two', **offset_two, 'expected_failed_checks': ['s1/3/state:mode', 's1/4/out:mode']},
+            {'id': 'offset-two', **offset_two, 'expected_failed_checks': ['s1/3/state:c1', 's1/4/out:mode']},
             {'id': 'invalid-model', 'model': {}, 'capabilities': {}, 'expected_failed_checks': ['s1/1/answer']}]}
         root, out = self.workspace()
         record = run_qualify(root, write_set(root, {'0000d001': key}), out, unreadable_in_mode=3)
@@ -241,7 +241,7 @@ class PendingSetTests(Workspace, unittest.TestCase):
             'calibration)'])
         offset, invalid = record['mutants']
         self.assertEqual((offset['rejected'], 's1/4/out:mode' in offset['failed_checks'],
-                          's1/3/state:mode' in offset['failed_checks']), (False, True, False))
+                          's1/3/state:c1' in offset['failed_checks']), (False, True, False))
         self.assertEqual(invalid, {'device': '0000d001', 'id': 'invalid-model', 'rejected': False, 'failed_checks': []})
         self.assertEqual(list(record['seconds']), ['0000d001/reference-a', '0000d001/reference-b', '0000d001/mutant-offset-two',
                                                    '0000d001/mutant-invalid-model'])

@@ -113,17 +113,19 @@ def answer_key(truth):
         _fields(cell, ('address', 'width'), what='state cell')
         _require(_named(name) and type(cell['address']) is int and 0 <= cell['address'] <= 0xffffffff
                  and type(cell['width']) is int and cell['width'] in (8, 16, 32), 'a state cell\'s address or width')
+    # A verdict publishes check ids built from cell and sequence names, so the names are numbers.
+    _require(set(cells) == {'c%d' % number for number in range(1, len(cells) + 1)},
+             'the state cells are named c1 to c%d' % len(cells))
     _state(truth['reset'], cells, 'the reset')
     _state(_fields(truth['mission'], ('state',), what='mission')['state'], cells, 'the mission')
     sequences = truth['sequences']
     _require(isinstance(sequences, list) and bool(sequences), 'there are sequences')
-    for sequence in sequences:
+    for index, sequence in enumerate(sequences, 1):
         _fields(sequence, ('id', 'steps'), what='sequence')
-        _require(_named(sequence['id']) and isinstance(sequence['steps'], list) and bool(sequence['steps']),
-                 'a sequence has an id and steps')
+        _require(sequence['id'] == 's%d' % index, 'sequence %d is named s%d' % (index, index))
+        _require(isinstance(sequence['steps'], list) and bool(sequence['steps']), 'a sequence has steps')
         for number, step in enumerate(sequence['steps'], 1):
             _step(step, cells, 'step %s/%d' % (sequence['id'], number))
-    _require(len({sequence['id'] for sequence in sequences}) == len(sequences), 'sequence ids are distinct')
     references = truth['references']
     _require(isinstance(references, dict) and set(references) == {'a', 'b'}, 'the references are a and b')
     for reference in references.values():

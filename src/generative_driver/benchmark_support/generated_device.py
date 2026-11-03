@@ -2,8 +2,9 @@
 
 `validate_device` checks the plaintext device that the generator seals and the evaluator opens: the identity part of
 its manifest entry, its image, its public mission and, given one, its answer key. `answer_key` checks a key alone, for
-a grader that holds only the key, and `checks` derives the key's check ids. Each raises ValueError naming the first
-defect. The module holds no device's design, so the private generator may import it (ADR 0005).
+a grader that holds only the key, `validate_identity` the identity part alone, for a manifest entry, and `checks`
+derives the key's check ids. Each raises ValueError naming the first defect. The module holds no device's design, so
+the private generator may import it (ADR 0005).
 """
 import json
 import re
@@ -106,16 +107,11 @@ def _machine(machine, cells, reset):
     return states, by_id
 
 
-def answer_key(truth):
-    """`truth` once it is a well-formed answer key, `generated-answer-key/2` in docs/generated-device-interface.md,
-    beside the `artifact_sha256` the evaluator adds: each field's own rules and those that need no mission. ValueError
-    names the first defect."""
+def _recipe(recipe):
+    """ValueError unless `recipe` boots the device's firmware in Renode from its own setup: a native recipe with reset
+    commands and an observation for the evaluator's health check, a `.resc` setup and includes among its source files,
+    no stimuli, and reset commands that end with a boot interval."""
     from .native import _validate_recipe
-    _fields(truth, _FIELDS, ('artifact_sha256',))
-    _require(truth['schema'] == SCHEMA, 'schema')
-    _require(isinstance(truth['nonce'], str) and re.fullmatch(r'[0-9a-f]{64}', truth['nonce']) is not None,
-             'the nonce is 64 lowercase hexadecimal digits')
-    recipe = truth['recipe']
     _validate_recipe(recipe)
     _require(bool(recipe.get('reset_commands')) and bool(recipe.get('observations'))
              and recipe.get('backend', 'renode') == 'renode', 'the recipe resets and observes a Renode emulator')
@@ -128,6 +124,17 @@ def answer_key(truth):
     _require(recipe['reset_commands'][-1].split()[:2] == ['emulation', 'RunFor'],
              'the recipe\'s last reset command is emulation RunFor over a boot interval')
     _require('stimuli' not in recipe, 'a generated recipe has no stimuli')
+
+
+def answer_key(truth):
+    """`truth` once it is a well-formed answer key, `generated-answer-key/2` in docs/generated-device-interface.md,
+    beside the `artifact_sha256` the evaluator adds: each field's own rules and those that need no mission. ValueError
+    names the first defect."""
+    _fields(truth, _FIELDS, ('artifact_sha256',))
+    _require(truth['schema'] == SCHEMA, 'schema')
+    _require(isinstance(truth['nonce'], str) and re.fullmatch(r'[0-9a-f]{64}', truth['nonce']) is not None,
+             'the nonce is 64 lowercase hexadecimal digits')
+    _recipe(truth['recipe'])
     cells = truth['state']
     _require(isinstance(cells, dict) and bool(cells), 'the state names its cells')
     for name, cell in cells.items():
@@ -233,9 +240,9 @@ def _references(key):
     references = key['references']
     for sequence in key['sequences']:
         for number, step in enumerate(sequence['steps'], 1):
+            if step['answer'] != 'refusal':
+                continue
             for name, reference in references.items():
-                if step['answer'] != 'refusal':
-                    continue
                 try:
                     bind_task(reference['capabilities'], step['task'], step['inputs'], reference['model'])
                 except ValueError as error:
@@ -369,8 +376,8 @@ def _framing(key, framing):
 
 def validate_device(device, *, image, mission, key=None):
     """Nothing, once the plaintext device is valid: `device`, the identity part of its manifest entry, its `image`, its
-    public `mission` and, given one, its answer `key` and the key's agreement with the mission. ValueError names the
-    first defect."""
+    public `mission` and, given one, its answer `key`, with the key's agreement with the mission and the framing and
+    what its references must show. ValueError names the first defect."""
     validate_identity(device)
     _mission(mission)
     if key is not None:

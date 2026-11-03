@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 
 from .case_assets import write_json
-from .instruments import family_for
+from .families import family_for
 
 DRAFT, EVIDENCE = 'evaluator-draft.enc', 'run-evidence.enc'
 SCHEMA = 'equivalence/1'
@@ -59,20 +59,19 @@ def accept_frozen_package(package, expected_sha256):
 def reference_execute(pin, truth, capabilities, *, renode, image, output_dir, package, expected_package_sha256,
                       private_dir=None, healthy_device_failures=False):
     """Grade a frozen package's final phase on a fresh emulator it starts and stops, through the package's own bundled
-    runtime. A family with its own step executor (`execute`, the generated devices') runs it, every other family's plan
-    runs through `execute_plan`. The emulator session keeps its files (its log, the monitor commands it rendered) in
+    runtime, by the family's `execute`. The emulator session keeps its files (its log, the monitor commands it rendered) in
     `private_dir` when given. Candidate models and reference emission run outside the grader
     (`reference_calibration.run_reference`)."""
     if pin.get('scenario_id') != 'original':
         raise ValueError('Unknown case scenario')
     from .execution import start_session
-    from .emulated_actions import execute_plan, canonical_package_invoker
+    from .emulated_actions import canonical_package_invoker
     from .behavior import validate_records
     from .snapshots import canonical_digest
     from .integrity import digest
     if not expected_package_sha256 or digest(package) != expected_package_sha256:
         raise ValueError('Frozen package changed before reference execution')
-    family = family_for(pin.get('case_id', 'tq9-v2'))
+    family = family_for(pin.get('case_id'))
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     model_dir = output/'model'
@@ -89,13 +88,8 @@ def reference_execute(pin, truth, capabilities, *, renode, image, output_dir, pa
                                          for p in sorted(runtime_root.glob('*.py'))})
         local = {**truth, 'artifact_sha256': frozen}
         contract = family.contract(pin, local, 'final')
-        if hasattr(family, 'execute'):
-            records = family.execute(session, invoke, contract, local, output/'raw.json',
-                                     healthy_device_failures=healthy_device_failures)
-        else:
-            records = execute_plan(session, invoke, family.build_plan(pin, local, 'final'), contract,
-                output/'raw.json', family.observations, truth['contracts']['time_policy']['sample_settle_seconds'],
-                healthy_device_failures=healthy_device_failures)
+        records = family.execute(session, invoke, pin, contract, local, output/'raw.json', phase='final',
+                                 healthy_device_failures=healthy_device_failures)
         if digest(package) != frozen:
             raise ValueError('Frozen package changed during final episode')
         result = {'execution': 'reference-calibration',

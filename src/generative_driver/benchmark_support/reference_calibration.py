@@ -67,14 +67,14 @@ def run_reference(pin, truth, model, capabilities, *, renode, image, output_dir,
     from .behavior import validate_records
     from .calibration import reference_model_bytes
     from .case_assets import write_json
-    from .emulated_actions import execute_plan, run_call
+    from .emulated_actions import run_call
     from .execution import start_session
-    from .instruments import family_for
+    from .families import family_for
     from .integrity import digest
     candidate = {**model, 'channel': {'type': 'tcp'}}
     if not validate_model(candidate)['ok']:
         raise ValueError('Reference candidates must be structurally valid before native calibration')
-    family = family_for(pin.get('case_id', 'tq9-v2'))
+    family = family_for(pin.get('case_id'))
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     model_dir = output/'model'
@@ -102,8 +102,8 @@ def run_reference(pin, truth, model, capabilities, *, renode, image, output_dir,
             invoke = model_invoker(model_dir, capabilities, session.binding, output/'tools', probes)
             local = {**truth, 'artifact_sha256': model_hash}
             contract = family.contract(pin, local, phase)
-            records = execute_plan(session, invoke, family.build_plan(pin, local, phase), contract,
-                output/'raw.json', family.observations, truth['contracts']['time_policy']['sample_settle_seconds'])
+            records = family.execute(session, invoke, pin, contract, local, output/'raw.json', phase=phase,
+                                     healthy_device_failures=False)
             grade = validate_records(contract, records)
         runtime_root = Path(interface_runtime.__file__).parent
         runtime_hash = canonical_digest({p.name: hashlib.sha256(p.read_bytes()).hexdigest()

@@ -86,3 +86,7 @@ def reuse_passed(events, capabilities):
     read = any(event.get('operation') == mapping['operation'] and event['result'].get('ok')
                and type(event['result'].get('outputs', {}).get(output)) in (int, float) for event in events)
     return read and any(abs(value - 370) <= 2 for value in duties) and bool(duties) and duties[-1] == 0
+
+
+HOOKS = {'contract': contract, 'build_plan': build_plan, 'observations': observations, 'reuse_passed': reuse_passed,
+         'required_mutants': REQUIRED_MUTANTS}

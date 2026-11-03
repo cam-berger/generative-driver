@@ -65,3 +65,7 @@ def reuse_passed(events, capabilities):
         saw_on |= measured.get('coil0') == 1
     last = events[-1]['observation']
     return saw_read and saw_on and last.get('coil0') == 0 and last.get('register3') == 4660
+
+
+HOOKS = {'contract': contract, 'build_plan': build_plan, 'observations': observations, 'reuse_passed': reuse_passed,
+         'required_mutants': REQUIRED_MUTANTS}

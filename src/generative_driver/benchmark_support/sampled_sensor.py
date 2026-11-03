@@ -38,3 +38,7 @@ def reuse_passed(events, capabilities):
                 and temperature==observed.get('reference_temperature') and sequence==observed.get('monitor_sequence')):
             readings.append(sequence)
     return len(readings)>=2 and any(b>a for a,b in zip(readings,readings[1:]))
+
+
+HOOKS = {'contract': contract, 'build_plan': build_plan, 'observations': observations, 'reuse_passed': reuse_passed,
+         'required_mutants': REQUIRED_MUTANTS}

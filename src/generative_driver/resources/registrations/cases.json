@@ -19,7 +19,7 @@
       "version": "2",
       "adapter_key": "legacy-emulator",
       "schema": "benchmark-case/1",
-      "native_module": null,
+      "native_module": "tq9_legacy",
       "mission_case": "tq9-v2",
       "truth_schema": null,
       "build_kind": null,

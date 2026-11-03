@@ -164,3 +164,7 @@ def validate_phase(phase):
     all_observed = [i for a in phase['actions'] if a['kind']=='observe' for i in a['checks']]
     if set(all_observed)!={c['id'] for c in contract['checks']} or len(all_observed)!=len(set(all_observed)):
         raise ValueError('Unobserved or duplicate scenario checks')
+
+
+HOOKS = {'contract': contract, 'build_plan': build_plan, 'observations': observations, 'reuse_passed': reuse_passed,
+         'required_mutants': REQUIRED_MUTANTS}

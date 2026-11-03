@@ -93,10 +93,11 @@ def classify_answer(result: dict, step: dict) -> str:
     return 'error'
 
 
-def execute(session, invoke, contract, truth, evidence_path, *, healthy_device_failures):
+def execute(session, invoke, pin, contract, truth, evidence_path, *, phase, healthy_device_failures):
     """Run the answer key's hidden sequences on the evaluator's device and return one record per check of `contract`.
 
-    Each sequence starts with `session.reset({})` and a read of the state. A state other than the key's `reset` leaves
+    `contract` holds the final phase's checks already, the only phase of a generated device, so neither `pin` nor `phase`
+    selects anything here. Each sequence starts with `session.reset({})` and a read of the state. A state other than the key's `reset` leaves
     every record of the sequence undecided ('unverified reset') and its steps uncalled. Each step calls its task through
     `run_call` with its grants, classifies the answer and reads the state; a cell that cannot be read leaves its record
     undecided ('unreadable state'). Only these observations of the evaluator's leave a record undecided, never what the
@@ -177,3 +178,7 @@ observations.monitor_units = {}
 def reuse_passed(events, capabilities):
     """Not judged yet: plan 4 judges fresh reuse by reading the device's memory after it."""
     return None
+
+
+HOOKS = {'contract': contract, 'execute': execute, 'observations': observations, 'reuse_passed': reuse_passed,
+         'required_mutants': REQUIRED_MUTANTS}

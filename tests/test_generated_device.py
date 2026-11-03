@@ -188,6 +188,23 @@ class ValidDeviceTests(unittest.TestCase):
         validate_device({**DEVICE, 'framing': 'binary-frames'}, image=FIXTURE_IMAGE,
                         mission=fixture_mission(DEVICE['id']), key=key)
 
+    def test_every_cell_changes_and_some_step_reports_an_output(self):
+        def constant_cell(key):
+            # A second cell, 0 in every state: Renode reads an unmapped address as 0, so it would test nothing.
+            key['state']['c2'] = {'address': 0x20000004, 'width': 8}
+            steps = [step for sequence in key['sequences'] for step in sequence['steps']]
+            for values in [key['reset'], key['mission']['state'], *key['machine']['states'].values(),
+                           *(step['state'] for step in steps)]:
+                values['c2'] = 0
+
+        def no_output(key):
+            for sequence in key['sequences']:
+                for step in sequence['steps']:
+                    step.pop('outputs', None)
+        self.assert_refused([('a cell that never changes', constant_cell, 'c2 changes'),
+                             # wrong-scale and constant-output would have nothing to break.
+                             ('no output', no_output, 'reports an output')])
+
     def test_cells_and_sequences_carry_no_design_in_their_names(self):
         # A verdict publishes check ids built from these names, so they are numbered.
         def swap(key):

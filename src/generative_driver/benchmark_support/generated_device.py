@@ -160,7 +160,8 @@ def answer_key(truth):
     for task, steps in by_task.items():
         # The runtime refuses an ungranted effect before sending, which grades as a matching refusal: a refusal step
         # without its task's grant would pass any driver. A value step lets the reference runs prove the grants.
-        _require(len({frozenset(step['grants']) for step in steps}) == 1, 'the steps of task %s carry the same grants' % task)
+        _require(len({frozenset(step['grants']) for step in steps}) == 1,
+                 'the steps of task %s carry the same grants' % task)
         _require(any(step['answer'] == 'value' for step in steps),
                  'task %s has a value step, which proves its grants and replies' % task)
     # The runtime runs a driver's identity operation, a read, before every call: a read that changed the state would
@@ -176,6 +177,13 @@ def answer_key(truth):
     # Hidden sequences include out-of-range values, so passing on the device's refusals is graded.
     _require(any(transition['answer'] == 'refusal' for transition in transitions.values()),
              'the hidden sequences take a refusal step')
+    steps = [step for sequence in sequences for step in sequence['steps']]
+    for cell in cells:
+        # Renode reads an unmapped address as 0, so a cell that never changes would test nothing.
+        _require(any(step['state'][cell] != truth['reset'][cell] for step in steps),
+                 'cell %s changes value in some step' % cell)
+    # The required mutants wrong-scale and constant-output break an output.
+    _require(any(step.get('outputs') for step in steps), 'a value step reports an output')
     references = truth['references']
     _require(isinstance(references, dict) and set(references) == {'a', 'b'}, 'the references are a and b')
     for reference in references.values():

@@ -2,9 +2,58 @@
   "goal": "Implement the next step of the benchmark: build step 5, the bench harness that runs trials on generated devices",
   "slug": "bench-harness",
   "branch": "mdk/bench-harness",
-  "stage": "setup",
+  "stage": "breakdown",
   "awaiting": null,
   "current": null,
-  "features": [],
+  "features": [
+    {
+      "id": "01",
+      "slug": "family-seam",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "02",
+      "slug": "unlocked-keys",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "03",
+      "slug": "generated-trials",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "04",
+      "slug": "set-admission",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "05",
+      "slug": "vault-gate",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "06",
+      "slug": "slot-policy",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "07",
+      "slug": "trial-sealing",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "08",
+      "slug": "bounded-output",
+      "status": "pending",
+      "base": null
+    }
+  ],
   "escalation": null
 }

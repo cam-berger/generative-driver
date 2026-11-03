@@ -225,45 +225,47 @@ class PendingSetTests(Workspace, unittest.TestCase):
         # The device cannot read its mode while in mode 3. Both references set mode 3, so two of their state checks are
         # undecided: an unknown grade, which is no pass. offset-two sets the mode two above the one asked, so its run
         # fails, but s1/3/state:c1, a check it targets, is undecided, never failed. invalid-model never reaches a
-        # device: its run raises, since its model is empty though it maps the mission's tasks. The device lists no required
-        # mutant, which only adds the inventory failure.
+        # device: its run raises, since its model is empty though it maps the mission's tasks. The required mutants never
+        # reach mode 3, or fail a check before it, so each is rejected.
         offset_two = copy.deepcopy(REFERENCE_A)
         offset_two['capabilities']['tasks']['set_mode']['inputs']['mode'] = {'parameter': 'mode', 'kind': 'affine',
                                                                              'scale': 1, 'offset': 2}
-        key = {**copy.deepcopy(FIXTURE_ANSWER_KEY), 'mutants': [
+        key = copy.deepcopy(FIXTURE_ANSWER_KEY)
+        key['mutants'] += [
             {'id': 'offset-two', **offset_two, 'expected_failed_checks': ['s1/3/state:c1', 's1/4/out:mode']},
             {'id': 'invalid-model', 'model': {}, 'capabilities': copy.deepcopy(REFERENCE_A['capabilities']),
-             'expected_failed_checks': ['s1/1/answer']}]}
+             'expected_failed_checks': ['s1/1/answer']}]
         root, out = self.workspace()
         record = run_qualify(root, write_set(root, {'0000d001': key}), out, unreadable_in_mode=3)
         self.assertEqual((record['status'], record['devices']), ('pending', {'0000d001': {'a': False, 'b': False}}))
         self.assertEqual(record['failures'], [
-            'mutant inventory:0000d001', 'reference a unknown:0000d001', 'reference b unknown:0000d001',
+            'reference a unknown:0000d001', 'reference b unknown:0000d001',
             'mutant offset-two missed expected checks:0000d001',
             'mutant invalid-model error:0000d001 (ValueError: Reference candidates must be structurally valid before native '
             'calibration)'])
-        offset, invalid = record['mutants']
+        rows = {row['id']: row for row in record['mutants']}
+        offset, invalid = rows['offset-two'], rows['invalid-model']
         self.assertEqual((offset['rejected'], 's1/4/out:mode' in offset['failed_checks'],
                           's1/3/state:c1' in offset['failed_checks']), (False, True, False))
         self.assertEqual(invalid, {'device': '0000d001', 'id': 'invalid-model', 'rejected': False, 'failed_checks': []})
-        self.assertEqual(list(record['seconds']), ['0000d001/reference-a', '0000d001/reference-b', '0000d001/mutant-offset-two',
-                                                   '0000d001/mutant-invalid-model'])
+        self.assertEqual([identifier for identifier, row in rows.items() if row['rejected']], MUTANTS)
+        self.assertEqual(list(record['seconds']),
+                         ['0000d001/reference-a', '0000d001/reference-b']
+                         + ['0000d001/mutant-' + mutant['id'] for mutant in key['mutants']])
         # A run that raised left no result to say how it ran.
         self.assertEqual((list(record['runs']), record['runs']['0000d001/mutant-invalid-model']),
                          (list(record['seconds']), {'backend': None, 'native_process_observed': None}))
 
-    def test_a_device_short_of_the_required_mutants_leaves_the_set_pending(self):
-        # 0000d001 and 0000d002, the sample of (level 1, text lines), list no mutant. 0000d003 lists every mutant but lies
-        # outside the sample, so none of them runs. Two references alike never get this far: their identity operations
-        # send the same command, which the validator refuses.
-        no_mutants = {**copy.deepcopy(FIXTURE_ANSWER_KEY), 'mutants': []}
+    def test_a_device_outside_the_sample_runs_no_mutant(self):
+        # 0000d001 and 0000d002 are the sample of (level 1, text lines); 0000d003 lies outside it.
         root, out = self.workspace()
-        registered = write_set(root, {'0000d001': no_mutants, '0000d002': no_mutants, '0000d003': FIXTURE_ANSWER_KEY})
-        record = run_qualify(root, registered, out)
+        devices = ('0000d001', '0000d002', '0000d003')
+        record = run_qualify(root, write_set(root, dict.fromkeys(devices, FIXTURE_ANSWER_KEY)), out)
         self.assertEqual((record['status'], record['sample'], record['failures']),
-                         ('pending', ['0000d001', '0000d002'], ['mutant inventory:0000d001', 'mutant inventory:0000d002']))
-        self.assertEqual((record['mutants'], list(record['seconds'])),
-                         ([], [device + '/reference-' + name for device in ('0000d001', '0000d002', '0000d003') for name in 'ab']))
+                         ('passed', ['0000d001', '0000d002'], []))
+        self.assertEqual({row['device'] for row in record['mutants']}, {'0000d001', '0000d002'})
+        self.assertEqual([run for run in record['seconds'] if run.startswith('0000d003/')],
+                         ['0000d003/reference-a', '0000d003/reference-b'])
 
     def test_a_grader_change_while_the_set_qualifies_leaves_it_pending(self):
         # The grader's modules load as the runs need them, so a change that lands during the runs can grade the later
@@ -281,20 +283,19 @@ class PendingSetTests(Workspace, unittest.TestCase):
 
     def test_a_decrypted_image_the_qualification_could_not_remove_leaves_the_set_pending(self):
         # A removal that fails, as on Windows while another process holds the file, is one that removes nothing here.
-        # The device's key lists no mutant, which only adds the inventory failure.
         root, out = self.workspace()
-        registered = write_set(root, {'0000d001': {**copy.deepcopy(FIXTURE_ANSWER_KEY), 'mutants': []}})
+        registered = write_set(root, {'0000d001': FIXTURE_ANSWER_KEY})
         with patch.object(set_qualification, 'rmtree'):
             record = run_qualify(root, registered, out)
-        self.assertEqual(record['failures'], ['mutant inventory:0000d001', 'decrypted image not removed:0000d001'])
+        self.assertEqual(record['failures'], ['decrypted image not removed:0000d001'])
         self.assertEqual([path.read_bytes() for path in out.glob('image-*/image')], [FIXTURE_IMAGE])
 
     def test_each_run_keeps_its_emulator_sessions_in_a_directory_of_its_own(self):
         # A run's emission session once lay beside its grading session, under the run's name with '-emission' added,
         # so mutant X's emission and the grading of mutant X-emission shared one directory.
-        wrong_scale = copy.deepcopy(FIXTURE_ANSWER_KEY['mutants'][0])
-        key = {**copy.deepcopy(FIXTURE_ANSWER_KEY),
-               'mutants': [wrong_scale, {**copy.deepcopy(wrong_scale), 'id': wrong_scale['id'] + '-emission'}]}
+        key = copy.deepcopy(FIXTURE_ANSWER_KEY)
+        wrong_scale = key['mutants'][0]
+        key['mutants'].append({**copy.deepcopy(wrong_scale), 'id': wrong_scale['id'] + '-emission'})
         root, out = self.workspace()
         registered = write_set(root, {'0000d001': key})
         sessions, start = [], fixture_start()
@@ -305,7 +306,7 @@ class PendingSetTests(Workspace, unittest.TestCase):
 
         with patch(START, side_effect=recording):
             record = qualify(root, SET, PASSWORD, renode=Path('/toy'), output_dir=out, registrations=registered)
-        self.assertEqual([row['rejected'] for row in record['mutants']], [True, True])
+        self.assertEqual([row['rejected'] for row in record['mutants']], [True] * len(key['mutants']))
         expected = [out.resolve() / 'native' / run / name for run in record['seconds']
                     for name in ('session', 'session-emission')]
         self.assertEqual(sorted(sessions), sorted(expected))

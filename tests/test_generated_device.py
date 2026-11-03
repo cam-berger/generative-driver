@@ -205,6 +205,12 @@ class ValidDeviceTests(unittest.TestCase):
                              # wrong-scale and constant-output would have nothing to break.
                              ('no output', no_output, 'reports an output')])
 
+    def test_the_mutants_include_the_required_ones(self):
+        without = lambda identifier: lambda key: key.update(
+            mutants=[mutant for mutant in key['mutants'] if mutant['id'] != identifier])
+        self.assert_refused([('no ' + identifier, without(identifier), 'mutants include')
+                             for identifier in ('wrong-scale', 'constant-output', 'wrong-state')])
+
     def test_cells_and_sequences_carry_no_design_in_their_names(self):
         # A verdict publishes check ids built from these names, so they are numbered.
         def swap(key):

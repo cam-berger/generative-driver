@@ -16,7 +16,6 @@ import time
 from pathlib import Path
 from shutil import rmtree
 
-from . import generated_device
 from .generated_sets import QUALIFICATION_SCHEMA, load_set, open_device, seal_qualification
 from .grader_identity import grader_identity
 
@@ -93,10 +92,9 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
     - `reference <a|b> <verdict>:<device>` for a reference that did not pass, and `mutant <id> <verdict>:<device>` or
       `mutant <id> missed expected checks:<device>` for a mutant not rejected. A run that raised gives
       `<run> error:<device> (<what it raised>)`;
-    - `mutant inventory:<device>` when the device's mutants do not include the family's REQUIRED_MUTANTS;
     - `decrypted image not removed:<device>` when the device's image is still on disk after its runs.
-    Two references alike never get this far: opening the device refuses references whose identity operations send the
-    same command.
+    A device short of the required mutants, or with two references whose identity operations send the same command,
+    never gets this far: opening it refuses it.
     The set is pending too, with `grader identity changed during qualification`, when the generated family's grader
     identity at the end is not the one stamped at the start: the grading modules load as the runs need them.
 
@@ -132,8 +130,6 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
     for device_id, opened in devices.items():
         key = opened['answer_key']
         references = key['references']
-        if not generated_device.REQUIRED_MUTANTS <= {mutant['id'] for mutant in key['mutants']}:
-            failures.append('mutant inventory:' + device_id)
         private = Path(tempfile.mkdtemp(prefix='image-', dir=output))
         try:
             image = private / 'image'

@@ -198,6 +198,8 @@ def answer_key(truth):
                  and all(isinstance(check, str) for check in failed) and len(set(failed)) == len(failed)
                  and set(failed) <= ids, 'a mutant expects distinct failures of the contract\'s checks')
     _require(len({mutant['id'] for mutant in mutants}) == len(mutants), 'mutant ids are distinct')
+    _require(REQUIRED_MUTANTS <= {mutant['id'] for mutant in mutants},
+             'the mutants include ' + ', '.join(sorted(REQUIRED_MUTANTS)))
     return truth
 
 

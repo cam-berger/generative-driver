@@ -94,14 +94,7 @@ List the whole closure with `python -c "from generative_driver.benchmark_support
 
 ## Generated sets
 
-A generated set is a batch of devices that the private device generator writes as one bundle, kept outside the repository and the installed package ([ADR 0003](adr/0003-generated-devices-register-by-set.md)). Each device is a case of the code-owned `generated` family, which grades it from the device's own decrypted answer key. The bundle holds:
-
-| Path | Content |
-|---|---|
-| `manifest.json` | Plaintext: each device's id, difficulty level (1–5) and framing (`text-lines`, `binary-frames` or `register-access`), with the hashes of its image, mission, answer key and sealed files. |
-| `devices/<id>.inputs.enc` | The device's image and public mission, sealed with the set's password. |
-| `devices/<id>.answer.enc` | The device's answer key, sealed with the set's password: its emulator recipe, state cells, hidden sequences, two reference drivers and mutants. |
-| `qualification.enc` | The set's qualification record, sealed with the set's password. |
+A generated set is a batch of devices that the private device generator writes as one bundle, kept in the answer vault, outside the repository and the installed package ([ADR 0003](adr/0003-generated-devices-register-by-set.md)). Each device is a case of the code-owned `generated` family, which grades it from the device's own decrypted answer key. The [generated-device interface](generated-device-interface.md) specifies the bundle, a plaintext manifest, each device's sealed inputs and answer key and the sealed qualification record, and the rules each device meets.
 
 **Register** a set by adding its name and the SHA-256 of its `manifest.json` bytes to `sets` in `src/generative_driver/resources/registrations/sets.json`. A set opens only while its manifest has that hash, so a changed device needs a new manifest and registration. Set registrations lie outside every grader identity: registering a set voids no admission.
 

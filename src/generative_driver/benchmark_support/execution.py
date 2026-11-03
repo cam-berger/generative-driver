@@ -1,5 +1,5 @@
 """The execution setup a case declares, shared by acquisition, the provider and the evaluator, and the default Renode
-session a family starts."""
+session a family starts; what a family adds to either sits behind its hooks (Feature 01, family-seam)."""
 
 
 def artifact_name(manifest):

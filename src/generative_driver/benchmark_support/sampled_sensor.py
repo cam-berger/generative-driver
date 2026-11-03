@@ -3,7 +3,7 @@ from .family_support import admission_valid, hydrate_family_truth, integer, priv
 
 REQUIRED_MUTANTS = frozenset({"constant", "scale", "signedness", "stale"})
 # Public development inputs, selected independently of the evaluator's final cases.
-CONDITIONS = (('low', -12.0), ('high', 32.0), ('zero', 0.0), ('fractional', 7.5), ('fine_fraction', 18.5625))
+_CONDITIONS = (('low', -12.0), ('high', 32.0), ('zero', 0.0), ('fractional', 7.5), ('fine_fraction', 18.5625))
 
 
 def contract(pin, truth, phase):
@@ -47,7 +47,7 @@ def _development_conditions(recipe):
     if 'source_q4' not in recipe.get('stimuli', {}):
         return None
     return {'schema': 'development-conditions/1', 'conditions': [
-        {'id': name, 'reference': {'value': value, 'unit': 'degC'}} for name, value in CONDITIONS]}
+        {'id': name, 'reference': {'value': value, 'unit': 'degC'}} for name, value in _CONDITIONS]}
 
 
 HOOKS = {'contract': contract, 'build_plan': build_plan, 'observations': observations, 'reuse_passed': reuse_passed,

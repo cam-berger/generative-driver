@@ -312,12 +312,13 @@ class FamilyRoutingTests(unittest.TestCase):
     def test_each_family_declares_the_mutants_its_qualification_requires(self):
         required = {
             'tq9-v2': {'wrong-scale', 'constant-output', 'wrong-state', 'unsigned-temperature',
-                       'wrong-temperature-scale', 'wrong-temperature-unit', 'wrong-temperature-byteorder', 'wrong-crc', 'wrong-duty-effect'},
+                       'wrong-temperature-scale', 'wrong-temperature-unit', 'wrong-temperature-byteorder', 'wrong-crc',
+                       'wrong-duty-effect'},
             'sampled-sensor-v1': {'constant', 'scale', 'signedness', 'stale'},
             'parameter-store-v1': {'constant', 'scale', 'order', 'wrong-bank', 'abort', 'idle-only-update',
-                                'short-rejection-frame'},
+                                   'short-rejection-frame'},
             'zephyr-modbus-v1': {'constant-read', 'wrong-byteorder', 'wrong-register', 'wrong-coil', 'omit-write',
-                              'wrong-request-crc'}}
+                                 'wrong-request-crc'}}
         for case_id, mutants in required.items():
             with self.subTest(case_id):
                 declared = family_for(case_id).required_mutants

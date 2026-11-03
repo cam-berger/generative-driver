@@ -51,9 +51,9 @@ def _sha256(value):
 
 
 class DeviceProvider:
-    """Owns one emulated device session at a time. `start` is the session factory (NativeSession.start by default),
-    called with renode, image, recipe and the session's own private directory (`sessions/<session_id>` under the
-    provider's, mode 0700), which holds the session's files (its log, rejected monitor commands) and is removed once its
+    """Owns one emulated device session at a time. `start` is the session factory (by default the family's
+    `start_session`), called with renode, image, recipe and the session's own private directory
+    (`sessions/<session_id>` under the provider's, mode 0700), which holds the session's files (its log, rejected monitor commands) and is removed once its
     stop is confirmed. Control calls are served one at a time."""
 
     def __init__(self, case_id, image, recipe, renode, private_dir, *, image_sha256=None, start=None):

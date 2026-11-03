@@ -2,7 +2,7 @@
 recorded (`recorded_grading`), so it declares no contract or plan (Feature 01, family-seam)."""
 
 # The public reuse mission requests 37 percent output, then disarm; the instrument reads the duty as a fraction.
-REQUESTED = .37
+_REQUESTED = .37
 
 
 def _instrument_units():
@@ -24,7 +24,7 @@ def _mission_done(events, capabilities):
               if e['result'].get('ok') is True and isinstance(e.get('observation'), dict)]
     read = any(e.get('operation') == spec['operation'] and e['result'].get('ok') is True
                and type(e['result'].get('outputs', {}).get(spec['output'])) in (int, float) for e in events)
-    return read and bool(duties) and any(abs(d - REQUESTED) <= .002 for d in duties) and duties[-1] == 0
+    return read and bool(duties) and any(abs(d - _REQUESTED) <= .002 for d in duties) and duties[-1] == 0
 
 
 HOOKS = {'instrument_units': _instrument_units, 'public_observation': _public_observation,

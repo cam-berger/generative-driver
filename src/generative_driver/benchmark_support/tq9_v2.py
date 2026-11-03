@@ -1,5 +1,5 @@
 """TQ9 behavior contracts and plans derived only from evaluator-owned truth, and its admission: the mutants a record
-must cover, the input identities it must carry and its check."""
+must cover, the input identities it must carry and its check, moved here from the core (Feature 01, family-seam)."""
 import copy
 
 REQUIRED_MUTANTS = frozenset({'wrong-scale', 'constant-output', 'wrong-state', 'unsigned-temperature',

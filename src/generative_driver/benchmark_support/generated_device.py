@@ -8,6 +8,7 @@ defect. The module holds no device's design, so the private generator may import
 import re
 
 from .capabilities import numeric_value
+from .missions import validate_mission
 
 FRAMINGS = ('text-lines', 'binary-frames', 'register-access')
 SCHEMA = 'generated-answer-key/1'
@@ -184,9 +185,32 @@ def validate_identity(device):
         raise ValueError('Invalid framing of device ' + identity + ': ' + repr(framing))
 
 
+def _mission(mission):
+    """ValueError unless `mission` is a public mission for a generated device, which states effects only: a
+    `benchmark-public-mission/1` of case `generated` without operating conditions or sampling, whose inputs are integers
+    or numbers and whose outputs have units, each with no other key, such as a range. Capability binding takes no bytes,
+    and takes a string only from a set the driver declares."""
+    validate_mission(mission, 'generated')
+
+    def require(condition, defect):
+        if not condition:
+            raise ValueError('Invalid generated mission: ' + defect)
+
+    require('operating_conditions' not in mission, 'it states no operating conditions')
+    for name, task in mission['tasks'].items():
+        require('sampling' not in task, 'task %s states no sampling' % name)
+        for item, spec in task['inputs'].items():
+            require(set(spec) == {'type'} and spec['type'] in ('integer', 'number'),
+                    'task %s input %s is an integer or a number, with no other key' % (name, item))
+        for item, spec in task['outputs'].items():
+            require(set(spec) == {'unit'} and isinstance(spec['unit'], str) and bool(spec['unit']),
+                    'task %s output %s has a unit and no other key' % (name, item))
+
+
 def validate_device(device, *, image, mission, key=None):
     """Nothing, once the plaintext device is valid: `device`, the identity part of its manifest entry, its `image`, its
     public `mission` and, given one, its answer `key`. ValueError names the first defect."""
     validate_identity(device)
+    _mission(mission)
     if key is not None:
         answer_key(key)

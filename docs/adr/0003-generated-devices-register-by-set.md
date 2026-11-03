@@ -8,4 +8,4 @@ Set registrations are code-owned data in `resources/registrations/sets.json` (se
 
 ## Consequences
 
-A pinned set never changes; replacing the scoring set means a new registration and a new baseline. A device's identity is its set registration plus its manifest entry, so saved pins and reports keep both.
+A pinned set never changes; replacing the scoring set means a new registration and a new baseline. A device's identity is its set registration plus its manifest entry, and reports keep both. A trial's own pin names only the set, its manifest hash and the device id: its worker can read the run folder, and the entry holds the device's level and framing (amended by the user on 2026-11-02, with generated sets kept in the answer vault).

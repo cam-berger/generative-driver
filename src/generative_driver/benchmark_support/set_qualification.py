@@ -16,10 +16,8 @@ import time
 from pathlib import Path
 from shutil import rmtree
 
-from . import generated
 from .generated_sets import QUALIFICATION_SCHEMA, load_set, open_device, seal_qualification
 from .grader_identity import grader_identity
-from .snapshots import canonical_digest
 
 PIN = {'case_id': 'generated', 'scenario_id': 'original', 'case_seed': 0, 'revision': 0}
 # What a run that could not be graded raises: the run's error, recorded as a failure, and the next run goes on.
@@ -83,8 +81,8 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
     Nothing runs before these checks: `set_root`, which receives the sealed record, and `output_dir` both lie outside
     the repository, the installed package and known candidate roots (`authoring.evaluator_directory`); `output_dir` is
     new or empty; `load_set` accepts the manifest that `registrations` (by default `set_registrations()`) pins; and
-    every device opens with `password` and holds a valid answer key. A failed check raises, and nothing is sealed, so a
-    wrong password never replaces a record.
+    every device opens with `password`, which checks it against the generated-device interface. A failed check raises,
+    and nothing is sealed, so a wrong password never replaces a record.
 
     Then, device by device in id order, references `a` and `b` run, then every mutant on a sampled device (`sample`).
     A reference passes with the verdict `passed`. A mutant is rejected when its verdict is `failed` and its
@@ -94,9 +92,9 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
     - `reference <a|b> <verdict>:<device>` for a reference that did not pass, and `mutant <id> <verdict>:<device>` or
       `mutant <id> missed expected checks:<device>` for a mutant not rejected. A run that raised gives
       `<run> error:<device> (<what it raised>)`;
-    - `mutant inventory:<device>` when the device's mutants do not include the family's REQUIRED_MUTANTS;
-    - `references not distinct:<device>` when its two references have the same model;
     - `decrypted image not removed:<device>` when the device's image is still on disk after its runs.
+    A device short of the required mutants, or with two references whose identity operations send the same command,
+    never gets this far: opening it refuses it.
     The set is pending too, with `grader identity changed during qualification`, when the generated family's grader
     identity at the end is not the one stamped at the start: the grading modules load as the runs need them.
 
@@ -119,8 +117,7 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
     identity = grader_identity(case_id='generated')
     devices = {}
     for entry in sorted(manifest['devices'], key=lambda entry: entry['id']):
-        devices[entry['id']] = opened = open_device(root, manifest, entry['id'], password, answer=True)
-        generated.answer_key(opened['answer_key'])
+        devices[entry['id']] = open_device(root, manifest, entry['id'], password, answer=True)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     output.chmod(0o700)  # an output that already existed, empty, keeps its own mode otherwise
     for name in ('runs', 'native'):
@@ -133,10 +130,6 @@ def qualify(set_root: Path, registration: str, password: str, *, renode: Path, o
     for device_id, opened in devices.items():
         key = opened['answer_key']
         references = key['references']
-        if not generated.REQUIRED_MUTANTS <= {mutant['id'] for mutant in key['mutants']}:
-            failures.append('mutant inventory:' + device_id)
-        if canonical_digest(references['a']['model']) == canonical_digest(references['b']['model']):
-            failures.append('references not distinct:' + device_id)
         private = Path(tempfile.mkdtemp(prefix='image-', dir=output))
         try:
             image = private / 'image'

@@ -10,9 +10,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from generated_fixtures import (FIXTURE_ANSWER_KEY, MODE_ADDRESS, MODE_UNIT, MUTANT_ERR_AS_VALUE, REFERENCE_A,
+from generated_fixtures import (BOUNDED, FIXTURE_ANSWER_KEY, MODE_ADDRESS, MODE_UNIT, MUTANT_ERR_AS_VALUE, REFERENCE_A,
                                 REFERENCE_B, STEP, FixtureDevice, fixture_mission, fixture_start)
-from generative_driver.benchmark_support import generated
+from generative_driver.benchmark_support import generated, generated_device
 from generative_driver.benchmark_support.behavior import validate_records
 from generative_driver.benchmark_support.evaluator import reference_execute
 from generative_driver.benchmark_support.generated import classify_answer
@@ -111,7 +111,11 @@ class StepGradingTests(unittest.TestCase):
         self.assertEqual(self.grade(REFERENCE_A)['grade']['verdict'], 'passed')
 
     def test_a_driver_that_declines_an_out_of_range_mode_before_sending_matches_the_devices_refusal(self):
-        # REFERENCE_B bounds mode to 0..3 in its capabilities, so bind_task refuses 9 without I/O and the mode stays 2.
+        # BOUNDED bounds mode to 0..3 in its model, so bind_task refuses 9 without I/O and the mode stays 2.
+        self.assertEqual(self.grade(BOUNDED)['grade']['verdict'], 'passed')
+
+    def test_a_driver_that_reads_the_devices_refusal_as_a_line_matches_it_too(self):
+        # REFERENCE_B forwards 9 and reads the reply as lines: it captures the same MODE ERR as A's read until a line feed.
         self.assertEqual(self.grade(REFERENCE_B)['grade']['verdict'], 'passed')
 
     def test_a_driver_that_reports_the_devices_refusal_as_a_value_fails_that_step(self):
@@ -131,7 +135,7 @@ class StepGradingTests(unittest.TestCase):
         evaluation = self.grade(REFERENCE_A)
         answers = {(e['sequence'], e['step']): e['answer'] for e in self.raw['events'] if 'step' in e}
         self.assertEqual(answers, {('s1', 1): 'refusal', ('s1', 2): 'value', ('s1', 3): 'value', ('s1', 4): 'value',
-                                   ('s2', 1): 'no_reply', ('s2', 2): 'value', ('s2', 3): 'value'})
+                                   ('s2', 1): 'no_reply', ('s2', 2): 'value', ('s2', 3): 'value', ('s2', 4): 'value'})
         self.assertEqual(len(evaluation['records']), len(evaluation['contract']['checks']))
         self.assertTrue(all('undecided' not in record for record in evaluation['records']))
 
@@ -145,8 +149,8 @@ class StepGradingTests(unittest.TestCase):
         # The mode cannot be read while the device is in mode 1: steps 3 and 4 of s1, after a verified reset.
         graded = self.grade(REFERENCE_A, unreadable_in_mode=1)['grade']
         undecided = {c['id']: c['reason'] for c in graded['checks'] if c['passed'] is None}
-        self.assertEqual((graded['verdict'], undecided), ('unknown', {'s1/3/state:mode': 'unreadable state',
-                                                                      's1/4/state:mode': 'unreadable state'}))
+        self.assertEqual((graded['verdict'], undecided), ('unknown', {'s1/3/state:c1': 'unreadable state',
+                                                                      's1/4/state:c1': 'unreadable state'}))
 
     def test_a_driver_that_changes_the_state_before_it_reports_the_devices_refusal_fails_that_steps_state(self):
         # Its set first sends MODE 0, so the device's ERR to MODE 9 is a refusal, but the mode is no longer 2.
@@ -154,7 +158,7 @@ class StepGradingTests(unittest.TestCase):
         steps = candidate['model']['operations']['write_mode']['steps']
         steps.insert(0, {**steps[0], 'tx': [{'text': 'MODE 0\n'}], 'capture': 'first'})
         checks = {c['id']: c['passed'] for c in self.grade(candidate)['grade']['checks']}
-        self.assertEqual((checks['s1/1/answer'], checks['s1/1/state:mode']), (True, False))
+        self.assertEqual((checks['s1/1/answer'], checks['s1/1/state:c1']), (True, False))
 
     def test_a_printed_host_fault_on_a_healthy_device_fails_the_driver_and_a_dead_device_leaves_no_grade(self):
         # Catches a package that escapes its grade by labelling its own failure the host's, and a dead evaluator device
@@ -163,9 +167,10 @@ class StepGradingTests(unittest.TestCase):
         graded = self.grade(REFERENCE_A, edit=printed, healthy_device_failures=True)['grade']
         self.assertEqual(graded['verdict'], 'failed')
         failed = sorted(c['id'] for c in graded['checks'] if c['passed'] is False)
-        self.assertEqual(failed, ['s1/1/answer', 's1/2/answer', 's1/2/out:mode', 's1/3/answer', 's1/3/state:mode',
-                                  's1/4/answer', 's1/4/out:mode', 's1/4/state:mode', 's2/1/answer', 's2/2/answer',
-                                  's2/2/state:mode', 's2/3/answer', 's2/3/out:mode', 's2/3/state:mode'])
+        self.assertEqual(failed, ['s1/1/answer', 's1/2/answer', 's1/2/out:mode', 's1/3/answer', 's1/3/state:c1',
+                                  's1/4/answer', 's1/4/out:mode', 's1/4/state:c1', 's2/1/answer', 's2/2/answer',
+                                  's2/2/state:c1', 's2/3/answer', 's2/3/out:mode', 's2/3/state:c1', 's2/4/answer',
+                                  's2/4/state:c1'])
         call = next(e for e in self.raw['events'] if 'step' in e)
         self.assertEqual((call['device_healthy'], call['result']['error']['reported_fault']), (True, 'host'))
         # Calibration never takes an outage for a driver's failure, and a device that died during a call is no grade.
@@ -249,9 +254,10 @@ class StepGradingTests(unittest.TestCase):
         device = FixtureDevice()
         with self.assertRaisesRegex(RuntimeError, 'behavioral grading is unavailable'):
             self.run_steps(device, lambda *call: dict(spawn))
-        # A reset, its observation and one read of the state, then the call's window; no health check follows.
-        self.assertEqual(device.commands, ['pause', 'machine Reset', 'cpu PC', 'sysbus ReadDoubleWord 0x20000000',
-                                           'start', 'pause'])
+        # A reset with its boot interval, its observation and one read of the state, then the call's window; no health
+        # check follows.
+        self.assertEqual(device.commands, ['pause', 'machine Reset', 'emulation RunFor "00:00:00.1"', 'cpu PC',
+                                           'sysbus ReadDoubleWord 0x20000000', 'start', 'pause'])
 
     def test_a_device_that_stops_before_its_state_is_read_leaves_no_grade(self):
         # Catches a dead evaluator device taken for an unreadable cell, which would leave an unknown grade that settles
@@ -293,7 +299,7 @@ class AnswerTests(unittest.TestCase):
         cls.real = {
             'value': call_package(REFERENCE_A, 'get_mode', {}, []),
             'device refusal': call_package(REFERENCE_A, 'set_mode', {'mode': 9}, ['write']),
-            'bound refusal': call_package(REFERENCE_B, 'set_mode', {'mode': 9}, ['write']),
+            'bound refusal': call_package(BOUNDED, 'set_mode', {'mode': 9}, ['write']),
             'precondition refusal': call_package(REFERENCE_A, *set_one, preconditions={'write_mode': [mode_is(0)]}),
             'silence': call_package(REFERENCE_A, 'ping', {}, []),
             'identity mismatch': call_package(strict, *set_one, before=lambda device: setattr(device, 'mode', 1)),
@@ -307,7 +313,7 @@ class AnswerTests(unittest.TestCase):
         real, shape = self.real, lambda name, *keys: tuple(self.real[name].get(key) for key in keys)
         fault = lambda name: (real[name]['error']['code'], real[name]['error']['fault'])
         self.assertEqual(shape('device refusal', 'identity_verified', 'transport_open_attempted'), (True, True))
-        self.assertEqual(real['device refusal']['transcript'][-1]['rx_hex'], b'ERR\n'.hex())
+        self.assertEqual(real['device refusal']['transcript'][-1]['rx_hex'], b'MODE ERR\n'.hex())
         self.assertEqual(shape('bound refusal', 'transport_open_attempted', 'transcript'), (False, []))
         self.assertEqual(fault('bound refusal'), ('capability_mapping', 'model'))
         self.assertEqual(fault('precondition refusal'), ('precondition_failed', 'operator'))
@@ -361,17 +367,17 @@ class AnswerKeyTests(unittest.TestCase):
         contract = generated.contract(PIN, {**FIXTURE_ANSWER_KEY, 'artifact_sha256': 'a' * 64}, 'final')
         rows = {check['id']: check for check in contract['checks']}
         self.assertEqual((contract['schema'], contract['artifact_sha256'], len(rows)),
-                         ('benchmark-behavior/1', 'a' * 64, 17))
-        self.assertEqual([i for i in rows if i.startswith('s1/1/')], ['s1/1/answer', 's1/1/state:mode'])
+                         ('benchmark-behavior/1', 'a' * 64, 19))
+        self.assertEqual([i for i in rows if i.startswith('s1/1/')], ['s1/1/answer', 's1/1/state:c1'])
         self.assertEqual([i for i in rows if i.startswith('s1/2/')],
-                         ['s1/2/answer', 's1/2/out:mode', 's1/2/state:mode'])
+                         ['s1/2/answer', 's1/2/out:mode', 's1/2/state:c1'])
         pick = lambda identifier, *keys: tuple(rows[identifier][key] for key in keys)
         self.assertEqual(pick('s2/1/answer', 'kind', 'expected', 'channel'), ('text', 'no_reply', 'runtime-transcript'))
         # An output's check expects the unit the public mission states for it.
-        mission_unit = fixture_mission('d001')['tasks']['get_mode']['outputs']['mode']['unit']
+        mission_unit = fixture_mission('0000d001')['tasks']['get_mode']['outputs']['mode']['unit']
         self.assertEqual(pick('s1/2/out:mode', 'kind', 'expected', 'absolute_tolerance', 'unit'),
                          ('number', 2, 0, mission_unit))
-        self.assertEqual(pick('s1/3/state:mode', 'kind', 'expected', 'absolute_tolerance', 'channel'),
+        self.assertEqual(pick('s1/3/state:c1', 'kind', 'expected', 'absolute_tolerance', 'channel'),
                          ('number', 1, 0, 'device-state'))
         self.assertTrue(all(check['revision'] == 0 for check in contract['checks']))
         # The device-state channel is one the grader accepts; a channel it does not know is still refused.
@@ -390,15 +396,15 @@ class AnswerKeyTests(unittest.TestCase):
             'missing nonce': lambda key: key.pop('nonce'),
             'short nonce': lambda key: key.update(nonce='ab' * 31),
             'uppercase nonce': lambda key: key.update(nonce='AB' * 32),
-            'another schema': lambda key: key.update(schema='generated-answer-key/2'),
+            'another schema': lambda key: key.update(schema='generated-answer-key/1'),
             'no reset commands': lambda key: key['recipe'].update(reset_commands=[]),
             'no observations': lambda key: key['recipe'].update(observations={}),
             'another backend': lambda key: key['recipe'].update(backend='native-sim'),
-            'a 64-bit cell': lambda key: key['state']['mode'].update(width=64),
-            'a negative address': lambda key: key['state']['mode'].update(address=-4),
-            'a cell with an extra field': lambda key: key['state']['mode'].update(signed=False),
+            'a 64-bit cell': lambda key: key['state']['c1'].update(width=64),
+            'a negative address': lambda key: key['state']['c1'].update(address=-4),
+            'a cell with an extra field': lambda key: key['state']['c1'].update(signed=False),
             'a reset that misses a cell': lambda key: key.update(reset={}),
-            'a reset beyond its width': lambda key: key['reset'].update(mode=2 ** 32),
+            'a reset beyond its width': lambda key: key['reset'].update(c1=2 ** 32),
             'a step with an unknown field': lambda key: step(key).update(note='x'),
             'an answer that is no answer': lambda key: step(key).update(answer='error'),
             'outputs on a refusal':
@@ -414,7 +420,7 @@ class AnswerKeyTests(unittest.TestCase):
             'an output with no unit': lambda key: step(key, 1)['outputs']['mode'].update(unit=None),
             'an unknown grant': lambda key: step(key).update(grants=['everything']),
             'an input that is no scalar': lambda key: step(key).update(inputs={'mode': [9]}),
-            'a step state beyond its width': lambda key: step(key).update(state={'mode': -1}),
+            'a step state beyond its width': lambda key: step(key).update(state={'c1': -1}),
             'a duplicate sequence': lambda key: key['sequences'].append(copy.deepcopy(key['sequences'][0])),
             'a sequence without steps': lambda key: key['sequences'][1].update(steps=[]),
             'a sequence id with a slash': lambda key: key['sequences'][1].update(id='s/2'),
@@ -425,7 +431,7 @@ class AnswerKeyTests(unittest.TestCase):
             'a mission state of no cell': lambda key: key.update(mission={'state': {}})}
         artifact = {'artifact_sha256': 'a' * 64}
         self.assertIs(generated.answer_key(FIXTURE_ANSWER_KEY), FIXTURE_ANSWER_KEY)
-        self.assertEqual(len(generated.contract(PIN, {**FIXTURE_ANSWER_KEY, **artifact}, 'final')['checks']), 17)
+        self.assertEqual(len(generated.contract(PIN, {**FIXTURE_ANSWER_KEY, **artifact}, 'final')['checks']), 19)
         for name, edit in defects.items():
             with self.subTest(name), self.assertRaises(ValueError):
                 generated.answer_key(change(edit))
@@ -440,10 +446,10 @@ class RegistrationTests(unittest.TestCase):
         from generative_driver.benchmark_support.registrations import CaseRegistration, family_module, registration_for
         from generative_driver.benchmark_support.registry import CURRENT_VERSIONS, case_descriptors
         # The fixture's public mission is one the mission validator accepts, with the unit of its one output.
-        self.assertEqual(validate_mission(fixture_mission('d001'), 'generated'), fixture_mission('d001'))
+        self.assertEqual(validate_mission(fixture_mission('0000d001'), 'generated'), fixture_mission('0000d001'))
         self.assertEqual(registration_for('generated'),
                          CaseRegistration('generated', 'generated', '1', 'emulator-v2', 'benchmark-case/2',
-                                          native_module='generated', truth_schema='generated-answer-key/1',
+                                          native_module='generated', truth_schema='generated-answer-key/2',
                                           calibration_kind='set'))
         self.assertIs(family_for('generated'), generated)
         self.assertIs(family_module('generated'), generated)
@@ -453,7 +459,7 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(rows['generated']['status'], 'pending')
         # Workers see only a generated device's UART: its monitor reads project to nothing.
         self.assertEqual(public_observation('generated', {'values': {'pc': 0x08000100}}), {'values': {}, 'units': {}})
-        self.assertEqual(generated.REQUIRED_MUTANTS, frozenset({'wrong-scale', 'constant-output', 'wrong-state'}))
+        self.assertEqual(generated_device.REQUIRED_MUTANTS, frozenset({'wrong-scale', 'constant-output', 'wrong-state'}))
         self.assertIsNone(generated.reuse_passed([], {}))
 
     def test_the_generated_identity_covers_the_core_and_the_generated_family(self):
@@ -461,7 +467,9 @@ class RegistrationTests(unittest.TestCase):
         core = {name for name in grader_closure(families=()) if not name.startswith('interface_runtime')}
         identity = grader_identity(case_id='generated')
         self.assertEqual(identity['scope'], 'generated')
-        self.assertEqual(set(identity['modules']), core | {'benchmark_support.generated'})
+        # The family's grading module and the validator that defines a valid generated device (ADR 0007).
+        self.assertEqual(set(identity['modules']),
+                         core | {'benchmark_support.generated', 'benchmark_support.generated_device'})
 
 
 if __name__ == '__main__':

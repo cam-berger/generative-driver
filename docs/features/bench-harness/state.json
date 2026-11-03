@@ -1,0 +1,10 @@
+{
+  "goal": "Implement the next step of the benchmark: build step 5, the bench harness that runs trials on generated devices",
+  "slug": "bench-harness",
+  "branch": "mdk/bench-harness",
+  "stage": "setup",
+  "awaiting": null,
+  "current": null,
+  "features": [],
+  "escalation": null
+}

@@ -11,11 +11,11 @@ from .capabilities import numeric_value
 from .missions import validate_mission
 
 FRAMINGS = ('text-lines', 'binary-frames', 'register-access')
-SCHEMA = 'generated-answer-key/1'
+SCHEMA = 'generated-answer-key/2'
 REQUIRED_MUTANTS = frozenset({'wrong-scale', 'constant-output', 'wrong-state'})
 ANSWERS = ('value', 'refusal', 'no_reply')
-_FIELDS = ('schema', 'nonce', 'recipe', 'state', 'reset', 'sequences', 'mission', 'references', 'mutants')
-_STEP_FIELDS = ('task', 'inputs', 'grants', 'answer', 'state')
+_FIELDS = ('schema', 'nonce', 'recipe', 'state', 'reset', 'machine', 'sequences', 'mission', 'references', 'mutants')
+_STEP_FIELDS = ('task', 'inputs', 'grants', 'answer', 'state', 'transition')
 _GRANTS = ('read', 'write', 'actuate', 'reset')
 _NAME = re.compile(r'[A-Za-z0-9_-]{1,64}')
 _HEX = re.compile(r'(?:[0-9a-f]{2})+')
@@ -79,26 +79,36 @@ def _step(step, cells, where):
     _state(step['state'], cells, where + ' state')
 
 
-def answer_key(truth):
-    """`truth` once it is a well-formed answer key: every field of `generated-answer-key/1` and no other, beside the
-    `artifact_sha256` the evaluator adds. ValueError names the first defect.
+def _machine(machine, cells, reset):
+    """The `machine`'s states and its transitions by id, once it is well formed: distinct states, each the values of the
+    `cells` in it, the initial one the `reset`, and transitions with distinct ids that start and end among them."""
+    _fields(machine, ('initial', 'states', 'transitions'), what='machine')
+    states = machine['states']
+    _require(isinstance(states, dict) and bool(states) and all(_named(name) for name in states),
+             'the machine names its states')
+    for name, values in states.items():
+        _state(values, cells, 'state ' + name)
+    _require(len({tuple(sorted(values.items())) for values in states.values()}) == len(states),
+             'distinct states hold distinct cell values')
+    _require(_named(machine['initial']) and machine['initial'] in states and states[machine['initial']] == reset,
+             'the initial state is the reset')
+    transitions = machine['transitions']
+    _require(isinstance(transitions, list) and bool(transitions), 'the machine has transitions')
+    for transition in transitions:
+        _fields(transition, ('id', 'from', 'task', 'answer', 'to'), what='transition')
+        _require(_named(transition['id']) and _named(transition['task']) and transition['answer'] in ANSWERS,
+                 'a transition names its id, task and answer')
+        _require(all(_named(transition[end]) and transition[end] in states for end in ('from', 'to')),
+                 'transition %s starts and ends among the states' % transition['id'])
+    by_id = {transition['id']: transition for transition in transitions}
+    _require(len(by_id) == len(transitions), 'transitions have distinct ids')
+    return states, by_id
 
-    - `nonce`: 64 lowercase hexadecimal digits, random, so that the key's digest in the plaintext set manifest cannot be
-      confirmed by guessing the key.
-    - `recipe`: a `NativeSession` recipe for Renode with reset commands and an observation, which the evaluator's health
-      check reads. The evaluator reads the reset state as soon as the reset commands return, with the emulator paused,
-      so they must leave the firmware booted to idle: Renode keeps RAM across `machine Reset` and the firmware's startup
-      code initializes it, so they end, for example, with `emulation RunFor` over a boot interval.
-    - `state`: {cell: {'address', 'width' 8, 16 or 32}}. `reset`, each step's `state` and `mission.state` give every
-      cell an unsigned value of its width.
-    - `sequences`: [{'id', 'steps'}]. A step is {'task', 'inputs', 'grants', 'answer' ('value', 'refusal' or
-      'no_reply'), 'state'}, with `outputs` ({name: {'value', 'tolerance', 'unit'}}, the unit the public mission states
-      and '1' for a dimensionless output) only on a value step, and `refusal_rx_hex` (the device's refusal in lowercase
-      hex) on every refusal step and no other, so that a driver that forwards the request and receives the device's
-      refusal answers a refusal. A timed-out exchange records none of the bytes it received, so a partial reply
-      followed by silence reads as no reply: a `no_reply` step cannot tell the two apart.
-    - `references` a and b, and `mutants` [{'id', 'model', 'capabilities', 'expected_failed_checks'}], whose expected
-      failures are checks of the key's own contract."""
+
+def answer_key(truth):
+    """`truth` once it is a well-formed answer key, `generated-answer-key/2` in docs/generated-device-interface.md,
+    beside the `artifact_sha256` the evaluator adds: each field's own rules and those that need no mission. ValueError
+    names the first defect."""
     from .native import _validate_recipe
     _fields(truth, _FIELDS, ('artifact_sha256',))
     _require(truth['schema'] == SCHEMA, 'schema')
@@ -119,14 +129,29 @@ def answer_key(truth):
              'the state cells are named c1 to c%d' % len(cells))
     _state(truth['reset'], cells, 'the reset')
     _state(_fields(truth['mission'], ('state',), what='mission')['state'], cells, 'the mission')
+    states, transitions = _machine(truth['machine'], cells, truth['reset'])
     sequences = truth['sequences']
     _require(isinstance(sequences, list) and bool(sequences), 'there are sequences')
+    taken = set()
     for index, sequence in enumerate(sequences, 1):
         _fields(sequence, ('id', 'steps'), what='sequence')
         _require(sequence['id'] == 's%d' % index, 'sequence %d is named s%d' % (index, index))
         _require(isinstance(sequence['steps'], list) and bool(sequence['steps']), 'a sequence has steps')
+        # Each sequence walks the machine from its initial state, one transition a step.
+        current = truth['machine']['initial']
         for number, step in enumerate(sequence['steps'], 1):
-            _step(step, cells, 'step %s/%d' % (sequence['id'], number))
+            where = 'step %s/%d' % (sequence['id'], number)
+            _step(step, cells, where)
+            transition = transitions.get(step['transition']) if isinstance(step['transition'], str) else None
+            _require(transition is not None, where + ' takes a declared transition')
+            _require((transition['task'], transition['answer']) == (step['task'], step['answer']),
+                     where + ' has its transition\'s task and answer')
+            _require(transition['from'] == current,
+                     where + ' starts where the previous step ended, or in the initial state')
+            _require(step['state'] == states[transition['to']], where + ' ends in its transition\'s end state')
+            current = transition['to']
+            taken.add(transition['id'])
+    _require(taken == set(transitions), 'the hidden sequences take every transition')
     by_task = {}
     for sequence in sequences:
         for step in sequence['steps']:

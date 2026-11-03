@@ -203,11 +203,22 @@ WRONG_STATE = _mutant(lambda operations, tasks: tasks['set_mode']['inputs'].upda
     mode={'parameter': 'mode', 'kind': 'affine', 'scale': 1, 'offset': 1}))
 
 
-def _step(task, inputs, answer, mode, *, output=None, refusal=None):
-    """A hidden step: the task call, the reference's answer and the mode the device holds afterwards, with the mode a
-    value step reports (`output`) and, on every refusal step, the bytes with which the device refuses (`refusal`)."""
+# The fixture's state machine as far as its hidden sequences walk it: each state is the mode it holds, and each
+# transition (start, task, answer, end) one task call from a state.
+_STATES = {'m1': 1, 'm2': 2, 'm3': 3}
+_TRANSITIONS = {'t1': ('m2', 'set_mode', 'refusal', 'm2'), 't2': ('m2', 'get_mode', 'value', 'm2'),
+                't3': ('m2', 'set_mode', 'value', 'm1'), 't4': ('m1', 'get_mode', 'value', 'm1'),
+                't5': ('m2', 'ping', 'no_reply', 'm2'), 't6': ('m2', 'set_mode', 'value', 'm3'),
+                't7': ('m3', 'get_mode', 'value', 'm3'), 't8': ('m3', 'ping', 'value', 'm3')}
+
+
+def _step(transition, inputs, *, output=None, refusal=None):
+    """A hidden step that takes `transition`: its task call, the reference's answer and the mode the device holds
+    afterwards, with the mode a value step reports (`output`) and, on every refusal step, the bytes with which the
+    device refuses (`refusal`)."""
+    _, task, answer, end = _TRANSITIONS[transition]
     step = {'task': task, 'inputs': inputs, 'grants': ['write'] if task == 'set_mode' else [], 'answer': answer,
-            'state': {'c1': mode}}
+            'state': {'c1': _STATES[end]}, 'transition': transition}
     if output is not None:
         step['outputs'] = {'mode': {'value': output, 'tolerance': 0, 'unit': MODE_UNIT}}
     if answer == 'refusal':
@@ -216,22 +227,21 @@ def _step(task, inputs, answer, mode, *, output=None, refusal=None):
 
 
 def fixture_answer_key():
-    """The answer key of the fixture device (`generated-answer-key/1`), with a fresh random nonce."""
+    """The answer key of the fixture device (`generated-answer-key/2`), with a fresh random nonce."""
     return {
-        'schema': 'generated-answer-key/1', 'nonce': secrets.token_hex(32),
+        'schema': 'generated-answer-key/2', 'nonce': secrets.token_hex(32),
         'recipe': {'reset_commands': ['machine Reset'],
                    'observations': {'pc': {'command': 'cpu PC', 'width': 32, 'count': 1}}},
         'state': {'c1': {'address': MODE_ADDRESS, 'width': 32}},
         'reset': {'c1': RESET_MODE},
+        'machine': {'initial': 'm2', 'states': {name: {'c1': mode} for name, mode in _STATES.items()},
+                    'transitions': [{'id': identifier, 'from': start, 'task': task, 'answer': answer, 'to': end}
+                                    for identifier, (start, task, answer, end) in _TRANSITIONS.items()]},
         'sequences': [
-            {'id': 's1', 'steps': [_step('set_mode', {'mode': 9}, 'refusal', 2, refusal=b'ERR\n'),
-                                   _step('get_mode', {}, 'value', 2, output=2),
-                                   _step('set_mode', {'mode': 1}, 'value', 1),
-                                   _step('get_mode', {}, 'value', 1, output=1)]},
-            {'id': 's2', 'steps': [_step('ping', {}, 'no_reply', 2),
-                                   _step('set_mode', {'mode': 3}, 'value', 3),
-                                   _step('get_mode', {}, 'value', 3, output=3),
-                                   _step('ping', {}, 'value', 3)]}],
+            {'id': 's1', 'steps': [_step('t1', {'mode': 9}, refusal=b'ERR\n'), _step('t2', {}, output=2),
+                                   _step('t3', {'mode': 1}), _step('t4', {}, output=1)]},
+            {'id': 's2', 'steps': [_step('t5', {}), _step('t6', {'mode': 3}), _step('t7', {}, output=3),
+                                   _step('t8', {})]}],
         'mission': {'state': {'c1': 1}},
         'references': {'a': copy.deepcopy(REFERENCE_A), 'b': copy.deepcopy(REFERENCE_B)},
         'mutants': [

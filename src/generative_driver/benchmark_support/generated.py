@@ -1,6 +1,6 @@
 """The generated family: grades the frozen driver of any generated device from its decrypted answer key, step by step.
 
-An answer key (`generated-answer-key/1`) holds the device's emulator recipe, the memory cells of its state, the state a
+An answer key (`generated-answer-key/2`) holds the device's emulator recipe, the memory cells of its state, the state a
 verified reset leaves, the hidden sequences, the state the public mission's objective leaves, two reference drivers and
 the mutants. Each hidden sequence starts from a reset that the evaluator verifies by reading the state, then calls the
 mission's tasks one step at a time. A step passes when the driver's answer and the device state read afterwards both

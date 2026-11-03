@@ -391,7 +391,7 @@ class AnswerKeyTests(unittest.TestCase):
             'missing nonce': lambda key: key.pop('nonce'),
             'short nonce': lambda key: key.update(nonce='ab' * 31),
             'uppercase nonce': lambda key: key.update(nonce='AB' * 32),
-            'another schema': lambda key: key.update(schema='generated-answer-key/2'),
+            'another schema': lambda key: key.update(schema='generated-answer-key/1'),
             'no reset commands': lambda key: key['recipe'].update(reset_commands=[]),
             'no observations': lambda key: key['recipe'].update(observations={}),
             'another backend': lambda key: key['recipe'].update(backend='native-sim'),
@@ -444,7 +444,7 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(validate_mission(fixture_mission('0000d001'), 'generated'), fixture_mission('0000d001'))
         self.assertEqual(registration_for('generated'),
                          CaseRegistration('generated', 'generated', '1', 'emulator-v2', 'benchmark-case/2',
-                                          native_module='generated', truth_schema='generated-answer-key/1',
+                                          native_module='generated', truth_schema='generated-answer-key/2',
                                           calibration_kind='set'))
         self.assertIs(family_for('generated'), generated)
         self.assertIs(family_module('generated'), generated)

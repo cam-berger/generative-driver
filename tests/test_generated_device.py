@@ -9,6 +9,18 @@ from generative_driver.benchmark_support.generated_device import validate_device
 DEVICE = {'id': '0000d001', 'level': 1, 'framing': 'text-lines'}
 
 
+def retake(key, identifier, **changes):
+    """Change the task or answer of transition `identifier` of `key` and of every step that takes it alike, so that only
+    the rule a test aims at breaks. A step that becomes a refusal records the fixture's refusal."""
+    next(transition for transition in key['machine']['transitions'] if transition['id'] == identifier).update(changes)
+    for sequence in key['sequences']:
+        for step in sequence['steps']:
+            if step['transition'] == identifier:
+                step.update(changes)
+                if step['answer'] == 'refusal':
+                    step.setdefault('refusal_rx_hex', b'ERR\n'.hex())
+
+
 class ValidDeviceTests(unittest.TestCase):
     def assert_refused(self, rows):
         """Each row (name, edit of the answer key, pattern) makes the fixture device invalid, for the reason `pattern`
@@ -56,11 +68,10 @@ class ValidDeviceTests(unittest.TestCase):
                 mutant['expected_failed_checks'] = [check for check in mutant['expected_failed_checks']
                                                     if check != 's1/2/out:mode']
         self.assert_refused([
-            ('a step that calls a task the mission lacks', lambda key: step(key, 0, 1).update(task='reboot'),
-             'steps call'),
-            # The fixture's two ping steps now read the mode, so no step calls ping.
+            ('a step that calls a task the mission lacks', lambda key: retake(key, 't2', task='reboot'), 'steps call'),
+            # The fixture's two ping transitions now read the mode, so no step calls ping.
             ('a mission task that no step calls',
-             lambda key: [step(key, 1, index).update(task='get_mode') for index in (0, 3)], 'steps call'),
+             lambda key: [retake(key, identifier, task='get_mode') for identifier in ('t5', 't8')], 'steps call'),
             ('an input the task does not declare', lambda key: step(key).update(inputs={'mode': 9, 'speed': 1}),
              'declared inputs'),
             ('a missing input', lambda key: step(key).update(inputs={}), 'declared inputs'),
@@ -79,11 +90,8 @@ class ValidDeviceTests(unittest.TestCase):
 
     def test_a_tasks_steps_share_grants_and_a_refusal_or_silence_has_a_value_beside_it(self):
         step = lambda key, sequence=0, index=0: key['sequences'][sequence]['steps'][index]
-
-        def refusals_only(key):
-            # Every set_mode step a refusal: no value step proves its grants.
-            for sequence, index in ((0, 2), (1, 1)):
-                step(key, sequence, index).update(answer='refusal', refusal_rx_hex=b'ERR\n'.hex())
+        # Every set_mode transition a refusal: no value step proves its grants.
+        refusals_only = lambda key: [retake(key, identifier, answer='refusal') for identifier in ('t3', 't6')]
         self.assert_refused([
             # The runtime refuses an ungranted effect before sending, which grades as a matching refusal: without its
             # task's grant, this refusal step would pass any driver.
@@ -91,7 +99,39 @@ class ValidDeviceTests(unittest.TestCase):
             ('steps of one task with other grants', lambda key: step(key, 0, 2).update(grants=['write', 'actuate']),
              'same grants'),
             ('a task that only refuses', refusals_only, 'value step'),
-            ('a task that is only silent', lambda key: step(key, 1, 3).update(answer='no_reply'), 'value step')])
+            ('a task that is only silent', lambda key: retake(key, 't8', answer='no_reply'), 'value step')])
+
+    def test_the_hidden_sequences_walk_every_transition_of_the_declared_machine(self):
+        step = lambda key, sequence=0, index=0: key['sequences'][sequence]['steps'][index]
+        machine = lambda key: key['machine']
+        transition = lambda key, identifier: next(t for t in key['machine']['transitions'] if t['id'] == identifier)
+
+        def starts_away(key):
+            # s2 starts with a silent ping, but from the state that mode 3 holds.
+            machine(key)['transitions'].append({'id': 't9', 'from': 'm3', 'task': 'ping', 'answer': 'no_reply',
+                                                'to': 'm3'})
+            step(key, 1, 0).update(transition='t9')
+        self.assert_refused([
+            ('version 1', lambda key: key.update(schema='generated-answer-key/1'), 'schema'),
+            ('no machine', lambda key: key.pop('machine'), 'fields of the answer key'),
+            ('a step that names no transition', lambda key: step(key).pop('transition'), 'fields of the step s1/1'),
+            ('a step that names an unknown transition', lambda key: step(key).update(transition='t0'),
+             'takes a declared transition'),
+            ('an initial state that is not the reset', lambda key: machine(key).update(initial='m1'),
+             'initial state'),
+            ('two states with the same cells', lambda key: machine(key)['states'].update(m4={'c1': 2}),
+             'distinct'),
+            ('a transition to an unknown state', lambda key: transition(key, 't3').update(to='m9'), 'among the states'),
+            ('a transition with a duplicate id', lambda key: machine(key)['transitions'].append(
+                dict(transition(key, 't3'))), 'distinct ids'),
+            ('a step whose task is not its transition\'s', lambda key: step(key, 0, 1).update(transition='t1'),
+             'task and answer'),
+            ('a sequence that starts away from the initial state', starts_away, 'starts where'),
+            ('a step whose transition starts elsewhere', lambda key: step(key, 0, 3).update(transition='t7'),
+             'starts where'),
+            ('a step that ends in another state', lambda key: step(key, 0, 2).update(state={'c1': 3}), 'end state'),
+            ('a transition that no step takes', lambda key: machine(key)['transitions'].append(
+                {'id': 't9', 'from': 'm1', 'task': 'set_mode', 'answer': 'value', 'to': 'm2'}), 'every transition')])
 
     def test_cells_and_sequences_carry_no_design_in_their_names(self):
         # A verdict publishes check ids built from these names, so they are numbered.

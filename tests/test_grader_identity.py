@@ -390,8 +390,8 @@ class FamilyRoutingTests(unittest.TestCase):
         upstream.assert_called_once_with(unlocked)
 
     def test_a_truth_of_a_schema_the_core_does_not_hydrate_comes_back_as_unlocked(self):
-        self.register('generated-fixture-v1', truth_schema='generated-answer-key/1')
-        unlocked = {'schema': 'generated-answer-key/1', 'references': {}}
+        self.register('generated-fixture-v1', truth_schema='generated-answer-key/2')
+        unlocked = {'schema': 'generated-answer-key/2', 'references': {}}
         with patch('generative_driver.benchmark_support.calibration.hydrate_truth', side_effect=AssertionError('hydrated')), \
                 patch('generative_driver.benchmark_support.upstream.hydrate_truth', side_effect=AssertionError('hydrated')):
             self.assertIs(self.truth_of('generated-fixture-v1', unlocked), unlocked)

@@ -15,8 +15,8 @@
     {
       "id": "02",
       "slug": "unlocked-keys",
-      "status": "pending",
-      "base": null
+      "status": "escalated",
+      "base": "2817f390b3edeb36637b7a713c8c046ceba6f61f"
     },
     {
       "id": "03",
@@ -55,5 +55,9 @@
       "base": null
     }
   ],
-  "escalation": null
+  "escalation": {
+    "feature": "02",
+    "reason": "02-B12 cannot be met as written. It says deleting or replacing the truth file once a trial's run has started changes neither grade nor seal, but the Spec makes evaluator.accepted_driver the only caller passing check_truth=False. adapters.adapter_for calls resolve_case with the default at every stage and package call, so with real stages an earlier change stops the run with IntegrityError: Case truth hash mismatch (outcome_category integrity), and it is never graded. Options: (a) adapter_for also passes check_truth=False and the 'only caller' sentence is amended; (b) narrow B12 to once the stages have ended and accept an earlier change as an integrity stop. All other Behaviours are built with a green full suite (1473 tests); nothing is committed.",
+    "at": "2026-11-04T05:55:22+00:00"
+  }
 }

@@ -101,7 +101,7 @@ def case_descriptors() -> list[dict]:
              'authenticated_admission': 'not-checked'} for row in rows]
 
 
-def resolve_case(case_id: str) -> CaseDefinition:
+def resolve_case(case_id: str, *, check_truth: bool = True) -> CaseDefinition:
     registration = registration_for(case_id)
     from .case_assets import case_root
     root = case_root()
@@ -113,7 +113,7 @@ def resolve_case(case_id: str) -> CaseDefinition:
     path = root/'cases'/case_id/'case.json'
     if not path.is_file():
         raise PendingCaseError('Benchmark case is pending: ' + case_id)
-    return load_definition(path, resource_root=root)
+    return load_definition(path, resource_root=root, check_truth=check_truth)
 
 
 def resource_path(root: Path, relative: str) -> Path:
@@ -143,7 +143,10 @@ def _unique_object(pairs):
     return result
 
 
-def load_definition(path: Path, *, resource_root: Path) -> CaseDefinition:
+def load_definition(path: Path, *, resource_root: Path, check_truth: bool = True) -> CaseDefinition:
+    """whose manifest is at `path`. With `check_truth` False the truth file is neither looked for nor hashed, so that
+    grading, which holds the answer key already, does not depend on a file a worker could change; the manifest's truth
+    hash and path are still validated."""
     path = Path(path)
     root = Path(resource_root).resolve()
     if not path.resolve().is_relative_to(root):
@@ -215,10 +218,11 @@ def load_definition(path: Path, *, resource_root: Path) -> CaseDefinition:
     if truth:
         _sha(truth.get('sha256'))
         truth_path = resource_path(root, truth.get('path'))
-        if not truth_path.is_file():
-            raise PendingCaseError('Case truth is unbuilt')
-        if hashlib.sha256(truth_path.read_bytes()).hexdigest() != truth['sha256']:
-            raise ValueError('Case truth hash mismatch')
+        if check_truth:
+            if not truth_path.is_file():
+                raise PendingCaseError('Case truth is unbuilt')
+            if hashlib.sha256(truth_path.read_bytes()).hexdigest() != truth['sha256']:
+                raise ValueError('Case truth hash mismatch')
     if not registration.requires_calibration:
         family, track = registration.family, registration.evidence_track
         approval, effects = registration.approval_scope, tuple(registration.default_effects)
@@ -232,12 +236,12 @@ def load_definition(path: Path, *, resource_root: Path) -> CaseDefinition:
                           copy.deepcopy(manifest), hashlib.sha256(raw).hexdigest())
 
 
-def pin_case(case_id: str, scenario_id: str | None, case_seed: int) -> dict:
+def pin_case(case_id: str, scenario_id: str | None, case_seed: int, *, check_truth: bool = True) -> dict:
     if type(case_seed) is not int:
         raise ValueError('case_seed must be an integer')
     if scenario_id not in (None, 'original'):
         raise ValueError('Unknown case scenario')
-    definition = resolve_case(case_id)
+    definition = resolve_case(case_id, check_truth=check_truth)
     registration = registration_for(case_id)
     if not registration.requires_calibration:
         default = 'original' if registration.has_case_file else None
@@ -266,23 +270,42 @@ def pin_case(case_id: str, scenario_id: str | None, case_seed: int) -> dict:
             'calibration': copy.deepcopy(calibration)}
 
 
-def require_calibration(pin: dict, options: dict) -> dict:
-    """Admission is evaluator-owned; public labels alone cannot launch an agent."""
+def case_truth(case_id, run_dir, password):
+    """, decrypted with `password`. The manifest is the run's pinned snapshot when `run_dir` holds one. The truth is
+    hydrated by the case's family; one that declares no `hydrate_truth` gets it back as unlocked."""
+    from .case_assets import case_inputs, case_root
+    from .emulator import truth_for_case
+    from .truth import UnlockedTruth
+    _, manifest = case_inputs(case_id, run_dir)
+    return UnlockedTruth(family_for(case_id).hydrate_truth(truth_for_case(case_root(), manifest, password)),
+                         manifest['truth']['sha256'])
+
+
+def require_calibration(pin: dict, password) -> dict:
+    """The admission of `admitted_truth`, for a caller with no use for the truth."""
+    return admitted_truth(pin, password)[1]
+
+
+def admitted_truth(pin: dict, password) -> tuple:
+    """Admission is evaluator-owned; public labels alone cannot launch an agent. (`UnlockedTruth` or None, admission): a
+    changed pin, or a v2 pin without passed calibration, raises before anything is decrypted, and a schema-1 pin, which
+    has no calibration to authenticate, is admitted with None and nothing decrypted."""
     current = pin_case(pin['case_id'], pin['scenario_id'], pin['case_seed'])
     if pin != current:
         raise ValueError('Calibration admission case pin changed')
     if pin['manifest'].get('schema') != 'benchmark-case/2':
-        return {'ok': True}
+        return None, {'ok': True}
     if pin.get('calibration', {}).get('status') != 'passed':
         raise ValueError('V2 case requires independently validated passed calibration before a run')
     from .case_assets import case_root
     from .emulator import truth_for_case
     from .execution import validate_setup
     from .snapshots import canonical_digest
+    from .truth import UnlockedTruth
     manifest = pin['manifest']
     family = family_for(pin['case_id'])
     try:
-        truth = family.hydrate_truth(truth_for_case(case_root(), manifest, options))
+        truth = family.hydrate_truth(truth_for_case(case_root(), manifest, password))
     except (OSError, ValueError) as error:
         raise ValueError('Authenticated calibration evidence requires the evaluator password file') from error
     record = truth.get('calibration', {})
@@ -293,4 +316,4 @@ def require_calibration(pin: dict, options: dict) -> dict:
         valid = False
     if not valid:
         raise ValueError('Calibration evidence is missing, stale, or incomplete; rerun native calibration')
-    return {'ok': True, 'evidence_sha256': canonical_digest(record)}
+    return UnlockedTruth(truth, manifest['truth']['sha256']), {'ok': True, 'evidence_sha256': canonical_digest(record)}

@@ -18,8 +18,10 @@ from unittest.mock import patch
 
 from test_configurator import scripted_stages, wait_stopped
 from test_harness import Device, EVIDENCE, unstarted_provider
+from generative_driver.benchmark_support.truth import EvaluatorPassword, UnlockedTruth, read_password
 
 TOKEN = 'scripted harness token'
+CASE_TRUTH = 'generative_driver.benchmark_support.registry.case_truth'
 # A value only the evaluator's contract holds: no public record, trial record or configurator file may carry it.
 EXPECTED = 271.828
 PASS, FAIL = (EXPECTED, 370), (EXPECTED, 0)
@@ -128,6 +130,10 @@ class PendingRunFixture(unittest.TestCase):
     """A completed emulated run awaiting its independent evaluation: scripted stages on a device the harness provides.
     The configurator unlocks no truth; the evaluator's truth is a toy one."""
 
+    # What must not run in this process unless a test asks for it: the fixture's truth file is opaque.
+    refused_unlocks = ('generative_driver.benchmark_support.registry.admitted_truth',
+                       'generative_driver.benchmark_support.emulator.truth_for_case')
+
     def setUp(self):
         from suite_fixtures import public_case_fixture
         from tq9_workflow_fixture import capabilities, model
@@ -143,8 +149,7 @@ class PendingRunFixture(unittest.TestCase):
                        'generative_driver.benchmark_support.case_assets.case_root'):
             guard = patch(target, return_value=self.root / 'resources')
             guard.start(); self.addCleanup(guard.stop)
-        for target in ('generative_driver.benchmark_support.registry.require_calibration',
-                       'generative_driver.benchmark_support.emulator.truth_for_case'):
+        for target in self.refused_unlocks:
             refused = patch(target, side_effect=AssertionError('the configurator unlocked case truth'))
             refused.start(); self.addCleanup(refused.stop)
         self.password = self.root / 'password-handle'
@@ -197,6 +202,11 @@ class PendingRunFixture(unittest.TestCase):
             result = wait_stopped(self.controller, run)
         self.assertEqual((result['status'], result['progress']['equivalence']), ('completed', 'pending'), result)
         return run, result
+
+    def unlocked_truth(self, payload=None):
+        """A toy answer key, unlocked under the fixture case's own truth hash."""
+        manifest = json.loads((self.image.parent / 'case.json').read_text())
+        return UnlockedTruth({'recipe': {}} if payload is None else payload, manifest['truth']['sha256'])
 
     @staticmethod
     def emitted(result):
@@ -368,39 +378,10 @@ class RecordEvaluationTests(PendingRunFixture):
         self.assertEqual((reopened_status['equivalence'], reopened_status['reason']), (unknown, 'Final verdict: unknown: unreadable state'))
 
 
-class HarnessGradingTests(PendingRunFixture):
-    """The harness's finish: grade once after the run is terminal and the device stopped, seal, post."""
+class HarnessTrialFixture(PendingRunFixture):
+    """A trial the harness runs against the in-process configurator."""
 
     calls, unreachable = (), ()
-
-    def test_native_pending_grade_resumes_without_a_renode_executable(self):
-        # Scripted workflow regression; the native Adapter itself is exercised on Linux separately.
-        from generative_driver.benchmark_support import evaluator
-        manifest_path = self.image.parent/'case.json'
-        manifest = json.loads(manifest_path.read_text())
-        native_image = self.image.with_suffix('.elf')
-        self.image.rename(native_image); self.image = native_image
-        manifest['images'] = {'firmware.elf': next(iter(manifest['images'].values()))}
-        manifest['execution_setup'] = {'method': 'native-sim', 'artifact': 'firmware.elf',
-            'substitutions': ['Scripted descriptor'], 'validated_behavior': [], 'hardware_gaps': ['Test only']}
-        manifest_path.write_text(json.dumps(manifest))
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
-                patch.object(evaluator, 'reference_execute', side_effect=OSError('host grading interrupted')):
-            trial, record = self.trial('native-resume')
-        self.assertEqual(record['status'], 'unscored')
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
-                patch.object(evaluator, 'reference_execute', side_effect=reference(FAIL)):
-            resumed = self.resume(trial)
-        self.assertEqual(resumed['status'], 'evaluated')
-        self.assertIs(resumed['equivalence']['equivalent'], False)
-        from generative_driver.reporting import report_run
-        output = self.root/'native-report.json'
-        with patch('generative_driver.client.call', side_effect=self.configurator):
-            report = report_run(record['run_id'], home=self.home, output=output)
-        self.assertEqual(report['execution_setup'], manifest['execution_setup'])
-        self.assertEqual(json.loads(output.read_text())['execution_setup'], manifest['execution_setup'])
-        for text in ('native-sim', 'firmware.elf', 'Scripted descriptor', 'Test only'):
-            self.assertIn(text, output.with_suffix('.md').read_text())
 
     def configurator(self, method, params=None, home=None, **kwargs):
         if method == 'ping':
@@ -414,34 +395,77 @@ class HarnessGradingTests(PendingRunFixture):
         except Exception as error:
             return {'ok': False, 'error': type(error).__name__, 'reason': str(error)}
 
-    def trial(self, name='trial', **options):
-        """One trial through the harness against the in-process configurator: (trial dir, trial record)."""
-        from generative_driver.benchmark_support import harness
+    def trial(self, name='trial', *, truth=None, **options):
+        """One trial through the harness against the in-process configurator: (trial dir, trial record). Its admission
+        hands out a provider of synthetic peers, and `truth`, or what `registry.case_truth` unlocks."""
+        from generative_driver.benchmark_support import harness, registry
         trial = self.root / 'bench' / name
         self.peers = []
         provider = unstarted_provider(self, self.image, trial, self.peers)
+        def admit(case_id, options, trial_dir, *, password, renode=None):
+            return (provider, {'calibration_evidence_sha256': EVIDENCE},
+                    truth or registry.case_truth(case_id, trial_dir, password))
         with scripted_stages(self.controller, check=self.check(**options)), \
-                patch.object(harness, 'admit', return_value=(provider, {'calibration_evidence_sha256': EVIDENCE})), \
+                patch.object(harness, 'admit', side_effect=admit), \
                 patch('generative_driver.client.call', side_effect=self.configurator):
             record = harness.run_trial(trial, {'trial_id': name, 'home': str(self.home), 'goal': harness.GOAL, 'case': 'tq9-v2',
                                                'case_options': {'scenario_id': 'original'}, 'effects': ['write', 'actuate'],
                                                'budget_seconds': 120, 'password_file': str(self.password)})
         return trial, record
 
+    def password_object(self):
+        return read_password(self.password)
+
     def resume(self, trial, renode=None):
         from generative_driver.benchmark_support import harness
         with patch('generative_driver.client.call', side_effect=self.configurator):
-            return harness.resume(trial, password_file=self.password, renode=renode)
+            return harness.resume(trial, password=self.password_object(), renode=renode)
+
+    @staticmethod
+    def refused_truth():
+        raise AssertionError('truth asked for')
 
     def truth(self, unlocked):
-        return lambda case_id, run_dir, options: unlocked.append((case_id, Path(run_dir), options)) or {'recipe': {}}
+        return lambda case_id, run_dir, password: unlocked.append((case_id, Path(run_dir), password)) or self.unlocked_truth()
+
+
+class HarnessGradingTests(HarnessTrialFixture):
+    """The harness's finish: grade once after the run is terminal and the device stopped, seal, post."""
+
+    def test_native_pending_grade_resumes_without_a_renode_executable(self):
+        # Scripted workflow regression; the native Adapter itself is exercised on Linux separately.
+        from generative_driver.benchmark_support import evaluator
+        manifest_path = self.image.parent/'case.json'
+        manifest = json.loads(manifest_path.read_text())
+        native_image = self.image.with_suffix('.elf')
+        self.image.rename(native_image); self.image = native_image
+        manifest['images'] = {'firmware.elf': next(iter(manifest['images'].values()))}
+        manifest['execution_setup'] = {'method': 'native-sim', 'artifact': 'firmware.elf',
+            'substitutions': ['Scripted descriptor'], 'validated_behavior': [], 'hardware_gaps': ['Test only']}
+        manifest_path.write_text(json.dumps(manifest))
+        with patch(CASE_TRUTH, side_effect=self.truth([])), \
+                patch.object(evaluator, 'reference_execute', side_effect=OSError('host grading interrupted')):
+            trial, record = self.trial('native-resume')
+        self.assertEqual(record['status'], 'unscored')
+        with patch(CASE_TRUTH, side_effect=self.truth([])), \
+                patch.object(evaluator, 'reference_execute', side_effect=reference(FAIL)):
+            resumed = self.resume(trial)
+        self.assertEqual(resumed['status'], 'evaluated')
+        self.assertIs(resumed['equivalence']['equivalent'], False)
+        from generative_driver.reporting import report_run
+        output = self.root/'native-report.json'
+        with patch('generative_driver.client.call', side_effect=self.configurator):
+            report = report_run(record['run_id'], home=self.home, output=output)
+        self.assertEqual(report['execution_setup'], manifest['execution_setup'])
+        self.assertEqual(json.loads(output.read_text())['execution_setup'], manifest['execution_setup'])
+        for text in ('native-sim', 'firmware.elf', 'Scripted descriptor', 'Test only'):
+            self.assertIn(text, output.with_suffix('.md').read_text())
 
     def test_the_harness_grades_the_frozen_driver_once_after_the_run_ended_and_its_device_stopped(self):
         # Catches grading before the run is terminal or while the run's device still runs, grading another package or
         # mapping than the run accepted, a public verdict that carries expected values, evaluator evidence left in
         # plaintext or written into the configurator's home, and a verdict the configurator never records.
         from generative_driver.benchmark_support import evaluator, harness
-        from generative_driver.benchmark_support.truth import unlock
         for name, values, equivalent in (('good', PASS, True), ('wrong', FAIL, False)):
             with self.subTest(driver=name):
                 trial, observed, calls, unlocked = self.root / 'bench' / name, [], [], []
@@ -450,7 +474,7 @@ class HarnessGradingTests(PendingRunFixture):
                     status = self.controller.call('status', {'run_id': record['run_id']})
                     journal = [json.loads(line)['kind'] for line in (trial / 'device/journal.jsonl').read_text().splitlines()]
                     observed.append((status['status'], status['stopping'], journal[-1], record['device_stop']['confirmed']))
-                with patch.object(evaluator, 'case_truth', side_effect=self.truth(unlocked)), \
+                with patch(CASE_TRUTH, side_effect=self.truth(unlocked)), \
                         patch.object(evaluator, 'reference_execute', side_effect=reference(values, calls, before)):
                     trial, record = self.trial(name)
                 run = {'run_id': record['run_id']}
@@ -470,7 +494,7 @@ class HarnessGradingTests(PendingRunFixture):
                 # Grading a candidate's frozen driver counts a no-reply on the evaluator's healthy device against it.
                 self.assertIs(call['healthy_device_failures'], True)
                 self.assertEqual(call['image'], self.home / 'runs' / record['run_id'] / 'benchmark/inputs/firmware.bin')
-                self.assertEqual(unlocked[0][1], self.home / 'runs' / record['run_id'])
+                self.assertEqual(unlocked[0][1], trial)
                 # The verdict the harness posted is the one the configurator holds.
                 equivalence = record['equivalence']
                 self.assertEqual(record['status'], 'evaluated')
@@ -489,7 +513,7 @@ class HarnessGradingTests(PendingRunFixture):
                 self.assertEqual(equivalence['mission']['name'], 'fresh_worker_mission')
                 # The sealed evidence lives in the trial directory and names the accepted driver it graded.
                 self.assertEqual(record['evidence'], {'path': 'run-evidence.enc', 'sha256': equivalence['evidence_sha256']})
-                payload = unlock(trial / 'run-evidence.enc', self.password.read_text(), equivalence['evidence_sha256'])
+                payload = read_password(self.password).unlock(trial / 'run-evidence.enc', equivalence['evidence_sha256'])
                 self.assertEqual((payload['schema'], payload['protocol'], payload['run_id']),
                                  ('benchmark-run-evidence/2', 'assistive/1', record['run_id']))
                 self.assertEqual((payload['final']['frozen_artifact_sha256'], payload['final']['contract']),
@@ -512,7 +536,7 @@ class HarnessGradingTests(PendingRunFixture):
         # Catches a resumed harness grading the frozen driver a second time, and a resume that records nothing.
         from generative_driver.benchmark_support import evaluator, harness
         calls, unlocked = [], []
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth(unlocked)), \
+        with patch(CASE_TRUTH, side_effect=self.truth(unlocked)), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(FAIL, calls)), \
                 patch.object(evaluator, 'seal', side_effect=SystemExit('harness killed after grading')):
             with self.assertRaises(SystemExit):
@@ -526,7 +550,7 @@ class HarnessGradingTests(PendingRunFixture):
         self.assertEqual((len(calls), len(unlocked)), (1, 1))
         for attempt in (1, 2):
             with self.subTest(resume=attempt), \
-                    patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+                    patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked again')), \
                     patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
                 resumed = self.resume(trial)
             self.assertEqual(resumed['status'], 'evaluated')
@@ -541,7 +565,7 @@ class HarnessGradingTests(PendingRunFixture):
         # still reported after a resume sealed and recorded the grade.
         from generative_driver.benchmark_support import evaluator, harness
         real_seal = evaluator.seal
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+        with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
                 patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
             trial, record = self.trial()
@@ -551,7 +575,7 @@ class HarnessGradingTests(PendingRunFixture):
         self.assertIsNone(record['equivalence']['evidence_sha256'])
         self.assertIsNone(self.controller.call('status', run)['equivalence'])
         self.assertFalse(self.verdicts(run))
-        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+        with patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked again')), \
                 patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')), \
                 patch.object(evaluator, 'seal', side_effect=real_seal):
             resumed = self.resume(trial)
@@ -566,7 +590,7 @@ class HarnessGradingTests(PendingRunFixture):
         # Catches a trial that reports the earlier failed post after a resume recorded the verdict.
         from generative_driver.benchmark_support import evaluator, harness
         self.unreachable = ('record_evaluation',)
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+        with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
             trial, record = self.trial()
         run = {'run_id': record['run_id']}
@@ -574,7 +598,7 @@ class HarnessGradingTests(PendingRunFixture):
         self.assertIn('not reachable', record['evaluation_failed'])
         self.assertIsNone(self.controller.call('status', run)['equivalence'])
         self.unreachable = ()
-        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+        with patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked again')), \
                 patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
             resumed = self.resume(trial)
         self.assertEqual(resumed['status'], 'evaluated')
@@ -586,14 +610,14 @@ class HarnessGradingTests(PendingRunFixture):
         # Catches a saved final submission replayed on the device (ported from the in-loop final's replay guard): the
         # evaluator rebuilds its grade from the draft, with no truth unlocked and no emulator started.
         from generative_driver.benchmark_support import evaluator
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+        with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(FAIL)):
             trial, record = self.trial()
         result = self.controller.call('result', {'run_id': record['run_id']})
-        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+        with patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked again')), \
                 patch.object(evaluator, 'reference_execute', side_effect=AssertionError('device accessed')):
             again, final = evaluator.grade('tq9-v2', trial, self.home / 'runs' / record['run_id'], result,
-                                           password_file=self.password)
+                                           password=read_password(self.password), truth_source=self.refused_truth)
         self.assertEqual(again, {k: v for k, v in record['equivalence'].items() if k != 'evidence_sha256'})
         self.assertEqual(final['frozen_artifact_sha256'], self.emitted(result))
         self.assertFalse((trial / 'private/final').exists())
@@ -602,15 +626,15 @@ class HarnessGradingTests(PendingRunFixture):
         # Catches a grade stamped with the configurator's own protocol rather than the run's, and a run that names no
         # protocol graded under a default, where the grade would claim a protocol the run never had.
         from generative_driver.benchmark_support import evaluator
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+        with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
             trial, record = self.trial()
         result = self.controller.call('result', {'run_id': record['run_id']})
         def grade(progress):
-            with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+            with patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked again')), \
                     patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
                 return evaluator.grade('tq9-v2', trial, self.home / 'runs' / record['run_id'], {**result, 'progress': progress},
-                                       password_file=self.password)[0]
+                                       password=read_password(self.password), truth_source=self.refused_truth)[0]
         graded = grade({**result['progress'], 'protocol': 'learning/1'})
         self.assertEqual((graded['status'], graded['equivalent'], graded['protocol']), ('graded', True, 'learning/1'))
         unnamed = {key: value for key, value in result['progress'].items() if key != 'protocol'}
@@ -622,10 +646,9 @@ class HarnessGradingTests(PendingRunFixture):
         # Catches a host fault recorded as a failed driver, its message (which may name a hidden stimulus) published,
         # an unscored grade that can never be completed, and a resume with no emulator posting another host fault.
         from generative_driver.benchmark_support import evaluator, harness
-        from generative_driver.benchmark_support.truth import unlock
         from generative_driver.configurator import PENDING
         unlocked = []
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth(unlocked)), \
+        with patch(CASE_TRUTH, side_effect=self.truth(unlocked)), \
                 patch.object(evaluator, 'reference_execute', side_effect=RuntimeError('monitor refused temp ' + str(EXPECTED))):
             trial, record = self.trial()
         run = {'run_id': record['run_id']}
@@ -639,12 +662,12 @@ class HarnessGradingTests(PendingRunFixture):
         for path in files(trial) + files(self.home):
             self.assertNotIn(str(EXPECTED).encode(), path.read_bytes(), path)
         # The handoffs are sealed all the same; the fault's message stays sealed with them.
-        payload = unlock(trial / 'run-evidence.enc', self.password.read_text(), record['evidence']['sha256'])
+        payload = read_password(self.password).unlock(trial / 'run-evidence.enc', record['evidence']['sha256'])
         self.assertIsNone(payload['final']); self.assertIn(str(EXPECTED), payload['evaluation_error'])
         # Grading needs the emulator: a resume without its path refuses before anything is graded or posted, rather
         # than posting another host fault.
         self.calls = []
-        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')), \
+        with patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked')), \
                 patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded without an emulator')), \
                 self.assertRaisesRegex(ValueError, 'emulator'):
             self.resume(trial)
@@ -652,7 +675,7 @@ class HarnessGradingTests(PendingRunFixture):
         self.assertEqual(len(self.events(run, 'evaluation.unscored')), 1)
         self.assertEqual(harness.read_trial(trial), record)
         calls = []
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth(unlocked)), \
+        with patch(CASE_TRUTH, side_effect=self.truth(unlocked)), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS, calls)):
             resumed = self.resume(trial, renode='scripted-emulator')
         self.assertEqual([call['renode'] for call in calls], ['scripted-emulator'])
@@ -668,9 +691,9 @@ class HarnessGradingTests(PendingRunFixture):
                 ('no-mapping', {'mapping': False}, 'graded', False, 'no capability mapping'),
                 ('changed-package', {'tamper': True}, 'unscored', None, 'integrity: Accepted package bytes changed')):
             with self.subTest(case=name), \
-                    patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')), \
+                    patch.object(evaluator, 'answer_key', side_effect=AssertionError('truth asked for')), \
                     patch.object(evaluator, 'reference_execute', side_effect=AssertionError('device started')):
-                trial, record = self.trial(name, **options)
+                trial, record = self.trial(name, truth=self.unlocked_truth(), **options)
                 equivalence = record['equivalence']
                 self.assertEqual((equivalence['status'], equivalence['equivalent']), (status, equivalent))
                 self.assertEqual([d['reason'] for d in equivalence['diff']], [reason])
@@ -700,9 +723,9 @@ class HarnessGradingTests(PendingRunFixture):
                            ('missing', lambda package: (package / 'driver/model.json').unlink()),
                            ('not-a-file', not_a_file)):
             with self.subTest(model=name), \
-                    patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')), \
+                    patch.object(evaluator, 'answer_key', side_effect=AssertionError('truth asked for')), \
                     patch.object(evaluator, 'reference_execute', side_effect=AssertionError('device started')):
-                trial, record = self.trial(name, edit=edit)
+                trial, record = self.trial(name, truth=self.unlocked_truth(), edit=edit)
                 equivalence = record['equivalence']
                 self.assertEqual((record['status'], equivalence['status'], equivalence['equivalent']),
                                  ('evaluated', 'graded', False))
@@ -722,7 +745,7 @@ class HarnessGradingTests(PendingRunFixture):
             calls, unlocked = [], []
             save = lambda package, codec=codec: (package / 'driver/model.json').write_bytes(json.dumps(self.model).encode(codec))
             with self.subTest(model=name), \
-                    patch.object(evaluator, 'case_truth', side_effect=self.truth(unlocked)), \
+                    patch(CASE_TRUTH, side_effect=self.truth(unlocked)), \
                     patch.object(evaluator, 'reference_execute', side_effect=reference(PASS, calls)):
                 trial, record = self.trial(name, edit=save)
                 equivalence = record['equivalence']
@@ -742,11 +765,11 @@ class HarnessGradingTests(PendingRunFixture):
                     raise OSError(5, 'Input/output error')
                 return read(path, *args, **kwargs)
             return refuse
-        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')), \
+        with patch.object(evaluator, 'answer_key', side_effect=AssertionError('truth asked for')), \
                 patch.object(evaluator, 'reference_execute', side_effect=AssertionError('device started')), \
                 patch.object(Path, 'read_text', unreadable(Path.read_text)), \
                 patch.object(Path, 'read_bytes', unreadable(Path.read_bytes)):
-            trial, record = self.trial('unreadable')
+            trial, record = self.trial('unreadable', truth=self.unlocked_truth())
         equivalence = record['equivalence']
         self.assertEqual((record['status'], equivalence['status'], equivalence['equivalent']), ('unscored', 'unscored', None))
         self.assertEqual(equivalence['diff'], [{'id': 'evaluation', 'reason': 'evaluator host fault: OSError'}])
@@ -761,10 +784,10 @@ class HarnessGradingTests(PendingRunFixture):
         executed = json.loads((run_dir / 'benchmark/execution.json').read_text())['executed']
         self.assertEqual(executed['evaluator_revision'], 'e' * 64)
         trial = self.root / 'trial'; trial.mkdir()
-        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')), \
+        with patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked')), \
                 patch.object(evaluator, 'reference_execute', side_effect=AssertionError('device started')):
-            done = harness.conclude(trial, 'tq9-v2', run_dir, result, password_file=self.password, token=TOKEN,
-                                    call=self.configurator)
+            done = harness.conclude(trial, 'tq9-v2', run_dir, result, password=read_password(self.password),
+                                    truth_source=self.refused_truth, token=TOKEN, call=self.configurator)
         self.assertEqual((done['status'], done['equivalence']['status'], done['equivalence']['equivalent']),
                          ('unscored', 'unscored', None))
         reason = done['equivalence']['diff'][0]['reason']
@@ -780,7 +803,7 @@ class HarnessGradingTests(PendingRunFixture):
                 def interrupted(stop=stop):
                     raise stop('operator interrupt during grading')
                 calls = []
-                with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                with patch(CASE_TRUTH, side_effect=self.truth([])), \
                         patch.object(evaluator, 'reference_execute', side_effect=reference(PASS, calls, after=interrupted)), \
                         self.assertRaises(stop):
                     self.trial(name)
@@ -797,7 +820,7 @@ class HarnessGradingTests(PendingRunFixture):
         # Catches a grade whose accepted record (here a handoff's notes) changed after acceptance left awaiting an
         # evaluation no resume can seal, with nothing told to the configurator.
         from generative_driver.benchmark_support import evaluator, harness
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+        with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
             trial, record = self.trial(tamper_notes=True)
         run = {'run_id': record['run_id']}
@@ -814,7 +837,7 @@ class HarnessGradingTests(PendingRunFixture):
         self.assertFalse((trial / 'run-evidence.enc').exists())
         # A resume meets the same changed bytes: nothing is graded again, and the trial is unscored again, never left
         # awaiting an evaluation.
-        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+        with patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked again')), \
                 patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
             resumed = self.resume(trial)
         self.assertEqual((resumed['status'], resumed['equivalence']['diff']), ('unscored', equivalence['diff']))
@@ -826,7 +849,6 @@ class HarnessGradingTests(PendingRunFixture):
         # grade inconsistent with its checks), which every resume would rebuild and post again, so that the driver's
         # grade is never recorded.
         from generative_driver.benchmark_support import case_assets, evaluator
-        from generative_driver.benchmark_support.truth import unlock
         reason = 'The capability mapping cannot judge the mission: KeyError: ' + 'k' * 300
         long = {'name': 'fresh_worker_mission', 'passed': None, 'reason': reason, 'fault': 'f' * 400}
         with patch.object(case_assets, 'reuse_mission', return_value=long):
@@ -834,7 +856,7 @@ class HarnessGradingTests(PendingRunFixture):
                                                                      'artifacts': [{'path': 'x', 'sha256': 'a' * 64}]}],
                                               'a' * 64, {})
         self.assertEqual(mission, {'name': 'fresh_worker_mission', 'passed': None, 'reason': reason[:300], 'fault': 'f' * 300})
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+        with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
                 patch.object(evaluator, 'reuse_mission', return_value=long):
             trial, record = self.trial('long-mission')
@@ -846,13 +868,13 @@ class HarnessGradingTests(PendingRunFixture):
             return evaluator.record('graded', True, [{'id': 'final/effect-1/duty', 'passed': False}], [],
                                     self.emitted(result), protocol=result['progress']['protocol']), None
         with patch.object(evaluator, 'grade', side_effect=inconsistent):
-            trial, record = self.trial('inconsistent')
+            trial, record = self.trial('inconsistent', truth=self.unlocked_truth())
         run = {'run_id': record['run_id']}
         self.assertEqual((record['status'], record['equivalence']['status']), ('unscored', 'unscored'))
         self.assertEqual(record['equivalence']['diff'], [{'id': 'evaluation', 'reason': 'evaluator host fault: '
                                                                                     'invalid evaluation record'}])
         self.assertEqual([e['diff'] for e in self.events(run, 'evaluation.unscored')], [record['equivalence']['diff']])
-        payload = unlock(trial / 'run-evidence.enc', self.password.read_text(), record['evidence']['sha256'])
+        payload = read_password(self.password).unlock(trial / 'run-evidence.enc', record['evidence']['sha256'])
         self.assertIsNone(payload['final']); self.assertIn('Invalid evaluation record', payload['evaluation_error'])
 
     def test_resume_refuses_a_trial_it_may_not_evaluate_and_evaluates_under_its_own_lock(self):
@@ -862,7 +884,7 @@ class HarnessGradingTests(PendingRunFixture):
         # later one.
         from generative_driver.benchmark_support import evaluator, harness
         from generative_driver.client import hold_process_lock
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+        with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
                 patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
             trial, record = self.trial()
@@ -903,7 +925,7 @@ class HarnessGradingTests(PendingRunFixture):
                     found = lock.read_bytes() if lock.is_file() else None
                     with patch.object(evaluator, 'grade', side_effect=AssertionError('graded')) as grading, \
                             patch.object(evaluator, 'seal', side_effect=AssertionError('sealed')) as sealing, \
-                            patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')) as unlocking, \
+                            patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked')) as unlocking, \
                             self.assertRaisesRegex(ValueError, message):
                         self.resume(trial, renode='scripted-emulator')
                     # A refused resume leaves the lock it found as it found it.
@@ -918,7 +940,7 @@ class HarnessGradingTests(PendingRunFixture):
         ended.wait()
         lock.write_text(str(ended.pid) + ' ' + 'b' * 32)
         harness._private(trial / 'trial.json', record)
-        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+        with patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked again')), \
                 patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
             resumed = self.resume(trial)
         self.assertEqual((resumed['status'], resumed['sealed']), ('evaluated', True))
@@ -931,7 +953,7 @@ class HarnessGradingTests(PendingRunFixture):
         # without letting go (killed, say), that id may name another running process (as the system reuses ids) or one
         # this user may not signal, and every later evaluation of the trial was refused until that process ended.
         from generative_driver.benchmark_support import evaluator, harness
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+        with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
                 patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
             trial, record = self.trial()
@@ -940,7 +962,7 @@ class HarnessGradingTests(PendingRunFixture):
         # This test's parent process stands in for an unrelated process that took over the ended evaluation's id: it
         # runs, and holds no lock of the trial.
         lock.write_text(str(os.getppid()) + ' ' + 'd' * 32)
-        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+        with patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked again')), \
                 patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
             resumed = self.resume(trial)
         self.assertEqual((resumed['status'], resumed['sealed']), ('evaluated', True))
@@ -952,7 +974,7 @@ class HarnessGradingTests(PendingRunFixture):
         # killed after its device stop, before it recorded that it finished, that id may name another running process
         # (as the system reuses ids) or one this user may not signal, and every resume was refused until it ended.
         from generative_driver.benchmark_support import evaluator, harness
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+        with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
                 patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
             trial, record = self.trial()
@@ -960,7 +982,7 @@ class HarnessGradingTests(PendingRunFixture):
         # process that took over its id.
         killed = {key: value for key, value in record.items() if key != 'finished'}
         harness._private(trial / 'trial.json', {**killed, 'status': 'evaluating', 'pid': os.getppid()})
-        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+        with patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked again')), \
                 patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
             resumed = self.resume(trial)
         self.assertEqual((resumed['status'], resumed['sealed']), ('evaluated', True))
@@ -971,7 +993,7 @@ class HarnessGradingTests(PendingRunFixture):
         # run its operator has since completed awaiting the grade: no resume graded it, so the trial never got a verdict
         # and its suite stayed blocked. Grading needs only the confirmed stop: it uses a fresh emulator.
         from generative_driver.benchmark_support import evaluator, harness
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+        with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
                 patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
             trial, record = self.trial()
@@ -996,7 +1018,7 @@ class HarnessGradingTests(PendingRunFixture):
         from generative_driver.benchmark_support import evaluator, harness
         trials = {}
         for name in ('waited', 'replaced'):
-            with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+            with patch(CASE_TRUTH, side_effect=self.truth([])), \
                     patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
                     patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
                 trials[name] = self.trial(name)[0]
@@ -1006,11 +1028,11 @@ class HarnessGradingTests(PendingRunFixture):
             if not held:
                 # Another evaluation holds the lock while this one waits, and completes the trial.
                 held.append(None)
-                held[0] = harness.resume(trial_dir, password_file=self.password)
+                held[0] = harness.resume(trial_dir, password=read_password(self.password))
             with real(trial_dir):
                 yield
         with patch.object(harness, '_exclusive', contended), \
-                patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+                patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked again')), \
                 patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
             waited = self.resume(trials['waited'])
         self.assertEqual((held[0]['status'], held[0]['sealed']), ('evaluated', True))
@@ -1032,13 +1054,13 @@ class HarnessGradingTests(PendingRunFixture):
         from generative_driver.benchmark_support import evaluator, harness
         for entry in ('trial-resume', 'harness-resume'):
             with self.subTest(entry=entry):
-                with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+                with patch(CASE_TRUTH, side_effect=self.truth([])), \
                         patch.object(evaluator, 'reference_execute', side_effect=reference(FAIL)), \
                         patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
                     trial, record = self.trial(entry)
                 self.assertEqual(record['status'], 'awaiting-evaluation')
                 printed = io.StringIO()
-                with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+                with patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked again')), \
                         patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')), \
                         patch('generative_driver.client.call', side_effect=self.configurator), \
                         contextlib.redirect_stdout(printed):
@@ -1061,8 +1083,7 @@ class HarnessGradingTests(PendingRunFixture):
         # guesses far faster than the truth envelope's key derivation allows, and a token kept anywhere in plaintext.
         import hmac
         from generative_driver.benchmark_support import evaluator
-        from generative_driver.benchmark_support.truth import unlock
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+        with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
             trial, record = self.trial('token')
         self.assertEqual(record['status'], 'evaluated')
@@ -1079,7 +1100,7 @@ class HarnessGradingTests(PendingRunFixture):
         sealed = trial / 'evaluation-token.enc'
         envelope = json.loads(sealed.read_text())
         self.assertEqual((envelope['kdf'], envelope['iterations']), ('PBKDF2-HMAC-SHA256', 600000))
-        token = unlock(sealed, password, hashlib.sha256(sealed.read_bytes()).hexdigest())
+        token = EvaluatorPassword(password).unlock(sealed, hashlib.sha256(sealed.read_bytes()).hexdigest())
         self.assertEqual(token['trial_id'], 'token')
         self.assertEqual(len(bytes.fromhex(token['token'])), 32)
         self.assertEqual(hashlib.sha256(token['token'].encode()).hexdigest(), stored)
@@ -1092,7 +1113,7 @@ class HarnessGradingTests(PendingRunFixture):
         # password; and a resume of a trial whose evaluation token is gone.
         from generative_driver.benchmark_support import evaluator, harness
         self.unreachable = ('record_evaluation',)
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+        with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
             trial, record = self.trial()
         run = {'run_id': record['run_id']}
@@ -1110,10 +1131,10 @@ class HarnessGradingTests(PendingRunFixture):
                 self.calls = []
                 with patch.object(evaluator, 'grade', side_effect=AssertionError('graded')) as grading, \
                         patch.object(evaluator, 'seal', side_effect=AssertionError('sealed')) as sealing, \
-                        patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked')) as unlocking, \
+                        patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked')) as unlocking, \
                         patch('generative_driver.client.call', side_effect=self.configurator), \
                         self.assertRaisesRegex(ValueError, message):
-                    harness.resume(trial, password_file=password, renode='scripted-emulator')
+                    harness.resume(trial, password=read_password(password), renode='scripted-emulator')
                 grading.assert_not_called(); sealing.assert_not_called(); unlocking.assert_not_called()
                 self.assertEqual(self.calls, [])
                 self.assertEqual((trial / 'run-evidence.enc').read_bytes(), evidence)
@@ -1123,7 +1144,7 @@ class HarnessGradingTests(PendingRunFixture):
                     aside.rename(token)
         self.assertIsNone(self.controller.call('status', run)['equivalence'])
         self.assertFalse(self.events(run, 'evaluation.unscored'))
-        with patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')), \
+        with patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked again')), \
                 patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')):
             resumed = self.resume(trial, renode='scripted-emulator')
         self.assertEqual((resumed['status'], resumed['sealed']), ('evaluated', True))
@@ -1135,7 +1156,7 @@ class HarnessGradingTests(PendingRunFixture):
         # the verdict and the trial record being written, although the evidence the verdict names is in the trial
         # directory; and evidence that no longer matches the verdict reported as its seal.
         from generative_driver.benchmark_support import evaluator, harness
-        with patch.object(evaluator, 'case_truth', side_effect=self.truth([])), \
+        with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
                 patch.object(harness, '_settle', side_effect=SystemExit('harness killed after the post')), \
                 self.assertRaises(SystemExit):
@@ -1150,7 +1171,7 @@ class HarnessGradingTests(PendingRunFixture):
         evidence = trial / 'run-evidence.enc'
         sealed = evidence.read_bytes()
         self.assertEqual(hashlib.sha256(sealed).hexdigest(), verdict['evidence_sha256'])
-        refused = (patch.object(evaluator, 'case_truth', side_effect=AssertionError('truth unlocked again')),
+        refused = (patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked again')),
                    patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded again')),
                    patch.object(evaluator, 'seal', side_effect=AssertionError('sealed again')))
         # Evidence that is not the one the verdict names is not reported as its seal.
@@ -1173,7 +1194,6 @@ class SealedEvidenceTests(PendingRunFixture):
         # Catches sealing a final of another package than the run accepted, accepted bytes that changed, or a snapshot
         # whose identity no longer holds.
         from generative_driver.benchmark_support import evaluator
-        from generative_driver.benchmark_support.truth import unlock
         run, result = self.pending()
         frozen = self.emitted(result)
         run_dir = self.home / 'runs' / run['run_id']
@@ -1181,23 +1201,23 @@ class SealedEvidenceTests(PendingRunFixture):
                  'capabilities_sha256': None, **{k: v for k, v in reference(PASS)(
                      {'revision': 0}, None, None, renode=None, image='x', output_dir=self.root / 'out',
                      expected_package_sha256=frozen, package=self.root).items()}, 'raw': None}
-        sealed = evaluator.seal(self.root / 'trial', run_dir, result, password_file=self.password, final=final)
-        payload = unlock(self.root / 'trial/run-evidence.enc', self.password.read_text(), sealed['sha256'])
+        sealed = evaluator.seal(self.root / 'trial', run_dir, result, password=read_password(self.password), final=final)
+        payload = read_password(self.password).unlock(self.root / 'trial/run-evidence.enc', sealed['sha256'])
         self.assertEqual(payload['final']['frozen_artifact_sha256'], frozen)
         other = {**final, 'frozen_artifact_sha256': '0' * 64, 'contract': contract('0' * 64),
                  'records': [{**r, 'artifact_sha256': '0' * 64} for r in final['records']]}
         with self.assertRaisesRegex(ValueError, 'accepted emit'):
-            evaluator.seal(self.root / 'other', run_dir, result, password_file=self.password, final=other)
+            evaluator.seal(self.root / 'other', run_dir, result, password=read_password(self.password), final=other)
         snapshot = run_dir / 'benchmark/execution.json'
         saved = snapshot.read_bytes()
         snapshot.write_text(json.dumps({**json.loads(saved), 'executed': {'changed': True}}))
         with self.assertRaisesRegex(ValueError, 'snapshot'):
-            evaluator.seal(self.root / 'snapshot', run_dir, result, password_file=self.password, final=final)
+            evaluator.seal(self.root / 'snapshot', run_dir, result, password=read_password(self.password), final=final)
         snapshot.write_bytes(saved)
         emitted = Path(next(h for h in result['accepted_handoffs'] if h['stage'] == 'emit')['artifacts'][0]['path'])
         (emitted / 'driver/model.json').write_text('{}')
         with self.assertRaisesRegex(ValueError, 'changed'):
-            evaluator.seal(self.root / 'changed', run_dir, result, password_file=self.password, final=final)
+            evaluator.seal(self.root / 'changed', run_dir, result, password=read_password(self.password), final=final)
         self.assertFalse([p for p in files(self.root) if p.name == 'run-evidence.enc' and p.parent.name != 'trial'])
 
     def test_sealed_run_evidence_names_the_protocol_of_its_run(self):
@@ -1205,19 +1225,18 @@ class SealedEvidenceTests(PendingRunFixture):
         # for the run's own, and evidence sealed for a run that names no protocol.
         from generative_driver.benchmark_support import evaluator
         from generative_driver.benchmark_support.evidence import seal_run_evidence_v2
-        from generative_driver.benchmark_support.truth import unlock
         run, result = self.pending()
         run_dir = self.home / 'runs' / run['run_id']
         learning = {**result, 'progress': {**result['progress'], 'protocol': 'learning/1'}}
-        sealed = evaluator.seal(self.root / 'learning', run_dir, learning, password_file=self.password)
-        payload = unlock(self.root / 'learning/run-evidence.enc', self.password.read_text(), sealed['sha256'])
+        sealed = evaluator.seal(self.root / 'learning', run_dir, learning, password=read_password(self.password))
+        payload = read_password(self.password).unlock(self.root / 'learning/run-evidence.enc', sealed['sha256'])
         self.assertEqual(payload['protocol'], 'learning/1')
         unnamed = {**result, 'progress': {key: value for key, value in result['progress'].items() if key != 'protocol'}}
         with self.assertRaisesRegex(ValueError, 'protocol'):
-            evaluator.seal(self.root / 'unnamed', run_dir, unnamed, password_file=self.password)
+            evaluator.seal(self.root / 'unnamed', run_dir, unnamed, password=read_password(self.password))
         for protocol in (None, '', 1):
             with self.subTest(protocol=protocol), self.assertRaisesRegex(ValueError, 'protocol'):
-                seal_run_evidence_v2({**payload, 'protocol': protocol}, self.root / 'unnamed/run-evidence.enc', self.password)
+                seal_run_evidence_v2({**payload, 'protocol': protocol}, self.root / 'unnamed/run-evidence.enc', read_password(self.password))
         self.assertFalse((self.root / 'unnamed/run-evidence.enc').exists())
 
 
@@ -1497,23 +1516,22 @@ class DurableRecordTests(unittest.TestCase):
         # Catches the evaluator's draft (or the run evidence) overwritten in place, so that a write cut short by a
         # killed process or a full disk leaves a truncated file every later grade fails to unlock.
         from generative_driver.benchmark_support import evaluator
-        from generative_driver.benchmark_support.truth import seal, unlock
         trial = self.root / 'trial'
         trial.mkdir()
         first = {'evaluations': [{'run_id': 'run-1', 'phase': 'final', 'frozen_artifact_sha256': 'a' * 64}]}
-        evaluator._draft(trial, self.password, first)
-        evidence = seal({'schema': 'benchmark-run-evidence/2'}, trial / 'run-evidence.enc', self.password.read_text())
+        evaluator._draft(trial, read_password(self.password), first)
+        evidence = read_password(self.password).seal({'schema': 'benchmark-run-evidence/2'}, trial / 'run-evidence.enc')
         real = Path.write_bytes
         def interrupted(path, data):
             real(path, data[:len(data) // 2])
             raise OSError(28, 'No space left on device')
         with patch.object(Path, 'write_bytes', interrupted):
             with self.assertRaises(OSError):
-                evaluator._draft(trial, self.password, {'evaluations': first['evaluations'] * 2})
+                evaluator._draft(trial, read_password(self.password), {'evaluations': first['evaluations'] * 2})
             with self.assertRaises(OSError):
-                seal({'schema': 'changed'}, trial / 'run-evidence.enc', self.password.read_text())
-        self.assertEqual(evaluator._draft(trial, self.password), first)
-        self.assertEqual(unlock(trial / 'run-evidence.enc', self.password.read_text(), evidence),
+                read_password(self.password).seal({'schema': 'changed'}, trial / 'run-evidence.enc')
+        self.assertEqual(evaluator._draft(trial, read_password(self.password)), first)
+        self.assertEqual(read_password(self.password).unlock(trial / 'run-evidence.enc', evidence),
                          {'schema': 'benchmark-run-evidence/2'})
         self.assertEqual(sorted(p.name for p in trial.iterdir()), ['evaluator-draft.enc', 'run-evidence.enc'])
 

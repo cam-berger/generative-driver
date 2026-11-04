@@ -19,10 +19,10 @@ import json
 import re
 from pathlib import Path
 
-from . import truth
 from .generated_device import validate_device, validate_identity
 from .grader_identity import grader_identity
 from .snapshots import canonical_digest
+from .truth import EvaluatorPassword
 
 QUALIFICATION_SCHEMA = 'generated-set-qualification/1'
 _QUALIFICATION_FILE = 'qualification.enc'
@@ -113,14 +113,15 @@ def _check_manifest(set_root, manifest, registration):
         raise ValueError('Duplicate device id in the manifest of set ' + registration)
 
 
-def seal_device(set_root: Path, device: dict, *, image: bytes, mission: dict, answer_key: dict, password: str) -> dict:
-    """Seal one device under `set_root/devices/`, creating it: its public inputs `{"image_base64", "mission"}` and its
-    answer key, each through `truth.seal`. `device` names the `id` (eight lowercase hexadecimal digits), `level` (1 to 5)
-    and `framing` (one of `generated_device.FRAMINGS`).
-    Returns the device's manifest entry. Before anything is written: ValueError for an invalid device, an image that is
-    not bytes, a mission or answer key that is not an object, a device that breaks the generated-device interface
-    (`generated_device.validate_device`) or an unusable password; and, from `canonical_digest`, TypeError for content
-    that JSON cannot carry (a set, bytes) and ValueError for NaN or text that cannot be encoded."""
+def seal_device(set_root: Path, device: dict, *, image: bytes, mission: dict, answer_key: dict,
+                password: EvaluatorPassword) -> dict:
+    """`set_root/devices/`, creating it: its public inputs `{"image_base64", "mission"}` and its answer key, each sealed
+    under `password`. `device` names the `id` (eight lowercase hexadecimal digits), `level` (1 to 5) and `framing` (one
+    of `generated_device.FRAMINGS`). Returns the device's manifest entry. Before anything is written: ValueError for an
+    invalid device, an image that is not bytes, a mission or answer key that is not an object, a device that breaks the
+    generated-device interface (`generated_device.validate_device`); AttributeError for a `password` that is no
+    `EvaluatorPassword`; and, from `canonical_digest`, TypeError for content that JSON cannot carry (a set, bytes) and
+    ValueError for NaN or text that cannot be encoded."""
     validate_identity(device)
     if not isinstance(image, bytes):
         raise ValueError('The image of a device is bytes')
@@ -137,7 +138,7 @@ def seal_device(set_root: Path, device: dict, *, image: bytes, mission: dict, an
               'answer': answer_key}
     for name, content in sealed.items():
         path = 'devices/' + identity + '.' + name + '.enc'
-        entry[name] = {'path': path, 'sha256': truth.seal(content, Path(set_root) / path, password)}
+        entry[name] = {'path': path, 'sha256': password.seal(content, Path(set_root) / path)}
     return entry
 
 
@@ -169,18 +170,18 @@ def load_set(set_root: Path, registration: str, *, registrations: dict | None = 
     return {**manifest, 'manifest_sha256': digest}
 
 
-def open_device(set_root: Path, manifest: dict, device_id: str, password: str, *, answer: bool = False) -> dict:
-    """One device of a loaded set: `{'image': bytes, 'mission': dict}`, and `'answer_key'` when `answer` is true. Without
-    it the answer file is never read, let alone decrypted. Each file goes through `truth.unlock` with its manifest hash,
-    and the image, the mission and the answer key are checked against their content hashes, then against the
-    generated-device interface (`generated_device.validate_device`), the inputs alone without `answer`. ValueError for
-    any mismatch or broken rule, the wrong password or an unknown device, before anything is returned; a file that
-    cannot be read raises OSError."""
+def open_device(set_root: Path, manifest: dict, device_id: str, password: EvaluatorPassword, *,
+                answer: bool = False) -> dict:
+    """: `{'image': bytes, 'mission': dict}`, and `'answer_key'` when `answer` is true. Without it the answer file is
+    never read, let alone decrypted. Each file is unlocked under `password` with its manifest hash, and the image, the
+    mission and the answer key are checked against their content hashes, then against the generated-device interface
+    (`generated_device.validate_device`), the inputs alone without `answer`. ValueError for any mismatch or broken rule,
+    the wrong password or an unknown device, before anything is returned; a file that cannot be read raises OSError."""
     entry = next((listed for listed in manifest['devices'] if listed.get('id') == device_id), None)
     if entry is None:
         raise ValueError('Unknown generated device: ' + str(device_id))
     # Each path resolves again where it is used: a symlink can change after the set loaded.
-    sealed = truth.unlock(_inside(set_root, entry['inputs']['path']), password, entry['inputs']['sha256'])
+    sealed = password.unlock(_inside(set_root, entry['inputs']['path']), entry['inputs']['sha256'])
     if (not isinstance(sealed, dict) or set(sealed) != {'image_base64', 'mission'}
             or not isinstance(sealed['image_base64'], str) or not isinstance(sealed['mission'], dict)):
         raise ValueError('Malformed inputs of device ' + device_id)
@@ -191,7 +192,7 @@ def open_device(set_root: Path, manifest: dict, device_id: str, password: str, *
         raise ValueError('The mission of device ' + device_id + ' does not match its manifest hash')
     opened = {'image': image, 'mission': sealed['mission']}
     if answer:
-        key = truth.unlock(_inside(set_root, entry['answer']['path']), password, entry['answer']['sha256'])
+        key = password.unlock(_inside(set_root, entry['answer']['path']), entry['answer']['sha256'])
         if not isinstance(key, dict) or canonical_digest(key) != entry['answer_key_sha256']:
             raise ValueError('The answer key of device ' + device_id + ' does not match its manifest hash')
         opened['answer_key'] = key
@@ -200,12 +201,12 @@ def open_device(set_root: Path, manifest: dict, device_id: str, password: str, *
     return opened
 
 
-def seal_qualification(set_root: Path, record: dict, password: str) -> str:
+def seal_qualification(set_root: Path, record: dict, password: EvaluatorPassword) -> str:
     """Seal a set's qualification record with the set's password into `set_root/qualification.enc` and return the SHA-256
     of the file written. The record lies beside the manifest, never inside a device's answer key: sealing is not
     deterministic, so a record there would change the manifest hash each time the set is qualified. No pin fixes the
     file's hash; the AES-GCM tag under the set's password authenticates it."""
-    return truth.seal(record, Path(set_root) / _QUALIFICATION_FILE, password)
+    return password.seal(record, Path(set_root) / _QUALIFICATION_FILE)
 
 
 # What reading a file can raise for its content or its absence, which admission reports as a reason: JSON nested deeper
@@ -219,7 +220,7 @@ def _named(error):
     return type(error).__name__ if isinstance(error, (OSError, RecursionError)) else 'ValueError'
 
 
-def admitted(set_root: Path, registration: str, device_id: str, password: str, *,
+def admitted(set_root: Path, registration: str, device_id: str, password: EvaluatorPassword, *,
              registrations: dict | None = None) -> list[str]:
     """The reasons device `device_id` of set `registration` under `set_root` may not run a trial, or [] when it may. Its
     set's qualification record must decrypt with `password`, name `registration` and the manifest that `registrations`
@@ -231,7 +232,7 @@ def admitted(set_root: Path, registration: str, device_id: str, password: str, *
     path = Path(set_root) / _QUALIFICATION_FILE
     try:
         # The tag under the set's password authenticates the record, so its hash is that of the bytes found.
-        record = truth.unlock(path, password, hashlib.sha256(path.read_bytes()).hexdigest())
+        record = password.unlock(path, hashlib.sha256(path.read_bytes()).hexdigest())
     except _UNREADABLE as error:
         return ['qualification unreadable: ' + _named(error)]
     if (not isinstance(record, dict) or set(record) != _QUALIFICATION_FIELDS or record['schema'] != QUALIFICATION_SCHEMA

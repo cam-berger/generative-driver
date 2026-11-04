@@ -145,7 +145,7 @@ def calibration_run(pin, truth, model, capabilities, *, renode, image, output_di
 def calibrate(case_id, options):
     """Build, analyze and execute references/mutants; emit an evaluator-only release.
 
-    Required options: evaluator_password_file, renode, ghidra_home, java_home,
+    Required options: evaluator_password, renode, ghidra_home, java_home,
     output. Compiler comes from compiler, ARM_NONE_EABI_GCC, or PATH.
     """
     import re
@@ -153,7 +153,6 @@ def calibrate(case_id, options):
     from .authoring import evaluator_directory, build_case
     from .registry import resolve_case, pin_case
     from .emulator import truth_for_case
-    from .truth import seal
     from .cases import _write
     from ..benchmark import case_root
     from ..toolkit import resources_root
@@ -168,7 +167,7 @@ def calibrate(case_id, options):
         from .asset_build import build_family, inventory
         truth = hydrate_truth(authoring_payload(evaluator_directory(options['authoring_root'])))
     elif registration.calibration_kind == 'reference':
-        truth=truth_for_case(case_root(),definition.manifest,options)
+        truth=truth_for_case(case_root(),definition.manifest,options['evaluator_password'])
     else:
         raise ValueError('No reference calibration recipe registered for this case')
     output=evaluator_directory(options['output'])
@@ -349,7 +348,7 @@ def calibrate(case_id, options):
     if record['status']=='passed':
         manifest['calibration'].update(evidence_sha256=canonical_digest(record),input_hashes=record['input_hashes'])
         manifest['limitations']=[x for x in manifest['limitations'] if x not in ('Calibration and actual-agent admission pending','Reference calibration pending')]
-    manifest['truth']['sha256']=seal(truth,output/(case_id+'.enc'),Path(options['evaluator_password_file']).read_text().strip())
+    manifest['truth']['sha256']=options['evaluator_password'].seal(truth,output/(case_id+'.enc'))
     _write(output/'case.json',manifest)
     return {'ok':record['status']=='passed','verdict':'passed' if record['status']=='passed' else 'failed',
             'execution':'reference-calibration','model_benchmark':False,'output':str(output),

@@ -6,12 +6,16 @@ from pathlib import Path
 
 
 def manage(action, case, password_file, output, new_password_file=None, compiler=None, authoring_dir=None, *, renode=None, ghidra_home=None, java_home=None):
+    from .truth import read_password
+    def password():
+        # A command with no file reaches the "required" refusal where it would use the password.
+        return read_password(password_file) if password_file else None
     if action == 'calibrate':
         from .registrations import registration_for
         calibration_kind = registration_for(case).calibration_kind
         if calibration_kind == 'upstream':
             from .upstream_qualification import calibrate
-            return calibrate(case, {'evaluator_password_file': password_file, 'output': output,
+            return calibrate(case, {'evaluator_password': password(), 'output': output,
                                    'renode': renode, 'ghidra_home': ghidra_home, 'java_home': java_home})
         if calibration_kind == 'family':
             # A family is calibrated from its private authoring root, whose sibling <case>.password is the handle.
@@ -28,11 +32,10 @@ def manage(action, case, password_file, output, new_password_file=None, compiler
                 ghidra_home=Path(ghidra_home or ''), java_home=Path(java_home or ''), output_dir=Path(output),
                 compiler=Path(compiler) if compiler else None))
         from .authoring import calibrate
-        return calibrate(case, {'evaluator_password_file':password_file,'output':output,'compiler':compiler,
+        return calibrate(case, {'evaluator_password':password(),'output':output,'compiler':compiler,
                                'renode':renode,'ghidra_home':ghidra_home,'java_home':java_home})
     from ..benchmark import case_root
     from .registry import resolve_case
-    from .truth import seal
     from .emulator import truth_for_case
     from .cases import _write
     if authoring_dir is not None:
@@ -48,7 +51,7 @@ def manage(action, case, password_file, output, new_password_file=None, compiler
     if not definition.manifest.get('truth'):
         raise ValueError('Case has no evaluator truth')
     manifest = definition.manifest
-    truth = truth_for_case(root, manifest, {'evaluator_password_file':password_file})
+    truth = truth_for_case(root, manifest, password())
     destination = Path(output).expanduser().resolve()
     package_boundary = Path(__file__).resolve().parents[2]
     checkout = next((p for p in Path(__file__).resolve().parents if (p/'.git').exists()), None)
@@ -69,7 +72,7 @@ def manage(action, case, password_file, output, new_password_file=None, compiler
         if not new_password_file:
             raise ValueError('Provide --new-password-file outside candidate inputs')
         path = destination/(case+'.enc')
-        digest = seal(truth, path, Path(new_password_file).read_text(encoding='utf-8').strip())
+        digest = read_password(new_password_file).seal(truth, path)
         _write(destination/'pin.json', {'case':case,'ciphertext':path.name,'sha256':digest})
         return {'ok':True,'ciphertext':str(path),'sha256':digest,
                 'instruction':'Distribute ciphertext and pin; deliver the new password through a separate evaluator channel'}

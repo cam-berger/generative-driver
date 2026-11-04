@@ -304,9 +304,9 @@ def main(argv=None):
             return 0 if result.get('ok', result.get('compatible', True)) else 1
         if args.command == 'set':
             from .benchmark_support.set_qualification import qualify
-            # Read once and stripped, as every benchmark command reads a password file.
-            password = Path(args.password_file).read_text(encoding='utf-8').strip()
-            record = qualify(Path(args.root), args.set, password, renode=Path(args.renode), output_dir=Path(args.output))
+            from .benchmark_support.truth import read_password
+            record = qualify(Path(args.root), args.set, read_password(args.password_file), renode=Path(args.renode),
+                             output_dir=Path(args.output))
             print(json.dumps({'ok': record['status'] == 'passed', 'status': record['status'],
                               'failures': record['failures'], 'seconds': record['seconds']}, indent=2, allow_nan=False))
             return 0 if record['status'] == 'passed' else 1
@@ -328,7 +328,8 @@ def main(argv=None):
                             renode=args.renode,ghidra_home=args.ghidra_home,java_home=args.java_home)
         elif args.command == 'trial-resume':
             from .benchmark_support.harness import resume
-            result = resume(args.trial_dir, password_file=args.password_file, renode=args.renode)
+            from .benchmark_support.truth import read_password
+            result = resume(args.trial_dir, password=read_password(args.password_file), renode=args.renode)
         elif args.command == 'compare':
             result = compare(args.before, args.after)
         else:
@@ -526,17 +527,19 @@ def cleanup(case_id, run_dir, options=None):
 
 def score(report, password_file=None, *, evidence_path=None):
     from .benchmark_support.adapters import adapter_for
+    from .benchmark_support.truth import read_password
     data = _read(report)
+    password = read_password(password_file) if password_file else None
     if data.get('schema') == 'benchmark-report/3':
         from .benchmark_support.evidence import regrade_v3
-        return regrade_v3(data, evidence_path, password_file)
+        return regrade_v3(data, evidence_path, password)
     if data.get('schema') == 'benchmark-report/2':
         from .benchmark_support.evidence import regrade_v2
-        return regrade_v2(data, evidence_path, password_file)
+        return regrade_v2(data, evidence_path, password)
     case = data.get('case')
     case_id = case.get('id') if isinstance(case, dict) else case
     if case_id == 'bme280':
-        return adapter_for(case_id).score(data, password_file, evidence_path=evidence_path)
-    return adapter_for(case_id).score(data, password_file)
+        return adapter_for(case_id).score(data, password, evidence_path=evidence_path)
+    return adapter_for(case_id).score(data, password)
 
 

@@ -23,11 +23,11 @@ from generative_driver.benchmark_support import (instruments, parameter_store, r
 from generative_driver.benchmark_support.calibration import inventory, validate_calibration
 from generative_driver.benchmark_support.case_assets import reuse_mission
 from generative_driver.benchmark_support.emulated_actions import execute_plan
-from generative_driver.benchmark_support.evaluator import case_truth, method_for
+from generative_driver.benchmark_support.evaluator import method_for
 from generative_driver.benchmark_support.families import Family, family_for, family_from
 from generative_driver.benchmark_support.grader_identity import grader_closure, grader_identity
 from generative_driver.benchmark_support.registrations import registered_case_ids, registration_for
-from generative_driver.benchmark_support.registry import case_descriptors, pin_case, require_calibration, resolve_case
+from generative_driver.benchmark_support.registry import case_descriptors, case_truth, pin_case, require_calibration, resolve_case
 from generative_driver.benchmark_support.snapshots import canonical_digest
 
 HOOKS = ('contract', 'observations', 'reuse_passed', 'required_mutants', 'execute', 'build_plan', 'hydrate_truth',
@@ -567,8 +567,9 @@ class HydrationTests(unittest.TestCase):
 
     def test_01_B13_a_family_truth_of_a_case_with_no_hydrate_truth_comes_back_unlocked(self):
         with self.unlocked(self.FAMILY_TRUTH), self.never_hydrated(), \
-                patch('generative_driver.benchmark_support.case_assets.case_inputs', return_value=(Path('inputs'), {})):
-            self.assertIs(case_truth('tq9-v2', Path('run'), {}), self.FAMILY_TRUTH)
+                patch('generative_driver.benchmark_support.case_assets.case_inputs',
+                      return_value=(Path('inputs'), {'truth': {'sha256': 'a' * 64}})):
+            self.assertIs(case_truth('tq9-v2', Path('run'), None).payload, self.FAMILY_TRUTH)
 
     def test_01_B13_admission_hydrates_from_the_family_never_from_the_truths_schema(self):
         pin = pin_case('tq9-v2', 'original', 0)
@@ -582,8 +583,9 @@ class HydrationTests(unittest.TestCase):
     def test_01_B13_a_case_hydrates_with_its_familys_hook(self):
         hydrated = {'hydrated': True}
         with self.unlocked(self.FAMILY_TRUTH), patch.dict(tq9_v2.HOOKS, {'hydrate_truth': lambda truth: hydrated}), \
-                patch('generative_driver.benchmark_support.case_assets.case_inputs', return_value=(Path('inputs'), {})):
-            self.assertIs(case_truth('tq9-v2', Path('run'), {}), hydrated)
+                patch('generative_driver.benchmark_support.case_assets.case_inputs',
+                      return_value=(Path('inputs'), {'truth': {'sha256': 'a' * 64}})):
+            self.assertIs(case_truth('tq9-v2', Path('run'), None).payload, hydrated)
 
 
 class AdmissionTests(unittest.TestCase):

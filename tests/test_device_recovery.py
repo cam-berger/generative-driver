@@ -86,9 +86,9 @@ class ProvidedRunTests(unittest.TestCase):
             guard = patch(target, return_value=self.root / 'resources')
             guard.start(); self.addCleanup(guard.stop)
         # Nothing here unlocks the case truth: the harness admitted the case before the run.
-        for target in ('generative_driver.benchmark_support.registry.require_calibration',
+        for target in ('generative_driver.benchmark_support.registry.admitted_truth',
                        'generative_driver.benchmark_support.emulator.truth_for_case',
-                       'generative_driver.benchmark_support.truth.unlock'):
+                       'generative_driver.benchmark_support.truth.EvaluatorPassword.unlock'):
             refused = patch(target, side_effect=AssertionError('the configurator unlocked case truth'))
             refused.start(); self.addCleanup(refused.stop)
         self.controller = Controller(self.root / 'home')

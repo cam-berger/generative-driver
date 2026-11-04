@@ -56,7 +56,7 @@ class EmulatorRecoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'stop'):
                 device.stop()
             self.assertIs(device.session,owner)
-            done=finish(device,'tq9-v2',None,[],None,{'status':'completed'})
+            done=finish(device,'tq9-v2',None,[],None,{'status':'completed'},truth_source=None)
             self.assertEqual((done['status'],done['device_stop']['confirmed']),('stop-unconfirmed',False))
             self.assertIn('stop',done['device_stop']['reason'])
             self.assertIs(device.session,owner);self.assertEqual(done['device']['session_id'],owner.info['session_id'])
@@ -88,7 +88,7 @@ class EmulatorRecoveryTests(unittest.TestCase):
                 self.assertIsNone(owner.process.poll())
                 with self.assertRaisesRegex(RuntimeError,'stop'):device.stop()
                 self.assertIs(device.session,owner)
-                done=finish(device,'tq9-v2',None,[],None)
+                done=finish(device,'tq9-v2',None,[],None,truth_source=None)
                 self.assertEqual((done['status'],done['device']['session_id']),('stop-unconfirmed',owner.info['session_id']))
                 self.assertIs(device.session,owner)
 

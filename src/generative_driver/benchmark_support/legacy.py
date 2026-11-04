@@ -6,7 +6,7 @@ from pathlib import Path
 from ..benchmark import _read, case_root, score_observations
 
 
-def score(report, password_file=None, *, evidence_path=None):
+def score(report, password=None, *, evidence_path=None):
     """Regrade recorded behavior; missing stage evidence cannot become overall success."""
     data = _read(report)
     case = data.get('case')
@@ -37,7 +37,7 @@ def score(report, password_file=None, *, evidence_path=None):
             or set(state.get('stage_verdicts', {})) - set(required)):
         raise ValueError('Report stage evidence is incompatible with the installed fresh reuse case')
     from .emulator import truth_for_case
-    truth = truth_for_case(case_root(), manifest, {'evaluator_password_file':password_file})
+    truth = truth_for_case(case_root(), manifest, password)
     observations = data.get('observations', state.get('probe_evaluation', {}).get('observations', {}))
     if case == 'bme280':
         grounding = state.get('physical_grounding', {})

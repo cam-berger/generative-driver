@@ -4,6 +4,8 @@ import hashlib
 import json
 import unittest
 
+from generative_driver.benchmark_support.truth import read_password
+
 STAGES=('acquire','interpret','probe','ground','emit','reuse')
 
 def fixture():
@@ -283,11 +285,11 @@ class ExportTests(unittest.TestCase):
                 with self.subTest(paths=paths),self.assertRaisesRegex(ValueError,'audit path'):report_suite('suite',output='out',audit_paths=paths)
 
 
-def export_fixture(root,per_case=True):
+def export_fixture(root,per_case=True,one_case=False):
     """Two sealed toy trials of two families served through a fake external IPC boundary; real report/seal/regrade
     code. Each child is stamped with its own case's revision, and the suite freezes them beside the revision they
     combine into. With `per_case` false, the suite is one frozen before cases had their own grader identities: every
-    child is stamped with its one revision."""
+    child is stamped with its one revision. With `one_case`, both trials are of one case, under one password file."""
     from pathlib import Path
     from test_benchmark_v2_evidence import SealedEvidenceTests
     from generative_driver.benchmark_support.evidence import seal_run_evidence,public_pin,public_v2_report
@@ -297,12 +299,13 @@ def export_fixture(root,per_case=True):
     manifest['entries']=manifest['entries'][:2]
     manifest['entries'][0]['scenario']='original'
     manifest['entries'][0]['case_seed']=manifest['entries'][1]['case_seed']=7
+    if one_case:manifest['entries'][1].update(case=manifest['entries'][0]['case'],case_seed=8)
     experiment['comparison_identity'].update(manifest=manifest,manifest_sha256=_test_digest(manifest),trials=[] ,entry_pins=[],time_policy=[{},{}])
     experiment['execution_snapshots']=[]
     owners={};event_rows={};evidence_files={};password_files={};slots=[]
     for index,entry in enumerate(manifest['entries']):
         rid=f'r{index+1}';payload=SealedEvidenceTests().payload()
-        pin=payload['case_pin'];pin.update(case_id=entry['case'],family='toy-family',scope='full-workflow',evidence_track='firmware',execution='actual-agent-emulation')
+        pin=payload['case_pin'];pin.update(case_id=entry['case'],case_seed=entry['case_seed'],family='toy-family',scope='full-workflow',evidence_track='firmware',execution='actual-agent-emulation')
         pin['manifest'].update(id=entry['case'],version='5',evaluator_version='5',execution='actual-agent-emulation')
         snapshot=payload['execution_snapshot']
         if per_case:snapshot['executed'].update(case_revisions((entry['case'],)))
@@ -311,7 +314,7 @@ def export_fixture(root,per_case=True):
         private=root/'runs'/rid/'benchmark';private.mkdir(parents=True)
         (private/'execution.json').write_text(json.dumps(snapshot),encoding='utf-8')
         password=root/f'{rid}.password';password.write_text('test-only password',encoding='utf-8')
-        sealed=seal_run_evidence(payload,private/'run-evidence.enc',password)
+        sealed=seal_run_evidence(payload,private/'run-evidence.enc',read_password(password))
         handoffs=[];events=[]
         for n,gate in enumerate(payload['accepted_gates']):
             handoff={k:gate[k] for k in ('stage','revision','assignment_id')}

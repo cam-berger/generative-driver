@@ -15,7 +15,7 @@ from unittest.mock import patch
 import generative_driver
 from generative_driver.benchmark_support import registrations, sampled_sensor
 from generative_driver.benchmark_support.calibration import hydrate_truth, inventory, validate_calibration
-from generative_driver.benchmark_support.evaluator import case_truth
+from generative_driver.benchmark_support.registry import case_truth
 from generative_driver.benchmark_support.families import family_for
 from generative_driver.benchmark_support.generated_sets import set_registrations
 from generative_driver.benchmark_support.grader_identity import (ENTRY_MODULES, SYSTEM_MODULES, grader_closure,
@@ -304,10 +304,11 @@ class FamilyRoutingTests(unittest.TestCase):
 
     def truth_of(self, case_id, unlocked):
         """`case_truth` of `case_id` when its sealed truth unlocks to `unlocked`, with no vault, case files or run."""
-        with patch('generative_driver.benchmark_support.case_assets.case_inputs', return_value=(Path('inputs'), {})), \
+        with patch('generative_driver.benchmark_support.case_assets.case_inputs',
+                   return_value=(Path('inputs'), {'truth': {'sha256': 'a' * 64}})), \
                 patch('generative_driver.benchmark_support.case_assets.case_root', return_value=Path('root')), \
                 patch('generative_driver.benchmark_support.emulator.truth_for_case', return_value=unlocked):
-            return case_truth(case_id, Path('run'), {})
+            return case_truth(case_id, Path('run'), None).payload
 
     def test_each_family_declares_the_mutants_its_qualification_requires(self):
         required = {

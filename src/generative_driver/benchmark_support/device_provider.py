@@ -23,7 +23,7 @@ RECEIPT = 'emulator-recovery/2'
 # else.
 TRUTH_KEYS = ('recipe', 'contracts', 'phases', 'scenarios', 'images', 'references', 'input_hashes',
               'reuse_goal', 'max_tolerances', 'max_reference_age_seconds',
-              'evaluator_password_file', 'password', 'password_file')
+              'evaluator_password', 'evaluator_password_file', 'password', 'password_file')
 
 
 def observed_values(session):

@@ -13,8 +13,10 @@ import threading
 from pathlib import Path
 
 from generative_driver.benchmark_support.generated_sets import seal_device, write_manifest
+from generative_driver.benchmark_support.truth import EvaluatorPassword
 
-PASSWORD = 'synthetic fixture credential'
+PASSWORD_TEXT = 'synthetic fixture credential'
+PASSWORD = EvaluatorPassword(PASSWORD_TEXT)
 FIXTURE_IMAGE = b'fixture firmware image'
 MODE_ADDRESS = 0x20000000
 RESET_MODE = 2

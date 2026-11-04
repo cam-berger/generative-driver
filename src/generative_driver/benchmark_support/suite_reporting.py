@@ -664,6 +664,7 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
     from ..client import call,default_home
     from ..reporting import report_run,_public,_tree_hash
     from .evidence import regrade_v2,regrade_v3
+    from .truth import read_password
     root=Path(home or default_home()).resolve();destination=Path(output).resolve()
     regrading=evidence_files is not None or password_files is not None
     if regrading and (not isinstance(evidence_files,dict) or not isinstance(password_files,dict)):
@@ -691,7 +692,11 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
     if audit_paths and not protocol:raise ValueError('The transcript audit covers assistive suites only')
     if audit_paths:
         for trial in trials:trial['audit']=[]
-    reports={};regraded=set()
+    reports={};regraded=set();held={}
+    def password_of(case):
+        # One file per case, read once across all its trials, and only if a trial of the case regrades.
+        if case not in held:held[case]=read_password(password_files[case])
+        return held[case]
     with TemporaryDirectory(prefix='gd-suite-report-') as temporary:
         for trial in started:
             rid=trial['run_id'];pin=identity['entry_pins'][trial['entry_index']]
@@ -728,13 +733,13 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
                 if (report.get('equivalence') or {}).get('evidence_sha256'):
                     if trial['trial_key'] not in evidence_files:raise ValueError('Regrade evidence must cover every trial with a recorded verdict exactly')
                     if trial['case'] not in password_files:raise ValueError('Missing case password handle')
-                    report=regrade_v3(report,Path(evidence_files[trial['trial_key']]),Path(password_files[trial['case']]))
+                    report=regrade_v3(report,Path(evidence_files[trial['trial_key']]),password_of(trial['case']))
                     regraded.add(trial['trial_key'])
                 qualified=settled and _report_equivalent(report)
             elif regrading:
                 if report.get('schema')!='benchmark-report/2':raise ValueError('Legacy trials do not support sidecar regrade')
                 if trial['case'] not in password_files:raise ValueError('Missing case password handle')
-                report=regrade_v2(report,Path(evidence_files[trial['trial_key']]),Path(password_files[trial['case']]))
+                report=regrade_v2(report,Path(evidence_files[trial['trial_key']]),password_of(trial['case']))
                 qualified=settled and _report_success(report)
             else:
                 qualified=_recorded_equivalence(owner,events,report) if protocol else _recorded_success(owner,events,report)

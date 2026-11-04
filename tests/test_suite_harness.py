@@ -11,9 +11,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from generative_driver.benchmark_support.truth import EvaluatorPassword
 from suite_fixtures import drive_suite
 from test_configurator import scripted_stages
-from test_evaluation import FAIL, PASS, PendingRunFixture, files, reference
+from test_evaluation import CASE_TRUTH, FAIL, PASS, PendingRunFixture, files, reference
 from test_harness import EVIDENCE, unstarted_provider
 
 EMULATOR = 'scripted-emulator-handle'
@@ -50,10 +51,11 @@ class HarnessSuiteFixture(PendingRunFixture):
             thread.join(60)
             self.assertFalse(thread.is_alive(), 'Test harness still owns files at cleanup')
 
-    def admit(self, case_id, options, trial_dir, *, password_file, renode=None):
-        self.admitted.append({'case': case_id, 'trial': Path(trial_dir), 'password_file': password_file, 'renode': renode,
+    def admit(self, case_id, options, trial_dir, *, password, renode=None):
+        self.admitted.append({'case': case_id, 'trial': Path(trial_dir), 'password': password, 'renode': renode,
                               'options': dict(options)})
-        return unstarted_provider(self, self.image, trial_dir, self.peers), {'calibration_evidence_sha256': EVIDENCE}
+        return (unstarted_provider(self, self.image, trial_dir, self.peers), {'calibration_evidence_sha256': EVIDENCE},
+                self.unlocked_truth(getattr(self, 'fixture_payload', None)))
 
     def grading(self, *outcomes):
         """A scripted final phase per grading call, in order: values to grade, or an exception the evaluator meets."""
@@ -73,7 +75,7 @@ class HarnessSuiteFixture(PendingRunFixture):
         stack = ExitStack()
         stack.enter_context(scripted_stages(self.controller, check=self.check(), runtime=runtime))
         stack.enter_context(patch.object(harness, 'admit', side_effect=self.admit))
-        stack.enter_context(patch.object(evaluator, 'case_truth', return_value={'recipe': {}}))
+        stack.enter_context(patch(CASE_TRUTH, side_effect=lambda *args: self.unlocked_truth()))
         stack.enter_context(patch.object(evaluator, 'reference_execute', side_effect=self.grading(*outcomes)))
         return stack
 
@@ -140,8 +142,9 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         runs = [row['run_id'] for row in rows]
         self.assertEqual(len(set(runs)), 3)
         # Each child ran on its own device, which the harness provided with the case's password file and stopped.
-        self.assertEqual([(a['password_file'], a['renode'], a['options']['scenario_id']) for a in self.admitted],
-                         [(str(self.password), EMULATOR, 'original')] * 3)
+        self.assertEqual([(a['renode'], a['options']['scenario_id']) for a in self.admitted], [(EMULATOR, 'original')] * 3)
+        self.assertEqual(len({id(a['password']) for a in self.admitted}), 1)
+        self.assertIsInstance(self.admitted[0]['password'], EvaluatorPassword)
         self.assertEqual(len(self.peers), 3); self.assertTrue(all(peer.closed for peer in self.peers))
         # Each child was graded once, after its run, in its own trial; the third grade met a host fault and is unscored.
         for run_id, expected in zip(runs, ('graded', 'graded', 'pending')):

@@ -39,7 +39,8 @@ def public_configuration(value):
     """Exclude evaluator handles and credentials from public execution evidence."""
     if isinstance(value, dict):
         return {key: public_configuration(item) for key, item in value.items()
-                if key not in {'password', 'evaluator_password_file', 'authkey', 'api_key', 'token'}}
+                if key not in {'password', 'evaluator_password', 'evaluator_password_file', 'authkey', 'api_key',
+                               'token'}}
     if isinstance(value, list):
         return [public_configuration(item) for item in value]
     return value

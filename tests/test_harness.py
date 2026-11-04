@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from test_device_provider import MONITOR, Process, RECIPE, keys
+from generative_driver.benchmark_support.truth import EvaluatorPassword, read_password
 
 EVIDENCE = 'e' * 64
 SOURCE = Path(__file__).resolve().parents[1] / 'src/generative_driver'
@@ -53,7 +54,7 @@ class DeviceEndpointTests(unittest.TestCase):
         (self.root / 'firmware.bin').write_bytes(b'synthetic image')
         # Nothing the harness serves to the configurator unlocks the case truth.
         for target in ('generative_driver.benchmark_support.emulator.truth_for_case',
-                       'generative_driver.benchmark_support.truth.unlock'):
+                       'generative_driver.benchmark_support.truth.EvaluatorPassword.unlock'):
             guard = patch(target, side_effect=AssertionError('truth unlocked while serving the device'))
             guard.start(); self.addCleanup(guard.stop)
 
@@ -223,7 +224,7 @@ class TrialFinishTests(unittest.TestCase):
                     if method == 'result':
                         return read
                     raise AssertionError(method)
-                with patch.object(harness, 'admit', return_value=(provider, {'calibration_evidence_sha256': EVIDENCE})), \
+                with patch.object(harness, 'admit', return_value=(provider, {'calibration_evidence_sha256': EVIDENCE}, None)), \
                         patch.object(evaluator, 'seal', side_effect=AssertionError('sealed what the harness did not read')) as sealing, \
                         patch.object(evaluator, 'grade', side_effect=AssertionError('graded what the harness did not read')) as grading, \
                         patch('generative_driver.client.call', side_effect=configurator):
@@ -248,7 +249,7 @@ class TrialFinishTests(unittest.TestCase):
         started = provider.start()['session_id']
         receipt = provider.replace(started, ['7'], ['6'])
         provider.session.stop = lambda: None  # The replacement never confirms its stop.
-        done = finish(provider, 'tq9-v2', None, [], None, {'status': 'completed'})
+        done = finish(provider, 'tq9-v2', None, [], None, {'status': 'completed'}, truth_source=None)
         self.assertEqual(done['status'], 'stop-unconfirmed')
         self.assertIs(done['device_stop']['confirmed'], False)
         self.assertEqual((done['device']['session_id'], done['device']['binding']),
@@ -272,7 +273,7 @@ class StartAdmissionTests(unittest.TestCase):
             guard = patch(target, return_value=self.root / 'resources')
             guard.start(); self.addCleanup(guard.stop)
         # The configurator no longer admits a case by unlocking truth: the harness does, before the run.
-        for target in ('generative_driver.benchmark_support.registry.require_calibration',
+        for target in ('generative_driver.benchmark_support.registry.admitted_truth',
                        'generative_driver.benchmark_support.emulator.truth_for_case'):
             refused = patch(target, side_effect=AssertionError('the configurator unlocked case truth'))
             refused.start(); self.addCleanup(refused.stop)
@@ -411,8 +412,10 @@ def start(**kwargs):
     return session
 patch('generative_driver.benchmark.case_root', return_value=Path(RESOURCES)).start()
 patch('generative_driver.benchmark_support.case_assets.case_root', return_value=Path(RESOURCES)).start()
-patch('generative_driver.benchmark_support.registry.require_calibration',
-      return_value={'ok': True, 'evidence_sha256': EVIDENCE}).start()
+from generative_driver.benchmark_support import registry
+def admitted(pin, password):
+    return registry.case_truth(pin['case_id'], Path('no-run'), password), {'ok': True, 'evidence_sha256': EVIDENCE}
+patch('generative_driver.benchmark_support.registry.admitted_truth', side_effect=admitted).start()
 patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=start).start()
 """
 
@@ -440,11 +443,9 @@ def start(**kwargs):
         session.observe = lambda: {'values': {}, 'reads': []}
         session.stop = lambda: None
     return session
-def admitted(pin, secret):
-    path = Path(secret['evaluator_password_file'])
-    if not path.is_absolute() or not path.is_file():
-        raise ValueError('password file not found: ' + str(path))
-    return {'ok': True, 'evidence_sha256': EVIDENCE_SHA}
+def admitted(pin, password):
+    from generative_driver.benchmark_support.truth import UnlockedTruth
+    return UnlockedTruth({'recipe': RECIPE}, pin['truth_sha256']), {'ok': True, 'evidence_sha256': EVIDENCE_SHA}
 def configurator(method, params=None, home=None, **kwargs):
     if method == 'ping':
         return {'ok': True}
@@ -453,8 +454,7 @@ def configurator(method, params=None, home=None, **kwargs):
     raise AssertionError(method)
 patch('generative_driver.benchmark.case_root', return_value=Path(RESOURCES_DIR)).start()
 patch('generative_driver.benchmark_support.case_assets.case_root', return_value=Path(RESOURCES_DIR)).start()
-patch('generative_driver.benchmark_support.registry.require_calibration', side_effect=admitted).start()
-patch('generative_driver.benchmark_support.evaluator.case_truth', return_value={'recipe': RECIPE}).start()
+patch('generative_driver.benchmark_support.registry.admitted_truth', side_effect=admitted).start()
 patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=start).start()
 patch('generative_driver.client.call', side_effect=configurator).start()
 """
@@ -607,7 +607,6 @@ class HarnessTrialTests(unittest.TestCase):
         from generative_driver import client, daemon
         from generative_driver.benchmark import run
         from generative_driver.benchmark_support.harness import read_trial
-        from generative_driver.benchmark_support.truth import seal, unlock
         from suite_fixtures import public_case_fixture
         from tq9_workflow_fixture import WORKER
         if os.name == 'nt':
@@ -628,7 +627,7 @@ class HarnessTrialTests(unittest.TestCase):
                      'contracts': {'units': {'temperature': 'degC', 'duty': 'permille'},
                                    'scenarios': {'original': {'phases': {'final': final}}},
                                    'time_policy': {'sample_settle_seconds': 0}}}
-            manifest['truth']['sha256'] = seal(truth, resources / manifest['truth']['path'], password.read_text())
+            manifest['truth']['sha256'] = read_password(password).seal(truth, resources / manifest['truth']['path'])
             (resources / 'cases/tq9-v2/case.json').write_text(json.dumps(manifest))
             fixture = root / 'harness_fixture.py'
             fixture.write_text(HARNESS_FIXTURE.replace('TESTS', repr(str(Path(__file__).resolve().parent)))
@@ -643,7 +642,7 @@ class HarnessTrialTests(unittest.TestCase):
                                                            'code': client.code_identity()}))
             for target, value in (('generative_driver.benchmark.case_root', {'return_value': resources}),
                                   ('generative_driver.benchmark_support.case_assets.case_root', {'return_value': resources}),
-                                  ('generative_driver.benchmark_support.registry.require_calibration',
+                                  ('generative_driver.benchmark_support.registry.admitted_truth',
                                    {'side_effect': AssertionError('the configurator admitted the case')}),
                                   ('generative_driver.benchmark_support.emulator.truth_for_case',
                                    {'side_effect': AssertionError('the configurator unlocked the case truth')})):
@@ -704,7 +703,7 @@ class HarnessTrialTests(unittest.TestCase):
                 self.assertEqual(record['device_stop'], {'stopped': True, 'confirmed': True})
                 self.assertIs(record['sealed'], True)
                 # The sealed evidence and the evaluator's draft live in the trial directory, never in the run's.
-                sealed = unlock(trial / 'run-evidence.enc', password.read_text(), result['equivalence']['evidence_sha256'])
+                sealed = read_password(password).unlock(trial / 'run-evidence.enc', result['equivalence']['evidence_sha256'])
                 self.assertEqual(sealed['final']['frozen_artifact_sha256'], result['equivalence']['frozen_artifact_sha256'])
                 self.assertTrue((trial / 'evaluator-draft.enc').is_file())
                 self.assertFalse([p for p in home.rglob('*.enc')])

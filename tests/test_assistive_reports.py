@@ -17,6 +17,7 @@ from test_configurator import scripted_stages
 from test_evaluation import EXPECTED, FAIL, PASS, TOKEN, Undecided, evaluation, files, reference
 from test_harness import EVIDENCE, unstarted_provider
 from test_suite_harness import EMULATOR, HarnessSuiteFixture, manifest
+from generative_driver.benchmark_support.truth import EvaluatorPassword, read_password
 
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 GATED = ('accepted_gates', 'evaluations', 'final_evaluation', 'evaluator_verdicts')
@@ -44,9 +45,9 @@ class AssistiveFixture(HarnessSuiteFixture):
             return reference(outcome)(*args, **kwargs)
         provider = unstarted_provider(self, self.image, trial, self.peers)
         with scripted_stages(self.controller, check=self.check(**options), runtime=runtime), \
-                patch.object(harness, 'admit', return_value=(provider, {'calibration_evidence_sha256': EVIDENCE})), \
+                patch.object(harness, 'admit', return_value=(provider, {'calibration_evidence_sha256': EVIDENCE},
+                                                             self.unlocked_truth())), \
                 patch('generative_driver.client.call', side_effect=self.configurator), \
-                patch.object(evaluator, 'case_truth', return_value={'recipe': {}}), \
                 patch.object(evaluator, 'reference_execute', side_effect=grade):
             record = harness.run_trial(trial, {'trial_id': name, 'home': str(self.home), 'goal': harness.GOAL, 'case': 'tq9-v2',
                                                'case_options': {'scenario_id': 'original'}, 'effects': ['write', 'actuate'],
@@ -201,14 +202,13 @@ class ScoreTests(AssistiveFixture):
         # the run of a system under another protocol, and a report that names another protocol than its evidence was
         # sealed under.
         from generative_driver.benchmark_support import evaluator
-        from generative_driver.benchmark_support.truth import unlock
         trial, record = self.trial('good', PASS)
         result = self.controller.call('result', {'run_id': record['run_id']})
         report = self.report(record['run_id'], 'good')
-        sealed = unlock(trial / 'run-evidence.enc', self.password.read_text(), report['equivalence']['evidence_sha256'])
+        sealed = read_password(self.password).unlock(trial / 'run-evidence.enc', report['equivalence']['evidence_sha256'])
         learning = {**result, 'progress': {**result['progress'], 'protocol': 'learning/1'}}
         folder = self.root / 'learning'
-        digest = evaluator.seal(folder, self.home / 'runs' / record['run_id'], learning, password_file=self.password,
+        digest = evaluator.seal(folder, self.home / 'runs' / record['run_id'], learning, password=read_password(self.password),
                                 final=sealed['final'], equivalence={**sealed['equivalence'], 'protocol': 'learning/1'})['sha256']
         named = {**report, 'protocol': 'learning/1',
                  'equivalence': {**report['equivalence'], 'protocol': 'learning/1', 'evidence_sha256': digest}}
@@ -223,15 +223,14 @@ class ScoreTests(AssistiveFixture):
         # Catches a regrade that keeps the sealed verdict over the sealed final's records, credits an equivalent verdict
         # sealed without a final, or pairs a final with another mapping than the verdict names.
         from generative_driver.benchmark_support import evaluator
-        from generative_driver.benchmark_support.truth import unlock
         trial, record = self.trial('good', PASS)
         result = self.controller.call('result', {'run_id': record['run_id']})
         report = self.report(record['run_id'], 'good')
         run_dir = self.home / 'runs' / record['run_id']
-        sealed = unlock(trial / 'run-evidence.enc', self.password.read_text(), report['equivalence']['evidence_sha256'])
+        sealed = read_password(self.password).unlock(trial / 'run-evidence.enc', report['equivalence']['evidence_sha256'])
         def resealed(name, **content):
             folder = self.root / 'resealed' / name
-            digest = evaluator.seal(folder, run_dir, result, password_file=self.password,
+            digest = evaluator.seal(folder, run_dir, result, password=read_password(self.password),
                                     **{'final': sealed['final'], 'equivalence': sealed['equivalence'], **content})['sha256']
             return {**report, 'equivalence': {**report['equivalence'], 'evidence_sha256': digest}}, folder / 'run-evidence.enc'
         failing = copy.deepcopy(sealed['final'])
@@ -253,7 +252,7 @@ class ScoreTests(AssistiveFixture):
         self.assertEqual(self.score(report, trial / 'run-evidence.enc'), report)
         run, _ = self.pending()
         report = self.report(run['run_id'], 'pending')
-        with patch('generative_driver.benchmark_support.truth.unlock', side_effect=AssertionError('evidence unlocked')):
+        with patch('generative_driver.benchmark_support.truth.EvaluatorPassword.unlock', side_effect=AssertionError('evidence unlocked')):
             scored = self.score(report, None, None)
         self.assertEqual((scored['verdict'], scored['equivalence'], scored['equivalence_status']), ('unscored', None, 'pending'))
 
@@ -290,13 +289,12 @@ class ScoreTests(AssistiveFixture):
         # Catches a regrade that credits an unknown verdict whose sealed final decides every check, a graded verdict whose
         # sealed final leaves one undecided, and a report that claims a graded verdict over sealed unknown evidence.
         from generative_driver.benchmark_support import evaluator
-        from generative_driver.benchmark_support.truth import unlock
         def resealed(trial, record, name, change):
             result = self.controller.call('result', {'run_id': record['run_id']})
             report = self.report(record['run_id'], name)
-            sealed = unlock(trial / 'run-evidence.enc', self.password.read_text(), report['equivalence']['evidence_sha256'])
+            sealed = read_password(self.password).unlock(trial / 'run-evidence.enc', report['equivalence']['evidence_sha256'])
             folder = self.root / 'resealed' / name
-            digest = evaluator.seal(folder, self.home / 'runs' / record['run_id'], result, password_file=self.password,
+            digest = evaluator.seal(folder, self.home / 'runs' / record['run_id'], result, password=read_password(self.password),
                                     final=change(copy.deepcopy(sealed['final'])), equivalence=sealed['equivalence'])['sha256']
             return {**report, 'equivalence': {**report['equivalence'], 'evidence_sha256': digest}}, folder / 'run-evidence.enc'
         def decide(final):
@@ -476,7 +474,7 @@ class ProtocolSeparationTests(unittest.TestCase):
         from test_benchmark_v2_evidence import SealedEvidenceTests
         fixture = SealedEvidenceTests(); fixture.setUp(); self.addCleanup(fixture.temp.cleanup)
         report, path = fixture.sealed(fixture.payload())
-        graded = score(report, fixture.password, evidence_path=path)
+        graded = score(report, fixture.password_file, evidence_path=path)
         self.assertEqual((graded['schema'], graded['verdict'], graded['final_evaluation']['verdict']),
                          ('benchmark-report/2', 'passed', 'passed'))
         self.assertNotIn('equivalence', graded)

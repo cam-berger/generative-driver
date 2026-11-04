@@ -4,7 +4,11 @@ from contextlib import contextmanager
 import json
 from types import SimpleNamespace
 import unittest
+from pathlib import Path
+import tempfile
 from unittest.mock import patch
+
+from generative_driver.benchmark_support.truth import EvaluatorPassword
 
 
 @contextmanager
@@ -31,10 +35,18 @@ def public_case():
 
 
 class CorpusPreflightTests(unittest.TestCase):
+    def credential(self):
+        """A synthetic password file, which the check reads."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        path = Path(temporary.name) / 'private-operator-credential.txt'
+        path.write_text('synthetic credential')
+        return str(path)
+
     def test_public_plan_checks_authenticated_admission_and_retains_blocked_inventory(self):
         from generative_driver.benchmark_support.corpus import plan_corpus
         from generative_driver.benchmark_support.preflight import check_corpus
-        credential = '/operator/private-password.txt'
+        credential = self.credential()
         with public_case() as (catalog, row, pin):
             plan = plan_corpus(catalog, repetitions=2)
             original = copy.deepcopy(plan)
@@ -56,7 +68,9 @@ class CorpusPreflightTests(unittest.TestCase):
         self.assertEqual(checked['status'], 'qualified')
         self.assertEqual(checked['evidence_sha256'], 'd'*64)
         self.assertEqual(result['failures'], [])
-        admission.assert_called_once_with(pin, {'evaluator_password_file': credential})
+        self.assertEqual(admission.call_count, 1)
+        self.assertEqual(admission.call_args.args[0], pin)
+        self.assertIsInstance(admission.call_args.args[1], EvaluatorPassword)
         self.assertEqual(plan, original)
         self.assertNotIn(credential, json.dumps(result))
         self.assertNotIn('evaluator_password', json.dumps(result))
@@ -79,7 +93,7 @@ class CorpusPreflightTests(unittest.TestCase):
     def test_admission_failures_expose_public_reasons_without_paths_or_secret_error_text(self):
         from generative_driver.benchmark_support.corpus import plan_corpus
         from generative_driver.benchmark_support.preflight import check_corpus
-        credential = '/private/operator-credential.txt'
+        credential = self.credential()
         secret = 'sentinel-secret-from-a-loader-error'
         with public_case() as (catalog, row, _):
             plan = plan_corpus(catalog)
@@ -108,7 +122,7 @@ class CorpusPreflightTests(unittest.TestCase):
             with patch('generative_driver.benchmark_support.emulator.truth_for_case', return_value={
                     'calibration': record, 'inventory_state': 'qualified', 'images': {},
                     'input_hashes': {}, 'mutations': {'mutants': []}, 'references': {}}) as truth:
-                result = check_corpus(plan, {'evaluator_password_files': {row['case']: '/unopened/handle'}})
+                result = check_corpus(plan, {'evaluator_password_files': {row['case']: self.credential()}})
         self.assertFalse(result['ok'])
         checked = next(case for case in result['cases'] if case['lineage'] == row['id'])
         self.assertEqual(checked['status'], 'unqualified')
@@ -205,7 +219,7 @@ class CorpusPreflightTests(unittest.TestCase):
             legacy = _legacy_plan(catalog, current['repetitions'], current['availability'])
             with patch('generative_driver.benchmark_support.registry.require_calibration',
                        return_value={'ok': True, 'evidence_sha256': 'd'*64}) as admission:
-                result = check_corpus(legacy, {'evaluator_password_files': {row['case']: '/unopened/handle'}})
+                result = check_corpus(legacy, {'evaluator_password_files': {row['case']: self.credential()}})
                 self.assertTrue(result['ok'])
                 self.assertTrue(all(case['selected'] for case in result['cases']))
                 admission.reset_mock()

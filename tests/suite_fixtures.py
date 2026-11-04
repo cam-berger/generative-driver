@@ -61,6 +61,28 @@ def public_case_fixture(root, case_id='tq9-v2', *, calibration=None, **changes):
     return manifest
 
 
+def legacy_case(test, resources, case_id, password, payload):
+    """An installed legacy case copied under `resources`, with its answer key resealed under `password` and the case root
+    patched to it: its truth file."""
+    import shutil
+    from pathlib import Path
+    from unittest.mock import patch
+    from generative_driver.toolkit import resources_root
+    resources = Path(resources)
+    installed = resources_root() / 'bench'
+    for name in (case_id, 'setup-smoke'):  # The stages' interpret assets are setup-smoke's public model.
+        shutil.copytree(installed / 'cases' / name, resources / 'cases' / name)
+    shutil.copytree(installed / 'missions', resources / 'missions', dirs_exist_ok=True)
+    manifest = json.loads((resources / 'cases' / case_id / 'case.json').read_text(encoding='utf-8'))
+    path = resources / manifest['truth']['path']
+    manifest['truth']['sha256'] = password.seal(payload, path)
+    (resources / 'cases' / case_id / 'case.json').write_text(json.dumps(manifest), encoding='utf-8')
+    for target in ('generative_driver.benchmark.case_root', 'generative_driver.benchmark_support.case_assets.case_root'):
+        guard = patch(target, return_value=resources)
+        guard.start(); test.addCleanup(guard.stop)
+    return path
+
+
 def write_scripted_case_worker(directory, *, hold_on_repair=False):
     """Write a subprocess contract fixture for legacy tq9 stages: it imports the supplied firmware at acquire, writes an
     unrelated setup-smoke model at interpret (the real stage observation notes it unqualified) and reports every later
@@ -119,8 +141,9 @@ def legacy_device_patches(private):
     from pathlib import Path
     from unittest.mock import patch
     from tq9_workflow_fixture import Silicon, legacy_truth
-    from generative_driver.benchmark_support import evaluator
-    real, peers = evaluator.case_truth, []
+    from generative_driver.benchmark_support import registry
+    from generative_driver.benchmark_support.truth import UnlockedTruth
+    real, peers = registry.case_truth, []
     def start(**kwargs):
         peer = Silicon(kwargs['image']); peers.append(peer)
         session = peer.session(kwargs['recipe'], Path(kwargs.get('private_dir') or Path(private) / ('native-' + str(len(peers)))))
@@ -129,9 +152,11 @@ def legacy_device_patches(private):
                 return 0 if getattr(peer, 'closed', False) else None
         session.process = Process()
         return session
-    def case_truth(case_id, run_dir, options):
-        return legacy_truth() if case_id == 'tq9' else real(case_id, run_dir, options)
-    return ([patch('generative_driver.benchmark_support.evaluator.case_truth', side_effect=case_truth),
+    def case_truth(case_id, run_dir, password):
+        if case_id == 'tq9':
+            return UnlockedTruth(legacy_truth(), registry.resolve_case('tq9').manifest['truth']['sha256'])
+        return real(case_id, run_dir, password)
+    return ([patch('generative_driver.benchmark_support.registry.case_truth', side_effect=case_truth),
              patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=start)], peers)
 
 

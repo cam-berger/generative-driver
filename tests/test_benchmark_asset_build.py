@@ -6,6 +6,7 @@ from pathlib import Path
 
 from generative_driver.benchmark_support.asset_build import (
     build_argv, require_private_root, require_toolchain)
+from generative_driver.benchmark_support.truth import read_password
 
 GCC = 'arm-none-eabi-gcc (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 14.2.1 20241119'
 OBJCOPY = 'GNU objcopy (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119'
@@ -97,6 +98,23 @@ else:
             return result
         return execute
 
+    def test_02_B9_assemble_release_reads_its_file_once(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from generative_driver.benchmark_support import asset_build, truth
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); author, compiler, script = self.fixture(root)
+            with patch('generative_driver.benchmark_support.authoring.subprocess.run', side_effect=self.runner(script)):
+                report = asset_build.build_family(author, compiler, root / 'private outputs')
+            password = root / 'password'; password.write_text('toy-only-test-password')
+            real = truth.read_password
+            with patch.object(truth, 'read_password', side_effect=real) as reading:
+                result = asset_build.assemble_release(author, report, password, root / 'release')
+            reading.assert_called_once_with(password)
+            manifest = json.loads((root / 'release/cases/parameter-store-v1/case.json').read_text())
+            self.assertEqual(manifest['truth']['sha256'], result['ciphertext_sha256'])
+
     def test_build_twice_seal_and_unlock_exact_pending_inventory(self):
         import base64
         import hashlib
@@ -122,7 +140,7 @@ else:
             self.assertEqual(set(manifest['images']), {'firmware.bin'})
             self.assertEqual(manifest['required_stages'], ['acquire','interpret','probe','ground','emit','reuse'])
             self.assertNotIn(str(author), json.dumps(manifest))
-            unlocked = truth.unlock(release / manifest['truth']['path'], password.read_text(), manifest['truth']['sha256'])
+            unlocked = read_password(password).unlock(release / manifest['truth']['path'], manifest['truth']['sha256'])
             self.assertEqual(set(unlocked['inventory']), asset_build.inventory('parameter-store-v1'))
             entry = unlocked['inventory']['build/firmware.bin']
             self.assertEqual(base64.b64decode(entry['base64']), b'toy BINoriginal')
@@ -318,6 +336,7 @@ class LegacyBuildTests(unittest.TestCase):
                 'generative_driver.benchmark_support.emulator.truth_for_case',return_value=truth),patch(
                 'generative_driver.benchmark_support.evaluator_cli.subprocess.run',side_effect=execute),patch(
                 'generative_driver.benchmark_support.evaluator_cli.subprocess.check_output',return_value='toy compiler'):
+                (root/'password').write_text('synthetic credential')
                 result=manage('rebuild','tq9',root/'password',root/'output',compiler=compiler)
             self.assertTrue(result['ok'])
             self.assertEqual(result['images'],expected)

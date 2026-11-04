@@ -10,11 +10,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from generated_fixtures import FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, PASSWORD, fixture_mission, write_fixture_set
-from generative_driver.benchmark_support import generated_sets, truth
+from generative_driver.benchmark_support import generated_sets
 from generative_driver.benchmark_support.generated_device import FRAMINGS
 from generative_driver.benchmark_support.generated_sets import (load_set, open_device, seal_device, set_registrations,
                                                                 write_manifest)
 from generative_driver.benchmark_support.snapshots import canonical_digest
+from generative_driver.benchmark_support.truth import EvaluatorPassword
 
 SET = 'fixture-v1'
 
@@ -269,7 +270,7 @@ class SetBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'pinned hash'):
             open_device(self.root, manifest, '0000d002', PASSWORD)
         self.assertEqual(open_device(self.root, manifest, '0000d001', PASSWORD)['image'], FIXTURE_IMAGE)  # 0000d001 is untouched
-        for password in ('wrong', ''):
+        for password in (EvaluatorPassword('wrong'),):
             for answer in (False, True):
                 with self.subTest(password=password, answer=answer), self.assertRaisesRegex(ValueError, 'password'):
                     open_device(self.root, manifest, '0000d001', password, answer=answer)
@@ -281,7 +282,7 @@ class SetBundleTests(unittest.TestCase):
         manifest = load_set(self.root, SET, registrations=self.write())
         inputs = {'image_base64': base64.b64encode(FIXTURE_IMAGE).decode('ascii'), 'mission': fixture_mission('0000d001')}
         self.assertEqual(open_device(self.root, manifest, '0000d001', PASSWORD)['mission'], inputs['mission'])
-        truth.seal(inputs, self.root / 'devices' / '0000d001.inputs.enc', PASSWORD)  # the same content, another salt and nonce
+        PASSWORD.seal(inputs, self.root / 'devices' / '0000d001.inputs.enc')  # the same content, another salt and nonce
         with self.assertRaisesRegex(ValueError, 'pinned hash'):
             open_device(self.root, manifest, '0000d001', PASSWORD)
 
@@ -326,7 +327,7 @@ class SetBundleTests(unittest.TestCase):
                 ('level 6', {**good, 'level': 6}, {}, 'level'),
                 ('a framing that does not exist', {**good, 'framing': 'morse'}, {}, 'framing'),
                 ('a text image', good, {'image': 'text'}, 'image'), ('a list mission', good, {'mission': []}, 'mission'),
-                ('no answer key', good, {'answer_key': None}, 'answer key'), ('no password', good, {'password': ''}, 'password')]
+                ('no answer key', good, {'answer_key': None}, 'answer key')]
         for name, device, changes, pattern in rows:
             with self.subTest(name), self.assertRaisesRegex(ValueError, pattern):
                 seal_device(self.root, device, **{**content, **changes})

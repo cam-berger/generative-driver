@@ -48,12 +48,12 @@ The public mission asks for register/coil operations and unrelated-state preserv
 
 The existing `truth calibrate` command reads an already registered manifest and encrypted inventory. For a new upstream case, implement its trusted support and place its public mission in the selected asset tree first. Privately author `upstream-truth.json` against [`upstream.hydrate_truth`](../src/generative_driver/benchmark_support/upstream.py): `schema: "benchmark-upstream-truth/1"`, `case_id`, `family`, `inventory_state: "pending"`, `images`, `source`, `build`, `recipe`, `phases` (`diagnostic` and `final`), `references` (`a` and `b`), `mutations`, and the exact `public_mission`. Author native episodes/references/oracles for that device; copying Zephyr's hidden expectations cannot qualify a different device. Author a matching public manifest using the [Zephyr manifest](../src/generative_driver/resources/bench/cases/zephyr-modbus-v1/case.json) as a field example, with the new trusted identity, provenance, image hashes and `calibration.status: "pending"`.
 
-Use the existing [`truth.seal`](../src/generative_driver/benchmark_support/truth.py) emitter to create the initial ciphertext and pin its returned digest in that manifest. For example, run this as an operator-private Python script after authoring both input JSON files; it creates pending assets, not qualification evidence:
+Use the existing [`EvaluatorPassword.seal`](../src/generative_driver/benchmark_support/truth.py) emitter to create the initial ciphertext and pin its returned digest in that manifest. For example, run this as an operator-private Python script after authoring both input JSON files; it creates pending assets, not qualification evidence:
 
 ```python
 import json
 from pathlib import Path
-from generative_driver.benchmark_support.truth import seal
+from generative_driver.benchmark_support.truth import read_password
 from generative_driver.benchmark_support.upstream import hydrate_truth
 
 private = Path("/operator/private/new-case-authoring")
@@ -63,8 +63,7 @@ assert payload["inventory_state"] == "pending"
 assert (payload["case_id"], payload["family"]) == (manifest["id"], manifest["family"])
 hydrate_truth(payload)  # Validates against trusted registration and public mission.
 case = manifest["id"]
-digest = seal(payload, private / (case + ".enc"),
-              (private.parent / (case + ".password")).read_text(encoding="utf-8").strip())
+digest = read_password(private.parent / (case + ".password")).seal(payload, private / (case + ".enc"))
 manifest["truth"] = {"path": "groundtruth/" + case + ".enc", "sha256": digest}
 manifest["calibration"] = {"status": "pending"}
 (private / "case.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

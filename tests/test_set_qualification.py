@@ -15,12 +15,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import generative_driver
-from generated_fixtures import (FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, PASSWORD, REFERENCE_A, fixture_mission,
+from generated_fixtures import (FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, PASSWORD, PASSWORD_TEXT, REFERENCE_A, fixture_mission,
                                 fixture_start, write_fixture_set)
 from generative_driver.benchmark import main
 from generative_driver.benchmark_support import generated_sets, set_qualification, truth
 from generative_driver.benchmark_support.grader_identity import grader_identity
 from generative_driver.benchmark_support.set_qualification import qualify, sample
+from generative_driver.benchmark_support.truth import EvaluatorPassword, read_password
 
 SET = 'fixture-v1'
 START = 'generative_driver.benchmark_support.native.NativeSession.start'
@@ -107,7 +108,7 @@ class QualifiedSetTests(Workspace, unittest.TestCase):
         # The record is sealed beside the manifest. The manifest and the device files stay as registered, so
         # requalifying never changes the manifest hash.
         sealed = self.root / 'qualification.enc'
-        self.assertEqual(truth.unlock(sealed, PASSWORD, hashlib.sha256(sealed.read_bytes()).hexdigest()), record)
+        self.assertEqual(PASSWORD.unlock(sealed, hashlib.sha256(sealed.read_bytes()).hexdigest()), record)
         after = files(self.root)
         after.pop('qualification.enc')
         self.assertEqual(after, self.before)
@@ -172,7 +173,7 @@ class QualifiedSetTests(Workspace, unittest.TestCase):
             generated_sets.seal_qualification(resealed[name], record, PASSWORD)
         malformed = ('another schema', 'a missing field', 'devices that are no map', 'no object')
         rows = [('no qualification', {'root': unqualified}, ['qualification unreadable: FileNotFoundError']),
-                ('another password', {'password': 'another credential'}, ['qualification unreadable: ValueError']),
+                ('another password', {'password': truth.EvaluatorPassword('another credential')}, ['qualification unreadable: ValueError']),
                 ('a changed byte', {'root': changed}, ['qualification unreadable: ValueError']),
                 ('a nested record', {'root': nested_record}, ['qualification unreadable: RecursionError']),
                 ('a nested registered manifest',
@@ -331,7 +332,7 @@ class PendingSetTests(Workspace, unittest.TestCase):
         rows = [('an output inside the repository', {'output_dir': inside}, 'outside repository'),
                 ('an output that is not empty', {'output_dir': crowded}, 'empty output directory'),
                 ('a set that is not registered', {'registrations': {}}, 'not registered'),
-                ('another password', {'password': 'another credential'}, 'Cannot unlock')]
+                ('another password', {'password': truth.EvaluatorPassword('another credential')}, 'Cannot unlock')]
         for name, change, pattern in rows:
             arguments = {'password': PASSWORD, 'output_dir': out, 'registrations': registered, **change}
             with self.subTest(name), patch(START) as start:
@@ -383,8 +384,20 @@ class CommandTests(Workspace, unittest.TestCase):
 
     def password_file(self, root):
         path = root.with_name('set.password')
-        path.write_text(PASSWORD + '\n', encoding='utf-8')
+        path.write_text(PASSWORD_TEXT + '\n', encoding='utf-8')
         return path
+
+    def test_02_B9_the_command_reads_its_file_once(self):
+        root, out = self.workspace()
+        write_fixture_set(root)
+        handle = self.password_file(root)
+        real = truth.read_password
+        with patch.object(truth, 'read_password', side_effect=real) as reading, \
+                patch('generative_driver.benchmark_support.set_qualification.qualify',
+                      return_value={'status': 'passed', 'failures': [], 'seconds': {}}):
+            code, _, _ = self.command(root, handle, out)
+        self.assertEqual(code, 0)
+        reading.assert_called_once_with(str(handle))
 
     def test_the_command_refuses_a_set_the_shipped_table_does_not_register(self):
         root, out = self.workspace()
@@ -393,7 +406,7 @@ class CommandTests(Workspace, unittest.TestCase):
             code, printed, logged = self.command(root, self.password_file(root), out)
         self.assertEqual((code, json.loads(printed)), (1, {'ok': False, 'error': 'Generated set not registered: ' + SET}))
         start.assert_not_called()
-        self.assertNotIn(PASSWORD, printed + logged)
+        self.assertNotIn(PASSWORD_TEXT, printed + logged)
         self.assertFalse((root / 'qualification.enc').exists())
 
     def test_the_command_prints_the_status_and_each_runs_seconds_and_never_the_password(self):
@@ -405,11 +418,15 @@ class CommandTests(Workspace, unittest.TestCase):
                                                            'seconds': seconds}) as qualifying:
                 exit_code, printed, logged = self.command(root, self.password_file(root), out)
                 # The password reaches the qualifier without its file's trailing newline.
-                qualifying.assert_called_once_with(root, SET, PASSWORD, renode=Path('/toy'), output_dir=out)
+                self.assertEqual(qualifying.call_count, 1)
+                (called_root, called_set, called), keywords = qualifying.call_args
+                self.assertEqual((called_root, called_set, keywords), (root, SET, {'renode': Path('/toy'), 'output_dir': out}))
+                sealed = called.seal({'a': 1}, out.with_name('sealed.enc'))
+                self.assertEqual(PASSWORD.unlock(out.with_name('sealed.enc'), sealed), {'a': 1})
                 self.assertEqual((exit_code, json.loads(printed)),
                                  (code, {'ok': status == 'passed', 'status': status, 'failures': failures,
                                          'seconds': seconds}))
-                self.assertNotIn(PASSWORD, printed + logged)
+                self.assertNotIn(PASSWORD_TEXT, printed + logged)
 
 
 if __name__ == '__main__':

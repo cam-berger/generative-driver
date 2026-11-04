@@ -147,9 +147,8 @@ def calibrate(case, options):
     from ..benchmark import case_root
     from .registry import resolve_case
     from .emulator import truth_for_case
-    from .truth import seal
     definition = resolve_case(case)
-    payload = truth_for_case(case_root(), definition.manifest, options)
+    payload = truth_for_case(case_root(), definition.manifest, options['evaluator_password'])
     output = Path(options['output']).expanduser().resolve()
     record = qualify(payload, definition.manifest, definition.root/artifact_name(definition.manifest), output,
                      **{key: options[key] for key in ('renode', 'ghidra_home', 'java_home')})
@@ -159,8 +158,7 @@ def calibrate(case, options):
     manifest['calibration'] = {'status': record['status']}
     if record['status'] == 'passed':
         manifest['calibration'].update(input_hashes=record['input_hashes'], evidence_sha256=canonical_digest(record))
-    manifest['truth']['sha256'] = seal(payload, output/(case + '.enc'),
-        Path(options['evaluator_password_file']).read_text(encoding='utf-8').strip())
+    manifest['truth']['sha256'] = options['evaluator_password'].seal(payload, output/(case + '.enc'))
     _write(output/'case.json', manifest)
     return {'ok': record['status'] == 'passed', 'execution': 'reference-calibration', 'model_benchmark': False,
             'case': case, 'status': record['status'], 'evidence_sha256': canonical_digest(record),

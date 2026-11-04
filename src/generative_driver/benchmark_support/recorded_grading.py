@@ -16,11 +16,12 @@ class Unscorable(ValueError):
     evaluator's limits. The message is public: it names no expected value or limit."""
 
 
-def grade(case_id, trial_dir, run_dir, result, *, password_file, protocol):
-    """Grade a completed legacy run's frozen driver once from the fresh reuse of it the run recorded (`recorded-reuse`):
-    (public equivalence/1 without its evidence hash, the final evaluation for the seal or None). It takes the accepted
-    driver as the evaluator does (`evaluator.accepted_driver`). A final the draft already holds for this run and package
-    is rebuilt and never graded again. A changed record raises IntegrityError; recorded evidence that cannot grade the
+def grade(case_id, trial_dir, run_dir, result, *, password, truth_source, protocol):
+    """from the fresh reuse of it the run recorded (`recorded-reuse`): (public equivalence/1 without its evidence hash,
+    the final evaluation for the seal or None). It takes the accepted driver as the evaluator does
+    (`evaluator.accepted_driver`), and asks `truth_source` for the answer key (`evaluator.answer_key`) only when it
+    grades. A final the draft already holds for this run and package is rebuilt and never graded again. A changed
+    record, or an answer key the pin does not name, raises IntegrityError; recorded evidence that cannot grade the
     driver for a reason outside it raises Unscorable. Every record names `protocol`, the run's; none raises ValueError,
     as the evaluator's grade does."""
     from .evaluator import accepted_driver, final_record, method_for, record, reuse_mission
@@ -35,8 +36,8 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, protocol):
                       mission=reuse_mission(case_id, run_dir, accepted, None, None), method=method_for(case_id),
                       protocol=protocol), None
     _, sha, revision, capabilities, capabilities_sha = driver
-    verdict, final = _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, capabilities_sha, password_file,
-                               protocol=protocol)
+    verdict, final = _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, capabilities_sha,
+                               password, truth_source, protocol=protocol)
     proof = owner_evidence(run_dir, accepted)
     if final is not None and required(proof, snapshot):
         final = {**final, 'generated_reuse_required': True, 'generated_reuse_verified': verified(proof, sha)}
@@ -148,13 +149,14 @@ def _physical(truth, events, capabilities, sha, revision, reuse, private):
     return checks, records, {'measurement': measurement, 'reference': saved}
 
 
-def _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, capabilities_sha, password_file, *, protocol):
+def _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, capabilities_sha, password,
+              truth_source, *, protocol):
     """Grade the frozen driver from the fresh reuse of it the run recorded (`recorded-reuse`): the accepted reuse
     handoff's package calls, re-hashed, against the truth's reuse goal (legacy tq9), or against the operator reference
     within the truth's limits (bme280). No device is touched. A final the draft holds for this run and package is
     rebuilt, never graded again. Its records name the run's `protocol`."""
     from .case_assets import REUSE_EVENTS, accepted_artifact, mapping_errors as tq9_errors, reuse_mission as _mission
-    from .evaluator import _copy, _draft, _held, _mission_fields, case_truth, final_record, method_for, record
+    from .evaluator import _copy, _draft, _held, _mission_fields, answer_key, final_record, method_for, record
     from .physical import mapping_errors as physical_errors, valid_rows
     accepted, private = result.get('accepted_handoffs') or [], Path(trial_dir)/'private'
     reuse = next((h for h in reversed(accepted) if h.get('stage') == 'reuse' and h.get('artifacts')), None)
@@ -178,10 +180,10 @@ def _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, 
     if events is None:
         return record('graded', False, [], [{'id': 'fresh_reuse', 'reason': 'fresh reuse recorded no call of the frozen driver'}],
                       sha, capabilities_sha, _mission_fields(mission), method, protocol=protocol), None
-    draft = _draft(trial_dir, password_file)
+    draft = _draft(trial_dir, password)
     final = _held(draft, result['run_id'], sha)
     if final is None:
-        truth = case_truth(case_id, run_dir, {'evaluator_password_file': str(password_file)})
+        truth = answer_key(truth_source, result['case_pin'])
         built = (_legacy_tq9(truth, events, capabilities, sha, revision) if case_id == 'tq9' else
                  _physical(truth, events, capabilities, sha, revision, reuse, private))
         if built is None:
@@ -194,5 +196,5 @@ def _recorded(case_id, trial_dir, run_dir, result, sha, revision, capabilities, 
                  'contract': {'schema': 'benchmark-behavior/1', 'artifact_sha256': sha, 'checks': checks},
                  'records': records, 'raw': raw}
         draft['evaluations'].append(final)
-        _draft(trial_dir, password_file, draft)
+        _draft(trial_dir, password, draft)
     return final_record(final, capabilities_sha, _mission_fields(mission), protocol=protocol), final

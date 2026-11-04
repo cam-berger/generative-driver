@@ -20,11 +20,12 @@ def exercise_execution(case_id, password_file, output, *, renode=None):
     from .emulator import truth_for_case
     from .device_provider import DeviceProvider
     from .authoring import evaluator_directory
+    from .truth import read_password
     plan = load_plan()
     case = resolve_case(case_id)
     if case.id != plan['case']:
         raise ValueError('No execution qualification plan for this case')
-    truth = truth_for_case(case_root(), case.manifest, {'evaluator_password_file': password_file})
+    truth = truth_for_case(case_root(), case.manifest, read_password(password_file) if password_file else None)
     method = case.manifest.get('execution_setup', {}).get('method', 'renode')
     if (truth['images'] != case.manifest['images'] or truth['source']['commit'] != plan['source_commit']
             or truth['recipe'].get('backend', 'renode') != method):

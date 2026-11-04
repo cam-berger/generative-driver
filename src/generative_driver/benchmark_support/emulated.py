@@ -628,7 +628,7 @@ def record_call(case_id, run_dir, stage, name, arguments, result, before, after,
             'result': measured(result), 'before_observation': before, 'observation': after}, allow_nan=False)+'\n')
 
 
-def score(report, password_file=None, *, evidence_path=None):
+def score(report, password=None, *, evidence_path=None):
     """Offline regrade requires an explicit evaluator sidecar; never guesses paths."""
     from .evidence import regrade_v2
-    return regrade_v2(report, evidence_path, password_file)
+    return regrade_v2(report, evidence_path, password)

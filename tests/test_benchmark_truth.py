@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from generative_driver.benchmark_support.truth import seal, unlock
+from generative_driver.benchmark_support.truth import EvaluatorPassword
 
 
 class EncryptedTruthTests(unittest.TestCase):
@@ -10,13 +10,13 @@ class EncryptedTruthTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'truth.enc'
             evidence = {'schema': 'benchmark-truth/1', 'expected': {'reading': 21.5}}
-            pin = seal(evidence, path, 'test-only-passphrase')
+            pin = EvaluatorPassword('test-only-passphrase').seal(evidence, path)
             self.assertNotIn(b'21.5', path.read_bytes())
-            self.assertEqual(unlock(path, 'test-only-passphrase', pin), evidence)
+            self.assertEqual(EvaluatorPassword('test-only-passphrase').unlock(path, pin), evidence)
             with self.assertRaises(ValueError):
-                unlock(path, 'incorrect', pin)
+                EvaluatorPassword('incorrect').unlock(path, pin)
             with self.assertRaises(ValueError):
-                unlock(path, 'test-only-passphrase', '0' * 64)
+                EvaluatorPassword('test-only-passphrase').unlock(path, '0' * 64)
 
 
 if __name__ == '__main__':

@@ -18,6 +18,7 @@ from shutil import rmtree
 
 from .generated_sets import QUALIFICATION_SCHEMA, load_set, open_device, seal_qualification
 from .grader_identity import grader_identity
+from .truth import EvaluatorPassword
 
 PIN = {'case_id': 'generated', 'scenario_id': 'original', 'case_seed': 0, 'revision': 0}
 # What a run that could not be graded raises: the run's error, recorded as a failure, and the next run goes on.
@@ -67,7 +68,7 @@ def _failure(run, device_id, grade, error):
     return '%s %s:%s' % (run, grade['verdict'], device_id)
 
 
-def qualify(set_root: Path, registration: str, password: str, *, renode: Path, output_dir: Path,
+def qualify(set_root: Path, registration: str, password: EvaluatorPassword, *, renode: Path, output_dir: Path,
             registrations: dict | None = None) -> dict:
     """Qualify the set `registration` under `set_root` once and return its record (`generated-set-qualification/1`):
     {schema, registration, manifest_sha256, grader_identity (the generated family's, whole), status 'passed' or

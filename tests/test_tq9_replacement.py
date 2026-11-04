@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from generative_driver.benchmark_support.registry import pin_case, resolve_case, validate_pinned_workflow
 from suite_fixtures import public_case_fixture
+from generative_driver.benchmark_support.truth import read_password
 
 
 class Tq9ReplacementTests(unittest.TestCase):
@@ -17,7 +18,6 @@ class Tq9ReplacementTests(unittest.TestCase):
 
     def test_unavailable_native_tools_cannot_qualify_the_replacement(self):
         from generative_driver.benchmark_support.authoring import calibrate
-        from generative_driver.benchmark_support.truth import seal
         from tq9_workflow_fixture import capabilities, model
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -29,10 +29,10 @@ class Tq9ReplacementTests(unittest.TestCase):
             truth['mutations'] = {'required': [], 'mutations': []}
             password = root/'password'
             password.write_text('synthetic replacement fixture')
-            manifest['truth']['sha256'] = seal(truth, resources/manifest['truth']['path'], password.read_text())
+            manifest['truth']['sha256'] = read_password(password).seal(truth, resources/manifest['truth']['path'])
             (resources/'cases/tq9-v3/case.json').write_text(json.dumps(manifest))
             with patch.dict(os.environ, {'GENERATIVE_DRIVER_CASE_ROOT': str(resources)}):
-                result = calibrate('tq9-v3', {'evaluator_password_file': str(password),
+                result = calibrate('tq9-v3', {'evaluator_password': read_password(password),
                     'output': str(root/'output'), 'compiler': '/absent',
                     'renode': None, 'ghidra_home': None, 'java_home': None})
             self.assertFalse(result['ok'])

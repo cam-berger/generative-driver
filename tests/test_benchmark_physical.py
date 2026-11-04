@@ -12,6 +12,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from generative_driver.benchmark import prepare_stage
+from generative_driver.benchmark_support.registry import case_truth
+from generative_driver.benchmark_support.truth import read_password
 
 BINDING = {'url': 'ftdi://scripted/1'}
 MAPPING = {'temperature': 't', 'humidity': 'h', 'pressure': 'p'}
@@ -27,12 +29,11 @@ def handoff(stage, paths, assignment=None):
 def reference_fixture(root, age=0):
     """A toy bme280 case whose toy truth is sealed under a synthetic credential, and an operator reference for reuse:
     (resources root, observation, evaluator options)."""
-    from generative_driver.benchmark_support.truth import seal
     resources=root/'resources';case=resources/'cases/bme280';case.mkdir(parents=True)
     password=root/'password';password.write_text('public toy fixture password')
     truth={'max_reference_age_seconds':60,'max_tolerances':{'temperature':.2,'humidity':1,'pressure':10}}
     encrypted=resources/'groundtruth/bme280.enc'
-    digest=seal(truth,encrypted,password.read_text())
+    digest=read_password(password).seal(truth, encrypted)
     (case/'case.json').write_text(json.dumps({'schema':'benchmark-case/1','id':'bme280','version':'3','evaluator_version':'3',
         'execution':'actual-agent-physical','scenarios':['original'],
         'required_stages':['acquire','interpret','probe','ground','emit','reuse'],
@@ -133,14 +134,49 @@ class RecordedReuseTests(unittest.TestCase):
                               {**self.options,'assignment_id':assignment})
         return checked,handoff('reuse',[Path(p) for p in checked['artifacts']],assignment)
 
-    def grade(self, reuse, protocol='assistive/1'):
+    def grade(self, reuse, protocol='assistive/1', truth_source=None):
         from generative_driver.benchmark_support import recorded_grading
         result={'run_id':'run-physical','case_pin':self.pin,'snapshot_sha256':self.snapshot['snapshot_sha256'],'status':'completed',
                 'progress':{'equivalence':'pending','protocol':protocol},'accepted_handoffs':[*self.accepted,reuse]}
         trial=self.root/'trial';trial.mkdir(exist_ok=True)
         with patch('generative_driver.benchmark_support.physical._measure',side_effect=AssertionError('the evaluator touched the board')):
-            return recorded_grading.grade('bme280',trial,self.run_dir,result,password_file=self.secret['evaluator_password_file'],
+            password=read_password(self.secret['evaluator_password_file'])
+            source=truth_source or (lambda:case_truth('bme280',self.run_dir,password))
+            return recorded_grading.grade('bme280',trial,self.run_dir,result,password=password,truth_source=source,
                                           protocol=result['progress']['protocol'])
+
+    def test_02_B14_recorded_grading_asks_for_the_answer_key_only_when_it_grades_and_in_todays_order(self):
+        from generative_driver.benchmark_support.evaluator import _draft
+        from generative_driver.benchmark_support.recorded_grading import grade
+        asked=[]
+        def source():
+            asked.append(1)
+            return case_truth('bme280',self.run_dir,read_password(self.secret['evaluator_password_file']))
+        def graded(accepted):
+            result={'run_id':'run-physical','case_pin':self.pin,'snapshot_sha256':self.snapshot['snapshot_sha256'],'status':'completed',
+                    'progress':{'equivalence':'pending','protocol':'assistive/1'},'accepted_handoffs':accepted}
+            trial=self.root/'trial';trial.mkdir(exist_ok=True)
+            return grade('bme280',trial,self.run_dir,result,password=read_password(self.secret['evaluator_password_file']),
+                         truth_source=source,protocol='assistive/1')
+        # No driver, an invalid mapping (before anything of the reuse) and no recorded reuse: no answer key is asked for.
+        record,final=graded([self.accepted[0]])
+        self.assertEqual((record['status'],final,asked),('no-driver',None,[]))
+        probe=json.loads(json.dumps(self.accepted[0]))
+        bad=self.root/'accepted/probe-bad';bad.mkdir()
+        (bad/'model.json').write_text('{}');(bad/'capabilities.json').write_text('[]')
+        invalid=handoff('probe',[bad/'model.json',bad/'capabilities.json'])
+        record,final=graded([invalid,self.accepted[1]])
+        self.assertEqual(([d['id'] for d in record['diff']],final,asked),(['capability_mapping'],None,[]))
+        record,final=graded(self.accepted)
+        self.assertEqual(([d['id'] for d in record['diff']],final,asked),(['fresh_reuse'],None,[]))
+        # It grades: asked once. The draft then holds the final: not asked again, and the same grade.
+        prepared,state=self.prepare()
+        self.measure(state,self.observed['observed_at'])
+        _,reuse=self.observe()
+        first,final=graded([*self.accepted,reuse])
+        self.assertEqual((first['equivalent'],asked),(True,[1]))
+        again,held=graded([*self.accepted,reuse])
+        self.assertEqual((again,held,asked),(first,final,[1]))
 
     def test_the_recorded_measurement_is_graded_against_the_operator_reference_after_the_run(self):
         prepared,state=self.prepare()
@@ -320,10 +356,10 @@ class EarlierProtocolScoreTests(unittest.TestCase):
             final=self.final(root,observed);Path(observed['evidence_path']).unlink()
             report=self.report(final)
             with patch('generative_driver.benchmark_support.legacy.case_root',return_value=resources):
-                self.assertEqual(score(report,options['evaluator_password_file'])['verdict'],'passed')
+                self.assertEqual(score(report,read_password(options['evaluator_password_file']))['verdict'],'passed')
                 Path(final['reference']['evidence_path']).write_text('Tampered saved copy')
                 with self.assertRaisesRegex(ValueError,'reference'):
-                    score(report,options['evaluator_password_file'])
+                    score(report,read_password(options['evaluator_password_file']))
 
     def test_offline_physical_grade_rechecks_final_values_and_measurement_reference_age(self):
         from generative_driver.benchmark_support.legacy import score
@@ -333,13 +369,13 @@ class EarlierProtocolScoreTests(unittest.TestCase):
             report=self.report({'reference':observed,'measurement_time':observed['observed_at'],
                     'observations':{'temperature':21.5,'humidity':40,'pressure':101325}})
             with patch('generative_driver.benchmark_support.legacy.case_root',return_value=resources):
-                self.assertEqual(score(report,options['evaluator_password_file'])['verdict'],'passed')
+                self.assertEqual(score(report,read_password(options['evaluator_password_file']))['verdict'],'passed')
                 report['case_state']['physical_final']['observations']['temperature']=999
-                self.assertEqual(score(report,options['evaluator_password_file'])['verdict'],'failed')
+                self.assertEqual(score(report,read_password(options['evaluator_password_file']))['verdict'],'failed')
                 report['case_state']['physical_final']['observations']['temperature']=21.5
                 report['case_state']['physical_final']['measurement_time']=observed['observed_at']+120
                 with self.assertRaisesRegex(ValueError,'reference'):
-                    score(report,options['evaluator_password_file'])
+                    score(report,read_password(options['evaluator_password_file']))
 
     def test_exported_physical_report_scores_with_explicit_reference_from_another_directory(self):
         # Catches losing the private reference path at export without a portable resolver.

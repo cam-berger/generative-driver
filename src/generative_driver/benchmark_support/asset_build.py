@@ -183,11 +183,11 @@ def assemble_release(authoring_root, build_report, password_file, output_dir):
     payload = {'schema': 'benchmark-family-truth/1', 'case_id': case_id, 'family': metadata['family'],
                'inventory_state': 'pending', 'inventory': entries, 'inventory_sha256': _canonical(hashes),
                'input_hashes': input_hashes}
-    password = Path(password_file).read_text(encoding='utf-8').strip()
+    password = truth.read_password(password_file)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     encrypted = output / 'groundtruth' / (case_id + '.enc')
-    digest = truth.seal(payload, encrypted, password)
-    if truth.unlock(encrypted, password, digest) != payload:
+    digest = password.seal(payload, encrypted)
+    if password.unlock(encrypted, digest) != payload:
         raise ValueError('Sealed inventory round-trip failed')
     manifest = {'schema': 'benchmark-case/2', 'id': case_id, 'family': metadata['family'],
         'version': '5', 'evaluator_version': '5', 'adapter_key': 'emulator-v2',

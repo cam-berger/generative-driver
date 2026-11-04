@@ -115,13 +115,13 @@ def _check_manifest(set_root, manifest, registration):
 
 def seal_device(set_root: Path, device: dict, *, image: bytes, mission: dict, answer_key: dict,
                 password: EvaluatorPassword) -> dict:
-    """`set_root/devices/`, creating it: its public inputs `{"image_base64", "mission"}` and its answer key, each sealed
-    under `password`. `device` names the `id` (eight lowercase hexadecimal digits), `level` (1 to 5) and `framing` (one
-    of `generated_device.FRAMINGS`). Returns the device's manifest entry. Before anything is written: ValueError for an
-    invalid device, an image that is not bytes, a mission or answer key that is not an object, a device that breaks the
-    generated-device interface (`generated_device.validate_device`); AttributeError for a `password` that is no
-    `EvaluatorPassword`; and, from `canonical_digest`, TypeError for content that JSON cannot carry (a set, bytes) and
-    ValueError for NaN or text that cannot be encoded."""
+    """Seal one device under `set_root/devices/`, creating it: its public inputs `{"image_base64", "mission"}` and its
+    answer key, each sealed under `password`. `device` names the `id` (eight lowercase hexadecimal digits), `level` (1
+    to 5) and `framing` (one of `generated_device.FRAMINGS`). Returns the device's manifest entry. Before anything is
+    written: ValueError for an invalid device, an image that is not bytes, a mission or answer key that is not an
+    object, a device that breaks the generated-device interface (`generated_device.validate_device`); AttributeError for
+    a `password` that is no `EvaluatorPassword`; and, from `canonical_digest`, TypeError for content that JSON cannot
+    carry (a set, bytes) and ValueError for NaN or text that cannot be encoded."""
     validate_identity(device)
     if not isinstance(image, bytes):
         raise ValueError('The image of a device is bytes')
@@ -172,11 +172,12 @@ def load_set(set_root: Path, registration: str, *, registrations: dict | None = 
 
 def open_device(set_root: Path, manifest: dict, device_id: str, password: EvaluatorPassword, *,
                 answer: bool = False) -> dict:
-    """: `{'image': bytes, 'mission': dict}`, and `'answer_key'` when `answer` is true. Without it the answer file is
-    never read, let alone decrypted. Each file is unlocked under `password` with its manifest hash, and the image, the
-    mission and the answer key are checked against their content hashes, then against the generated-device interface
-    (`generated_device.validate_device`), the inputs alone without `answer`. ValueError for any mismatch or broken rule,
-    the wrong password or an unknown device, before anything is returned; a file that cannot be read raises OSError."""
+    """One device of a loaded set: `{'image': bytes, 'mission': dict}`, and `'answer_key'` when `answer` is true.
+    Without it the answer file is never read, let alone decrypted. Each file is unlocked under `password` with its
+    manifest hash, and the image, the mission and the answer key are checked against their content hashes, then against
+    the generated-device interface (`generated_device.validate_device`), the inputs alone without `answer`. ValueError
+    for any mismatch or broken rule, the wrong password or an unknown device, before anything is returned; a file that
+    cannot be read raises OSError."""
     entry = next((listed for listed in manifest['devices'] if listed.get('id') == device_id), None)
     if entry is None:
         raise ValueError('Unknown generated device: ' + str(device_id))

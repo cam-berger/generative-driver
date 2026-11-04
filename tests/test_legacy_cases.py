@@ -17,7 +17,7 @@ from test_configurator import WORKFLOW_TIMEOUT, context_of, gateway_identity, sc
 from test_device_provider import MONITOR, keys
 from test_device_recovery import FORBIDDEN, imported
 from test_harness import SOURCE
-from suite_fixtures import legacy_case
+from suite_fixtures import file_changes, legacy_case, symlinks_refused
 from tq9_workflow_fixture import Silicon, legacy_capabilities, legacy_truth, model as tq9_model, replies
 from generative_driver.benchmark_support.registry import pin_case
 from generative_driver.benchmark_support.truth import EvaluatorPassword, UnlockedTruth, read_password
@@ -97,7 +97,7 @@ class LegacyTrialFixture(unittest.TestCase):
         self.password.write_text('synthetic fixture credential')
         self.home = self.root / 'home'; self.home.mkdir(mode=0o700)
         (self.home / 'config.json').write_text(json.dumps({'executors': {'codex': {'command': ['scripted-runtime']}}}))
-        self.peers, self.unlocked, self.during = [], [], []
+        self.peers, self.unlocked = [], []
         self.truth_sha256 = None
         def case_truth(case_id, where, password):
             # The harness unlocks the truth once, at admission, for the recipe and the grade.
@@ -123,16 +123,14 @@ class LegacyTrialFixture(unittest.TestCase):
             reply = self.controller.call(method, params or {})
             self.run_id = reply.get('run_id')
             return reply
-        reply = self.controller.call(method, params or {})
-        if method == 'status' and self.during and reply.get('status') == 'completed':
-            self.during.pop()()
-        return reply
+        return self.controller.call(method, params or {})
 
     def tool(self, request, name, arguments):
         return self.controller.call('tool', {**gateway_identity(request), 'name': name, 'arguments': arguments})
 
-    def trial(self, *, duty=370, disarm=True):
-        """Run one trial with scripted workers; the reuse worker requests `duty` permille and disarms when `disarm`."""
+    def trial(self, *, duty=370, disarm=True, name='trial', after_acquire=None):
+        """Run one trial with scripted workers; the reuse worker requests `duty` permille and disarms when `disarm`, and
+        `after_acquire()` runs in the acquire worker, once it has acquired the firmware."""
         from generative_driver.benchmark_support import harness
         real_check, self.objectives = self.controller._check, {}
         def work(request):
@@ -144,6 +142,8 @@ class LegacyTrialFixture(unittest.TestCase):
             self.objectives[request.stage] = task.get('objective')
             if request.stage == 'acquire':
                 self.tool(request, 'acquire_firmware_artifact', task['context'])
+                if after_acquire:
+                    after_acquire()
             elif request.stage == 'probe':
                 model_dir = task['context']['model_dir']
                 self.assertTrue(self.tool(request, 'interface_execute', {'model_dir': model_dir, 'operation': 'measure', 'parameters': {}})['ok'])
@@ -172,13 +172,13 @@ class LegacyTrialFixture(unittest.TestCase):
                                     '_request_id': gateway_identity(request)['assignment_id']+':'+operation})
                                 self.assertTrue(result.structured_content['ok'], result)
                 asyncio.run(reuse())
-        request = {'trial_id': 'trial-legacy', 'home': str(self.home), 'goal': 'Legacy scripted contract', 'case': 'tq9',
+        request = {'trial_id': 'trial-legacy' if name == 'trial' else name, 'home': str(self.home), 'goal': 'Legacy scripted contract', 'case': 'tq9',
                    'executor': 'codex', 'budget_seconds': 120, 'effects': ['write', 'actuate'], 'case_options': {},
                    'scoped_tool_approval': 'emulator', 'password_file': str(self.password), 'renode': str(self.root / 'renode')}
         from owner_ipc_fixture import owner_ipc
         with owner_ipc(self.controller), \
                 scripted_stages(self.controller, check=real_check, prepare=lambda original, *args: original(*args), work=work):
-            record = harness.run_trial(self.root / 'trial', request, call=self.configurator)
+            record = harness.run_trial(self.root / name, request, call=self.configurator)
         return record, self.controller.call('result', {'run_id': record['run_id']})
 
 
@@ -203,17 +203,28 @@ class LegacyUnlockOnceTests(LegacyTrialFixture):
         self.assertEqual((record['status'], result['equivalence']['equivalent']), ('evaluated', True), record)
         self.assertEqual(self.opened.count(self.truth_file), 1)
 
-    def test_02_B12_deleting_or_replacing_the_files_once_the_stages_ended_changes_neither_grade_nor_seal(self):
-        # At the moment grading starts. Earlier, a stage's `adapter_for` still opens the truth file (registry.py's default).
-        def change():
-            self.truth_file.write_bytes(b'a worker changed this'); self.password.unlink()
-        self.during.append(change)
-        record, result = self.trial(duty=500, disarm=False)
-        self.assertEqual(self.during, [])
-        self.assertEqual((record['status'], result['equivalence']['status'], result['equivalence']['equivalent']),
-                         ('evaluated', 'graded', False), record)
-        sealed = self.literal.unlock(self.root / 'trial/run-evidence.enc', record['evidence']['sha256'])
-        self.assertEqual((sealed['final']['method'], sealed['evaluation_error']), ('recorded-reuse', None))
+    def test_02_B12_a_worker_changing_the_files_during_the_stages_changes_neither_grade_nor_seal(self):
+        _, undisturbed = self.trial(duty=500, disarm=False, name='undisturbed')
+        self.assertEqual((undisturbed['status'], undisturbed['equivalence']['status'],
+                          undisturbed['equivalence']['equivalent']), ('completed', 'graded', False), undisturbed['reason'])
+        refused = symlinks_refused(self.root)
+        for name, change, undo in file_changes(self.truth_file, self.password, self.root / 'outside-the-root.bin'):
+            with self.subTest(change=name):
+                if name == 'symlink' and refused:
+                    self.skipTest('The system refuses a symlink: ' + refused)
+                try:
+                    record, result = self.trial(duty=500, disarm=False, name=name, after_acquire=change)
+                finally:
+                    undo()
+                self.assertEqual((result['status'], [h['stage'] for h in result['accepted_handoffs']]),
+                                 ('completed', list(STAGES)), result['reason'])
+                self.assertEqual((record['status'], record['sealed']), ('evaluated', True), record)
+                without_seal = lambda equivalence: {key: value for key, value in equivalence.items()
+                                                    if key != 'evidence_sha256'}
+                self.assertEqual(without_seal(record['equivalence']), without_seal(undisturbed['equivalence']))
+                sealed = self.literal.unlock(self.root / name / 'run-evidence.enc', record['evidence']['sha256'])
+                self.assertIsNone(sealed['evaluation_error'])
+                self.assertIsNotNone(sealed['final'])
 
 
 class LegacyTrialTests(LegacyTrialFixture):

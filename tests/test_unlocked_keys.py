@@ -16,8 +16,8 @@ from unittest.mock import patch
 
 from generative_driver.benchmark_support import evaluator, families, harness, registry, truth
 from generative_driver.benchmark_support.snapshots import canonical_digest
-from suite_fixtures import legacy_case, public_case_fixture
-from test_configurator import scripted_stages
+from suite_fixtures import file_changes, legacy_case, public_case_fixture, symlinks_refused
+from test_configurator import gateway_identity, scripted_stages, task_of
 from test_evaluation import CASE_TRUTH, FAIL, HarnessTrialFixture, PASS, PendingRunFixture, reference
 from test_legacy_cases import silicon_start
 from test_suite_harness import HarnessSuiteFixture, manifest as suite_manifest
@@ -244,6 +244,20 @@ class PinWithoutTruthFileTests(PendingRunFixture):
             registry.pin_case('tq9-v2', 'original', 0)
         self.assertEqual(registry.resolve_case('tq9-v2', check_truth=False).manifest, pin['manifest'])
         self.assertEqual(registry.pin_case('tq9-v2', 'original', 0, check_truth=False), pin)
+        # A symlink out of the root: the default refuses it, as `resource_path` does, and without the file check it passes.
+        outside = self.root / 'outside-the-root.bin'
+        outside.write_bytes(b'not the answer key')
+        try:
+            truth_file.symlink_to(outside)
+        except OSError:
+            pass  # Windows may disallow unprivileged symlinks.
+        else:
+            with self.assertRaisesRegex(ValueError, 'escapes root'):
+                registry.pin_case('tq9-v2', 'original', 0)
+            with self.assertRaisesRegex(ValueError, 'escapes root'):
+                registry.resource_path(self.root / 'resources', 'groundtruth/tq9-v2.enc')
+            self.assertEqual(registry.pin_case('tq9-v2', 'original', 0, check_truth=False), pin)
+            truth_file.unlink()
         # What stays checked: the manifest's own truth hash, the image and any asset.
         case = self.root / 'resources/cases/tq9-v2/case.json'
         manifest = json.loads(case.read_text())
@@ -251,11 +265,44 @@ class PinWithoutTruthFileTests(PendingRunFixture):
         for name, changed, error, message in (
                 ('a malformed truth hash', {**manifest, 'truth': {**manifest['truth'], 'sha256': 'short'}}, ValueError, 'Malformed SHA-256'),
                 ('an escaping truth path', {**manifest, 'truth': {**manifest['truth'], 'path': '../outside'}}, ValueError, 'escapes root'),
+                ('an absolute truth path', {**manifest, 'truth': {**manifest['truth'], 'path': str(outside)}}, ValueError, 'Invalid case resource path'),
                 ('a changed image hash', {**manifest, 'images': {'firmware.bin': '0' * 64}}, ValueError, 'Case image hash mismatch')):
             case.write_text(json.dumps(changed))
             with self.subTest(name), self.assertRaisesRegex(error, message):
                 registry.pin_case('tq9-v2', 'original', 0, check_truth=False)
         case.write_text(json.dumps(manifest))
+
+    def test_02_B22_adapter_for_opens_no_truth_file_and_raises_only_what_load_definition_does(self):
+        from generative_driver.benchmark_support.adapters import adapter_for
+        from generative_driver.benchmark_support import emulated
+        truth_file = self.root / 'resources/groundtruth/tq9-v2.enc'
+        read = []
+        real = Path.read_bytes
+
+        def read_bytes(path):
+            read.append(Path(path))
+            return real(path)
+        with patch.object(Path, 'read_bytes', read_bytes):
+            self.assertIs(adapter_for('tq9-v2'), emulated)
+        self.assertTrue(read)
+        self.assertNotIn(truth_file, read)
+        for name, change in (('replaced', lambda: truth_file.write_bytes(b'replaced')), ('missing', truth_file.unlink)):
+            change()
+            with self.subTest(name):
+                self.assertIs(adapter_for('tq9-v2'), emulated)
+        case = self.image.parent / 'case.json'
+        manifest = json.loads(case.read_text())
+        for name, changed, message in (
+                ('a malformed truth hash', {**manifest, 'truth': {**manifest['truth'], 'sha256': 'short'}}, 'Malformed SHA-256'),
+                ('an escaping truth path', {**manifest, 'truth': {**manifest['truth'], 'path': '../outside'}}, 'escapes root'),
+                ('a changed image hash', {**manifest, 'images': {'firmware.bin': '0' * 64}}, 'Case image hash mismatch')):
+            case.write_text(json.dumps(changed))
+            with self.subTest(name), self.assertRaisesRegex(ValueError, message):
+                adapter_for('tq9-v2')
+        case.write_text(json.dumps(manifest))
+        self.image.unlink()
+        with self.assertRaisesRegex(registry.PendingCaseError, 'Case image is unbuilt'):
+            adapter_for('tq9-v2')
 
     def test_02_B22_grading_checks_the_pin_without_opening_the_truth_file(self):
         run, result = self.pending()
@@ -437,21 +484,71 @@ class SealedTrialFixture(HarnessTrialFixture):
                       side_effect=silicon_start(self, [], self.root))
         guard.start(); self.addCleanup(guard.stop)
 
-    def real_trial(self, name, *, during=None, **options):
-        """A trial through the real `admit`; `during()` runs once, at the first status read of its started run."""
-        pending = [during] if during else []
-
-        def call(method, params=None):
-            if method == 'status' and pending:
-                pending.pop()()
-            return self.configurator(method, params)
+    def real_trial(self, name, **options):
+        """A trial through the real `admit`, with scripted stage observations."""
         trial = self.root / 'bench' / name
         with scripted_stages(self.controller, check=self.check(**options)):
             record = harness.run_trial(trial, {'trial_id': name, 'home': str(self.home), 'goal': harness.GOAL, 'case': 'tq9-v2',
                                                'case_options': {'scenario_id': 'original'}, 'effects': ['write', 'actuate'],
                                                'budget_seconds': 120, 'password_file': str(self.password),
-                                               'renode': str(self.root / 'renode')}, call=call)
+                                               'renode': str(self.root / 'renode')}, call=self.configurator)
         return trial, record
+
+    def tool(self, request, name, arguments):
+        return self.controller.call('tool', {**gateway_identity(request), 'name': name, 'arguments': arguments})
+
+    def staged_trial(self, name, *, after_acquire=None):
+        """A trial through the real `admit`, `_prepare` and `_check`, with scripted workers: (trial, record, result).
+        `after_acquire()` runs in the acquire worker, once it has acquired the firmware."""
+        import asyncio
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        from owner_ipc_fixture import owner_ipc
+        from package_env import package_env
+        from tq9_workflow_fixture import replies
+        real_check = self.controller._check
+
+        def work(request):
+            workspace = Path(request.workspace)
+            if request.stage == 'interpret':
+                (workspace / 'model.json').write_text(json.dumps(self.model))
+                (workspace / 'replies.json').write_text(json.dumps(replies()))
+                return
+            task = task_of(request.prompt)
+            if request.stage == 'acquire':
+                self.tool(request, 'acquire_firmware_artifact', task['context'])
+                if after_acquire:
+                    after_acquire()
+            elif request.stage == 'probe':
+                model_dir = task['context']['model_dir']
+                measure = {'model_dir': model_dir, 'operation': 'measure', 'parameters': {}}
+                self.assertTrue(self.tool(request, 'interface_execute', measure)['ok'])
+                self.assertTrue(self.tool(request, 'probe_run', {**measure, 'n': 1})['ok'])
+                (workspace / 'capabilities.json').write_text(json.dumps(self.mapping))
+            elif request.stage == 'emit':
+                self.assertTrue(self.tool(request, 'emit_package', task['context'])['ok'])
+            elif request.stage == 'reuse':
+                async def reuse():
+                    gateway = request.gateway
+                    parameters = StdioServerParameters(command=gateway['command'], args=gateway['args'], env=package_env())
+                    async with stdio_client(parameters) as streams:
+                        async with ClientSession(*streams) as client:
+                            await client.initialize()
+                            assignment = gateway_identity(request)['assignment_id']
+                            for operation, values in (('measure', {}), ('arm', {}), ('set_duty', {'duty': 370}), ('disarm', {})):
+                                called = await client.call_tool('device_' + operation,
+                                                                {**values, '_request_id': assignment + ':' + operation})
+                                self.assertTrue(called.structured_content['ok'], called)
+                asyncio.run(reuse())
+        trial = self.root / 'bench' / name
+        with owner_ipc(self.controller), \
+                scripted_stages(self.controller, check=real_check, prepare=lambda original, *args: original(*args), work=work):
+            record = harness.run_trial(trial, {'trial_id': name, 'home': str(self.home), 'goal': harness.GOAL, 'case': 'tq9-v2',
+                                               'executor': 'codex', 'case_options': {'scenario_id': 'original'},
+                                               'effects': ['write', 'actuate'], 'budget_seconds': 120,
+                                               'scoped_tool_approval': 'emulator', 'password_file': str(self.password),
+                                               'renode': str(self.root / 'renode')}, call=self.configurator)
+        return trial, record, self.controller.call('result', {'run_id': record['run_id']}) if record['run_id'] else None
 
 
 class UnlockOnceTests(SealedTrialFixture):
@@ -472,30 +569,41 @@ class UnlockOnceTests(SealedTrialFixture):
             self.resume(trial)
         self.assertEqual(spy.opened, [trial / 'evaluation-token.enc'])
 
-    def test_02_B12_deleting_or_replacing_the_files_once_the_run_started_changes_neither_grade_nor_seal(self):
-        kept, secret = self.truth_file.read_bytes(), self.password.read_bytes()
-        fields = ('status', 'equivalent', 'checks', 'diff', 'passed', 'total', 'method', 'protocol')
-
-        def deleted():
-            self.truth_file.unlink(); self.password.unlink()
-
-        def replaced():
-            self.truth_file.write_bytes(b'a worker changed this'); self.password.write_text('another credential')
+    def test_02_B12_a_worker_changing_the_files_during_the_stages_changes_neither_grade_nor_seal(self):
         with patch.object(evaluator, 'reference_execute', side_effect=reference(FAIL)):
-            _, undisturbed = self.real_trial('undisturbed')
-        self.assertEqual((undisturbed['status'], undisturbed['equivalence']['equivalent']), ('evaluated', False), undisturbed)
-        for name, change in (('deleted', deleted), ('replaced', replaced)):
+            _, undisturbed, result = self.staged_trial('undisturbed')
+        self.assertEqual(undisturbed['status'], 'evaluated', undisturbed)
+        self.assertEqual((result['equivalence']['status'], result['equivalence']['equivalent']), ('graded', False))
+        without_seal = lambda equivalence: {key: value for key, value in equivalence.items()
+                                            if key != 'evidence_sha256'}
+        refused = symlinks_refused(self.root)
+        for name, change, undo in file_changes(self.truth_file, self.password, self.root / 'outside-the-root.bin'):
             with self.subTest(change=name), patch.object(evaluator, 'reference_execute', side_effect=reference(FAIL)):
-                trial, record = self.real_trial(name, during=change)
-                self.assertEqual(record['status'], 'evaluated', record)
-                self.assertIs(record['sealed'], True)
-                self.assertEqual({key: record['equivalence'][key] for key in fields},
-                                 {key: undisturbed['equivalence'][key] for key in fields})
-                sealed = self.literal.unlock(trial / 'run-evidence.enc', record['equivalence']['evidence_sha256'])
-                self.assertEqual(sealed['equivalence']['status'], 'graded')
-                self.assertIsNotNone(sealed['final'])
+                if name == 'symlink' and refused:
+                    self.skipTest('The system refuses a symlink: ' + refused)
+                try:
+                    trial, record, result = self.staged_trial(name, after_acquire=change)
+                finally:
+                    undo()
+                self.assertEqual((result['status'], [h['stage'] for h in result['accepted_handoffs']]),
+                                 ('completed', ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse']), result['reason'])
+                self.assertEqual((record['status'], record['sealed']), ('evaluated', True), record)
+                self.assertEqual(without_seal(record['equivalence']), without_seal(undisturbed['equivalence']))
+                sealed = self.literal.unlock(trial / 'run-evidence.enc', record['evidence']['sha256'])
                 self.assertIsNone(sealed['evaluation_error'])
-            self.truth_file.write_bytes(kept); self.password.write_bytes(secret)
+                self.assertIsNotNone(sealed['final'])
+
+    def test_02_B12_limit_a_case_json_edited_during_the_stages_is_seen_at_grading_as_integrity(self):
+        case = self.image.parent / 'case.json'
+        manifest = json.loads(case.read_text())
+
+        def edit():
+            case.write_text(json.dumps({**manifest, 'truth': {**manifest['truth'], 'sha256': '0' * 64}}))
+        with patch.object(evaluator, 'reference_execute', side_effect=AssertionError('graded')):
+            _, record, result = self.staged_trial('edited', after_acquire=edit)
+        self.assertEqual(result['status'], 'completed', result['reason'])
+        self.assertEqual((record['status'], record['equivalence']['status']), ('unscored', 'unscored'), record)
+        self.assertTrue(record['equivalence']['diff'][0]['reason'].startswith('integrity: '), record['equivalence'])
 
 
 class GraderSourceTests(unittest.TestCase):
@@ -879,6 +987,19 @@ class CommandReadTests(unittest.TestCase):
         self.handle = self.root / 'password-handle'
         self.handle.write_text(SECRET)
         self.password = truth.EvaluatorPassword(SECRET)
+
+    def test_02_B22_score_goes_through_the_adapter_and_meets_the_files_own_errors(self):
+        from generative_driver import benchmark
+        from tq9_workflow_fixture import legacy_truth
+        path = legacy_case(self, self.root / 'resources', 'tq9', self.password, legacy_truth())
+        report = {'case': 'tq9', 'stages': {}}
+        self.assertEqual(benchmark.score(report, str(self.handle))['case'], 'tq9')
+        path.write_bytes(b'replaced')
+        with self.assertRaisesRegex(ValueError, 'does not match its pinned hash'):
+            benchmark.score(report, str(self.handle))
+        path.unlink()
+        with self.assertRaises(FileNotFoundError):
+            benchmark.score(report, str(self.handle))
 
     def test_02_B9_score_reads_its_file_once(self):
         from generative_driver import benchmark

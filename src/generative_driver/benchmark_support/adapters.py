@@ -36,7 +36,9 @@ _ADAPTERS = {'emulator-v2': _emulated, 'smoke': _smoke, 'legacy-emulator': _lega
 
 
 def adapter_for(case_id: str):
-    definition = resolve_case(case_id)
+    """The adapter module of `case_id`, by its `adapter_key`. It runs on every stage and package call, so it does not
+    open the truth file: a worker changing that file must not stop the run (Feature 02, unlocked keys)."""
+    definition = resolve_case(case_id, check_truth=False)
     loader = _ADAPTERS.get(definition.adapter_key)
     if loader is None:
         raise ValueError('Benchmark adapter is pending: ' + definition.adapter_key)

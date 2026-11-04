@@ -91,3 +91,23 @@ Module-level `truth.seal` and `truth.unlock` go. `_key` and the envelope stay as
 - Any real password, vault or model run. Requalification is the user's, at pinning.
 
 ## Deviations
+
+- A rewrap script cut the opening words of 14 docstrings in a80ebc7, restored after it — a slip inside this Feature's own diff, all read whole, no scope effect.
+- `_refuse_unsafe_path` repeats the two lexical checks of `resource_path` — the Spec requires a helper of its own and `resource_path` unchanged.
+- `test_02_B22_a_suite_resume...` has no RED, and the three B7 tests have RED only by mutation — they pin behaviour the Spec says stays as it is.
+- `test_02_B16_an_unlocked_truth...` and `test_02_B9_the_command_reads_its_file_once` get RED from a temporary revert — process only; the saved excerpts fit.
+- Legacy B11, legacy B15 and recorded B14 get RED from temporary mutations — process only; the saved excerpts fit.
+- RED for new names is mostly `AttributeError`/`TypeError`, and two B17 REDs stay signature-only — a disclosure, not a scope change; two other B17 tests have REDs that fit.
+- Other existing expected values changed with B11/B20 (`test_legacy_cases.py`, `test_evaluation.py` `unlocked[0][1]`) — the same removal of the second unlock as the Spec's named exception.
+- "Truth unlocked" guards now patch `evaluator.answer_key` or pass `truth=` — they guard the same thing, now that a trial's truth comes from `admit`.
+- Tests with fake password paths now write real temporary files — follows from reading at command entry.
+- `seal_device`'s "no password" row and `''` in the wrong-password subtest are gone — B21 replaces that refusal, and `EvaluatorPassword('')` cannot be built.
+- Names the Spec left open: `evaluator.answer_key`, `registry._refuse_unsafe_path`, `harness._read_supplied`, `_supplied_passwords`, `_UnreadablePassword` — the Spec asks for these helpers without naming them, and only `answer_key` is public.
+- Test support added (`HarnessTrialFixture`, `LegacyTrialFixture`, `SealedTrialFixture.staged_trial`, `legacy_case`, `file_changes`, `symlinks_refused`, `PASSWORD_TEXT` and others) — test-only, serving the seams the Spec agrees.
+- `truth_source` is a required keyword on `finish` — the Spec lists `finish` among the functions that take it.
+- `benchmark.score` reads a given file at entry, so an unreadable file raises even for a report naming no evidence — traces to "A path is read at a process or command entry"; nothing is unlocked and no grade changes.
+- `check_corpus` reads before admission, so an unreadable file on a schema-1 pin is `qualification-failed` — 02-B10 states it; `admitted_truth` itself still admits schema-1 without decrypting.
+- `check_corpus` and `run_suite` read a shared file once, and `report_suite` reads lazily per case — fits 02-B5 and 02-B9.
+- `family_calibration.calibrate` gives `Evaluator password handle required` for an absent, empty or non-UTF-8 file — fits 02-B1's "quoting nothing"; for non-UTF-8 this replaces a decode error, which is harmless.
+- `tests/test_unlocked_keys.py` and `tests/test_legacy_cases.py` hold added lines over 120 columns — no scope effect, neighbouring tests do the same; wrap them when these files are next touched.
+- The refused-symlink skip was shown only with `Path.symlink_to` patched in a scratch run, and nothing ran on Windows — 02-B12's skip happens in the test's own thread, and the Reviewer reran it: `OK (skipped=2)`.

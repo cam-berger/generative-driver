@@ -17,13 +17,13 @@ class Unscorable(ValueError):
 
 
 def grade(case_id, trial_dir, run_dir, result, *, password, truth_source, protocol):
-    """from the fresh reuse of it the run recorded (`recorded-reuse`): (public equivalence/1 without its evidence hash,
-    the final evaluation for the seal or None). It takes the accepted driver as the evaluator does
-    (`evaluator.accepted_driver`), and asks `truth_source` for the answer key (`evaluator.answer_key`) only when it
-    grades. A final the draft already holds for this run and package is rebuilt and never graded again. A changed
-    record, or an answer key the pin does not name, raises IntegrityError; recorded evidence that cannot grade the
-    driver for a reason outside it raises Unscorable. Every record names `protocol`, the run's; none raises ValueError,
-    as the evaluator's grade does."""
+    """Grade a completed legacy run's frozen driver once from the fresh reuse of it the run recorded (`recorded-reuse`):
+    (public equivalence/1 without its evidence hash, the final evaluation for the seal or None). It takes the accepted
+    driver as the evaluator does (`evaluator.accepted_driver`), and asks `truth_source` for the answer key
+    (`evaluator.answer_key`) only when it grades. A final the draft already holds for this run and package is rebuilt
+    and never graded again. A changed record, or an answer key the pin does not name, raises IntegrityError; recorded
+    evidence that cannot grade the driver for a reason outside it raises Unscorable. Every record names `protocol`, the
+    run's; none raises ValueError, as the evaluator's grade does."""
     from .evaluator import accepted_driver, final_record, method_for, record, reuse_mission
     from .mcp_reuse import owner_evidence, required, verified
     if not isinstance(protocol, str) or not protocol:

@@ -83,6 +83,37 @@ def legacy_case(test, resources, case_id, password, payload):
     return path
 
 
+def file_changes(truth_file, password, outside):
+    """The changes a worker could make to a trial's files, as (name, change, undo): both deleted, both replaced, and the
+    truth file swapped for a symlink to `outside`, for which a test first asks `symlinks_refused`."""
+    from pathlib import Path
+    truth_file, password, outside = Path(truth_file), Path(password), Path(outside)
+    kept, secret = truth_file.read_bytes(), password.read_bytes()
+    outside.write_bytes(b'not the answer key')
+    def undo():
+        truth_file.unlink(missing_ok=True); truth_file.write_bytes(kept); password.write_bytes(secret)
+    def deleted():
+        truth_file.unlink(); password.unlink()
+    def replaced():
+        truth_file.write_bytes(b'a worker changed this'); password.write_text('another credential')
+    def symlink():
+        truth_file.unlink(); truth_file.symlink_to(outside)
+    return (('deleted', deleted, undo), ('replaced', replaced, undo), ('symlink', symlink, undo))
+
+
+def symlinks_refused(directory):
+    """The class name of the OSError this system raises for a symlink in `directory`, or None. A test asks in its own
+    thread: a skip raised in a stage's worker would reach the configurator as that stage's failure."""
+    from pathlib import Path
+    probe = Path(directory) / 'symlink-probe'
+    try:
+        probe.symlink_to(Path(directory))
+    except OSError as error:
+        return type(error).__name__
+    probe.unlink()
+    return None
+
+
 def write_scripted_case_worker(directory, *, hold_on_repair=False):
     """Write a subprocess contract fixture for legacy tq9 stages: it imports the supplied firmware at acquire, writes an
     unrelated setup-smoke model at interpret (the real stage observation notes it unqualified) and reports every later

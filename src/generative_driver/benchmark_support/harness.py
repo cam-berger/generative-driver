@@ -195,16 +195,18 @@ def legacy_recipe(truth):
 
 
 def device_recipe(case_id, truth):
-    """`truth` and nothing else: everything but the recipe is dropped before a provider sees it."""
+    """The device definition of the `UnlockedTruth` `truth` and nothing else: everything but the recipe is dropped
+    before a provider sees it."""
     return legacy_recipe(truth.payload) if case_id == 'tq9' else truth.payload['recipe']
 
 
 def admit(case_id, options, trial_dir, *, password, renode=None):
-    """, build its device provider from the recipe alone: (provider or None, admission, `UnlockedTruth`). This step
-    decrypts the case truth, once for every kind of case, and the trial grades from what it returns; a provider sees
-    only the recipe. A v2 case's admission names its calibration evidence; legacy cases have none. A bound device
-    (bme280) is the operator's: no provider, and a password that could not grade the run refuses it before it starts.
-    The caller starts the provider, so that it holds the device even when the start fails."""
+    """Admit the case and, for an emulated one, build its device provider from the recipe alone: (provider or None,
+    admission, `UnlockedTruth`). This step decrypts the case truth, once for every kind of case, and the trial grades
+    from what it returns; a provider sees only the recipe. A v2 case's admission names its calibration evidence; legacy
+    cases have none. A bound device (bme280) is the operator's: no provider, and a password that could not grade the run
+    refuses it before it starts. The caller starts the provider, so that it holds the device even when the start
+    fails."""
     from .device_provider import DeviceProvider
     from .registry import admitted_truth, case_truth, pin_case, resolve_case
     pin = pin_case(case_id, options.get('scenario_id'), options.get('case_seed', 0))
@@ -266,12 +268,13 @@ def _post(call, method, params):
 
 def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, renode=None, token=None, call=None,
              graded=True):
-    """whose handoffs it read. A completed run whose verdict is pending is graded once (`graded` False when its device
-    stop was not confirmed: then nothing is graded) from the answer key `truth_source()` returns, the run evidence is
-    sealed in the trial directory, and the verdict, or an unscored grade, is posted with record_evaluation; any other
-    run's handoffs are sealed alone. No grade is posted that was not sealed first; an unscored one carries none. A
-    record the configurator's equivalence/1 schema would refuse, or accepted records that no longer match their hashes
-    at the seal, are posted unscored: no retry would change them. The plaintext evaluation never outlives this call."""
+    """What the harness does with a terminal run whose handoffs it read. A completed run whose verdict is pending is
+    graded once (`graded` False when its device stop was not confirmed: then nothing is graded) from the answer key
+    `truth_source()` returns, the run evidence is sealed in the trial directory, and the verdict, or an unscored grade,
+    is posted with record_evaluation; any other run's handoffs are sealed alone. No grade is posted that was not sealed
+    first; an unscored one carries none. A record the configurator's equivalence/1 schema would refuse, or accepted
+    records that no longer match their hashes at the seal, are posted unscored: no retry would change them. The
+    plaintext evaluation never outlives this call."""
     from ..configurator import IntegrityError, _evaluation_errors
     from . import evaluator, recorded_grading
     if result.get('equivalence') is not None:
@@ -451,18 +454,19 @@ def _unread(status, result):
 
 
 def run_trial(trial_dir, request, *, password=None, call=None, launch=None, heartbeat=None, stop=None):
-    """, admit, provide the device, start the run, wait, stop the device, grade a completed run once from the answer key
-    admission unlocked, seal, post the verdict. The password file (`password_file` in `request`) is read once, before
-    the configurator is first contacted, unless the caller passes the object as `password`; an unreadable or empty file
-    fails the trial with a reason that names the case and the error's class, and no path. The password file path and the
-    emulator executable stay in this process's memory; trial.json holds neither as a field, nor the evaluation token,
-    though the reason a later failure records there quotes the error met, which may name the emulator's path. A suite's
-    harness passes the password it holds, its child's start request (`start` in `request`), its configurator requests
-    (`call`), `launch(params)`, which starts and attaches the child through its suite, a `heartbeat()` while the run
-    runs and a `stop` event that ends the wait. A suite child's start that got no answer is sent again (see
-    `_start_child`), so a lost reply never has the device stopped under the child it started; trial.json records that
-    the start was sent (`start_sent`) before it is. The harness holds a lock file in `trial_dir` for as long as it runs,
-    by which others tell that it still runs (its process id alone may come to name another process)."""
+    """One trial: read the password, admit, provide the device, start the run, wait, stop the device, grade a completed
+    run once from the answer key admission unlocked, seal, post the verdict. The password file (`password_file` in
+    `request`) is read once, before the configurator is first contacted, unless the caller passes the object as
+    `password`; an unreadable or empty file fails the trial with a reason that names the case and the error's class, and
+    no path. The password file path and the emulator executable stay in this process's memory; trial.json holds neither
+    as a field, nor the evaluation token, though the reason a later failure records there quotes the error met, which
+    may name the emulator's path. A suite's harness passes the password it holds, its child's start request (`start` in
+    `request`), its configurator requests (`call`), `launch(params)`, which starts and attaches the child through its
+    suite, a `heartbeat()` while the run runs and a `stop` event that ends the wait. A suite child's start that got no
+    answer is sent again (see `_start_child`), so a lost reply never has the device stopped under the child it started;
+    trial.json records that the start was sent (`start_sent`) before it is. The harness holds a lock file in `trial_dir`
+    for as long as it runs, by which others tell that it still runs (its process id alone may come to name another
+    process)."""
     from ..client import hold_process_lock
     trial_dir = Path(trial_dir)
     trial_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -530,8 +534,8 @@ def run_trial(trial_dir, request, *, password=None, call=None, launch=None, hear
 
 
 class _UnreadablePassword(ValueError):
-    """. Its message is written to the trial's or suite's record: it names the case and the error's class, never the
-    path or the error's text."""
+    """A supplied password file that cannot be read. Its message is written to the trial's or suite's record: it names
+    the case and the error's class, never the path or the error's text."""
 
 
 def _read_supplied(case, path):
@@ -629,15 +633,16 @@ def _release_trial(trial_dir, record, held, server):
 
 def reattach(trial_dir, *, password, renode=None, call=None, heartbeat=None, stop=None, budget_seconds=None,
              budget_reason=None, resume_run=None):
-    """before it ended, once the device it ran on was stopped, confirmed: admit it again, which decrypts the answer key
-    its grade uses, provide a device anew from the recipe, attach it to the stopped run with the trial's evaluation
-    token (`attach_device`; the configurator refuses a run with anything uncertain), resume the run and see it through
-    as a new trial is. Only the password the trial ran with unlocks its token: under any other nothing starts. An
-    approved budget extension (`budget_seconds`, `budget_reason`) reaches the run's resume; a suite's harness resumes
-    its child through the suite (`resume_run(params)`). From the moment a device may run, the trial record names it with
-    an unconfirmed stop, so a harness lost meanwhile leaves a device to reconcile, never the earlier confirmed stop. It
-    holds the trial's evaluation lock throughout, which every resume, reattachment or adoption of the trial takes before
-    it asks whether the trial's harness still runs: the process id the record names from then on is a diagnostic."""
+    """Continue a trial whose run stopped before it ended, once the device it ran on was stopped, confirmed: admit it
+    again, which decrypts the answer key its grade uses, provide a device anew from the recipe, attach it to the stopped
+    run with the trial's evaluation token (`attach_device`; the configurator refuses a run with anything uncertain),
+    resume the run and see it through as a new trial is. Only the password the trial ran with unlocks its token: under
+    any other nothing starts. An approved budget extension (`budget_seconds`, `budget_reason`) reaches the run's resume;
+    a suite's harness resumes its child through the suite (`resume_run(params)`). From the moment a device may run, the
+    trial record names it with an unconfirmed stop, so a harness lost meanwhile leaves a device to reconcile, never the
+    earlier confirmed stop. It holds the trial's evaluation lock throughout, which every resume, reattachment or
+    adoption of the trial takes before it asks whether the trial's harness still runs: the process id the record names
+    from then on is a diagnostic."""
     trial_dir = Path(trial_dir)
     if read_trial(trial_dir) is None:
         raise ValueError('No trial with a run to continue: ' + str(trial_dir))
@@ -1210,20 +1215,20 @@ def _refused(suite_dir):
 
 
 def run_suite(suite_dir, request, *, call=None, stop=None):
-    """. It starts the suite on the configurator (or resumes a stopped one, given its `suite_id`) under a fresh random
-    token, of which the configurator keeps only the sha256, and then works through the suite one slot at a time: reserve
-    the slot, run its trial (a child on a device this harness provides, graded once after its run), and have the
-    configurator settle the slot from the child's status and recorded evaluation, which it reads itself. It stops once
-    the configurator reports the suite complete, stopped or blocked, and lets go of it; a harness that stops while the
-    suite runs leaves it blocked for a resume. Every supplied password file is read once, before the configurator is
-    first contacted, so that deleting the files later changes nothing; an unreadable or empty one ends the harness
-    there, with a reason that names the case and the error's class, and no path, and the suite never accepted. Password
-    file and emulator paths are never fields of suite.json or the suite tables, and no child's run receives them. The
-    reason a later failure records in suite.json (written for this user only, in the bench home) quotes the error met,
-    which may name the emulator's path. The configurator learns of a failure only which trial failed and where this
-    record is. An approved child budget extension in `request` goes to the stopped child this run continues, and to no
-    other. The harness holds a lock file in `suite_dir` for as long as it runs, by which the configurator and other
-    launches tell that it still runs (its process id alone may come to name another process)."""
+    """One bench harness run of a suite. It starts the suite on the configurator (or resumes a stopped one, given its
+    `suite_id`) under a fresh random token, of which the configurator keeps only the sha256, and then works through the
+    suite one slot at a time: reserve the slot, run its trial (a child on a device this harness provides, graded once
+    after its run), and have the configurator settle the slot from the child's status and recorded evaluation, which it
+    reads itself. It stops once the configurator reports the suite complete, stopped or blocked, and lets go of it; a
+    harness that stops while the suite runs leaves it blocked for a resume. Every supplied password file is read once,
+    before the configurator is first contacted, so that deleting the files later changes nothing; an unreadable or empty
+    one ends the harness there, with a reason that names the case and the error's class, and no path, and the suite
+    never accepted. Password file and emulator paths are never fields of suite.json or the suite tables, and no child's
+    run receives them. The reason a later failure records in suite.json (written for this user only, in the bench home)
+    quotes the error met, which may name the emulator's path. The configurator learns of a failure only which trial
+    failed and where this record is. An approved child budget extension in `request` goes to the stopped child this run
+    continues, and to no other. The harness holds a lock file in `suite_dir` for as long as it runs, by which the
+    configurator and other launches tell that it still runs (its process id alone may come to name another process)."""
     from ..client import hold_process_lock
     suite_dir = Path(suite_dir)
     suite_dir.mkdir(parents=True, exist_ok=True, mode=0o700)

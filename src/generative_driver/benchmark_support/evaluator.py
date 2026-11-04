@@ -26,9 +26,9 @@ def method_for(case_id):
 
 
 def answer_key(truth_source, pin):
-    """of `pin` with: the payload of the `UnlockedTruth` that `truth_source()` returns. The grader never decrypts one
-    (Feature 02, unlocked keys). One unlocked under another hash than the pin's raises IntegrityError, and is not
-    graded."""
+    """The answer key to grade the run of `pin` with: the payload of the `UnlockedTruth` that `truth_source()` returns.
+    The grader never decrypts one (Feature 02, unlocked keys). One unlocked under another hash than the pin's raises
+    IntegrityError, and is not graded."""
     from .integrity import IntegrityError
     truth = truth_source()
     if truth.sha256 != pin.get('truth_sha256'):
@@ -266,14 +266,15 @@ def accepted_driver(case_id, trial_dir, run_dir, result):
 
 
 def grade(case_id, trial_dir, run_dir, result, *, password, truth_source, renode=None):
-    """: (public equivalence/1 without its evidence hash, the final evaluation for the seal or None). It takes the
-    accepted driver (`accepted_driver`), asks `truth_source` for the answer key (`answer_key`) and runs the final phase
-    on a fresh emulator; a driver without a capability mapping, or whose model is missing or not a JSON object, fails
-    before either. A final the draft already holds for this run and package is rebuilt and never graded again. A changed
-    record, an answer key the pin does not name, or a grader other than the evaluator revision the run was stamped with,
-    raises IntegrityError; a model file the grader cannot read raises its OSError, a host fault. Every record names the
-    protocol the run's progress names, and a result that names none raises ValueError. Legacy tq9 and bme280 are graded
-    from their recorded reuse by `recorded_grading.grade` instead."""
+    """Grade a completed run's frozen driver once, on a fresh emulator: (public equivalence/1 without its evidence hash,
+    the final evaluation for the seal or None). It takes the accepted driver (`accepted_driver`), asks `truth_source`
+    for the answer key (`answer_key`) and runs the final phase on a fresh emulator; a driver without a capability
+    mapping, or whose model is missing or not a JSON object, fails before either. A final the draft already holds for
+    this run and package is rebuilt and never graded again. A changed record, an answer key the pin does not name, or a
+    grader other than the evaluator revision the run was stamped with, raises IntegrityError; a model file the grader
+    cannot read raises its OSError, a host fault. Every record names the protocol the run's progress names, and a result
+    that names none raises ValueError. Legacy tq9 and bme280 are graded from their recorded reuse by
+    `recorded_grading.grade` instead."""
     from .case_assets import case_inputs
     protocol = _protocol(result)
     trial_dir, run_dir = Path(trial_dir), Path(run_dir)

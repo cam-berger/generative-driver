@@ -6,3 +6,5 @@
 - 01: `upstream.py:23` still reads `truth_schema` (the Spec cites :22); removing that field is out of scope.
 - 01: `docs/superpowers/plans/2026-11-01-generated-grader.md:46-58` and `docs/superpowers/plans/2026-10-30-grader-identity.md` still name `family_module`, `native_family_for` and `REQUIRED_MUTANTS`. These are historical plans, so they stay.
 - 01: Shipped calibration records now show stale grader identities, because every identity moved once. The Spec expects this: the user requalifies at pinning.
+- 02: `seal_run_evidence` has no source caller (`src/generative_driver/benchmark_support/evidence.py:246`, line number from before this Feature); two test files build older evidence with it: `tests/test_suite_reporting.py`, `tests/test_benchmark_v2_evidence.py`.
+- 02: `docs/superpowers/plans/2026-11-01-generated-grader.md:13,145,156,182` still name `truth.seal` and `truth.unlock`. This is a historical plan, so it stays.

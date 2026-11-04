@@ -129,6 +129,15 @@ def resource_path(root: Path, relative: str) -> Path:
     return candidate
 
 
+def _refuse_unsafe_path(relative) -> None:
+    """The lexical refusals of `resource_path`, for a path whose file is not to be touched: the resolve in its
+    containment check would follow a symlink a worker planted."""
+    if not isinstance(relative, str) or not relative or Path(relative).is_absolute() or '\\' in relative:
+        raise ValueError('Invalid case resource path')
+    if any(part in ('.', '..') for part in Path(relative).parts):
+        raise ValueError('Case resource path escapes root')
+
+
 def _sha(value):
     if not isinstance(value, str) or re.fullmatch(r'[0-9a-f]{64}', value) is None:
         raise ValueError('Malformed SHA-256')
@@ -144,9 +153,9 @@ def _unique_object(pairs):
 
 
 def load_definition(path: Path, *, resource_root: Path, check_truth: bool = True) -> CaseDefinition:
-    """whose manifest is at `path`. With `check_truth` False the truth file is neither looked for nor hashed, so that
-    grading, which holds the answer key already, does not depend on a file a worker could change; the manifest's truth
-    hash and path are still validated."""
+    """The checked definition of the case whose manifest is at `path`. With `check_truth` False the truth file is
+    neither looked for, hashed nor resolved, so that stages and grading do not depend on a file a worker could change;
+    the manifest's truth hash and the truth path's form are still validated."""
     path = Path(path)
     root = Path(resource_root).resolve()
     if not path.resolve().is_relative_to(root):
@@ -217,8 +226,10 @@ def load_definition(path: Path, *, resource_root: Path, check_truth: bool = True
     truth = manifest.get('truth', {})
     if truth:
         _sha(truth.get('sha256'))
-        truth_path = resource_path(root, truth.get('path'))
-        if check_truth:
+        if not check_truth:
+            _refuse_unsafe_path(truth.get('path'))
+        else:
+            truth_path = resource_path(root, truth.get('path'))
             if not truth_path.is_file():
                 raise PendingCaseError('Case truth is unbuilt')
             if hashlib.sha256(truth_path.read_bytes()).hexdigest() != truth['sha256']:
@@ -271,8 +282,9 @@ def pin_case(case_id: str, scenario_id: str | None, case_seed: int, *, check_tru
 
 
 def case_truth(case_id, run_dir, password):
-    """, decrypted with `password`. The manifest is the run's pinned snapshot when `run_dir` holds one. The truth is
-    hydrated by the case's family; one that declares no `hydrate_truth` gets it back as unlocked."""
+    """The case's `UnlockedTruth`, decrypted with `password`. The manifest is the run's pinned snapshot when `run_dir`
+    holds one. The truth is hydrated by the case's family; one that declares no `hydrate_truth` gets it back as
+    unlocked."""
     from .case_assets import case_inputs, case_root
     from .emulator import truth_for_case
     from .truth import UnlockedTruth

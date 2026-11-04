@@ -37,6 +37,7 @@
 | Answer vault / generator volume | The encrypted volume holding passwords, answer keys, every generated set, each set's secret seed and sealed scoring trials / the one holding the generator's repository. Neither is mounted while workers run. |
 | Device generator | The private tool, kept in its own encrypted volume outside this repository, that writes each generated device's firmware, mission, answer key, reference drivers and mutants from a sampled design. |
 | Generated-device interface | The written rules every generated device meets: what its manifest entry, image, public mission and answer key hold, and how they agree. One validator in this repository checks them when the generator seals a device and when the evaluator opens it; rules that only an emulator run can show are checked when its set is qualified. |
+| Family hook | One thing the grading core asks of a family: a family module declares it in `HOOKS`, and the core reads it only through `families.family_for`. |
 | Difficulty level | One of five generator settings, easy to hard, that raise state, refusal rules, composite tasks, hidden triggers, value encoding and binary obfuscation together. |
 | Comparison | Two systems' per-device results on one admitted scoring set under the same evaluator revision and limits, naming every changed dimension. Reports outside a scoring set stay separate series. |
 | Anchor | Today's admitted hand-made and upstream cases, run with each pinned system and reported apart from the scoring set; never pooled into its pass rate or comparisons. |

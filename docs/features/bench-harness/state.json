@@ -4,13 +4,13 @@
   "branch": "mdk/bench-harness",
   "stage": "spec",
   "awaiting": null,
-  "current": "01",
+  "current": "02",
   "features": [
     {
       "id": "01",
       "slug": "family-seam",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "6b4ad0ce227fce553591f079ee991a1580799f1b"
     },
     {
       "id": "02",

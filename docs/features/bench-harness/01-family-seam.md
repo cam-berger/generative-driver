@@ -74,3 +74,18 @@ A family module declares a module-level `HOOKS` dict, hook name to value. Helper
 - Any real run, password or vault. Requalification is the user's, at pinning.
 
 ## Deviations
+
+- CONTEXT.md not edited by Build — the orchestrator added the row, which meets the Spec's Docs line.
+- Committed as it went, with e99a7e7 not green alone — process only, and the Feature diff is unaffected.
+- Registration fields named `grading_method`, `execution`, `evidence_track`, `approval_scope`, `default_effects`, `default_scope`, `requires_calibration`, `has_case_file`, `single_image`, with `default_effects` a JSON list — the Spec leaves the names to the builder, every row carries them and the schema string is unchanged.
+- `inventory()` takes a case id and `calibration._FAMILIES` holds case ids — follows "Lookups by family name become lookups by case id".
+- `input_commitments` holds the whole set of names — a fair reading of "the `inventory` set"; it replaces `calibration.py:103` exactly.
+- A no-module case raises "Unknown native family: <case>", and `tq9_legacy` raises "Case declares no <hook> hook: tq9" — B4 asks for a `ValueError` naming the case, and `reuse_mission`'s reason is kept.
+- `run_reference` loses its tq9-v2 default — same rule as `evaluator.py:75`, on a line the removed name forced to change; all three source callers name the case.
+- `REQUIRED_MUTANTS` constants stay in the family modules — the core and calibration code read them through the hook; no scope change.
+- `calibration.input_hashes` and `REQUIRED_SCENARIOS` stay put — the Spec's move list omits them and neither names a family, so B6 holds.
+- New public names `execution.start_renode`, `family_support.admission_valid`, `family_support.hydrate_family_truth`, and `validate_setup` needs `manifest['id']` — needed for the default session, the shared binding and B16's per-case validation.
+- `test_the_generated_identity_covers_the_core_and_the_generated_family` also expects `benchmark_support.missions` — direct result of B7 moving `upstream` out of the core, and it serves the Intent.
+- `generated.execute` gained unused `pin` and `phase` — the Spec's hook table sets this signature.
+- Existing tests changed for the new interface — each change traces to a removed name or to B13/B16; expected values hold apart from the `missions` item above.
+- `NativeFirmwareSession` only mocked, nothing run on Linux or Windows — B16 says the test mocks the session classes.

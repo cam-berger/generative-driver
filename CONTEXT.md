@@ -19,6 +19,8 @@
 | Ground / fresh reuse | Test meanings against the device / new agent uses only package and objective. Reuse is the final stage. |
 | Groundtruth | Password-encrypted, hash-pinned expected behavior held only by the evaluator. |
 | Bench harness | Benchmark operator: holds password, owns emulator/provider, supplies device descriptor and grades after the run. A suite's harness reads each password once, starts trials only after the answer vault and generator volume are unmounted, and seals each graded scoring trial in the answer vault. |
+| Evaluator password | One case's or set's password once read: held in the memory of the process that read it, used only to seal and unlock, and impossible to print or serialize. This catches mistakes in our own code; it does not stop anything that can read that process's memory. |
+| Unlocked truth | A case's answer key decrypted in the bench harness's memory, once per trial and again for a trial resumed later, with the hash of the ciphertext it came from. The harness passes it to the grader, which never decrypts an answer key. |
 | Instrument observation | Device-state readings visible to workers, never grades. Generated devices offer none for now: workers see only their UART. |
 | Lineage | Upstream firmware ancestry selected in a corpus. Repetitions of one lineage do not demonstrate another device family. |
 | Case | Registered, versioned image and evaluator contract, with public mission data and a separately encrypted answer key. A generated device is a case registered through its set. |

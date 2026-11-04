@@ -1,7 +1,7 @@
 """The stage adapter of a registered case. This is system behavior, so the evaluator never imports it."""
 from types import SimpleNamespace
 
-from .registry import resolve_case
+from .registrations import registration_for
 
 
 def _legacy_emulator():
@@ -36,10 +36,11 @@ _ADAPTERS = {'emulator-v2': _emulated, 'smoke': _smoke, 'legacy-emulator': _lega
 
 
 def adapter_for(case_id: str):
-    """The adapter module of `case_id`, by its `adapter_key`. It runs on every stage and package call, so it does not
-    open the truth file: a worker changing that file must not stop the run (Feature 02, unlocked keys)."""
-    definition = resolve_case(case_id, check_truth=False)
-    loader = _ADAPTERS.get(definition.adapter_key)
+    """The adapter module of `case_id`, by the `adapter_key` of its registration. It runs on every stage and package
+    call, so it opens no file: a worker changing one must not stop the run (Feature 02, unlocked keys), and a generated
+    case has none (Feature 03, generated trials). A run's snapshot check and each start catch a changed case."""
+    adapter_key = registration_for(case_id).adapter_key
+    loader = _ADAPTERS.get(adapter_key)
     if loader is None:
-        raise ValueError('Benchmark adapter is pending: ' + definition.adapter_key)
+        raise ValueError('Benchmark adapter is pending: ' + adapter_key)
     return loader()

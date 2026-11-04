@@ -1,6 +1,7 @@
 """Static, read-only benchmark case admission and identity."""
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 import copy
 import hashlib
 import json
@@ -114,6 +115,18 @@ def resolve_case(case_id: str, *, check_truth: bool = True) -> CaseDefinition:
     if not path.is_file():
         raise PendingCaseError('Benchmark case is pending: ' + case_id)
     return load_definition(path, resource_root=root, check_truth=check_truth)
+
+
+def case_selection(case_id: str) -> SimpleNamespace:
+    """The `id`, `execution`, `evidence_track`, `approval_scope` and `default_effects` of a case, for a site that reads
+    only those. A row that fills them all (a generated case's: it has no manifest to read) answers alone. Any other
+    answers with `resolve_case` for what its row leaves null, so such a site still refuses a changed case."""
+    row, names = registration_for(case_id), ('execution', 'evidence_track', 'approval_scope', 'default_effects')
+    values = {name: getattr(row, name) for name in names}
+    if None in values.values():
+        definition = resolve_case(case_id)
+        values = {name: getattr(definition, name) if value is None else value for name, value in values.items()}
+    return SimpleNamespace(id=case_id, **values)
 
 
 def resource_path(root: Path, relative: str) -> Path:
@@ -302,7 +315,7 @@ def admitted_truth(pin: dict, password) -> tuple:
     """Admission is evaluator-owned; public labels alone cannot launch an agent. (`UnlockedTruth` or None, admission): a
     changed pin, or a v2 pin without passed calibration, raises before anything is decrypted, and a schema-1 pin, which
     has no calibration to authenticate, is admitted with None and nothing decrypted."""
-    current = pin_case(pin['case_id'], pin['scenario_id'], pin['case_seed'])
+    current = family_for(pin['case_id']).current_pin(pin)
     if pin != current:
         raise ValueError('Calibration admission case pin changed')
     if pin['manifest'].get('schema') != 'benchmark-case/2':

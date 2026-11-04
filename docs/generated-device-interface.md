@@ -86,7 +86,7 @@ A cell's value is an unsigned integer of the cell's width.
 - `source_files` holds Renode files by name, each name matching `[A-Za-z0-9_-]+\.(resc|repl|cs)`.
 - `setup` names the `.resc` that runs last, and `includes` lists the source files to include before it, in order. The evaluator writes the source files into a private directory and runs `$bin=<image>; $uart=<port>; include <each include>; include <setup>`. The setup loads `$bin`, serves the UART as a TCP server on `$uart` and starts the machine. The evaluator waits for Renode's log to say `Machine started`.
 - `reset_commands` are monitor commands that leave the firmware booted to idle, the last of them `emulation RunFor` over a boot interval. Renode keeps RAM across `machine Reset`, and the evaluator reads the reset state as soon as the reset commands return, with the emulator paused. Without the boot interval, that read shows the previous run's RAM.
-- `observations` names at least one monitor read for the evaluator's health check: `{<name>: {"command", "width", "count"}}`, with a width of 8, 16, 32 or 64 bits and a count of 1 to 4096, or `{<name>: {"kind": "scalar", "command", "unit"}}`.
+- `observations` names at least one monitor read for the evaluator's health check: `{<name>: {"command", "width", "count"}}`, with a width of 8, 16, 32 or 64 bits and a count of 1 to 4096, or `{<name>: {"kind": "scalar", "command", "unit"}}`. It must read the same value on every boot, since recovery compares a replacement's reading with the first boot's. Set qualification will check this (Feature 04); no code checks it yet.
 - `backend`, if present, is `renode`. A generated recipe has no `stimuli`.
 
 Every monitor command is a single command, without a line break, `;`, NUL or braces, and finishes within the evaluator's 5-second monitor timeout.
@@ -168,7 +168,7 @@ Nothing in this repository can check these, so the generator's own tests must:
 
 ## What a trial and a verdict reveal
 
-A trial's worker receives the image and the mission, and a pin that names only the set, its manifest hash and the device id, never the level or framing. The bench harness reads a suite's manifests and sealed files into memory before the answer vault unmounts, and refuses to start while a set's directory is still reachable.
+A trial's worker receives the image and the mission, and a pin that names the set, its manifest hash, the device id, and the hashes of the image, the answer file and the qualification record, never the level or framing. The bench harness reads a suite's manifests and sealed files into memory before the answer vault unmounts, and refuses to start while a set's directory is still reachable.
 
 A verdict publishes each check's id, whether it passed, and a reason for each check that failed or was undecided. The ids are `<sequence>/<step>/answer`, `<sequence>/<step>/out:<output>` and `<sequence>/<step>/state:<cell>`, with steps numbered from 1. They show:
 - how many sequences, steps and cells a device has;

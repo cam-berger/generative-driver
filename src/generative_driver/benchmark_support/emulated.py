@@ -12,12 +12,14 @@ from .cases import _state, _write
 # The evaluator uses these too, so they are defined in a module of its own and imported here under their old names.
 from .case_assets import REUSE_EVENTS, accepted_artifact as _artifact, case_inputs as _inputs, reuse_mission as _mission
 from .execution import artifact_name
+from ..device_client import offers_readings
 
+PAUSED = ('The provided emulator runs only inside each live call and is paused between calls, so device time advances '
+          'during a call and not while you work between calls. ')
 # Instrument readings are device evidence, as a real device's readings would be; workers see them, nothing grades them.
 INSTRUMENT = ('Live interface_execute and probe_run results carry before_observation and observation: instrument '
               'readings of the emulated device with units. They are device evidence, as a real device\'s readings would '
-              'be, never a grade. The provided emulator runs only inside each live call and is paused between calls, so '
-              'device time advances during a call and not while you work between calls. ')
+              'be, never a grade. ' + PAUSED)
 
 
 def _development_conditions(case_id, prepared, workspace, options):
@@ -40,12 +42,12 @@ def _development_conditions(case_id, prepared, workspace, options):
             'context': {**prepared.get('context', {}), 'development_conditions': str(path)}}
 
 
-def _required_tasks(case_id):
+def _required_tasks(case_id, run_dir=None):
     from .missions import load_mission
-    return tuple(load_mission(case_id)['tasks'])
+    return tuple(load_mission(case_id, run_dir)['tasks'])
 
 
-def _capability_guidance(workspace, case_id):
+def _capability_guidance(workspace, case_id, run_dir=None):
     from . import capabilities
     rules = workspace/'_capability_rules.py'
     shutil.copyfile(capabilities.__file__, rules)
@@ -61,7 +63,7 @@ except (ValueError, UnicodeError):
     result = {'ok': False, 'errors': [{'fault': 'model', 'code': 'capability_mapping',
         'path': 'capabilities.json', 'message': 'Capability file must contain valid UTF-8 JSON'}]}
 else:
-    result = validate_capabilities(mapping, model, ''' + repr(_required_tasks(case_id)) + ''')
+    result = validate_capabilities(mapping, model, ''' + repr(_required_tasks(case_id, run_dir)) + ''')
 print(json.dumps(result, allow_nan=False))
 sys.exit(0 if result['ok'] else 1)
 ''', encoding='utf-8')
@@ -204,6 +206,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
     ws = Path(workspace).resolve()
     ws.mkdir(parents=True, exist_ok=True)
     inputs, manifest = _inputs(case_id, run_dir)
+    readings = offers_readings(options.get('device'))
     if stage == 'acquire':
         source = inputs/artifact_name(manifest)
         if hashlib.sha256(source.read_bytes()).hexdigest() != manifest['images'][artifact_name(manifest)]:
@@ -219,18 +222,20 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         if adapted.get('skip') or adapted.get('blocked'):
             return adapted
         binding = adapted['binding']
-        guidance = _capability_guidance(ws, case_id)
+        guidance = _capability_guidance(ws, case_id, run_dir)
         from .candidate_context import task_contract
-        _write(ws/'TASKS.json', task_contract(case_id, options.get('configured_effects', [])))
+        _write(ws/'TASKS.json', task_contract(case_id, options.get('configured_effects', []), run_dir))
         guidance.append(str(ws/'TASKS.json'))
         objective = ('Test the supplied immutable model over the emulator binding. Write capabilities.json with '
-            'schema benchmark-capabilities/2 and tasks ' + ', '.join(_required_tasks(case_id)) + '. '
+            'schema benchmark-capabilities/2 and tasks ' + ', '.join(_required_tasks(case_id, run_dir)) + '. '
             'Each task declares operation, constants, inputs and outputs. Map every requested input and output '
             'in TASKS.json, including its physical unit, to the candidate model. Report unsupported capabilities honestly.')
         objective += (' Read TASKS.json for required task semantics, outputs and effect grants. '
             'Read CAPABILITY_FORMAT.md and run validate_capabilities.py with the supplied model directory '
-            'and your capabilities.json. Correct mapping errors before submission. ' + INSTRUMENT +
-            'Compare those readings and the observed effects with your decoded outputs. Preserve capabilities.json even '
+            'and your capabilities.json. Correct mapping errors before submission. '
+            + (INSTRUMENT + 'Compare those readings and the observed effects' if readings
+               else PAUSED + 'Compare the observed effects')
+            + ' with your decoded outputs. Preserve capabilities.json even '
             'when incomplete; report needs_revision and the observed discrepancy if the immutable model needs repair. '
             'Do not invent unsupported units or change the model here. Your observed probe records, capabilities.json and '
             'notes are handed on; where the model fails on the device, that difference goes back to interpretation.')
@@ -241,7 +246,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                 'binding': binding, 'effects': ['write', 'actuate']}, ws, options)
     if stage == 'ground':
         from .ground import device_evidence
-        prepared = device_evidence(accepted, ws)
+        prepared = device_evidence(accepted, ws, readings=readings)
         if prepared.get('skip'):
             return prepared
         _contract_pair(_handoff_with(accepted, ('probe',), 'model.json'), ws/'model')
@@ -250,7 +255,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         if case_id not in RECORDED:  # The legacy adapter retains its original mapping contract.
             from .candidate_context import task_contract
             tasks = ws/'TASKS.json'
-            _write(tasks, task_contract(case_id, options.get('configured_effects', [])))
+            _write(tasks, task_contract(case_id, options.get('configured_effects', []), run_dir))
             prepared['inputs'].append(str(tasks))
             prepared['objective'] += ' Read TASKS.json for the required observable behaviors and any public quantity comparisons.'
         return _development_conditions(case_id,
@@ -316,12 +321,12 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         from .missions import load_mission
         from .registrations import registration_for
         registration = registration_for(case_id)
-        public_mission = load_mission(registration.mission_case or case_id)
+        public_mission = load_mission(registration.mission_case or case_id, run_dir)
         mission = public_mission['reuse_objective']
         if 'operating_conditions' in public_mission:
             mission += ('\nProvided operating conditions (public facts):\n'
                 + '\n'.join('- ' + condition for condition in public_mission['operating_conditions']) + '\n')
-        return {'objective': 'Use only the emitted package and this objective: ' + mission + ' Use benchmark_package_execute for each operation. Find names and arguments in the package reference. Each result also carries an instrument reading of the emulated device after the call. Report actual observations and limitations.',
+        return {'objective': 'Use only the emitted package and this objective: ' + mission + ' Use benchmark_package_execute for each operation. Find names and arguments in the package reference. ' + ('Each result also carries an instrument reading of the emulated device after the call. ' if readings else '') + 'Report actual observations and limitations.',
                 'inputs': [str(package)], 'allowed_tools': ['benchmark_package_execute'],
                 'context': {'package_dir': str(package)}, 'binding': binding,
                 'boundary': 'fresh package-only mission'}
@@ -342,10 +347,10 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                 'and unresolved facts in NOTES.md. TCP cannot verify physical UART settings; do not invent them.'})
         sources['BINDING_CONTEXT.json'] = str(wiring)
         from .candidate_context import task_contract, repair_sources
-        _write(ws/'TASKS.json', task_contract(case_id, options.get('configured_effects', [])))
+        _write(ws/'TASKS.json', task_contract(case_id, options.get('configured_effects', []), run_dir))
         sources['TASKS.json'] = str(ws/'TASKS.json')
         if options.get('feedback'):
-            sources.update(repair_sources(run_dir, ws, options['feedback']))
+            sources.update(repair_sources(run_dir, ws, options['feedback'], readings=readings))
         attempt = int(state.get('interpret_attempt', 0)) + 1
         prepared = call_tool('interpret_run', {'run_dir': str(Path(run_dir).resolve()/'benchmark/tools'),
             'front_end': 'interpret-interface', 'inputs': sources, 'mode': 'prepare', 'attempt': attempt,
@@ -361,7 +366,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
     raise ValueError('Native stage is not implemented: ' + stage)
 
 
-def _mapping_errors(case_id, mapping, model):
+def _mapping_errors(case_id, mapping, model, run_dir=None):
     """The structural check of a probe's capability mapping against its model: {ok, errors}. Legacy tq9 maps its
     tasks in the legacy form (`cases.mapping_errors`)."""
     if case_id == 'tq9':
@@ -369,7 +374,7 @@ def _mapping_errors(case_id, mapping, model):
         errors = mapping_errors(mapping, model)
         return {'ok': not errors, 'errors': errors}
     from .behavior import validate_capabilities
-    return validate_capabilities(mapping, model, _required_tasks(case_id))
+    return validate_capabilities(mapping, model, _required_tasks(case_id, run_dir))
 
 
 # Cases graded after the run from the fresh reuse the run recorded: their reuse hands on that record.
@@ -414,6 +419,7 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
     options = options or {}
     ws = Path(workspace)
     _, manifest = _inputs(case_id, run_dir)
+    readings = offers_readings(options.get('device'))
     if stage == 'acquire':
         matches, unreadable = [], []
         for provenance in sorted(ws.rglob('provenance.json')):
@@ -497,7 +503,8 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
                         reason = 'Capability file must contain valid UTF-8 JSON'
             if parsed and files.get('model.json'):
                 try:
-                    validation = _mapping_errors(case_id, mapping, json.loads(files['model.json'].read_text(encoding='utf-8')))
+                    model = json.loads(files['model.json'].read_text(encoding='utf-8'))
+                    validation = _mapping_errors(case_id, mapping, model, run_dir)
                 except (KeyError, TypeError, AttributeError, IndexError, ValueError) as error:
                     # The mapping check reads the model as a valid one; a model that fails validation still reaches
                     # probe when the emulator can carry it, and its defects are the configurator's model_contract diff.
@@ -520,7 +527,8 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
         # The candidate's own files and the device evidence of its runs, kept for a later repair; nothing graded.
         remember(run_dir, stage, files, report, workspace=ws)
         return _observed(artifacts, checks, dropped, scope='The worker\'s mapping, the adapted model and the live '
-                         'journal with instrument readings: device evidence, not a grade')
+                         'journal' + (' with instrument readings' if readings else '')
+                         + ': device evidence, not a grade')
     if stage == 'emit':
         from ..toolkit import call_tool
         from ..configurator import digest, _emit_check_failure
@@ -569,8 +577,8 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
             record.write_text(''.join(json.dumps(e, allow_nan=False) + '\n' for e in events
                                       if e.get('assignment_id') == options.get('assignment_id')), encoding='utf-8')
             handed.append(record)
-        return _observed(handed, [mission],
-                         scope='The fresh worker\'s package calls and the instrument readings after them; a note, not a grade')
+        return _observed(handed, [mission], scope='The fresh worker\'s package calls'
+                         + (' and the instrument readings after them' if readings else '') + '; a note, not a grade')
     raise ValueError('Native stage is not implemented: ' + stage)
 
 
@@ -605,13 +613,14 @@ def record_call(case_id, run_dir, stage, name, arguments, result, before, after,
     """Journal one live call with the instrument readings around it: a package call for fresh reuse's mission note, a
     model call in the live journal probe and ground hand on. Readings are device evidence; nothing here grades them."""
     path, state = _state(run_dir)
+    offered = offers_readings((options or {}).get('device'))
+    readings = {'observation': after, 'before_observation': before} if offered else {}
     if name == 'benchmark_package_execute':
         row = {'actor': 'worker', 'stage': stage, 'operation': arguments.get('operation'), 'revision': state.get('revision', 0),
                'attempt_id': state['package_attempts'][stage], 'assignment_id': (options or {}).get('assignment_id'),
                'package_sha256': state['package_sha256'], 'parameters': arguments.get('parameters', {}),
                **({'mcp': arguments['mcp']} if arguments.get('mcp') else {}),
-               'result': result, 'observation': after,
-               'before_observation': before}
+               'result': result, **readings}
         with (Path(run_dir)/'benchmark/package-events.jsonl').open('a') as stream:
             stream.write(json.dumps(row, allow_nan=False)+'\n')
         return
@@ -625,7 +634,8 @@ def record_call(case_id, run_dir, stage, name, arguments, result, before, after,
     journal.parent.mkdir(parents=True, exist_ok=True)
     with journal.open('a', encoding='utf-8') as stream:
         stream.write(json.dumps({'operation': arguments.get('operation'), 'parameters': arguments.get('parameters', {}),
-            'result': measured(result), 'before_observation': before, 'observation': after}, allow_nan=False)+'\n')
+            'result': measured(result), **({'before_observation': before, 'observation': after} if readings else {})},
+            allow_nan=False)+'\n')
 
 
 def score(report, password=None, *, evidence_path=None):

@@ -4,12 +4,35 @@ import json
 import math
 
 
+def _registered_through_a_set(case) -> bool:
+    from .registrations import registered_case_ids, registration_for
+    return case in registered_case_ids() and registration_for(case).calibration_kind == 'set'
+
+
+def _check_set_entry(entry) -> None:
+    """ValueError unless `entry` of a set manifest names a device of a case registered through its set, as its pin will:
+    the only scenario and seed a generated device has."""
+    from .generated_device import validate_device_id
+    if not _registered_through_a_set(entry['case']):
+        raise ValueError('A set suite runs only cases registered through a set: ' + entry['case'])
+    if entry['scenario'] != 'original':
+        raise ValueError('A generated device has only the original scenario: ' + entry['scenario'])
+    if entry['case_seed'] != 0:
+        raise ValueError('A generated device has only case seed 0: ' + str(entry['case_seed']))
+    validate_device_id(entry['device_id'])
+
+
 def normalize_manifest(manifest: dict) -> dict:
+    """The checked copy of a suite manifest. One with a top-level `set` names one generated set, and each of its entries
+    a device of it by `device_id` (Feature 03, generated trials); a generated case runs in no other suite."""
     required = {'schema', 'id', 'version', 'entries', 'repetitions',
                 'child_budget_seconds', 'suite_budget_seconds', 'max_active_children'}
-    if not isinstance(manifest, dict) or set(manifest) != required:
+    if not isinstance(manifest, dict) or set(manifest) - {'set'} != required:
         raise ValueError('Suite manifest fields are incomplete or unknown')
     result = copy.deepcopy(manifest)
+    set_suite = 'set' in result
+    if set_suite and (not isinstance(result['set'], str) or not result['set'].strip()):
+        raise ValueError('A suite set must be a nonblank string')
     if result['schema'] != 'benchmark-suite/1':
         raise ValueError('Unsupported suite schema')
     if any(not isinstance(result[key], str) or not result[key].strip() for key in ('id', 'version')):
@@ -28,13 +51,18 @@ def normalize_manifest(manifest: dict) -> dict:
         raise ValueError('Suite requires entries')
     identities = set()
     for entry in result['entries']:
-        if not isinstance(entry, dict) or set(entry) != {'case', 'scenario', 'case_seed'}:
+        fields = {'case', 'scenario', 'case_seed', *(('device_id',) if set_suite else ())}
+        if not isinstance(entry, dict) or set(entry) != fields:
             raise ValueError('Invalid suite entry fields')
         if any(not isinstance(entry[key], str) or not entry[key].strip() for key in ('case', 'scenario')):
             raise ValueError('Case and scenario must be nonblank strings')
         if type(entry['case_seed']) is not int:
             raise ValueError('Case seed must be an integer, never a model seed')
-        identity = (entry['case'], entry['scenario'], entry['case_seed'])
+        if set_suite:
+            _check_set_entry(entry)
+        elif _registered_through_a_set(entry['case']):
+            raise ValueError('A generated case runs only in a suite of one set: ' + entry['case'])
+        identity = (entry['case'], entry['scenario'], entry['case_seed'], entry.get('device_id'))
         if identity in identities:
             raise ValueError('Duplicate suite entry')
         identities.add(identity)
@@ -53,15 +81,19 @@ def expand_trials(manifest: dict) -> list[dict]:
 def preflight_selection(manifest: dict) -> tuple[dict, list, list[dict]]:
     """Check public selection and pin registered assets without starting processes.
 
-    Authenticated calibration and runtime configuration remain owner admission.
+    Authenticated calibration and runtime configuration remain owner admission. A set manifest's definitions come from
+    its row, and it has no pins here: the bench harness builds them, and `freeze_suite` checks what it sends.
     """
-    from .registry import resolve_case, pin_case
+    from .registry import case_selection, resolve_case, pin_case
     normalized = normalize_manifest(manifest)
-    definitions = [resolve_case(entry['case']) for entry in normalized['entries']]
+    select = case_selection if 'set' in normalized else resolve_case
+    definitions = [select(entry['case']) for entry in normalized['entries']]
     if any(case.execution != 'actual-agent-emulation' for case in definitions):
         raise ValueError('Suite requires emulated actual-agent cases')
     if len({case.evidence_track for case in definitions}) != 1:
         raise ValueError('Mixed evidence tracks cannot share a suite aggregate')
+    if 'set' in normalized:
+        return normalized, definitions, []
     pins = [pin_case(entry['case'], entry['scenario'], entry['case_seed']) for entry in normalized['entries']]
     for definition, pin in zip(definitions, pins):
         calibration = pin.get('calibration', {})
@@ -75,8 +107,8 @@ def preflight_selection(manifest: dict) -> tuple[dict, list, list[dict]]:
 
 
 def _launch_options(options, home):
-    """Split suite options: evaluator password files and the emulator executable go to the bench harness on its stdin,
-    never into the frozen suite; the rest is frozen with the suite."""
+    """Split suite options: evaluator password files, the emulator executable and a set suite's `set_root` go to the
+    bench harness on its stdin, never into the frozen suite; the rest is frozen with the suite."""
     from pathlib import Path
     from ..client import default_home
     if options is not None and not isinstance(options, dict):
@@ -89,19 +121,21 @@ def _launch_options(options, home):
             raise ValueError('Suite options.home must be a nonblank path')
         if Path(selected_home).expanduser().resolve() != directory:
             raise ValueError('Suite options.home must match the configured owner home')
-    return directory, selected, selected.pop('evaluator_password_files', None), selected.pop('renode', None)
+    return (directory, selected, selected.pop('evaluator_password_files', None), selected.pop('renode', None),
+            selected.pop('set_root', None))
 
 
 def start_suite(manifest: dict, executor: str | None = None, options: dict | None = None,
                 request_id: str | None = None, *, home=None, autostart=True, via_owner=False) -> dict:
     """Start a suite through a detached bench harness, which drives it; the configurator only freezes and stores it.
-    Password files and the emulator executable in `options` go to the harness on its stdin, never into the suite tables
-    or a child's run. A selection is checked before any configurator starts; a repeated request_id with the
+    Password files (keyed by the set's name for a set suite), the emulator executable and a set suite's `set_root` in
+    `options` go to the harness on its stdin, never into the suite tables or a child's run. A selection is checked
+    before any configurator starts; a repeated request_id with the
     same inputs follows the suite it started."""
     from ..client import call
     from .harness import launch_suite
     normalized = normalize_manifest(manifest)
-    directory, selected, passwords, renode = _launch_options(options, home)
+    directory, selected, passwords, renode, set_root = _launch_options(options, home)
     from ..setup import configured_executor
     executor = configured_executor(executor, directory)
     if executor != 'replay' and 'replay_candidates' in selected:
@@ -122,14 +156,16 @@ def start_suite(manifest: dict, executor: str | None = None, options: dict | Non
         preflight_selection(normalized)
     return launch_suite({'manifest': normalized, 'executor': executor, 'options': selected,
                          'request_id': request_id},
-                        home=directory, password_files=passwords, renode=renode, autostart=autostart, via_owner=via_owner)
+                        home=directory, password_files=passwords, renode=renode, set_root=set_root, autostart=autostart,
+                        via_owner=via_owner)
 
 
 def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autostart=True, via_owner=False,
                  suite_budget_seconds=None, budget_reason=None, child_budget_seconds=None,
                  child_budget_reason=None) -> dict:
     """Resume a stopped suite through a newly launched bench harness, which takes over its scheduling. Only the password
-    files and the emulator executable are read from `options`, and they go to that harness as at the start: the suite
+    files, the emulator executable and `set_root` are read from `options`, and they go to that harness as at the start:
+    the suite
     keeps the options it was frozen with. An approved suite budget extension raises the suite's total; an approved child budget
     extension raises the total of the stopped child the resume continues (an emulated child once its device is
     attached anew), and no other child's."""
@@ -142,26 +178,29 @@ def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autos
             or not child_budget_reason.strip()):
         raise ValueError('A child budget extension requires a finite positive total of at most seven days and a '
                          'nonblank child_budget_reason')
-    directory, _, passwords, renode = _launch_options(options, home)
+    directory, _, passwords, renode, set_root = _launch_options(options, home)
     request = {'suite_id': suite_id, **{key: value for key, value in (
         ('suite_budget_seconds', suite_budget_seconds), ('budget_reason', budget_reason),
         ('child_budget_seconds', child_budget_seconds),
         ('child_budget_reason', child_budget_reason if child_budget_seconds is not None else None)) if value is not None}}
-    return launch_suite(request, home=directory, password_files=passwords, renode=renode, autostart=autostart, via_owner=via_owner)
+    return launch_suite(request, home=directory, password_files=passwords, renode=renode, set_root=set_root,
+                        autostart=autostart, via_owner=via_owner)
 
 
 SCHEDULER = 'harness/1'
-# Suite option keys that would carry a credential or the emulator executable; they belong to the bench harness.
-SECRET = ('password', 'renode')
+# Suite option keys that would carry a credential, the emulator executable or a set's root; the bench harness holds
+# them.
+SECRET = ('password', 'renode', 'set_root')
 
 
 def refuse_secrets(options) -> None:
-    """Suite options never carry an evaluator password file or the emulator executable: the bench harness holds them."""
+    """Suite options never carry an evaluator password file, the emulator executable or a set's root: the bench harness
+    holds them."""
     if not isinstance(options, dict):
         raise ValueError('Unknown suite options')
     if any(any(word in str(key).lower() for word in SECRET) for key in options):
-        raise ValueError('Evaluator password files and the emulator executable belong to the bench harness, which takes '
-                         'them on its stdin; a suite never holds them')
+        raise ValueError('Evaluator password files, the emulator executable and a set root belong to the bench '
+                         'harness, which takes them on its stdin; a suite never holds them')
 
 
 def harness_driven(frozen: dict) -> bool:
@@ -172,13 +211,33 @@ def harness_driven(frozen: dict) -> bool:
         any(word in str(key).lower() for word in SECRET) for key in options)
 
 
+def _frozen_device_pins(manifest, device_pins):
+    """The pins of a set manifest's entries, in order, from `device_pins` ({device id: pin}), as its bench harness built
+    them: exactly one per entry, each naming that entry's set and device, and each what its case's family holds current.
+    The configurator takes the harness's word for the image and answer hashes (Feature 03, generated trials)."""
+    from .families import family_for
+    entries = manifest['entries']
+    if not isinstance(device_pins, dict) or set(device_pins) != {entry['device_id'] for entry in entries}:
+        raise ValueError('A set suite is frozen with one device pin per entry, from its bench harness: device_pins')
+    for entry in entries:
+        pin = device_pins[entry['device_id']]
+        if (not isinstance(pin, dict) or pin.get('device_id') != entry['device_id'] or pin.get('set') != manifest['set']
+                or pin.get('case_id') != entry['case']):
+            raise ValueError('A device pin names another device: ' + entry['device_id'])
+        if family_for(entry['case']).current_pin(pin) != pin:
+            raise ValueError('A device pin differs from what its family holds current: ' + entry['device_id'])
+    return [device_pins[entry['device_id']] for entry in entries]
+
+
 def freeze_suite(manifest: dict, executor: str, executor_config: dict,
-                 options: dict, provenance: dict, *, harness_token_sha256: str) -> dict:
+                 options: dict, provenance: dict, *, harness_token_sha256: str,
+                 device_pins: dict | None = None) -> dict:
     """Pin inputs without creating an owner, run, snapshot or native process.
 
     This private frozen object is not a public result. The bench harness that drives the suite holds evaluator password
     files and the emulator executable; the frozen suite holds only the sha256 of that harness's token. The child owner
-    separately compares the harness's admission of each v2 child with its public pin before starting any operation.
+    separately compares the harness's admission of each v2 child with its public pin before starting any operation. A
+    set suite is frozen with the `device_pins` its harness built; no other suite takes any.
     """
     import hashlib
     import json
@@ -208,11 +267,17 @@ def freeze_suite(manifest: dict, executor: str, executor_config: dict,
         if key in options and (not isinstance(options[key], str) or not options[key].strip()):
             raise ValueError('Suite tool paths must be nonblank strings')
     normalized, definitions, pins = preflight_selection(normalized)
+    if 'set' in normalized:
+        pins = _frozen_device_pins(normalized, device_pins)
+    elif device_pins is not None:
+        raise ValueError('Device pins belong to a set suite')
     encoded = json.dumps(normalized, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
     frozen = copy.deepcopy({'manifest': normalized, 'manifest_sha256': hashlib.sha256(encoded).hexdigest(),
-        'request': {'manifest': normalized, 'executor': executor, 'options': options},
+        'request': {'manifest': normalized, 'executor': executor, 'options': options,
+                    **({'device_pins': device_pins} if device_pins is not None else {})},
         'executor': executor, 'executor_config': executor_config, 'options': child_options,
         'scope': 'full-workflow', 'entry_pins': pins,
+        **({'device_pins': device_pins} if device_pins is not None else {}),
         'entry_effects': [list(case.default_effects) for case in definitions],
         'provenance': provenance, 'trials': expand_trials(normalized),
         'scheduler': SCHEDULER, 'harness_token_sha256': harness_token_sha256})
@@ -260,8 +325,9 @@ def child_request(frozen: dict, trial: dict) -> dict:
             'scoped_tool_approval': approval, 'budget_seconds': frozen['manifest']['child_budget_seconds']}
 
 
-# What the bench harness adds to a frozen child request: the child's device, its admission and the evaluation token hash.
-HARNESS_KEYS = ('device', 'admission', 'evaluation_token_sha256')
+# What the bench harness adds to a frozen child request: the child's device, its admission, the evaluation token hash
+# and the folder of its public inputs, for a device of a set.
+HARNESS_KEYS = ('device', 'admission', 'evaluation_token_sha256', 'public_inputs')
 
 
 def child_identity_differs(frozen: dict, trial: dict, submitted) -> str | None:

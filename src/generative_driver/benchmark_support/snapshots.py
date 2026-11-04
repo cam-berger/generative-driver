@@ -6,13 +6,16 @@ from pathlib import Path
 import shutil
 import tempfile
 
-from .registry import resolve_case, resource_path, pin_case
+from .families import family_for
+from .registry import resolve_case, resource_path
+
+
+def canonical_bytes(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode('utf-8')
 
 
 def canonical_digest(value):
-    payload = json.dumps(value, sort_keys=True, separators=(',', ':'),
-                         ensure_ascii=False, allow_nan=False).encode('utf-8')
-    return hashlib.sha256(payload).hexdigest()
+    return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
 def read_snapshot(run_dir: Path) -> dict:
@@ -46,7 +49,11 @@ def public_configuration(value):
     return value
 
 
-def snapshot_case(run_dir: Path, pin: dict, provenance: dict) -> dict:
+def snapshot_case(run_dir: Path, pin: dict, provenance: dict, *, public_inputs=None) -> dict:
+    """The run's snapshot of its case: the pin's public files, each copied and checked against the pin's hash, which the
+    run reads from then on. They come from `public_inputs`, the folder the bench harness sends for a device of a
+    generated set, whose files nothing else here can read (Feature 03, generated trials), or else from the case's
+    root."""
     target = Path(run_dir) / 'benchmark'
     target.mkdir(parents=True, exist_ok=True)
     public_files = {**pin['manifest'].get('images', {}), **pin['manifest'].get('assets', {})}
@@ -58,15 +65,15 @@ def snapshot_case(run_dir: Path, pin: dict, provenance: dict) -> dict:
         if saved != record:
             raise ValueError('Execution snapshot provenance mismatch')
         return saved
-    if pin_case(pin['case_id'], pin['scenario_id'], pin['case_seed']) != pin:
+    if family_for(pin['case_id']).current_pin(pin) != pin:
         raise ValueError('Case pin changed before capture')
-    definition = resolve_case(pin['case_id'])
+    root = Path(public_inputs) if public_inputs else resolve_case(pin['case_id']).root
     temporary = Path(tempfile.mkdtemp(prefix='.snapshot-', dir=target))
     try:
         inputs = temporary / 'inputs'
         inputs.mkdir()
         for name, expected in public_files.items():
-            source = resource_path(definition.root, name)
+            source = resource_path(root, name)
             destination = resource_path(inputs, name)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)

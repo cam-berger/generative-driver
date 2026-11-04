@@ -30,7 +30,8 @@ def public_case():
     definition = SimpleNamespace(id=row['case'], execution='actual-agent-emulation',
                                  evidence_track='firmware', manifest=manifest)
     with patch('generative_driver.benchmark_support.registry.resolve_case', return_value=definition), \
-            patch('generative_driver.benchmark_support.registry.pin_case', side_effect=lambda *args: copy.deepcopy(pin)):
+            patch('generative_driver.benchmark_support.registry.pin_case',
+                  side_effect=lambda *args, **_: copy.deepcopy(pin)):
         yield catalog, row, pin
 
 

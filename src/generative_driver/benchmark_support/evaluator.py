@@ -9,7 +9,7 @@ import json
 import shutil
 from pathlib import Path
 
-from .case_assets import write_json
+from .case_assets import NOT_JUDGED, write_json
 from .families import family_for
 from .registrations import registered_case_ids, registration_for
 
@@ -181,10 +181,17 @@ def unscored(reason, frozen, method='fresh-final', *, protocol: str):
 def reuse_mission(case_id, run_dir, accepted, frozen, capabilities):
     """Whether fresh reuse did the public mission with the frozen package, from the package events the run recorded for
     its accepted reuse assignment. The grade reports it beside the verdict, as the record's `mission`; required
-    generated reuse also needs the owner's proof."""
+    generated reuse also needs the owner's proof. A family whose `reuse_passed` returns None does not judge fresh reuse,
+    whatever the run did, and no other family returns None: it returns False or raises, as `_mission` handles."""
     from .case_assets import reuse_mission as _mission
     from .mcp_reuse import owner_evidence, required, verified
     from .snapshots import read_snapshot
+    try:
+        judged = family_for(case_id).reuse_passed([], {}) is not None
+    except (KeyError, TypeError, ValueError, AttributeError, IndexError):
+        judged = True
+    if not judged:
+        return {'name': 'fresh_worker_mission', 'passed': None, 'reason': NOT_JUDGED}
     proof = owner_evidence(run_dir, accepted)
     snapshot = read_snapshot(run_dir) if (Path(run_dir)/'benchmark/execution.json').is_file() else {}
     if required(proof, snapshot) and not verified(proof, frozen):
@@ -230,7 +237,6 @@ def accepted_driver(case_id, trial_dir, run_dir, result):
     mapping sha256 or None). A changed record or grader raises IntegrityError."""
     from .grader_identity import grader_identity
     from .integrity import IntegrityError
-    from .registry import pin_case
     from .snapshots import require_snapshot
     trial_dir, run_dir = Path(trial_dir), Path(run_dir)
     pin = result['case_pin']
@@ -241,7 +247,7 @@ def accepted_driver(case_id, trial_dir, run_dir, result):
     if snapshot['snapshot_sha256'] != result.get('snapshot_sha256'):
         raise IntegrityError('Execution snapshot differs from the run record')
     # The answer key is already in memory: a worker changing its file must not turn a failing run into a fault.
-    if pin_case(case_id, pin.get('scenario_id'), pin.get('case_seed', 0), check_truth=False) != pin:
+    if pin.get('case_id') != case_id or family_for(case_id).current_pin(pin, check_truth=False) != pin:
         raise IntegrityError('The installed case differs from the run\'s pinned case')
     if snapshot['executed'].get('evaluator_revision') != grader_identity(case_id=case_id)['sha256']:
         # A grader edited during the trial never seals a verdict under the revision the run started with.
@@ -334,9 +340,12 @@ def grade(case_id, trial_dir, run_dir, result, *, password, truth_source, renode
 
 def _generated_mission(mission, proved):
     """The mission of a final that requires generated MCP reuse: the fresh worker's own result when the owner's proof of
-    that reuse holds, else failed for want of the proof, whatever the worker's result."""
+    that reuse holds, else failed for want of the proof, whatever the worker's result. A case that does not judge fresh
+    reuse keeps that mission, proof or none."""
     found = mission if isinstance(mission, dict) else {}
     name = found.get('name', 'fresh_worker_mission')
+    if found.get('reason') == NOT_JUDGED:
+        return found
     if not proved:
         return {'name': name, 'passed': False, 'reason': OWNER_PROOF}
     return {'name': name, 'passed': found.get('passed'), **{key: found[key] for key in ('reason', 'fault') if key in found}}

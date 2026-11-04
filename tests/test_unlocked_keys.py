@@ -272,7 +272,9 @@ class PinWithoutTruthFileTests(PendingRunFixture):
                 registry.pin_case('tq9-v2', 'original', 0, check_truth=False)
         case.write_text(json.dumps(manifest))
 
-    def test_02_B22_adapter_for_opens_no_truth_file_and_raises_only_what_load_definition_does(self):
+    def test_02_B22_adapter_for_opens_no_file_and_a_changed_case_does_not_raise_from_it(self):
+        # Narrowed by 03-B16: `adapter_for` reads the registration alone; a start and the grade still refuse a changed
+        # case.
         from generative_driver.benchmark_support.adapters import adapter_for
         from generative_driver.benchmark_support import emulated
         truth_file = self.root / 'resources/groundtruth/tq9-v2.enc'
@@ -284,8 +286,7 @@ class PinWithoutTruthFileTests(PendingRunFixture):
             return real(path)
         with patch.object(Path, 'read_bytes', read_bytes):
             self.assertIs(adapter_for('tq9-v2'), emulated)
-        self.assertTrue(read)
-        self.assertNotIn(truth_file, read)
+        self.assertEqual(read, [])
         for name, change in (('replaced', lambda: truth_file.write_bytes(b'replaced')), ('missing', truth_file.unlink)):
             change()
             with self.subTest(name):
@@ -297,12 +298,15 @@ class PinWithoutTruthFileTests(PendingRunFixture):
                 ('an escaping truth path', {**manifest, 'truth': {**manifest['truth'], 'path': '../outside'}}, 'escapes root'),
                 ('a changed image hash', {**manifest, 'images': {'firmware.bin': '0' * 64}}, 'Case image hash mismatch')):
             case.write_text(json.dumps(changed))
-            with self.subTest(name), self.assertRaisesRegex(ValueError, message):
-                adapter_for('tq9-v2')
+            with self.subTest(name):
+                self.assertIs(adapter_for('tq9-v2'), emulated)
+                with self.assertRaisesRegex(ValueError, message):
+                    registry.pin_case('tq9-v2', 'original', 0, check_truth=False)
         case.write_text(json.dumps(manifest))
         self.image.unlink()
+        self.assertIs(adapter_for('tq9-v2'), emulated)
         with self.assertRaisesRegex(registry.PendingCaseError, 'Case image is unbuilt'):
-            adapter_for('tq9-v2')
+            registry.pin_case('tq9-v2', 'original', 0, check_truth=False)
 
     def test_02_B22_grading_checks_the_pin_without_opening_the_truth_file(self):
         run, result = self.pending()

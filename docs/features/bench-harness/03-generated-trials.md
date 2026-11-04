@@ -108,3 +108,25 @@ The pin's `manifest` has `schema` `benchmark-case/2`, the fields above that a ma
 - The generator, real Renode, a real set, vault or password, model runs, and Windows or Linux runs. Whether a real device's boot reading is stable is untested here.
 
 ## Deviations
+
+- `FixtureDevice.session` and `fixture_start` take the `Process` stand-in as a keyword, `process=False` by default — test-only; the Spec's aim, a confirmed provider stop, holds for trials, and `tests/test_set_qualification.py:123` stays true.
+- `generated.py` holds the template in a public `device_pin`, with `ARTIFACT` and `MISSION`, and `generated_trials.device_pin` wraps it — the Spec asks for one template in `generated.py` and leaves the name open.
+- The row helper is `registry.case_selection`, answering from the row alone only when all four fields are filled — does what "Row or manifest" says; only the `generated` row fills all four.
+- `device_pins` is in the stored request, and a non-set suite sent pins is refused — both follow from freezing pins and don't widen scope.
+- `freeze_suite` also refuses a differing `case_id` or `set` — falls under "carries one for another device".
+- `_set_device_pins` normalizes, reports unknown devices first and removes repeated reasons — keeps 03-B4's reason form and changes no outcome.
+- Own wording for missing-input reasons — the Spec fixes only the form.
+- `admit_device` compares the pin using the pin's own evidence value, and `_provided_device` compares the evidence — 03-B13 asks for hashes, and the evidence is still checked on a new start.
+- `OSError` is named by class alone in `admit_device` and `answer_key` too — stricter, and serves 03-B7's rule that no root reaches a record.
+- `reattach` with no `device` has no explicit refusal — confirmed: `_suite_trial` is its only caller, and it builds the device first.
+- `_expected_pin` gives `case_seed must be an integer` for a non-`int` options seed and `Expected case pin differs...` for a malformed or differing pin, including an unknown scenario on a pinned start — within 03-B9's scoped "unchanged".
+- `KeyError` instead of `IntegrityError` at `evaluator.py:250` for a pin with no `scenario_id` — follows the Spec's literal hook, and `require_snapshot` compares the pin first.
+- New signatures the Spec leaves open (`load_mission`, `task_contract`, `_required_tasks`, `_capability_guidance`, `_mapping_errors`, `device_evidence`, `repair_sources`, `snapshot_case`, `_suite_trial`) — each carries `run_dir`, `readings` or `public_inputs` as 03-B15, 03-B17 and 03-B18 need.
+- New public names (`generated_device.validate_device_id`, `snapshots.canonical_bytes`, `device_client.offers_readings`, `emulated.PAUSED`, `case_assets.NOT_JUDGED`, `generated_trials.PUBLIC_INPUTS`), and `record_call`'s options gain `device` — each serves a Behaviour or the Spec's shared-constant seam.
+- `qualification_digest` reads the private `generated_sets._QUALIFICATION_FILE` — the Spec keeps `generated_sets` unchanged.
+- `suite_reporting.py` checks a pin's `device_id` against its entry — under 03-B23's "a row validates with it"; hand-made entries compare None with None.
+- Existing tests changed (`test_family_seam.py`, `test_generated_family.py`, `test_case_registration.py`, `test_unlocked_keys.py`, `test_corpus_preflight.py`) — named by the Spec or forced by the new hook.
+- Over-long lines: `emulated.py:329`, `suite_reporting.py:353` and a 121-column comment at `tests/test_generated_trials.py:1340` — no scope effect; the two source lines were already long.
+- Test-first wasn't kept everywhere, with mutation and stub REDs instead — process only; the RED evidence was judged and fits.
+- `test_03_B25` now waits for the harness to exit before reading `suite.json` — the test's wait read the file between detach and final write, an order that predates this Feature. The window was only reproduced by widening it, so linking the one failure to it is a strong inference; the status assertion still runs.
+- Docs amended as listed, nothing real run — the Spec's own list, and the out-of-scope items were not run.

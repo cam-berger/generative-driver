@@ -1,7 +1,8 @@
 """Two systems compared device by device on one scoring set.
 
 Reporting code, outside the grader's identity: it reads saved suite reports and grades nothing. A device is a trial's
-`case`, and a system's result on it is the outcome its row stores (`scored`), never one derived again here. A leak check
+`case` and, in a suite of one generated set, its `device_id`, and a system's result on it is the outcome its row stores
+(`scored`), never one derived again here. A leak check
 sets the after system's pass rate on the scoring set beside its rate on a fresh batch of devices: a clearly better
 score on the scoring set means the set leaked. A comparison is an output of a sealed scoring set, so it carries
 aggregates only: no case name, run id or trial key appears in it, nor in the reason of a refusal."""
@@ -58,12 +59,17 @@ def _canonical(value) -> str:
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
 
 
+def _device(row: dict) -> tuple:
+    """What tells one device from another in a manifest entry or a trial row (Feature 03, generated trials)."""
+    return row['case'], row.get('device_id')
+
+
 def _per_case(identity: dict, key: str) -> dict:
-    """For each case, the sorted canonical JSON forms of the `key` (`entry_pins` or `time_policy`) of every entry that
+    """For each device, the sorted canonical JSON forms of the `key` (`entry_pins` or `time_policy`) of every entry that
     names it. A case may have several entries, and the order of a suite's entries is its own."""
     cases = {}
     for entry, item in zip(identity['manifest']['entries'], identity[key]):
-        cases.setdefault(entry['case'], []).append(_canonical(item))
+        cases.setdefault(_device(entry), []).append(_canonical(item))
     return {case: sorted(forms) for case, forms in cases.items()}
 
 
@@ -93,7 +99,7 @@ def _outcomes_by_device(report: dict) -> dict:
     """The stored outcome of every trial row of each device: a list, as a device may have been tried more than once."""
     devices = {}
     for row in report['trials']:
-        devices.setdefault(row['case'], []).append(row.get('scored'))
+        devices.setdefault(_device(row), []).append(row.get('scored'))
     return devices
 
 

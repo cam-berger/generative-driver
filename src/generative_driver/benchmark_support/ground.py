@@ -10,10 +10,11 @@ def _named(path, name):
     return path.name == name or bool(separator) and prefix.isdigit() and original == name
 
 
-def device_evidence(accepted, workspace):
+def device_evidence(accepted, workspace, *, readings=True):
     """Ground inputs from the latest probe handoff that carries the adapted model: that model, as the assigned model
-    directory, the worker's own probe records, its capability mapping and the live journal with the instrument
-    readings of the emulated device. Device evidence only: no grade, expected value or evaluator record."""
+    directory, the worker's own probe records, its capability mapping and the live journal, with the instrument readings
+    of the emulated device when it offers them (`readings`). Device evidence only: no grade, expected value or evaluator
+    record."""
     handoff = next((h for h in reversed(accepted or []) if h.get('stage') == 'probe'
                     and any(_named(Path(a['path']), 'model.json') for a in h.get('artifacts', []))), None)
     if handoff is None:
@@ -59,16 +60,22 @@ def device_evidence(accepted, workspace):
     index = bundle/'device-observations.json'
     index.write_text(json.dumps({'schema': 'benchmark-ground-evidence/3', 'model': {'directory': 'model', 'sha256': model_sha},
         'capabilities': mapping, 'probes': probes, 'live_observations': live,
-        'instrument': 'before_observation and observation are instrument readings of the emulated device with units: '
-                      'device evidence, as a real device\'s readings would be, never a grade.'}, indent=1) + '\n', encoding='utf-8')
+        **({'instrument': 'before_observation and observation are instrument readings of the emulated device with '
+                          'units: device evidence, as a real device\'s readings would be, never a grade.'}
+           if readings else {})},
+        indent=1) + '\n', encoding='utf-8')
     notes = [note for note, missing in (('No probe record of the model available', not probes),
                                         ('No live journal available', live is None)) if missing]
     return {'objective': 'Test the meanings the supplied model gives the emulated device: units, scaling and the effects '
                 'of its operations. Run the model in model/ with probe_run and interface_execute through the '
-                'configurator-owned emulator connection. Live results carry before_observation and observation, '
-                'instrument readings of the emulated device with units; they are device evidence, as a real device\'s '
-                'readings would be, never a grade. Compare decoded outputs and effects with those readings, the supplied '
-                'probe records, capability mapping and journal (ground-evidence/device-observations.json). Report what '
+                'configurator-owned emulator connection. '
+                + ('Live results carry before_observation and observation, '
+                   'instrument readings of the emulated device with units; they are device evidence, as a real '
+                   'device\'s readings would be, never a grade. Compare decoded outputs and effects with those '
+                   'readings, the supplied '
+                   if readings else 'Compare decoded outputs and effects with the supplied ')
+                + 'probe records, capability mapping and journal (ground-evidence/device-observations.json). Report '
+                'what '
                 'the device did that the model did not predict, and needs_revision for a specific contradiction.',
             'inputs': [str(index), *inputs], 'context': {'model_dir': str(model_dir), 'evidence': str(index)},
             **({'input_notes': notes} if notes else {})}

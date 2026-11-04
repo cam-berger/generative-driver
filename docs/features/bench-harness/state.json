@@ -4,7 +4,7 @@
   "branch": "mdk/bench-harness",
   "stage": "spec",
   "awaiting": null,
-  "current": "03",
+  "current": "04",
   "features": [
     {
       "id": "01",
@@ -21,8 +21,8 @@
     {
       "id": "03",
       "slug": "generated-trials",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "c4b6e2bf616c3bc27b1f140992d20d6a1e072501"
     },
     {
       "id": "04",

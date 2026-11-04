@@ -103,8 +103,8 @@ def validate_scoped_approval(spec):
         raise ValueError('Unsupported scoped_tool_approval')
     if case_id is None:
         raise ValueError('Emulator approval requires a registered benchmark case such as tq9')
-    from .benchmark_support.registry import resolve_case
-    definition = resolve_case(case_id)
+    from .benchmark_support.registry import case_selection
+    definition = case_selection(case_id)
     if definition.execution != 'actual-agent-emulation' or definition.approval_scope != 'emulator':
         raise ValueError('scoped_tool_approval supports only a registered emulator profile')
     case_option_values=spec.get('case_options')
@@ -127,6 +127,8 @@ def case_options(spec):
     if spec.get('device') and spec.get('_device'):
         # The provided device as the configurator's durable record holds it now (a recovery changes its binding).
         options['device']={key:spec['_device'][key] for key in ('session_id','binding')}
+        if 'instrument' in spec['device']:
+            options['device']['instrument'] = copy.deepcopy(spec['device']['instrument'])
         if spec['device'].get('development_conditions'):
             options['device']['development_conditions'] = copy.deepcopy(spec['device']['development_conditions'])
     return {**options,'revision':spec.get('_revision',0),'feedback':spec.get('_feedback'),
@@ -143,8 +145,8 @@ def _replay_config(params, config, home):
     case_id = case.get('id') if isinstance(case, dict) else case
     if not case_id:
         raise ValueError('The replay executor runs emulated benchmark cases only; this start names no case')
-    from .benchmark_support.registry import resolve_case
-    if resolve_case(case_id).execution != 'actual-agent-emulation':
+    from .benchmark_support.registry import case_selection
+    if case_selection(case_id).execution != 'actual-agent-emulation':
         raise ValueError('The replay executor runs emulated benchmark cases only, never ' + str(case_id))
     return candidate_config(config, bench=bench_home(home))
 
@@ -186,14 +188,14 @@ def _verify_candidate(config):
 
 
 def _refuse_secrets(spec):
-    """The configurator never holds a password, a password file or the emulator executable, for any case: the bench
-    harness does. The request itself is checked too, since the run keeps all of it as its spec."""
+    """The configurator never holds a password, a password file, the emulator executable or a set's root, for any case:
+    the bench harness does. The request itself is checked too, since the run keeps all of it as its spec."""
     case = spec.get('case')
     for options in (spec, spec.get('case_options'), case.get('options') if isinstance(case, dict) else None):
-        if isinstance(options, dict) and any('password' in str(key).lower() or str(key).lower() == 'renode'
-                                             for key in options):
-            raise ValueError('The configurator takes no password, password file or emulator executable; the bench '
-                             'harness holds them')
+        if isinstance(options, dict) and any('password' in str(key).lower()
+                                             or str(key).lower() in ('renode', 'set_root') for key in options):
+            raise ValueError('The configurator takes no password, password file, emulator executable or set root; the '
+                             'bench harness holds them')
 
 
 OLD_SUITE = ('This suite was frozen before the bench harness drove suites (it holds evaluator password files or no '
@@ -230,6 +232,23 @@ def _assistive(suite):
 
 # A child whose recorded request differs from its frozen slot holds that slot's request_id for good.
 TAKEN = "; the slot's request_id is taken by that child, so start a new suite"
+
+
+def _expected_pin(case_id, options, expected):
+    """The pin a start names, once it is that start's own (its case, scenario and seed) and what the case's family holds
+    current: a frozen suite's child starts from it, and a generated device has no manifest to pin it from again."""
+    from .benchmark_support.families import family_for
+    if type(options.get('case_seed', 0)) is not int:
+        raise ValueError('case_seed must be an integer')
+    differs = ValueError('Expected case pin differs from current case inputs')
+    if (not isinstance(expected, dict) or expected.get('case_id') != case_id or 'scenario_id' not in expected
+            or options.get('scenario_id') not in (None, expected['scenario_id'])
+            or options.get('case_seed', 0) != expected.get('case_seed')):
+        raise differs
+    pin = family_for(case_id).current_pin(expected)
+    if _json(expected) != _json(pin):
+        raise differs
+    return pin
 
 
 def _provided_device(params, pin):
@@ -1551,7 +1570,9 @@ class Controller:
         options=params.get('options',{})
         refuse_secrets(options)
         token,pid,lock=_harness_identity(params,'A suite is started and driven by its bench harness: `benchmark suite start`')
-        request={'manifest':manifest,'executor':executor,'options':options}
+        pins=params.get('device_pins')
+        request={'manifest':manifest,'executor':executor,'options':options,
+                 **({'device_pins':pins} if pins is not None else {})}
         with self._lock:
             saved=self._suites.find_request(params.get('request_id'),request)
             if saved is None:
@@ -1560,7 +1581,8 @@ class Controller:
                 if executor=='replay':
                     config=_replay_suite_config(manifest,options,self.home)
                 provenance=execution_provenance(config,case_ids=[entry['case'] for entry in manifest['entries']])
-                frozen=freeze_suite(manifest,executor,config,options,provenance,harness_token_sha256=token)
+                frozen=freeze_suite(manifest,executor,config,options,provenance,harness_token_sha256=token,
+                                    device_pins=pins)
                 saved=self._suites.create(frozen,params.get('request_id'),harness_pid=pid,harness_lock=lock)
                 if not saved['duplicate']:
                     self._suites.set_state(saved['suite_id'],'running')
@@ -1687,7 +1709,8 @@ class Controller:
         if trial is None:
             return {'ok':True,'suite_id':suite_id,'status':status,'slot':None}
         return {'ok':True,'suite_id':suite_id,'status':status,
-                'slot':{key:trial[key] for key in ('ordinal','trial_key','case','child_request_id','run_id')},
+                'slot':{key:trial[key] for key in ('ordinal','trial_key','case','device_id','child_request_id','run_id')
+                        if key in trial},
                 'request':child_request(suite['frozen'],trial)}
 
     def _suite_expired(self, suite):
@@ -1902,11 +1925,11 @@ class Controller:
             time.sleep(.05)
 
     def _verify_suite(self, suite):
-        from .benchmark_support.registry import pin_case
+        from .benchmark_support.families import family_for
         from .benchmark_support.snapshots import execution_provenance
         frozen = suite['frozen']
         for pin in frozen['entry_pins']:
-            if pin_case(pin['case_id'],pin['scenario_id'],pin['case_seed']) != pin:
+            if family_for(pin['case_id']).current_pin(pin) != pin:
                 raise ValueError('Frozen suite case pin changed')
         cases = [entry['case'] for entry in frozen['manifest']['entries']]
         if execution_provenance(frozen['executor_config'], case_ids=cases) != frozen['provenance']:
@@ -2147,10 +2170,11 @@ class Controller:
                     from .benchmark_support.registry import pin_case
                     from .benchmark_support.snapshots import snapshot_case, execution_provenance
                     options = case_options(spec)
-                    pin = pin_case(case['id'] if isinstance(case, dict) else case,
-                                   options.get('scenario_id'), options.get('case_seed', 0))
-                    if 'case_pin' in params and _json(params['case_pin']) != _json(pin):
-                        raise ValueError('Expected case pin differs from current case inputs')
+                    case_id = case['id'] if isinstance(case, dict) else case
+                    if 'case_pin' in params:
+                        pin = _expected_pin(case_id, options, params['case_pin'])
+                    else:
+                        pin = pin_case(case_id, options.get('scenario_id'), options.get('case_seed', 0))
                     if pin['manifest'].get('schema') == 'benchmark-case/2':
                         required_effects = set(pin['manifest']['default_effects']) - {'read'}
                         if required_effects - set(effects):
@@ -2176,7 +2200,8 @@ class Controller:
                         config = spec['executor_config'] = _copy_candidate(config, self.home / 'runs' / run_id)
                     spec['_case_pin'] = pin
                     saved = snapshot_case(self.home / 'runs' / run_id, pin,
-                                          execution_provenance(config, case_ids=(pin['case_id'],)))
+                                          execution_provenance(config, case_ids=(pin['case_id'],)),
+                                          public_inputs=spec.get('public_inputs'))
                     spec['_snapshot_sha256'] = saved['snapshot_sha256']
                     spec['_execution_run_dir'] = str(self.home / 'runs' / run_id)
                     encoded = _json(spec)
@@ -2954,8 +2979,10 @@ class Controller:
         the reading after it. A provider that fails before the call refuses it (nothing reached the device, so nothing
         is uncertain); one that fails after the call leaves the call's own result to reconcile. Either is recorded and
         stops the stage for the operator. The caller holds the run's operation lock (every tool call does), so one live
-        call at a time is inside the window and its readings are its own."""
-        from .device_client import DeviceUnavailable, reading
+        call at a time is inside the window and its readings are its own. A device that offers no readings is still
+        observed, since that refuses a call when its provider fails, but neither its result nor the journal holds
+        them."""
+        from .device_client import DeviceUnavailable, offers_readings, reading
         started, result, before, after, lost = False, None, None, None, None
         try:
             if condition_id is not None:
@@ -2980,7 +3007,9 @@ class Controller:
         spec = json.loads(run['spec'])
         from .benchmark import record_call
         record_call(spec['_case_pin']['case_id'], self.home / 'runs' / run['id'], assignment['stage'], name, arguments,
-                    result, before, after, {'assignment_id': assignment['id']})
+                    result, before, after, {'assignment_id': assignment['id'], 'device': spec.get('device')})
+        if not offers_readings(spec.get('device')):
+            return result
         return {**result, 'before_observation': before, **({'observation': after} if after else {})}
 
     def _check(self, spec, stage, run_dir, workspace, report, accepted, assignment):

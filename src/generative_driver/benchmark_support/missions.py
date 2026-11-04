@@ -39,12 +39,19 @@ def validate_mission(value, case_id):
     return copy.deepcopy(value)
 
 
-def load_mission(case_id):
-    from .case_assets import case_root
+def load_mission(case_id, run_dir=None):
+    """The public mission of `case_id`. A case registered through a set has one per device: during a run (`run_dir`) it
+    is read from the run's checked snapshot, since the set's own files are out of reach (Feature 03, generated trials).
+    Any other case reads the mission of its case root."""
+    from .case_assets import case_inputs, case_root
+    from .registrations import registered_case_ids, registration_for
     from .registry import _unique_object
     if not isinstance(case_id, str) or not re.fullmatch('[a-z0-9][a-z0-9-]*', case_id):
         raise ValueError('Invalid public mission case ID')
-    path = case_root() / 'missions' / (case_id + '.json')
+    if run_dir is not None and case_id in registered_case_ids() and registration_for(case_id).calibration_kind == 'set':
+        path = case_inputs(case_id, run_dir)[0] / 'mission.json'
+    else:
+        path = case_root() / 'missions' / (case_id + '.json')
     try:
         value = json.loads(path.read_text(encoding='utf-8'), object_pairs_hook=_unique_object)
     except FileNotFoundError:

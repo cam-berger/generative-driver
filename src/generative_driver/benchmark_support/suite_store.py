@@ -174,7 +174,9 @@ class SuiteStore:
         fields=('ordinal','trial_key','case','scenario','case_seed','repeat_index','run_id','status','outcome_category')
         def public(slot):
             settled=slot['result'] or {}
-            return {**{key:slot[key] for key in fields},'equivalent':settled.get('equivalent'),
+            return {**{key:slot[key] for key in fields},
+                    **({'device_id':slot['device_id']} if 'device_id' in slot else {}),
+                    'equivalent':settled.get('equivalent'),
                     'equivalence_status':settled.get('equivalence_status')}
         return {'suite_id':suite_id,'trials':[public(_slot(row)) for row in rows[:limit]],
             'next_offset':offset+limit if len(rows)>limit else None}

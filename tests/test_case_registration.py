@@ -116,7 +116,9 @@ class RegistrationTableTests(unittest.TestCase):
                              native_module='zephyr_modbus', truth_schema='benchmark-upstream-truth/1',
                              build_kind='zephyr-modbus', calibration_kind='upstream'),
             CaseRegistration('generated', 'generated', '1', 'emulator-v2', 'benchmark-case/2',
-                             native_module='generated', truth_schema='generated-answer-key/2', calibration_kind='set')))
+                             native_module='generated', truth_schema='generated-answer-key/2', calibration_kind='set',
+                             execution='actual-agent-emulation', evidence_track='firmware', approval_scope='emulator',
+                             default_effects=['write', 'actuate'])))
 
     def test_a_duplicate_key_an_unknown_or_missing_field_or_a_duplicate_id_is_refused(self):
         from dataclasses import asdict

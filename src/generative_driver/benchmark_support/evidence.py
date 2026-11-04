@@ -8,7 +8,8 @@ COUNTS = ('verdict', 'passed', 'total')
 USAGE = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens',
          'total_tokens', 'observed_total_tokens', 'reported_attempts', 'attempts', 'coverage', 'counting')
 PIN = ('case_id', 'case_version', 'manifest_sha256', 'scenario_id', 'scenario_sha256',
-       'case_seed', 'truth_sha256', 'evaluator_version', 'family', 'variant', 'execution', 'evidence_track', 'scope')
+       'case_seed', 'truth_sha256', 'evaluator_version', 'family', 'variant', 'execution', 'evidence_track', 'scope',
+       'set', 'device_id')
 
 
 def _scalars(value, fields):

@@ -11,6 +11,9 @@ STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 # The record of the package calls of a fresh reuse, which the reuse stage hands on.
 REUSE_EVENTS = 'reuse-events.jsonl'
 TASKS = ('temperature', 'arm', 'set_duty', 'disarm')
+# The reason in the mission of a case whose family's `reuse_passed` returns None, so that a regrade reads it from the
+# sealed mission and needs no case id (Feature 03, generated trials).
+NOT_JUDGED = 'This case does not judge fresh reuse'
 
 
 def case_root():
@@ -86,12 +89,15 @@ def mapping_errors(mapping, model):
 def reuse_mission(case_id, events, capabilities):
     """Whether the fresh worker's package calls did the public mission, judged from their outputs and the instrument
     readings of the emulated device: a note on the reuse stage, never a grade. Failed calls are attributed only on
-    trusted evidence: untyped or mixed failures blame nobody."""
+    trusted evidence: untyped or mixed failures blame nobody. A family whose `reuse_passed` returns None judges
+    nothing."""
     try:
         done = family_for(case_id).reuse_passed(events, capabilities)
     except (KeyError, TypeError, ValueError, AttributeError, IndexError) as error:
         return {'name': 'fresh_worker_mission', 'passed': None,
                 'reason': 'The capability mapping cannot judge the mission: ' + type(error).__name__ + ': ' + str(error)}
+    if done is None:
+        return {'name': 'fresh_worker_mission', 'passed': None, 'reason': NOT_JUDGED}
     if done:
         return {'name': 'fresh_worker_mission', 'passed': True}
     failed = [e['result'] for e in events if e['result'].get('ok') is not True]

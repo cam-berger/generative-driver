@@ -97,6 +97,7 @@ def _experiment(value):
         from .registry import validate_public_workflow_identity
         validate_public_workflow_identity(pin)
         if any(pin.get(k)!=entry[v] for k,v in (('case_id','case'),('scenario_id','scenario'),('case_seed','case_seed'))):raise ValueError('Entry pin mismatch')
+        if pin.get('device_id')!=entry.get('device_id'):raise ValueError('Entry pin mismatch')
         if any(pin.get(k)!=identity[k] for k in ('execution','evidence_track','scope')) or not pin.get('family'):raise ValueError('Mixed or missing pin scope')
         if any(not _sha(pin.get(k)) for k in ('manifest_sha256','truth_sha256','pin_sha256')) or not pin.get('case_version') or not pin.get('evaluator_version'):raise ValueError('Incomplete pin identity')
         if not isinstance(pin.get('image_hashes'),dict) or any(not _sha(v) for v in pin['image_hashes'].values()):raise ValueError('Invalid image identities')
@@ -349,7 +350,7 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
         report=reports.get(trial.get('run_id'),{})
         # An assistive trial that has no report yet carries no verdict, not even an unscored one.
         safe=(public_v3_report(report) if report else {}) if protocol else public_v2_report(report)
-        row={key:trial[key] for key in ('trial_key','ordinal','entry_index','repeat_index','case','family','scenario','case_seed','run_id','status','outcome_category')}
+        row={key:trial[key] for key in ('trial_key','ordinal','entry_index','repeat_index','case','device_id','family','scenario','case_seed','run_id','status','outcome_category') if key in trial}
         # `workflow_status` and `effective_budget_seconds` let the row alone repeat the outcome its report gave.
         row.update({key:safe[key] for key in ('verdict','equivalence','equivalence_status','stages','final_evaluation','elapsed_seconds',
             'worker_seconds','tool_seconds','usage','workflow_status','effective_budget_seconds') if key in safe})
@@ -686,8 +687,10 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
     _validate_trials(manifest,trials,{},experiment)
     started=[trial for trial in trials if trial.get('run_id')]
     protocol=identity.get('protocol');keys={trial['trial_key'] for trial in started}
+    # One password seals every device of a set, so a set suite's file is keyed by the set.
+    keyed=lambda case:manifest.get('set',case)
     if regrading and ((set(evidence_files)-keys if protocol else set(evidence_files)!=keys)
-            or set(password_files)-{trial['case'] for trial in trials}):
+            or set(password_files)-{keyed(trial['case']) for trial in trials}):
         raise ValueError('Regrade evidence must cover every started trial exactly')
     if audit_paths and not protocol:raise ValueError('The transcript audit covers assistive suites only')
     if audit_paths:
@@ -732,8 +735,8 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
             if regrading and protocol:
                 if (report.get('equivalence') or {}).get('evidence_sha256'):
                     if trial['trial_key'] not in evidence_files:raise ValueError('Regrade evidence must cover every trial with a recorded verdict exactly')
-                    if trial['case'] not in password_files:raise ValueError('Missing case password handle')
-                    report=regrade_v3(report,Path(evidence_files[trial['trial_key']]),password_of(trial['case']))
+                    if keyed(trial['case']) not in password_files:raise ValueError('Missing case password handle')
+                    report=regrade_v3(report,Path(evidence_files[trial['trial_key']]),password_of(keyed(trial['case'])))
                     regraded.add(trial['trial_key'])
                 qualified=settled and _report_equivalent(report)
             elif regrading:

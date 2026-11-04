@@ -33,7 +33,7 @@ from generative_driver.benchmark_support.snapshots import canonical_digest
 HOOKS = ('contract', 'observations', 'reuse_passed', 'required_mutants', 'execute', 'build_plan', 'hydrate_truth',
          'admission_valid', 'validate_phase', 'required_scenarios', 'mutant_checks_may_exceed_expected',
          'input_commitments', 'inventory_files', 'instrument_units', 'public_observation', 'development_conditions',
-         'start_session', 'validate_execution')
+         'start_session', 'validate_execution', 'current_pin')
 REQUIRED = ('contract', 'observations', 'reuse_passed', 'required_mutants')
 INVENTORY_SET = frozenset({'source', 'contract', 'recipe', 'references', 'mutations', 'build', 'inventory'})
 

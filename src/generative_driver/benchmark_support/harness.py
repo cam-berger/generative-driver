@@ -200,15 +200,18 @@ def device_recipe(case_id, truth):
     return legacy_recipe(truth.payload) if case_id == 'tq9' else truth.payload['recipe']
 
 
-def admit(case_id, options, trial_dir, *, password, renode=None):
+def admit(case_id, options, trial_dir, *, password, renode=None, device=None, pin=None):
     """Admit the case and, for an emulated one, build its device provider from the recipe alone: (provider or None,
     admission, `UnlockedTruth`). This step decrypts the case truth, once for every kind of case, and the trial grades
     from what it returns; a provider sees only the recipe. A v2 case's admission names its calibration evidence; legacy
     cases have none. A bound device (bme280) is the operator's: no provider, and a password that could not grade the run
     refuses it before it starts. The caller starts the provider, so that it holds the device even when the start
-    fails."""
+    fails. A device of a generated set (`device`, with its frozen `pin`) is admitted through its set instead."""
     from .device_provider import DeviceProvider
     from .registry import admitted_truth, case_truth, pin_case, resolve_case
+    if device is not None:
+        from .generated_trials import admit_device
+        return admit_device(device, pin, password, trial_dir, renode=renode)
     pin = pin_case(case_id, options.get('scenario_id'), options.get('case_seed', 0))
     if not pin['execution'].startswith('actual-agent-'):
         raise ValueError('The bench harness runs actual-agent benchmark cases only')
@@ -453,7 +456,7 @@ def _unread(status, result):
     return None
 
 
-def run_trial(trial_dir, request, *, password=None, call=None, launch=None, heartbeat=None, stop=None):
+def run_trial(trial_dir, request, *, password=None, call=None, launch=None, heartbeat=None, stop=None, device=None):
     """One trial: read the password, admit, provide the device, start the run, wait, stop the device, grade a completed
     run once from the answer key admission unlocked, seal, post the verdict. The password file (`password_file` in
     `request`) is read once, before the configurator is first contacted, unless the caller passes the object as
@@ -462,11 +465,12 @@ def run_trial(trial_dir, request, *, password=None, call=None, launch=None, hear
     as a field, nor the evaluation token, though the reason a later failure records there quotes the error met, which
     may name the emulator's path. A suite's harness passes the password it holds, its child's start request (`start` in
     `request`), its configurator requests (`call`), `launch(params)`, which starts and attaches the child through its
-    suite, a `heartbeat()` while the run runs and a `stop` event that ends the wait. A suite child's start that got no
-    answer is sent again (see `_start_child`), so a lost reply never has the device stopped under the child it started;
-    trial.json records that the start was sent (`start_sent`) before it is. The harness holds a lock file in `trial_dir`
-    for as long as it runs, by which others tell that it still runs (its process id alone may come to name another
-    process)."""
+    suite, a `heartbeat()` while the run runs, a `stop` event that ends the wait and, for a device of a generated set,
+    its `SetDevice` (`device`), which admits the trial through its set from the start request's pin. A suite child's
+    start that got no answer is sent again (see `_start_child`), so a lost reply never has the device stopped under the
+    child it started; trial.json records that the start was sent (`start_sent`) before it is. The harness holds a lock
+    file in `trial_dir` for as long as it runs, by which others tell that it still runs (its process id alone may come
+    to name another process)."""
     from ..client import hold_process_lock
     trial_dir = Path(trial_dir)
     trial_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -490,8 +494,9 @@ def run_trial(trial_dir, request, *, password=None, call=None, launch=None, hear
         reachable = configurator('ping', {})
         if not reachable.get('ok'):
             raise ValueError(reachable.get('reason') or 'The configurator is not reachable')
+        set_device = {'device': device, 'pin': (start or {}).get('case_pin')} if device is not None else {}
         held['provider'], admission, truth = admit(request['case'], (start or request).get('case_options') or {},
-                                                   trial_dir, password=password, renode=renode)
+                                                   trial_dir, password=password, renode=renode, **set_device)
         if held['provider'] is not None:
             held['provider'].start()
             server = DeviceServer(held['provider'], trial_dir / 'endpoint')
@@ -504,6 +509,9 @@ def run_trial(trial_dir, request, *, password=None, call=None, launch=None, hear
                                            if request.get(key) is not None}
         params.update(request_id=request_id, evaluation_token_sha256=hashlib.sha256(token.encode()).hexdigest(),
                       **({'device': server.descriptor} if server else {}), **({'admission': admission} if admission else {}))
+        if device is not None:
+            from .generated_trials import PUBLIC_INPUTS
+            params['public_inputs'] = str(trial_dir / PUBLIC_INPUTS)
         # From here a run may exist that this trial started, whether or not its reply arrives.
         record['start_sent'] = time.time()
         _private(trial_dir / 'trial.json', record)
@@ -556,6 +564,42 @@ def _supplied_passwords(files):
         if path and path not in read:
             read[path] = _read_supplied(case, path)
     return {case: read[path] for case, path in files.items() if path}
+
+
+def _set_device_pins(manifest, set_root, passwords):
+    """{device id: pin} of every entry of the set manifest `manifest`, once the set `set_root` holds is registered and
+    every entry's device admitted, for a harness that has not yet contacted the configurator. Any refusal is a
+    ValueError that lists its reasons and names no path, as `_read_supplied`'s does."""
+    from . import generated_sets, generated_trials
+    from .suites import normalize_manifest
+    registration = normalize_manifest(manifest)['set']
+
+    def refused(reasons):
+        listed_once = '; '.join(dict.fromkeys(reasons))
+        return ValueError('The generated set ' + registration + ' is not admitted: ' + listed_once)
+    if not set_root:
+        raise refused(['no set root was supplied'])
+    if registration not in passwords:
+        raise refused(['no evaluator password file was supplied'])
+    password = passwords[registration]
+    try:
+        loaded = generated_sets.load_set(set_root, registration)
+    except OSError as error:
+        raise refused([type(error).__name__]) from None
+    except ValueError as error:
+        raise refused([str(error)]) from None
+    devices = [entry['device_id'] for entry in manifest['entries']]
+    listed = {entry['id'] for entry in loaded['devices']}
+    unknown = ['Unknown generated device: ' + device for device in devices if device not in listed]
+    reasons = unknown or [reason for device in devices
+                          for reason in generated_sets.admitted(set_root, registration, device, password)]
+    if reasons:
+        raise refused(reasons)
+    try:
+        evidence = generated_trials.qualification_digest(set_root, password)
+    except (OSError, ValueError) as error:
+        raise refused([type(error).__name__]) from None
+    return {device: generated_trials.device_pin(loaded, device, evidence) for device in devices}
 
 
 def _start_child(launch, params, shutdown, stop=None):
@@ -632,7 +676,7 @@ def _release_trial(trial_dir, record, held, server):
 
 
 def reattach(trial_dir, *, password, renode=None, call=None, heartbeat=None, stop=None, budget_seconds=None,
-             budget_reason=None, resume_run=None):
+             budget_reason=None, resume_run=None, device=None):
     """Continue a trial whose run stopped before it ended, once the device it ran on was stopped, confirmed: admit it
     again, which decrypts the answer key its grade uses, provide a device anew from the recipe, attach it to the stopped
     run with the trial's evaluation token (`attach_device`; the configurator refuses a run with anything uncertain),
@@ -642,7 +686,7 @@ def reattach(trial_dir, *, password, renode=None, call=None, heartbeat=None, sto
     trial record names it with an unconfirmed stop, so a harness lost meanwhile leaves a device to reconcile, never the
     earlier confirmed stop. It holds the trial's evaluation lock throughout, which every resume, reattachment or
     adoption of the trial takes before it asks whether the trial's harness still runs: the process id the record names
-    from then on is a diagnostic."""
+    from then on is a diagnostic. A device of a generated set (`device`) is admitted again through its set."""
     trial_dir = Path(trial_dir)
     if read_trial(trial_dir) is None:
         raise ValueError('No trial with a run to continue: ' + str(trial_dir))
@@ -670,7 +714,9 @@ def reattach(trial_dir, *, password, renode=None, call=None, heartbeat=None, sto
         held, server = {'provider': None}, None
         try:
             options = {'scenario_id': pin.get('scenario_id'), 'case_seed': pin.get('case_seed', 0)}
-            held['provider'], _, truth = admit(record['case'], options, trial_dir, password=password, renode=renode)
+            set_device = {'device': device, 'pin': result.get('case_pin')} if device is not None else {}
+            held['provider'], _, truth = admit(record['case'], options, trial_dir, password=password, renode=renode,
+                                               **set_device)
             if held['provider'] is None:
                 raise ValueError('A bound-device trial has no device to provide anew: its operator resumes the run')
             for key in ('device', 'reason', 'run_status', 'sealed', 'sealing_failed', 'evidence', 'equivalence',
@@ -719,7 +765,7 @@ def _resumed_here(configurator, run_id):
                                            or observed.get('stopping') is True)
 
 
-def resume(trial_dir, *, password, renode=None, call=None):
+def resume(trial_dir, *, password, renode=None, call=None, device=None):
     """Complete the evaluation of a trial whose harness has exited after its device stop was confirmed: one that died
     after the stop, could not grade (unscored, an evaluator host fault) or could not post its verdict. A final the draft
     already holds is rebuilt, never graded again; a verdict the configurator holds is never posted again. The answer key
@@ -730,13 +776,21 @@ def resume(trial_dir, *, password, renode=None, call=None):
     stopped following the run (its budget's deadline passed, it was stopped, or it died) and the operator has since
     completed or cancelled the run; while the run is still stopped, the operator resumes it first. So is a trial
     recorded `run-stopped` whose run has since completed awaiting its grade (stopped after fresh reuse, by a restart
-    say, and resumed): grading uses a fresh emulator, so the confirmed stop of the trial's device is all it needs."""
+    say, and resumed): grading uses a fresh emulator, so the confirmed stop of the trial's device is all it needs. A
+    trial on a device of a generated set grades from the answer key unlocked through its set (`device`), which only its
+    suite holds: without it, it is refused here."""
     from ..client import call as client_call
     from . import evaluator
+    from .registrations import registered_case_ids, registration_for
     from .registry import case_truth
     trial_dir = Path(trial_dir)
-    if read_trial(trial_dir) is None:
+    found = read_trial(trial_dir)
+    if found is None:
         raise ValueError('No trial with a run to evaluate: ' + str(trial_dir))
+    if (device is None and found.get('case') in registered_case_ids()
+            and registration_for(found['case']).calibration_kind == 'set'):
+        raise ValueError('A trial on a device of a generated set is resumed through its suite, which holds the set '
+                         'root: benchmark suite resume')
     with _exclusive(trial_dir):
         # Read under the lock: an evaluation that held it may have just completed the trial.
         record = read_trial(trial_dir)
@@ -770,9 +824,13 @@ def resume(trial_dir, *, password, renode=None, call=None):
             raise ValueError('The trial\'s frozen driver is not graded yet: grading starts a fresh emulator, so pass its '
                              'executable (--renode)')
         run_dir = home / 'runs' / record['run_id']
-        done = conclude(trial_dir, record['case'], run_dir, result, password=password,
-                        truth_source=lambda: case_truth(record['case'], run_dir, password), renode=renode, token=token,
-                        call=configurator)
+        if device is not None:
+            from .generated_trials import answer_key
+            truth_source = lambda: answer_key(device, password)
+        else:
+            truth_source = lambda: case_truth(record['case'], run_dir, password)
+        done = conclude(trial_dir, record['case'], run_dir, result, password=password, truth_source=truth_source,
+                        renode=renode, token=token, call=configurator)
         _settle(record, {**done, 'status': done.get('status') or 'run-stopped', 'resumed': time.time()})
         _private(trial_dir / 'trial.json', record)
     return record
@@ -1228,12 +1286,16 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
     quotes the error met, which may name the emulator's path. The configurator learns of a failure only which trial
     failed and where this record is. An approved child budget extension in `request` goes to the stopped child this run
     continues, and to no other. The harness holds a lock file in `suite_dir` for as long as it runs, by which the
-    configurator and other launches tell that it still runs (its process id alone may come to name another process)."""
+    configurator and other launches tell that it still runs (its process id alone may come to name another process). A
+    new suite of one generated set also needs its `set_root` and the set's password file: before that first contact the
+    harness loads the set, refuses it unless every entry's device is admitted (as it refuses an unreadable file), and
+    builds each entry's pin, which the configurator freezes. A resumed one opens the set only as a slot needs it."""
     from ..client import hold_process_lock
     suite_dir = Path(suite_dir)
     suite_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     request = dict(request)
     files, renode = dict(request.pop('password_files', None) or {}), request.pop('renode', None)
+    set_root = request.pop('set_root', None)
     extension = {key: request[key] for key in ('child_budget_seconds', 'child_budget_reason') if request.get(key) is not None}
     home = Path(request['home'])
     configurator = call or _configurator(home, request.get('autostart', True))
@@ -1246,6 +1308,10 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
     attached, failure, current = False, None, None
     try:
         passwords = _supplied_passwords(files)
+        # Only a new set suite is opened here: a resumed one has its pins frozen, and opens its set as a slot needs it.
+        manifest = None if record['suite_id'] else request.get('manifest')
+        device_pins = (_set_device_pins(manifest, set_root, passwords)
+                       if isinstance(manifest, dict) and 'set' in manifest else None)
         reachable = configurator('ping', {})
         if not reachable.get('ok'):
             raise ValueError(reachable.get('reason') or 'The configurator is not reachable')
@@ -1260,7 +1326,7 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
             reply = configurator('suite_start', {'manifest': request.get('manifest'), 'executor': request.get('executor'),
                                                  'options': request.get('options') or {},
                                                  'request_id': request.get('request_id') or 'harness-' + uuid.uuid4().hex,
-                                                 **identity})
+                                                 **identity, **({'device_pins': device_pins} if device_pins else {})})
         if reply.get('ok') is not True:
             raise ValueError(reply.get('reason') or 'The configurator refused the suite')
         # A duplicate start drives nothing, unless the configurator says this harness is the one attached to it.
@@ -1285,7 +1351,8 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
             scheduling = {'suite_id': record['suite_id'], 'token': token, 'ordinal': slot['ordinal']}
             # The configurator starts, or resumes, the slot's child only while the suite runs, under the suite's lock.
             _suite_trial(suite_dir, slot, reserved.get('request'), configurator, home=home, passwords=passwords,
-                         renode=renode, heartbeat=heartbeat, stop=stop, extension=extension if slot['run_id'] else {},
+                         renode=renode, set_root=set_root, heartbeat=heartbeat, stop=stop,
+                         extension=extension if slot['run_id'] else {},
                          launch=lambda params, scheduling=scheduling: configurator('suite_start_child', {**scheduling, 'request': params}),
                          resume_run=lambda params, scheduling=scheduling: configurator('suite_resume_child', {**scheduling, **params}))
             if slot['run_id']:
@@ -1318,23 +1385,34 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
 
 
 def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renode, launch, resume_run, heartbeat, stop,
-                 extension=None):
+                 extension=None, set_root=None):
     """Run, or continue, the trial of a reserved slot until its child has ended and, for an emulated case, the frozen
     driver was graded and its verdict posted, or the trial says why not. The child starts through its suite
     (`launch(params)`), which starts and attaches it only while the suite runs. A slot whose child exists continues it:
     one still running is waited for, a completed one awaiting its grade is evaluated again (never a final the
     evaluator's draft holds), and a stopped one with nothing uncertain gets a device anew and resumes through its suite
     (`resume_run(params)`), with the approved child budget `extension` if any. Every child, legacy tq9 included, is
-    graded once after its run."""
+    graded once after its run. A slot of a set suite takes its password by its set, and its `SetDevice` from its frozen
+    pin and the harness's `set_root`, in the same step."""
     case, run_id = slot['case'], slot['run_id']
     extension = extension or {}
     budget = float((child or {}).get('budget_seconds') or 10800)
+    pinned = (child or {}).get('case_pin') or {}
+    keyed = pinned.get('set') or case
     def password():
         # Only providing, grading or continuing a device needs the case's password: a child whose verdict is recorded,
         # or whose effect is uncertain, is left to the configurator's settlement without one.
-        if case not in passwords:
-            raise ValueError('The evaluator password file of ' + case + ' is required to provide and grade its device')
-        return passwords[case]
+        if keyed not in passwords:
+            raise ValueError('The evaluator password file of ' + keyed + ' is required to provide and grade its device')
+        return passwords[keyed]
+    def device():
+        """Keyword arguments naming the slot's device of a set, for a slot that needs it; none for any other case."""
+        if 'set' not in pinned:
+            return {}
+        if not set_root:
+            raise ValueError('The set root of ' + keyed + ' is required to provide and grade its device')
+        from .generated_trials import SetDevice
+        return {'device': SetDevice(Path(set_root), keyed, pinned['device_id'])}
     def trial_of(completed):
         found = _trial_of(suite_dir.parent, run_id, slot['child_request_id'])
         if found is None:
@@ -1346,7 +1424,8 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
         trial_dir = suite_dir / 'trials' / (slot['trial_key'] + '-' + uuid.uuid4().hex[:8])
         record = run_trial(trial_dir, {'trial_id': trial_dir.name, 'home': str(home), 'case': case, 'start': child,
                                        'renode': renode},
-                           password=password(), call=configurator, launch=launch, heartbeat=heartbeat, stop=stop)
+                           password=password(), call=configurator, launch=launch, heartbeat=heartbeat, stop=stop,
+                           **device())
     else:
         status = _wait(configurator, run_id, time.monotonic() + budget + GRACE, threading.Event(), heartbeat, stop)
         if 'harness_stopped' in status:
@@ -1354,24 +1433,26 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
         if status.get('status') == 'completed':
             if status.get('equivalence') is not None:
                 return
-            held = password()
-            record = resume(trial_of(True), password=held, renode=renode, call=configurator)
+            held, named = password(), device()
+            record = resume(trial_of(True), password=held, renode=renode, call=configurator, **named)
         elif status.get('uncertain_effect'):
             return  # The configurator blocks the suite; only the operator reconciles an uncertain effect.
         else:
-            held = password()
+            held, named = password(), device()
             record = reattach(trial_of(False), password=held, renode=renode, call=configurator,
                               heartbeat=heartbeat, stop=stop, budget_seconds=extension.get('child_budget_seconds'),
-                              budget_reason=extension.get('child_budget_reason'), resume_run=resume_run)
+                              budget_reason=extension.get('child_budget_reason'), resume_run=resume_run, **named)
     if record.get('status') in ('failed', 'stop-unconfirmed'):
         raise ValueError('Trial ' + slot['trial_key'] + ' ' + record['status'] + ': ' + str(record.get('reason') or ''))
 
 
-def launch_suite(request, *, home, password_files=None, renode=None, autostart=True, timeout=900, via_owner=False):
+def launch_suite(request, *, home, password_files=None, renode=None, set_root=None, autostart=True, timeout=900,
+                 via_owner=False):
     """Start a detached bench harness for a suite and return once the configurator took the suite on, or refused it.
     `request` holds the manifest, executor, options and request_id of a new suite, or the suite_id (with an approved
-    budget extension) of a stopped one to resume. Password file and emulator paths reach the harness on its stdin, never
-    its command line or the suite tables. A repeated request_id with the same inputs follows the suite it started, with
+    budget extension) of a stopped one to resume. Password file and emulator paths, and a set suite's `set_root`, reach
+    the harness on its stdin, never its command line or the suite tables. A repeated request_id with the same inputs
+    follows the suite it started, with
     no second harness."""
     home = Path(home).expanduser().resolve()
     bench = bench_home(home)
@@ -1382,11 +1463,17 @@ def launch_suite(request, *, home, password_files=None, renode=None, autostart=T
         raise ValueError('Evaluator password files must map case ids to file paths')
     if renode is not None and (not isinstance(renode, str) or not renode.strip()):
         raise ValueError('The emulator executable must be a path')
-    if request.get('manifest') is not None and set(password_files or {}) - {e['case'] for e in request['manifest']['entries']}:
+    if set_root is not None and (not isinstance(set_root, str) or not set_root.strip()):
+        raise ValueError('The set root must be a path')
+    manifest = request.get('manifest')
+    # A set suite's password files are keyed by its set, as one password seals the set's every device.
+    if manifest is not None and set(password_files or {}) - ({manifest['set']} if 'set' in manifest
+                                                             else {e['case'] for e in manifest['entries']}):
         raise ValueError('Evaluator password files must name selected cases')
     # Relative paths name files from the caller's directory; the harness itself runs in the suite directory.
     passwords = {case: str(Path(path).expanduser().resolve()) for case, path in (password_files or {}).items()}
     renode = str(Path(renode).expanduser().resolve()) if renode else None
+    set_root = str(Path(set_root).expanduser().resolve()) if set_root else None
     request = {**request, 'home': str(home), 'autostart': autostart}
     key = 'suite-run-' + uuid.uuid4().hex[:16]
     request_id = request.get('request_id')
@@ -1406,7 +1493,8 @@ def launch_suite(request, *, home, password_files=None, renode=None, autostart=T
     suite_dir = bench / 'suites' / key
     suite_dir.mkdir(parents=True, mode=0o700)
     try:
-        payload = {**request, 'password_files': passwords, 'renode': renode}
+        payload = {**request, 'password_files': passwords, 'renode': renode,
+                   **({'set_root': set_root} if set_root else {})}
         process = (_spawn_via_owner(suite_dir, 'suite', payload, home) if via_owner else
                    _spawn(suite_dir, ['--suite-dir', str(suite_dir)], payload))
     except (OSError, ValueError) as error:

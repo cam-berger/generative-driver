@@ -452,7 +452,9 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(registration_for('generated'),
                          CaseRegistration('generated', 'generated', '1', 'emulator-v2', 'benchmark-case/2',
                                           native_module='generated', truth_schema='generated-answer-key/2',
-                                          calibration_kind='set'))
+                                          calibration_kind='set', execution='actual-agent-emulation',
+                                          evidence_track='firmware', approval_scope='emulator',
+                                          default_effects=['write', 'actuate']))
         self.assertIs(family_for('generated').execute, generated.execute)
         self.assertEqual(CURRENT_VERSIONS['generated'], '1')
         rows = {row['id']: row for row in case_descriptors()}
@@ -468,10 +470,11 @@ class RegistrationTests(unittest.TestCase):
         core = {name for name in grader_closure(families=()) if not name.startswith('interface_runtime')}
         identity = grader_identity(case_id='generated')
         self.assertEqual(identity['scope'], 'generated')
-        # The family's grading module and the validator that defines a valid generated device (ADR 0007).
+        # The family's grading module, the validator that defines a valid generated device (ADR 0007) and the set table
+        # its pin hook reads (Feature 03).
         self.assertEqual(set(identity['modules']),
                          core | {'benchmark_support.generated', 'benchmark_support.generated_device',
-                                 'benchmark_support.missions'})
+                                 'benchmark_support.generated_sets', 'benchmark_support.missions'})
 
 
 if __name__ == '__main__':

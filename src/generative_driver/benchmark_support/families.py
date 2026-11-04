@@ -17,7 +17,7 @@ _REQUIRED = ('contract', 'observations', 'reuse_passed', 'required_mutants')
 _HOOKS = frozenset({*_REQUIRED, 'execute', 'build_plan', 'hydrate_truth', 'admission_valid', 'validate_phase',
                     'required_scenarios', 'mutant_checks_may_exceed_expected', 'input_commitments', 'inventory_files',
                     'instrument_units', 'public_observation', 'development_conditions', 'start_session',
-                    'validate_execution'})
+                    'validate_execution', 'current_pin'})
 _INVENTORY_COMMITMENTS = frozenset({'source', 'contract', 'recipe', 'references', 'mutations', 'build', 'inventory'})
 
 
@@ -42,6 +42,7 @@ class Family:
     development_conditions: Callable
     start_session: Callable
     validate_execution: Callable
+    current_pin: Callable
 
     @property
     def required_mutants(self) -> frozenset:
@@ -60,6 +61,11 @@ def _refusal(registration, hook):
 def _renode(*, recipe, **arguments):
     from .execution import start_renode
     return start_renode(recipe=recipe, **arguments)
+
+
+def _pinned_case(pin, *, check_truth=True):
+    from .registry import pin_case
+    return pin_case(pin['case_id'], pin['scenario_id'], pin['case_seed'], check_truth=check_truth)
 
 
 def _check(registration, hooks):
@@ -125,7 +131,8 @@ def family_from(registration: CaseRegistration, hooks: dict[str, Any]) -> Family
         instrument_units=units, public_observation=hooks.get('public_observation', default_projection),
         development_conditions=hooks.get('development_conditions', lambda recipe: None),
         start_session=hooks.get('start_session', _renode),
-        validate_execution=hooks.get('validate_execution', refuse_native_execution))
+        validate_execution=hooks.get('validate_execution', refuse_native_execution),
+        current_pin=hooks.get('current_pin', _pinned_case))
 
 
 def family_for(case_id: str) -> Family:

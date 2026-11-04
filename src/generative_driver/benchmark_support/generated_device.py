@@ -278,6 +278,12 @@ def checks(key, revision):
     return found
 
 
+def validate_device_id(identity):
+    """Nothing, once `identity` is a device id: eight lowercase hexadecimal digits. ValueError otherwise."""
+    if not isinstance(identity, str) or not _DEVICE_ID.fullmatch(identity):
+        raise ValueError('Invalid device id: ' + repr(identity))
+
+
 def validate_identity(device):
     """Nothing, once `device` names a valid `id`, `level` and `framing`: eight lowercase hexadecimal digits, which carry
     no design and never name a Windows device, a level from 1 to 5 and one of FRAMINGS. ValueError names the first
@@ -285,8 +291,7 @@ def validate_identity(device):
     if not isinstance(device, dict):
         raise ValueError('A generated device is an object')
     identity, level, framing = device.get('id'), device.get('level'), device.get('framing')
-    if not isinstance(identity, str) or not _DEVICE_ID.fullmatch(identity):
-        raise ValueError('Invalid device id: ' + repr(identity))
+    validate_device_id(identity)
     if type(level) is not int or level not in _LEVELS:  # a bool is not a level
         raise ValueError('Invalid level of device ' + identity + ': ' + repr(level))
     if framing not in FRAMINGS:

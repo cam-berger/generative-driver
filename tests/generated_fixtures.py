@@ -116,8 +116,10 @@ class FixtureDevice:
         """The binding of the device's UART."""
         return {'host': '127.0.0.1', 'port': self.servers[0].server_address[1]}
 
-    def session(self, recipe, private_dir=None):
-        """A NativeSession attached to this device; stopping the session stops the device."""
+    def session(self, recipe, private_dir=None, *, process=False):
+        """A NativeSession attached to this device; stopping the session stops the device. With `process` it has a
+        stand-in for the emulator's process, so that a device provider can confirm its stop. A set's qualification runs
+        without one, so that its record says no native emulator process ran."""
         from generative_driver.benchmark_support.native import NativeSession
         info = {'binding': self.binding, 'monitor_port': self.servers[1].server_address[1]}
         if private_dir is not None:
@@ -125,6 +127,13 @@ class FixtureDevice:
             info['private_dir'] = str(private_dir)
         session = NativeSession.attach(info, recipe)
         session.stop = self.close
+        if process:
+            device = self
+
+            class Process:
+                def poll(self):
+                    return 0 if device.closed else None
+            session.process = Process()
         return session
 
     def close(self):
@@ -136,10 +145,11 @@ class FixtureDevice:
             server.server_close()
 
 
-def fixture_start(**device):
-    """A stand-in for `NativeSession.start` to patch it with: each start starts a new FixtureDevice(**device)."""
+def fixture_start(*, process=False, **device):
+    """A stand-in for `NativeSession.start` to patch it with: each start starts a new FixtureDevice(**device), whose
+    session has a `process` stand-in as `FixtureDevice.session` says."""
     def start(*, recipe, private_dir=None, **_):
-        return FixtureDevice(**device).session(recipe, private_dir)
+        return FixtureDevice(**device).session(recipe, private_dir, process=process)
     return start
 
 

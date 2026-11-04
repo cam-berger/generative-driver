@@ -95,6 +95,7 @@ A family hook is one thing the grading core asks of a family. A family module de
 | `development_conditions(recipe)` | optional | `None` |
 | `start_session(*, recipe, **arguments)` | optional | Renode; refuses any other recipe backend |
 | `validate_execution(manifest, truth)` | optional | refuses a `native-sim` manifest |
+| `current_pin(pin, *, check_truth=True)` | optional | `pin_case(pin['case_id'], pin['scenario_id'], pin['case_seed'], check_truth=...)` |
 
 ## Qualify, activate, then measure
 
@@ -131,6 +132,25 @@ python -m generative_driver benchmark set qualify --set generated-development-v1
 The command emits and grades both reference drivers on every device, and every mutant on a sample: the first two devices by id of each level and framing. The set passes when every reference grades `passed` and every sampled mutant grades `failed` on at least the checks it targets. Before any run, each device is checked against the [generated-device interface](generated-device-interface.md) as it opens, so a device without two references whose identity operations send different commands, or without the mutants `wrong-scale`, `constant-output` and `wrong-state`, stops the command. An `unknown` grade, with undecided checks, neither passes a reference nor rejects a mutant. The set stays pending when the generated family's grader identity at the end of the runs differs from the one at their start. The command prints the status, the failures and each run's seconds, and exits 1 unless the set passed; qualify a small development set first to time a full one. It seals the record into `qualification.enc`, so requalifying never changes the manifest hash. For each run the record also names the backend and whether the grader observed a native emulator process, which tells a record made on test fixtures from one made under Renode. `--root` and `--output` must lie outside the repository, and `--output` must be new or empty. The output receives a plaintext copy of the record and each run's evidence, which includes the reference drivers and the hidden checks, so keep it in the answer vault; qualification makes its directories readable by their owner only. Qualification runs reference and mutant drivers on the emulator; it measures no model.
 
 `generated_sets.admitted` admits a device for a trial only when the set's record decrypts, names the set and the manifest hash its registration pins, carries the `generated` case's current grader identity and status `passed`, and shows both references passed on that device. Otherwise it returns the reasons.
+
+### Run a set as a suite
+
+A suite names one set and its devices. Its manifest has a top-level `set`, and each entry names a device:
+
+```json
+{"schema": "benchmark-suite/1", "id": "my-suite", "version": "1", "set": "my-set-v1",
+ "entries": [{"case": "generated", "scenario": "original", "case_seed": 0, "device_id": "0000d001"}],
+ "repetitions": 1, "child_budget_seconds": 10800, "suite_budget_seconds": 86400, "max_active_children": 1}
+```
+
+Its options name the set's directory and key its password file by the set's name, as `suite_reporting.report_suite` keys its `password_files`:
+
+```json
+{"set_root": "/path/to/my-set-v1", "evaluator_password_files": {"my-set-v1": "/path/to/my-set-v1.password"},
+ "renode": "/path/to/renode"}
+```
+
+`set_root` reaches the bench harness on its stdin, as password files do. The harness refuses the suite, before it contacts the configurator, unless the set is registered and qualified and every entry's device is admitted. A device pin (the harness builds it and the configurator freezes it) never holds the level or framing. A trial on a set's device is resumed through its suite (`benchmark suite resume`, with the same options): `benchmark trial-resume` has no set root and refuses it. Its grade reports fresh reuse as not judged.
 
 ## Add, unselect or retire
 

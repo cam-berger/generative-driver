@@ -70,9 +70,12 @@ class EvaluatorPassword:
         return hashlib.sha256(data).hexdigest()
 
     def unlock(self, path, expected_sha256):
-        """The evidence sealed in the file at `path`. ValueError for a file whose hash is not `expected_sha256`, the
+        """The evidence sealed in the file at `path`, as `unlock_bytes` opens its bytes."""
+        return self.unlock_bytes(Path(path).read_bytes(), expected_sha256)
+
+    def unlock_bytes(self, data, expected_sha256):
+        """The evidence sealed in the file bytes `data`. ValueError for bytes whose hash is not `expected_sha256`, the
         wrong password or a broken envelope."""
-        data = Path(path).read_bytes()
         if hashlib.sha256(data).hexdigest() != expected_sha256:
             raise ValueError('Groundtruth ciphertext does not match its pinned hash')
         try:

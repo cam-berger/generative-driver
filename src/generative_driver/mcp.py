@@ -131,11 +131,14 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = No
 @server.tool()
 def driver_benchmark_suite_start(manifest: dict, executor: Literal['codex', 'goose', 'replay'] | None = None,
                                  options: dict | None = None, request_id: str | None = None) -> str:
-    """Start a durable emulated suite; save suite_id to reconnect from either client.
+    """Start a durable emulated suite; save suite_id, or a set suite's request_id, to reconnect from either client.
 
     A detached bench harness drives the suite: it receives options.evaluator_password_files and options.renode (FILE
     paths, never a password) on its stdin, provides each child's device and grades each frozen driver after its run.
     The suite tables never hold those paths and no child's run receives them. Use the configured MCP home.
+    A suite of one generated set also takes options.set_root, the set's folder, on the same stdin. It returns
+    status awaiting-unmount with a request_id once the set is held in memory: the operator then closes the vault, and
+    the same call with that request_id returns the suite_id once the harness has started the suite.
     executor "replay" replays options.replay_candidates, one saved candidate directory per case, without a model; its
     results are labelled replay-emulation and never compared with model suites.
     Emulator tool approval and inference budgets require explicit user authorization.
@@ -180,7 +183,9 @@ def driver_benchmark_suite_resume(suite_id: str, suite_budget_seconds: float | N
                                   child_budget_reason: str | None = None) -> str:
     """Resume a stopped incomplete suite after correcting its blocker; a newly launched bench harness takes it over.
 
-    options holds only evaluator_password_files and renode (FILE paths) for that harness; emulated suites need them.
+    options holds only evaluator_password_files, renode and a set suite's set_root (paths) for that harness; emulated
+    suites need them. Given set_root it may return status awaiting-unmount with the suite_id: the operator then closes
+    the vault, and driver_benchmark_suite_status follows the suite.
     A user-approved extension increases the total suite wall-clock budget from original start and requires a reason.
     A separate user-approved child extension (child_budget_seconds, child_budget_reason) increases the total budget of
     the stopped child the resume continues, and of no other child.

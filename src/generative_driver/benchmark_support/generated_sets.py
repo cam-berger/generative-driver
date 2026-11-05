@@ -197,11 +197,45 @@ def open_device(set_root: Path, manifest: dict, device_id: str, password: Evalua
     the generated-device interface (`generated_device.validate_device`), the inputs alone without `answer`. ValueError
     for any mismatch or broken rule, the wrong password or an unknown device, before anything is returned; a file that
     cannot be read raises OSError."""
+    # Each path resolves again where it is used: a symlink can change after the set loaded.
+    return _opened(manifest, device_id,
+                   lambda _name, file: password.unlock(_inside(set_root, file['path']), file['sha256']), answer=answer)
+
+
+def open_held(manifest: dict, device_id: str, sealed: dict, password: EvaluatorPassword, *,
+              answer: bool = False) -> dict:
+    """What `open_device` returns and refuses, from the device's sealed files `sealed` held in memory ({'inputs': bytes,
+    'answer': bytes}), with no file read. Without `answer` the answer is never decrypted."""
+    return _opened(manifest, device_id, lambda name, file: password.unlock_bytes(sealed[name], file['sha256']),
+                   answer=answer)
+
+
+def held_answer(manifest: dict, device_id: str, sealed: dict, password: EvaluatorPassword) -> dict:
+    """The answer key of a device from its sealed files `sealed` held in memory, decrypting the answer alone: for a
+    grade after the trial's device stopped, which needs no inputs. It is checked against `answer_key_sha256`, which the
+    registered manifest binds, and not against the mission, which stays sealed."""
+    entry = _device(manifest, device_id)
+    return _checked_key(password.unlock_bytes(sealed['answer'], entry['answer']['sha256']), entry)
+
+
+def _device(manifest, device_id):
     entry = next((listed for listed in manifest['devices'] if listed.get('id') == device_id), None)
     if entry is None:
         raise ValueError('Unknown generated device: ' + str(device_id))
-    # Each path resolves again where it is used: a symlink can change after the set loaded.
-    sealed = password.unlock(_inside(set_root, entry['inputs']['path']), entry['inputs']['sha256'])
+    return entry
+
+
+def _checked_key(key, entry):
+    if not isinstance(key, dict) or canonical_digest(key) != entry['answer_key_sha256']:
+        raise ValueError('The answer key of device ' + entry['id'] + ' does not match its manifest hash')
+    return key
+
+
+def _opened(manifest, device_id, unlock, *, answer):
+    """The checks of `open_device`, where `unlock(name, file)` decrypts the sealed `file` of the manifest entry's field
+    `name`."""
+    entry = _device(manifest, device_id)
+    sealed = unlock('inputs', entry['inputs'])
     if (not isinstance(sealed, dict) or set(sealed) != {'image_base64', 'mission'}
             or not isinstance(sealed['image_base64'], str) or not isinstance(sealed['mission'], dict)):
         raise ValueError('Malformed inputs of device ' + device_id)
@@ -212,10 +246,7 @@ def open_device(set_root: Path, manifest: dict, device_id: str, password: Evalua
         raise ValueError('The mission of device ' + device_id + ' does not match its manifest hash')
     opened = {'image': image, 'mission': sealed['mission']}
     if answer:
-        key = password.unlock(_inside(set_root, entry['answer']['path']), entry['answer']['sha256'])
-        if not isinstance(key, dict) or canonical_digest(key) != entry['answer_key_sha256']:
-            raise ValueError('The answer key of device ' + device_id + ' does not match its manifest hash')
-        opened['answer_key'] = key
+        opened['answer_key'] = _checked_key(unlock('answer', entry['answer']), entry)
     validate_device({name: entry[name] for name in ('id', 'level', 'framing')}, image=image,
                     mission=opened['mission'], key=opened.get('answer_key'))
     return opened
@@ -354,6 +385,29 @@ def admitted(set_root: Path, registration: str, device_id: str, password: Evalua
         record = password.unlock(path, hashlib.sha256(path.read_bytes()).hexdigest())
     except _UNREADABLE as error:
         return ['qualification unreadable: ' + _named(error)]
+
+    def loaded():
+        pins = set_registrations() if registrations is None else registrations
+        return load_set(set_root, registration, registrations=pins), pins[registration]
+    return _admission_reasons(record, registration, device_id, loaded)
+
+
+def admitted_held(held, device_id: str) -> list[str]:
+    """The reasons `admitted` gives for device `device_id`, from the set in memory `held` (`generated_trials.HeldSet`)
+    and with no file of the set read: the registered hash is compared with `set_registrations()`, and the grader
+    identity recomputed, at each call. A held manifest the registrations no longer pin is `manifest refused`, as
+    `load_set`'s refusal is."""
+    def loaded():
+        pins = set_registrations()
+        if pins.get(held.registration) != held.manifest['manifest_sha256']:
+            raise ValueError('The held manifest of ' + held.registration + ' is not the registered manifest')
+        return held.manifest, pins[held.registration]
+    return _admission_reasons(held.record, held.registration, device_id, loaded)
+
+
+def _admission_reasons(record, registration, device_id, loaded):
+    """The reasons of `admitted` from the unlocked `record`, where `loaded()` gives (the manifest of `registration`, the
+    hash its registration pins), or raises what reading them can."""
     if (not isinstance(record, dict) or set(record) != _QUALIFICATION_FIELDS or record['schema'] != QUALIFICATION_SCHEMA
             or not isinstance(record['devices'], dict)):
         return ['qualification malformed']
@@ -361,13 +415,12 @@ def admitted(set_root: Path, registration: str, device_id: str, password: Evalua
     if record['registration'] != registration:
         reasons.append('qualification of another registration')
     try:
-        pins = set_registrations() if registrations is None else registrations
-        manifest = load_set(set_root, registration, registrations=pins)
+        manifest, pinned = loaded()
     except _UNREADABLE as error:
         reasons.append('manifest refused: ' + _named(error))
     else:
         recorded = record['manifest_sha256']
-        if recorded != pins[registration] or recorded != manifest['manifest_sha256']:
+        if recorded != pinned or recorded != manifest['manifest_sha256']:
             reasons.append('qualification of another manifest')
         whole_record = qualification_reasons(record, manifest)
     try:

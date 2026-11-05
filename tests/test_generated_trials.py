@@ -14,8 +14,9 @@ from unittest.mock import patch
 
 from generated_fixtures import (FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, PASSWORD, PASSWORD_TEXT, REFERENCE_A, REFERENCE_B,
                                 fixture_mission, fixture_start, registrations_table, write_fixture_set)
-from generative_driver.benchmark_support import (evaluator, generated_sets, harness, registry, set_qualification,
-                                                  snapshots)
+from generative_driver.benchmark_support import (evaluator, generated_sets, generated_trials, harness, registry,
+                                                  set_qualification, snapshots)
+from generative_driver.benchmark_support.evidence import public_pin
 from generative_driver.benchmark_support.families import family_for
 from generative_driver.benchmark_support.registrations import registration_for
 from generative_driver.benchmark_support.registry import PendingCaseError, pin_case
@@ -62,6 +63,19 @@ def recorded_digest(root):
     """The digest of the set's qualification record, as a pin names it."""
     path = Path(root) / 'qualification.enc'
     return canonical_digest(PASSWORD.unlock(path, hashlib.sha256(path.read_bytes()).hexdigest()))
+
+
+def held_device(root, device_id='0000d001', devices=('0000d001', '0000d002')):
+    """The `SetDevice` of `device_id` of the set under `root`, held in memory."""
+    return generated_trials.SetDevice(generated_trials.hold_set(root, SET, devices, PASSWORD), device_id)
+
+
+def out_of_reach(test):
+    """Have the gate of every in-process harness of `test` find the set's folder out of reach, as a test that is not of
+    the gate needs of a set it keeps."""
+    guard = patch.object(generated_trials, 'set_unreachable', return_value=True)
+    guard.start()
+    test.addCleanup(guard.stop)
 
 
 def set_manifest(*device_ids, **changes):
@@ -459,13 +473,17 @@ class SetRootOptionTests(unittest.TestCase):
 
 
 class SuiteStartFixture(unittest.TestCase):
-    """`run_suite` up to the configurator's first `suite_start`, which refuses: what it does before first contact."""
+    """`run_suite` up to the configurator's first `suite_start`, which refuses: what it does before first contact. A
+    test that is not of the gate takes the set's folder to be out of reach, so that it never waits."""
+    gated = False
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.base = Path(directory.name).resolve()
         self.calls = []
+        if not self.gated:
+            out_of_reach(self)
 
     def call(self, method, params=None):
         self.calls.append((method, params))
@@ -524,7 +542,7 @@ class SuiteStartPinTests(SuiteStartFixture):
                            password_files={SET: str(self.base / 'wrong-handle')}, set_root=str(root))
         with patch.object(generated_sets, 'set_registrations', return_value={}):
             self.assertRefused(prefix + 'Generated set not registered: ' + SET, **supplied)
-        with patch.object(generated_sets, 'admitted',
+        with patch.object(generated_sets, 'admitted_held',
                           return_value=['qualification pending', 'references not passed:0000d001']):
             self.assertRefused(prefix + 'qualification pending; references not passed:0000d001', **supplied)
 
@@ -545,7 +563,8 @@ class SuiteStartPinTests(SuiteStartFixture):
         self.assertFalse(home.exists())
         # The detached harness reads the table the test registered the set in.
         fixture = self.base / 'registered_harness_fixture.py'
-        fixture.write_text('from pathlib import Path\nfrom generative_driver.benchmark_support import generated_sets\n'
+        fixture.write_text('from pathlib import Path\nfrom generative_driver.benchmark_support import generated_sets, '
+                           'generated_trials\ngenerated_trials.set_unreachable = lambda root: True\n'
                            'generated_sets._SETS_FILE = Path(' + repr(str(generated_sets._SETS_FILE)) + ')\n')
         with patch.dict(os.environ, {'GD_TEST_HARNESS_FIXTURE': str(fixture)}):
             again = harness.launch_suite(request, home=home, password_files={SET: str(password)}, set_root=str(root),
@@ -601,16 +620,16 @@ class WholeRecordRefusalTests(SuiteStartFixture):
                            set_root=str(resealed_set(self, failure)))
 
     def test_04_B6_each_slots_admit_refuses_the_same_way(self):
-        from generative_driver.benchmark_support.generated_trials import SetDevice, device_pin
+        from generative_driver.benchmark_support.generated_trials import device_pin
         root = resealed_set(self, no_native_process)
         _, _, manifest = qualified_set()
         trial = self.base / 'trial'
         trial.mkdir()
-        with patch.object(generated_sets, 'open_device', side_effect=AssertionError('opened')), \
+        with patch.object(generated_sets, 'open_held', side_effect=AssertionError('opened')), \
                 self.assertRaisesRegex(ValueError, 'is not admitted: native process not observed:0000d001; '
                                                    'native process not observed:0000d002'):
             harness.admit('generated', {}, trial, password=PASSWORD, renode='emulator-handle',
-                          device=SetDevice(root, SET, '0000d001'), pin=device_pin(manifest, '0000d001', EVIDENCE))
+                          device=held_device(root), pin=device_pin(manifest, '0000d001', EVIDENCE))
         self.assertEqual(list(trial.iterdir()), [])
 
 
@@ -651,7 +670,6 @@ class FixtureVariableTests(SuiteStartFixture):
 
     def setUp(self):
         super().setUp()
-        from generative_driver.benchmark_support import generated_trials
         self.trials = generated_trials
         self.root, self.handle, self.manifest = qualified_set()
         self.shipped = self.base / 'shipped-sets.json'
@@ -688,10 +706,10 @@ class FixtureVariableTests(SuiteStartFixture):
     def test_04_B13_a_slots_admit_refuses_a_shipped_set(self):
         trial = self.base / 'trial'
         trial.mkdir()
-        device = self.trials.SetDevice(self.root, SET, '0000d001')
+        device = held_device(self.root)
         pin = self.trials.device_pin(self.manifest, '0000d001', recorded_digest(self.root))
         with patch.dict(os.environ, self.VARIABLE), patch.object(self.trials, '_SHIPPED_SETS', self.shipped), \
-                patch.object(generated_sets, 'open_device', side_effect=AssertionError('opened')), \
+                patch.object(generated_sets, 'open_held', side_effect=AssertionError('opened')), \
                 self.assertRaisesRegex(ValueError, 'is not admitted: .*GD_TEST_HARNESS_FIXTURE'):
             harness.admit('generated', {}, trial, password=PASSWORD, renode='emulator-handle', device=device, pin=pin)
         self.assertEqual(list(trial.iterdir()), [])
@@ -712,6 +730,7 @@ class SuiteResumeTests(unittest.TestCase):
         self.root, self.password, self.manifest = qualified_set()
         from generative_driver.benchmark_support.generated_trials import device_pin
         self.pin = device_pin(self.manifest, '0000d001', recorded_digest(self.root))
+        out_of_reach(self)
 
     def resume(self, status, **request):
         """A harness resuming a suite whose one slot has a child in `status`: its record."""
@@ -719,10 +738,12 @@ class SuiteResumeTests(unittest.TestCase):
             'ordinal': 0, 'trial_key': 'entry-000-repeat-000', 'case': 'generated', 'child_request_id': 'child',
             'run_id': 'run-1', 'device_id': '0000d001'}, 'request': {'budget_seconds': 1, 'case_pin': self.pin}},
             {'ok': True, 'status': 'completed', 'slot': None}]
+        stopped = {'ok': True, 'status': 'blocked', 'stopping': False, 'active_child_id': None, 'experiment': {
+            'comparison_identity': {'manifest': set_manifest('0000d001'), 'entry_pins': [public_pin(self.pin)]}}}
 
         def call(method, params=None):
             return {'ping': {'ok': True}, 'suite_resume': {'ok': True, 'suite_id': 'suite-1', 'attached': True},
-                    'status': {'ok': True, 'stopping': False, **status},
+                    'suite_result': stopped, 'status': {'ok': True, 'stopping': False, **status},
                     'suite_settle': {'ok': True, 'decision': 'advance'}}.get(method) or (
                         reservations.pop(0) if method == 'suite_reserve' else {'ok': True})
         return harness.run_suite(self.base / 'suite',
@@ -738,22 +759,23 @@ class SuiteResumeTests(unittest.TestCase):
 
     def test_03_B5_a_slot_that_needs_its_device_fails_only_there_for_what_is_missing(self):
         needs = {'status': 'completed', 'equivalence': None}
+        # A root with no password file is refused before the suite resumes (Feature 05, B13).
         record = self.resume(needs, set_root=str(self.root))
-        self.assertEqual((record['status'], record['accepted']), ('failed', True), record)
+        self.assertEqual((record['status'], record['accepted']), ('failed', False), record)
         self.assertEqual(record['reason'],
-                         'The evaluator password file of ' + SET + ' is required to provide and grade its device')
+                         'The generated set ' + SET + ' is not admitted: no evaluator password file was supplied')
         record = self.resume(needs, password_files={SET: str(self.password)})
         self.assertEqual((record['status'], record['accepted']), ('failed', True), record)
         self.assertEqual(record['reason'], 'The set root of ' + SET + ' is required to provide and grade its device')
 
     def test_03_B5_a_slot_builds_its_device_from_its_frozen_pin_and_its_password_by_set(self):
-        from generative_driver.benchmark_support.generated_trials import SetDevice
         needs = {'status': 'completed', 'equivalence': None}
         with patch.object(harness, '_trial_of', return_value=self.base / 'trial'), patch.object(harness, '_adopt'), \
                 patch.object(harness, 'resume', return_value={'status': 'evaluated'}) as resumed:
             record = self.resume(needs, password_files={SET: str(self.password)}, set_root=str(self.root))
         self.assertEqual(record['status'], 'finished', record)
-        self.assertEqual(resumed.call_args.kwargs['device'], SetDevice(self.root, SET, '0000d001'))
+        device = resumed.call_args.kwargs['device']
+        self.assertEqual((device.device_id, device.held.registration), ('0000d001', SET))
         self.assertEqual(resumed.call_args.args, (self.base / 'trial',))
 
 
@@ -916,32 +938,34 @@ class AdmissionTests(unittest.TestCase):
         self.trial.mkdir()
 
     def qualified(self, device_id='0000d001'):
-        from generative_driver.benchmark_support.generated_trials import SetDevice, device_pin
+        from generative_driver.benchmark_support.generated_trials import device_pin
         root, _, manifest = qualified_set()
-        return root, manifest, SetDevice(root, SET, device_id), device_pin(manifest, device_id, recorded_digest(root))
+        return root, manifest, held_device(root, device_id), device_pin(manifest, device_id, recorded_digest(root))
 
     def admit(self, device, pin):
         return harness.admit('generated', {}, self.trial, password=PASSWORD, renode='emulator-handle', device=device,
                              pin=pin)
 
     def test_03_B12_a_device_of_a_set_not_admitted_is_refused_with_every_reason(self):
-        from generative_driver.benchmark_support.generated_trials import SetDevice, device_pin
-        root, manifest = registered_set(self)
+        from generative_driver.benchmark_support.generated_trials import device_pin
+        root, _, manifest = qualified_set()
         pin = device_pin(manifest, '0000d001', EVIDENCE)
-        with self.assertRaisesRegex(ValueError, 'is not admitted: qualification unreadable: FileNotFoundError'):
-            self.admit(SetDevice(root, SET, '0000d001'), pin)
-        with patch.object(generated_sets, 'admitted',
+        unqualified = resealed_set(self, lambda record: record.update(status='pending'))
+        with self.assertRaisesRegex(ValueError, 'is not admitted: qualification pending'):
+            self.admit(held_device(unqualified), pin)
+        device = held_device(root)
+        with patch.object(generated_sets, 'admitted_held',
                           return_value=['the first reason', 'the second reason']) as asked, \
-                patch.object(generated_sets, 'open_device', side_effect=AssertionError('opened')), \
+                patch.object(generated_sets, 'open_held', side_effect=AssertionError('opened')), \
                 self.assertRaisesRegex(ValueError, 'the first reason; the second reason'):
-            self.admit(SetDevice(root, SET, '0000d001'), pin)
-        self.assertEqual(asked.call_args.args, (root, SET, '0000d001', PASSWORD))
+            self.admit(device, pin)
+        self.assertEqual(asked.call_args.args, (device.held, '0000d001'))
         self.assertEqual(sorted(path.name for path in self.trial.iterdir()), [])
 
     def test_03_B13_it_opens_the_device_once_and_returns_the_grade_its_answer_key(self):
         root, manifest, device, pin = self.qualified()
         from generative_driver.benchmark_support import execution
-        with patch.object(generated_sets, 'open_device', wraps=generated_sets.open_device) as opened, \
+        with patch.object(generated_sets, 'open_held', wraps=generated_sets.open_held) as opened, \
                 patch.object(execution, 'validate_setup', wraps=execution.validate_setup) as validated:
             provider, admission, unlocked = self.admit(device, pin)
         self.assertEqual(opened.call_count, 1)
@@ -958,7 +982,7 @@ class AdmissionTests(unittest.TestCase):
         root, manifest, device, pin = self.qualified()
         other = self.qualified('0000d002')[3]
         wrong_truth = {**other, 'device_id': '0000d001'}
-        with patch.object(generated_sets, 'open_device', side_effect=AssertionError('opened')), \
+        with patch.object(generated_sets, 'open_held', side_effect=AssertionError('opened')), \
                 self.assertRaisesRegex(ValueError, 'differs from its set'):
             self.admit(device, wrong_truth)
         self.assertEqual(sorted(path.name for path in self.trial.iterdir()), [])
@@ -1063,12 +1087,16 @@ class AdapterTests(unittest.TestCase):
 class GeneratedTrialFixture(PendingRunFixture):
     """An in-process configurator and the suite's harness in a thread, with a scripted worker through the real
     `_prepare` and `_check`, on the qualified fixture set. Nothing of admission, the provider or the grade is patched
-    but the emulator session, each a fresh fixture device."""
+    but the emulator session, each a fresh fixture device. A test that is not of the gate takes the set's folder to be
+    out of reach, so that it never waits."""
+    gated = False
 
     def setUp(self):
         super().setUp()
         self.set_root, self.handle, self.manifest = qualified_set()
         self.prepared, self.checked, self.results = {}, {}, []
+        if not self.gated:
+            out_of_reach(self)
         guard = patch(START, side_effect=fixture_start(process=True))
         guard.start()
         self.addCleanup(guard.stop)
@@ -1143,12 +1171,12 @@ class GeneratedTrialFixture(PendingRunFixture):
                                             work=self.work(candidate, **options)))
         return stack
 
-    def drive(self, *devices, calls=None, intercept=None, **request):
+    def drive(self, *devices, calls=None, intercept=None, stop=None, **request):
         return drive_suite(self.controller, self.root / 'home-bench/suites', {
             'manifest': set_manifest(*devices), 'executor': 'codex', 'options': {'scoped_tool_approval': 'emulator'},
             'password_files': {SET: str(self.handle)}, 'set_root': str(self.set_root), 'renode': 'emulator-handle',
             **request},
-            calls=calls, intercept=intercept)
+            calls=calls, intercept=intercept, stop=stop)
 
     def row_results(self, suite_id):
         rows = self.controller.call('suite_result', {'suite_id': suite_id})['trials']
@@ -1320,7 +1348,6 @@ class FreshReuseTests(GeneratedTrialFixture):
 
 class LaterHarnessTests(GeneratedTrialFixture):
     def test_03_B21_a_resumed_slot_grades_from_the_key_unlocked_through_its_set(self):
-        from generative_driver.benchmark_support import generated_trials
         with self.staged(REFERENCE_A), patch.object(evaluator, 'reference_execute', side_effect=RuntimeError('host')):
             first = self.drive('0000d001', request_id='graded-later')
         self.assertEqual(self.row_results(first['suite_id'])[1][0]['equivalence'], None)
@@ -1329,7 +1356,7 @@ class LaterHarnessTests(GeneratedTrialFixture):
             second = self.drive('0000d001', suite_id=first['suite_id'])
         self.assertEqual(second['status'], 'finished', second)
         self.assertEqual(unlocked.call_count, 1)
-        self.assertEqual(unlocked.call_args.args[0], generated_trials.SetDevice(self.set_root, SET, '0000d001'))
+        self.assertEqual(unlocked.call_args.args[0].device_id, '0000d001')
         self.assertEqual(self.row_results(first['suite_id'])[1][0]['equivalence']['equivalent'], True)
 
     def test_03_B21_a_reattached_slot_is_admitted_through_its_set(self):
@@ -1343,14 +1370,13 @@ class LaterHarnessTests(GeneratedTrialFixture):
         with self.staged(REFERENCE_A, runtime=stop_probe):
             first = self.drive('0000d001', request_id='reattached')
         self.assertEqual(stopped, ['probe'])
-        from generative_driver.benchmark_support import generated_trials
         with self.staged(REFERENCE_A), \
-                patch.object(generated_sets, 'admitted', wraps=generated_sets.admitted) as admitted, \
-                patch.object(generated_sets, 'open_device', wraps=generated_sets.open_device) as opened, \
+                patch.object(generated_sets, 'admitted_held', wraps=generated_sets.admitted_held) as admitted, \
+                patch.object(generated_sets, 'open_held', wraps=generated_sets.open_held) as opened, \
                 patch.object(generated_trials, 'answer_key', side_effect=AssertionError('decrypted again')):
             second = self.drive('0000d001', suite_id=first['suite_id'])
         self.assertEqual(second['status'], 'finished', second)
-        self.assertEqual(admitted.call_count, 1)
+        self.assertEqual(admitted.call_count, 2, 'once at the start of the resume, and once at its slot')
         self.assertEqual(opened.call_count, 1)
         self.assertEqual(self.row_results(first['suite_id'])[1][0]['equivalence']['equivalent'], True)
 
@@ -1535,9 +1561,10 @@ from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, TESTS)
 from generated_fixtures import fixture_start
-from generative_driver.benchmark_support import generated_sets
+from generative_driver.benchmark_support import generated_sets, generated_trials
 generated_sets._SETS_FILE = Path(TABLE)
 patch(START, side_effect=fixture_start(process=True)).start()
+generated_trials.set_unreachable = lambda root: True
 '''
 
 

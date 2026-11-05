@@ -160,6 +160,23 @@ def start_suite(manifest: dict, executor: str | None = None, options: dict | Non
                         via_owner=via_owner)
 
 
+def _refuse_live_set_suite(suite_id, home) -> None:
+    """ValueError for a set suite whose active child is queued or running, or that has anything still stopping: resuming
+    it would have its operator open the vault while workers run, for a refusal. A configurator that cannot be reached, a
+    suite it does not know and a suite of no set go on to the harness, which reports them. A slot launching with no
+    attached child, which arises only after a configurator crash, is not visible here."""
+    from ..client import call
+    result = call('suite_result', {'suite_id': suite_id, 'limit': 1}, home, autostart=False)
+    identity = (result.get('experiment') or {}).get('comparison_identity') or {}
+    if 'set' not in (identity.get('manifest') or {}):
+        return
+    status = call('suite_status', {'suite_id': suite_id}, home, autostart=False)
+    child = status.get('active_child_id')
+    child_status = call('status', {'run_id': child}, home, autostart=False).get('status') if child else None
+    if child_status in ('queued', 'running') or status.get('stopping'):
+        raise ValueError('The suite still has work running; stop it or let it finish before resuming it: ' + suite_id)
+
+
 def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autostart=True, via_owner=False,
                  suite_budget_seconds=None, budget_reason=None, child_budget_seconds=None,
                  child_budget_reason=None) -> dict:
@@ -168,7 +185,8 @@ def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autos
     the suite
     keeps the options it was frozen with. An approved suite budget extension raises the suite's total; an approved child budget
     extension raises the total of the stopped child the resume continues (an emulated child once its device is
-    attached anew), and no other child's."""
+    attached anew), and no other child's. A set suite with work still running is refused here
+    (`_refuse_live_set_suite`), before its operator opens the vault."""
     from .harness import launch_suite
     if not isinstance(suite_id, str) or not suite_id.strip():
         raise ValueError('suite_id must be a nonblank string')
@@ -179,6 +197,7 @@ def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autos
         raise ValueError('A child budget extension requires a finite positive total of at most seven days and a '
                          'nonblank child_budget_reason')
     directory, _, passwords, renode, set_root = _launch_options(options, home)
+    _refuse_live_set_suite(suite_id, directory)
     request = {'suite_id': suite_id, **{key: value for key, value in (
         ('suite_budget_seconds', suite_budget_seconds), ('budget_reason', budget_reason),
         ('child_budget_seconds', child_budget_seconds),

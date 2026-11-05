@@ -173,7 +173,7 @@ Nothing in this repository can check these, so the generator's own tests must:
 
 ## What a trial and a verdict reveal
 
-A trial's worker receives the image and the mission, and a pin that names the set, its manifest hash, the device id, and the hashes of the image, the answer file and the qualification record, never the level or framing. The bench harness reads a suite's manifests and sealed files into memory before the answer vault unmounts, and refuses to start while a set's directory is still reachable.
+A trial's worker receives the image and the mission, and a pin that names the set, its manifest hash, the device id, and the hashes of the image, the answer file and the qualification record, never the level or framing. The bench harness holds a suite's manifest, qualification record and sealed files in memory, and waits until the set's folder is out of reach before it starts the suite. The operator closes the vault by hand; the harness only watches the path.
 
 A verdict publishes each check's id, whether it passed, and a reason for each check that failed or was undecided. The ids are `<sequence>/<step>/answer`, `<sequence>/<step>/out:<output>` and `<sequence>/<step>/state:<cell>`, with steps numbered from 1. They show:
 - how many sequences, steps and cells a device has;

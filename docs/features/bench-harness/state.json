@@ -4,7 +4,7 @@
   "branch": "mdk/bench-harness",
   "stage": "spec",
   "awaiting": null,
-  "current": "05",
+  "current": "06",
   "features": [
     {
       "id": "01",
@@ -33,8 +33,8 @@
     {
       "id": "05",
       "slug": "vault-gate",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "d3a9143d310530b6ebe95410cd941a4e4a7f976b"
     },
     {
       "id": "06",

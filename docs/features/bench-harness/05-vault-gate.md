@@ -89,3 +89,20 @@ def set_unreachable(set_root) -> bool           # 05-B8
 - A real vault, volume, password, Renode or model run. First real use belongs to the plan 6 runbook. Real filesystem behaviour on an unmounted volume is untested here.
 
 ## Deviations
+
+- Public `generated_sets.held_answer` — 05-B3 needs the answer decrypted alone and `open_held` always decrypts inputs; this adds one name and no scope.
+- `harness.UNMOUNT_POLL = 1` — keeps the Spec's once-a-second poll and lets tests run it quickly.
+- A `stop` during the pre-start wait ends the harness `failed`, `accepted: false`, with no `suite_start` or `suite_resume` — the Interface section names stopping the harness as a way to end a wait, and `_refused` then releases the request.
+- Wording chosen for 05-B10, the 05-B13 pin reason, damaged files and 05-B12 — the Spec leaves these strings open, and none holds a path.
+- The variable guard runs before the hold — keeps Feature 04's order and shows only when both refuse.
+- `hold_set` runs before the scoring-coverage check — follows 05-B5's order, and only a suite with both faults reports a different reason.
+- A resume with `set_root` refuses when `suite_result` or the child `status` reply isn't ok — without that reply it can't tell the suite may resume, so failing closed serves 05-B13's aim of not having the vault opened for a refusal.
+- A hand-made suite resumed with `set_root` makes one extra `suite_result`, and a failure of that call replaces `suite_resume`'s text — 05-B13 must ask before it knows the suite has no set, and the outcome is still a refusal.
+- `suite_result` with `limit: 1` — only the experiment block and status are used.
+- The harness repeats the configurator's three refusal sentences as literals — 05-B13 asks for the configurator's own text, and a test pins two against the real controller and the third against its source.
+- `suite.json` keeps `set` after a wait, and status returns to the previous value — it holds a set name and no path, and 05-B5 needs the status to move on.
+- `generated_trials` reads five private names of `generated_sets` — no scope change, and the Spec says `hold_set` keeps `_inside`'s checks.
+- Changed tests: `tests/test_unlocked_keys.py:137`, `test_03_B12`, `test_03_B21_a_reattached_slot_...`, `GeneratedTrialFixture.drive` — each follows from `unlock_bytes`, the hold, or 05-B4 and 05-B13.
+- `--options` help text on `benchmark suite start` — the Spec's Docs list asks for `set_root` option descriptions in `benchmark.py`.
+- Order of work: `unlock_bytes` and the wait constants came before their tests, and tests written after their code have mutation REDs — a disclosed process point with no scope effect; the failures were seen in the saved files.
+- Tests only remove, rename or empty ordinary folders, so nothing ran against a real volume — the Spec's own limit; the empty-folder rule, including hidden files on a mount point, needs checking at first real use.

@@ -107,7 +107,8 @@ def main(argv=None):
     starting.add_argument('--manifest', required=True)
     starting.add_argument('--executor', choices=['codex', 'goose', 'replay'],
                           help='Default: the one configured runtime; replay runs options.replay_candidates without a model')
-    starting.add_argument('--options')
+    starting.add_argument('--options', help='JSON file of suite options. The evaluator password files, the emulator '
+                          'executable and a set suite\'s set_root go to the bench harness on its stdin')
     starting.add_argument('--request-id')
     for action in ('status', 'events', 'result', 'cancel', 'resume'):
         lifecycle = suites.add_parser(action)
@@ -123,8 +124,9 @@ def main(argv=None):
             lifecycle.add_argument('--child-budget-seconds', type=float,
                                    help='Approved new total budget of the stopped child the resume continues')
             lifecycle.add_argument('--child-budget-reason')
-            lifecycle.add_argument('--options', help='JSON file with the evaluator password files and emulator executable '
-                                   'for the bench harness that resumes the suite')
+            lifecycle.add_argument('--options', help='JSON file with the evaluator password files, the emulator '
+                                   'executable and a set suite\'s set_root for the bench harness that resumes the '
+                                   'suite')
     exporting = suites.add_parser('report')
     exporting.add_argument('suite_id')
     exporting.add_argument('--output', required=True)

@@ -134,7 +134,7 @@ class PasswordObjectTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             truth.EvaluatorPassword('')
         self.assertFalse([name for name in vars(type(password)) if not name.startswith('_')
-                          and name not in ('seal', 'unlock')])
+                          and name not in ('seal', 'unlock', 'unlock_bytes')])
 
     def test_02_B3_seals_and_unlocks_in_the_format_shipped_ciphertexts_hold(self):
         password = truth.EvaluatorPassword(SECRET)

@@ -150,7 +150,24 @@ Its options name the set's directory and key its password file by the set's name
  "renode": "/path/to/renode"}
 ```
 
-`set_root` reaches the bench harness on its stdin, as password files do. The harness refuses the suite, before it contacts the configurator, unless the set is registered and qualified and every entry's device is admitted. A device pin (the harness builds it and the configurator freezes it) never holds the level or framing. A trial on a set's device is resumed through its suite (`benchmark suite resume`, with the same options): `benchmark trial-resume` has no set root and refuses it. Its grade reports fresh reuse as not judged.
+`set_root` reaches the bench harness on its stdin, as password files do. The harness refuses the suite, before it contacts the configurator, unless the set is registered and qualified, every entry's device is admitted, and neither the configurator home, the bench home, the emulator executable nor a replay candidate lies under the set's folder. A device pin (the harness builds it and the configurator freezes it) never holds the level or framing. A trial on a set's device is resumed through its suite (`benchmark suite resume`, with the same options): `benchmark trial-resume` has no set root and refuses it. Its grade reports fresh reuse as not judged.
+
+Workers never run with the vault open. To start a suite:
+
+1. Open the answer vault, and start the suite with the options above. Save the `request_id` it returns; one is minted if you give none.
+2. The call returns `status: awaiting-unmount` as soon as the harness holds the set in memory. No suite is frozen yet and no budget runs.
+3. Close the answer vault, password files and generator volume by hand. The harness checks only the set's folder, once a second: it is out of reach when `manifest.json` is gone and the folder is gone or empty. A locked volume that still answers keeps the gate shut.
+4. Repeat the start with the same `request_id` and inputs. It follows the same harness and returns the `suite_id` once the suite is accepted.
+
+A folder still reachable after an hour ends the harness with `The vault holding set <name> was not closed in time`, and the same `request_id` starts afresh. To end a wait early, stop the harness, whose `pid` is in the `suite.json` of its `suite_dir`. If the folder is reachable again before a later trial or a continued one, the harness waits again in the same way, and only `suite.json` shows it: the suite's budget keeps running, a cancel ends the wait, and at the limit the suite blocks and can resume. A remount during a trial is not caught.
+
+To resume a stopped suite:
+
+1. Stop the suite or let it finish: `benchmark suite resume` refuses while its active child is queued or running, or anything of it is still stopping.
+2. Open the vault and run the resume with the same options. The harness asks the configurator whether the suite can resume, then holds the set and refuses a set no longer admitted, or a record other than the one each device pin names, with the vault still open.
+3. The call returns `status: awaiting-unmount` with the `suite_id`. Close the vault as above. A resume takes no claim, so follow it with `benchmark suite status`, not by repeating it.
+
+A resume with no `set_root` does not wait: slots with a recorded verdict or an uncertain effect settle without one, and a slot that needs its device fails.
 
 ## Add, unselect or retire
 

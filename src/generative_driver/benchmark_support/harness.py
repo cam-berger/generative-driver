@@ -16,7 +16,9 @@ run has completed. Its state lives under a bench home beside the configurator ho
 
 A suite's harness (`run_suite`) drives the suite the configurator stores: it reserves each slot, runs that slot's trial as
 above, and has the configurator settle the slot from what the configurator reads itself. A resumed suite gets a new
-harness, which continues a stopped trial on a device it provides anew (`reattach`) or grades an unscored one once."""
+harness, which continues a stopped trial on a device it provides anew (`reattach`) or grades an unscored one once. A
+suite of a generated set holds the set in memory and starts no trial until the set's folder is out of reach (Feature 05,
+vault gate; spec decision 17)."""
 import argparse
 import contextlib
 import errno
@@ -400,6 +402,9 @@ def finish(provider, case_id, run_dir, result, password, status=None, *, truth_s
 UNREACHABLE = 300
 # How long past the end of a run's wall-clock budget a harness keeps following the run.
 GRACE = 600
+# How long a suite's harness waits for the set's folder to go out of reach, each time, and how often it looks.
+UNMOUNT_WAIT = 3600
+UNMOUNT_POLL = 1
 # The device stop of a trial whose device the operator owns: the harness held none.
 UNHELD = {'confirmed': True, 'held': False}
 
@@ -566,47 +571,101 @@ def _supplied_passwords(files):
     return {case: read[path] for case, path in files.items() if path}
 
 
-def _set_device_pins(manifest, set_root, passwords):
-    """{device id: pin} of every entry of the set manifest `manifest`, once the set `set_root` holds is registered and
-    every entry's device admitted, for a harness that has not yet contacted the configurator. A scoring set must have
-    its entries name every device of its set once, with one repetition. Any refusal is a ValueError that lists its
-    reasons and names no path, as `_read_supplied`'s does."""
+def _not_admitted(registration, reasons):
+    """The refusal of the set `registration`, listing its `reasons` once each: it names no path, as `_read_supplied`'s
+    does."""
+    return ValueError('The generated set ' + registration + ' is not admitted: ' + '; '.join(dict.fromkeys(reasons)))
+
+
+def _held_set(registration, devices, set_root, passwords):
+    """The `HeldSet` of `devices` of the set `registration`, or its refusal (`_not_admitted`), for a harness whose every
+    file of the set is read here, once."""
+    from . import generated_trials
+    reasons = generated_trials.fixture_variable_reasons(registration)
+    if reasons:
+        raise _not_admitted(registration, reasons)
+    if not set_root:
+        raise _not_admitted(registration, ['no set root was supplied'])
+    if registration not in passwords:
+        raise _not_admitted(registration, ['no evaluator password file was supplied'])
+    try:
+        return generated_trials.hold_set(set_root, registration, devices, passwords[registration])
+    except OSError as error:
+        raise _not_admitted(registration, [type(error).__name__]) from None
+    except ValueError as error:
+        raise _not_admitted(registration, [str(error)]) from None
+
+
+def _under_set_root(set_root, home, renode, options):
+    """The reasons a suite could never run with the set's folder out of reach: the configurator home `home`, its bench
+    home, the emulator executable `renode` or a replay candidate of the suite's `options` lies under `set_root`, both
+    sides resolved."""
+    root = Path(set_root).resolve()
+    candidates = (options or {}).get('replay_candidates') if isinstance(options, dict) else None
+    named = (('the configurator home', [home]), ('the bench home', [bench_home(home)]),
+             ('the emulator executable', [renode] if renode else []),
+             ('a replay candidate', list(candidates.values()) if isinstance(candidates, dict) else []))
+    return [what + ' lies under the set root' for what, paths in named
+            if any(Path(path).expanduser().resolve().is_relative_to(root) for path in paths)]
+
+
+def _set_device_pins(manifest, set_root, passwords, *, home, renode, options):
+    """(the `HeldSet`, {device id: pin} of every entry of the set manifest `manifest`), once the set `set_root` holds is
+    registered, every entry's device admitted and nothing the suite needs lies under its root (`_under_set_root`), for
+    a harness that has not yet contacted the configurator. A scoring set must have its entries name every device of its
+    set once, with one repetition. Any refusal is `_not_admitted`."""
     from . import generated_sets, generated_trials
     from .suites import normalize_manifest
     normalized = normalize_manifest(manifest)
     registration = normalized['set']
-
-    def refused(reasons):
-        listed_once = '; '.join(dict.fromkeys(reasons))
-        return ValueError('The generated set ' + registration + ' is not admitted: ' + listed_once)
-    reasons = generated_trials.fixture_variable_reasons(registration)
-    if reasons:
-        raise refused(reasons)
-    if not set_root:
-        raise refused(['no set root was supplied'])
-    if registration not in passwords:
-        raise refused(['no evaluator password file was supplied'])
-    password = passwords[registration]
-    try:
-        loaded = generated_sets.load_set(set_root, registration)
-    except OSError as error:
-        raise refused([type(error).__name__]) from None
-    except ValueError as error:
-        raise refused([str(error)]) from None
-    devices = [entry['device_id'] for entry in manifest['entries']]
-    listed = {entry['id'] for entry in loaded['devices']}
-    unknown = ['Unknown generated device: ' + device for device in devices if device not in listed]
+    devices = [entry['device_id'] for entry in normalized['entries']]
+    held = _held_set(registration, devices, set_root, passwords)
+    listed = {entry['id'] for entry in held.manifest['devices']}
     partial = generated_sets.is_scoring(registration) and (set(devices) != listed or normalized['repetitions'] != 1)
-    reasons = unknown or (['a scoring suite runs every device of its set once'] if partial else
-                          [reason for device in devices
-                           for reason in generated_sets.admitted(set_root, registration, device, password)])
+    reasons = (['a scoring suite runs every device of its set once'] if partial else
+               [reason for device in devices for reason in generated_sets.admitted_held(held, device)])
+    reasons += _under_set_root(set_root, home, renode, options)
     if reasons:
-        raise refused(reasons)
-    try:
-        evidence = generated_trials.qualification_digest(set_root, password)
-    except (OSError, ValueError) as error:
-        raise refused([type(error).__name__]) from None
-    return {device: generated_trials.device_pin(loaded, device, evidence) for device in devices}
+        raise _not_admitted(registration, reasons)
+    pins = {device: generated_trials.device_pin(held.manifest, device, held.evidence_sha256) for device in devices}
+    return held, pins
+
+
+def _held_for_resume(configurator, suite_id, set_root, passwords, *, home, renode):
+    """The `HeldSet` a resume given `set_root` drives its set suite with, or None for a suite of no set. It asks the
+    configurator first, and refuses in its words a suite that cannot resume, so no vault stays open for one. Then it
+    refuses (`_not_admitted`), with the vault still open, a set not admitted, what lies under its root, and a record or
+    set other than the ones each entry's frozen pin names, which `public_pin` shows only by its digest. Budget and
+    frozen implementation refusals stay in `suite_resume`."""
+    from . import generated_sets, generated_trials
+    from .snapshots import canonical_digest
+    result = _expect(configurator('suite_result', {'suite_id': suite_id, 'limit': 1}),
+                     'The configurator did not report the suite')
+    identity = (result.get('experiment') or {}).get('comparison_identity') or {}
+    manifest = identity.get('manifest') or {}
+    if 'set' not in manifest:
+        return None
+    if result.get('status') not in ('blocked', 'failed', 'cancelled'):
+        raise ValueError('Only a stopped incomplete suite can resume')
+    if result.get('stopping'):
+        raise ValueError('Previous suite work is still stopping')
+    child = result.get('active_child_id')
+    if child and _expect(configurator('status', {'run_id': child}),
+                         'The configurator did not report the suite\'s active child').get('uncertain_effect'):
+        raise ValueError('Outstanding effect is uncertain; operator must respond with confirmed_safe after '
+                         'reconciliation')
+    registration = manifest['set']
+    devices = [entry['device_id'] for entry in manifest['entries']]
+    held = _held_set(registration, devices, set_root, passwords)
+    reasons = [reason for device in devices for reason in generated_sets.admitted_held(held, device)]
+    reasons += _under_set_root(set_root, home, renode, None)
+    reasons += ['qualification differs from the frozen pin:' + device
+                for device, pin in zip(devices, identity['entry_pins'])
+                if canonical_digest(generated_trials.device_pin(held.manifest, device, held.evidence_sha256))
+                != pin['pin_sha256']]
+    if reasons:
+        raise _not_admitted(registration, reasons)
+    return held
 
 
 def _start_child(launch, params, shutdown, stop=None):
@@ -1279,6 +1338,37 @@ def _refused(suite_dir):
     return isinstance(record, dict) and record.get('accepted') is False and _harness_exited(None, record, suite_dir)
 
 
+class _VaultNotClosed(ValueError):
+    """A set's folder still reachable after `UNMOUNT_WAIT`. Its message names the set and no path."""
+
+
+class _NoWorkerStarted(Exception):
+    """A slot's wait for its set's folder ended before the folder went out of reach: no worker started, and the slot is
+    not the harness's to settle (`_suite_trial`)."""
+
+
+def _await_unmount(suite_dir, record, set_root, registration, *, stop=None, poll=None):
+    """Whether the folder of the set `registration` is out of reach, after waiting for it if it is not. The first check
+    finds out; if the folder is reachable the record says `awaiting-unmount` until it is not, for at most
+    `UNMOUNT_WAIT`, after which `_VaultNotClosed` ends the harness. Only the path is watched (see
+    `generated_trials.set_unreachable`). A `stop`, or a `poll()` that returns false, ends the wait early: False."""
+    from . import generated_trials
+    if generated_trials.set_unreachable(set_root):
+        return True
+    before = record['status']
+    record.update(status='awaiting-unmount', set=registration)
+    _private(Path(suite_dir) / 'suite.json', record)
+    deadline, closed = time.monotonic() + UNMOUNT_WAIT, False
+    while not closed and not (stop is not None and stop.is_set()) and (poll is None or poll()):
+        if time.monotonic() >= deadline:
+            raise _VaultNotClosed('The vault holding set ' + registration + ' was not closed in time')
+        time.sleep(UNMOUNT_POLL)
+        closed = generated_trials.set_unreachable(set_root)
+    record['status'] = before
+    _private(Path(suite_dir) / 'suite.json', record)
+    return closed
+
+
 def run_suite(suite_dir, request, *, call=None, stop=None):
     """One bench harness run of a suite. It starts the suite on the configurator (or resumes a stopped one, given its
     `suite_id`) under a fresh random token, of which the configurator keeps only the sha256, and then works through the
@@ -1295,8 +1385,13 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
     continues, and to no other. The harness holds a lock file in `suite_dir` for as long as it runs, by which the
     configurator and other launches tell that it still runs (its process id alone may come to name another process). A
     new suite of one generated set also needs its `set_root` and the set's password file: before that first contact the
-    harness loads the set, refuses it unless every entry's device is admitted (as it refuses an unreadable file), and
-    builds each entry's pin, which the configurator freezes. A resumed one opens the set only as a slot needs it."""
+    harness holds the set in memory, refuses it unless every entry's device is admitted and nothing it needs lies under
+    its root (as it refuses an unreadable file), and builds each entry's pin, which the configurator freezes. After a
+    `ping` it waits until the folder is out of reach (`_await_unmount`), and then reads no file of the set. A resumed
+    one given `set_root` does the same once the configurator says it can resume (`_held_for_resume`); one given none
+    does not wait, and a slot that needs its device fails there. It checks the folder again before each worker: a wait
+    that ends with no worker started goes back to the top of the loop unsettled, and one that passes its limit ends the
+    harness, blaming no trial."""
     from ..client import hold_process_lock
     suite_dir = Path(suite_dir)
     suite_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1315,13 +1410,20 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
     attached, failure, current = False, None, None
     try:
         passwords = _supplied_passwords(files)
-        # Only a new set suite is opened here: a resumed one has its pins frozen, and opens its set as a slot needs it.
+        # Only a new set suite is held here: a resumed one has its pins frozen, and holds its set below, once the
+        # configurator says it can resume.
         manifest = None if record['suite_id'] else request.get('manifest')
-        device_pins = (_set_device_pins(manifest, set_root, passwords)
-                       if isinstance(manifest, dict) and 'set' in manifest else None)
+        held, device_pins = (_set_device_pins(manifest, set_root, passwords, home=home, renode=renode,
+                                              options=request.get('options'))
+                             if isinstance(manifest, dict) and 'set' in manifest else (None, None))
         reachable = configurator('ping', {})
         if not reachable.get('ok'):
             raise ValueError(reachable.get('reason') or 'The configurator is not reachable')
+        if record['suite_id'] and set_root:
+            held = _held_for_resume(configurator, record['suite_id'], set_root, passwords, home=home, renode=renode)
+        if held is not None and not _await_unmount(suite_dir, record, set_root, held.registration, stop=stop):
+            raise ValueError('The bench harness stopped before the vault holding set ' + held.registration
+                             + ' was closed')
         identity = {'harness_token_sha256': hashlib.sha256(token.encode()).hexdigest(), 'harness_pid': os.getpid(),
                     **({'harness_lock': str((suite_dir / HARNESS_LOCK).resolve())} if lock else {})}
         if record['suite_id']:
@@ -1347,6 +1449,13 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
             if time.monotonic() - beat['at'] >= .2:
                 beat['at'] = time.monotonic()
                 _post(configurator, 'suite_reserve', {'suite_id': record['suite_id'], 'token': token})
+        def slot_gate(slot):
+            # The reservation stands in for a heartbeat while no child runs, and tells of a suite that moved on. A reply
+            # that is not ok says nothing of the suite: a brief outage is no reason to stop waiting.
+            def still_reserved():
+                reply = _post(configurator, 'suite_reserve', {'suite_id': record['suite_id'], 'token': token})
+                return reply.get('ok') is not True or reply.get('slot') == slot
+            return _await_unmount(suite_dir, record, set_root, held.registration, stop=stop, poll=still_reserved)
         while attached and not (stop is not None and stop.is_set()):
             reserved = _expect(configurator('suite_reserve', {'suite_id': record['suite_id'], 'token': token}),
                                'The configurator refused the reservation')
@@ -1357,11 +1466,21 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
             current = slot['trial_key']
             scheduling = {'suite_id': record['suite_id'], 'token': token, 'ordinal': slot['ordinal']}
             # The configurator starts, or resumes, the slot's child only while the suite runs, under the suite's lock.
-            _suite_trial(suite_dir, slot, reserved.get('request'), configurator, home=home, passwords=passwords,
-                         renode=renode, set_root=set_root, heartbeat=heartbeat, stop=stop,
-                         extension=extension if slot['run_id'] else {},
-                         launch=lambda params, scheduling=scheduling: configurator('suite_start_child', {**scheduling, 'request': params}),
-                         resume_run=lambda params, scheduling=scheduling: configurator('suite_resume_child', {**scheduling, **params}))
+            try:
+                _suite_trial(suite_dir, slot, reserved.get('request'), configurator, home=home, passwords=passwords,
+                             renode=renode, held=held, heartbeat=heartbeat, stop=stop,
+                             extension=extension if slot['run_id'] else {},
+                             launch=lambda params, scheduling=scheduling: configurator(
+                                 'suite_start_child', {**scheduling, 'request': params}),
+                             resume_run=lambda params, scheduling=scheduling: configurator(
+                                 'suite_resume_child', {**scheduling, **params}),
+                             gate=slot_gate if held is not None else None)
+            except _NoWorkerStarted:
+                current = None
+                continue
+            except _VaultNotClosed:
+                current = None  # No trial failed: the operator left the vault open.
+                raise
             if slot['run_id']:
                 extension = {}
             settled = _expect(configurator('suite_settle', {'suite_id': record['suite_id'], 'token': token,
@@ -1392,7 +1511,7 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
 
 
 def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renode, launch, resume_run, heartbeat, stop,
-                 extension=None, set_root=None):
+                 extension=None, held=None, gate=None):
     """Run, or continue, the trial of a reserved slot until its child has ended and, for an emulated case, the frozen
     driver was graded and its verdict posted, or the trial says why not. The child starts through its suite
     (`launch(params)`), which starts and attaches it only while the suite runs. A slot whose child exists continues it:
@@ -1400,7 +1519,9 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
     evaluator's draft holds), and a stopped one with nothing uncertain gets a device anew and resumes through its suite
     (`resume_run(params)`), with the approved child budget `extension` if any. Every child, legacy tq9 included, is
     graded once after its run. A slot of a set suite takes its password by its set, and its `SetDevice` from its frozen
-    pin and the harness's `set_root`, in the same step."""
+    pin and the set the harness holds (`held`), in the same step. Immediately before a worker can start, on a new child
+    or a continued one, `gate(slot)` must find the set's folder out of reach, or `_NoWorkerStarted` ends the slot; a
+    grade starts no worker, and is not gated."""
     case, run_id = slot['case'], slot['run_id']
     extension = extension or {}
     budget = float((child or {}).get('budget_seconds') or 10800)
@@ -1416,10 +1537,13 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
         """Keyword arguments naming the slot's device of a set, for a slot that needs it; none for any other case."""
         if 'set' not in pinned:
             return {}
-        if not set_root:
+        if held is None:
             raise ValueError('The set root of ' + keyed + ' is required to provide and grade its device')
         from .generated_trials import SetDevice
-        return {'device': SetDevice(Path(set_root), keyed, pinned['device_id'])}
+        return {'device': SetDevice(held, pinned['device_id'])}
+    def out_of_reach():
+        if gate is not None and not gate(slot):
+            raise _NoWorkerStarted()
     def trial_of(completed):
         found = _trial_of(suite_dir.parent, run_id, slot['child_request_id'])
         if found is None:
@@ -1428,11 +1552,12 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
         _adopt(found, run_id, completed)
         return found
     if run_id is None:
+        supplied, named = password(), device()
+        out_of_reach()
         trial_dir = suite_dir / 'trials' / (slot['trial_key'] + '-' + uuid.uuid4().hex[:8])
         record = run_trial(trial_dir, {'trial_id': trial_dir.name, 'home': str(home), 'case': case, 'start': child,
                                        'renode': renode},
-                           password=password(), call=configurator, launch=launch, heartbeat=heartbeat, stop=stop,
-                           **device())
+                           password=supplied, call=configurator, launch=launch, heartbeat=heartbeat, stop=stop, **named)
     else:
         status = _wait(configurator, run_id, time.monotonic() + budget + GRACE, threading.Event(), heartbeat, stop)
         if 'harness_stopped' in status:
@@ -1440,13 +1565,14 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
         if status.get('status') == 'completed':
             if status.get('equivalence') is not None:
                 return
-            held, named = password(), device()
-            record = resume(trial_of(True), password=held, renode=renode, call=configurator, **named)
+            supplied, named = password(), device()
+            record = resume(trial_of(True), password=supplied, renode=renode, call=configurator, **named)
         elif status.get('uncertain_effect'):
             return  # The configurator blocks the suite; only the operator reconciles an uncertain effect.
         else:
-            held, named = password(), device()
-            record = reattach(trial_of(False), password=held, renode=renode, call=configurator,
+            supplied, named = password(), device()
+            out_of_reach()
+            record = reattach(trial_of(False), password=supplied, renode=renode, call=configurator,
                               heartbeat=heartbeat, stop=stop, budget_seconds=extension.get('child_budget_seconds'),
                               budget_reason=extension.get('child_budget_reason'), resume_run=resume_run, **named)
     if record.get('status') in ('failed', 'stop-unconfirmed'):
@@ -1460,7 +1586,8 @@ def launch_suite(request, *, home, password_files=None, renode=None, set_root=No
     budget extension) of a stopped one to resume. Password file and emulator paths, and a set suite's `set_root`, reach
     the harness on its stdin, never its command line or the suite tables. A repeated request_id with the same inputs
     follows the suite it started, with
-    no second harness."""
+    no second harness. A new set suite always has a request_id, minted here if none is given, and this returns as soon
+    as its harness waits for the set's folder to go out of reach, as a resume of one does."""
     home = Path(home).expanduser().resolve()
     bench = bench_home(home)
     if bench == home or bench.is_relative_to(home):
@@ -1483,6 +1610,9 @@ def launch_suite(request, *, home, password_files=None, renode=None, set_root=No
     set_root = str(Path(set_root).expanduser().resolve()) if set_root else None
     request = {**request, 'home': str(home), 'autostart': autostart}
     key = 'suite-run-' + uuid.uuid4().hex[:16]
+    if isinstance(manifest, dict) and 'set' in manifest and request.get('request_id') is None:
+        # A set suite's harness may answer before any suite exists: this is what its operator follows it by.
+        request['request_id'] = 'set-suite-' + uuid.uuid4().hex
     request_id = request.get('request_id')
     if request_id is not None and not request.get('suite_id'):
         if not isinstance(request_id, str) or not request_id.strip():
@@ -1512,7 +1642,10 @@ def launch_suite(request, *, home, password_files=None, renode=None, set_root=No
 
 
 def _follow_suite(suite_dir, process, timeout, *, duplicate):
-    """Follow a suite harness until the configurator took the suite on (its reply), or refused it ({ok: false})."""
+    """Follow a suite harness until the configurator took the suite on (its reply), it was refused ({ok: false}), or the
+    harness waits for its set's folder to go out of reach, which is itself a reply: the operator has yet to close the
+    vault, so a client must not be held here. A new suite's reply carries the request_id to follow it by; a resume takes
+    no claim, so its reply carries the suite_id instead."""
     deadline = time.monotonic() + timeout
     while True:
         record = read_suite(suite_dir) or {}
@@ -1525,6 +1658,11 @@ def _follow_suite(suite_dir, process, timeout, *, duplicate):
         if exited or record.get('status') in ('failed', 'finished'):
             return {'ok': False, 'suite_dir': str(suite_dir), 'reason': record.get('reason') or
                     'The bench harness exited before the configurator took the suite on; see ' + str(suite_dir / 'harness.log')}
+        if record.get('status') == 'awaiting-unmount':
+            named = ({'suite_id': record['suite_id']} if record.get('suite_id') else
+                     {'request_id': record.get('request_id'), 'duplicate': duplicate})
+            return {'ok': True, 'status': 'awaiting-unmount', 'set': record.get('set'), 'suite_dir': str(suite_dir),
+                    **named}
         if time.monotonic() > deadline:
             raise TimeoutError('The bench harness did not start the suite in time; see ' + str(suite_dir / 'harness.log'))
         time.sleep(.1)

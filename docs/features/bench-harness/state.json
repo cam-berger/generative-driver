@@ -4,7 +4,7 @@
   "branch": "mdk/bench-harness",
   "stage": "spec",
   "awaiting": null,
-  "current": "06",
+  "current": "07",
   "features": [
     {
       "id": "01",
@@ -39,8 +39,8 @@
     {
       "id": "06",
       "slug": "slot-policy",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "04b87dd5da1c84bb0a5bc8774d8041f7dac1ef47"
     },
     {
       "id": "07",

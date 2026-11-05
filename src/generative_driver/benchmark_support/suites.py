@@ -160,9 +160,16 @@ def start_suite(manifest: dict, executor: str | None = None, options: dict | Non
                         via_owner=via_owner)
 
 
-def _refuse_live_set_suite(suite_id, home) -> None:
+# The one refusal of an extension of a scoring suite's child budget: `resume_suite` before it launches a harness, the
+# harness with the vault still open and the configurator, which decides.
+NO_CHILD_EXTENSION = ('A scoring suite runs every child on the child budget it froze, which pairing relies on: '
+                      'child_budget_seconds')
+
+
+def _refuse_live_set_suite(suite_id, home, child_budget_seconds=None) -> None:
     """ValueError for a set suite whose active child is queued or running, or that has anything still stopping: resuming
-    it would have its operator open the vault while workers run, for a refusal. A configurator that cannot be reached, a
+    it would have its operator open the vault while workers run, for a refusal. So too for a scoring suite given a child
+    budget extension. A configurator that cannot be reached, a
     suite it does not know and a suite of no set go on to the harness, which reports them. A slot launching with no
     attached child, which arises only after a configurator crash, is not visible here."""
     from ..client import call
@@ -170,6 +177,8 @@ def _refuse_live_set_suite(suite_id, home) -> None:
     identity = (result.get('experiment') or {}).get('comparison_identity') or {}
     if 'set' not in (identity.get('manifest') or {}):
         return
+    if child_budget_seconds is not None and 'scoring_set' in identity:
+        raise ValueError(NO_CHILD_EXTENSION)
     status = call('suite_status', {'suite_id': suite_id}, home, autostart=False)
     child = status.get('active_child_id')
     child_status = call('status', {'run_id': child}, home, autostart=False).get('status') if child else None
@@ -185,8 +194,8 @@ def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autos
     the suite
     keeps the options it was frozen with. An approved suite budget extension raises the suite's total; an approved child budget
     extension raises the total of the stopped child the resume continues (an emulated child once its device is
-    attached anew), and no other child's. A set suite with work still running is refused here
-    (`_refuse_live_set_suite`), before its operator opens the vault."""
+    attached anew), and no other child's, but a scoring suite refuses one. A set suite with work still running is
+    refused here (`_refuse_live_set_suite`), before its operator opens the vault."""
     from .harness import launch_suite
     if not isinstance(suite_id, str) or not suite_id.strip():
         raise ValueError('suite_id must be a nonblank string')
@@ -197,7 +206,7 @@ def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autos
         raise ValueError('A child budget extension requires a finite positive total of at most seven days and a '
                          'nonblank child_budget_reason')
     directory, _, passwords, renode, set_root = _launch_options(options, home)
-    _refuse_live_set_suite(suite_id, directory)
+    _refuse_live_set_suite(suite_id, directory, child_budget_seconds)
     request = {'suite_id': suite_id, **{key: value for key, value in (
         ('suite_budget_seconds', suite_budget_seconds), ('budget_reason', budget_reason),
         ('child_budget_seconds', child_budget_seconds),
@@ -385,3 +394,35 @@ def child_disposition(result: dict) -> str:
     completed = result.get('outcome_category', 'unknown') == 'completed' and result.get('status') == 'completed'
     equivalence = result.get('equivalence') if isinstance(result.get('equivalence'), dict) else {}
     return 'advance' if completed and equivalence.get('status') in ('graded', 'no-driver', 'unknown') else 'block'
+
+
+# Why a scoring suite's slot never got a run, in the one closed word its row keeps.
+NO_RUN = ('admit-refused', 'provider-failed', 'start-refused')
+
+
+def scoring_disposition(result: dict, slot: dict) -> str:
+    """What a scoring suite does with its slot's child (Feature 06, slot policy; spec decision 20): `advance` (it
+    stands), `fault` (the slot gets its rerun), `flag` (the audit found a command naming the set's folder), `regrade`
+    (the same driver is graded again), `wait` or `block`. `result` is what the configurator read of the child, its
+    `equivalence`, `unscored` reason and `effective_budget_seconds` included, and `slot` the suite's row. Settlement and
+    the report call the same `classify`, here on a projection of the same records. A rerun's fault stands. A grade
+    unscored for a host fault is graded once more, on either attempt, before it counts as one."""
+    from .outcomes import classify
+    if result.get('stopping') or result.get('status') in ('queued', 'running'):
+        return 'wait'
+    if result.get('stopping') is not False or result.get('uncertain_effect') is not False:
+        return 'block'
+    equivalence = result.get('equivalence') if isinstance(result.get('equivalence'), dict) else None
+    awaiting = 'unscored' if result.get('unscored') else 'pending' if result.get('status') == 'completed' else None
+    outcome = classify(
+        {'run_id': result.get('run_id'), 'status': 'finished', 'outcome_category': result.get('outcome_category')},
+        {'workflow_status': result.get('status'), 'elapsed_seconds': result['updated'] - result['created'],
+         'effective_budget_seconds': result.get('effective_budget_seconds'), 'equivalence': equivalence,
+         'equivalence_status': equivalence.get('status') if equivalence else awaiting,
+         'reason': result.get('unscored') or result.get('reason')},
+        flagged=bool(slot.get('audit')), unscored_integrity_fails=True)
+    if outcome != 'fault':
+        return {'flagged': 'flag', 'running': 'block'}.get(outcome, 'advance')
+    if result.get('status') == 'completed' and equivalence is None and slot.get('regrade') != 'spent':
+        return 'regrade'
+    return 'advance' if slot.get('attempt', 1) == 2 else 'fault'

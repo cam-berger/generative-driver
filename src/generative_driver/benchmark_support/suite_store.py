@@ -1,5 +1,7 @@
 """Durable suite slots in the existing controller database; no execution owner. The bench harness that drives a suite is
-recorded by the sha256 of its token, its process id, the lock file it holds while it runs and whether it is attached."""
+recorded by the sha256 of its token, its process id, the lock file it holds while it runs and whether it is attached. A
+scoring suite's slot may also settle `faulted` or `flagged`, and a faulted one comes back for its one regrade or rerun
+(Feature 06, slot policy; spec decision 20)."""
 import json
 import time
 import uuid
@@ -15,7 +17,10 @@ def _json(value):
 def _slot(row):
     return {**json.loads(row['trial_json']),
         **{key:row[key] for key in ('child_request_id','run_id','status','outcome_category')},
-        'result':json.loads(row['result_json']) if row['result_json'] else None}
+        'result':json.loads(row['result_json']) if row['result_json'] else None,
+        **({'attempt':row['attempt']} if row['attempt']!=1 else {}),
+        **{key:row[key] for key in ('no_run_reason','regrade') if row[key] is not None},
+        **{key:json.loads(row[key]) for key in ('first_attempt','audit') if row[key] is not None}}
 
 
 class SuiteStore:
@@ -44,6 +49,11 @@ class SuiteStore:
                                 ('harness_lock','TEXT')):
                 if column not in columns:
                     db.execute('ALTER TABLE suites ADD COLUMN '+column+' '+kind)
+            columns={row['name'] for row in db.execute('PRAGMA table_info(suite_trials)')}
+            for column,kind in (('attempt','INTEGER NOT NULL DEFAULT 1'),('first_attempt','TEXT'),
+                                ('no_run_reason','TEXT'),('regrade','TEXT'),('audit','TEXT')):
+                if column not in columns:
+                    db.execute('ALTER TABLE suite_trials ADD COLUMN '+column+' '+kind)
 
     def _event(self,db,suite_id,kind,payload):
         db.execute('INSERT INTO suite_events(suite_id,kind,payload,created) VALUES(?,?,?,?)',
@@ -150,10 +160,32 @@ class SuiteStore:
             if row is not None:return _slot(row)
             if suite['cancelled'] or suite['status']!='running':return None
             row=db.execute("SELECT * FROM suite_trials WHERE suite_id=? AND status='pending' ORDER BY ordinal LIMIT 1",(suite_id,)).fetchone()
-            if row is None:return None
+            if row is None:
+                row=db.execute("SELECT * FROM suite_trials WHERE suite_id=? AND status='faulted' "
+                               "AND (attempt=1 OR regrade='due') ORDER BY ordinal LIMIT 1",(suite_id,)).fetchone()
+                if row is None:return None
+                self._again(db,suite_id,row)
+                return _slot(db.execute('SELECT * FROM suite_trials WHERE suite_id=? AND ordinal=?',
+                                        (suite_id,row['ordinal'])).fetchone())
             db.execute("UPDATE suite_trials SET status='launching' WHERE suite_id=? AND ordinal=?",(suite_id,row['ordinal']))
             self._event(db,suite_id,'trial.launching',{'ordinal':row['ordinal']})
             return {**_slot(row),'status':'launching'}
+
+    def _again(self,db,suite_id,row):
+        """A faulted slot's turn after every pending slot: its regrade, which keeps its child and clears its settlement
+        so that it may settle again, or else its one rerun, a new child under a new request id. Either commits with the
+        reservation that the caller's transaction holds."""
+        ordinal=row['ordinal']
+        if row['regrade']=='due':
+            db.execute("UPDATE suite_trials SET status='running',regrade='spent',result_json=NULL "
+                       'WHERE suite_id=? AND ordinal=?',(suite_id,ordinal))
+            self._event(db,suite_id,'trial.regrade',{'ordinal':ordinal,'run_id':row['run_id']})
+            return
+        request=f"suite:{suite_id}:trial:{ordinal}:rerun"
+        db.execute("UPDATE suite_trials SET status='launching',child_request_id=?,attempt=2,regrade=NULL,run_id=NULL,"
+                   "result_json=NULL,no_run_reason=NULL,outcome_category='unknown' WHERE suite_id=? AND ordinal=?",
+                   (request,suite_id,ordinal))
+        self._event(db,suite_id,'trial.rerun',{'ordinal':ordinal,'first_run_id':row['run_id']})
 
     def attach(self,suite_id,ordinal,child_request_id,run_id):
         with self.open_db() as db:
@@ -175,7 +207,8 @@ class SuiteStore:
         def public(slot):
             settled=slot['result'] or {}
             return {**{key:slot[key] for key in fields},
-                    **({'device_id':slot['device_id']} if 'device_id' in slot else {}),
+                    **{key:slot[key] for key in ('device_id','attempt','first_attempt','no_run_reason','audit')
+                       if key in slot},
                     'equivalent':settled.get('equivalent'),
                     'equivalence_status':settled.get('equivalence_status')}
         return {'suite_id':suite_id,'trials':[public(_slot(row)) for row in rows[:limit]],
@@ -190,28 +223,62 @@ class SuiteStore:
             'data':json.loads(row['payload']),'time':row['created']} for row in rows],
             'cursor':rows[-1]['seq'] if rows else after}
 
-    def settle(self,suite_id,ordinal,result,*,terminal_final=False):
+    def store_audit(self,suite_id,ordinal,findings):
+        """Keep a slot's audit findings; they move nothing, and `settle` is what makes the slot `flagged`."""
+        with self.open_db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('UPDATE suite_trials SET audit=? WHERE suite_id=? AND ordinal=?',
+                       (_json(findings),suite_id,ordinal))
+            self._event(db,suite_id,'trial.audit_flagged',{'ordinal':ordinal,'findings':len(findings)})
+
+    def settle_no_run(self,suite_id,ordinal,reason,first_attempt):
+        """Settle a reserved slot whose trial never got a run, with the closed word `reason`: `faulted` with
+        `first_attempt` on a first attempt, for its rerun, and `finished` on a rerun, which stands. The status it
+        took."""
+        public={'run_id':None,'status':'failed','outcome_category':'host','equivalent':None,'equivalence_status':None}
+        with self.open_db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute('SELECT * FROM suite_trials WHERE suite_id=? AND ordinal=?',(suite_id,ordinal)).fetchone()
+            status='finished' if row['attempt']==2 else 'faulted'
+            db.execute("UPDATE suite_trials SET status=?,outcome_category='host',result_json=?,no_run_reason=?,"
+                       'first_attempt=COALESCE(?,first_attempt) WHERE suite_id=? AND ordinal=?',
+                       (status,_json(public),reason,None if first_attempt is None else _json(first_attempt),
+                        suite_id,ordinal))
+            self._event(db,suite_id,'trial.'+status,{'ordinal':ordinal,'no_run_reason':reason})
+            return status
+
+    def settle(self,suite_id,ordinal,result,*,terminal_final=False,disposition='advance',first_attempt=None):
+        """Settle a slot from its ended child. `disposition` is `scoring_disposition`'s word, or `advance` for any
+        suite: `advance` is `finished`, `fault` and `regrade` are `faulted` and `flag` is `flagged`. A faulted first
+        attempt keeps `first_attempt` as its history, which a grade after its regrade clears; `regrade` makes one
+        due."""
         if (result.get('stopping') is not False or result.get('uncertain_effect') is not False
                 or result.get('status') not in ('completed','failed','cancelled','blocked')):
             raise ValueError('Child must be settled before its slot')
         category=result.get('outcome_category','unknown')
-        if category not in ('completed','model','host','operator','cancelled','unknown'):
+        if category not in ('completed','model','host','operator','cancelled','unknown','safety','integrity'):
             raise ValueError('Invalid child outcome category')
         # The child's recorded evaluation, as the configurator read it: none for a child of a suite frozen before the harness.
         equivalence=result.get('equivalence') if isinstance(result.get('equivalence'),dict) else {}
         public={'run_id':result.get('run_id'),'status':result['status'],'outcome_category':category,
                 'equivalent':equivalence.get('equivalent'),'equivalence_status':equivalence.get('status')}
+        status={'advance':'finished','fault':'faulted','regrade':'faulted','flag':'flagged'}[disposition]
         with self.open_db() as db:
             db.execute('BEGIN IMMEDIATE')
+            if category in ('safety','integrity') and 'scoring_set' not in self._get(db,suite_id)['frozen']:
+                raise ValueError('Invalid child outcome category')
             row=db.execute('SELECT * FROM suite_trials WHERE suite_id=? AND ordinal=?',(suite_id,ordinal)).fetchone()
             if row is None or not row['run_id'] or row['run_id']!=public['run_id']:
                 raise ValueError('Settlement does not match attached child')
             if row['result_json'] is not None:
                 if row['result_json']!=_json(public):raise ValueError('Child slot already has a different settlement')
                 return
-            db.execute("UPDATE suite_trials SET status='finished',outcome_category=?,result_json=? WHERE suite_id=? AND ordinal=?",
-                (category,_json(public),suite_id,ordinal))
-            self._event(db,suite_id,'trial.finished',{'ordinal':ordinal,**public})
+            history=row['first_attempt'] if row['attempt']==2 else _json(first_attempt) if status=='faulted' else None
+            db.execute('UPDATE suite_trials SET status=?,outcome_category=?,result_json=?,first_attempt=?,'
+                       'regrade=? WHERE suite_id=? AND ordinal=?',
+                (status,category,_json(public),history,'due' if disposition=='regrade' else row['regrade'],
+                 suite_id,ordinal))
+            self._event(db,suite_id,'trial.'+status,{'ordinal':ordinal,**public})
             if terminal_final:
                 self._event(db,suite_id,'terminal_child_settled',{'ordinal':ordinal,**public})
 

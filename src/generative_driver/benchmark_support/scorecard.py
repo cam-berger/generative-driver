@@ -503,6 +503,15 @@ def _groups(rows):
     return groups
 
 
+def _reruns(rows):
+    """How many devices a scoring suite ran again (Feature 06, slot policy), and what their first attempts cost: the
+    tokens and wall seconds summed over those that gave them, with how many did under `measured`."""
+    first = [row.get('first_attempt') or {} for row in rows if row.get('attempt') == 2]
+    tokens, seconds = _figure(row.get('tokens') for row in first), _figure(row.get('seconds') for row in first)
+    return {'count': len(first), 'first_attempt_tokens': tokens.total, 'first_attempt_seconds': seconds.total,
+            'measured': {'first_attempt_tokens': tokens.measured, 'first_attempt_seconds': seconds.measured}}
+
+
 def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | None = None) -> dict:
     """The scorecard of a suite, schema `benchmark-scorecard/1`, from its `benchmark-suite-report/3` and the records of
     the runs its trials started. It says what it measures: the `suite_id`; whether the suite is still under way or was
@@ -517,8 +526,9 @@ def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | N
     report's `equivalent_and_mission` count of equivalent drivers with a successful fresh mission that earlier studies
     reported, when it has one; the `groups`, that pass rate by each value of each of `family`, `level` and `framing`
     that the trial rows carry; the report's `execution` and `model_benchmark` when it has them, which say that no model
-    ran a replay suite's trials; `measured_trials`; and the figures of `trial_metrics` added up over the trials, under
-    `run` (repairs and claim) and `stages` (each stage).
+    ran a replay suite's trials; `measured_trials`; the `reruns` (`_reruns`); and the figures of `trial_metrics` added
+    up over the trials, under `run` (repairs and claim) and `stages` (each stage), which count a rerun's run and not its
+    first attempt's.
 
     The two `execution` fields differ for a replay suite: the card's own says how its trials were run
     (`replay-emulation`, from the report), and `conditions.execution` is what the frozen experiment declared
@@ -564,8 +574,8 @@ def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | N
     card = {'schema': SUITE_SCHEMA, 'suite_id': report['suite_id'], 'provisional': report.get('provisional'),
             'status': report.get('status'), 'reason': reason, 'system': system, 'conditions': conditions,
             **{key: report[key] for key in LABELS if key in report}, 'pass_rate': rate, 'pass_line': pass_rate_line(rate),
-            **joint, 'groups': _groups(rows), 'measured_trials': len(measured), 'run': _run_figures(measured),
-            'stages': stages}
+            **joint, 'groups': _groups(rows), 'measured_trials': len(measured), 'reruns': _reruns(rows),
+            'run': _run_figures(measured), 'stages': stages}
     if 'scoring_set' not in identity:
         flag = lambda row: ({'equivalent_and_mission': row['equivalent_and_mission']}
                             if 'equivalent_and_mission' in row else {})
@@ -594,8 +604,9 @@ def scorecard_markdown(card: dict) -> str:
     when the card has one), and a suite no model ran says so on the next (`model_benchmark` is False). Under them, one
     line names the system (protocol, runtime and version, model and reasoning effort, and how it executed and on what
     evidence: the card's own `execution` when it has one, else the conditions', then the evidence track), one the scoring
-    set (its registration and the first 12 characters of its manifest hash) of a suite that ran one, and one gives the
-    joint verdict of earlier studies. Then come the pass line of each group, the run figures, a row of sums and one of
+    set (its registration and the first 12 characters of its manifest hash) of a suite that ran one, one the reruns of a
+    suite that ran any, with what their first attempts cost, and one gives the joint verdict of earlier studies. Then
+    come the pass line of each group, the run figures, a row of sums and one of
     medians for each stage, and the managed calls by tool. A figure that no trial measured reads `unknown`, and one that
     only some did is marked with how many (`n/N`)."""
     trials, stages, run = card['measured_trials'], card['stages'], card['run']
@@ -616,6 +627,12 @@ def scorecard_markdown(card: dict) -> str:
     if 'scoring_set' in card['conditions']:
         scoring = card['conditions']['scoring_set']
         lines.append(f"Scoring set: {scoring['registration']}, manifest {scoring['manifest_sha256'][:12]}")
+    reruns = card.get('reruns') or {'count': 0}
+    if reruns['count']:
+        cost = [_cell(reruns[key], reruns['measured'][key], reruns['count'])
+                for key in ('first_attempt_tokens', 'first_attempt_seconds')]
+        lines.append(f"Reruns: {reruns['count']}, whose first attempts took {cost[0]} tokens and {cost[1]} wall "
+                     'seconds, in no figure below')
     if 'joint_verdict' in card:
         joint = card['joint_verdict']
         lines += ['', "Earlier studies' joint verdict (an equivalent driver and a successful fresh mission): "

@@ -167,7 +167,29 @@ To resume a stopped suite:
 2. Open the vault and run the resume with the same options. The harness asks the configurator whether the suite can resume, then holds the set and refuses a set no longer admitted, or a record other than the one each device pin names, with the vault still open.
 3. The call returns `status: awaiting-unmount` with the `suite_id`. Close the vault as above. A resume takes no claim, so follow it with `benchmark suite status`, not by repeating it.
 
-A resume with no `set_root` does not wait: slots with a recorded verdict or an uncertain effect settle without one, and a slot that needs its device fails.
+A resume with no `set_root` does not wait: slots with a recorded verdict or an uncertain effect settle without one, and a slot that needs its device, or a stopped child's audit, fails.
+
+A resume of a scoring suite never continues a stopped child on a new device, and refuses a child budget extension, since pairing calls any such override incompatible. A suite budget extension stays available, under the seven-day cap.
+
+### What a scoring suite does at each ending
+
+A suite whose frozen record holds `scoring_set` goes on past one bad trial. Development and hand-made suites stop at each stop, as they always did.
+
+| The trial | Slot settles | Then |
+|---|---|---|
+| Passes, fails or is unknown, including a spent child budget, no driver, a grade unscored for `integrity:`, or a safety, integrity or model stop | `finished` | Next slot |
+| Stops for the host or an operator with budget left, is cancelled alone, or leaves no evidence | `faulted` | One rerun at the end |
+| Never got a run: `admit-refused`, `provider-failed` or `start-refused` | `faulted`, with that word | One rerun at the end; the full text stays in `trial.json` |
+| Ran, but grading hit an evaluator host fault | `faulted`, keeping its run | One regrade of the same driver at the end, then a rerun if it is unscored again |
+| Ran a command naming the set's folder | `flagged` | Not graded, no rerun, outside the pass rate |
+
+A rerun is a fresh trial in a new trial folder, under a new request id, with the same frozen pin and the full child budget. Once no slot is pending, faulted slots rerun in ordinal order. The rerun's result stands: a rerun that faults counts as a fault, after one regrade if its grading hit a host fault, and there is no third attempt. It stays one row, with the first attempt kept as history, and the scorecard's `reruns` block gives that attempt's cost. The report stays `provisional` until every rerun is done.
+
+No limit stops a run of faults: on a broken host every slot and every rerun faults, the suite ends `completed`, and each counts as a fault.
+
+These still stop the suite until a resume: an uncertain effect, even with a spent budget; a child identity mismatch; a configurator the harness cannot reach; a password or root missing at a slot that needs it; the vault not closed in time; the suite's budget running out; a cancel of the suite; a failed call to record a fault or a flag; an emulator stop that cannot be confirmed; a dead harness; and a completed child still awaiting its grade, or whose grade could not be sealed or posted.
+
+The audit reads Codex transcripts only, and only commands that name the set's folder in their text. It catches slips. A flagged trial's stored findings hold each transcript's name and its command's SHA-256, never the command or the root. `report_suite`'s `audit_paths` add to those findings and never overwrite them.
 
 ## Add, unselect or retire
 

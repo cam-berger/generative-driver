@@ -81,3 +81,28 @@ Starting a rerun, its new request id, `attempt`, `launching` and a reset `regrad
 - Any real model run, password, vault, Renode or set.
 
 ## Deviations
+
+- A grade that could not be posted or sealed stops a scoring suite, and a resume posts it without grading again — this is 06-B3's "completed one awaiting its grade", and it keeps 06-B11's new trial to a regrade that is unscored again.
+- `_suite_trial` returns `unsettled`, `run_suite` skips `suite_settle`, and `suite.json`'s `settled` list gets an entry with that word — serves 06-B12 and 06-B13. After a `stop` the suite blocks on detach; after a `deadline` or `owner shutdown` the same harness reserves the slot again, waits and audits, which is also correct, though no test covers that path.
+- On a scoring suite, the settlement path's `block` for a completed child awaiting its grade is reached only by a hand change, and the suite's reason is the detach text — the suite still stops until a resume grades the child; `suite.json` keeps the failure text.
+- `_follow_run` raises on a scoring suite when an ended run could not be read — serves 06-B12 by stopping the suite rather than settling unaudited.
+- The stopped branch reads `result` before auditing, so an unreadable stopped run stops at that slot even if nothing would be flagged — falls under 06-B5's configurator it can't reach, and lets 06-B14's seal use a result already read.
+- `finish`, `resume` and `run_trial` take a `_SlotAudit` object instead of separate token and ordinal arguments — same inputs, and the root stays in memory and out of records as 06-B14 wants.
+- The audit in `finish` runs before the device stops — the child is already terminal, and a failed flag call still leaves the device stop recorded.
+- Names the Spec left open (`suite_no_run`, `suite_flag`, `store_audit`, `settle_no_run`, `regrade` values, events, rerun id) — naming only.
+- A no-run settlement goes through `settle_no_run` — `settle` requires an attached run, and the 06-B4 outcome is the same.
+- New row fields appear only when not at their default — keeps other suites' rows as they are today, and every reader treats a missing `attempt` as 1.
+- `regrade` is in no public row, and the reservation lacks `first_attempt` and `no_run_reason` — each reader gets what it uses.
+- `_suite_result` keeps a `faulted` row's status as well as a `flagged` one's — follows from the new slot status, and `classify` still reads the child's status from its report.
+- `trial.json` gains `no_run` and status `flagged`, and `start-refused` needs a `ValueError` reply — implements 06-B4's closed word with no text matching; the private field also appears on other suites' `trial.json`, with no change in behaviour.
+- A completed child with an uncertain effect returns before grading — traces to 06-B5 and 06-B13.
+- A flagged child found in the stopped branch is sealed by `_seal_flagged`, and with no trial folder is flagged but unsealed — traces to 06-B12 and 06-B14; 06-B16's missing-folder stop covers completed children only.
+- A child cancelled by a suite cancel or the suite budget settles `faulted` at once when the harness saw it end, and reruns on the resume — 06-B18's ended-first rule and 06-B6's "settles by `classify` alone" both lead here, and the suite itself still stops as 06-B5 says.
+- `command_sha256` hashes the 300-character truncated command — the Spec keeps `audit.py` unchanged, and stored and report-time findings still match.
+- `first_attempt.outcome` is always `fault`, and a no-run first attempt has `run_id`, `tokens` and `seconds` all `None` — only a fault keeps history, and a no-run attempt has nothing to measure.
+- A no-run row's report `reason` is its closed word — the full text stays in `trial.json`, as 06-B4 asks.
+- `reruns.measured` shape, the block on every card, and the text line only when `count` > 0 — matches the Spec's block and leaves other suites' text as it is today.
+- `stored_finding` lives in `harness.py` and `suite_reporting` imports it lazily — the Spec fixes no location, `audit.py` stays as it is, and the lazy import has a precedent in `scorecard`.
+- Tests are split into two modules and no three-device set was built — test layout only, and ordinal order across three slots is tested at `reserve`.
+- The no-root failure has its own sentence — 06-B13 still fails at that slot.
+- Several integration tests came after their code, with mutation RED or none — process only; each excerpt read fails for the Behaviour's reason, and every Behaviour has at least one fitting RED.

@@ -5,7 +5,8 @@ Passes and failures are the graded trials: the evaluator's grade, a stop the sys
 that a host or operator problem, or missing evidence (no grade, an unscored one, or one the exporter could not
 confirm), kept from a grade is a `fault`, counted but not graded; one whose grade left a step undecided is `unknown`.
 The rest are `flagged` (the transcript audit found a worker touching a forbidden path), `running` (a grade counts only
-once its slot has settled) and `not_run`."""
+once its slot has settled) and `not_run`. A scoring suite's slot that never got a run says why (`no_run_reason`): it is
+a `fault`. There a grade unscored for integrity is a `failure` (Feature 06, slot policy)."""
 import math
 
 # Each outcome, with the key of the count it adds to in `pass_rate`.
@@ -28,10 +29,19 @@ def _budget_spent(report: dict) -> bool:
     return numbers and elapsed >= budget
 
 
-def classify(trial: dict, report: dict | None, *, flagged: bool = False) -> str:
+def _unscored_for_integrity(reason) -> bool:
+    """Whether the reason of an unscored grade, as a report words it (`Unscored: ` and its reasons joined) or as the
+    configurator reads it (the first reason alone), leads with the integrity reason. Its source is the latest unscored
+    evaluation."""
+    if not isinstance(reason, str):
+        return False
+    return reason.removeprefix('Unscored: ').split('; ')[0].startswith('integrity:')
+
+
+def classify(trial: dict, report: dict | None, *, flagged: bool = False, unscored_integrity_fails: bool = False) -> str:
     """The outcome of a planned trial from its suite row and the report of its run, by the first rule that applies:
 
-    1. `not_run` when it has no run.
+    1. `not_run` when it has no run, or `fault` when its row also gives a `no_run_reason`.
     2. `flagged` when `flagged`.
     3. `running` while the run is pending, launching, running or queued, or its grade is pending.
     4. A stopped run (blocked, failed or cancelled) is a `failure` when the stop was safety, integrity or model, or
@@ -42,7 +52,8 @@ def classify(trial: dict, report: dict | None, *, flagged: bool = False) -> str:
     6. `fault` when the report's verdict is `unqualified`: the exporter could not confirm the settled grade.
     7. By the report's equivalence status, which only a settled row has left to count: `graded` is a `pass` when
        equivalent and else a `failure`, `no-driver` is a `failure` and `unknown` is `unknown`. Any other status
-       (`unscored`, none, or one not named here) is a `fault`, settled or not.
+       (`unscored`, none, or one not named here) is a `fault`, settled or not; with `unscored_integrity_fails`, on a
+       scoring suite, an `unscored` grade whose reason leads with `integrity:` is a `failure`.
 
     Rules 3 and 4 take the run's status from the report's `workflow_status` when it has one, else from the row's
     `status`; rule 4 also counts a stop on the row alone, as a suite report blocks the row of a completed child that
@@ -50,7 +61,7 @@ def classify(trial: dict, report: dict | None, *, flagged: bool = False) -> str:
     stand for both arguments: a `/3` row carries `workflow_status` and `effective_budget_seconds`, and only a `/2` row
     lacks them, so only there does a spent budget not show."""
     if not trial.get('run_id'):
-        return 'not_run'
+        return 'fault' if trial.get('no_run_reason') else 'not_run'
     if flagged:
         return 'flagged'
     report = report if isinstance(report, dict) else {}
@@ -67,7 +78,8 @@ def classify(trial: dict, report: dict | None, *, flagged: bool = False) -> str:
     if report.get('verdict') == 'unqualified':
         return 'fault'
     if grade not in RECORDED:
-        return 'fault'
+        integrity = unscored_integrity_fails and grade == 'unscored' and _unscored_for_integrity(report.get('reason'))
+        return 'failure' if integrity else 'fault'
     if grade == 'graded':
         equivalence = report.get('equivalence')
         return 'pass' if isinstance(equivalence, dict) and equivalence.get('equivalent') is True else 'failure'

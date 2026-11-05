@@ -18,7 +18,8 @@ A suite's harness (`run_suite`) drives the suite the configurator stores: it res
 above, and has the configurator settle the slot from what the configurator reads itself. A resumed suite gets a new
 harness, which continues a stopped trial on a device it provides anew (`reattach`) or grades an unscored one once. A
 suite of a generated set holds the set in memory and starts no trial until the set's folder is out of reach (Feature 05,
-vault gate; spec decision 17)."""
+vault gate; spec decision 17). A scoring suite moves past a trial that ended badly and audits each ended child's
+transcripts for commands naming the set's folder (Feature 06, slot policy; spec decisions 17 and 20)."""
 import argparse
 import contextlib
 import errno
@@ -42,7 +43,7 @@ from pathlib import Path
 TRIAL = 'bench-trial/1'
 GOAL = 'Recover, check, package and freshly reuse the benchmark device interface for the desired functions.'
 # A trial the harness has finished with. `awaiting-evaluation` and `unscored` trials are completed by `resume`.
-FINISHED = ('evaluated', 'unscored', 'awaiting-evaluation', 'run-stopped', 'stop-unconfirmed', 'failed')
+FINISHED = ('evaluated', 'unscored', 'awaiting-evaluation', 'run-stopped', 'stop-unconfirmed', 'failed', 'flagged')
 # What a resume may still complete: the device stopped, confirmed, and the run's verdict not yet recorded.
 RESUMABLE = ('evaluating', 'awaiting-evaluation', 'unscored', 'evaluated')
 CONTROL = ('status', 'observe', 'set_running', 'select_condition', 'replace', 'release')
@@ -367,11 +368,15 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
 
 
 def finish(provider, case_id, run_dir, result, password, status=None, *, truth_source, trial_dir=None, renode=None,
-           token=None, call=None, persist=None):
+           token=None, call=None, persist=None, audit=None):
     """After the run is terminal: stop the device, confirmed, then conclude the trial (`run_dir` None concludes nothing:
     the harness did not read the run's handoffs). A stop that is not confirmed keeps the device owned and names its live
     session and binding, which a recovery may have replaced since the run started, for manual reconciliation; nothing is
-    graded then, and the handoffs are sealed all the same. `persist(update)` records the stop before any grading."""
+    graded then, and the handoffs are sealed all the same. `persist(update)` records the stop before any grading. On a
+    scoring suite (`audit`, a `_SlotAudit`) the run's transcripts are read first, with the device still held so that a
+    failed flag call leaves `_release_trial` to stop it and say so; a flagged trial's handoffs are sealed as for an
+    unconfirmed stop, with no grade."""
+    flagged = audit is not None and run_dir is not None and audit.flagged(run_dir)
     done = {}
     try:
         # A bound device is the operator's: the harness holds none, so nothing of it is left to stop.
@@ -384,18 +389,47 @@ def finish(provider, case_id, run_dir, result, password, status=None, *, truth_s
             pass
     confirmed = done['device_stop'].get('confirmed') is True
     completed = (status or {}).get('status') == 'completed'
-    done['status'] = ('stop-unconfirmed' if not confirmed else 'awaiting-evaluation' if completed else 'run-stopped')
+    ended = 'flagged' if flagged else 'awaiting-evaluation' if completed else 'run-stopped'
+    done['status'] = 'stop-unconfirmed' if not confirmed else ended
     if run_dir is not None and trial_dir is not None and password:
-        if confirmed and completed:
+        if confirmed and completed and not flagged:
             done['status'] = 'evaluating'
         if persist:
             persist(dict(done))
         concluded = conclude(trial_dir, case_id, run_dir, result, password=password, truth_source=truth_source,
-                             renode=renode, token=token, call=call, graded=confirmed)
+                             renode=renode, token=token, call=call, graded=confirmed and not flagged)
         done.update({key: value for key, value in concluded.items() if key != 'status' or confirmed})
         if confirmed and 'status' not in concluded:
-            done['status'] = 'awaiting-evaluation' if completed else 'run-stopped'
+            done['status'] = ended
     return done
+
+
+class _SlotAudit:
+    """The transcript audit of a scoring suite's slot (`audit_commands`; spec decision 17): the set's root, in this
+    harness's memory alone, and the slot's token and ordinal for the flag call. What the call sends and any reason it
+    leads to name each finding by its transcript and its command's hash, so that no record holds the root."""
+
+    def __init__(self, set_root, scheduling, call):
+        self._set_root, self._scheduling, self._call = set_root, scheduling, call
+
+    def flagged(self, run_dir):
+        """Whether the workers of the ended run in `run_dir` ran a command naming the set's folder, once the
+        configurator has stored what was found. A reply that is not ok raises: the trial is left for a resume, which
+        audits it again."""
+        from .audit import audit_commands
+        findings = audit_commands(run_dir, (self._set_root,))
+        if not findings:
+            return False
+        stored = [stored_finding(row) for row in findings]
+        _expect(_post(self._call, 'suite_flag', {**self._scheduling, 'findings': stored}),
+                'The configurator did not record the flag')
+        return True
+
+
+def stored_finding(finding):
+    """An audit finding as a suite stores it: its transcript's name and its command's sha256, not the command."""
+    return {'transcript': finding['transcript'],
+            'command_sha256': hashlib.sha256(finding['command'].encode('utf-8')).hexdigest()}
 
 
 # How long a harness waits through an unreachable configurator before it stops waiting for a run.
@@ -461,7 +495,8 @@ def _unread(status, result):
     return None
 
 
-def run_trial(trial_dir, request, *, password=None, call=None, launch=None, heartbeat=None, stop=None, device=None):
+def run_trial(trial_dir, request, *, password=None, call=None, launch=None, heartbeat=None, stop=None, device=None,
+              audit=None):
     """One trial: read the password, admit, provide the device, start the run, wait, stop the device, grade a completed
     run once from the answer key admission unlocked, seal, post the verdict. The password file (`password_file` in
     `request`) is read once, before the configurator is first contacted, unless the caller passes the object as
@@ -475,7 +510,9 @@ def run_trial(trial_dir, request, *, password=None, call=None, launch=None, hear
     start that got no answer is sent again (see `_start_child`), so a lost reply never has the device stopped under the
     child it started; trial.json records that the start was sent (`start_sent`) before it is. The harness holds a lock
     file in `trial_dir` for as long as it runs, by which others tell that it still runs (its process id alone may come
-    to name another process)."""
+    to name another process). A scoring suite's harness also passes its slot's `audit` (`_SlotAudit`), which `finish`
+    runs, and a failure before there is a run names why in closed words (`no_run`) if it was no matter of reaching the
+    configurator."""
     from ..client import hold_process_lock
     trial_dir = Path(trial_dir)
     trial_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -492,6 +529,9 @@ def run_trial(trial_dir, request, *, password=None, call=None, launch=None, hear
     lock = hold_process_lock(trial_dir / HARNESS_LOCK)
     _private(trial_dir / 'trial.json', record)
     held, server = {'provider': None}, None
+    # The word for why this trial has no run yet, from the moment a failure would be the trial's and not the reach of
+    # the configurator; None once there is a run, or if the configurator never answered.
+    no_run = None
     try:
         if password is None and password_file:
             password = _read_supplied(request['case'], password_file)
@@ -500,8 +540,10 @@ def run_trial(trial_dir, request, *, password=None, call=None, launch=None, hear
         if not reachable.get('ok'):
             raise ValueError(reachable.get('reason') or 'The configurator is not reachable')
         set_device = {'device': device, 'pin': (start or {}).get('case_pin')} if device is not None else {}
+        no_run = 'admit-refused'
         held['provider'], admission, truth = admit(request['case'], (start or request).get('case_options') or {},
                                                    trial_dir, password=password, renode=renode, **set_device)
+        no_run = 'provider-failed'
         if held['provider'] is not None:
             held['provider'].start()
             server = DeviceServer(held['provider'], trial_dir / 'endpoint')
@@ -522,7 +564,9 @@ def run_trial(trial_dir, request, *, password=None, call=None, launch=None, hear
         _private(trial_dir / 'trial.json', record)
         started = (_start_child(launch, params, server.shutdown if server else threading.Event(), stop) if launch
                    else configurator('start', params))
+        no_run = None
         if not started.get('ok'):
+            no_run = 'start-refused' if started.get('error') == 'ValueError' else None
             raise ValueError(started.get('reason') or 'The configurator refused the run')
         # A bound device is the operator's: the record names the stop of a device the harness never held from the start,
         # so a harness lost while it follows the run leaves a trial `resume` grades once the run has completed.
@@ -532,11 +576,12 @@ def run_trial(trial_dir, request, *, password=None, call=None, launch=None, hear
         _private(trial_dir / 'trial.json', record)
         _follow_run(trial_dir, record, held, server, configurator, budget=params.get('budget_seconds') or 10800,
                     password=password, truth_source=lambda: truth, renode=renode, token=token, heartbeat=heartbeat,
-                    stop=stop)
+                    stop=stop, audit=audit)
     except _UnreadablePassword as error:
         record.update(status='failed', reason=str(error))
     except Exception as error:
-        record.update(status='failed', reason=type(error).__name__ + ': ' + str(error))
+        record.update(status='failed', reason=type(error).__name__ + ': ' + str(error),
+                      **({'no_run': no_run} if no_run else {}))
     finally:
         try:
             _release_trial(trial_dir, record, held, server)
@@ -631,13 +676,15 @@ def _set_device_pins(manifest, set_root, passwords, *, home, renode, options):
     return held, pins
 
 
-def _held_for_resume(configurator, suite_id, set_root, passwords, *, home, renode):
+def _held_for_resume(configurator, suite_id, set_root, passwords, *, home, renode, extension=None):
     """The `HeldSet` a resume given `set_root` drives its set suite with, or None for a suite of no set. It asks the
     configurator first, and refuses in its words a suite that cannot resume, so no vault stays open for one. Then it
     refuses (`_not_admitted`), with the vault still open, a set not admitted, what lies under its root, and a record or
     set other than the ones each entry's frozen pin names, which `public_pin` shows only by its digest. Budget and
-    frozen implementation refusals stay in `suite_resume`."""
+    frozen implementation refusals stay in `suite_resume`, but for a scoring suite's child budget `extension`, which is
+    refused here too with the vault still open."""
     from . import generated_sets, generated_trials
+    from .suites import NO_CHILD_EXTENSION
     from .snapshots import canonical_digest
     result = _expect(configurator('suite_result', {'suite_id': suite_id, 'limit': 1}),
                      'The configurator did not report the suite')
@@ -654,6 +701,8 @@ def _held_for_resume(configurator, suite_id, set_root, passwords, *, home, renod
                          'The configurator did not report the suite\'s active child').get('uncertain_effect'):
         raise ValueError('Outstanding effect is uncertain; operator must respond with confirmed_safe after '
                          'reconciliation')
+    if extension and 'scoring_set' in identity:
+        raise ValueError(NO_CHILD_EXTENSION)
     registration = manifest['set']
     devices = [entry['device_id'] for entry in manifest['entries']]
     held = _held_set(registration, devices, set_root, passwords)
@@ -687,11 +736,12 @@ def _start_child(launch, params, shutdown, stop=None):
 
 
 def _follow_run(trial_dir, record, held, server, configurator, *, budget, password, truth_source, renode, token,
-                heartbeat=None, stop=None):
+                heartbeat=None, stop=None, audit=None):
     """See a started run through: wait until it ends, then stop its device, confirmed, and conclude the trial. The device
     `held` holds passes to `finish`, which records its stop before anything is graded. A run on the operator's bound
     device (no `server`) is followed until it completes or is cancelled: the operator answers and resumes it in between,
-    and may extend its budget, which extends the wait."""
+    and may extend its budget, which extends the wait. A scoring suite's run that ended unread could not be audited (see
+    `_SlotAudit`), so it ends here for a resume, rather than settle."""
     home, run_id = Path(record['home']), record['run_id']
     deadline = time.monotonic() + float(budget) + GRACE
     while True:
@@ -718,12 +768,14 @@ def _follow_run(trial_dir, record, held, server, configurator, *, budget, passwo
         _private(trial_dir / 'trial.json', record)
     done = finish(held['provider'], record['case'], None if unread else home / 'runs' / run_id, result, password,
                   status, truth_source=truth_source, trial_dir=trial_dir, renode=renode, token=token, persist=persist,
-                  call=configurator)
+                  call=configurator, audit=audit)
     held['provider'] = None
     if unread:
         # The device is stopped all the same; nothing is sealed that the harness did not read from a finished run.
         done.update(sealed=False, sealing_failed=unread)
     _settle(record, done)
+    if unread and audit is not None and 'harness_stopped' not in status:
+        raise ValueError('The ended run could not be read, so it is not audited: ' + unread)
 
 
 def _release_trial(trial_dir, record, held, server):
@@ -831,7 +883,7 @@ def _resumed_here(configurator, run_id):
                                            or observed.get('stopping') is True)
 
 
-def resume(trial_dir, *, password, renode=None, call=None, device=None):
+def resume(trial_dir, *, password, renode=None, call=None, device=None, audit=None):
     """Complete the evaluation of a trial whose harness has exited after its device stop was confirmed: one that died
     after the stop, could not grade (unscored, an evaluator host fault) or could not post its verdict. A final the draft
     already holds is rebuilt, never graded again; a verdict the configurator holds is never posted again. The answer key
@@ -844,7 +896,9 @@ def resume(trial_dir, *, password, renode=None, call=None, device=None):
     recorded `run-stopped` whose run has since completed awaiting its grade (stopped after fresh reuse, by a restart
     say, and resumed): grading uses a fresh emulator, so the confirmed stop of the trial's device is all it needs. A
     trial on a device of a generated set grades from the answer key unlocked through its set (`device`), which only its
-    suite holds: without it, it is refused here."""
+    suite holds: without it, it is refused here. A scoring suite's completed child (`audit`, its slot's `_SlotAudit`)
+    grades whatever the trial recorded of its device or its harness, since grading uses a fresh emulator that a leftover
+    one cannot touch, unless the audit flags it first: then its handoffs are sealed with no grade."""
     from ..client import call as client_call
     from . import evaluator
     from .registrations import registered_case_ids, registration_for
@@ -864,11 +918,12 @@ def resume(trial_dir, *, password, renode=None, call=None, device=None):
             raise ValueError('No trial with a run to evaluate: ' + str(trial_dir))
         if not _harness_exited(None, record, trial_dir):
             raise ValueError('The trial\'s bench harness is still running')
-        if (record.get('device_stop') or {}).get('confirmed') is not True:
+        if audit is None and (record.get('device_stop') or {}).get('confirmed') is not True:
             raise ValueError('The trial\'s device stop was not confirmed; reconcile its device before evaluating')
         # A bound-device trial whose harness stopped following its run: the operator may have completed the run since.
-        followed = record['device_stop'].get('held') is False and record.get('status') in ('run-stopped', 'running')
-        if record.get('status') not in (*RESUMABLE, 'run-stopped') and not followed:
+        followed = ((record.get('device_stop') or {}).get('held') is False
+                    and record.get('status') in ('run-stopped', 'running'))
+        if audit is None and record.get('status') not in (*RESUMABLE, 'run-stopped') and not followed:
             raise ValueError('The trial awaits no evaluation: ' + str(record.get('status')))
         # Only the password the trial ran with unlocks its token: under any other, nothing is graded, sealed or posted.
         token = evaluation_token(trial_dir, password, record['trial_id'])
@@ -885,21 +940,34 @@ def resume(trial_dir, *, password, renode=None, call=None, device=None):
                 and (result.get('status') != 'completed' or (result.get('progress') or {}).get('equivalence') != 'pending')):
             raise ValueError('The trial awaits no evaluation: run-stopped, and its run (' + str(result.get('status'))
                              + ') does not await its grade')
+        run_dir = home / 'runs' / record['run_id']
+        flagged = audit is not None and audit.flagged(run_dir)
         native = (result.get('case_pin') or {}).get('manifest', {}).get('execution_setup', {}).get('method') == 'native-sim'
-        if renode is None and not native and evaluator.needs_grading(trial_dir, result, password=password):
+        if (renode is None and not native and not flagged
+                and evaluator.needs_grading(trial_dir, result, password=password)):
             raise ValueError('The trial\'s frozen driver is not graded yet: grading starts a fresh emulator, so pass its '
                              'executable (--renode)')
-        run_dir = home / 'runs' / record['run_id']
         if device is not None:
             from .generated_trials import answer_key
             truth_source = lambda: answer_key(device, password)
         else:
             truth_source = lambda: case_truth(record['case'], run_dir, password)
         done = conclude(trial_dir, record['case'], run_dir, result, password=password, truth_source=truth_source,
-                        renode=renode, token=token, call=configurator)
-        _settle(record, {**done, 'status': done.get('status') or 'run-stopped', 'resumed': time.time()})
+                        renode=renode, token=token, call=configurator, graded=not flagged)
+        _settle(record, {**done, 'status': 'flagged' if flagged else done.get('status') or 'run-stopped',
+                         'resumed': time.time()})
         _private(trial_dir / 'trial.json', record)
     return record
+
+
+def _seal_flagged(trial_dir, run_dir, result, password):
+    """Seal the handoffs of a stopped child the audit flagged on a resume, its trial's harness gone before it could,
+    with no grade: as `finish` seals a flagged trial."""
+    with _exclusive(trial_dir):
+        record = read_trial(trial_dir)
+        done = conclude(trial_dir, record['case'], run_dir, result, password=password, truth_source=None, graded=False)
+        _settle(record, {**done, 'status': 'flagged', 'resumed': time.time()})
+        _private(Path(trial_dir) / 'trial.json', record)
 
 
 def _settle(record, done):
@@ -1420,7 +1488,8 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
         if not reachable.get('ok'):
             raise ValueError(reachable.get('reason') or 'The configurator is not reachable')
         if record['suite_id'] and set_root:
-            held = _held_for_resume(configurator, record['suite_id'], set_root, passwords, home=home, renode=renode)
+            held = _held_for_resume(configurator, record['suite_id'], set_root, passwords, home=home, renode=renode,
+                                    extension=extension)
         if held is not None and not _await_unmount(suite_dir, record, set_root, held.registration, stop=stop):
             raise ValueError('The bench harness stopped before the vault holding set ' + held.registration
                              + ' was closed')
@@ -1465,16 +1534,20 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
                 break
             current = slot['trial_key']
             scheduling = {'suite_id': record['suite_id'], 'token': token, 'ordinal': slot['ordinal']}
+            scoring = reserved.get('scoring') is True
             # The configurator starts, or resumes, the slot's child only while the suite runs, under the suite's lock.
             try:
-                _suite_trial(suite_dir, slot, reserved.get('request'), configurator, home=home, passwords=passwords,
-                             renode=renode, held=held, heartbeat=heartbeat, stop=stop,
-                             extension=extension if slot['run_id'] else {},
-                             launch=lambda params, scheduling=scheduling: configurator(
-                                 'suite_start_child', {**scheduling, 'request': params}),
-                             resume_run=lambda params, scheduling=scheduling: configurator(
-                                 'suite_resume_child', {**scheduling, **params}),
-                             gate=slot_gate if held is not None else None)
+                recorded = _suite_trial(suite_dir, slot, reserved.get('request'), configurator, home=home,
+                                        passwords=passwords, renode=renode, held=held, heartbeat=heartbeat, stop=stop,
+                                        extension=extension if slot['run_id'] else {},
+                                        launch=lambda params, scheduling=scheduling: configurator(
+                                            'suite_start_child', {**scheduling, 'request': params}),
+                                        resume_run=lambda params, scheduling=scheduling: configurator(
+                                            'suite_resume_child', {**scheduling, **params}),
+                                        gate=slot_gate if held is not None else None,
+                                        scoring=scheduling if scoring else None,
+                                        audit=(_SlotAudit(set_root, scheduling, configurator)
+                                               if scoring and set_root else None))
             except _NoWorkerStarted:
                 current = None
                 continue
@@ -1483,6 +1556,12 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
                 raise
             if slot['run_id']:
                 extension = {}
+            if recorded:
+                # The configurator has the slot's fault or found its child, or the child is unaudited: no settlement.
+                current = None
+                record['settled'].append({'ordinal': slot['ordinal'], 'decision': recorded})
+                _private(suite_dir / 'suite.json', record)
+                continue
             settled = _expect(configurator('suite_settle', {'suite_id': record['suite_id'], 'token': token,
                                                             'ordinal': slot['ordinal']}), 'The configurator refused the settlement')
             current = None
@@ -1511,7 +1590,7 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
 
 
 def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renode, launch, resume_run, heartbeat, stop,
-                 extension=None, held=None, gate=None):
+                 extension=None, held=None, gate=None, scoring=None, audit=None):
     """Run, or continue, the trial of a reserved slot until its child has ended and, for an emulated case, the frozen
     driver was graded and its verdict posted, or the trial says why not. The child starts through its suite
     (`launch(params)`), which starts and attaches it only while the suite runs. A slot whose child exists continues it:
@@ -1521,7 +1600,14 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
     graded once after its run. A slot of a set suite takes its password by its set, and its `SetDevice` from its frozen
     pin and the set the harness holds (`held`), in the same step. Immediately before a worker can start, on a new child
     or a continued one, `gate(slot)` must find the set's folder out of reach, or `_NoWorkerStarted` ends the slot; a
-    grade starts no worker, and is not gated."""
+    grade starts no worker, and is not gated.
+
+    On a scoring suite (`scoring`, the slot's scheduling fields) a trial that never got a run is recorded in place of a
+    raise, by its closed word: the configurator's decision is returned, and there is nothing to settle. A stopped child
+    never gets a device anew: it settles as it stands, once `audit` (`_SlotAudit`, which needs the set's root) has read
+    its transcripts. A completed one is graded whatever became of its device. A slot whose findings are stored is not
+    audited or graded again. A trial whose harness stopped waiting returns `unsettled`, as nothing audited its child,
+    and a grade that could not be sealed or posted stops the suite for a resume."""
     case, run_id = slot['case'], slot['run_id']
     extension = extension or {}
     budget = float((child or {}).get('budget_seconds') or 10800)
@@ -1557,18 +1643,40 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
         trial_dir = suite_dir / 'trials' / (slot['trial_key'] + '-' + uuid.uuid4().hex[:8])
         record = run_trial(trial_dir, {'trial_id': trial_dir.name, 'home': str(home), 'case': case, 'start': child,
                                        'renode': renode},
-                           password=supplied, call=configurator, launch=launch, heartbeat=heartbeat, stop=stop, **named)
+                           password=supplied, call=configurator, launch=launch, heartbeat=heartbeat, stop=stop,
+                           audit=audit, **named)
+        if scoring and record.get('status') == 'failed' and record.get('no_run'):
+            return _expect(_post(configurator, 'suite_no_run', {**scoring, 'reason': record['no_run']}),
+                           'The configurator did not record the fault of ' + slot['trial_key'])['decision']
     else:
         status = _wait(configurator, run_id, time.monotonic() + budget + GRACE, threading.Event(), heartbeat, stop)
         if 'harness_stopped' in status:
             raise ValueError('The bench harness stopped waiting for child ' + run_id + ': ' + status['harness_stopped'])
+        if scoring and status.get('uncertain_effect'):
+            return None  # Whatever the child's status: the configurator blocks the suite until it is reconciled.
         if status.get('status') == 'completed':
-            if status.get('equivalence') is not None:
-                return
+            if status.get('equivalence') is not None or (scoring and slot.get('audit')):
+                return None
             supplied, named = password(), device()
-            record = resume(trial_of(True), password=supplied, renode=renode, call=configurator, **named)
+            record = resume(trial_of(True), password=supplied, renode=renode, call=configurator, audit=audit, **named)
         elif status.get('uncertain_effect'):
-            return  # The configurator blocks the suite; only the operator reconciles an uncertain effect.
+            return None  # The configurator blocks the suite; only the operator reconciles an uncertain effect.
+        elif scoring:
+            if slot.get('audit'):
+                return None
+            if audit is None:
+                raise ValueError('The set root of ' + keyed + ' is required to audit its stopped trial')
+            # Read before the flag: a flagged slot never comes back, so its handoffs are sealed now or never.
+            result = _post(configurator, 'result', {'run_id': run_id})
+            unread = _unread({}, result)
+            if unread:
+                raise ValueError('The stopped run could not be read, so it is not audited: ' + unread)
+            if audit.flagged(home / 'runs' / run_id):
+                found = _trial_of(suite_dir.parent, run_id, slot['child_request_id'])
+                if found is not None:
+                    _adopt(found, run_id, False)
+                    _seal_flagged(found, home / 'runs' / run_id, result, password())
+            return None
         else:
             supplied, named = password(), device()
             out_of_reach()
@@ -1577,6 +1685,15 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
                               budget_reason=extension.get('child_budget_reason'), resume_run=resume_run, **named)
     if record.get('status') in ('failed', 'stop-unconfirmed'):
         raise ValueError('Trial ' + slot['trial_key'] + ' ' + record['status'] + ': ' + str(record.get('reason') or ''))
+    if run_id is None and scoring and 'harness_stopped' in (record.get('run_status') or {}):
+        # It stopped waiting, so nothing audited the child, which may have ended since: a resume audits, then settles.
+        return 'unsettled'
+    if scoring and (record.get('evaluation_failed') or record.get('status') == 'awaiting-evaluation'):
+        # The configurator never heard this grade, and an earlier unscored one would read as if this were one too. A
+        # resume seals and posts it again and never grades again.
+        raise ValueError('Trial ' + slot['trial_key'] + ' could not seal or post its grade: '
+                         + str(record.get('evaluation_failed') or record.get('sealing_failed')))
+    return None
 
 
 def launch_suite(request, *, home, password_files=None, renode=None, set_root=None, autostart=True, timeout=900,

@@ -26,6 +26,7 @@
 | Case | Registered, versioned image and evaluator contract, with public mission data and a separately encrypted answer key. A generated device is a case registered through its set. |
 | Device pin | The frozen identity of one generated device in a trial: its set, the set's manifest hash, its id and the hashes of its image, answer file and qualification record. The bench harness builds it and the configurator freezes it. It never holds the level or framing, because a worker can read it. |
 | Boot reading | A generated device's startup observation, read from a fresh emulator before anything else touches it. A device's graded runs must all give the same reading, or its set stays pending, because recovery relies on it to show a replacement emulator started clean. |
+| Rerun | A scoring suite's one replacement trial for a device whose first trial ended in a fault, run after every first attempt. It stays one result for that device, and its result stands. |
 | Execution setup | The case's method, actual executable artifact, substitutions, validated behavior and remaining hardware gaps. Native and MCU binaries have distinct identities. |
 | Public mission | Required task meanings, inputs, output units and the objective for fresh reuse. Hidden vectors remain evaluator-owned. A generated mission states only each task's effect; ranges, refusal conditions, framing and the mapping onto firmware commands stay hidden. |
 | Trial | One fresh six-stage run. A repetition starts another trial, not another lineage. |

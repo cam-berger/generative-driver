@@ -90,14 +90,17 @@ def snapshot_case(run_dir: Path, pin: dict, provenance: dict, *, public_inputs=N
 def execution_provenance(config: dict, *, case_ids, reuse_profile=None) -> dict:
     """Capture implementation identity and nonsecret runtime settings before launch, for a run or suite of `case_ids`.
     The toolchain and skills revisions hash the system under test; the evaluator revisions are the grading code alone:
-    `evaluator_revisions` the grader identity of each case, `evaluator_revision` the one they combine into."""
+    `evaluator_revisions` the grader identity of each case, `evaluator_revision` the one they combine into. The
+    toolchain revision leaves out the set registrations, which change when any set is added, so that registering one
+    neither moves a comparison dimension nor blocks a suite's resume; a suite's own set is held by `current_pin`."""
     import platform
     from .grader_identity import case_revisions  # which imports this module, so not at module level
     from .integrity import tree_hash
     package = Path(__file__).resolve().parents[1]
     return {**({'reuse_profile': reuse_profile} if reuse_profile else {}),
             'toolchain_revision': hashlib.sha256(
-                (tree_hash(package) + tree_hash(package.parent / 'interface_runtime')).encode()).hexdigest(),
+                (tree_hash(package, exclude=('resources/registrations/sets.json',))
+                 + tree_hash(package.parent / 'interface_runtime')).encode()).hexdigest(),
             'skills_revision': tree_hash(package / 'resources/toolchain/skills'),
             **case_revisions(case_ids),
             'runtime_configuration': public_configuration(config),

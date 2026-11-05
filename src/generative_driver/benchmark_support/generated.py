@@ -143,6 +143,10 @@ def execute(session, invoke, pin, contract, truth, evidence_path, *, phase, heal
     `contract` already holds the final phase's checks, the only phase of a generated device, so neither `pin` nor
     `phase` selects anything here.
 
+    First, on the fresh session, it reads the startup observation (`device_provider.observed_values`, the read recovery
+    compares), before any reset or call. Its values are `boot_reading` in the evidence, for set qualification to compare
+    across a device's runs; no check reads them. A read that raises is a run error, as other device errors are.
+
     Each sequence starts with `session.reset({})` and a read of the state. A state other than the key's `reset` leaves
     every record of the sequence undecided ('unverified reset') and its steps uncalled. Each step calls its task through
     `run_call` with its grants, classifies the answer and reads the state; a cell that cannot be read leaves its record
@@ -154,14 +158,15 @@ def execute(session, invoke, pin, contract, truth, evidence_path, *, phase, heal
     only on a healthy device too. The raw evidence is written to `evidence_path` as the steps run."""
     from .behavior import _check_contract
     from .case_assets import write_json
+    from .device_provider import observed_values
     from .emulated_actions import _device_healthy, graded_result, run_call
     key = answer_key(truth)
     _check_contract(contract)
     checks = {check['id']: check for check in contract['checks']}
-    events, records = [], []
+    events, records, boot = [], [], {}
 
     def save(**extra):
-        write_json(evidence_path, {'schema': 'generated-step-evidence/1', 'events': events, 'records': records,
+        write_json(evidence_path, {'schema': 'generated-step-evidence/1', **boot, 'events': events, 'records': records,
                                    **extra})
 
     def read():
@@ -177,6 +182,7 @@ def execute(session, invoke, pin, contract, truth, evidence_path, *, phase, heal
                         **({'undecided': undecided} if undecided else {})})
 
     try:
+        boot['boot_reading'] = observed_values(session)['values']
         for sequence in key['sequences']:
             event = {'sequence': sequence['id'], 'reset': session.reset({})}
             events.append(event)

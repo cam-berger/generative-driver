@@ -30,10 +30,14 @@ class IntegrityError(ValueError):
     """A recorded or observed hash, sealed input or handoff no longer matches: the run stops for integrity."""
 
 
-def tree_hash(root):
+def tree_hash(root, *, exclude=()):
+    """The SHA-256 of every file under `root` but compiled code and the files `exclude` names, as POSIX paths relative
+    to `root`."""
     hasher = hashlib.sha256()
     for path in sorted(Path(root).rglob('*')):
-        if path.is_file() and '__pycache__' not in path.parts and path.suffix not in ('.pyc', '.pyo'):
-            hasher.update(path.relative_to(root).as_posix().encode() + b'\0')
+        relative = path.relative_to(root).as_posix()
+        if (path.is_file() and '__pycache__' not in path.parts and path.suffix not in ('.pyc', '.pyo')
+                and relative not in exclude):
+            hasher.update(relative.encode() + b'\0')
             hasher.update(hashlib.sha256(path.read_bytes()).digest())
     return hasher.hexdigest()

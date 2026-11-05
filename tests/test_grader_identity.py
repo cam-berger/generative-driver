@@ -13,13 +13,15 @@ from types import MappingProxyType
 from unittest.mock import patch
 
 import generative_driver
-from generative_driver.benchmark_support import registrations, sampled_sensor
+import interface_runtime
+from generative_driver.benchmark_support import registrations, sampled_sensor, snapshots
 from generative_driver.benchmark_support.calibration import hydrate_truth, inventory, validate_calibration
 from generative_driver.benchmark_support.registry import case_truth
 from generative_driver.benchmark_support.families import family_for
 from generative_driver.benchmark_support.generated_sets import set_registrations
 from generative_driver.benchmark_support.grader_identity import (ENTRY_MODULES, SYSTEM_MODULES, grader_closure,
                                                                  grader_identity)
+from generative_driver.benchmark_support.integrity import tree_hash
 from generative_driver.benchmark_support.snapshots import canonical_digest
 
 
@@ -30,6 +32,54 @@ class PackageCopy:
         root = Path(directory.name) / 'generative_driver'
         shutil.copytree(Path(generative_driver.__file__).parent, root, ignore=shutil.ignore_patterns('__pycache__'))
         return root
+
+
+class ToolchainRevisionTests(PackageCopy, unittest.TestCase):
+    """What `execution_provenance` hashes, on a copy of the package and `interface_runtime`: the shipped file is never
+    edited."""
+
+    def setUp(self):
+        self.root = self.copy_package()
+        shutil.copytree(Path(interface_runtime.__file__).parent, self.root.parent / 'interface_runtime',
+                        ignore=shutil.ignore_patterns('__pycache__'))
+        self.table = self.root / 'resources' / 'registrations' / 'sets.json'
+
+    def provenance(self):
+        with patch.object(snapshots, '__file__', str(self.root / 'benchmark_support' / 'snapshots.py')):
+            return snapshots.execution_provenance({}, case_ids=('tq9-v2',))
+
+    def write_table(self, sets):
+        self.table.write_text(json.dumps({'schema': 'generated-set-registrations/2', 'sets': sets}), encoding='utf-8')
+
+    def test_04_B2_any_change_to_the_set_table_leaves_every_dimension_as_it_was(self):
+        self.write_table({'one-v1': {'manifest_sha256': 'a' * 64, 'scoring': False}})
+        before = self.provenance()
+        for name, sets in (('another set added', {'one-v1': {'manifest_sha256': 'a' * 64, 'scoring': False},
+                                                  'two-v1': {'manifest_sha256': 'b' * 64, 'scoring': False}}),
+                           ('another set changed', {'one-v1': {'manifest_sha256': 'a' * 64, 'scoring': False},
+                                                    'two-v1': {'manifest_sha256': 'c' * 64, 'scoring': False}}),
+                           ('a mark changed', {'one-v1': {'manifest_sha256': 'a' * 64, 'scoring': True},
+                                               'two-v1': {'manifest_sha256': 'c' * 64, 'scoring': False}})):
+            self.write_table(sets)
+            with self.subTest(name):
+                self.assertEqual(self.provenance(), before)
+
+    def test_04_B2_any_other_change_under_the_package_still_moves_the_toolchain_revision(self):
+        before = self.provenance()['toolchain_revision']
+        for name in ('resources/registrations/cases.json', 'resources/sets.json', 'configurator.py',
+                     '../interface_runtime/engine.py'):
+            path = self.root / name
+            kept = path.read_bytes() if path.exists() else None
+            path.write_bytes((kept or b'') + b'\n')
+            with self.subTest(name):
+                self.assertNotEqual(self.provenance()['toolchain_revision'], before)
+            path.write_bytes(kept) if kept is not None else path.unlink()
+        self.assertEqual(self.provenance()['toolchain_revision'], before)
+
+    def test_04_B2_the_exporters_tree_hash_still_covers_the_set_table(self):
+        before = tree_hash(self.root)
+        self.write_table({'one-v1': {'manifest_sha256': 'a' * 64, 'scoring': False}})
+        self.assertNotEqual(tree_hash(self.root), before)
 
 
 class GraderClosureTests(PackageCopy, unittest.TestCase):
@@ -210,7 +260,8 @@ class CaseIdentityTests(PackageCopy, unittest.TestCase):
         root = self.copy_package()
         table = root / 'resources' / 'registrations' / 'sets.json'
         self.assertTrue(table.is_file())  # the copy holds the shipped table, which this replaces
-        table.write_text(json.dumps({'schema': 'generated-set-registrations/1', 'sets': {'generated-scoring-v1': 'a' * 64}},
+        table.write_text(json.dumps({'schema': 'generated-set-registrations/2',
+                                     'sets': {'generated-scoring-v1': {'manifest_sha256': 'a' * 64, 'scoring': True}}},
                                     indent=2) + '\n', encoding='utf-8')
         self.assertEqual(set_registrations(table), {'generated-scoring-v1': 'a' * 64})  # a genuine registration
         self.assertEqual(grader_identity(root)['sha256'], grader_identity()['sha256'])

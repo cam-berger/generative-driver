@@ -2084,6 +2084,7 @@ class Controller:
         return {'schema':'benchmark-suite-experiment/1',
             # Only a suite its bench harness drives, whose children are graded after their runs, names the assistive protocol.
             'comparison_identity':{**({'protocol':PROTOCOL} if _assistive(suite) else {}),
+                **({'scoring_set':frozen['scoring_set']} if 'scoring_set' in frozen else {}),
                 'manifest':manifest,'manifest_sha256':frozen['manifest_sha256'],
                 'entry_pins':[public_pin(pin) for pin in frozen['entry_pins']],
                 'trials':frozen['trials'],'repetitions':manifest['repetitions'],

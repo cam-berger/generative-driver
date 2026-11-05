@@ -7,11 +7,12 @@ A set is a directory that the operator keeps outside the repository and the inst
     devices/<id>.inputs.enc   sealed {"image_base64", "mission"}: the public inputs of a trial
     devices/<id>.answer.enc   sealed answer key: opened only by grading and qualification
 
-The registrations are code-owned data: `resources/registrations/sets.json` (set name -> manifest SHA-256), installed beside
-`cases.json` and read relative to the package, never through `case_root()`, which an environment variable can redirect. They
-lie outside every grader identity, so registering a set changes no case's admission; a comparison carries the manifest hash
-instead. Each file is checked on the way in: the manifest against its registration, each sealed file against the manifest,
-and each plaintext against its content hash. Nothing is returned before every check has passed.
+The registrations are code-owned data: `resources/registrations/sets.json` (set name -> manifest SHA-256 and whether it
+is a scoring set), installed beside `cases.json` and read relative to the package, never through `case_root()`, which an
+environment variable can redirect. They lie outside every grader identity, so registering a set changes no case's
+admission; a comparison carries the manifest hash instead. Each file is checked on the way in: the manifest against its
+registration, each sealed file against the manifest, and each plaintext against its content hash. Nothing is returned
+before every check has passed.
 """
 import base64
 import hashlib
@@ -19,6 +20,7 @@ import json
 import re
 from pathlib import Path
 
+from .families import family_for
 from .generated_device import validate_device, validate_identity
 from .grader_identity import grader_identity
 from .snapshots import canonical_digest
@@ -30,7 +32,7 @@ _QUALIFICATION_FIELDS = {'schema', 'registration', 'manifest_sha256', 'grader_id
                          'mutants', 'failures', 'seconds', 'runs'}
 _MANIFEST_FILE = 'manifest.json'
 _MANIFEST_SCHEMA = 'generated-set-manifest/1'
-_REGISTRATIONS_SCHEMA = 'generated-set-registrations/1'
+_REGISTRATIONS_SCHEMA = 'generated-set-registrations/2'
 _SETS_FILE = Path(__file__).resolve().parents[1] / 'resources' / 'registrations' / 'sets.json'
 _SHA256 = re.compile(r'[0-9a-f]{64}')
 _ENTRY_FIELDS = {'id', 'level', 'framing', 'image_sha256', 'mission_sha256', 'answer_key_sha256', 'inputs', 'answer'}
@@ -54,19 +56,36 @@ def _is_sha256(value):
     return isinstance(value, str) and _SHA256.fullmatch(value) is not None
 
 
-def set_registrations(path: Path | None = None) -> dict[str, str]:
-    """Registered set name -> manifest SHA-256, from the table at `path`, by default the code-owned one. The table is
-    `{"schema": "generated-set-registrations/1", "sets": {name: sha256}}`. ValueError for a duplicate key, another schema,
-    an unknown or missing field, or a pin that is not 64 lowercase hexadecimal characters; a table that cannot be read
-    raises OSError."""
+def _registered(path):
+    """The sets of the table at `path`, by default the code-owned one, each entry checked. See `set_registrations`."""
     file = _SETS_FILE if path is None else Path(path)
     table = _read_json(file.read_bytes(), 'generated set registrations ' + str(file))
     if (not isinstance(table, dict) or set(table) != {'schema', 'sets'} or table['schema'] != _REGISTRATIONS_SCHEMA
             or not isinstance(table['sets'], dict)):
         raise ValueError('Unsupported generated set registrations: ' + str(file))
-    if not all(_is_sha256(pin) for pin in table['sets'].values()):
-        raise ValueError('A generated set registration pins its manifest by a lowercase hexadecimal SHA-256')
-    return dict(table['sets'])
+    for name, entry in table['sets'].items():
+        if (not isinstance(entry, dict) or set(entry) != {'manifest_sha256', 'scoring'}
+                or not _is_sha256(entry['manifest_sha256']) or not isinstance(entry['scoring'], bool)):
+            raise ValueError('A generated set registration holds its manifest_sha256, a lowercase hexadecimal SHA-256, '
+                             'and its scoring mark, a boolean: ' + name)
+    return table['sets']
+
+
+def set_registrations(path: Path | None = None) -> dict[str, str]:
+    """Registered set name -> manifest SHA-256, from the table at `path`, by default the code-owned one. The table is
+    `{"schema": "generated-set-registrations/2", "sets": {name: {"manifest_sha256", "scoring"}}}`. ValueError for a
+    duplicate key, another schema, an unknown or missing field, a pin that is not 64 lowercase hexadecimal characters or
+    a mark that is not a boolean; a table that cannot be read raises OSError."""
+    return {name: entry['manifest_sha256'] for name, entry in _registered(path).items()}
+
+
+def is_scoring(registration, path=None) -> bool:
+    """Whether the set `registration` is a scoring set, by the mark in the table at `path`, by default the code-owned
+    one. ValueError for an unregistered name, and for what `set_registrations` refuses."""
+    sets = _registered(path)
+    if registration not in sets:
+        raise ValueError('Generated set not registered: ' + str(registration))
+    return sets[registration]['scoring']
 
 
 def _inside(set_root, relative):
@@ -210,6 +229,103 @@ def seal_qualification(set_root: Path, record: dict, password: EvaluatorPassword
     return password.seal(record, Path(set_root) / _QUALIFICATION_FILE)
 
 
+def sample(devices: list[dict]) -> list[str]:
+    """The ids of the devices whose mutants run, in id order: of the manifest entries `devices`, the first two by id of
+    each (level, framing)."""
+    groups = {}
+    for device in sorted(devices, key=lambda device: device['id']):
+        groups.setdefault((device['level'], device['framing']), []).append(device['id'])
+    return sorted(identity for ids in groups.values() for identity in ids[:2])
+
+
+def _references_passed(passed):
+    return isinstance(passed, dict) and set(passed) == {'a', 'b'} and passed['a'] is True and passed['b'] is True
+
+
+def _naming(reason, device, ids):
+    """`reason`, with `device` after a colon only when it is one of the manifest's `ids`: a record's failures can hold a
+    private path, so no other text of a record reaches a reason."""
+    return reason + ':' + device if device in ids else reason
+
+
+def _mutant_reasons(mutants, ids, sampled):
+    """(the reasons the record's `mutants` give, its rows whose device and id are text)."""
+    listed = mutants if isinstance(mutants, list) else []
+    rows = [row for row in listed
+            if isinstance(row, dict) and isinstance(row.get('device'), str) and isinstance(row.get('id'), str)]
+    reasons = [] if isinstance(mutants, list) and len(rows) == len(listed) else ['qualification mutants malformed']
+    seen = set()
+    for row in rows:
+        device, identity = row['device'], row['id']
+        if row.get('rejected') is not True:
+            reasons.append(_naming('mutant not rejected', device, ids))
+        if (device, identity) in seen:
+            reasons.append(_naming('mutant repeated', device, ids))
+        seen.add((device, identity))
+        if device not in sampled:
+            reasons.append(_naming('mutant outside the sample', device, ids))
+    required = family_for('generated').required_mutants
+    reasons += ['required mutant missing:' + device for device in sampled
+                if not required <= {row['id'] for row in rows if row['device'] == device}]
+    return reasons, rows
+
+
+def _run_reasons(runs, ids):
+    """The reasons the rows of the record's `runs` give: a native process not observed, and for each manifest device
+    boot readings that are missing, empty or not all the same."""
+    reasons, first = [], {}
+    for name, row in runs.items():
+        device = name.partition('/')[0]
+        row = row if isinstance(row, dict) else {}
+        if row.get('native_process_observed') is not True:
+            reasons.append(_naming('native process not observed', device, ids))
+        if device in ids:
+            reading = row.get('boot_reading')
+            if not isinstance(reading, dict) or not reading:
+                reasons.append('boot reading missing:' + device)
+            elif reading != first.setdefault(device, reading):
+                reasons.append('boot reading differs:' + device)
+    return reasons
+
+
+def _whole_record_reasons(record, manifest):
+    ids, sampled = [entry['id'] for entry in manifest['devices']], sample(manifest['devices'])
+    reasons = [] if record.get('failures') == [] else ['qualification failures recorded']
+    devices = record['devices'] if isinstance(record.get('devices'), dict) else {}
+    if set(devices) != set(ids):
+        reasons.append('qualification devices differ from the manifest')
+    reasons += ['references not passed:' + device for device in ids if not _references_passed(devices.get(device))]
+    if record.get('sample') != sampled:
+        reasons.append('qualification sample differs from the manifest')
+    mutant_reasons, rows = _mutant_reasons(record.get('mutants'), ids, sampled)
+    reasons += mutant_reasons
+    runs = record['runs'] if isinstance(record.get('runs'), dict) else {}
+    expected = {device + '/reference-' + name for device in ids for name in 'ab'}
+    expected |= {row['device'] + '/mutant-' + row['id'] for row in rows}
+    if not isinstance(record.get('runs'), dict) or set(runs) != expected:
+        reasons.append('qualification runs differ from the manifest and mutants')
+    return reasons + _run_reasons(runs, ids)
+
+
+def qualification_reasons(record, manifest) -> list[str]:
+    """The reasons the qualification `record` as a whole does not show its loaded `manifest` natively and completely
+    qualified, each once, or [] when it does: failures recorded; devices other than the manifest's; a device's
+    references not both passed; another sample than `sample` computes; a mutant row not rejected, repeated or of a
+    device outside the sample; a sampled device short of the family's required mutants; runs other than each device's
+    two references and each mutant row; a run whose `native_process_observed` is not `True`; and a device's runs whose
+    boot readings are missing, empty or not all the same. A mutant dropped beyond the required ones is not detected: the
+    record lists no key's mutants, and its tag authenticates it. Whether the references are distinct is not read here:
+    `open_device` refuses that, and the manifest hash binds the key. It reads nothing but its arguments, never reads
+    `backend`, and never raises for the shape of a field. Each reason is fixed text naming at most a device id of the
+    manifest."""
+    if not isinstance(record, dict):
+        return ['qualification malformed']
+    try:
+        return list(dict.fromkeys(_whole_record_reasons(record, manifest)))
+    except RecursionError:  # readings nested deeper than comparing them reaches
+        return ['qualification malformed']
+
+
 # What reading a file can raise for its content or its absence, which admission reports as a reason: JSON nested deeper
 # than the parser reaches raises RecursionError.
 _UNREADABLE = (OSError, ValueError, RecursionError)
@@ -227,9 +343,11 @@ def admitted(set_root: Path, registration: str, device_id: str, password: Evalua
     set's qualification record must decrypt with `password`, name `registration` and the manifest that `registrations`
     (by default `set_registrations()`) pins for it, which `load_set` must accept, carry the generated family's current
     grader identity (`grader_identity(case_id='generated')`, the whole identity) and the status `passed`, and show both
-    references passed (`True`, never a number equal to it) on the device. A record that cannot be read or decrypted
-    gives that one reason. No OSError, ValueError or RecursionError, whatever a file holds, is raised: it is a reason,
-    named by its class, so that a caller reports a refusal."""
+    references passed (`True`, never a number equal to it) on the device. It must also show the set natively and
+    completely qualified (`qualification_reasons`), which a manifest that was refused has nothing to check against. A
+    record that cannot be read or decrypted gives that one reason. No OSError, ValueError or RecursionError, whatever a
+    file holds, is raised: it is a reason, named by its class, so that a caller reports a refusal. Each reason is given
+    once."""
     path = Path(set_root) / _QUALIFICATION_FILE
     try:
         # The tag under the set's password authenticates the record, so its hash is that of the bytes found.
@@ -239,7 +357,7 @@ def admitted(set_root: Path, registration: str, device_id: str, password: Evalua
     if (not isinstance(record, dict) or set(record) != _QUALIFICATION_FIELDS or record['schema'] != QUALIFICATION_SCHEMA
             or not isinstance(record['devices'], dict)):
         return ['qualification malformed']
-    reasons = []
+    reasons, whole_record = [], []
     if record['registration'] != registration:
         reasons.append('qualification of another registration')
     try:
@@ -251,6 +369,7 @@ def admitted(set_root: Path, registration: str, device_id: str, password: Evalua
         recorded = record['manifest_sha256']
         if recorded != pins[registration] or recorded != manifest['manifest_sha256']:
             reasons.append('qualification of another manifest')
+        whole_record = qualification_reasons(record, manifest)
     try:
         if record['grader_identity'] != grader_identity(case_id='generated'):
             reasons.append('qualification under another grader identity')
@@ -258,8 +377,6 @@ def admitted(set_root: Path, registration: str, device_id: str, password: Evalua
         reasons.append('grader identity unavailable: ' + _named(error))
     if record['status'] != 'passed':
         reasons.append('qualification pending')
-    passed = record['devices'].get(device_id)
-    if (not isinstance(passed, dict) or set(passed) != {'a', 'b'}
-            or passed['a'] is not True or passed['b'] is not True):
+    if not _references_passed(record['devices'].get(device_id)):
         reasons.append('references not passed:' + str(device_id))
-    return reasons
+    return list(dict.fromkeys(reasons + whole_record))

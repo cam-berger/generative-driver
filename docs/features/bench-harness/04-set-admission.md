@@ -87,3 +87,16 @@ def qualification_reasons(record, manifest) -> list[str]   # pure: 04-B3, 04-B4
 - Any real qualification, set, password, vault, Renode or model run. Requalification is the user's, at pinning.
 
 ## Deviations
+
+- `run_suite` refuses a device named twice with `Duplicate suite entry`, not the not-admitted form — the refusal still comes before any contact, so only the message differs.
+- Own fixed text for the reasons the Spec left open — 04-B3 asks for fixed text naming at most a device id, and an id appears only when the manifest lists it.
+- Added `qualification mutants malformed` and `qualification malformed` — fixed text, needed for 04-B3's "never raises", and they refuse rather than admit.
+- A boot reading that isn't a non-empty object counts as missing — fails closed, and serves complete qualification.
+- `raw.json` stores only `values` as `boot_reading` — the Spec defines the row as the values, and the raw monitor responses aren't needed to compare.
+- `qualify` records `boot_reading: None` when a finished run's evidence can't be read, including valid JSON that isn't an object — fails closed: admission refuses with `boot reading missing`, and a test covers it. JSON nested too deep still raises `RecursionError` out of `qualify`, reachable only by damaging the file and before anything is sealed.
+- Names the Spec left open (`tree_hash(exclude=)`, `fixture_variable_reasons`, `_SHIPPED_SETS`, `_registered`, `_passed_under`) — they implement seams the Spec describes; the guard stays one function, so it wasn't dropped.
+- The refusal text names `--replace-passed` even when `qualify` is called directly — only tells the user how to proceed.
+- Test reshaping (`FixtureDevice(pc=)`, `registrations_table`, split fixture classes, renamed and moved tests, a reworded comment) — supports the Spec's listed test changes, with no product scope.
+- 04-B12's "qualifies as today" rows patch `open_device` to show `qualify` got past the check — each row fails if the check refuses, and real re-qualifications are covered elsewhere.
+- The 04-B8 test wraps `reference_calibration.calibration_run` to damage a finished run's `raw.json` — the real function still runs, and a real run leaves no other way to reach this path.
+- Doc additions on scoring suites, aggregate-only scorecards and a rules-table row, and a "Boot reading" row in `CONTEXT.md` — they describe what was built and define the new term, with no change in behaviour.

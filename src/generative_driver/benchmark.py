@@ -155,6 +155,8 @@ def main(argv=None):
     qualifying.add_argument('--renode', required=True)
     qualifying.add_argument('--output', required=True, help='A new or empty evaluator-private directory outside the '
                             'repository for each run\'s evidence and a plaintext copy of the record')
+    qualifying.add_argument('--replace-passed', action='store_true', help='Qualify a scoring set again though its '
+                            'record passed under the current grader identity, replacing that record')
     running = commands.add_parser('run')
     running.add_argument('--case', default='setup-smoke', choices=case_ids())
     running.add_argument('--scenario')
@@ -306,7 +308,7 @@ def main(argv=None):
             from .benchmark_support.set_qualification import qualify
             from .benchmark_support.truth import read_password
             record = qualify(Path(args.root), args.set, read_password(args.password_file), renode=Path(args.renode),
-                             output_dir=Path(args.output))
+                             output_dir=Path(args.output), **({'replace': True} if args.replace_passed else {}))
             print(json.dumps({'ok': record['status'] == 'passed', 'status': record['status'],
                               'failures': record['failures'], 'seconds': record['seconds']}, indent=2, allow_nan=False))
             return 0 if record['status'] == 'passed' else 1

@@ -6,6 +6,7 @@ when 0 <= n <= 3, and replies `MODE ERR` otherwise, so both its replies begin wi
 `ID:FIXTURE`; `PING` replies `PONG` in mode 3 and is never answered in another mode; any other line replies `ERR`. The
 mode lives at 0x20000000, and a reset leaves it at 2. Its public mission states the mode's unit, `1` (dimensionless)."""
 import copy
+import json
 import re
 import secrets
 import socketserver
@@ -31,15 +32,16 @@ class FixtureDevice:
     changes nothing), and has a stopped-machine mode Renode lacks.
 
     The monitor answers `start` and `pause` (the emulator runs only between them), `machine Reset` (the mode becomes
-    `reset_mode`), `emulation RunFor`, `cpu PC`, and a `sysbus ReadByte`, `ReadWord` or `ReadDoubleWord` of the mode's
-    address. It answers
+    `reset_mode`), `emulation RunFor`, `cpu PC` (`pc`, with an error line when it is None), and a `sysbus ReadByte`,
+    `ReadWord` or `ReadDoubleWord` of the mode's address. It answers
     with an error line a read of any other address, of an address in `unreadable`, or of any address while the mode is
     `unreadable_in_mode`. A UART line sent while the emulator is paused is dropped with its connection. On the UART line
     `dies_on` the machine stops: its UART hangs up on every line from then on, and its monitor still starts and pauses
     the emulator but rejects every other command."""
 
-    def __init__(self, *, unreadable=(), reset_mode=RESET_MODE, unreadable_in_mode=None, dies_on=None):
+    def __init__(self, *, unreadable=(), reset_mode=RESET_MODE, unreadable_in_mode=None, dies_on=None, pc='0x08000100'):
         self.mode = self.reset_mode = reset_mode
+        self.pc = pc
         self.unreadable, self.unreadable_in_mode, self.dies_on = set(unreadable), unreadable_in_mode, dies_on
         self.running = self.dead = self.closed = False
         self.lines, self.commands = [], []
@@ -102,7 +104,7 @@ class FixtureDevice:
         if command.startswith('emulation RunFor '):
             return ''
         if command == 'cpu PC':
-            return '0x08000100'
+            return 'Error: no program counter' if self.pc is None else self.pc
         read = re.fullmatch(r'sysbus (ReadByte|ReadWord|ReadDoubleWord) (0x[0-9a-f]{8})', command)
         if read is None:
             return 'Error: unknown command'
@@ -301,6 +303,13 @@ def fixture_mission(device_id):
                      'outputs': {}},
         'ping': {'meaning': 'Check that the device listens.', 'inputs': {}, 'outputs': {}}},
         'reuse_objective': 'Put fixture device ' + device_id + ' in mode 1 and report its mode.'}
+
+
+def registrations_table(pins, *, scoring=False):
+    """The text of a `sets.json` that registers each set of `pins` ({name: manifest SHA-256}) under the one mark
+    `scoring`."""
+    return json.dumps({'schema': 'generated-set-registrations/2',
+                       'sets': {name: {'manifest_sha256': pin, 'scoring': scoring} for name, pin in pins.items()}})
 
 
 def write_fixture_set(root):

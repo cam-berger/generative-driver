@@ -237,7 +237,9 @@ def freeze_suite(manifest: dict, executor: str, executor_config: dict,
     This private frozen object is not a public result. The bench harness that drives the suite holds evaluator password
     files and the emulator executable; the frozen suite holds only the sha256 of that harness's token. The child owner
     separately compares the harness's admission of each v2 child with its public pin before starting any operation. A
-    set suite is frozen with the `device_pins` its harness built; no other suite takes any.
+    set suite is frozen with the `device_pins` its harness built; no other suite takes any. A suite of a scoring set
+    also holds `scoring_set`, its registration and its manifest hash from the pins, so that no later change to the
+    registrations changes what the suite ran.
     """
     import hashlib
     import json
@@ -267,8 +269,13 @@ def freeze_suite(manifest: dict, executor: str, executor_config: dict,
         if key in options and (not isinstance(options[key], str) or not options[key].strip()):
             raise ValueError('Suite tool paths must be nonblank strings')
     normalized, definitions, pins = preflight_selection(normalized)
+    scoring = {}
     if 'set' in normalized:
+        from .generated_sets import is_scoring
         pins = _frozen_device_pins(normalized, device_pins)
+        if is_scoring(normalized['set']):
+            scoring = {'scoring_set': {'registration': normalized['set'],
+                                       'manifest_sha256': pins[0]['manifest_sha256']}}
     elif device_pins is not None:
         raise ValueError('Device pins belong to a set suite')
     encoded = json.dumps(normalized, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
@@ -277,7 +284,7 @@ def freeze_suite(manifest: dict, executor: str, executor_config: dict,
                     **({'device_pins': device_pins} if device_pins is not None else {})},
         'executor': executor, 'executor_config': executor_config, 'options': child_options,
         'scope': 'full-workflow', 'entry_pins': pins,
-        **({'device_pins': device_pins} if device_pins is not None else {}),
+        **({'device_pins': device_pins} if device_pins is not None else {}), **scoring,
         'entry_effects': [list(case.default_effects) for case in definitions],
         'provenance': provenance, 'trials': expand_trials(normalized),
         'scheduler': SCHEDULER, 'harness_token_sha256': harness_token_sha256})

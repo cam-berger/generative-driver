@@ -9,6 +9,7 @@ family's own closure holds `generated_sets`.
 """
 import contextlib
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from .truth import UnlockedTruth
 
 # The folder of a trial that holds what its worker receives, as the trial's endpoint folder holds the configurator's.
 PUBLIC_INPUTS = 'public-inputs'
+_SHIPPED_SETS = Path(__file__).resolve().parents[1] / 'resources' / 'registrations' / 'sets.json'
 
 
 @dataclass(frozen=True, repr=False)
@@ -27,6 +29,17 @@ class SetDevice:
     set_root: Path
     registration: str
     device_id: str
+
+
+def fixture_variable_reasons(registration, shipped=None):
+    """[the reason the set `registration` may not run], or [] when it may: with `GD_TEST_HARNESS_FIXTURE` set, which can
+    replace any check of the harness, a set named in the file `shipped`, by default the package's own `sets.json` read
+    by its own path, is refused. This catches a mistake only (`docs/design.md`)."""
+    if not os.environ.get('GD_TEST_HARNESS_FIXTURE'):
+        return []
+    if registration not in generated_sets.set_registrations(_SHIPPED_SETS if shipped is None else shipped):
+        return []
+    return ['GD_TEST_HARNESS_FIXTURE is set, and this is a shipped set']
 
 
 def _entry(manifest, device_id):
@@ -75,15 +88,17 @@ def _unlocked_key(device, manifest, password):
 
 def admit_device(device, pin, password, trial_dir, *, renode=None):
     """Admit one device of a set for a trial: (provider, admission, `UnlockedTruth`). No flag or test switch bypasses
-    this: a device its set's qualification does not admit (`generated_sets.admitted`) raises ValueError naming every
-    reason, and so does a `pin` whose hashes differ from the set's manifest entry. The device is opened with its answer
-    key once, its execution setup validated, and what a worker receives written into `trial_dir/public-inputs`: the
+    this: a device its set's qualification does not admit (`generated_sets.admitted`), or a shipped set under the test
+    variable (`fixture_variable_reasons`), raises ValueError naming every reason, and so does a `pin` whose hashes
+    differ from the set's manifest entry. The device is opened with its answer key once, its execution setup validated,
+    and what a worker receives written into `trial_dir/public-inputs`: the
     image and the canonical JSON of the mission, whose bytes its hash covers. The provider starts from that image and
     receives only the recipe, and the admission names the digest of the set's qualification record. The caller starts
     the provider, so that it holds the device even when the start fails."""
     from .device_provider import DeviceProvider
     from .execution import validate_setup
-    reasons = generated_sets.admitted(device.set_root, device.registration, device.device_id, password)
+    reasons = (fixture_variable_reasons(device.registration)
+               or generated_sets.admitted(device.set_root, device.registration, device.device_id, password))
     if reasons:
         raise ValueError('The generated set ' + device.registration + ' is not admitted: ' + '; '.join(reasons))
     with _reading(device):

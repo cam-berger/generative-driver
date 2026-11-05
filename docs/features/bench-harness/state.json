@@ -4,7 +4,7 @@
   "branch": "mdk/bench-harness",
   "stage": "spec",
   "awaiting": null,
-  "current": "04",
+  "current": "05",
   "features": [
     {
       "id": "01",
@@ -27,8 +27,8 @@
     {
       "id": "04",
       "slug": "set-admission",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "f8640222527109a6222d0609deca5be2ba7bb30c"
     },
     {
       "id": "05",

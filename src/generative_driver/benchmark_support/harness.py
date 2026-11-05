@@ -568,15 +568,20 @@ def _supplied_passwords(files):
 
 def _set_device_pins(manifest, set_root, passwords):
     """{device id: pin} of every entry of the set manifest `manifest`, once the set `set_root` holds is registered and
-    every entry's device admitted, for a harness that has not yet contacted the configurator. Any refusal is a
-    ValueError that lists its reasons and names no path, as `_read_supplied`'s does."""
+    every entry's device admitted, for a harness that has not yet contacted the configurator. A scoring set must have
+    its entries name every device of its set once, with one repetition. Any refusal is a ValueError that lists its
+    reasons and names no path, as `_read_supplied`'s does."""
     from . import generated_sets, generated_trials
     from .suites import normalize_manifest
-    registration = normalize_manifest(manifest)['set']
+    normalized = normalize_manifest(manifest)
+    registration = normalized['set']
 
     def refused(reasons):
         listed_once = '; '.join(dict.fromkeys(reasons))
         return ValueError('The generated set ' + registration + ' is not admitted: ' + listed_once)
+    reasons = generated_trials.fixture_variable_reasons(registration)
+    if reasons:
+        raise refused(reasons)
     if not set_root:
         raise refused(['no set root was supplied'])
     if registration not in passwords:
@@ -591,8 +596,10 @@ def _set_device_pins(manifest, set_root, passwords):
     devices = [entry['device_id'] for entry in manifest['entries']]
     listed = {entry['id'] for entry in loaded['devices']}
     unknown = ['Unknown generated device: ' + device for device in devices if device not in listed]
-    reasons = unknown or [reason for device in devices
-                          for reason in generated_sets.admitted(set_root, registration, device, password)]
+    partial = generated_sets.is_scoring(registration) and (set(devices) != listed or normalized['repetitions'] != 1)
+    reasons = unknown or (['a scoring suite runs every device of its set once'] if partial else
+                          [reason for device in devices
+                           for reason in generated_sets.admitted(set_root, registration, device, password)])
     if reasons:
         raise refused(reasons)
     try:

@@ -10,28 +10,22 @@ before a full set is qualified.
 This module runs the grader and grades nothing itself, so it lies outside every grader identity, as
 `reference_calibration` does.
 """
+import hashlib
+import json
 import subprocess
 import tempfile
 import time
 from pathlib import Path
 from shutil import rmtree
 
-from .generated_sets import QUALIFICATION_SCHEMA, load_set, open_device, seal_qualification
+from . import generated_sets
+from .generated_sets import QUALIFICATION_SCHEMA, is_scoring, load_set, open_device, sample, seal_qualification
 from .grader_identity import grader_identity
 from .truth import EvaluatorPassword
 
 PIN = {'case_id': 'generated', 'scenario_id': 'original', 'case_seed': 0, 'revision': 0}
 # What a run that could not be graded raises: the run's error, recorded as a failure, and the next run goes on.
 _RUN_ERRORS = (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError)
-
-
-def sample(devices: list[dict]) -> list[str]:
-    """The ids of the devices whose mutants run, in id order: of the manifest entries `devices`, the first two by id of
-    each (level, framing)."""
-    groups = {}
-    for device in sorted(devices, key=lambda device: device['id']):
-        groups.setdefault((device['level'], device['framing']), []).append(device['id'])
-    return sorted(identity for ids in groups.values() for identity in ids[:2])
 
 
 def _private(directory, *, exist_ok=False):
@@ -60,6 +54,26 @@ def _run(key, candidate, run, *, renode, image, output):
         return None, error
 
 
+def _boot_reading(output, run):
+    """The boot reading the grade of `run` recorded in its evidence, or None when none can be read."""
+    try:
+        evidence = json.loads((output / 'runs' / run / 'raw.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    return evidence.get('boot_reading') if isinstance(evidence, dict) else None
+
+
+def _passed_under(root, password, identity):
+    """Whether the set's record unlocks under `password`, passed, under the grader `identity`. A record that is missing
+    or cannot be read is none."""
+    path = root / generated_sets._QUALIFICATION_FILE
+    try:
+        record = password.unlock(path, hashlib.sha256(path.read_bytes()).hexdigest())
+    except (OSError, ValueError, RecursionError):
+        return False
+    return isinstance(record, dict) and record.get('status') == 'passed' and record.get('grader_identity') == identity
+
+
 def _failure(run, device_id, grade, error):
     """The failure of a run that did not count: `<run> <verdict>:<device>`, or `<run> error:<device> (<what it
     raised>)`."""
@@ -69,21 +83,24 @@ def _failure(run, device_id, grade, error):
 
 
 def qualify(set_root: Path, registration: str, password: EvaluatorPassword, *, renode: Path, output_dir: Path,
-            registrations: dict | None = None) -> dict:
+            registrations: dict | None = None, replace: bool = False) -> dict:
     """Qualify the set `registration` under `set_root` once and return its record (`generated-set-qualification/1`):
     {schema, registration, manifest_sha256, grader_identity (the generated family's, whole), status 'passed' or
     'pending', devices {id: {'a': bool, 'b': bool}}, sample [ids], mutants [{device, id, rejected, failed_checks}],
-    failures [str], seconds {run: float}, runs {run: {'backend', 'native_process_observed'}}}. `runs` holds the
-    evaluator's own account of each run: the backend the device's recipe names, and whether the grading session's own
-    emulator process was still running when grading ended, False for an attached session such as a test fixture's. A
-    run that raised has None for both. The record is sealed with `password` beside the manifest
+    failures [str], seconds {run: float}, runs {run: {'backend', 'native_process_observed', 'boot_reading'}}}. `runs`
+    holds the evaluator's own account of each run: the backend the device's recipe names, whether the grading session's
+    own emulator process was still running when grading ended, False for an attached session such as a test fixture's,
+    and the values of the startup observation the grade read on that session, from its evidence. A run that raised has
+    None for all three, even if it left partial evidence. The record is sealed with `password` beside the manifest
     (`generated_sets.seal_qualification`), and a plaintext copy is written to `output_dir/qualification.json`.
 
     Nothing runs before these checks: `set_root`, which receives the sealed record, and `output_dir` both lie outside
     the repository, the installed package and known candidate roots (`authoring.evaluator_directory`); `output_dir` is
     new or empty; `load_set` accepts the manifest that `registrations` (by default `set_registrations()`) pins; and
     every device opens with `password`, which checks it against the generated-device interface. A failed check raises,
-    and nothing is sealed, so a wrong password never replaces a record.
+    and nothing is sealed, so a wrong password never replaces a record. Nor does a slip replace a scoring set's result:
+    a record of a scoring set that unlocks under `password`, passed and under the current grader identity, stops this
+    too, unless `replace`. A `registrations` table holds no mark, so such a call counts as a development set's.
 
     Then, device by device in id order, references `a` and `b` run, then every mutant on a sampled device (`sample`).
     A reference passes with the verdict `passed`. A mutant is rejected when its verdict is `failed` and its
@@ -93,6 +110,8 @@ def qualify(set_root: Path, registration: str, password: EvaluatorPassword, *, r
     - `reference <a|b> <verdict>:<device>` for a reference that did not pass, and `mutant <id> <verdict>:<device>` or
       `mutant <id> missed expected checks:<device>` for a mutant not rejected. A run that raised gives
       `<run> error:<device> (<what it raised>)`;
+    - `boot reading differs:<device>` when, all of a device's runs finished, the boot readings of those that have one
+      are not all the same. No run is added for it;
     - `decrypted image not removed:<device>` when the device's image is still on disk after its runs.
     A device short of the required mutants, or with two references whose identity operations send the same command,
     never gets this far: opening it refuses it.
@@ -116,6 +135,9 @@ def qualify(set_root: Path, registration: str, password: EvaluatorPassword, *, r
         raise ValueError('Set qualification requires a new or empty output directory')
     manifest = load_set(root, registration, registrations=registrations)
     identity = grader_identity(case_id='generated')
+    if not replace and registrations is None and is_scoring(registration) and _passed_under(root, password, identity):
+        raise ValueError('A scoring set already passed under the current grader identity; --replace-passed replaces '
+                         'that record: ' + registration)
     devices = {}
     for entry in sorted(manifest['devices'], key=lambda entry: entry['id']):
         devices[entry['id']] = open_device(root, manifest, entry['id'], password, answer=True)
@@ -141,8 +163,9 @@ def qualify(set_root: Path, registration: str, password: EvaluatorPassword, *, r
                 named, started = device_id + '/' + name, time.monotonic()
                 result, error = _run(key, candidate, named, renode=renode, image=image, output=output)
                 record['seconds'][named] = round(time.monotonic() - started, 3)
-                record['runs'][named] = {field: None if result is None else result[field]
-                                         for field in ('backend', 'native_process_observed')}
+                record['runs'][named] = {**{field: None if result is None else result[field]
+                                            for field in ('backend', 'native_process_observed')},
+                                         'boot_reading': None if result is None else _boot_reading(output, named)}
                 return (None if result is None else result['grade']), error
 
             passed = record['devices'][device_id] = {}
@@ -165,6 +188,10 @@ def qualify(set_root: Path, registration: str, password: EvaluatorPassword, *, r
                         failures.append('mutant %s missed expected checks:%s' % (mutant['id'], device_id))
                     else:
                         failures.append(_failure('mutant ' + mutant['id'], device_id, grade, error))
+            readings = [row['boot_reading'] for name, row in record['runs'].items()
+                        if name.startswith(device_id + '/') and row['boot_reading'] is not None]
+            if any(reading != readings[0] for reading in readings):
+                failures.append('boot reading differs:' + device_id)
         finally:
             rmtree(private, ignore_errors=True)
         if private.exists():  # a decrypted image left on disk, as on Windows while a process holds it, is reported

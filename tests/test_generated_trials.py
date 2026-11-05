@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from generated_fixtures import (FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, PASSWORD, PASSWORD_TEXT, REFERENCE_A, REFERENCE_B,
-                                fixture_mission, fixture_start, write_fixture_set)
+                                fixture_mission, fixture_start, registrations_table, write_fixture_set)
 from generative_driver.benchmark_support import (evaluator, generated_sets, harness, registry, set_qualification,
                                                   snapshots)
 from generative_driver.benchmark_support.families import family_for
@@ -45,12 +45,11 @@ def qualified_set():
         base = Path(directory.name).resolve()
         root = base / 'set'
         root.mkdir()
-        (base / 'sets.json').write_text(json.dumps({'schema': 'generated-set-registrations/1',
-                                                    'sets': {SET: write_fixture_set(root)}}))
+        (base / 'sets.json').write_text(registrations_table({SET: write_fixture_set(root)}))
         guard = patch(SETS_FILE, base / 'sets.json')
         guard.start()
         unittest.addModuleCleanup(guard.stop)
-        with patch(START, side_effect=fixture_start()):
+        with patch(START, side_effect=fixture_start(process=True)):
             record = set_qualification.qualify(root, SET, PASSWORD, renode=Path('/toy'),
                                                output_dir=base / 'qualification')
         assert record['status'] == 'passed', record['failures']
@@ -131,7 +130,7 @@ def registered_set(test):
     root = Path(directory.name).resolve() / 'set'
     root.mkdir()
     table = Path(directory.name) / 'sets.json'
-    table.write_text(json.dumps({'schema': 'generated-set-registrations/1', 'sets': {SET: write_fixture_set(root)}}))
+    table.write_text(registrations_table({SET: write_fixture_set(root)}))
     guard = patch(SETS_FILE, table)
     guard.start()
     test.addCleanup(guard.stop)
@@ -459,8 +458,8 @@ class SetRootOptionTests(unittest.TestCase):
                 harness.launch_suite({'manifest': set_manifest()}, home=self.root / 'home', set_root=bad)
 
 
-class SuiteStartPinTests(unittest.TestCase):
-    """What `run_suite` does before its first configurator contact."""
+class SuiteStartFixture(unittest.TestCase):
+    """`run_suite` up to the configurator's first `suite_start`, which refuses: what it does before first contact."""
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -485,6 +484,8 @@ class SuiteStartPinTests(unittest.TestCase):
         self.assertEqual(json.loads((self.directory / 'suite.json').read_text())['reason'], reason)
         return record
 
+
+class SuiteStartPinTests(SuiteStartFixture):
     def test_03_B4_every_entry_gets_its_pin_before_the_configurator_is_contacted(self):
         root, password, manifest = qualified_set()
         from generative_driver.benchmark_support.generated_trials import device_pin
@@ -554,6 +555,153 @@ class SuiteStartPinTests(unittest.TestCase):
         self.assertNotEqual(again['suite_dir'], refused['suite_dir'])
 
 
+def as_scoring_set(test):
+    """The qualified set, registered for this test in a second table with the same hash and the mark `scoring`: the
+    table's path."""
+    _, _, manifest = qualified_set()
+    directory = tempfile.TemporaryDirectory()
+    test.addCleanup(directory.cleanup)
+    table = Path(directory.name) / 'sets.json'
+    table.write_text(registrations_table({SET: manifest['manifest_sha256']}, scoring=True))
+    guard = patch(SETS_FILE, table)
+    guard.start()
+    test.addCleanup(guard.stop)
+    return table
+
+
+def resealed_set(test, change):
+    """A copy of the qualified set, under the same registered manifest, its record altered by `change` and resealed."""
+    source, _, _ = qualified_set()
+    directory = tempfile.TemporaryDirectory()
+    test.addCleanup(directory.cleanup)
+    root = Path(directory.name).resolve() / 'set'
+    shutil.copytree(source, root)
+    path = root / 'qualification.enc'
+    record = PASSWORD.unlock(path, hashlib.sha256(path.read_bytes()).hexdigest())
+    change(record)
+    generated_sets.seal_qualification(root, record, PASSWORD)
+    return root
+
+
+def no_native_process(record):
+    for row in record['runs'].values():
+        row['native_process_observed'] = False
+
+
+class WholeRecordRefusalTests(SuiteStartFixture):
+    def test_04_B6_a_suite_on_a_set_with_such_a_reason_refuses_before_any_contact(self):
+        _, password, _ = qualified_set()
+
+        def failure(record):
+            record['failures'].append('/private/path')
+        prefix = 'The generated set ' + SET + ' is not admitted: '
+        self.assertRefused(prefix + 'native process not observed:0000d001; native process not observed:0000d002',
+                           password_files={SET: str(password)}, set_root=str(resealed_set(self, no_native_process)))
+        self.assertRefused(prefix + 'qualification failures recorded', password_files={SET: str(password)},
+                           set_root=str(resealed_set(self, failure)))
+
+    def test_04_B6_each_slots_admit_refuses_the_same_way(self):
+        from generative_driver.benchmark_support.generated_trials import SetDevice, device_pin
+        root = resealed_set(self, no_native_process)
+        _, _, manifest = qualified_set()
+        trial = self.base / 'trial'
+        trial.mkdir()
+        with patch.object(generated_sets, 'open_device', side_effect=AssertionError('opened')), \
+                self.assertRaisesRegex(ValueError, 'is not admitted: native process not observed:0000d001; '
+                                                   'native process not observed:0000d002'):
+            harness.admit('generated', {}, trial, password=PASSWORD, renode='emulator-handle',
+                          device=SetDevice(root, SET, '0000d001'), pin=device_pin(manifest, '0000d001', EVIDENCE))
+        self.assertEqual(list(trial.iterdir()), [])
+
+
+class ScoringSuiteStartTests(SuiteStartFixture):
+    REFUSED = 'The generated set ' + SET + ' is not admitted: a scoring suite runs every device of its set once'
+
+    def supplied(self):
+        root, password, _ = qualified_set()
+        return {'password_files': {SET: str(password)}, 'set_root': str(root)}
+
+    def test_04_B9_a_scoring_suite_must_name_every_device(self):
+        as_scoring_set(self)
+        self.assertRefused(self.REFUSED, manifest=set_manifest('0000d001'), **self.supplied())
+
+    def test_04_B9_a_scoring_suite_runs_once(self):
+        as_scoring_set(self)
+        self.assertRefused(self.REFUSED, manifest=set_manifest(repetitions=2), **self.supplied())
+
+    def test_04_B9_the_same_device_twice_is_refused_before_contact_as_for_any_set(self):
+        # No RED of its own: `normalize_manifest` refuses it for every set, in its own form.
+        as_scoring_set(self)
+        self.assertRefused('Duplicate suite entry', manifest=set_manifest('0000d001', '0000d001', '0000d002'),
+                           **self.supplied())
+
+    def test_04_B9_every_device_once_starts(self):
+        as_scoring_set(self)
+        self.run_suite(**self.supplied())
+        self.assertEqual([method for method, _ in self.calls], ['ping', 'suite_start'])
+
+    def test_04_B9_a_development_set_may_run_any_devices_any_number_of_times(self):
+        self.run_suite(manifest=set_manifest('0000d002', repetitions=3), **self.supplied())
+        self.assertEqual([method for method, _ in self.calls], ['ping', 'suite_start'])
+
+
+class FixtureVariableTests(SuiteStartFixture):
+    """A test's own table stands for the shipped file, which is never edited."""
+    VARIABLE = {'GD_TEST_HARNESS_FIXTURE': 'a fixture file'}
+
+    def setUp(self):
+        super().setUp()
+        from generative_driver.benchmark_support import generated_trials
+        self.trials = generated_trials
+        self.root, self.handle, self.manifest = qualified_set()
+        self.shipped = self.base / 'shipped-sets.json'
+        self.shipped.write_text(registrations_table({SET: self.manifest['manifest_sha256']}))
+        self.supplied = {'password_files': {SET: str(self.handle)}, 'set_root': str(self.root)}
+
+    def test_04_B13_with_the_variable_a_shipped_set_has_a_reason_that_names_it(self):
+        with patch.dict(os.environ, self.VARIABLE):
+            reasons = self.trials.fixture_variable_reasons(SET, self.shipped)
+            self.assertEqual(len(reasons), 1)
+            self.assertIn('GD_TEST_HARNESS_FIXTURE', reasons[0])
+            self.assertEqual(self.trials.fixture_variable_reasons('another-set', self.shipped), [])
+
+    def test_04_B13_without_the_variable_it_has_none(self):
+        with patch.dict(os.environ):
+            os.environ.pop('GD_TEST_HARNESS_FIXTURE', None)
+            self.assertEqual(self.trials.fixture_variable_reasons(SET, self.shipped), [])
+
+    def test_04_B13_it_reads_the_shipped_file_by_the_packages_own_path_and_not_through_the_table_a_test_redirects(self):
+        # `_SETS_FILE` registers the set here; the shipped file does not.
+        self.assertIn(SET, generated_sets.set_registrations())
+        shipped = Path(generated_sets.__file__).resolve().parents[1] / 'resources/registrations/sets.json'
+        self.assertEqual(self.trials._SHIPPED_SETS, shipped)
+        with patch.dict(os.environ, self.VARIABLE):
+            self.assertEqual(self.trials.fixture_variable_reasons(SET), [])
+
+    def test_04_B13_a_suite_on_a_shipped_set_refuses_at_its_start(self):
+        with patch.dict(os.environ, self.VARIABLE), patch.object(self.trials, '_SHIPPED_SETS', self.shipped):
+            record = self.run_suite(**self.supplied)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(record['status'], 'failed')
+        self.assertRegex(record['reason'], '^The generated set ' + SET + ' is not admitted: .*GD_TEST_HARNESS_FIXTURE')
+
+    def test_04_B13_a_slots_admit_refuses_a_shipped_set(self):
+        trial = self.base / 'trial'
+        trial.mkdir()
+        device = self.trials.SetDevice(self.root, SET, '0000d001')
+        pin = self.trials.device_pin(self.manifest, '0000d001', recorded_digest(self.root))
+        with patch.dict(os.environ, self.VARIABLE), patch.object(self.trials, '_SHIPPED_SETS', self.shipped), \
+                patch.object(generated_sets, 'open_device', side_effect=AssertionError('opened')), \
+                self.assertRaisesRegex(ValueError, 'is not admitted: .*GD_TEST_HARNESS_FIXTURE'):
+            harness.admit('generated', {}, trial, password=PASSWORD, renode='emulator-handle', device=device, pin=pin)
+        self.assertEqual(list(trial.iterdir()), [])
+
+    def test_04_B13_a_set_outside_the_shipped_list_runs_as_it_did(self):
+        with patch.dict(os.environ, self.VARIABLE):
+            self.run_suite(**self.supplied)
+        self.assertEqual([method for method, _ in self.calls], ['ping', 'suite_start'])
+
+
 class SuiteResumeTests(unittest.TestCase):
     """A resumed set suite: each slot needs its device and password only when it provides or grades."""
 
@@ -609,7 +757,7 @@ class SuiteResumeTests(unittest.TestCase):
         self.assertEqual(resumed.call_args.args, (self.base / 'trial',))
 
 
-class SuiteFreezeTests(PendingRunFixture):
+class SetSuiteFixture(PendingRunFixture):
     def setUp(self):
         super().setUp()
         self.set_root, self.handle, self.manifest = qualified_set()
@@ -622,6 +770,8 @@ class SuiteFreezeTests(PendingRunFixture):
             'harness_pid': os.getpid(), 'harness_token_sha256': 'a' * 64,
             **({} if device_pins is None else {'device_pins': device_pins}), **changes})
 
+
+class SuiteFreezeTests(SetSuiteFixture):
     def test_03_B8_the_configurator_freezes_the_pins_it_is_sent_and_starts_each_child_from_its_own(self):
         started = self.suite_start(self.pins)
         self.assertTrue(started['ok'], started)
@@ -662,6 +812,99 @@ class SuiteFreezeTests(PendingRunFixture):
         self.assertEqual(normalized, set_manifest())
         self.assertEqual(pins, [])
         self.assertEqual([case.id for case in definitions], ['generated', 'generated'])
+
+
+class SetTableAfterFreezeTests(SetSuiteFixture):
+    """A suite frozen on a copy of the package whose own `sets.json` registers the set, so that a change to that file
+    reaches both the fingerprint and `current_pin`, as it would on an installation. The shipped file is never edited."""
+
+    def setUp(self):
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        package = Path(temporary.name).resolve() / 'generative_driver'
+        source = Path(snapshots.__file__).resolve().parents[1]
+        for name, target in ((source, package),
+                             (source.parent / 'interface_runtime', package.parent / 'interface_runtime')):
+            shutil.copytree(name, target, ignore=shutil.ignore_patterns('__pycache__'))
+        self.package = package
+        self.table = package / 'resources/registrations/sets.json'
+        self.write_table({SET: {'manifest_sha256': self.manifest['manifest_sha256'], 'scoring': False}})
+        for guard in (patch(SETS_FILE, self.table),
+                      patch.object(snapshots, '__file__', str(package / 'benchmark_support/snapshots.py'))):
+            guard.start()
+            self.addCleanup(guard.stop)
+
+    def write_table(self, sets):
+        self.table.write_text(json.dumps({'schema': 'generated-set-registrations/2', 'sets': sets}))
+
+    def resume(self, suite_id):
+        self.controller._suites.set_state(suite_id, 'blocked', 'for this test')
+        self.controller._suites.detach_harness(suite_id)
+        return self.controller.call('suite_resume', {'suite_id': suite_id, 'harness_token_sha256': 'b' * 64,
+                                                     'harness_pid': 1})
+
+    def test_04_B2_a_change_to_another_set_or_any_mark_does_not_block_a_resume(self):
+        started = self.suite_start(self.pins)
+        self.assertTrue(started['ok'], started)
+        own = {'manifest_sha256': self.manifest['manifest_sha256']}
+        for name, sets in (('another set added', {SET: {**own, 'scoring': False},
+                                                  'other-v1': {'manifest_sha256': 'b' * 64, 'scoring': False}}),
+                           ('another set changed', {SET: {**own, 'scoring': False},
+                                                    'other-v1': {'manifest_sha256': 'c' * 64, 'scoring': True}}),
+                           ('its own mark changed', {SET: {**own, 'scoring': True}})):
+            self.write_table(sets)
+            with self.subTest(name):
+                self.assertTrue(self.resume(started['suite_id'])['ok'])
+
+    def test_04_B2_a_change_to_its_own_hash_refuses_the_resume_through_current_pin(self):
+        started = self.suite_start(self.pins)
+        self.assertTrue(started['ok'], started)
+        self.write_table({SET: {'manifest_sha256': 'f' * 64, 'scoring': False}})
+        with self.assertRaisesRegex(ValueError, 'names a manifest its set does not register: ' + SET):
+            self.resume(started['suite_id'])
+
+    def test_04_B2_another_change_under_the_package_still_refuses_the_resume(self):
+        started = self.suite_start(self.pins)
+        self.assertTrue(started['ok'], started)
+        (self.package / 'resources/another.json').write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'Frozen suite implementation or execution environment changed'):
+            self.resume(started['suite_id'])
+
+
+class ScoringFreezeTests(SetSuiteFixture):
+    def test_04_B10_a_scoring_suite_freezes_its_set_and_its_report_names_it(self):
+        table = as_scoring_set(self)
+        started = self.suite_start(self.pins)
+        self.assertTrue(started['ok'], started)
+        scoring = {'registration': SET, 'manifest_sha256': self.manifest['manifest_sha256']}
+        self.assertEqual(self.controller._suites.get(started['suite_id'])['frozen']['scoring_set'], scoring)
+
+        def identity():
+            result = self.controller.call('suite_result', {'suite_id': started['suite_id']})
+            return result['experiment']['comparison_identity']
+        self.assertEqual(identity()['scoring_set'], scoring)
+        # A later change to the table changes nothing frozen.
+        pins = {SET: self.manifest['manifest_sha256'], 'other-v1': 'b' * 64}
+        table.write_text(registrations_table(pins, scoring=False))
+        self.assertEqual(self.controller._suites.get(started['suite_id'])['frozen']['scoring_set'], scoring)
+        self.assertEqual(identity()['scoring_set'], scoring)
+        table.write_text(registrations_table({SET: 'c' * 64}, scoring=True))
+        self.assertEqual(self.controller._suites.get(started['suite_id'])['frozen']['scoring_set'], scoring)
+
+    def test_04_B10_a_development_suite_has_no_such_key(self):
+        # No RED of its own: this pins what must stay.
+        started = self.suite_start(self.pins)
+        self.assertTrue(started['ok'], started)
+        self.assertNotIn('scoring_set', self.controller._suites.get(started['suite_id'])['frozen'])
+        result = self.controller.call('suite_result', {'suite_id': started['suite_id']})
+        self.assertNotIn('scoring_set', result['experiment']['comparison_identity'])
+
+    def test_04_B10_a_handmade_suite_has_no_such_key(self):
+        # No RED of its own: this pins what must stay.
+        started = self.suite_start(None, manifest=handmade_manifest(repetitions=1), request_id='handmade')
+        self.assertTrue(started['ok'], started)
+        self.assertNotIn('scoring_set', self.controller._suites.get(started['suite_id'])['frozen'])
 
 
 class AdmissionTests(unittest.TestCase):
@@ -1312,6 +1555,61 @@ class WholeSuiteTests(unittest.TestCase):
             time.sleep(.2)
         self.fail(call('suite_status', {'suite_id': suite_id}))
 
+    def finished_suite(self):
+        """A replay suite over the two devices through its detached harness, under whichever table the test registers
+        the set in: (its home, its saved report, read as a saved one is)."""
+        from generative_driver.benchmark_support.suite_reporting import _saved_report, report_suite
+        from suite_fixtures import wait_harnesses
+        from test_replay_executor import serve
+        set_root, handle, _ = qualified_set()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name).resolve()
+        candidate = replay_candidate(root / 'candidate', REFERENCE_A)
+        fixture = root / 'harness_fixture.py'
+        fixture.write_text(HARNESS_FIXTURE.replace('TESTS', repr(str(Path(__file__).resolve().parent)))
+                           .replace('TABLE', repr(str(generated_sets._SETS_FILE))).replace('START', repr(START)))
+        home = root / 'home'
+        call = serve(self, home)
+        options = {'replay_candidates': {'generated': str(candidate)}, 'evaluator_password_files': {SET: str(handle)},
+                   'set_root': str(set_root), 'renode': str(root / 'renode-executable-handle')}
+        with patch.dict(os.environ, {'GD_TEST_HARNESS_FIXTURE': str(fixture)}):
+            started = start_suite(set_manifest(), 'replay', options, 'whole-suite', home=home)
+            self.assertTrue(started.get('ok'), started)
+            status = self.settled(call, started['suite_id'])
+        self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 2, 2), status)
+        wait_harnesses(home)
+        report_suite(started['suite_id'], home=home, output=root / 'report')
+        return home, _saved_report(json.loads((root / 'report/suite.json').read_text()))
+
+    def test_04_B11_a_saved_report_of_a_scoring_suite_pairs_with_no_hand_added_value(self):
+        from generative_driver.benchmark_support.pairing import paired_comparison
+        from generative_driver.benchmark_support.scorecard import bench_trial_dirs, suite_scorecard
+        as_scoring_set(self)
+        _, _, manifest = qualified_set()
+        home, saved = self.finished_suite()
+        scoring = {'registration': SET, 'manifest_sha256': manifest['manifest_sha256']}
+        self.assertEqual(saved['experiment']['comparison_identity']['scoring_set'], scoring)
+        compared = paired_comparison(saved, copy.deepcopy(saved))
+        self.assertEqual((compared['compatible'], compared['devices']['both'], compared['excluded']['repeated']),
+                         (True, 2, 0), compared)
+        card = suite_scorecard(saved, home=home, trial_dirs=bench_trial_dirs(saved, home))
+        self.assertEqual(card['conditions']['scoring_set'], scoring)
+        self.assertEqual(card['pass_line'], '2/2 pass, 0 unknown, 0 faults, 2 planned')
+        self.assertNotIn('trials', card)
+        text = json.dumps(card)
+        for row in saved['trials']:
+            for private in (row['trial_key'], row['device_id'], row['run_id']):
+                self.assertNotIn(private, text)
+
+    def test_04_B11_a_development_suites_report_is_refused_by_that_check(self):
+        # No RED of its own: this pins what must stay.
+        from generative_driver.benchmark_support.pairing import paired_comparison
+        _, saved = self.finished_suite()
+        self.assertNotIn('scoring_set', saved['experiment']['comparison_identity'])
+        with self.assertRaisesRegex(ValueError, 'Pairing needs two reports that carry a scoring set'):
+            paired_comparison(saved, copy.deepcopy(saved))
+
     def test_03_B25_a_suite_over_two_devices_with_one_candidate_finishes_and_regrades(self):
         from generative_driver.benchmark_support.harness import read_suite
         from generative_driver.benchmark_support.pairing import paired_comparison
@@ -1358,7 +1656,7 @@ class WholeSuiteTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'password handle|Regrade evidence'):
             report_suite(started['suite_id'], home=home, output=root / 'keyed-by-case', evidence_files=evidence,
                          password_files={'generated': str(handle)})
-        # Saved reports over the two devices, each with a scoring set added by hand: Feature 04 records it.
+        # Saved reports over the two devices, each with a scoring set added by hand, as this set is a development set.
         saved = json.loads((root / 'regraded-report/suite.json').read_text())
         saved['experiment']['comparison_identity']['scoring_set'] = {'registration': SET, 'manifest_sha256': 'a' * 64}
         saved = _saved_report(saved)

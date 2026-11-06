@@ -684,7 +684,7 @@ def _refuse_scoring_report(suite_id,root,output,password,set_root,vault):
     folder=Path(vault).expanduser().resolve()
     if not Path(set_root).expanduser().resolve().is_relative_to(folder):
         raise ValueError("A scoring suite's report needs its set root under the vault folder: "+suite_id)
-    if not Path(output).expanduser().resolve().is_relative_to(folder):
+    if not output.is_relative_to(folder):
         raise ValueError("A scoring suite's report is written only under the vault folder: "+suite_id)
     refuse_unsettled_scoring(suite_id,root)
 
@@ -698,6 +698,8 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
     from pathlib import Path
     from ..client import default_home
     root=Path(home or default_home()).resolve()
+    # One path, so that the folder the check approves is the one the export writes.
+    output=Path(output).expanduser().resolve()
     return _export_suite(suite_id,home=root,output=output,evidence_files=evidence_files,password_files=password_files,
                          audit_paths=audit_paths,password=password,vault=vault,
                          check=lambda:_refuse_scoring_report(suite_id,root,output,password,set_root,vault))

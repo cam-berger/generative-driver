@@ -231,7 +231,7 @@ def admit(case_id, options, trial_dir, *, password, renode=None, device=None, pi
                       if pin['manifest'].get('schema') == 'benchmark-case/2' else {}), truth
 
 
-TOKEN = 'evaluation-token.enc'
+TOKEN = trial_store.TOKEN
 
 
 def evaluation_token(trial_dir, password, trial_id, *, create=False):
@@ -757,12 +757,17 @@ def _refuse_beside_readable(configurator, home, registration):
 
 def _seal_settled(home, suite_id, slot, password, configurator, token):
     """Seal the trial of a slot that has just settled, found by its run or its child request. A slot with no folder is
-    left to the sweep that comes next, which makes one from its row."""
+    left to the sweep that comes next, which makes one from its row. So is a folder with a run and no start, as one made
+    from a row has: it has no token of its own, and the sweep that comes next proves the password first or stops. The
+    sweep before this settled saw an active slot, so it may have proved nothing."""
     found = ((slot['run_id'] and trial_store.find_trial(home, suite_id, slot['run_id']))
              or trial_store.find_trial(home, suite_id, slot['child_request_id']))
     if found is None:
         return
-    run_id = slot['run_id'] or trial_store.read_trial(found).get('run_id')
+    record = trial_store.read_trial(found)
+    run_id = slot['run_id'] or record.get('run_id')
+    if run_id and record.get('start_sent') is None:
+        return
     run_dir = Path(home) / 'runs' / run_id if run_id else None
     workspaces = trial_store.run_workspaces(configurator, run_id, run_dir) if run_id else []
     trial_store.seal_trial(found, run_dir, workspaces, password, configurator, token)
@@ -1528,7 +1533,7 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
     # Held before the record names this process, as a trial's harness holds its own.
     lock = hold_process_lock(suite_dir / HARNESS_LOCK)
     _private(suite_dir / 'suite.json', record)
-    attached, failure, current, sealing, closed = False, None, None, None, False
+    attached, failure, current, sealing, closed, held = False, None, None, None, False, None
     try:
         passwords = _supplied_passwords(files)
         # Only a new set suite is held here: a resumed one has its pins frozen, and holds its set below, once the
@@ -1588,7 +1593,7 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
         while attached and not (stop is not None and stop.is_set()):
             # Before the reservation that starts a worker, or that finds nothing left and completes the suite.
             if sealing is not None:
-                trial_store.sweep(home, record['suite_id'], sealing, configurator, token)
+                trial_store.sweep(home, record['suite_id'], sealing, configurator, token, proven=held is not None)
             reserved = _expect(configurator('suite_reserve', {'suite_id': record['suite_id'], 'token': token}),
                                'The configurator refused the reservation')
             slot = reserved.get('slot')
@@ -1647,7 +1652,7 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
             # Before the suite's final status, so that a failure here is a stop. A configurator it cannot reach makes
             # this do nothing, and the next start sweeps.
             try:
-                trial_store.sweep(home, record['suite_id'], sealing, configurator, token)
+                trial_store.sweep(home, record['suite_id'], sealing, configurator, token, proven=held is not None)
             except trial_store.Unreachable:
                 pass
             except trial_store.SealError as error:

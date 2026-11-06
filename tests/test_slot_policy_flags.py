@@ -832,6 +832,12 @@ class SealedSuiteTests(AuditFixture):
             self.assertEqual(code, 0, report)
             self.assertEqual([row['scored'] for row in report['trials']], ['flagged', 'pass'])
             self.assertEqual(self.assertSavedReportReads(report)['devices']['both'], 1)
+            # A `~` the check expands is the `~` the export writes under, not a folder of that name here.
+            with patch.dict(os.environ, {'HOME': str(self.vault), 'USERPROFILE': str(self.vault)}):
+                code, tilde = self.main('report', suite_id, '--output', '~/' + self.exports.name + '/tilde', *handle,
+                                        '--set-root', str(self.set_root), '--vault-folder', str(self.vault))
+            self.assertEqual(code, 0, tilde)
+            self.assertTrue((self.exports / 'tilde/suite.json').is_file())
             code, unsealed = self.main('unseal', suite_id, '--trial', flagged, *handle, *place, '--output',
                                        str(vault / 'checking'))
             self.assertEqual(code, 0, unsealed)

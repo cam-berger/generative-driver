@@ -13,13 +13,14 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import tarfile
 import tempfile
 import time
 import uuid
 from collections import namedtuple
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 # How many bytes of a seal's tar.gz one sealed part holds at most, so memory stays bounded whatever a trial wrote.
 PART_BYTES = 64 * 1024 * 1024
@@ -31,6 +32,7 @@ _WRITER_TEMPORARY = re.compile(r'\..+\.[0-9a-f]{16,32}')
 _SEALED_NAME = re.compile(r'sealed-([0-9]+)-(?:[0-9]+|index)\.enc')
 _WORKSPACE_ATTEMPT, _WORKSPACE_FOLDER = re.compile('attempt[0-9]+'), re.compile('gd-candidate-.+')
 _CONCLUDED = ('finished', 'faulted', 'flagged')
+_RUN_NAME = re.compile('[0-9A-Za-z_-]+')
 _DELETE_ATTEMPTS, _DELETE_PAUSE = 50, .05
 
 
@@ -393,7 +395,9 @@ def _stream_members(paths_and_hashes, password):
     with tarfile.open(fileobj=reader, mode='r|gz') as tar:
         for member in tar:
             parts = member.name.replace('\\', '/').split('/')
-            if not (member.isfile() or member.isdir()) or member.name.startswith('/') or '..' in parts:
+            # Windows would root `\\evil`, `C:/evil` and `C:evil`: refused on every platform, by the normalised name.
+            if (not (member.isfile() or member.isdir()) or not parts[0] or '..' in parts
+                    or PureWindowsPath(member.name).anchor):
                 raise SealError('A sealed trial holds something other than plain files and folders inside it')
             yield member, tar.extractfile(member) if member.isfile() else None
 
@@ -413,16 +417,37 @@ def _verify_generation(trial, index, password):
         raise SealError('A sealed trial differs from its index')
 
 
-def _prove_password(trial, password):
-    """Unlock the trial's evaluation token, so plaintext is never deleted under a seal the real password cannot open. A
-    no-run trial with no token has nothing to check."""
+def _prove_on_own_token(trial, record, run_dir, password):
+    """Unlock the evaluation token of a trial with a run and a start, so its plaintext is never deleted under a seal the
+    real password cannot open. A missing token there is damage. Whether it has a run is told by `run_dir`, as a trial
+    that never heard of its run names none on disk. A no-run trial, or a folder made from a slot's row, which has no
+    start and no token, relies on `_prove_on_the_suite`."""
+    if run_dir is None or record.get('start_sent') is None:
+        return
     path = Path(trial) / TOKEN
     if not path.exists():
-        return
+        raise SealError('A trial\'s evaluation token is missing, so nothing of it is deleted')
     try:
         _open_file(password, path)
     except ValueError:
         raise SealError('The password does not unlock this trial\'s evaluation token') from None
+
+
+def _prove_on_the_suite(home, suite_id, password, *, runs):
+    """Prove `password` before anything of the suite is sealed: any of its tokens that unlocks will do, so one damaged
+    token does not stop the right password. Tokens of which none unlocks stop it. So does a suite with no token at all
+    if a run is due to be sealed (`runs`); a no-run trial holds nothing worth losing, and is sealed without proof."""
+    tokens = [folder / TOKEN for folder in trial_dirs(home, suite_id) if (folder / TOKEN).exists()]
+    for path in tokens:
+        try:
+            _open_file(password, path)
+            return
+        except (OSError, ValueError):
+            continue
+    if tokens:
+        raise SealError('The password unlocks no evaluation token of this suite')
+    if runs:
+        raise SealError('Nothing can prove the password, so a concluded run is neither sealed nor deleted')
 
 
 def _remove_file(path):
@@ -565,19 +590,20 @@ def _changed(entries, indexes):
 
 def seal_trial(trial, run_dir, workspaces, password, call, token):
     """Seal one concluded trial and return its stub; `run_dir` is None for a trial with no run, and `workspaces` are the
-    folders `run_workspaces` names. In order: prove `password` (`_prove_password`), remove `private/`, write the seal
-    and sync it, unlock it and compare every member, write the stub and sync it, tell the configurator (`call`, with the
-    harness's `token` if it has one), delete the plaintext and check it is gone. So no plaintext is deleted before its
-    seal has verified. A trial with a seal already is decided from what is on disk, and no seal is overwritten: every
-    generation is verified, what matches is deleted, and a changed or extra file goes in a further generation. A stub
-    with nothing left beside it is returned as it is, and nothing is unlocked. Any failure is a `SealError`."""
+    folders `run_workspaces` names. In order: prove `password` (`_prove_on_own_token`), remove `private/`, write the
+    seal and sync it, unlock it and compare every member, write the stub and sync it, tell the configurator (`call`,
+    with the harness's `token` if it has one), delete the plaintext and check it is gone. So no plaintext is deleted
+    before its seal has verified. A trial with a seal already is decided from what is on disk, and no seal is
+    overwritten: every generation is verified, what matches is deleted, and a changed or extra file goes in a further
+    generation. A stub with nothing left beside it is returned as it is, and nothing is unlocked. Any failure is a
+    `SealError`."""
     trial = Path(trial)
     with _failing('Sealing a concluded trial'):
         record = read_trial(trial)
         stub = _is_stub(record)
         if stub and not _plaintext(trial, run_dir, workspaces, stub=True):
             return record
-        _prove_password(trial, password)
+        _prove_on_own_token(trial, record, run_dir, password)
         if (trial / 'private').exists():
             _remove_tree(trial / 'private')
         run_id = Path(run_dir).name if run_dir is not None else record.get('run_id')
@@ -706,56 +732,58 @@ def _made_from_row(home, suite_id, row, request, run_id):
     return folder
 
 
-def _prove_on_a_neighbour(home, suite_id, password):
-    """Prove `password` on another trial of the suite, for a folder that has no token of its own."""
-    for folder in trial_dirs(home, suite_id):
-        if (folder / TOKEN).exists():
-            return _prove_password(folder, password)
-    return None
+def _work_of(home, suite_id, rows, records, every):
+    """What a sweep has to do, decided from what is on disk with nothing yet touched: (the run folder of each trial due
+    to be sealed or None, its folder and record, or the row and request to make a folder from). Whether anything is left
+    of a folder is told without the run's events: the delete takes the workspaces first. No stub and no plaintext is a
+    `SealError`."""
+    work = []
+    for row, request, run_id in _targets(suite_id, rows, every):
+        held = [(folder, record) for folder, record in records if record.get('request_id') == request]
+        if not held and not run_id:
+            if every:
+                continue
+            raise SealError('A concluded trial has neither a stub nor plaintext')
+        run_dir = Path(home) / 'runs' / run_id if run_id else None
+        owner = _owner(held, run_id) if run_id else None
+        if run_id and owner is None:
+            if not _plaintext_of_run(run_dir):
+                raise SealError('A concluded trial has neither a stub nor plaintext')
+            work.append((run_dir, None, None, (row, request)))
+        for folder, record in held:
+            folder_run = run_dir if folder == owner else None
+            if not _is_stub(record) or _plaintext(folder, folder_run, [], stub=True):
+                work.append((folder_run, folder, record, None))
+    return work
 
 
-def _seal_found(folder, record, run_dir, password, call, token):
-    """Seal one folder unless nothing is left of it. Whether anything is left is told without the run's events: the
-    delete takes the workspaces first."""
-    if _is_stub(record) and not _plaintext(folder, run_dir, [], stub=True):
-        return
-    workspaces = run_workspaces(call, Path(run_dir).name, run_dir) if run_dir is not None else []
-    seal_trial(folder, run_dir, workspaces, password, call, token)
-
-
-def _sweep(home, suite_id, password, call, token, every=False):
+def _sweep(home, suite_id, password, call, token, every=False, proven=False):
     rows, identity = _suite_rows(call, suite_id)
     if 'scoring_set' not in identity:
         return
     with _failing('Sweeping a suite\'s concluded trials'):
         _refuse_damaged(home, suite_id)
         records = _suite_records(trials_under(bench_home(home) / 'suites'), suite_id)
-        for row, request, run_id in _targets(suite_id, rows, every):
-            held = [(folder, record) for folder, record in records if record.get('request_id') == request]
-            if not held and not run_id:
-                if every:
-                    continue
-                raise SealError('A concluded trial has neither a stub nor plaintext')
-            run_dir = Path(home) / 'runs' / run_id if run_id else None
-            owner = _owner(held, run_id) if run_id else None
-            if run_id and owner is None:
-                if not _plaintext_of_run(run_dir):
-                    raise SealError('A concluded trial has neither a stub nor plaintext')
-                _prove_on_a_neighbour(home, suite_id, password)
-                owner = _made_from_row(home, suite_id, row, request, run_id)
-                held = [*held, (owner, read_trial(owner))]
-            for folder, record in held:
-                _seal_found(folder, record, run_dir if folder == owner else None, password, call, token)
+        work = _work_of(home, suite_id, rows, records, every)
+        if work and not proven:
+            _prove_on_the_suite(home, suite_id, password, runs=any(item[0] is not None for item in work))
+        for run_dir, folder, _, to_make in work:
+            if to_make:
+                folder = _made_from_row(home, suite_id, *to_make, run_dir.name)
+            workspaces = run_workspaces(call, run_dir.name, run_dir) if run_dir is not None else []
+            seal_trial(folder, run_dir, workspaces, password, call, token)
 
 
-def sweep(home, suite_id, password, call, token=None):
+def sweep(home, suite_id, password, call, token=None, *, proven=False):
     """Seal any concluded trial of the suite `suite_id` still readable, scanning the whole bench home of `home`, since a
     suite's trials can span several harnesses' folders (`_targets`). Each is decided from what is on disk: no seal and
     plaintext is sealed; a valid seal and plaintext is finished (`seal_trial`); a seal and no plaintext, or a stub with
-    no local seal and no plaintext, as after `store`, is done; no stub and no plaintext stops the suite. `token` is the
-    harness's, with none when no harness is attached. A failure is a `SealError`, and a configurator it cannot read
-    `Unreachable`, one of them. A suite that is not scoring is left alone."""
-    _sweep(home, suite_id, password, call, token)
+    no local seal and no plaintext, as after `store`, is done; no stub and no plaintext stops the suite. If anything is
+    due to be sealed, `password` is proved first (`_prove_on_the_suite`), unless `proven` says a harness holding the set
+    has already unlocked its record under it. `token` is the harness's, with none when no harness is attached. A failure
+    is a `SealError`, and a configurator it cannot read `Unreachable`, one of them. A suite that is not scoring is left
+    alone."""
+    _sweep(home, suite_id, password, call, token, proven=proven)
 
 
 def _vault_folder(vault, suite_id, trial):
@@ -807,8 +835,6 @@ def _each_member(trial, indexes, suite_id, password, vault):
 
 
 def _read_seal_into(root, trial, record, suite_id, password, vault):
-    if password is None:
-        raise SealError('A sealed trial opens only with its set\'s password file')
     indexes = _indexes(trial, record, suite_id, password, vault)
     for name, row, stream in _each_member(trial, indexes, suite_id, password, vault):
         target = root / name
@@ -831,14 +857,28 @@ def _copy_plaintext(root, trial, run_dir):
                 shutil.copyfileobj(source, copy)
 
 
+def _is_run_of_suite(home, suite_id, name):
+    """Whether `name` is a plain name of a run in the runs database of `home` that suite `suite_id` started."""
+    database = Path(home) / 'runs.sqlite3'
+    if not (isinstance(name, str) and _RUN_NAME.fullmatch(name) and database.is_file()):
+        return False
+    with contextlib.closing(sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True)) as db:
+        row = db.execute('SELECT request_id FROM runs WHERE id=?', (name,)).fetchone()
+    return row is not None and str(row[0]).startswith('suite:' + suite_id + ':trial:')
+
+
 def _read_into(root, home, suite_id, trial, password, vault):
+    if password is None:
+        raise SealError('A concluded trial opens only with its set\'s password file')
     folder = Path(trial) if isinstance(trial, Path) else find_trial(home, suite_id, trial)
     record = None
     if folder is not None:
         record = read_trial(folder) if (folder / 'trial.json').exists() else None
         if record is None or not str(record.get('request_id')).startswith('suite:' + suite_id + ':trial:'):
             raise SealError('No such trial of this suite')
-    run_id = record.get('run_id') if record else str(trial)
+    elif not _is_run_of_suite(home, suite_id, trial):
+        raise SealError('No such trial of this suite')
+    run_id = record.get('run_id') if record else trial
     run_dir = Path(home) / 'runs' / run_id if run_id else None
     if record is None and not (run_dir.is_dir() and _plaintext_of_run(run_dir)):
         raise SealError('No such trial of this suite')

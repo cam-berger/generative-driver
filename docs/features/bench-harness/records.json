@@ -97,6 +97,11 @@
       "feature": "06",
       "sha256": "4efaa7a884fddd879c4ecf1e1be044ef7aa8bed6cd2f41cc1afff1d83e6d434a",
       "at": "2026-11-05T15:37:53+00:00"
+    },
+    {
+      "feature": "07",
+      "sha256": "07c911bcbd11b71e0523681c679da1b9563de136a985b278481205fa36a80c8e",
+      "at": "2026-11-06T01:45:39+00:00"
     }
   ]
 }

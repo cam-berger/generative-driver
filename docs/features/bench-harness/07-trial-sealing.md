@@ -91,3 +91,36 @@ def store(home, suite_id, vault, password, call) -> None                       #
 - Any real vault, password, Renode, set or model run.
 
 ## Deviations
+
+- `trial_store` has public names beyond the Spec's list (`new_trial_dir`, `solo_trial_dir`, `trials_under`, `readable_suites`, `run_workspaces`, `SealError`, `Unreachable`, `SEALED`, `TOKEN`) — they serve 07-B19's layout rule and the harness's needs, with no scope change.
+- `bench_home(home=None)` keeps its optional argument — this makes `harness.bench_home` the plain alias 07-B19 asks for.
+- `_trial_of` takes a list of folders — the glob has to move into `trial_store` under 07-B19; behaviour is unchanged.
+- "Before every worker starts" is a sweep at the top of `run_suite`'s loop — no trial can conclude between that sweep and the worker, and it also covers the reservation that completes the suite.
+- The call is named `suite_sealed`, the column `runs.sealed`, and marking adds no event — the Spec leaves the names open, and no new event keeps 07-B13's figures equal.
+- `suite_start` and `suite_resume` replies carry `scoring_set`, stripped from `suite.json` — the registration is no secret, and the harness needs it before its first reserve without reading the live table of sets.
+- A resume whose `suite_result` was lost stops right after attaching, in the 07-B5 sentence — it fails closed and starts no worker.
+- With a set root and no password file, a scoring resume gets 07-B5's sentence, not Feature 05's B13 reason — the Spec asks for one sentence.
+- `_refuse_beside_readable` counts a suite the configurator can't name as the same set — it fails closed, in line with 07-B5's worst case.
+- A failed seal stays stopped, but the way-out sweep may retry it — the failure is kept, the suite still blocks, and nothing is deleted before verifying.
+- The detach reason on a sealing failure is the closed text, with no `see .../suite.json` — 07-B4 requires no path.
+- The top proof runs only when the sweep or `store` has something to seal — it keeps 07-B3's "a seal and no plaintext: done". `_move_to_vault` still unlocks each copy before its original goes, and a copy left in the vault is valid ciphertext that a repeat reuses.
+- "No stub and no plaintext" stops while the sweep plans, before any row is sealed — it serves "before sealing anything". The cost: one such row leaves every other concluded trial of that suite readable until a person repairs it, with no worker of that suite starting meanwhile.
+- Only a trial with a run and a start proves on its own token — 07-B6's own wording; a no-run trial's token still counts towards the top proof.
+- `_seal_settled` has no top proof and takes no `proven` keyword — a folder with a run and a start proves on its own token, a folder with a run and a null `start_sent` goes to the sweep, which proves or stops, and a no-run trial is 07-B6's "nothing worth losing".
+- `seal_trial` called directly on a folder with a run and a null `start_sent` does no proof of its own — its only two callers are `_sweep` after its top proof and `_seal_settled` behind its guard.
+- `opened` needs a password for plaintext too — fits 07-B13's "raises with no password"; a wrong one can still open plaintext, but only for the operator.
+- `_is_run_of_suite` reads the runs database read-only — the Spec's `opened` has no `call`, `scorecard` already reads this database directly, and a missing database or a failed read refuses.
+- `report_suite` expands `~` in `output` for every suite — one normalised path is the fix for the check and the export disagreeing.
+- `harness.TOKEN` imports `trial_store.TOKEN` — one name in one place.
+- A stub with no local seal but late plaintext seals it in a further generation — this makes the documented `gd report <run>` after `store` resolve, and no seal is overwritten.
+- A stopped, unsettled slot found as a stub restores before its audit — otherwise it would settle unaudited; on a stored slot it is 07-B16's failed restore.
+- `restore` writes the original `trial.json` bytes itself, an exception to 07-B19 — byte identity avoids a needless generation, and it is one contained write.
+- A file that shrinks while being tarred fails the seal and stops the suite — it fails safe, and a resume seals it.
+- An unfinished generation's parts stay beside the trial and are moved by `store` — follows "never overwrites a seal", and read-back ignores them.
+- `store` refuses an absent vault folder, a completed suite still `stopping`, and a non-scoring suite — narrower acceptance that keeps a closed mount point unfilled, with no harness racing it.
+- `suite unseal` has a required `--output`, new or empty, under the vault folder, and its body is in `benchmark.py` — realises 07-B15's location rule.
+- `refuse_unsettled_scoring` is in `suites.py`, and the report's refusals fire inside `_export_suite` through `check` — the entry still supplies the refusals, with no extra call.
+- `ScoringFixture`'s stand-in also patches `_sync_file` — the Spec's cost exception; the real path runs in `tests/test_trial_sealing.py` and the five end-to-end tests.
+- Existing tests changed in `tests/test_scorecard.py`, `tests/test_vault_gate.py` and `tests/test_slot_policy.py`, and the round-two test changes — each follows from 07-B5, 07-B6 or 07-B17, and none weakens what the test checks.
+- `.scratch/benchmark-baseline/spec.md` changed at decision 21 and lines 22 and 102, not "line 59" — line 59 is about names; the lines that speak of sealing were changed.
+- Tests were written in groups, with report, scorecard and CLI code before their tests, resting on mutation REDs — it breaks the test-first rule in `STANDARDS.md` and `AGENTS.md`, which the user has been told; scope is unchanged, and the excerpts sampled fail for the Behaviour's reason.

@@ -415,8 +415,8 @@ class SweepFixture(FolderFixture):
         return {'ordinal': ordinal, 'trial_key': 'entry-%03d-repeat-000' % ordinal, 'case': 'generated',
                 'run_id': run_id, 'status': status, **fields}
 
-    def sweep(self, password=PASSWORD, token='harness-token'):
-        trial_store.sweep(self.home, SUITE, password, self.call, token)
+    def sweep(self, password=PASSWORD, token='harness-token', **options):
+        trial_store.sweep(self.home, SUITE, password, self.call, token, **options)
 
     def seal_files(self, trial=None):
         return {path.name: path.read_bytes() for path in (trial or self.trial).glob('sealed-*.enc')}
@@ -624,7 +624,8 @@ class WhatTheSweepDecidesTests(SweepFixture):
         self.assertTrue(self.parent.exists())
 
     def test_07_B3_a_seal_under_another_password_stops_the_suite_and_deletes_nothing(self):
-        trial = self.make_trial(ordinal=1, key='entry-001-repeat-000-bbbbbbbb', run_id=None, token=False)
+        trial = self.make_trial(ordinal=1, key='entry-001-repeat-000-bbbbbbbb', run_id=None, token=False,
+                                start_sent=None)
         self.call.rows = [self.row(1, 'finished', None)]
         with crashing('_mark_sealed'), self.assertRaises(Crash):
             trial_store.seal_trial(trial, self.run_dir, [], WRONG, self.call, 'harness-token')
@@ -744,7 +745,7 @@ class WhichTrialsTheSweepTakesTests(SweepFixture):
 
     def test_07_B7_a_run_with_no_trial_folder_gets_one_made_from_the_slots_row(self):
         shutil.rmtree(self.trial)
-        self.sweep()
+        self.sweep(proven=True)
         trial = trial_store.find_trial(self.home, SUITE, RUN)
         stub = harness.read_trial(trial)
         self.assertEqual((stub['status'], stub['run_id'], stub['case'], stub['start_sent']),
@@ -789,13 +790,15 @@ class FailureTests(SweepFixture):
         self.assertAllSealed()
 
     def test_07_B4_a_verifying_failure_stops_it_with_nothing_deleted(self):
-        real = trial_store._PartReader.readinto
+        real, read = trial_store._PartReader.readinto, []
 
         def damaged(reader, buffer):
             size = real(reader, buffer)
-            if size:
-                # Not the last byte: Python's stream reader ignores a gzip trailer, which is why the index holds hashes.
-                buffer[size // 2] = buffer[size // 2] ^ 0xff
+            if size > 16 and not read:
+                # Early in the first read: a byte late in the stream may be only padding, or the gzip trailer, which
+                # Python's stream reader ignores. The index holds hashes for that reason.
+                read.append(size)
+                buffer[16] = buffer[16] ^ 0xff
             return size
         with patch.object(trial_store._PartReader, 'readinto', damaged), self.assertRaises(trial_store.SealError):
             self.sweep()
@@ -979,6 +982,21 @@ class LinksAndModesTests(SweepFixture):
                         self.fail('It opened')
                 self.assertFalse(escape.exists())
 
+    def test_07_B9_a_name_a_windows_path_would_root_or_climb_is_refused_on_any_platform(self):
+        def named(name):
+            def build(tar):
+                info = tarfile.TarInfo(name)
+                info.size = 4
+                tar.addfile(info, io.BytesIO(b'evil'))
+            return build
+        for name in ('\\evil', 'C:/evil', 'C:\\evil', 'C:evil', '\\\\server\\share\\evil', 'run\\..\\..\\evil', '/evil',
+                     'run/../../evil'):
+            with self.subTest(name):
+                self.forged(named(name))
+                with self.assertRaisesRegex(trial_store.SealError, 'other than plain files'):
+                    with trial_store.opened(self.home, SUITE, self.trial, PASSWORD):
+                        self.fail('It opened')
+
     def test_07_B9_a_member_its_index_does_not_list_is_refused(self):
         def build(tar):
             info = tarfile.TarInfo('run/unlisted')
@@ -1099,12 +1117,6 @@ class ReadingBackTests(SweepFixture):
             self.assertFalse((root / 'trial/run-evidence.enc').exists())
             self.assertFalse((root / 'run/benchmark/inputs').exists())
         self.assertNothingDeleted()
-
-    def test_07_B13_a_run_with_no_trial_folder_opens_too(self):
-        shutil.rmtree(self.trial)
-        with trial_store.opened(self.home, SUITE, RUN, PASSWORD) as root:
-            self.assertEqual((root / 'run/benchmark/state.json').read_bytes(), RUN_FILES['benchmark/state.json'])
-            self.assertEqual(list((root / 'trial').iterdir()), [])
 
     def test_07_B13_a_seal_with_no_password_or_the_wrong_one_raises(self):
         self.sweep()
@@ -1431,6 +1443,7 @@ class WhichDecisionsSealTests(HarnessFixture):
         shutil.rmtree(self.trial)
         self.driven.reservations = [self.slot()]
         self.driven.rows = [self.row(status='running')]
+        self.make_trial(ordinal=1, key='entry-001-repeat-000-bbbbbbbb', run_id='run-2')
 
         def settled(method, params=None):
             if method == 'suite_settle':
@@ -1936,6 +1949,19 @@ class ScoringReadRefusalTests(unittest.TestCase):
         self.status = {'ok': False, 'reason': 'No configurator'}
         self.assertRefused('did not report the suite')
 
+    def test_07_B18_one_normalised_output_goes_to_the_check_and_to_the_export(self):
+        written = []
+
+        def export(suite_id, *, home, output, check, **_options):
+            check()
+            written.append(output)
+        with patch.dict(os.environ, {'HOME': str(self.root), 'USERPROFILE': str(self.root)}), \
+                patch.object(suite_reporting, '_export_suite', export), \
+                patch('generative_driver.client.call', self.call):
+            suite_reporting.report_suite(SUITE, home=self.root / 'home', output='~/vault/report', password=PASSWORD,
+                                         set_root=self.set_root, vault='~/vault')
+        self.assertEqual(written, [self.vault / 'report'])
+
     def test_07_B13_B17_a_scoring_scorecard_with_no_password_or_set_root_raises_rather_than_give_none_figures(self):
         for missing in ({'password': None, 'set_root': 'x'}, {'password': PASSWORD, 'set_root': None}):
             with self.subTest(str(missing)), self.assertRaisesRegex(ValueError, 'needs its set.s password file'):
@@ -2095,6 +2121,350 @@ def fcntl_module():
     except ImportError:
         raise unittest.SkipTest('This system has no fcntl') from None
     return fcntl
+
+
+class PasswordRuleTests(SweepFixture):
+    """07-B6 as ruled: a proof at the top of a sweep or `store`, a trial's own token, and a stop with nothing
+    deleted."""
+
+    def neighbour(self, key='entry-001-repeat-000-bbbbbbbb', ordinal=1, damaged=False):
+        """Another trial of the suite, with its own token, that no row of the test concludes."""
+        trial = self.make_trial(ordinal=ordinal, key=key, run_id='run-' + key[-8:])
+        if damaged:
+            (trial / trial_store.TOKEN).write_bytes(b'not what was sealed')
+        return trial
+
+    def assertRunKept(self):
+        for relative, content in RUN_FILES.items():
+            self.assertEqual((self.run_dir / relative).read_bytes(), content)
+        for relative, content in WORKSPACE_FILES.items():
+            self.assertEqual((self.parent / relative).read_bytes(), content)
+
+    def test_07_B6_a_trial_with_a_run_and_a_start_and_no_token_stops_with_nothing_deleted(self):
+        (self.trial / trial_store.TOKEN).unlink()
+        with self.assertRaisesRegex(trial_store.SealError, 'evaluation token is missing') as raised:
+            self.seal()
+        self.assertNotIn(str(self.root), str(raised.exception))
+        self.assertNothingDeleted()
+        self.assertTrue((self.trial / 'private/final/secret.json').exists())
+        self.assertEqual(self.generations(), [])
+        self.assertEqual(self.call.sealed_marks(), [])
+
+    def test_07_B6_it_is_the_same_from_a_sweep_even_with_the_set_held(self):
+        self.neighbour()
+        (self.trial / trial_store.TOKEN).unlink()
+        for options in ({}, {'proven': True}):
+            with self.subTest(str(options)), \
+                    self.assertRaisesRegex(trial_store.SealError, 'evaluation token is missing'):
+                self.sweep(**options)
+            self.assertNothingDeleted()
+
+    def test_07_B6_has_a_run_comes_from_the_run_folder_as_an_adopted_silent_folder_names_none_on_disk(self):
+        record = json.loads((self.trial / 'trial.json').read_text())
+        (self.trial / 'trial.json').write_text(json.dumps({**record, 'run_id': None}))
+        self.neighbour()
+        (self.trial / trial_store.TOKEN).unlink()
+        with self.assertRaisesRegex(trial_store.SealError, 'evaluation token is missing'):
+            self.sweep()
+        self.assertNothingDeleted()
+
+    def test_07_B6_every_pass_that_would_delete_proves_again_after_a_crash(self):
+        with crashing('_delete_plaintext'), self.assertRaises(Crash):
+            self.seal()
+        (self.trial / trial_store.TOKEN).unlink()
+        with self.assertRaisesRegex(trial_store.SealError, 'evaluation token is missing'):
+            self.seal()
+        self.assertRunKept()
+
+    def test_07_B6_a_stub_with_nothing_left_never_stops_on_a_missing_token(self):
+        self.seal()
+        (self.trial / trial_store.TOKEN).unlink()
+        stub = self.seal()
+        self.assertEqual(stub['status'], 'sealed')
+        self.sweep()
+
+    def test_07_B6_killed_after_making_a_folder_from_a_row_the_next_sweep_still_needs_its_proof(self):
+        self.neighbour()
+        shutil.rmtree(self.trial)
+        with crashing('seal_trial'), self.assertRaises(Crash):
+            self.sweep()
+        made = trial_store.find_trial(self.home, SUITE, RUN)
+        self.assertEqual(harness.read_trial(made)['start_sent'], None)
+        with self.assertRaisesRegex(trial_store.SealError, 'password'):
+            self.sweep(password=WRONG)
+        self.assertRunKept()
+        self.assertEqual(harness.read_trial(made)['status'], 'made-from-row')
+        self.sweep()
+        self.assertEqual(harness.read_trial(made)['status'], 'sealed')
+
+    def test_07_B6_a_folder_made_from_a_row_with_nothing_to_prove_on_stops_with_nothing_deleted_or_made(self):
+        shutil.rmtree(self.trial)
+        for password in (PASSWORD, WRONG):
+            with self.subTest(password is PASSWORD), \
+                    self.assertRaisesRegex(trial_store.SealError, 'prove the password'):
+                self.sweep(password=password)
+            self.assertRunKept()
+            self.assertEqual(trial_store.trial_dirs(self.home, SUITE), [])
+
+    def test_07_B6_killed_after_making_it_with_nothing_to_prove_on_it_stops_too(self):
+        shutil.rmtree(self.trial)
+        with crashing('seal_trial'), self.assertRaises(Crash):
+            self.sweep(proven=True)
+        with self.assertRaisesRegex(trial_store.SealError, 'prove the password'):
+            self.sweep()
+        self.assertRunKept()
+
+    def test_07_B6_a_harness_holding_the_set_has_proved_it(self):
+        shutil.rmtree(self.trial)
+        with patch.object(trial_store, '_open_file', wraps=trial_store._open_file) as unlocking:
+            self.sweep(proven=True)
+        made = trial_store.find_trial(self.home, SUITE, RUN)
+        self.assertEqual(harness.read_trial(made)['status'], 'sealed')
+        self.assertNotIn(trial_store.TOKEN, [Path(call.args[1]).name for call in unlocking.call_args_list])
+
+    def test_07_B6_a_damaged_token_does_not_stop_the_right_password(self):
+        self.neighbour(key='entry-001-repeat-000-00000000', damaged=True)
+        self.neighbour(key='entry-002-repeat-000-11111111', ordinal=2)
+        shutil.rmtree(self.trial)
+        self.sweep()
+        self.assertEqual(harness.read_trial(trial_store.find_trial(self.home, SUITE, RUN))['status'], 'sealed')
+
+    def test_07_B6_a_token_that_cannot_be_read_does_not_stop_it_either(self):
+        damaged = self.neighbour(key='entry-001-repeat-000-00000000')
+        self.neighbour(key='entry-002-repeat-000-11111111', ordinal=2)
+        shutil.rmtree(self.trial)
+        real = trial_store._open_file
+
+        def unreadable(password, path, expected=None):
+            if Path(path).parent == damaged:
+                raise OSError(5, 'Input/output error', str(path))
+            return real(password, path, expected)
+        with patch.object(trial_store, '_open_file', unreadable):
+            self.sweep()
+        self.assertEqual(harness.read_trial(trial_store.find_trial(self.home, SUITE, RUN))['status'], 'sealed')
+
+    def test_07_B6_tokens_none_of_which_unlock_stop_it_before_anything_is_sealed(self):
+        no_run = self.make_trial(ordinal=1, key='entry-000-repeat-000-0000none', run_id=None, token=False)
+        self.call.rows = [self.row(1, 'finished', None), self.row()]
+        with self.assertRaisesRegex(trial_store.SealError, 'unlocks no evaluation token') as raised:
+            self.sweep(password=WRONG)
+        self.assertNotIn(str(self.root), str(raised.exception))
+        self.assertNothingDeleted()
+        self.assertEqual(harness.read_trial(no_run)['status'], 'evaluated')
+        self.assertTrue((no_run / 'device/journal.jsonl').exists())
+        self.assertEqual(self.generations(no_run), [])
+
+    def test_07_B6_a_no_run_trial_in_a_suite_with_no_token_at_all_is_sealed_without_proof(self):
+        (self.trial / trial_store.TOKEN).unlink()
+        no_run = self.make_trial(ordinal=1, key='entry-001-repeat-000-bbbbbbbb', run_id=None, token=False)
+        self.call.rows = [self.row(1, 'finished', None)]
+        self.sweep(password=WRONG)
+        self.assertEqual(harness.read_trial(no_run)['status'], 'sealed')
+
+    def test_07_B6_with_nothing_to_seal_no_key_is_derived_whatever_the_password(self):
+        self.sweep()
+        with patch.object(trial_store, '_open_file', side_effect=AssertionError('It unlocked something')):
+            self.sweep(password=WRONG)
+
+    def test_07_B6_B16_store_under_a_wrong_password_seals_and_deletes_nothing(self):
+        no_run = self.make_trial(ordinal=1, key='entry-000-repeat-000-0000none', run_id=None, token=False)
+        self.call.rows = [self.row(1, 'finished', None), self.row()]
+        vault = self.root / 'vault'
+        vault.mkdir()
+        with self.assertRaisesRegex(trial_store.SealError, 'unlocks no evaluation token'):
+            trial_store.store(self.home, SUITE, vault, WRONG, self.call)
+        self.assertNothingDeleted()
+        self.assertEqual(harness.read_trial(no_run)['status'], 'evaluated')
+        self.assertTrue((no_run / 'device/journal.jsonl').exists())
+        self.assertEqual(list(vault.iterdir()), [])
+        self.assertEqual(self.call.sealed_marks(), [])
+
+    def test_07_B6_B16_a_suite_with_nothing_to_prove_on_cannot_be_stored(self):
+        shutil.rmtree(self.trial)
+        vault = self.root / 'vault'
+        vault.mkdir()
+        with self.assertRaisesRegex(trial_store.SealError, 'prove the password'):
+            trial_store.store(self.home, SUITE, vault, PASSWORD, self.call)
+        self.assertRunKept()
+        self.assertEqual(list(vault.iterdir()), [])
+
+
+class HarnessProofTests(HarnessFixture):
+    def sweeps(self, **request):
+        """The `proven` of each sweep one resumed harness makes."""
+        with patch.object(trial_store, 'sweep') as sweeping:
+            self.resume(**request)
+        return [call.kwargs['proven'] for call in sweeping.call_args_list]
+
+    def test_07_B6_both_sweep_sites_say_nothing_is_proven_with_no_set_held(self):
+        self.driven.reservations = [self.slot()]
+        self.driven.decision = 'block'
+        self.assertEqual(self.sweeps(), [False, False])
+
+    def test_07_B6_both_sweep_sites_say_it_is_proven_by_a_held_set(self):
+        self.driven.reservations = [self.slot()]
+        self.driven.decision = 'block'
+        held = SimpleNamespace(registration='set-v1')
+        with patch.object(harness, '_held_for_resume', return_value=held), \
+                patch.object(generated_trials, 'set_unreachable', return_value=True):
+            self.assertEqual(self.sweeps(set_root=str(self.root / 'set')), [True, True])
+
+    def test_07_B6_a_harness_holding_the_set_seals_a_run_that_has_lost_its_folder(self):
+        shutil.rmtree(self.trial)
+        self.driven.rows = [self.row()]
+        held = SimpleNamespace(registration='set-v1')
+        with patch.object(harness, '_held_for_resume', return_value=held), \
+                patch.object(generated_trials, 'set_unreachable', return_value=True):
+            record = self.resume(set_root=str(self.root / 'set'))
+        self.assertEqual(record['status'], 'finished', record)
+        self.assertEqual(harness.read_trial(trial_store.find_trial(self.home, SUITE, RUN))['status'], 'sealed')
+
+    def test_07_B6_a_harness_holding_nothing_stops_at_it_and_starts_no_worker(self):
+        shutil.rmtree(self.trial)
+        self.driven.rows = [self.row()]
+        record = self.resume()
+        self.assertEqual(record['status'], 'failed')
+        self.assertIn('prove the password', record['reason'])
+        self.assertNotIn(str(self.root), record['reason'])
+        self.assertNotIn('suite_reserve', self.driven.methods())
+        self.assertEqual((self.run_dir / 'benchmark/state.json').read_bytes(), RUN_FILES['benchmark/state.json'])
+
+
+class SettledFolderWithNoStartTests(HarnessFixture):
+    """A settling slot whose folder has a run and no start, as one made from a row has: no token of its own, so the
+    sweep that follows must prove the password or stop, and the sweep before it saw an active slot and proved
+    nothing."""
+
+    def setUp(self):
+        super().setUp()
+        shutil.rmtree(self.trial)
+        self.trial = self.make_trial(token=False, start_sent=None)
+
+    def settled(self, *, set_root=None):
+        """One resumed harness over that slot, which concludes when it settles: its record."""
+        self.driven.reservations = [self.slot()]
+        self.driven.rows = [self.row(status='running')]
+
+        def concluding(method, params=None):
+            if method == 'suite_settle':
+                self.driven.rows[0]['status'] = 'finished'
+            return self.driven(method, params)
+        folder = trial_store.suite_dir(self.home, 'suite-run-resumed')
+        with patch.object(harness, '_suite_trial', return_value=None):
+            return harness.run_suite(folder, {'home': str(self.home), 'suite_id': SUITE, 'password_files': {
+                'set-v1': str(self.handle)}, **({'set_root': set_root} if set_root else {})}, call=concluding)
+
+    def assertKept(self):
+        for relative, content in RUN_FILES.items():
+            self.assertEqual((self.run_dir / relative).read_bytes(), content)
+        self.assertEqual(self.generations(), [])
+        self.assertEqual(harness.read_trial(self.trial)['status'], 'evaluated')
+        self.assertNotIn('suite_sealed', self.driven.methods())
+
+    def test_07_B6_a_settled_folder_with_a_run_and_no_start_under_a_wrong_password_stops_with_nothing_deleted(self):
+        self.make_trial(ordinal=1, key='entry-001-repeat-000-bbbbbbbb', run_id='run-2')
+        self.handle.write_text('another-password')
+        record = self.settled()
+        self.assertEqual(record['status'], 'failed', record)
+        self.assertEqual(record['reason'], 'The password unlocks no evaluation token of this suite')
+        self.assertKept()
+
+    def test_07_B6_with_nothing_to_prove_on_it_stops_too(self):
+        record = self.settled()
+        self.assertEqual(record['status'], 'failed', record)
+        self.assertIn('prove the password', record['reason'])
+        self.assertKept()
+
+    def test_07_B6_the_right_password_seals_it_in_the_sweep_that_follows(self):
+        self.make_trial(ordinal=1, key='entry-001-repeat-000-bbbbbbbb', run_id='run-2')
+        record = self.settled()
+        self.assertEqual(record['status'], 'finished', record)
+        self.assertEqual(harness.read_trial(self.trial)['status'], 'sealed')
+        methods = self.driven.methods()
+        settled = methods.index('suite_settle')
+        self.assertEqual(methods[settled + 1:settled + 4], ['suite_result', 'events', 'suite_sealed'])
+
+    def test_07_B6_a_harness_holding_the_set_seals_it_there_with_nothing_else_to_prove_on(self):
+        held = SimpleNamespace(registration='set-v1')
+        with patch.object(harness, '_held_for_resume', return_value=held), \
+                patch.object(generated_trials, 'set_unreachable', return_value=True):
+            record = self.settled(set_root=str(self.root / 'set'))
+        self.assertEqual(record['status'], 'finished', record)
+        self.assertEqual(harness.read_trial(self.trial)['status'], 'sealed')
+
+
+class OnlyThisSuitesRunsTests(SweepFixture):
+    OTHER = 'run-other'
+
+    def setUp(self):
+        super().setUp()
+        write_files(self.home / 'runs' / self.OTHER, {'work/secret.txt': b'another suites plaintext'})
+        with contextlib.closing(sqlite3.connect(self.home / 'runs.sqlite3')) as db:
+            db.execute('CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, request_id TEXT)')
+            db.executemany('INSERT OR REPLACE INTO runs VALUES(?,?)', [
+                (RUN, 'suite:' + SUITE + ':trial:0'), (self.OTHER, 'suite:suite-other:trial:0'),
+                ('run-solo', 'trial-request')])
+            db.commit()
+
+    def assertRefused(self, suite, key, password=PASSWORD):
+        with self.assertRaisesRegex(trial_store.SealError, 'No such trial') as raised:
+            with trial_store.opened(self.home, suite, key, password):
+                self.fail('It opened')
+        self.assertNotIn(str(self.root), str(raised.exception))
+
+    def test_07_B13_a_name_that_is_no_run_of_this_suite_is_refused_though_it_has_plaintext(self):
+        self.assertRefused(SUITE, self.OTHER)
+        write_files(self.home / 'runs/run-solo', {'work/secret.txt': b'plaintext'})
+        self.assertRefused(SUITE, 'run-solo')
+        write_files(self.home / 'runs/run-unknown', {'work/secret.txt': b'plaintext'})
+        self.assertRefused(SUITE, 'run-unknown')
+
+    def test_07_B13_a_name_that_is_not_plain_is_refused(self):
+        write_files(self.root / 'outside', {'work/secret.txt': b'plaintext'})
+        names = ('../../outside', '..', '.', '', 'a/b', str(self.root / 'outside'))
+        for name in names:
+            with self.subTest(name):
+                self.assertRefused(SUITE, name)
+        # The database is readable and writable by the same user, so a row saying so does not make it plain.
+        with contextlib.closing(sqlite3.connect(self.home / 'runs.sqlite3')) as db:
+            db.executemany('INSERT INTO runs VALUES(?,?)', [(name, 'suite:' + SUITE + ':trial:0') for name in names])
+            db.commit()
+        for name in names:
+            with self.subTest(name + ' with a row'):
+                self.assertRefused(SUITE, name)
+
+    def test_07_B13_a_run_of_this_suite_with_no_folder_still_opens(self):
+        shutil.rmtree(self.trial)
+        with trial_store.opened(self.home, SUITE, RUN, PASSWORD) as root:
+            self.assertEqual((root / 'run/benchmark/state.json').read_bytes(), RUN_FILES['benchmark/state.json'])
+
+    def test_07_B13_with_no_database_nothing_says_it_is_this_suites(self):
+        shutil.rmtree(self.trial)
+        (self.home / 'runs.sqlite3').unlink()
+        self.assertRefused(SUITE, RUN)
+
+    def test_07_B13_plaintext_needs_the_password_too(self):
+        with self.assertRaisesRegex(trial_store.SealError, 'password file'):
+            with trial_store.opened(self.home, SUITE, RUN, None):
+                self.fail('It opened')
+
+    def test_07_B15_unseal_writes_nothing_of_another_suites_run(self):
+        vault = self.root / 'vault'
+        vault.mkdir()
+        handle = self.root / 'password-handle'
+        handle.write_text('the-trial-sealing-password')
+        output = io.StringIO()
+        with patch.dict(os.environ, {'GENERATIVE_DRIVER_HOME': str(self.home)}), contextlib.redirect_stdout(output):
+            code = benchmark.main(['suite', 'unseal', SUITE, '--trial', self.OTHER, '--password-file', str(handle),
+                                   '--vault-folder', str(vault), '--output', str(vault / 'checking')])
+        self.assertEqual(code, 1, output.getvalue())
+        self.assertIn('No such trial', json.loads(output.getvalue())['error'])
+        self.assertFalse((vault / 'checking').exists())
+
+
+class OneTokenNameTests(unittest.TestCase):
+    def test_07_B6_the_harness_uses_the_one_token_name(self):
+        self.assertIs(harness.TOKEN, trial_store.TOKEN)
 
 
 if __name__ == '__main__':

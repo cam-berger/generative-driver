@@ -64,7 +64,7 @@ class ReadingIntoMemoryTests(HoldingFixture):
             return real(path)
 
         def call(method, params=None):
-            at_contact.append(sorted(str(path.relative_to(root)) for path in reads if path.is_relative_to(root)))
+            at_contact.append(sorted(path.relative_to(root).as_posix() for path in reads if path.is_relative_to(root)))
             return self.call(method, params)
         with patch.object(Path, 'read_bytes', read_bytes):
             harness_record = self.run_with(call, **self.supplied(root))
@@ -100,7 +100,9 @@ class ReadingIntoMemoryTests(HoldingFixture):
         root = copied_set(self)
         (root / 'devices/0000d001.answer.enc').unlink()
         (root / 'devices/0000d001.answer.enc').mkdir()
-        self.assertRefused(PREFIX + 'IsADirectoryError', **self.supplied(root))
+        # Windows refuses to open a directory as a file with a PermissionError.
+        self.assertRefused(PREFIX + ('PermissionError' if os.name == 'nt' else 'IsADirectoryError'),
+                           **self.supplied(root))
 
 
 def wait_until(predicate, what, seconds=120):

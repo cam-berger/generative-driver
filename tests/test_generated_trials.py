@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1606,21 +1607,24 @@ class WholeSuiteTests(unittest.TestCase):
             status = self.settled(call, started['suite_id'])
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 2, 2), status)
         wait_harnesses(home)
-        report_suite(started['suite_id'], home=home, output=root / 'report')
-        return home, _saved_report(json.loads((root / 'report/suite.json').read_text()))
+        output = set_root.parent / ('report-' + uuid.uuid4().hex)
+        self.addCleanup(shutil.rmtree, output, ignore_errors=True)
+        report_suite(started['suite_id'], home=home, output=output, password=PASSWORD, set_root=set_root,
+                     vault=set_root.parent)
+        return home, _saved_report(json.loads((output / 'suite.json').read_text()))
 
     def test_04_B11_a_saved_report_of_a_scoring_suite_pairs_with_no_hand_added_value(self):
         from generative_driver.benchmark_support.pairing import paired_comparison
-        from generative_driver.benchmark_support.scorecard import bench_trial_dirs, suite_scorecard
+        from generative_driver.benchmark_support.scorecard import suite_scorecard
         as_scoring_set(self)
-        _, _, manifest = qualified_set()
+        set_root, _, manifest = qualified_set()
         home, saved = self.finished_suite()
         scoring = {'registration': SET, 'manifest_sha256': manifest['manifest_sha256']}
         self.assertEqual(saved['experiment']['comparison_identity']['scoring_set'], scoring)
         compared = paired_comparison(saved, copy.deepcopy(saved))
         self.assertEqual((compared['compatible'], compared['devices']['both'], compared['excluded']['repeated']),
                          (True, 2, 0), compared)
-        card = suite_scorecard(saved, home=home, trial_dirs=bench_trial_dirs(saved, home))
+        card = suite_scorecard(saved, home=home, password=PASSWORD, set_root=set_root)
         self.assertEqual(card['conditions']['scoring_set'], scoring)
         self.assertEqual(card['pass_line'], '2/2 pass, 0 unknown, 0 faults, 2 planned')
         self.assertNotIn('trials', card)

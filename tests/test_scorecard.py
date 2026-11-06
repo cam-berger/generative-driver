@@ -978,11 +978,24 @@ def three_probed(exchanges=(5, 3, 0)):
     return scoring_report({'d0': 'pass', 'd1': 'failure', 'd2': 'failure'}), metrics
 
 
+@contextlib.contextmanager
+def scoring_read():
+    """A scoring suite's card, as a test of the card alone reads it: no folder opened, no set read and nothing asked of
+    the configurator. `tests/test_slot_policy_flags.py` reads them for real."""
+    @contextlib.contextmanager
+    def opened(*_args, **_kwargs):
+        yield Path('no-such-opened-copy')
+    with patch('generative_driver.benchmark_support.trial_store.opened', opened), \
+            patch('generative_driver.benchmark_support.scorecard._set_design', return_value={}), \
+            patch('generative_driver.benchmark_support.suites.refuse_unsettled_scoring'):
+        yield {'password': object(), 'set_root': 'no-such-set'}
+
+
 def scorecard_of(report, metrics, **arguments):
     """The scorecard of `report`, with `trial_metrics` answering from `metrics` by run id (so no home is opened)."""
     with patch('generative_driver.benchmark_support.scorecard.trial_metrics',
-               side_effect=lambda home, run_id, **_: metrics[run_id]):
-        return suite_scorecard(report, home=Path('no-such-home'), **arguments)
+               side_effect=lambda home, run_id, **_: metrics[run_id]), scoring_read() as reading:
+        return suite_scorecard(report, home=Path('no-such-home'), **reading, **arguments)
 
 
 class SuiteScorecardTests(unittest.TestCase):
@@ -1260,7 +1273,7 @@ class SuiteScorecardTests(unittest.TestCase):
             asked.append((home, run_id, arguments.get('trial_dir')))
             return blank_metrics(run_id)
         with patch('generative_driver.benchmark_support.scorecard.trial_metrics', side_effect=measure):
-            suite_scorecard(scoring_report({'d0': 'pass', 'd1': 'failure'}), home=self.home,
+            suite_scorecard(scoring_report({'d0': 'pass', 'd1': 'failure'}, scoring=False), home=self.home,
                             trial_dirs={'entry-001-repeat-000': Path('trial-one'), 'entry-009-repeat-000': Path('nobody')})
         self.assertEqual(asked, [(self.home, 'r0', None), (self.home, 'r1', Path('trial-one'))])
 
@@ -1446,8 +1459,8 @@ class BenchTrialDirectoryTests(unittest.TestCase):
 class ScorecardCommandTests(unittest.TestCase):
     def command(self, report, metrics, *arguments, home='state'):
         """`benchmark suite scorecard` as the command line runs it, in a home named by the environment as `generative-driver
-        --home` sets it, with `report_suite` returning `report` and `trial_metrics` answering from `metrics` (by run id, or
-        a function of the home and run id): (exit code, the JSON it printed, the call `report_suite` got, the home each
+        --home` sets it, with the export returning `report` and `trial_metrics` answering from `metrics` (by run id, or
+        a function of the home and run id): (exit code, the JSON it printed, the call the export got, the home each
         `trial_metrics` call got)."""
         from generative_driver.benchmark import main
         asked, output = [], io.StringIO()
@@ -1455,10 +1468,12 @@ class ScorecardCommandTests(unittest.TestCase):
             asked.append(home)
             return metrics(home, run_id) if callable(metrics) else metrics[run_id]
         with patch.dict(os.environ, {'GENERATIVE_DRIVER_HOME': str(home)}), \
-                patch('generative_driver.benchmark_support.suite_reporting.report_suite', return_value=report) as export, \
+                patch('generative_driver.benchmark_support.suite_reporting._export_suite',
+                      return_value=report) as export, \
                 patch('generative_driver.benchmark_support.scorecard.trial_metrics', side_effect=measure), \
+                patch('generative_driver.benchmark._read_password', return_value=object()), scoring_read(), \
                 contextlib.redirect_stdout(output):
-            code = main(['suite', 'scorecard', *arguments])
+            code = main(['suite', 'scorecard', *arguments, '--password-file', 'handle', '--set-root', 'no-such-set'])
         return code, json.loads(output.getvalue()), export.call_args, asked
 
     def test_the_command_writes_the_json_and_the_markdown_and_prints_the_json(self):
@@ -1565,7 +1580,10 @@ class RealSuiteTests(AssistiveFixture):
         with self.owner():
             report = report_suite(sid, home=self.home, output=self.root / 'export', audit_paths=(self.VAULT,))
         report['experiment']['comparison_identity']['scoring_set'] = {'registration': 'generated-set-1', 'manifest_sha256': 'a' * 64}
-        card = suite_scorecard(report, home=self.home, trial_dirs=bench_trial_dirs(report, self.home))
+        with scoring_read() as reading, patch(
+                'generative_driver.benchmark_support.scorecard._scoring_metrics',
+                side_effect=lambda home, _suite, row, *_: trial_metrics(home, row['run_id'])):
+            card = suite_scorecard(report, home=self.home, **reading)
         self.assertNotIn('trials', card)
         self.assertEqual(card['pass_line'], '0/1 pass, 0 unknown, 1 faults, 3 planned, 1 flagged')
         # The suite is blocked at a trial, and its reason names it: the aggregate says only that it is provisional.

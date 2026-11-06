@@ -620,7 +620,8 @@ class ResumeWithoutARootTests(ResumeFixture):
                 self.directory = self.base / name.replace(' ', '-')
                 record = self.resume_without([self.slot(), {'ok': True, 'status': 'completed', 'slot': None}], child)
                 self.assertEqual((record['status'], record['accepted']), ('finished', True), record)
-                self.assertNotIn('suite_result', self.methods())
+                # Feature 07's B5 asks the one thing a resume with no root needs to know: is its password here?
+                self.assertEqual(self.methods().count('suite_result'), 1)
 
     def test_05_B15_a_slot_that_needs_its_device_fails_there(self):
         # No RED of its own: Feature 03's B5 stands.

@@ -321,9 +321,9 @@ def _claim(handoffs, reports, final):
             'agrees': None if claimed is None or passed is None else claimed == passed}
 
 
-def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None) -> dict:
+def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None, run_dir: Path | None = None) -> dict:
     """The metrics of one run, schema `benchmark-trial-metrics/1`: its `repairs`, its `claim` and, for each stage in
-    order:
+    order (`run_dir` is where the run's files are read, if not in `home`: `trial_store.opened`'s copy of a scoring run):
 
     - `attempts`: the `stage.assigned` events. `wall_seconds`: from the first of them to the last `stage.accepted` or
       `stage.skipped` event. `worker_seconds` and `tokens`: the workers' reports summed.
@@ -362,7 +362,7 @@ def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None) -> 
 
     Raises FileNotFoundError for a `home` with no database and ValueError for a `run_id` the database does not hold."""
     home = Path(home)
-    run_dir = home / 'runs' / run_id
+    run_dir = home / 'runs' / run_id if run_dir is None else Path(run_dir)
     events, reports, handoffs, final, progress = _records(home, run_id)
     assigned, begun, ended = {stage: [] for stage in STAGES}, {}, {stage: [] for stage in STAGES}
     managed, device = {stage: {} for stage in STAGES}, {stage: dict.fromkeys(DEVICE, 0) for stage in STAGES}
@@ -484,9 +484,10 @@ def bench_trial_dirs(report: dict, home: Path) -> dict[str, Path]:
     directory, under any suite of the bench home beside `home`, whose `trial.json` names the trial's run, found as the
     harness finds a trial for a run. A started trial with no directory there is left out, and its resets are then those
     the configurator recorded, a lower bound."""
-    from .harness import _trial_of, bench_home
-    suites = bench_home(home) / 'suites'
-    found = {row['trial_key']: _trial_of(suites, row['run_id']) for row in report['trials'] if row.get('run_id')}
+    from .harness import _trial_of
+    from .trial_store import trial_dirs
+    found = {row['trial_key']: _trial_of(trial_dirs(home), row['run_id']) for row in report['trials']
+             if row.get('run_id')}
     return {key: directory for key, directory in found.items() if directory is not None}
 
 
@@ -512,7 +513,25 @@ def _reruns(rows):
             'measured': {'first_attempt_tokens': tokens.measured, 'first_attempt_seconds': seconds.measured}}
 
 
-def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | None = None) -> dict:
+def _set_design(set_root, scoring_set):
+    """{device id: {level, framing}} of a scoring set, read from the manifest under `set_root` and held only for the
+    length of a scorecard. ValueError for a set other than the one the suite froze."""
+    from .generated_sets import load_set
+    manifest = load_set(Path(set_root), scoring_set['registration'])
+    if manifest['manifest_sha256'] != scoring_set['manifest_sha256']:
+        raise ValueError('The set root holds another manifest than the suite froze: ' + scoring_set['registration'])
+    return {device['id']: {key: device[key] for key in ('level', 'framing')} for device in manifest['devices']}
+
+
+def _scoring_metrics(home, suite_id, row, password, vault):
+    """A scoring trial's metrics, read from `trial_store.opened`'s copy, sealed or not."""
+    from .trial_store import opened
+    with opened(home, suite_id, row['run_id'], password, vault=vault) as root:
+        return trial_metrics(home, row['run_id'], trial_dir=root / 'trial', run_dir=root / 'run')
+
+
+def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | None = None, password=None,
+                    set_root=None, vault=None) -> dict:
     """The scorecard of a suite, schema `benchmark-scorecard/1`, from its `benchmark-suite-report/3` and the records of
     the runs its trials started. It says what it measures: the `suite_id`; whether the suite is still under way or was
     stopped before its slots settled (the report's `provisional` flag, the suite's `status` and its `reason`, None for a
@@ -543,7 +562,11 @@ def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | N
     are never unknown (attempts, managed calls, device) are plain sums. In `run` the repairs are summed the same way, and
     each yes/no figure of the claim is how many trials answered true, false and unknown.
 
-    A report that carries a scoring set gives aggregates only: no `trials`, and no case, run id or trial key. Any other
+    A report that carries a scoring set gives aggregates only: no `trials`, and no case, run id or trial key. Its
+    figures are read through `trial_store.opened`, so it needs `password` (the set's `EvaluatorPassword`), and `vault`
+    once `trial_store.store` has run, and it raises with no password rather than give None figures. It needs `set_root`
+    to join each row's level and framing in memory for its `groups`, and saves neither anywhere. It refuses a suite with
+    anything still running (`refuse_unsettled_scoring`). Any other
     adds `trials`, a `{trial_key, scored, equivalent_and_mission, metrics}` row for each planned trial (the flag where
     the report's row has one), its metrics None without a run or while it runs. Audit findings quote raw worker commands
     and are in no scorecard.
@@ -554,9 +577,19 @@ def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | N
         raise ValueError("A scorecard needs a benchmark-suite-report/3, which stores each trial's scored outcome")
     rows, trial_dirs = report['trials'], trial_dirs or {}
     identity, dimensions = report['experiment']['comparison_identity'], report['experiment']['dimensions']
+    scoring = 'scoring_set' in identity
+    if scoring:
+        from .suites import refuse_unsettled_scoring
+        if password is None or not set_root:
+            raise ValueError("A scoring suite's scorecard needs its set's password file and its set root: "
+                             + str(report.get('suite_id')))
+        refuse_unsettled_scoring(report['suite_id'], home)
+        design = _set_design(set_root, identity['scoring_set'])
+        rows = [{**row, **design.get(row.get('device_id'), {})} for row in rows]
     budget, policy = identity['budgets']['effective'], identity['intervention_policy']
     rate = pass_rate([row.get('scored') for row in rows])
-    metrics = {row['trial_key']: trial_metrics(home, row['run_id'], trial_dir=trial_dirs.get(row['trial_key']))
+    metrics = {row['trial_key']: (_scoring_metrics(home, report['suite_id'], row, password, vault) if scoring else
+                                  trial_metrics(home, row['run_id'], trial_dir=trial_dirs.get(row['trial_key'])))
                for row in rows if row.get('run_id') and row.get('scored') != 'running'}
     measured = list(metrics.values())
     stages = {stage: _stage_figures([trial['stages'][stage] for trial in measured]) for stage in STAGES}

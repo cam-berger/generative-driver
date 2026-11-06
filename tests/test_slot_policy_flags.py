@@ -1,23 +1,28 @@
 """Feature 06, slot policy: what a scoring suite's report and scorecard say of a rerun, and what becomes of a trial the
 transcript audit flags. Hand-written fixture devices, scripted workers and synthetic credentials only; never Renode, a
 real set, a vault or a model run."""
+import contextlib
 import hashlib
+import io
 import json
+import os
 import shutil
 import tempfile
 import threading
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from generative_driver.benchmark_support import harness
-from generative_driver.benchmark_support.audit import TRANSCRIPT
+from generative_driver import benchmark
+from generative_driver.benchmark_support import harness, trial_store
+from generative_driver.benchmark_support.audit import TRANSCRIPT, audit_commands
 from generative_driver.benchmark_support.outcomes import pass_rate_line
-from generative_driver.benchmark_support.scorecard import scorecard_markdown, suite_scorecard
+from generative_driver.benchmark_support.scorecard import scorecard_markdown, suite_scorecard, trial_metrics
 from generative_driver.benchmark_support.suite_reporting import compare_suites, report_suite
 from generative_driver.benchmark_support.suites import resume_suite
 from generated_fixtures import REFERENCE_A
-from test_generated_trials import SET, set_manifest
+from test_generated_trials import PASSWORD, SET, set_manifest
 from test_slot_policy import FIRST, HOST, OPERATOR, SECOND, ScoringFixture
 
 EXTENSION = ('A scoring suite runs every child on the child budget it froze, which pairing relies on: '
@@ -25,8 +30,18 @@ EXTENSION = ('A scoring suite runs every child on the child budget it froze, whi
 
 
 class ReportFixture(ScoringFixture):
+    def setUp(self):
+        super().setUp()
+        self.vault = self.set_root.parent
+        self.exports = self.vault / ('exports-' + uuid.uuid4().hex)
+        self.addCleanup(shutil.rmtree, self.exports, ignore_errors=True)
+
     def report(self, record, name='export', **options):
-        return report_suite(record['suite_id'], home=self.home, output=self.root / name, **options)
+        return report_suite(record['suite_id'], home=self.home, output=self.exports / name, password=PASSWORD,
+                            set_root=self.set_root, vault=self.vault, **options)
+
+    def card(self, report):
+        return suite_scorecard(report, home=self.home, password=PASSWORD, set_root=self.set_root)
 
     def assertSavedReportReads(self, report):
         """Two copies of the report compare, device by device, as saved reports do."""
@@ -40,7 +55,7 @@ class RerunReportTests(ReportFixture):
         with self.scripted(HOST):
             record = self.run_harness(request_id='rerun-report')
             report = self.report(record)
-            card = suite_scorecard(report, home=self.home)
+            card = self.card(report)
         first, rerun = self.children[0], self.children[2]
         self.assertEqual(report['provisional'], False)
         self.assertEqual(len(report['trials']), 2)
@@ -70,7 +85,7 @@ class RerunReportTests(ReportFixture):
         with self.staged(REFERENCE_A, runtime=self.stopping(reported, reported, reported, reported, stage='acquire')):
             record = self.run_harness(request_id='tokens')
             report = self.report(record)
-            card = suite_scorecard(report, home=self.home)
+            card = self.card(report)
         self.assertEqual([row['first_attempt']['tokens'] for row in report['trials']], [12, 12])
         self.assertEqual((card['reruns']['count'], card['reruns']['first_attempt_tokens']), (2, 24))
         self.assertEqual(card['reruns']['measured']['first_attempt_tokens'], 2)
@@ -161,7 +176,7 @@ class OtherSuiteReportTests(ReportFixture):
         self.assertEqual(self.status(record)['status'], 'blocked')
         self.assertEqual(report['trials'][0]['scored'], 'fault')
         self.assertNotIn('flagged', report['counts'])
-        card = suite_scorecard(report, home=self.home)
+        card = self.card(report)
         self.assertEqual(card['reruns']['count'], 0)
         self.assertFalse(any(line.startswith('Reruns:') for line in scorecard_markdown(card).splitlines()))
 
@@ -226,7 +241,7 @@ class FlaggedTrialTests(AuditFixture):
     def test_06_B14_a_flagged_trials_handoffs_are_sealed_with_no_grade(self):
         with self.staged(REFERENCE_A, runtime=self.naming()):
             record = self.run_harness(request_id='sealed')
-        trial = next(row for row in self.trial_records() if row['run_id'] == self.children[0])
+        trial = self.original_record(record['suite_id'], self.children[0])
         self.assertEqual((trial['status'], trial['sealed'], trial.get('equivalence')), ('flagged', True, None))
         self.assertEqual(self.result(self.children[0])['equivalence'], None)
         self.assertCompleted(record)
@@ -266,7 +281,7 @@ class FlaggedTrialTests(AuditFixture):
             first = self.run_harness(request_id='refused', intercept=intercept)
             self.assertEqual((first['status'], self.status(first)['status']), ('failed', 'blocked'))
             self.assertEqual(self.graded, [])
-            trial = next(row for row in self.trial_records() if row['run_id'] == self.children[0])
+            trial = self.original_record(first['suite_id'], self.children[0])
             self.assertEqual(trial['device_stop']['confirmed'], True)
             second = self.run_harness(suite_id=first['suite_id'])
         self.assertCompleted(second)
@@ -307,7 +322,7 @@ class FlaggedTrialTests(AuditFixture):
         self.assertCompleted(second)
         self.assertEqual(self.graded, [SECOND])
         self.assertEqual(self.rows(first)[0]['status'], 'flagged')
-        trial = next(row for row in self.trial_records() if row['run_id'] == self.children[0])
+        trial = self.original_record(first['suite_id'], self.children[0])
         self.assertEqual((trial['status'], trial['sealed']), ('flagged', True))
 
     def stopped_while_dead(self, request_id):
@@ -333,7 +348,7 @@ class FlaggedTrialTests(AuditFixture):
         self.assertCompleted(second)
         self.assertEqual(self.rows(first)[0]['status'], 'flagged')
         self.assertEqual(len(self.children), 2)
-        trial = next(row for row in self.trial_records() if row['run_id'] == self.children[0])
+        trial = self.original_record(first['suite_id'], self.children[0])
         self.assertEqual((trial['status'], trial['sealed'], trial['evidence']['path']),
                          ('flagged', True, 'run-evidence.enc'))
 
@@ -448,7 +463,7 @@ class FlaggedTrialTests(AuditFixture):
             third = self.run_harness(suite_id=first['suite_id'])
         self.assertCompleted(third)
         self.assertEqual(self.rows(first)[0]['status'], 'flagged')
-        trial = next(row for row in self.trial_records() if row['run_id'] == self.children[0])
+        trial = self.original_record(first['suite_id'], self.children[0])
         self.assertEqual((trial['status'], trial['sealed']), ('flagged', True))
 
     def test_06_B12_the_audit_only_reads_transcripts_of_its_own_set(self):
@@ -573,6 +588,256 @@ class ResumeSuiteRefusalTests(unittest.TestCase):
         del self.identity['scoring_set']
         self.resume()
         self.assertEqual(len(self.spawned), 1)
+
+
+class SealedSuiteTests(AuditFixture):
+    """Feature 07, trial sealing, end to end through scripted suites, with real key derivations."""
+    real_seals = True
+
+    def stub_of(self, suite_id, key):
+        return harness.read_trial(trial_store.find_trial(self.home, suite_id, key))
+
+    def main(self, *arguments):
+        """`benchmark suite ...` in this home: (exit code, what it printed)."""
+        output = io.StringIO()
+        with patch.dict(os.environ, {'GENERATIVE_DRIVER_HOME': str(self.home)}), contextlib.redirect_stdout(output):
+            code = benchmark.main(['suite', *arguments])
+        return code, json.loads(output.getvalue())
+
+    def recording_figures(self):
+        """A patch under which what each run's figures were is kept, as they stand just before its first seal:
+        (`seal_trial` patch, {run id: (metrics, public report)})."""
+        real, figures = trial_store.seal_trial, {}
+
+        def seal(trial, run_dir, workspaces, *args):
+            if run_dir is not None and run_dir.name not in figures:
+                figures[run_dir.name] = self.figures_of(run_dir.name, trial, run_dir)
+            return real(trial, run_dir, workspaces, *args)
+        return patch.object(trial_store, 'seal_trial', seal), figures
+
+    def figures_of(self, run_id, trial_dir, run_dir):
+        from generative_driver.reporting import report_run
+        from generative_driver.benchmark_support.suite_reporting import _public_report
+        with tempfile.TemporaryDirectory() as temporary:
+            report = report_run(run_id, home=self.home, output=Path(temporary) / 'report.json', autostart=False)
+        return trial_metrics(self.home, run_id, trial_dir=trial_dir, run_dir=run_dir), _public_report(report)
+
+    def assertFiguresStand(self, suite_id, figures):
+        self.assertGreater(len(figures), 0)
+        for run_id, before in figures.items():
+            with trial_store.opened(self.home, suite_id, run_id, PASSWORD) as root:
+                self.assertEqual(self.figures_of(run_id, root / 'trial', root / 'run'), before, run_id)
+
+    def test_07_B1_B7_B13_each_trial_is_sealed_as_it_concludes_and_its_figures_stand(self):
+        host = self.stopping(HOST, stage='probe')
+        names = self.naming(nth=1)
+        readable_at_a_start, starts = [], []
+
+        def runtime(request):
+            return host(request) or names(request)
+
+        def intercept(method, params, forward):
+            if method == 'suite_start_child':
+                starts.append(params['suite_id'])
+                for row in forward('suite_result', {'suite_id': params['suite_id']})['trials']:
+                    if row['status'] in ('finished', 'faulted', 'flagged'):
+                        request = 'suite:' + params['suite_id'] + ':trial:' + str(row['ordinal'])
+                        record = self.stub_of(params['suite_id'], request)
+                        if record['status'] != 'sealed':
+                            readable_at_a_start.append(request)
+            return forward(method, params)
+        patcher, figures = self.recording_figures()
+        with self.staged(REFERENCE_A, runtime=runtime), patcher:
+            record = self.run_harness(request_id='sealed-suite', intercept=intercept)
+            self.assertCompleted(record)
+            suite_id = record['suite_id']
+            self.assertEqual(len(self.children), 3)
+            self.assertEqual(len(starts), 3)
+            self.assertEqual(readable_at_a_start, [])
+            first, flagged, rerun = self.children
+            self.assertEqual(sorted(figures), sorted(self.children))
+            self.assertFiguresStand(suite_id, figures)
+            rows = self.rows(record)
+            self.assertEqual([row['status'] for row in rows], ['finished', 'flagged'])
+            for run_id in self.children:
+                stub = self.stub_of(suite_id, run_id)
+                self.assertEqual(stub['status'], 'sealed')
+                self.assertEqual(sorted(stub), ['case', 'finished', 'request_id', 'run_id', 'schema', 'sealed_files',
+                                                'start_sent', 'status', 'trial_id'])
+                self.assertIs(self.controller.call('status', {'run_id': run_id})['sealed'], True)
+                run_dir = self.home / 'runs' / run_id
+                self.assertEqual(sorted(path.relative_to(run_dir).as_posix() for path in run_dir.rglob('*')
+                                        if path.is_file() and 'inputs' not in path.parts), ['benchmark/execution.json'])
+                trial = trial_store.find_trial(self.home, suite_id, run_id)
+                self.assertFalse((trial / 'private').exists())
+                self.assertFalse((trial / 'device').exists())
+            # What the audit found of the flagged trial's transcript is read back from its seal.
+            with trial_store.opened(self.home, suite_id, flagged, PASSWORD) as root:
+                self.assertEqual(len(audit_commands(root / 'run', (str(self.set_root),))), 1)
+                # The temporary interpret workspace went into the seal, and out of the temporary folder.
+                self.assertTrue(list((root / 'workspaces').glob('gd-candidate-*/attempt*/model.json')))
+            with self.controller._db() as db:
+                workspaces = [json.loads(row['payload'])['workspace'] for row in db.execute(
+                    "SELECT payload FROM events WHERE kind='stage.assigned'").fetchall()
+                    if json.loads(row['payload'])['stage'] == 'interpret']
+            self.assertTrue(workspaces)
+            self.assertFalse([path for path in workspaces if Path(path).exists()])
+            # `_verify_suite` reads only the kept paths: a report and a settled suite still stand.
+            report = self.report(record)
+            self.assertEqual([row['scored'] for row in report['trials']], ['pass', 'flagged'])
+            with self.assertRaisesRegex(ValueError, 'A sealed run does not resume or take a device'):
+                self.controller.call('resume', {'run_id': first})
+            self.assertEqual(self.card(report)['pass_line'], pass_rate_line(report['pass_rate']))
+            self.assertHoldsNoRoot()
+
+    def test_07_B14_a_trial_due_a_regrade_is_restored_graded_again_and_sealed_again(self):
+        restored = []
+        real = trial_store.restore
+
+        def restore(trial, password):
+            real(trial, password)
+            restored.append(harness.read_trial(trial)['status'])
+        patcher, figures = self.recording_figures()
+        with self.scripted(), self.grading_faults(d0000d001=1), patch.object(trial_store, 'restore', restore), patcher:
+            record = self.run_harness(request_id='regraded')
+            self.assertCompleted(record)
+            suite_id, child = record['suite_id'], self.children[0]
+            self.assertEqual(len(self.children), 2)
+            self.assertEqual([row['equivalent'] for row in self.rows(record)], [True, True])
+            self.assertEqual(restored[0], 'unscored')
+            trial = trial_store.find_trial(self.home, suite_id, child)
+            self.assertEqual(sorted(int(path.name.split('-')[1]) for path in trial.glob('sealed-*-index.enc')), [1, 2])
+            index = trial / 'sealed-2-index.enc'
+            members = PASSWORD.unlock(index, hashlib.sha256(index.read_bytes()).hexdigest())['members']
+            self.assertEqual(list(members), ['trial/trial.json'])
+            self.assertEqual(self.original_record(suite_id, child)['status'], 'evaluated')
+            self.assertEqual(self.stub_of(suite_id, child)['status'], 'sealed')
+            self.assertFalse(list((self.home / 'runs' / child).rglob('_agent_events.jsonl')))
+            self.assertFiguresStand(suite_id, {self.children[1]: figures[self.children[1]]})
+
+    def test_07_B4_a_failed_seal_stops_the_suite_and_a_resume_seals_it_before_any_worker_starts(self):
+        real, disk_full, started = trial_store._seal_file, [True], []
+
+        def seal(password, value, path):
+            if disk_full:
+                raise OSError(28, 'No space left on device', str(path))
+            return real(password, value, path)
+
+        def intercept(method, params, forward):
+            if method == 'suite_start_child':
+                started.append(self.stub_of(params['suite_id'], 'suite:' + params['suite_id'] + ':trial:0')['status'])
+            return forward(method, params)
+        with self.scripted(), patch.object(trial_store, '_seal_file', seal):
+            first = self.run_harness(request_id='failed-seal', intercept=intercept)
+            self.assertEqual(first['status'], 'failed')
+            self.assertNotIn(str(self.root), first['reason'])
+            status = self.status(first)
+            self.assertEqual(status['status'], 'blocked')
+            self.assertIn('Sealing a concluded trial failed: OSError', status['reason'])
+            self.assertEqual(self.slot_status(first, 0), 'finished')
+            self.assertEqual(len(self.children), 1)
+            self.assertNotEqual(self.stub_of(first['suite_id'], self.children[0])['status'], 'sealed')
+            disk_full.clear()
+            second = self.run_harness(suite_id=first['suite_id'], intercept=intercept)
+            self.assertCompleted(second)
+        self.assertEqual(started[-1], 'sealed')
+        for run_id in self.children:
+            self.assertEqual(self.stub_of(first['suite_id'], run_id)['status'], 'sealed')
+
+    def test_07_B5_B16_a_new_suite_waits_for_cancel_then_store_and_a_resume_of_what_was_stored_stops_there(self):
+        stop = threading.Event()
+        vault = self.root / 'vault'
+        vault.mkdir()
+        with self.staged(REFERENCE_A, runtime=self.dying_at(stop, 'probe', 0, then=HOST)):
+            first = self.run_harness(request_id='abandoned', stop=stop)
+            suite_id = first['suite_id']
+            self.ended(self.children[0])
+            self.assertEqual(self.status(first)['status'], 'blocked')
+            self.calls.clear()
+            with self.assertRaisesRegex(ValueError, 'still has a readable trial.*' + suite_id):
+                self.run_harness(request_id='beside')
+            self.assertEqual([method for method, _ in self.calls], ['ping', 'suite_result'])
+            code, printed = self.main('store', suite_id, '--password-file', str(self.handle), '--vault-folder',
+                                      str(vault))
+            self.assertEqual(code, 1, printed)
+            self.assertIn('takes a completed suite', printed['error'])
+            self.controller.call('suite_cancel', {'suite_id': suite_id})
+            code, printed = self.main('store', suite_id, '--password-file', str(self.handle), '--vault-folder',
+                                      str(vault))
+            self.assertEqual((code, printed), (0, {'ok': True, 'suite_id': suite_id, 'stored': True}))
+            stub = self.stub_of(suite_id, self.children[0])
+            self.assertEqual(stub['status'], 'sealed')
+            trial = trial_store.find_trial(self.home, suite_id, self.children[0])
+            self.assertEqual(list(trial.glob('sealed-*.enc')), [])
+            self.assertTrue((vault / 'sealed-trials' / suite_id / trial.name / 'sealed-1-index.enc').exists())
+            self.assertIs(self.controller.call('status', {'run_id': self.children[0]})['sealed'], True)
+            with trial_store.opened(self.home, suite_id, self.children[0], PASSWORD, vault=vault) as root:
+                self.assertTrue((root / 'trial/trial.json').exists())
+            # A later resume reaching such a slot fails safe.
+            again = self.run_harness(suite_id=suite_id)
+            self.assertEqual(again['status'], 'failed')
+            self.assertIn('no longer beside its stub', again['reason'])
+            self.assertEqual(self.slot_status(first, 0), 'running')
+            self.controller.call('suite_cancel', {'suite_id': suite_id})
+            # With nothing left readable, a new suite of the set starts.
+            self.children.clear()
+            new = self.run_harness(request_id='after-the-store')
+            self.assertCompleted(new)
+
+    def test_07_B15_B16_B17_B18_after_store_the_commands_read_it_from_the_vault_folder(self):
+        vault = self.exports / 'vault'
+        vault.mkdir(parents=True)
+        handle = ['--password-file', str(self.handle)]
+        place = ['--vault-folder', str(vault)]
+        with self.staged(REFERENCE_A, runtime=self.naming()):
+            record = self.run_harness(request_id='commands')
+            suite_id = record['suite_id']
+            flagged = self.children[0]
+            self.assertCompleted(record)
+            before = self.main('scorecard', suite_id, '--output', str(self.root / 'card-before'), *handle,
+                               '--set-root', str(self.set_root))
+            self.assertEqual(before[0], 0, before[1])
+            code, stored = self.main('store', suite_id, *handle, *place)
+            self.assertEqual(code, 0, stored)
+            code, card = self.main('scorecard', suite_id, '--output', str(self.root / 'card'), *handle, *place,
+                                   '--set-root', str(self.set_root), '--audit-path', str(self.set_root))
+            self.assertEqual(code, 0, card)
+            self.assertEqual(card['stages'], before[1]['stages'])
+            self.assertEqual(card['pass_line'], before[1]['pass_line'])
+            self.assertEqual(list(card['groups']['level']), ['1'])
+            self.assertEqual(list(card['groups']['framing']), ['text-lines'])
+            text = json.dumps(card) + (self.root / 'card/scorecard.md').read_text()
+            for private in (flagged, '0000d001', str(self.set_root), str(vault)):
+                self.assertNotIn(private, text)
+            code, sealed_away = self.main('scorecard', suite_id, '--output', str(self.root / 'no-card'), *handle,
+                                          '--set-root', str(self.set_root))
+            self.assertEqual(code, 1, sealed_away)
+            self.assertIn('vault folder', sealed_away['error'])
+            self.assertFalse((self.root / 'no-card').exists())
+            code, none = self.main('scorecard', suite_id, '--output', str(self.root / 'no-card'))
+            self.assertEqual(code, 1, none)
+            self.assertIn('password file', none['error'])
+            code, refused = self.main('report', suite_id, '--output', str(self.root / 'no-report'))
+            self.assertEqual(code, 1, refused)
+            self.assertIn('password file', refused['error'])
+            self.assertFalse((self.root / 'no-report').exists())
+            # The set root must lie under the vault folder here too, so this report is written beside it.
+            code, report = self.main('report', suite_id, '--output', str(self.exports / 'report'), *handle,
+                                     '--set-root', str(self.set_root), '--vault-folder', str(self.vault),
+                                     '--audit-path', str(self.set_root))
+            self.assertEqual(code, 1, report)
+            self.assertIn('vault folder', report['error'])
+            code, report = self.main('report', suite_id, '--output', str(self.exports / 'report'), *handle,
+                                     '--set-root', str(self.set_root), '--vault-folder', str(self.vault))
+            self.assertEqual(code, 0, report)
+            self.assertEqual([row['scored'] for row in report['trials']], ['flagged', 'pass'])
+            self.assertEqual(self.assertSavedReportReads(report)['devices']['both'], 1)
+            code, unsealed = self.main('unseal', suite_id, '--trial', flagged, *handle, *place, '--output',
+                                       str(vault / 'checking'))
+            self.assertEqual(code, 0, unsealed)
+            found = audit_commands(vault / 'checking/run', (str(self.set_root),))
+            self.assertEqual([finding['command'] for finding in found], [self.command()])
+            self.assertNotIn(str(vault), json.dumps(self.calls, default=str))
 
 
 if __name__ == '__main__':

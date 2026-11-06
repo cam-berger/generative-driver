@@ -13,13 +13,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from generated_fixtures import REFERENCE_A, FixtureDevice, fixture_start
-from generative_driver.benchmark_support import evaluator, generated_sets, generated_trials, harness
+from generative_driver.benchmark_support import evaluator, generated_sets, generated_trials, harness, trial_store
 from generative_driver.benchmark_support.outcomes import classify
 from generative_driver.benchmark_support.suite_store import SuiteStore
 from generative_driver.benchmark_support.suites import child_disposition, scoring_disposition
 from suite_fixtures import drive_suite, sqlite_context
 from test_configurator import gateway_identity
-from test_generated_trials import SET, START, GeneratedTrialFixture, SetSuiteFixture, as_scoring_set, set_manifest
+from test_generated_trials import (PASSWORD, SET, START, GeneratedTrialFixture, SetSuiteFixture, as_scoring_set,
+                                   set_manifest)
 
 
 def ended(status='failed', category='host', **changes):
@@ -403,15 +404,38 @@ def run_of(request):
     return gateway_identity(request)['run_id'] if request.gateway else None
 
 
+def cheap_seals(test):
+    """Have `test`'s seals derive no key and sync no disk, which cost each concluded trial at least four key derivations
+    and several full syncs: the real path is covered in `test_trial_sealing.py` and the end-to-end tests of
+    `test_slot_policy_flags.py`."""
+    def seal(_password, value, path):
+        data = json.dumps(value).encode()
+        Path(path).write_bytes(data)
+        return hashlib.sha256(data).hexdigest()
+
+    def open_file(_password, path, expected=None):
+        data = Path(path).read_bytes()
+        if expected and hashlib.sha256(data).hexdigest() != expected:
+            raise ValueError('Groundtruth ciphertext does not match its pinned hash')
+        return json.loads(data)
+    for name, stand_in in (('_seal_file', seal), ('_open_file', open_file), ('_sync_file', lambda _path: None)):
+        guard = patch.object(trial_store, name, stand_in)
+        guard.start()
+        test.addCleanup(guard.stop)
+
+
 class ScoringFixture(GeneratedTrialFixture):
     """A scoring suite of the qualified fixture set, driven by an in-process harness whose records a test reads. A child
     is told from another by the order it started in."""
+    real_seals = False
 
     def setUp(self):
         super().setUp()
         self.table = as_scoring_set(self)
         self.children = []
         self.calls = []
+        if not self.real_seals:
+            cheap_seals(self)
 
     def nth(self, request):
         """Which child started this stage, counted from 0, or None for a stage that does not say."""
@@ -458,8 +482,22 @@ class ScoringFixture(GeneratedTrialFixture):
         return self.controller.call('result', {'run_id': run_id})
 
     def trial_records(self):
+        """What each trial folder's record holds now: a concluded one's stub."""
         return [harness.read_trial(path.parent)
                 for path in (self.root / 'home-bench/suites').glob('*/trials/*/trial.json')]
+
+    def original_record(self, suite_id, run_id):
+        """The trial record of a run as it stood before it was sealed, read back through `opened`."""
+        with trial_store.opened(self.home, suite_id, run_id, PASSWORD) as root:
+            return json.loads((root / 'trial/trial.json').read_text())
+
+    def original_records(self, suite_id):
+        """Every trial record of a suite as it stood before it was sealed."""
+        records = []
+        for folder in trial_store.trial_dirs(self.home, suite_id):
+            with trial_store.opened(self.home, suite_id, folder, PASSWORD) as root:
+                records.append(json.loads((root / 'trial/trial.json').read_text()))
+        return records
 
     def assertCompleted(self, record):
         self.assertEqual((record['status'], self.status(record)['status']), ('finished', 'completed'), record)
@@ -631,7 +669,7 @@ class NoRunTests(ScoringFixture):
         faulted = next(event for event in events if event['kind'] == 'trial.faulted')
         self.assertEqual(faulted['data']['no_run_reason'], word)
         self.assertNotIn(secret, json.dumps(self.calls, default=str) + json.dumps(events))
-        self.assertIn(secret, json.dumps(self.trial_records()))
+        self.assertIn(secret, json.dumps(self.original_records(record['suite_id'])))
 
     def test_06_B4_a_refused_admit_faults_with_its_word_and_reruns(self):
         with self.scripted(), self.refusing_once(harness, 'admit', ValueError('Refused under /private/admit-path')):
@@ -709,6 +747,9 @@ class NoRunTests(ScoringFixture):
                 self.assertEqual(record['status'], 'failed')
                 self.assertEqual(self.status(record)['status'], 'blocked')
                 self.assertEqual(self.rows(record)[0]['status'], 'launching')
+                # Feature 07's B5 would refuse the next suite of this set beside this one's readable trial.
+                for path in (self.root / 'home-bench/suites').glob('*/trials'):
+                    shutil.rmtree(path)
 
     def test_06_B4_a_reply_that_never_came_to_a_start_is_no_fault(self):
         calm = patch.object(harness, 'UNREACHABLE', 0)

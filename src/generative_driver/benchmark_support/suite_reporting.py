@@ -672,25 +672,64 @@ def _union_of_findings(stored,found):
     return [*found,*(finding for finding in stored if finding not in again)]
 
 
-def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_files=None,audit_paths=()):
-    """Export a suite's measurements from its configured owner. An earlier suite's regrade needs the sealed evidence of
-    every started trial; an assistive suite's, that of exactly the trials whose verdict was recorded (each names its
-    evidence), since an unscored or stopped trial has no verdict to authenticate.
+def _refuse_scoring_report(suite_id,root,output,password,set_root,vault):
+    """A scoring suite's report holds per-trial data, so it is written only inside the open vault: it needs the password
+    file, the set root and a vault folder holding both the root and the output, and nothing of the suite may still run
+    (`refuse_unsettled_scoring`). These paths never reach the configurator."""
+    from pathlib import Path
+    from .suites import refuse_unsettled_scoring
+    if password is None or not set_root or not vault:
+        raise ValueError("A scoring suite's report needs its set's password file, its set root and a vault folder: "
+                         +suite_id)
+    folder=Path(vault).expanduser().resolve()
+    if not Path(set_root).expanduser().resolve().is_relative_to(folder):
+        raise ValueError("A scoring suite's report needs its set root under the vault folder: "+suite_id)
+    if not Path(output).expanduser().resolve().is_relative_to(folder):
+        raise ValueError("A scoring suite's report is written only under the vault folder: "+suite_id)
+    refuse_unsettled_scoring(suite_id,root)
+
+def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_files=None,audit_paths=(),password=None,
+                 set_root=None,vault=None):
+    """Export a suite's measurements from its configured owner (`_export_suite`). A scoring suite's report needs
+    `password` (the set's `EvaluatorPassword`, apart from `password_files`, which switches on regrading), `set_root` and
+    `vault`, and refuses as `_refuse_scoring_report` says; `suite compare` still works from it, since only its counts
+    leave."""
+    if output is None or not str(output).strip():raise ValueError('Suite export requires an explicit output directory')
+    from pathlib import Path
+    from ..client import default_home
+    root=Path(home or default_home()).resolve()
+    return _export_suite(suite_id,home=root,output=output,evidence_files=evidence_files,password_files=password_files,
+                         audit_paths=audit_paths,password=password,vault=vault,
+                         check=lambda:_refuse_scoring_report(suite_id,root,output,password,set_root,vault))
+
+def _audited(root,suite_id,run_id,audit_paths,password,vault):
+    """What the audit finds in a run's transcripts. A scoring suite's are read through `trial_store.opened`, as they may
+    be sealed, so it needs `password`."""
+    if password is None:raise ValueError("A scoring suite's audit needs its set's password file: "+suite_id)
+    from .trial_store import opened
+    with opened(root,suite_id,run_id,password,vault=vault) as held:
+        return audit_commands(held/'run',audit_paths)
+
+def _export_suite(suite_id,*,home,output,evidence_files=None,password_files=None,audit_paths=(),password=None,
+                  vault=None,check=None):
+    """The export `report_suite` and a scorecard's temporary one share, the owner's home being `home`. `check()` runs
+    once the owner says the suite is a scoring suite, before anything is written. An earlier suite's regrade needs the
+    sealed evidence of every started trial; an assistive suite's, that of exactly the trials whose verdict was recorded
+    (each names its evidence), since an unscored or stopped trial has no verdict to authenticate.
 
     With `audit_paths` (forbidden paths, private to the operator), each trial's run directory in the owner's home is
     audited (`audit_commands`): every row of the export carries its `audit` findings, and a trial with any is `flagged`,
     not graded. A report without `audit_paths` has no `audit` on its rows but what a scoring suite's harness stored, and
     these paths never overwrite that: a row holds the union of the two. The paths are in no output but the commands that
     name them, which the findings quote."""
-    if output is None or not str(output).strip():raise ValueError('Suite export requires an explicit output directory')
     audit_paths=forbidden_paths(audit_paths)
     from pathlib import Path
     from tempfile import TemporaryDirectory
-    from ..client import call,default_home
+    from ..client import call
     from ..reporting import report_run,_public,_tree_hash
     from .evidence import regrade_v2,regrade_v3
     from .truth import read_password
-    root=Path(home or default_home()).resolve();destination=Path(output).resolve()
+    root=home;destination=Path(output).resolve()
     regrading=evidence_files is not None or password_files is not None
     if regrading and (not isinstance(evidence_files,dict) or not isinstance(password_files,dict)):
         raise ValueError('Regrade requires trial-keyed evidence and case-keyed password files')
@@ -704,6 +743,7 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
         if following is None:break
         if type(following) is not int or following<=offset:raise ValueError('Invalid suite pagination')
         offset=following
+    if check and 'scoring_set' in ((first.get('experiment') or {}).get('comparison_identity') or {}):check()
     experiment=_experiment(first['experiment']);identity=experiment['comparison_identity'];manifest=identity['manifest']
     expected=identity['trials']
     if len(rows)!=len(expected):raise ValueError('Missing owner suite slots')
@@ -774,7 +814,10 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
             trial['outcome_category']=owner.get('outcome_category','unknown')
             if owner.get('stopping') is not False or owner.get('uncertain_effect') is not False:trial['status']='blocked'
             # The run directory is where the owner keeps what the run's workers left (`runs/<run_id>` in its home).
-            if audit_paths:trial['audit']=_union_of_findings(trial['audit'],audit_commands(root/'runs'/rid,audit_paths))
+            if audit_paths:
+                found=(_audited(root,suite_id,rid,audit_paths,password,vault) if 'scoring_set' in identity
+                       else audit_commands(root/'runs'/rid,audit_paths))
+                trial['audit']=_union_of_findings(trial['audit'],found)
             reports[rid]=report
         if regrading and protocol and set(evidence_files)!=regraded:
             raise ValueError('Regrade evidence must cover every trial with a recorded verdict exactly')

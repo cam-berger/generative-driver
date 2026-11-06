@@ -140,7 +140,7 @@ def _replay_config(params, config, home):
     replay, nor a physical device. Its configuration names the candidate and the hash of its files; the candidate lies
     outside the bench home beside `home`, which holds evaluator records."""
     from .replay import candidate_config
-    from .benchmark_support.harness import bench_home
+    from .benchmark_support.trial_store import bench_home
     case = params.get('case')
     case_id = case.get('id') if isinstance(case, dict) else case
     if not case_id:
@@ -156,7 +156,7 @@ def _replay_suite_config(manifest, options, home):
     checked first, then each stored by its hash in the configurator home, from which every child of that case takes its
     copy."""
     from .replay import stored_candidate, suite_candidates
-    from .benchmark_support.harness import bench_home
+    from .benchmark_support.trial_store import bench_home
     checked = suite_candidates({entry['case'] for entry in manifest['entries']},
                                options.get('replay_candidates') if isinstance(options, dict) else None,
                                bench=bench_home(home))
@@ -214,6 +214,11 @@ def _harness_identity(params, refusal):
     if lock is not None and (not isinstance(lock, str) or not Path(lock).is_absolute()):
         raise ValueError('harness_lock must be an absolute path')
     return token, pid, lock
+
+
+def _sealing(frozen):
+    """What tells a suite's harness that it seals concluded trials, and under whose password: a scoring suite's set."""
+    return {'scoring_set':frozen['scoring_set']['registration']} if 'scoring_set' in frozen else {}
 
 
 def _attached_to(suite, token_sha256):
@@ -1238,6 +1243,8 @@ class Controller:
             columns = {row['name'] for row in db.execute('PRAGMA table_info(runs)')}
             if 'outcome_category' not in columns:
                 db.execute("ALTER TABLE runs ADD COLUMN outcome_category TEXT NOT NULL DEFAULT 'unknown'")
+            if 'sealed' not in columns:
+                db.execute('ALTER TABLE runs ADD COLUMN sealed INTEGER NOT NULL DEFAULT 0')
             for row in db.execute("SELECT * FROM runs WHERE status IN ('queued','running')").fetchall():
                 final = _final_verdict(db, row['id'])
                 if final:
@@ -1346,11 +1353,13 @@ class Controller:
         if method.startswith('device_'):
             return self.device_access.control(method, params)
         if method == 'benchmark_spawn':
-            from .benchmark_support.harness import bench_home, _spawn
+            from .benchmark_support.harness import _spawn
+            from .benchmark_support.trial_store import bench_home, solo_trial_dir, suite_dir
             kind = params.get('kind')
             directory = Path(params['directory']).resolve()
-            if kind not in ('trial', 'suite') or directory.parent != bench_home(self.home) / (
-                    'trials' if kind == 'trial' else 'suites'):
+            if kind not in ('trial', 'suite') or directory != (solo_trial_dir(bench_home(self.home), directory.name)
+                                                               if kind == 'trial'
+                                                               else suite_dir(self.home, directory.name)):
                 raise ValueError('A bench harness must launch in its owner\'s bench directory')
             channel = params.get('channel') or {}
             if (set(channel) != {'schema', 'port', 'token'} or channel['schema'] != 'bench-launch-channel/1'
@@ -1383,7 +1392,8 @@ class Controller:
                 row = self._row(run_id)
                 stopping = row['status'] in TERMINAL and (run_id in self._workers or run_id in self._inflight)
                 out = {'ok': True, **{k: row[k] for k in ('status', 'stage', 'reason', 'created', 'updated', 'outcome_category')},
-                       'run_id': run_id, 'uncertain_effect': bool(row['uncertain']), 'stopping': stopping}
+                       'run_id': run_id, 'uncertain_effect': bool(row['uncertain']), 'stopping': stopping,
+                       **({'sealed': True} if row['sealed'] else {})}
             with self._db() as db:
                 final = _final_verdict(db, run_id)
                 accepted = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM handoffs WHERE run_id=? ORDER BY created', (run_id,))]
@@ -1470,6 +1480,9 @@ class Controller:
                     db.execute('DELETE FROM pending_effects WHERE run_id=?',(run_id,))
                 self._event(run_id,'operator.response',{'message':message,'observation':observation,'effect_resolution':resolution},db)
             return self.call('status', {'run_id': run_id})
+        if method in ('attach_device', 'resume') and self._row(run_id)['sealed']:
+            # Before anything asks the device, so a stray resume cannot turn a fault into an integrity failure.
+            raise ValueError('A sealed run does not resume or take a device: ' + run_id)
         if method == 'attach_device':
             return self._attach_device(run_id, params)
         if method == 'record_evaluation':
@@ -1586,9 +1599,10 @@ class Controller:
                 saved=self._suites.create(frozen,params.get('request_id'),harness_pid=pid,harness_lock=lock)
                 if not saved['duplicate']:
                     self._suites.set_state(saved['suite_id'],'running')
-                    return {'ok':True,'suite_id':saved['suite_id'],'duplicate':False,'attached':True}
+                    return {'ok':True,'suite_id':saved['suite_id'],'duplicate':False,'attached':True,**_sealing(frozen)}
             # A repeated request. Its harness, sending it again after a lost reply, is told it still drives the suite.
-            return {'ok':True,'suite_id':saved['suite_id'],'duplicate':True,'attached':_attached_to(saved,token)}
+            return {'ok':True,'suite_id':saved['suite_id'],'duplicate':True,'attached':_attached_to(saved,token),
+                    **_sealing(saved['frozen'])}
 
     def _suite_lock(self, suite_id):
         with self._lock:
@@ -1986,6 +2000,24 @@ class Controller:
                 self._suites.settle(suite_id,slot['ordinal'],observed,disposition='flag')
         return {'ok':True,'suite_id':suite_id,'decision':decision}
 
+    def _suite_sealed(self, suite_id, params):
+        """Mark a run of a scoring suite sealed: `status` and `result` show it, and it no longer resumes or takes a
+        device. It takes the slot's run or its first attempt's, and it is repeatable, since a crash may send it again.
+        It needs the suite's token while a harness is attached; with none it takes none: it only restricts a run."""
+        with self._suite_lock(suite_id):
+            suite = self._suite(suite_id)
+            if 'scoring_set' not in suite['frozen']:
+                raise ValueError('Only a scoring suite seals its trials: ' + suite_id)
+            if self._harness_alive(suite):
+                self._suite_driver(suite_id, params)
+            slot = self._slot(suite, params.get('ordinal'))
+            run_id = params.get('run_id')
+            if not run_id or run_id not in (slot['run_id'], (slot.get('first_attempt') or {}).get('run_id')):
+                raise ValueError('The run is not a trial of this suite slot: ' + str(run_id))
+            with self._db() as db:
+                db.execute('UPDATE runs SET sealed=1 WHERE id=?',(run_id,))
+        return {'ok':True,'suite_id':suite_id,'run_id':run_id}
+
     def _suite_detach(self, suite_id, params):
         """The harness lets go of the suite; one that stops while the suite still runs leaves it blocked for a resume."""
         reason = params.get('reason')
@@ -2064,7 +2096,8 @@ class Controller:
                 raise ValueError(OLD_SUITE)
             if suite['status'] in ('queued','running') and _attached_to(suite, params.get('harness_token_sha256')):
                 # Its harness's resume again, the first reply lost: that harness still drives the suite.
-                return {**self._suite_call('suite_status',{'suite_id':suite_id}),'attached':True}
+                return {**self._suite_call('suite_status',{'suite_id':suite_id}),'attached':True,
+                        **_sealing(suite['frozen'])}
             if suite['status'] not in ('blocked','failed','cancelled'):
                 raise ValueError('Only a stopped incomplete suite can resume')
             if self._suite_call('suite_status',{'suite_id':suite_id})['stopping']:
@@ -2094,7 +2127,7 @@ class Controller:
                         self.call('status',{'run_id':found['run_id']}),terminal_final=True)
             self._suites.attach_harness(suite_id,token,pid,lock)
             self._suites.set_state(suite_id,'running')
-        return {**self._suite_call('suite_status',{'suite_id':suite_id}),'attached':True}
+        return {**self._suite_call('suite_status',{'suite_id':suite_id}),'attached':True,**_sealing(suite['frozen'])}
 
     def _suite_call(self,method,params):
         if method=='suite_start':return self.suite_start(params)
@@ -2109,6 +2142,7 @@ class Controller:
         if method=='suite_settle':return self._suite_settle(suite_id,params)
         if method=='suite_no_run':return self._suite_no_run(suite_id,params)
         if method=='suite_flag':return self._suite_flag(suite_id,params)
+        if method=='suite_sealed':return self._suite_sealed(suite_id,params)
         if method=='suite_detach':return self._suite_detach(suite_id,params)
         if method=='suite_events':
             # Each event says why the suite stopped where it did, with paths scrubbed as reports scrub them.

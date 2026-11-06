@@ -19,7 +19,9 @@ above, and has the configurator settle the slot from what the configurator reads
 harness, which continues a stopped trial on a device it provides anew (`reattach`) or grades an unscored one once. A
 suite of a generated set holds the set in memory and starts no trial until the set's folder is out of reach (Feature 05,
 vault gate; spec decision 17). A scoring suite moves past a trial that ended badly and audits each ended child's
-transcripts for commands naming the set's folder (Feature 06, slot policy; spec decisions 17 and 20)."""
+transcripts for commands naming the set's folder (Feature 06, slot policy; spec decisions 17 and 20), and seals each
+trial that concludes in place under the set's password, so that no later worker finds it readable (Feature 07, trial
+sealing; spec decision 21; `trial_store`)."""
 import argparse
 import contextlib
 import errno
@@ -40,6 +42,8 @@ from multiprocessing import AuthenticationError
 from multiprocessing.connection import Client, Listener
 from pathlib import Path
 
+from . import trial_store
+
 TRIAL = 'bench-trial/1'
 GOAL = 'Recover, check, package and freshly reuse the benchmark device interface for the desired functions.'
 # A trial the harness has finished with. `awaiting-evaluation` and `unscored` trials are completed by `resume`.
@@ -51,11 +55,7 @@ OWNER = (*CONTROL, 'stop', 'shutdown')
 TERMINAL = ('completed', 'failed', 'cancelled', 'blocked')
 
 
-def bench_home(home=None):
-    """The bench home: a sibling of the configurator home, never inside it."""
-    from ..client import default_home
-    home = Path(home or default_home()).expanduser().resolve()
-    return home.parent / (home.name + '-bench')
+bench_home = trial_store.bench_home
 
 
 def _private(path, value):
@@ -76,8 +76,8 @@ def _private(path, value):
 
 def read_trial(trial_dir):
     try:
-        return json.loads((Path(trial_dir) / 'trial.json').read_text(encoding='utf-8'))
-    except (OSError, ValueError):
+        return trial_store.read_trial(trial_dir)
+    except ValueError:
         return None
 
 
@@ -684,7 +684,7 @@ def _held_for_resume(configurator, suite_id, set_root, passwords, *, home, renod
     frozen implementation refusals stay in `suite_resume`, but for a scoring suite's child budget `extension`, which is
     refused here too with the vault still open."""
     from . import generated_sets, generated_trials
-    from .suites import NO_CHILD_EXTENSION
+    from .suites import NO_CHILD_EXTENSION, NO_RESUME_PASSWORD
     from .snapshots import canonical_digest
     result = _expect(configurator('suite_result', {'suite_id': suite_id, 'limit': 1}),
                      'The configurator did not report the suite')
@@ -704,6 +704,8 @@ def _held_for_resume(configurator, suite_id, set_root, passwords, *, home, renod
     if extension and 'scoring_set' in identity:
         raise ValueError(NO_CHILD_EXTENSION)
     registration = manifest['set']
+    if 'scoring_set' in identity and registration not in passwords:
+        raise ValueError(NO_RESUME_PASSWORD + ': ' + registration)
     devices = [entry['device_id'] for entry in manifest['entries']]
     held = _held_set(registration, devices, set_root, passwords)
     reasons = [reason for device in devices for reason in generated_sets.admitted_held(held, device)]
@@ -715,6 +717,55 @@ def _held_for_resume(configurator, suite_id, set_root, passwords, *, home, renod
     if reasons:
         raise _not_admitted(registration, reasons)
     return held
+
+
+def _refuse_resume_with_no_password(configurator, suite_id, passwords):
+    """Refuse a resume given no set root of a scoring suite whose password it was not given: it could seal nothing. A
+    configurator that does not answer goes on to `suite_resume`, which reports it."""
+    from .suites import NO_RESUME_PASSWORD
+    result = _post(configurator, 'suite_result', {'suite_id': suite_id, 'limit': 1})
+    identity = (result.get('experiment') or {}).get('comparison_identity') or {}
+    registration = (identity.get('manifest') or {}).get('set')
+    if 'scoring_set' in identity and registration not in passwords:
+        raise ValueError(NO_RESUME_PASSWORD + ': ' + str(registration))
+
+
+def _sealing_password(reply, passwords):
+    """The password a suite's concluded trials are sealed under, from the configurator's reply that it took the suite
+    on, or None for a suite that seals nothing. The reply says, so the harness reads no live table of sets. A resume
+    that could not ask beforehand is stopped here, before it starts any worker."""
+    from .suites import NO_RESUME_PASSWORD
+    registration = reply.get('scoring_set')
+    if registration is None:
+        return None
+    if registration not in passwords:
+        raise ValueError(NO_RESUME_PASSWORD + ': ' + str(registration))
+    return passwords[registration]
+
+
+def _refuse_beside_readable(configurator, home, registration):
+    """Refuse a new scoring suite while another suite of the set `registration` in this bench home has a trial still
+    readable: a new worker on the same firmware beside it is the worst case. Asking is only for a folder that exists. A
+    suite the configurator cannot name might be of this set."""
+    for suite_id in trial_store.readable_suites(home):
+        reply = _post(configurator, 'suite_result', {'suite_id': suite_id, 'limit': 1})
+        identity = (reply.get('experiment') or {}).get('comparison_identity') or {}
+        if reply.get('ok') is not True or (identity.get('manifest') or {}).get('set') == registration:
+            raise ValueError('Another suite of set ' + registration + ' still has a readable trial; resume it, or '
+                             'cancel and store it (benchmark suite store), first: ' + suite_id)
+
+
+def _seal_settled(home, suite_id, slot, password, configurator, token):
+    """Seal the trial of a slot that has just settled, found by its run or its child request. A slot with no folder is
+    left to the sweep that comes next, which makes one from its row."""
+    found = ((slot['run_id'] and trial_store.find_trial(home, suite_id, slot['run_id']))
+             or trial_store.find_trial(home, suite_id, slot['child_request_id']))
+    if found is None:
+        return
+    run_id = slot['run_id'] or trial_store.read_trial(found).get('run_id')
+    run_dir = Path(home) / 'runs' / run_id if run_id else None
+    workspaces = trial_store.run_workspaces(configurator, run_id, run_dir) if run_id else []
+    trial_store.seal_trial(found, run_dir, workspaces, password, configurator, token)
 
 
 def _start_child(launch, params, shutdown, stop=None):
@@ -1154,8 +1205,8 @@ def launch(case, output_dir=None, executor=None, options=None, approval=None, *,
             identity['executor_config'] = request['executor_config']
         held = _claim(bench, request_id, trial_id, identity)
         if held is not None:
-            return _follow(bench / 'trials' / held, None, wait, timeout, duplicate=True)
-    trial_dir = bench / 'trials' / trial_id
+            return _follow(trial_store.solo_trial_dir(bench, held), None, wait, timeout, duplicate=True)
+    trial_dir = trial_store.solo_trial_dir(bench, trial_id)
     trial_dir.mkdir(parents=True, mode=0o700)
     try:
         payload = {**request, 'password_file': password_file, 'renode': renode}
@@ -1337,21 +1388,21 @@ def _expect(reply, refusal):
     return reply
 
 
-def _trial_of(suites, run_id, request_id=None):
-    """The trial directory, under any suite of this bench home, whose trial ran `run_id`, or None. A trial whose start the
-    configurator never answered names no run: failing a trial that names it, the latest trial that sent a start under
-    the slot's child request (`request_id`, unique to the slot) and learnt of no run is the one that started it, since
-    the configurator starts a slot's child once and no trial is made for a slot whose child exists."""
+def _trial_of(folders, run_id, request_id=None):
+    """The trial directory, among `folders` (`trial_store.trial_dirs`), whose trial ran `run_id`, or None. A trial whose
+    start the configurator never answered names no run: failing a trial that names it, the latest trial that sent a
+    start under the slot's child request (`request_id`, unique to the slot) and learnt of no run is the one that started
+    it, since the configurator starts a slot's child once and no trial is made for a slot whose child exists."""
     latest = None
-    for path in sorted(Path(suites).glob('*/trials/*/trial.json')):
-        record = read_trial(path.parent)
+    for folder in folders:
+        record = read_trial(folder)
         if not isinstance(record, dict):
             continue
         if record.get('run_id') == run_id:
-            return path.parent
+            return folder
         if (request_id is not None and record.get('request_id') == request_id and record.get('run_id') is None
                 and record.get('start_sent') and (latest is None or record['start_sent'] > latest[0])):
-            latest = (record['start_sent'], path.parent)
+            latest = (record['start_sent'], folder)
     return latest[1] if latest else None
 
 
@@ -1459,7 +1510,9 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
     one given `set_root` does the same once the configurator says it can resume (`_held_for_resume`); one given none
     does not wait, and a slot that needs its device fails there. It checks the folder again before each worker: a wait
     that ends with no worker started goes back to the top of the loop unsettled, and one that passes its limit ends the
-    harness, blaming no trial."""
+    harness, blaming no trial. A scoring suite's harness seals each trial once it has settled, and sweeps
+    (`trial_store`) before each reservation, so no worker starts beside a readable concluded trial, and on its way out
+    while it is attached. A failure there stops the suite, with a reason that names no path."""
     from ..client import hold_process_lock
     suite_dir = Path(suite_dir)
     suite_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1475,7 +1528,7 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
     # Held before the record names this process, as a trial's harness holds its own.
     lock = hold_process_lock(suite_dir / HARNESS_LOCK)
     _private(suite_dir / 'suite.json', record)
-    attached, failure, current = False, None, None
+    attached, failure, current, sealing, closed = False, None, None, None, False
     try:
         passwords = _supplied_passwords(files)
         # Only a new set suite is held here: a resumed one has its pins frozen, and holds its set below, once the
@@ -1490,6 +1543,12 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
         if record['suite_id'] and set_root:
             held = _held_for_resume(configurator, record['suite_id'], set_root, passwords, home=home, renode=renode,
                                     extension=extension)
+        elif record['suite_id']:
+            _refuse_resume_with_no_password(configurator, record['suite_id'], passwords)
+        elif held is not None:
+            from .generated_sets import is_scoring
+            if is_scoring(held.registration):
+                _refuse_beside_readable(configurator, home, held.registration)
         if held is not None and not _await_unmount(suite_dir, record, set_root, held.registration, stop=stop):
             raise ValueError('The bench harness stopped before the vault holding set ' + held.registration
                              + ' was closed')
@@ -1510,8 +1569,9 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
         # A duplicate start drives nothing, unless the configurator says this harness is the one attached to it.
         attached = bool(reply.get('attached')) or not reply.get('duplicate')
         record.update(status='running', accepted=True, suite_id=reply['suite_id'], duplicate=bool(reply.get('duplicate')),
-                      reply={key: value for key, value in reply.items() if key != 'reason'})
+                      reply={key: value for key, value in reply.items() if key not in ('reason', 'scoring_set')})
         _private(suite_dir / 'suite.json', record)
+        sealing = _sealing_password(reply, passwords) if attached else None
         beat = {'at': 0.0}
         def heartbeat():
             # While a child runs, the configurator holds the suite to its budget and its cancellation on reservation.
@@ -1526,6 +1586,9 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
                 return reply.get('ok') is not True or reply.get('slot') == slot
             return _await_unmount(suite_dir, record, set_root, held.registration, stop=stop, poll=still_reserved)
         while attached and not (stop is not None and stop.is_set()):
+            # Before the reservation that starts a worker, or that finds nothing left and completes the suite.
+            if sealing is not None:
+                trial_store.sweep(home, record['suite_id'], sealing, configurator, token)
             reserved = _expect(configurator('suite_reserve', {'suite_id': record['suite_id'], 'token': token}),
                                'The configurator refused the reservation')
             slot = reserved.get('slot')
@@ -1561,25 +1624,42 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
                 current = None
                 record['settled'].append({'ordinal': slot['ordinal'], 'decision': recorded})
                 _private(suite_dir / 'suite.json', record)
+                if sealing is not None and recorded in ('fault', 'advance'):
+                    _seal_settled(home, record['suite_id'], slot, sealing, configurator, token)
                 continue
             settled = _expect(configurator('suite_settle', {'suite_id': record['suite_id'], 'token': token,
                                                             'ordinal': slot['ordinal']}), 'The configurator refused the settlement')
             current = None
             record['settled'].append({'ordinal': slot['ordinal'], 'decision': settled.get('decision')})
             _private(suite_dir / 'suite.json', record)
+            if sealing is not None and settled.get('decision') in ('advance', 'fault', 'flag', 'regrade'):
+                _seal_settled(home, record['suite_id'], slot, sealing, configurator, token)
             if settled.get('decision') == 'block':
                 record['suite_status'] = settled.get('status')
                 break
         record['status'] = 'finished'
     except Exception as error:
         failure = str(error) if isinstance(error, ValueError) else type(error).__name__ + ': ' + str(error)
+        closed = isinstance(error, trial_store.SealError)
         record.update(status='failed', reason=failure)
     finally:
+        if attached and sealing is not None:
+            # Before the suite's final status, so that a failure here is a stop. A configurator it cannot reach makes
+            # this do nothing, and the next start sweeps.
+            try:
+                trial_store.sweep(home, record['suite_id'], sealing, configurator, token)
+            except trial_store.Unreachable:
+                pass
+            except trial_store.SealError as error:
+                if failure is None:
+                    failure, closed = str(error), True
+                    record.update(status='failed', reason=failure)
         if attached:
             # The failure text may name a path handed to this harness alone (the emulator executable): the configurator
-            # is told which trial failed and where this record is, never the text itself.
-            public = (('trial ' + current + ' failed' if current else 'the harness failed') + '; see '
-                      + str(suite_dir / 'suite.json')) if failure else None
+            # is told which trial failed and where this record is, never the text itself. A sealing failure names no
+            # path and no trial.
+            public = (failure if closed else ('trial ' + current + ' failed' if current else 'the harness failed')
+                      + '; see ' + str(suite_dir / 'suite.json')) if failure else None
             record['detached'] = _post(configurator, 'suite_detach', {'suite_id': record['suite_id'], 'token': token,
                                                                        **({'reason': public} if public else {})}).get('ok') is True
         record['finished'] = time.time()
@@ -1631,7 +1711,7 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
         if gate is not None and not gate(slot):
             raise _NoWorkerStarted()
     def trial_of(completed):
-        found = _trial_of(suite_dir.parent, run_id, slot['child_request_id'])
+        found = _trial_of(trial_store.trials_under(suite_dir.parent), run_id, slot['child_request_id'])
         if found is None:
             raise ValueError('The trial of child ' + run_id + ' is not under this bench home; its device and evaluation '
                              'cannot be continued')
@@ -1640,7 +1720,7 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
     if run_id is None:
         supplied, named = password(), device()
         out_of_reach()
-        trial_dir = suite_dir / 'trials' / (slot['trial_key'] + '-' + uuid.uuid4().hex[:8])
+        trial_dir = trial_store.new_trial_dir(suite_dir, slot['trial_key'])
         record = run_trial(trial_dir, {'trial_id': trial_dir.name, 'home': str(home), 'case': case, 'start': child,
                                        'renode': renode},
                            password=supplied, call=configurator, launch=launch, heartbeat=heartbeat, stop=stop,
@@ -1658,7 +1738,10 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
             if status.get('equivalence') is not None or (scoring and slot.get('audit')):
                 return None
             supplied, named = password(), device()
-            record = resume(trial_of(True), password=supplied, renode=renode, call=configurator, audit=audit, **named)
+            found = trial_of(True)
+            if scoring:
+                trial_store.restore(found, supplied)  # A regrade's, or a stored trial's, which stops here.
+            record = resume(found, password=supplied, renode=renode, call=configurator, audit=audit, **named)
         elif status.get('uncertain_effect'):
             return None  # The configurator blocks the suite; only the operator reconciles an uncertain effect.
         elif scoring:
@@ -1666,13 +1749,17 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
                 return None
             if audit is None:
                 raise ValueError('The set root of ' + keyed + ' is required to audit its stopped trial')
+            sealed = _trial_of(trial_store.trials_under(suite_dir.parent), run_id, slot['child_request_id'])
+            if sealed is not None and (read_trial(sealed) or {}).get('status') == trial_store.SEALED:
+                # The audit reads its transcripts: a slot sealed unsettled, by a store, stops here rather than settle.
+                trial_store.restore(sealed, password())
             # Read before the flag: a flagged slot never comes back, so its handoffs are sealed now or never.
             result = _post(configurator, 'result', {'run_id': run_id})
             unread = _unread({}, result)
             if unread:
                 raise ValueError('The stopped run could not be read, so it is not audited: ' + unread)
             if audit.flagged(home / 'runs' / run_id):
-                found = _trial_of(suite_dir.parent, run_id, slot['child_request_id'])
+                found = _trial_of(trial_store.trials_under(suite_dir.parent), run_id, slot['child_request_id'])
                 if found is not None:
                     _adopt(found, run_id, False)
                     _seal_flagged(found, home / 'runs' / run_id, result, password())
@@ -1736,15 +1823,15 @@ def launch_suite(request, *, home, password_files=None, renode=None, set_root=No
             raise ValueError('request_id must be a nonblank string')
         identity = {name: request.get(name) for name in SUITE_IDENTITY}
         held = _claim(bench, request_id, key, identity, kind='suite')
-        if held is not None and _refused(bench / 'suites' / held):
+        if held is not None and _refused(trial_store.suite_dir(home, held)):
             # The harness that claimed this request_id ended without the configurator's reply on record: refused (none
             # was frozen, so once the cause is fixed the same request starts afresh), or ended before it wrote the reply
             # down (the new harness's start finds the frozen suite and reports it, driving nothing).
             _release_claim(bench, request_id, held)
             held = _claim(bench, request_id, key, identity, kind='suite')
         if held is not None:
-            return _follow_suite(bench / 'suites' / held, None, timeout, duplicate=True)
-    suite_dir = bench / 'suites' / key
+            return _follow_suite(trial_store.suite_dir(home, held), None, timeout, duplicate=True)
+    suite_dir = trial_store.suite_dir(home, key)
     suite_dir.mkdir(parents=True, mode=0o700)
     try:
         payload = {**request, 'password_files': passwords, 'renode': renode,

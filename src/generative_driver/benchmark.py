@@ -134,6 +134,10 @@ def main(argv=None):
                            help='A forbidden path: flag a trial whose worker ran a command that names it, and leave '
                            'that trial ungraded. Repeat for each path. The export shows a path only in the commands '
                            'that name it')
+    exporting.add_argument('--password-file', help='A scoring suite\'s: its set\'s password; read once, never printed')
+    exporting.add_argument('--set-root', help='A scoring suite\'s: the set\'s directory, under the vault folder')
+    exporting.add_argument('--vault-folder', help='A scoring suite\'s: the open vault\'s folder, which holds the set '
+                           'root and the output')
     scorecard = suites.add_parser('scorecard', help='Measure a suite from its retained records: its pass rate and, per stage, '
                                   'time, tokens, tool and device use; a scoring suite shows aggregates only')
     scorecard.add_argument('suite_id')
@@ -141,6 +145,23 @@ def main(argv=None):
     scorecard.add_argument('--audit-path', action='append', metavar='PATH',
                            help='A forbidden path: flag a trial whose worker ran a command that names it, and leave '
                            'that trial ungraded. Repeat for each path. The scorecard quotes no command')
+    scorecard.add_argument('--password-file', help='A scoring suite\'s: its set\'s password; read once, never printed')
+    scorecard.add_argument('--set-root', help='A scoring suite\'s: the set\'s directory, for each device\'s level and '
+                           'framing')
+    scorecard.add_argument('--vault-folder', help='A scoring suite\'s, once benchmark suite store has run: the open '
+                           'vault\'s folder')
+    storing = suites.add_parser('store', help='Sweep a completed or cancelled scoring suite and move its sealed trials '
+                                'into the vault folder')
+    storing.add_argument('suite_id')
+    storing.add_argument('--password-file', required=True, help='The set\'s password; read once, never printed')
+    storing.add_argument('--vault-folder', required=True, help='The open vault\'s folder')
+    unsealing = suites.add_parser('unseal', help='Write one sealed trial under the vault folder, to check a flagged '
+                                  'command')
+    unsealing.add_argument('suite_id')
+    unsealing.add_argument('--trial', required=True, help='Its run id or trial id')
+    unsealing.add_argument('--password-file', required=True, help='The set\'s password; read once, never printed')
+    unsealing.add_argument('--vault-folder', required=True, help='The open vault\'s folder')
+    unsealing.add_argument('--output', required=True, help='A new or empty folder under the vault folder')
     suite_comparing = suites.add_parser('compare')
     suite_comparing.add_argument('before')
     suite_comparing.add_argument('after')
@@ -272,17 +293,32 @@ def main(argv=None):
                 result = compare_suites(args.before, args.after, leak_check=args.leak_check)
             elif args.action == 'report':
                 from .benchmark_support.suite_reporting import report_suite
-                result = report_suite(args.suite_id, output=args.output, audit_paths=tuple(args.audit_path or ()))
+                result = report_suite(args.suite_id, output=args.output, audit_paths=tuple(args.audit_path or ()),
+                                      password=_read_password(args.password_file), set_root=args.set_root,
+                                      vault=args.vault_folder)
             elif args.action == 'scorecard':
                 from .client import default_home
                 from .benchmark_support.scorecard import bench_trial_dirs, suite_scorecard, write_scorecard
-                from .benchmark_support.suite_reporting import report_suite
+                from .benchmark_support.suite_reporting import _export_suite
                 home = Path(default_home()).expanduser().resolve()
+                password = _read_password(args.password_file)
                 # The export holds each trial's details, which a scoring suite never shows: only its aggregate stays.
                 with tempfile.TemporaryDirectory(prefix='gd-scorecard-') as temporary:
-                    report = report_suite(args.suite_id, home=home, output=temporary, audit_paths=tuple(args.audit_path or ()))
-                result = suite_scorecard(report, home=home, trial_dirs=bench_trial_dirs(report, home))
+                    report = _export_suite(args.suite_id, home=home, output=temporary,
+                                           audit_paths=tuple(args.audit_path or ()), password=password,
+                                           vault=args.vault_folder)
+                result = suite_scorecard(report, home=home, trial_dirs=bench_trial_dirs(report, home),
+                                         password=password, set_root=args.set_root, vault=args.vault_folder)
                 write_scorecard(result, args.output)
+            elif args.action == 'store':
+                from .client import call, default_home
+                from .benchmark_support.trial_store import store
+                home = Path(default_home()).expanduser().resolve()
+                store(home, args.suite_id, args.vault_folder, _read_password(args.password_file),
+                      lambda method, params: call(method, params, home=home, autostart=False))
+                result = {'ok': True, 'suite_id': args.suite_id, 'stored': True}
+            elif args.action == 'unseal':
+                result = _unseal(args.suite_id, args.trial, args.password_file, args.vault_folder, args.output)
             elif args.action == 'start':
                 from .benchmark_support.suites import start_suite
                 params = {'manifest': json.loads(Path(args.manifest).read_text(encoding='utf-8')),
@@ -345,6 +381,28 @@ def main(argv=None):
     except (OSError, ValueError, RuntimeError) as error:
         print(json.dumps({'ok': False, 'error': str(error)}))
         return 1
+
+
+def _read_password(path):
+    """The password in the file at `path`, or None with none given."""
+    from .benchmark_support.truth import read_password
+    return read_password(path) if path else None
+
+
+def _unseal(suite_id, trial, password_file, vault_folder, output):
+    """Write one sealed trial into the folder `output`, for a person checking a flagged command. It writes only under
+    the given vault folder, in a folder new or empty."""
+    from .client import default_home
+    from .benchmark_support.trial_store import opened
+    vault, target = Path(vault_folder).expanduser().resolve(), Path(output).expanduser().resolve()
+    if not vault.is_dir() or target == vault or not target.is_relative_to(vault):
+        raise ValueError('benchmark suite unseal writes only under the given vault folder: ' + suite_id)
+    if target.exists() and any(target.iterdir()):
+        raise ValueError('benchmark suite unseal writes only into a new or empty folder: ' + suite_id)
+    with opened(Path(default_home()).expanduser().resolve(), suite_id, trial, _read_password(password_file),
+                vault=vault) as root:
+        shutil.copytree(root, target, dirs_exist_ok=True)
+    return {'ok': True, 'suite_id': suite_id, 'output': str(target)}
 
 
 def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, autostart=True, wait=False, via_owner=False):

@@ -194,7 +194,8 @@ class GraderClosureTests(PackageCopy, unittest.TestCase):
         # Catches reporting code (the outcomes, the audit, the pairing, the scorecard, the suite report and the corpus) that a
         # grading module comes to import without the boundary test failing: every change to it would then change the grader's
         # identity and void a qualification, though it grades nothing.
-        for name in ('outcomes', 'audit', 'pairing', 'scorecard', 'suite_reporting', 'corpus'):
+        for name in ('outcomes', 'audit', 'pairing', 'scorecard', 'suite_reporting', 'corpus', 'trial_store',
+                     'generated_trials'):
             with self.subTest(name):
                 root = self.copy_package()
                 self.import_from_grading(root, 'from . import ' + name)

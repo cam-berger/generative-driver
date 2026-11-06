@@ -191,6 +191,20 @@ These still stop the suite until a resume: an uncertain effect, even with a spen
 
 The audit reads Codex transcripts only, and only commands that name the set's folder in their text. It catches slips. A flagged trial's stored findings hold each transcript's name and its command's SHA-256, never the command or the root. `report_suite`'s `audit_paths` add to those findings and never overwrite them.
 
+### Sealing a scoring suite's trials
+
+Each concluded trial of a scoring suite (finished, faulted, flagged or never run) is sealed in place under the set's password: its run folder but for `benchmark/execution.json` and `benchmark/inputs/`, its trial folder but for `*.enc` and lock files, and its temporary interpret workspaces. `trial.json` becomes a stub with status `sealed`, and the run shows `sealed: true` and refuses `resume` and `attach_device`. A failure to seal stops the suite with a reason that names no path, and a resume seals what is left before any worker starts. So a scoring suite's resume needs its password file, and a new scoring suite refuses while another suite of its set has a trial still readable. Development and hand-made suites are not sealed.
+
+With the vault open, once the suite is settled:
+
+- `benchmark suite store <suite id> --password-file <file> --vault-folder <folder>` seals what is left, then moves each seal under `<folder>/sealed-trials/<suite id>/`, unlocking each copy before its original goes. It takes a completed suite, or a cancelled one with nothing stopping. Stubs and other `*.enc` files stay. A repeat finishes a move cut short, and it never replaces a vault file that differs.
+- To abandon a suite, cancel it, then store it. That seals every readable trial, an unsettled slot's too. A later resume that reaches such a slot stops at the failed restore.
+- `benchmark suite scorecard` of a scoring suite needs `--password-file` and `--set-root`, and `--vault-folder` once `store` has run. It refuses while the suite is queued or running or anything of it is stopping, and it stays aggregate-only.
+- `benchmark suite report` of a scoring suite needs `--password-file`, `--set-root` and `--vault-folder`, and refuses in the same states, or unless the set root and `--output` lie under the vault folder, since the report holds per-trial data. `benchmark suite compare` still reads it, as only its counts leave.
+- `benchmark suite unseal <suite id> --trial <run id or trial id> --password-file <file> --vault-folder <folder> --output <folder under it>` writes one sealed trial out for a person checking a flagged command. It refuses any other location.
+
+`gd report <run>` on a sealed run writes files into the run's folder, and the next sweep seals them. `suite_result`, `suite_events`, `suite_status` and `suite.json` are unchanged and can show per-trial data.
+
 ## Add, unselect or retire
 
 **Add** a lineage by updating a versioned catalog, with blockers until admission is complete; implement and qualify its registered case before claiming execution. Never substitute a synthetic development case for an upstream lineage.

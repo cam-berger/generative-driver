@@ -45,8 +45,8 @@
     {
       "id": "07",
       "slug": "trial-sealing",
-      "status": "pending",
-      "base": null
+      "status": "escalated",
+      "base": "73727de4f01579bd8582872696ce220bce0ecfb1"
     },
     {
       "id": "08",
@@ -55,5 +55,9 @@
       "base": null
     }
   ],
-  "escalation": null
+  "escalation": {
+    "feature": "07",
+    "reason": "A folder made from a slot's row has no evaluation token of its own. When no other trial of the suite has a token either, the password can't be proved, and the current code seals and deletes the run's plaintext under it, which a wrong password would make unrecoverable. 07-B6 says plaintext is never deleted under a seal the real password can't open, while 07-B7 says a run with no trial folder gets a seal made from the row. Reviewer's recommended ruling: stop the suite with nothing deleted. Five other Behaviour findings are for a fix round: a run's trial with its token missing is treated as nothing to check; a made folder isn't re-proved after a crash; a no-run folder can be sealed before the wrong password is noticed; a report's output check and write normalise the path differently; extraction's path check misses Windows forms; and read-back by name copies another suite's run with no password.",
+    "at": "2026-11-05T23:49:33+00:00"
+  }
 }

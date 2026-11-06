@@ -50,7 +50,7 @@
     },
     {
       "id": "08",
-      "slug": "bounded-output",
+      "slug": "output-measure",
       "status": "pending",
       "base": null
     }

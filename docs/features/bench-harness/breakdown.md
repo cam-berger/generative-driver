@@ -9,4 +9,4 @@ For the evaluator who runs the benchmark: a scoring suite runs end to end on han
 05. vault-gate — a suite reads its sets into memory and starts trials only once their roots are unreachable
 06. slot-policy — a scoring suite counts a spent budget as failure, moves past faults, reruns once and acts on audit flags
 07. trial-sealing — trial folders sit behind one module, and graded scoring trials are sealed with a stub left behind
-08. bounded-output — package output is capped so one trial cannot exhaust the bench host
+08. output-measure — each trial records the largest output its driver printed beside its firmware's size, with no limit until real sizes are known

@@ -38,10 +38,11 @@ _QUALIFIED = []
 
 
 def qualified_set():
-    """The fixture set, really qualified, once in this test process since that takes twelve emulator runs, and
-    registered in a table for as long as the process's tests run: its root, its password file and its loaded manifest.
-    No test changes it."""
+    """The fixture set, really qualified, once in this test module since that takes twelve emulator runs, and registered
+    in a table for as long as the module's tests run: its root, its password file and its loaded manifest. No test
+    changes it. A module's cleanups end it, so a later module in the same process qualifies its own."""
     if not _QUALIFIED:
+        unittest.addModuleCleanup(_QUALIFIED.clear)
         directory = tempfile.TemporaryDirectory()
         unittest.addModuleCleanup(directory.cleanup)
         base = Path(directory.name).resolve()

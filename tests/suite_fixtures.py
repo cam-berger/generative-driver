@@ -77,7 +77,9 @@ def legacy_case(test, resources, case_id, password, payload):
     path = resources / manifest['truth']['path']
     manifest['truth']['sha256'] = password.seal(payload, path)
     (resources / 'cases' / case_id / 'case.json').write_text(json.dumps(manifest), encoding='utf-8')
-    for target in ('generative_driver.benchmark.case_root', 'generative_driver.benchmark_support.case_assets.case_root'):
+    # `legacy` holds its own name for it, bound when it was first imported, which may be long before this test.
+    for target in ('generative_driver.benchmark.case_root', 'generative_driver.benchmark_support.case_assets.case_root',
+                   'generative_driver.benchmark_support.legacy.case_root'):
         guard = patch(target, return_value=resources)
         guard.start(); test.addCleanup(guard.stop)
     return path

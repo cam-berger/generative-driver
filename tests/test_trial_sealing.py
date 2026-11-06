@@ -310,6 +310,12 @@ class WhatASealHoldsTests(FolderFixture):
         writer.start()
         self.addCleanup(writer.join)
         self.addCleanup(finished.set)
+        if os.name == 'nt':
+            # Windows won't delete a file a writer holds open: the failed delete stops the suite, and the log stays.
+            with self.assertRaisesRegex(trial_store.SealError, '^Sealing a concluded trial failed: PermissionError$'):
+                self.seal()
+            self.assertTrue(log.exists())
+            return
         self.seal()
         finished.set()
         sealed = self.index()['members']['trial/device/sessions/s/emulator.log']
@@ -946,11 +952,12 @@ class LinksAndModesTests(SweepFixture):
         folder.chmod(0)
         workspace.chmod(0)
         self.addCleanup(lambda: [os.path.exists(path) and path.chmod(0o700) for path in (folder, workspace)])
+        # What a mode of 0 reads as: 0 here, and read-only on Windows.
+        modes = [stat.S_IMODE(path.lstat().st_mode) for path in (secret, folder)]
         self.sweep()
         self.assertAllSealed()
         index = self.index()['members']
-        self.assertEqual(index['run/work/probe/a1/_agent_events.jsonl']['mode'], 0)
-        self.assertEqual(index['trial/device']['mode'], 0)
+        self.assertEqual([index['run/work/probe/a1/_agent_events.jsonl']['mode'], index['trial/device']['mode']], modes)
 
     def test_07_B9_a_whole_trial_folder_chmod_000_is_fixed_as_well(self):
         self.trial.chmod(0o700)

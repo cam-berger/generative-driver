@@ -1,6 +1,7 @@
 """Feature 06, slot policy: a scoring suite moves past a trial that ended badly, reruns a faulted device once at the end
 and does not grade a trial the transcript audit flags. Hand-written fixture devices, scripted workers and synthetic
 credentials only; never Renode, a real set, a vault or a model run."""
+import contextlib
 import hashlib
 import json
 import shutil
@@ -382,13 +383,14 @@ class SettlementTests(StoreFixture):
         self.assertEqual(rows[1].get('audit'), [FINDING])
 
     def test_06_B1_a_database_from_before_this_gains_the_new_fields_with_their_defaults(self):
-        with sqlite3.connect(self.path) as db:
+        # A connection used as a context manager commits but stays open, and Windows can't delete an open file.
+        with contextlib.closing(sqlite3.connect(self.path)) as db, db:
             for column in ('attempt', 'first_attempt', 'no_run_reason', 'regrade', 'audit'):
                 db.execute('ALTER TABLE suite_trials DROP COLUMN ' + column)
         store = SuiteStore(sqlite_context(self.path))
         suite = store.create(frozen_of(1))['suite_id']
         self.assertEqual(json.loads(json.dumps(store.get(suite)['trials'][0]))['status'], 'pending')
-        with sqlite3.connect(self.path) as db:
+        with contextlib.closing(sqlite3.connect(self.path)) as db:
             self.assertEqual(db.execute('SELECT attempt FROM suite_trials').fetchone(), (1,))
 
 

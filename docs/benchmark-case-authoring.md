@@ -207,6 +207,14 @@ With the vault open, once the suite is settled:
 
 `gd report <run>` on a sealed run writes files into the run's folder, and the next sweep seals them. `suite_result`, `suite_events`, `suite_status` and `suite.json` are unchanged and can show per-trial data.
 
+### Output figures on the scorecard
+
+Each graded trial records in `trial.json` the largest output its driver printed, as `package_output: {largest_bytes, calls}`: `largest_bytes` is one call's stdout and stderr together, in the UTF-8 bytes of the text as the grader read it. The scorecard shows it beside the firmware's size, the sum of the case's images. Its `package_output` block gives the `max` and `median` of `largest_bytes`, `firmware_bytes` and `ratio` (each trial's first divided by its second) over the `measured` trials holding both figures. A trial's metrics hold the same three figures, with `None` for what is unknown. A scoring suite's card holds only the aggregates.
+
+The 2 MiB in the [driver contract](../src/generative_driver/resources/docs/DRIVER_CONTRACT.md) is the runtime's ceiling on what it returns, a rule and not a measurement, and nothing holds a driver to it: these figures exist to show whether a limit is needed, and whether it should be proportional to the firmware ([limits](design.md)).
+
+Only grading's calls count. A call that timed out or could not start is not counted; one that crashed after it started is, since it returned. A first attempt's figures stay sealed with it and are not on the card, so the card can understate the largest output when a first attempt printed the most. A harness that dies before writing its record leaves the trial unmeasured, and a resume cannot recover that.
+
 ## Add, unselect or retire
 
 **Add** a lineage by updating a versioned catalog, with blockers until admission is complete; implement and qualify its registered case before claiming execution. Never substitute a synthetic development case for an upstream lineage.

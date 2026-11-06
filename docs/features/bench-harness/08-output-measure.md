@@ -41,3 +41,12 @@ No limit is added. Until there is one, a flood from a tampered driver or a later
 - Any real run, password, vault, Renode, set or model.
 
 ## Deviations
+
+- `OutputMeter` is a new public class in `emulated_actions.py` — the Interface asks for a small mutable object with `add(stdout, stderr)` without naming a home; it sits beside the invoker and adds no import to grading code.
+- The docs say a crashed call is counted, against this Spec's Docs bullet — 08-B1 ("the calls that returned") and the Interface both require it, the docs match the code, and leaving out a crash that printed a flood would work against the Intent. Only timed-out and could-not-start calls are uncounted.
+- The scorecard's read fallback also catches `AttributeError` and `RecursionError` — both are real ways to read a tampered or over-deep record, 08-B7 says "a card never fails on it", and each is reached by a test.
+- `_firmware_bytes` gives None when `manifest.images` and `public_files` disagree or the image is missing, and images are a dict, not a list — a fair reading of "doesn't match", since `read_snapshot` checks only `public_files`; honest pins can't trip it.
+- `_largest_output` treats a non-integer `largest_bytes` as unmeasured — serves 08-B7's "reads as unmeasured" and "never fails", and only a tampered record can reach it.
+- The card line's wording, `.3g` exponent form at 1000 or above, and no `n/N` on the ratio — 08-B6 fixes neither the wording nor the placement beyond one line after `Reruns:`, and the Interface asks for `_cell` on byte figures only.
+- Test harness additions: the `printed` argument on `reference`, the `meter` keyword on `StepGradingTests.grade`, and the `linked` subtest left out on Windows — the Spec asks the double to add known sizes, and the Windows skip is only for symlink privilege.
+- 08-B2's final test names weren't re-run under their mutation, and `test_08_B1_a_harness_that_dies...` can't catch a figure written early, since a dead process isn't simulated — process only; that path was confirmed by reading `conclude`, and 08-B1 and 08-B2 have fitting RED.

@@ -15,6 +15,7 @@ from generated_fixtures import (BOUNDED, FIXTURE_ANSWER_KEY, MODE_ADDRESS, MODE_
                                 REFERENCE_B, STEP, FixtureDevice, fixture_mission, fixture_start)
 from generative_driver.benchmark_support import generated, generated_device
 from generative_driver.benchmark_support.behavior import validate_records
+from generative_driver.benchmark_support.emulated_actions import OutputMeter
 from generative_driver.benchmark_support.evaluator import reference_execute
 from generative_driver.benchmark_support.generated import classify_answer
 from generative_driver.benchmark_support.integrity import digest
@@ -85,7 +86,25 @@ def add_to_bundled_runtime(package, code):
 
 
 class StepGradingTests(unittest.TestCase):
-    def grade(self, candidate, *, edit=None, healthy_device_failures=False, **device):
+    def test_08_B1_a_real_grading_gives_its_meter_each_package_call(self):
+        meter = OutputMeter()
+        self.grade(REFERENCE_A, meter=meter)
+        called = [event for event in self.raw['events'] if 'step' in event]
+        self.assertGreater(len(called), 0)
+        self.assertEqual(meter.calls, len(called))
+        self.assertGreater(meter.largest_bytes, 0)
+
+    def test_08_B3_a_real_grading_gives_the_same_grade_and_evidence_with_and_without_a_meter(self):
+        unmeasured = self.grade(REFERENCE_A)
+        evidence = self.raw
+        measured = self.grade(REFERENCE_A, meter=OutputMeter())
+        self.assertEqual((measured['records'], measured['grade']), (unmeasured['records'], unmeasured['grade']))
+        self.assertNotIn('largest_bytes', json.dumps(self.raw))
+        self.assertNotIn('package_output', json.dumps(self.raw))
+        self.assertEqual([event for event in self.raw['events'] if 'step' in event],
+                         [event for event in evidence['events'] if 'step' in event])
+
+    def grade(self, candidate, *, edit=None, healthy_device_failures=False, meter=None, **device):
         """The evaluation of `candidate`'s frozen package: emitted by the reference runner against a fixture device,
         then graded by reference_execute on a fresh one; both devices are FixtureDevice(**device). `edit` changes the
         package between the two. The evaluator's raw evidence is kept in self.raw."""
@@ -103,7 +122,7 @@ class StepGradingTests(unittest.TestCase):
                 return reference_execute(PIN, key, candidate['capabilities'], renode=Path('/toy'), image=Path('/toy'),
                                          output_dir=root/'final', package=package,
                                          expected_package_sha256=digest(package), private_dir=root/'native',
-                                         healthy_device_failures=healthy_device_failures)
+                                         healthy_device_failures=healthy_device_failures, meter=meter)
             finally:
                 raw = root/'final'/'raw.json'
                 self.raw = json.loads(raw.read_text(encoding='utf-8')) if raw.is_file() else None

@@ -213,7 +213,20 @@ def execute_plan(session, invoke, plan, contract, evidence_path, observations, s
     return records
 
 
-def package_invoker(package, binding, grants):
+class OutputMeter:
+    """How much the package calls of one grading printed (Feature 08, output measure): `largest_bytes`, the largest
+    stdout and stderr together of one call in the UTF-8 bytes of the text as read, and `calls`, how many calls returned.
+    It limits nothing. The harness holds it, so the figures reach neither the grade nor its evidence."""
+
+    def __init__(self):
+        self.largest_bytes, self.calls = 0, 0
+
+    def add(self, stdout, stderr):
+        self.largest_bytes = max(self.largest_bytes, len(stdout.encode('utf-8')) + len(stderr.encode('utf-8')))
+        self.calls += 1
+
+
+def package_invoker(package, binding, grants, *, meter=None):
     """Normal installed package CLI, isolated from the source checkout. A call that ends without a result is reported as
     a host fault, never raised: from `package` when the package outlasted the call limit or exited without a result,
     from `package-process` when the process could not start (`spawn`) or a signal the grader did not send killed it
@@ -221,7 +234,9 @@ def package_invoker(package, binding, grants):
     package prints itself is dropped, so that a package cannot print its way to that label. A printed object that no
     runtime writes (`_malformation`: a field of the wrong type, objects or arrays nested more than MAX_RESULT_DEPTH
     levels deep, or a number that is not finite), which the honest CLI never prints, is the driver's `malformed_result`,
-    keeping the start of the print with its length and SHA-256 (`_malformed_result`)."""
+    keeping the start of the print with its length and SHA-256 (`_malformed_result`). A `meter` (`OutputMeter`) is given
+    what each call that returned printed, before any of it is parsed; a call that timed out or could not start adds
+    nothing."""
     import json
     import subprocess
     import sys
@@ -245,6 +260,8 @@ def package_invoker(package, binding, grants):
         except OSError as error:
             return failed('package-process', 'spawn', 'The package process could not start: ' + type(error).__name__
                           + ': ' + str(error))
+        if meter is not None:
+            meter.add(completed.stdout, completed.stderr)
         try:
             result = json.loads(completed.stdout)
         except (ValueError, RecursionError):
@@ -265,10 +282,11 @@ def package_invoker(package, binding, grants):
     return invoke
 
 
-def canonical_package_invoker(package, capabilities, binding):
+def canonical_package_invoker(package, capabilities, binding, *, meter=None):
     """The package's calls by canonical task: a task the mapping cannot bind fails before the package runs, and the
     outputs and units of a result are renamed to the task's. `package_invoker` has already made a result no runtime
-    writes the driver's `malformed_result`, so every result has the shape this reads."""
+    writes the driver's `malformed_result`, so every result has the shape this reads. `meter` goes to
+    `package_invoker`."""
     import json
     from pathlib import Path
     from .behavior import bind_task
@@ -278,7 +296,7 @@ def canonical_package_invoker(package, capabilities, binding):
             request = bind_task(capabilities, task, inputs, model)
         except ValueError as error:
             return _binding_failure(task, error)
-        result = package_invoker(package, binding, grants)(**request)
+        result = package_invoker(package, binding, grants, meter=meter)(**request)
         mappings = capabilities['tasks'][task]['outputs']
         return {**result,
             'outputs': {key: result.get('outputs', {}).get(mapping['output']) for key, mapping in mappings.items()},

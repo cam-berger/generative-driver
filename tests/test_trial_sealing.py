@@ -335,6 +335,15 @@ class PasswordProofTests(FolderFixture):
 
 
 class StubTests(FolderFixture):
+    def test_08_B5_the_figure_is_sealed_with_the_original_record_and_the_stub_holds_exactly_its_keys(self):
+        figure = {'largest_bytes': 500, 'calls': 3}
+        trial = self.make_trial(package_output=figure)
+        stub = self.seal(trial)
+        self.assertEqual(sorted(stub), ['case', 'finished', 'request_id', 'run_id', 'schema', 'sealed_files',
+                                        'start_sent', 'status', 'trial_id'])
+        self.assertNotIn('package_output', (trial / 'trial.json').read_text())
+        self.assertEqual(json.loads(self.members(trial=trial)['trial/trial.json'])['package_output'], figure)
+
     def test_07_B11_the_stub_holds_exactly_these_keys(self):
         stub = self.seal()
         self.assertEqual(sorted(stub), ['case', 'finished', 'request_id', 'run_id', 'schema', 'sealed_files',

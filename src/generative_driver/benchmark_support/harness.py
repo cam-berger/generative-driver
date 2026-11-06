@@ -280,9 +280,12 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
     is posted with record_evaluation; any other run's handoffs are sealed alone. No grade is posted that was not sealed
     first; an unscored one carries none. A record the configurator's equivalence/1 schema would refuse, or accepted
     records that no longer match their hashes at the seal, are posted unscored: no retry would change them. The
-    plaintext evaluation never outlives this call."""
+    plaintext evaluation never outlives this call. A grading that counted package calls returns `package_output`, its
+    largest output and its calls, for the trial record alone: however the grade or seal or post ended, and never in what
+    is sealed or posted."""
     from ..configurator import IntegrityError, _evaluation_errors
     from . import evaluator, recorded_grading
+    from .emulated_actions import OutputMeter
     if result.get('equivalence') is not None:
         # The configurator already holds this run's verdict: nothing is graded, sealed or posted again. Its seal is the
         # evidence the verdict names, when the trial directory holds exactly that (a harness may have died after the
@@ -303,6 +306,7 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
     frozen = (evaluator.emitted(accepted) or (None, None))[1]
     method = evaluator.method_for(case_id)
     done, content, equivalence = {}, {}, None
+    meter = OutputMeter()
     try:
         if pending and graded:
             try:
@@ -314,7 +318,7 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
                 else:
                     equivalence, content['final'] = evaluator.grade(case_id, trial_dir, run_dir, result,
                                                                     password=password, truth_source=truth_source,
-                                                                    renode=renode)
+                                                                    renode=renode, meter=meter)
                 content['mission'] = equivalence.get('mission')
             except IntegrityError as error:
                 equivalence, content['error'] = evaluator.unscored('integrity: ' + str(error), frozen, method,
@@ -349,6 +353,8 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
     finally:
         # Whatever ends grading or sealing, an interrupt included, the plaintext copies and evaluation output go.
         shutil.rmtree(Path(trial_dir) / 'private', ignore_errors=True)
+    if meter.calls:
+        done['package_output'] = {'largest_bytes': meter.largest_bytes, 'calls': meter.calls}
     if equivalence is None:
         return done
     equivalence = {**equivalence, 'evidence_sha256': done['evidence']['sha256'] if done['sealed'] else None}

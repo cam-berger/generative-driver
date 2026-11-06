@@ -48,11 +48,11 @@ def accept_frozen_package(package, expected_sha256):
 
 
 def reference_execute(pin, truth, capabilities, *, renode, image, output_dir, package, expected_package_sha256,
-                      private_dir=None, healthy_device_failures=False):
+                      private_dir=None, healthy_device_failures=False, meter=None):
     """Grade a frozen package's final phase on a fresh emulator it starts and stops, through the package's own bundled
     runtime, by the family's `execute`. The emulator session keeps its files (its log, the monitor commands it rendered)
-    in `private_dir` when given. Candidate models and reference emission run outside the grader
-    (`reference_calibration.run_reference`)."""
+    in `private_dir` when given. A `meter` goes to the invoker, which adds to it what each package call printed.
+    Candidate models and reference emission run outside the grader (`reference_calibration.run_reference`)."""
     if pin.get('scenario_id') != 'original':
         raise ValueError('Unknown case scenario')
     from .emulated_actions import canonical_package_invoker
@@ -72,7 +72,7 @@ def reference_execute(pin, truth, capabilities, *, renode, image, output_dir, pa
     session = family.start_session(renode=renode, image=image, recipe=truth['recipe'], private_dir=private_dir)
     try:
         frozen = accept_frozen_package(package, expected_package_sha256)
-        invoke = canonical_package_invoker(package, capabilities, session.binding)
+        invoke = canonical_package_invoker(package, capabilities, session.binding, meter=meter)
         runtime_root = Path(package)/'interface_runtime'
         runtime_hash = canonical_digest({p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                                          for p in sorted(runtime_root.glob('*.py'))})
@@ -271,7 +271,7 @@ def accepted_driver(case_id, trial_dir, run_dir, result):
     return snapshot, (package, sha, revision, capabilities, capabilities_sha)
 
 
-def grade(case_id, trial_dir, run_dir, result, *, password, truth_source, renode=None):
+def grade(case_id, trial_dir, run_dir, result, *, password, truth_source, renode=None, meter=None):
     """Grade a completed run's frozen driver once, on a fresh emulator: (public equivalence/1 without its evidence hash,
     the final evaluation for the seal or None). It takes the accepted driver (`accepted_driver`), asks `truth_source`
     for the answer key (`answer_key`) and runs the final phase on a fresh emulator; a driver without a capability
@@ -279,8 +279,9 @@ def grade(case_id, trial_dir, run_dir, result, *, password, truth_source, renode
     this run and package is rebuilt and never graded again. A changed record, an answer key the pin does not name, or a
     grader other than the evaluator revision the run was stamped with, raises IntegrityError; a model file the grader
     cannot read raises its OSError, a host fault. Every record names the protocol the run's progress names, and a result
-    that names none raises ValueError. Legacy tq9 and bme280 are graded from their recorded reuse by
-    `recorded_grading.grade` instead."""
+    that names none raises ValueError. A `meter` is added to by each package call of a grading on a fresh emulator
+    (`emulated_actions.OutputMeter`), and nothing of it reaches the return value. Legacy tq9 and bme280 are graded from
+    their recorded reuse by `recorded_grading.grade` instead."""
     from .case_assets import case_inputs
     protocol = _protocol(result)
     trial_dir, run_dir = Path(trial_dir), Path(run_dir)
@@ -324,7 +325,7 @@ def grade(case_id, trial_dir, run_dir, result, *, password, truth_source, renode
         evaluation = reference_execute({**pin, 'revision': revision}, truth, capabilities, renode=renode,
                                        image=inputs/artifact_name(manifest), output_dir=output, package=package,
                                        expected_package_sha256=sha, private_dir=private/'native',
-                                       healthy_device_failures=True)
+                                       healthy_device_failures=True, meter=meter)
         raw = output/'raw.json'
         final = {'run_id': result['run_id'], 'phase': 'final', 'revision': revision, 'frozen_artifact_sha256': sha,
                  'capabilities_sha256': capabilities_sha, 'contract': evaluation['contract'], 'records': evaluation['records'],

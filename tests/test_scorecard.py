@@ -2,9 +2,11 @@
 never recorded, and what the trials of a suite add up to."""
 import contextlib
 import copy
+import hashlib
 import io
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import time
@@ -20,6 +22,7 @@ from test_suite_harness import manifest
 from interface_runtime.package import package_files
 from generative_driver.benchmark_support.outcomes import pass_rate
 from generative_driver.benchmark_support.scorecard import scorecard_markdown, suite_scorecard, trial_metrics
+from generative_driver.benchmark_support.snapshots import canonical_digest
 
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 BINDING = {'host': '127.0.0.1', 'port': 45681}
@@ -193,6 +196,36 @@ def repairing(spec, stage, run_dir, workspace, report, accepted, assignment):
     """Ground sees the device contradict the model at revision 0, so interpretation is repaired once."""
     found = accepting(spec, stage, run_dir, workspace, report, accepted, assignment)
     return {**found, 'device_diff': DIFF} if stage == 'ground' and assignment['revision'] == 0 else found
+
+
+def kept_inputs(home, run_id, images, assets=None):
+    """A run's kept snapshot, as `snapshot_case` leaves it under `benchmark/`: `images` and `assets`, each
+    {name: bytes}, in `inputs/`, and the record that pins them."""
+    target = Path(home) / 'runs' / run_id / 'benchmark'
+    (target / 'inputs').mkdir(parents=True, exist_ok=True)
+    hashes = {name: hashlib.sha256(content).hexdigest() for name, content in {**images, **(assets or {})}.items()}
+    for name, content in {**images, **(assets or {})}.items():
+        (target / 'inputs' / name).write_bytes(content)
+    write_snapshot(target, {'manifest': {'images': {name: hashes[name] for name in images}}}, hashes)
+    return target
+
+
+def write_snapshot(target, pin, public_files):
+    body = {'schema': 'benchmark-execution-snapshot/1', 'case_pin': pin, 'public_files': public_files, 'executed': {}}
+    record = {**body, 'snapshot_sha256': canonical_digest(body)}
+    (target / 'execution.json').write_text(json.dumps(record), encoding='utf-8')
+
+
+def measured_trial_dir(home, largest, calls=1):
+    """A bench trial's folder whose record holds the largest output it measured."""
+    trial = Path(home).parent / 'trial'
+    trial.mkdir(exist_ok=True)
+    (trial / 'trial.json').write_text(json.dumps({'package_output': {'largest_bytes': largest, 'calls': calls}}))
+    return trial
+
+
+# More deeply nested than the JSON reader goes: a file that reads as RecursionError.
+TOO_DEEP = '[' * 200000
 
 
 class TrialMetricsTests(unittest.TestCase):
@@ -904,6 +937,112 @@ class TrialMetricsTests(unittest.TestCase):
         keys = lambda value: {key: keys(item) for key, item in value.items()} if isinstance(value, dict) else None
         self.assertEqual(keys(blank_metrics(run)), keys(trial_metrics(home, run)))
 
+    def test_08_B6_a_trial_holds_its_largest_output_the_firmwares_size_and_their_ratio(self):
+        home, run, _ = self.scripted()
+        kept_inputs(home, run, {'firmware.bin': b'f' * 1000})
+        self.assertEqual(trial_metrics(home, run, trial_dir=measured_trial_dir(home, 2500))['package_output'],
+                         {'largest_bytes': 2500, 'firmware_bytes': 1000, 'ratio': 2.5})
+
+    def test_08_B6_what_is_unknown_is_none_and_gives_no_ratio(self):
+        home, run, _ = self.scripted()
+        self.assertEqual(trial_metrics(home, run)['package_output'],
+                         {'largest_bytes': None, 'firmware_bytes': None, 'ratio': None})
+        self.assertEqual(trial_metrics(home, run, trial_dir=measured_trial_dir(home, 2500))['package_output'],
+                         {'largest_bytes': 2500, 'firmware_bytes': None, 'ratio': None})
+        kept_inputs(home, run, {'firmware.bin': b'f' * 1000})
+        self.assertEqual(trial_metrics(home, run)['package_output'],
+                         {'largest_bytes': None, 'firmware_bytes': 1000, 'ratio': None})
+
+    def test_08_B6_a_trial_that_printed_nothing_has_a_ratio_of_zero(self):
+        home, run, _ = self.scripted()
+        kept_inputs(home, run, {'firmware.bin': b'f' * 1000})
+        self.assertEqual(trial_metrics(home, run, trial_dir=measured_trial_dir(home, 0))['package_output'],
+                         {'largest_bytes': 0, 'firmware_bytes': 1000, 'ratio': 0.0})
+
+    def test_08_B7_the_firmware_is_every_image_and_no_other_input(self):
+        home, run, _ = self.scripted()
+        kept_inputs(home, run, {'firmware.bin': b'f' * 1000, 'second.bin': b's' * 24}, {'mission.json': b'm' * 5000})
+        self.assertEqual(trial_metrics(home, run)['package_output']['firmware_bytes'], 1024)
+
+    def test_08_B7_the_figure_is_read_from_the_homes_run_not_from_an_opened_copy(self):
+        home, run, _ = self.scripted()
+        kept_inputs(home, run, {'firmware.bin': b'f' * 1000})
+        elsewhere = Path(home).parent / 'opened-run'
+        elsewhere.mkdir()
+        self.assertEqual(trial_metrics(home, run, run_dir=elsewhere)['package_output']['firmware_bytes'], 1000)
+
+    def test_08_B7_an_image_that_cannot_be_trusted_gives_no_figure_and_the_metrics_stand(self):
+        home, run, _ = self.scripted()
+        image = b'f' * 1000
+        sha = hashlib.sha256(image).hexdigest()
+
+        def missing(target):
+            (target / 'inputs/firmware.bin').unlink()
+
+        def changed(target):
+            (target / 'inputs/firmware.bin').write_bytes(b'g' * 1000)
+
+        def linked(target):
+            (target / 'inputs/firmware.bin').unlink()
+            (target / 'inputs/firmware.bin').symlink_to(target / 'elsewhere.bin')
+            (target / 'elsewhere.bin').write_bytes(image)
+
+        def hash_of_record_changed(target):
+            record = json.loads((target / 'execution.json').read_text())
+            (target / 'execution.json').write_text(json.dumps({**record, 'snapshot_sha256': '0' * 64}))
+
+        def no_record(target):
+            (target / 'execution.json').unlink()
+
+        def text(content):
+            return lambda target: (target / 'execution.json').write_text(content)
+
+        def pin(images, public_files=None):
+            return lambda target: write_snapshot(target, {'manifest': {'images': images}},
+                                                 {'firmware.bin': sha} if public_files is None else public_files)
+
+        def empty_image(target):
+            (target / 'inputs/firmware.bin').write_bytes(b'')
+            write_snapshot(target, {'manifest': {'images': {'firmware.bin': hashlib.sha256(b'').hexdigest()}}},
+                           {'firmware.bin': hashlib.sha256(b'').hexdigest()})
+
+        # Windows lets only a privileged process make a link.
+        links = (('linked', linked),) if os.name != 'nt' else ()
+        for name, change in (('missing', missing), ('changed', changed), *links,
+                             ('record changed', hash_of_record_changed), ('no record', no_record),
+                             ('record not JSON', text('not json')), ('record not an object', text('[]')),
+                             ('record too deep', text(TOO_DEEP)),
+                             ('no images', pin({})), ('an empty list', pin([])), ('images of no shape', pin(7)),
+                             ('image not pinned', pin({'firmware.bin': sha}, {})),
+                             ('image another hash than pinned', pin({'firmware.bin': '0' * 64})),
+                             ('no pin', lambda target: write_snapshot(target, {}, {})),
+                             ('total of zero', empty_image)):
+            with self.subTest(name):
+                # Each from a fresh folder: a link left by another case would refuse this one for that reason.
+                shutil.rmtree(Path(home) / 'runs' / run / 'benchmark', ignore_errors=True)
+                target = kept_inputs(home, run, {'firmware.bin': image})
+                self.assertEqual(trial_metrics(home, run)['package_output']['firmware_bytes'], 1000)
+                change(target)
+                self.assertEqual(trial_metrics(home, run, trial_dir=measured_trial_dir(home, 2500))['package_output'],
+                                 {'largest_bytes': 2500, 'firmware_bytes': None, 'ratio': None})
+
+    def test_08_B7_a_missing_or_unreadable_trial_record_reads_as_unmeasured(self):
+        home, run, _ = self.scripted()
+        kept_inputs(home, run, {'firmware.bin': b'f' * 1000})
+        unmeasured = {'largest_bytes': None, 'firmware_bytes': 1000, 'ratio': None}
+        no_trial = Path(home).parent / 'no-trial'
+        self.assertEqual(trial_metrics(home, run, trial_dir=no_trial)['package_output'], unmeasured)
+        for name, content in (('not JSON', 'not json'), ('not an object', '[]'), ('too deep', TOO_DEEP),
+                              ('no figure', '{"status": "evaluated"}'), ('no largest', '{"package_output": {}}'),
+                              ('no object', '{"package_output": 7}'),
+                              ('a text', '{"package_output": {"largest_bytes": "500", "calls": 1}}'),
+                              ('a yes', '{"package_output": {"largest_bytes": true, "calls": 1}}'),
+                              ('a stub', '{"status": "sealed", "sealed_files": []}')):
+            with self.subTest(name):
+                trial = measured_trial_dir(home, 2500)
+                (trial / 'trial.json').write_text(content)
+                self.assertEqual(trial_metrics(home, run, trial_dir=trial)['package_output'], unmeasured)
+
 
 def tokens(total, **counters):
     """A stage's token counters: `total` and the `counters` given, every other counter unknown."""
@@ -917,7 +1056,19 @@ def blank_metrics(run_id):
              'worker_actions': UNKNOWN_ACTIONS, 'device': NO_DEVICE, 'tokens': UNKNOWN_TOKENS}
     return {'schema': 'benchmark-trial-metrics/1', 'run_id': run_id, 'repairs': None,
             'claim': {'claimed_success': None, 'mission_passed': None, 'agrees': None},
+            'package_output': {'largest_bytes': None, 'firmware_bytes': None, 'ratio': None},
             'stages': {name: copy.deepcopy(stage) for name in STAGES}}
+
+
+def printing(run_id, largest, firmware, ratio):
+    """The metrics of a run whose package output and firmware measured these."""
+    metrics = blank_metrics(run_id)
+    metrics['package_output'] = {'largest_bytes': largest, 'firmware_bytes': firmware, 'ratio': ratio}
+    return metrics
+
+
+NO_OUTPUT_BLOCK = {'largest_bytes': {'max': None, 'median': None}, 'firmware_bytes': {'max': None, 'median': None},
+                   'ratio': {'max': None, 'median': None}, 'measured': 0}
 
 
 def probed(run_id, total, **probe):
@@ -1288,6 +1439,45 @@ class SuiteScorecardTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'benchmark-suite-report/3'):
                     self.card(report, {'r0': blank_metrics('r0')})
 
+    def test_08_B6_the_card_gives_the_most_and_median_over_the_trials_holding_both_figures(self):
+        report = scoring_report({'d0': 'pass', 'd1': 'failure', 'd2': 'failure', 'd3': 'failure'})
+        card = self.card(report, {'r0': printing('r0', 100, 1000, .1), 'r1': printing('r1', 300, 3000, .1),
+                                  # Neither is measured, so neither of their figures is in the block.
+                                  'r2': printing('r2', None, 90000, None), 'r3': printing('r3', 90000, None, None)})
+        self.assertEqual(card['package_output'], {'largest_bytes': {'max': 300, 'median': 200.0},
+                                                  'firmware_bytes': {'max': 3000, 'median': 2000.0},
+                                                  'ratio': {'max': .1, 'median': .1}, 'measured': 2})
+
+    def test_08_B6_the_ratio_is_each_trials_own(self):
+        report = scoring_report({'d0': 'pass', 'd1': 'failure'})
+        card = self.card(report, {'r0': printing('r0', 100, 1000, .1), 'r1': printing('r1', 100, 10, 10.0)})
+        self.assertEqual(card['package_output']['ratio'], {'max': 10.0, 'median': 5.05})
+
+    def test_08_B6_a_card_with_none_measured_says_so(self):
+        card = self.card(scoring_report({'d0': 'pass'}), {'r0': blank_metrics('r0')})
+        self.assertEqual(card['package_output'], NO_OUTPUT_BLOCK)
+        card = self.card(scoring_report({'d0': 'not_run'}), {})
+        self.assertEqual(card['package_output'], NO_OUTPUT_BLOCK)
+
+    def test_08_B8_a_scoring_card_holds_the_aggregates_and_no_trials_figure(self):
+        report = scoring_report({'d0': 'pass', 'd1': 'failure', 'd2': 'failure'})
+        card = self.card(report, {'r0': printing('r0', 111111, 777771, .142857),
+                                  'r1': printing('r1', 222222, 777772, .285714),
+                                  'r2': printing('r2', 333333, 777773, .428571)})
+        self.assertEqual(card['package_output']['measured'], 3)
+        self.assertNotIn('trials', card)
+        text = json.dumps(card) + scorecard_markdown(card)
+        for figure in ('111111', '777771', '142857'):
+            self.assertNotIn(figure, text)
+
+    def test_08_B8_any_other_card_also_holds_each_trials_figures_in_its_row(self):
+        report = scoring_report({'d0': 'pass', 'd1': 'failure'}, scoring=False)
+        first, second = printing('r0', 100, 1000, .1), printing('r1', None, 1000, None)
+        card = self.card(report, {'r0': first, 'r1': second})
+        self.assertEqual([row['metrics']['package_output'] for row in card['trials']],
+                         [first['package_output'], second['package_output']])
+        self.assertEqual(card['package_output']['measured'], 1)
+
 
 class ScorecardMarkdownTests(unittest.TestCase):
     def markdown(self, report, metrics):
@@ -1430,6 +1620,42 @@ class ScorecardMarkdownTests(unittest.TestCase):
             self.assertEqual(self.table_row(text, 'Stages', stage), [stage, '0'] + ['unknown'] * 7 + ['0'] * 3)
             self.assertEqual(self.table_row(text, 'Medians', stage), [stage] + ['unknown'] * 3)
         self.assertTrue(text.endswith('\n## Managed calls\n\nnone\n'))
+
+    def output_line(self, card):
+        found = [line for line in scorecard_markdown(card).splitlines() if line.startswith('Package output:')]
+        self.assertLessEqual(len(found), 1)
+        return found[0] if found else None
+
+    def test_08_B6_the_text_gives_one_line_with_the_ratio_to_three_significant_figures(self):
+        report = scoring_report({'d0': 'pass', 'd1': 'failure'})
+        card = scorecard_of(report, {'r0': printing('r0', 123, 1000000, .000123),
+                                     'r1': printing('r1', 457, 1000000, .000457)})
+        self.assertEqual(self.output_line(card), 'Package output: largest 457 bytes at most, median 290; '
+                                                 'firmware 1000000 bytes at most, median 1000000; '
+                                                 'ratio 0.000457 at most, median 0.00029')
+
+    def test_08_B6_a_figure_only_some_trials_measured_says_how_many_did(self):
+        report = scoring_report({'d0': 'pass', 'd1': 'failure', 'd2': 'failure'})
+        card = scorecard_of(report, {'r0': printing('r0', 100, 1000, .1), 'r1': printing('r1', 201, 1000, .201),
+                                     'r2': blank_metrics('r2')})
+        self.assertEqual(self.output_line(card), 'Package output: largest 201 (2/3) bytes at most, '
+                                                 'median 150.50 (2/3); firmware 1000 (2/3) bytes at most, '
+                                                 'median 1000 (2/3); '
+                                                 'ratio 0.201 at most, median 0.151')
+
+    def test_08_B6_the_line_comes_after_the_reruns_and_a_card_with_none_measured_has_none(self):
+        report = scoring_report({'d0': 'pass'})
+        report['trials'][0].update(attempt=2, first_attempt={'tokens': 5, 'seconds': 1})
+        measured = scorecard_of(report, {'r0': printing('r0', 100, 1000, .1)})
+        lines = scorecard_markdown(measured).splitlines()
+        reruns = next(number for number, line in enumerate(lines) if line.startswith('Reruns: 1'))
+        self.assertEqual(lines[reruns + 1], self.output_line(measured))
+        self.assertIsNone(self.output_line(scorecard_of(report, {'r0': blank_metrics('r0')})))
+
+    def test_08_B6_a_card_saved_before_the_block_still_reads(self):
+        card = scorecard_of(scoring_report({'d0': 'pass'}), {'r0': blank_metrics('r0')})
+        del card['package_output']
+        self.assertIsNone(self.output_line(card))
 
 
 class BenchTrialDirectoryTests(unittest.TestCase):

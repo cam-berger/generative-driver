@@ -15,10 +15,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from generative_driver import benchmark
-from generative_driver.benchmark_support import harness, trial_store
+from generative_driver.benchmark_support import evaluator, harness, trial_store
 from generative_driver.benchmark_support.audit import TRANSCRIPT, audit_commands
 from generative_driver.benchmark_support.outcomes import pass_rate_line
-from generative_driver.benchmark_support.scorecard import scorecard_markdown, suite_scorecard, trial_metrics
+from generative_driver.benchmark_support.scorecard import (bench_trial_dirs, scorecard_markdown, suite_scorecard,
+                                                            trial_metrics)
 from generative_driver.benchmark_support.suite_reporting import compare_suites, report_suite
 from generative_driver.benchmark_support.suites import resume_suite
 from generated_fixtures import REFERENCE_A
@@ -27,6 +28,12 @@ from test_slot_policy import FIRST, HOST, OPERATOR, SECOND, ScoringFixture
 
 EXTENSION = ('A scoring suite runs every child on the child budget it froze, which pairing relies on: '
              'child_budget_seconds')
+
+
+def kept_image_bytes(home, run_id, result):
+    """The size of the run's images, each read from where the run keeps it."""
+    inputs = Path(home) / 'runs' / run_id / 'benchmark/inputs'
+    return sum((inputs / name).stat().st_size for name in result['case_pin']['manifest']['images'])
 
 
 class ReportFixture(ScoringFixture):
@@ -179,6 +186,21 @@ class OtherSuiteReportTests(ReportFixture):
         card = self.card(report)
         self.assertEqual(card['reruns']['count'], 0)
         self.assertFalse(any(line.startswith('Reruns:') for line in scorecard_markdown(card).splitlines()))
+
+    def test_08_B1_B6_B7_B8_a_development_suites_card_holds_each_trials_figures_in_its_row(self):
+        with self.scripted():
+            record = self.run_harness(request_id='development-output', manifest=set_manifest(FIRST))
+            report = self.report(record)
+            card = suite_scorecard(report, home=self.home, trial_dirs=bench_trial_dirs(report, self.home))
+        run_id = self.children[0]
+        recorded = harness.read_trial(trial_store.find_trial(self.home, record['suite_id'], run_id))['package_output']
+        self.assertGreater(recorded['calls'], 0)
+        self.assertGreater(recorded['largest_bytes'], 0)
+        firmware = kept_image_bytes(self.home, run_id, self.result(run_id))
+        self.assertEqual(card['trials'][0]['metrics']['package_output'],
+                         {'largest_bytes': recorded['largest_bytes'], 'firmware_bytes': firmware,
+                          'ratio': recorded['largest_bytes'] / firmware})
+        self.assertEqual(card['package_output']['measured'], 1)
 
 
 class AuditFixture(ReportFixture):
@@ -657,6 +679,9 @@ class SealedSuiteTests(AuditFixture):
             first, flagged, rerun = self.children
             self.assertEqual(sorted(figures), sorted(self.children))
             self.assertFiguresStand(suite_id, figures)
+            # A stopped run and a flagged one are graded by nobody, so neither measured anything.
+            for run_id in (first, flagged):
+                self.assertNotIn('package_output', self.original_record(suite_id, run_id))
             rows = self.rows(record)
             self.assertEqual([row['status'] for row in rows], ['finished', 'flagged'])
             for run_id in self.children:
@@ -711,9 +736,76 @@ class SealedSuiteTests(AuditFixture):
             members = PASSWORD.unlock(index, hashlib.sha256(index.read_bytes()).hexdigest())['members']
             self.assertEqual(list(members), ['trial/trial.json'])
             self.assertEqual(self.original_record(suite_id, child)['status'], 'evaluated')
+            self.assertGreater(self.original_record(suite_id, child)['package_output']['calls'], 0)
             self.assertEqual(self.stub_of(suite_id, child)['status'], 'sealed')
             self.assertFalse(list((self.home / 'runs' / child).rglob('_agent_events.jsonl')))
             self.assertFiguresStand(suite_id, {self.children[1]: figures[self.children[1]]})
+
+    def test_08_B4_B5_B6_B7_B8_a_scoring_suites_figures_stay_sealed_and_only_its_aggregates_leave(self):
+        real, spent, largest_first_attempt = evaluator.reference_execute, [], 1024 * 1024
+
+        def execute(pin, *args, meter=None, **kwargs):
+            # The first device's grading and its regrade print a known amount and meet a host fault: it is run again.
+            if pin['device_id'] == FIRST and len(spent) < 2:
+                spent.append(pin['device_id'])
+                meter.add('x' * largest_first_attempt, '')
+                raise RuntimeError('Scripted host')
+            return real(pin, *args, meter=meter, **kwargs)
+        vault = self.exports / 'vault'
+        vault.mkdir(parents=True)
+        handle = ['--password-file', str(self.handle)]
+        with self.scripted(), patch.object(evaluator, 'reference_execute', execute):
+            record = self.run_harness(request_id='output')
+            self.assertCompleted(record)
+            suite_id = record['suite_id']
+            self.assertEqual(len(self.children), 3)
+            first, other, rerun = self.children
+            originals = {run_id: self.original_record(suite_id, run_id) for run_id in self.children}
+            self.assertEqual(originals[first]['package_output'], {'largest_bytes': largest_first_attempt, 'calls': 1})
+            measured = [originals[run_id]['package_output'] for run_id in (other, rerun)]
+            for figure in measured:
+                self.assertGreater(figure['calls'], 0)
+                self.assertLess(figure['largest_bytes'], largest_first_attempt)
+            for run_id in self.children:
+                stub = self.stub_of(suite_id, run_id)
+                self.assertEqual(sorted(stub), ['case', 'finished', 'request_id', 'run_id', 'schema', 'sealed_files',
+                                                'start_sent', 'status', 'trial_id'])
+            # The offline regrade of the real evidence stands: `report_suite` regrades each trial it reports.
+            report = self.report(record)
+            self.assertEqual([row['scored'] for row in report['trials']], ['pass', 'pass'])
+            trial = trial_store.find_trial(self.home, suite_id, rerun)
+            evidence = PASSWORD.unlock(trial / 'run-evidence.enc', originals[rerun]['evidence']['sha256'])
+            self.assertTrue(evidence['final']['raw'])
+            self.assertNotIn('largest_bytes', json.dumps(evidence))
+            self.assertNotIn('package_output', json.dumps(evidence))
+            text = json.dumps(self.calls, default=str)
+            self.assertNotIn('largest_bytes', text)
+            self.assertNotIn('package_output', text)
+            for path in self.home.rglob('*'):
+                if path.is_file():
+                    self.assertNotIn(b'largest_bytes', path.read_bytes(), path)
+            code, before = self.main('scorecard', suite_id, '--output', str(self.root / 'card-before'), *handle,
+                                     '--set-root', str(self.set_root))
+            self.assertEqual(code, 0, before)
+            code, stored = self.main('store', suite_id, *handle, '--vault-folder', str(vault))
+            self.assertEqual(code, 0, stored)
+            code, card = self.main('scorecard', suite_id, '--output', str(self.root / 'card'), *handle,
+                                   '--vault-folder', str(vault), '--set-root', str(self.set_root),
+                                   '--audit-path', str(self.set_root))
+            self.assertEqual(code, 0, card)
+        # The rerun's own figures are on the card: the first attempt's, the largest of all, is not.
+        self.assertEqual(card['package_output'], before['package_output'])
+        block = card['package_output']
+        self.assertEqual(block['measured'], 2)
+        sizes = sorted(figure['largest_bytes'] for figure in measured)
+        self.assertEqual(block['largest_bytes'], {'max': sizes[1], 'median': (sizes[0] + sizes[1]) / 2})
+        firmware = kept_image_bytes(self.home, rerun, self.result(rerun))
+        self.assertEqual(block['firmware_bytes']['max'], firmware)
+        self.assertEqual(block['ratio']['max'], sizes[1] / firmware)
+        self.assertNotIn('trials', card)
+        lines = (self.root / 'card/scorecard.md').read_text().splitlines()
+        self.assertEqual(sum(line.startswith('Package output: largest') for line in lines), 1, lines)
+        self.assertNotIn(str(largest_first_attempt), json.dumps(card) + '\n'.join(lines))
 
     def test_07_B4_a_failed_seal_stops_the_suite_and_a_resume_seals_it_before_any_worker_starts(self):
         real, disk_full, started = trial_store._seal_file, [True], []

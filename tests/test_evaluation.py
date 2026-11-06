@@ -68,13 +68,18 @@ def scripted_record(check, value, revision, sha):
             **({'undecided': str(value)} if undecided else {})}
 
 
-def reference(values, calls=None, before=None, after=None):
+def reference(values, calls=None, before=None, after=None, printed=()):
     """A scripted final phase in reference_execute's shape: the toy contract, records with `values`, raw evidence and
-    the plaintext evaluation output the real one leaves in its output directory. `after` runs once that output exists."""
+    the plaintext evaluation output the real one leaves in its output directory. `after` runs once that output exists,
+    and the package calls it stands for printed `printed`, (stdout, stderr) each, which it adds to the meter it is
+    given."""
     def execute(pin, truth, capabilities, *, renode, image, output_dir, package, expected_package_sha256,
-                private_dir=None, healthy_device_failures=False):
+                private_dir=None, healthy_device_failures=False, meter=None):
         if before:
             before()
+        for stdout, stderr in printed:
+            if meter is not None:
+                meter.add(stdout, stderr)
         if calls is not None:
             calls.append({'pin': pin, 'capabilities': capabilities, 'image': Path(image),
                           'package': Path(package), 'sha': expected_package_sha256, 'output': Path(output_dir),

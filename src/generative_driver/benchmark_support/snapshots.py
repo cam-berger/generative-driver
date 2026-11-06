@@ -6,13 +6,16 @@ from pathlib import Path
 import shutil
 import tempfile
 
-from .registry import resolve_case, resource_path, pin_case
+from .families import family_for
+from .registry import resolve_case, resource_path
+
+
+def canonical_bytes(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode('utf-8')
 
 
 def canonical_digest(value):
-    payload = json.dumps(value, sort_keys=True, separators=(',', ':'),
-                         ensure_ascii=False, allow_nan=False).encode('utf-8')
-    return hashlib.sha256(payload).hexdigest()
+    return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
 def read_snapshot(run_dir: Path) -> dict:
@@ -39,13 +42,18 @@ def public_configuration(value):
     """Exclude evaluator handles and credentials from public execution evidence."""
     if isinstance(value, dict):
         return {key: public_configuration(item) for key, item in value.items()
-                if key not in {'password', 'evaluator_password_file', 'authkey', 'api_key', 'token'}}
+                if key not in {'password', 'evaluator_password', 'evaluator_password_file', 'authkey', 'api_key',
+                               'token'}}
     if isinstance(value, list):
         return [public_configuration(item) for item in value]
     return value
 
 
-def snapshot_case(run_dir: Path, pin: dict, provenance: dict) -> dict:
+def snapshot_case(run_dir: Path, pin: dict, provenance: dict, *, public_inputs=None) -> dict:
+    """The run's snapshot of its case: the pin's public files, each copied and checked against the pin's hash, which the
+    run reads from then on. They come from `public_inputs`, the folder the bench harness sends for a device of a
+    generated set, whose files nothing else here can read (Feature 03, generated trials), or else from the case's
+    root."""
     target = Path(run_dir) / 'benchmark'
     target.mkdir(parents=True, exist_ok=True)
     public_files = {**pin['manifest'].get('images', {}), **pin['manifest'].get('assets', {})}
@@ -57,15 +65,15 @@ def snapshot_case(run_dir: Path, pin: dict, provenance: dict) -> dict:
         if saved != record:
             raise ValueError('Execution snapshot provenance mismatch')
         return saved
-    if pin_case(pin['case_id'], pin['scenario_id'], pin['case_seed']) != pin:
+    if family_for(pin['case_id']).current_pin(pin) != pin:
         raise ValueError('Case pin changed before capture')
-    definition = resolve_case(pin['case_id'])
+    root = Path(public_inputs) if public_inputs else resolve_case(pin['case_id']).root
     temporary = Path(tempfile.mkdtemp(prefix='.snapshot-', dir=target))
     try:
         inputs = temporary / 'inputs'
         inputs.mkdir()
         for name, expected in public_files.items():
-            source = resource_path(definition.root, name)
+            source = resource_path(root, name)
             destination = resource_path(inputs, name)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
@@ -82,14 +90,17 @@ def snapshot_case(run_dir: Path, pin: dict, provenance: dict) -> dict:
 def execution_provenance(config: dict, *, case_ids, reuse_profile=None) -> dict:
     """Capture implementation identity and nonsecret runtime settings before launch, for a run or suite of `case_ids`.
     The toolchain and skills revisions hash the system under test; the evaluator revisions are the grading code alone:
-    `evaluator_revisions` the grader identity of each case, `evaluator_revision` the one they combine into."""
+    `evaluator_revisions` the grader identity of each case, `evaluator_revision` the one they combine into. The
+    toolchain revision leaves out the set registrations, which change when any set is added, so that registering one
+    neither moves a comparison dimension nor blocks a suite's resume; a suite's own set is held by `current_pin`."""
     import platform
     from .grader_identity import case_revisions  # which imports this module, so not at module level
     from .integrity import tree_hash
     package = Path(__file__).resolve().parents[1]
     return {**({'reuse_profile': reuse_profile} if reuse_profile else {}),
             'toolchain_revision': hashlib.sha256(
-                (tree_hash(package) + tree_hash(package.parent / 'interface_runtime')).encode()).hexdigest(),
+                (tree_hash(package, exclude=('resources/registrations/sets.json',))
+                 + tree_hash(package.parent / 'interface_runtime')).encode()).hexdigest(),
             'skills_revision': tree_hash(package / 'resources/toolchain/skills'),
             **case_revisions(case_ids),
             'runtime_configuration': public_configuration(config),

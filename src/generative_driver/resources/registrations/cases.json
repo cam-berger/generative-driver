@@ -11,7 +11,16 @@
       "mission_case": null,
       "truth_schema": null,
       "build_kind": null,
-      "calibration_kind": null
+      "calibration_kind": null,
+      "grading_method": "fresh-final",
+      "execution": "scripted-replay",
+      "evidence_track": "recorded-replay",
+      "approval_scope": null,
+      "default_effects": [],
+      "default_scope": "installation",
+      "requires_calibration": false,
+      "has_case_file": false,
+      "single_image": true
     },
     {
       "id": "tq9",
@@ -19,11 +28,23 @@
       "version": "2",
       "adapter_key": "legacy-emulator",
       "schema": "benchmark-case/1",
-      "native_module": null,
+      "native_module": "tq9_legacy",
       "mission_case": "tq9-v2",
       "truth_schema": null,
       "build_kind": null,
-      "calibration_kind": null
+      "calibration_kind": null,
+      "grading_method": "recorded-reuse",
+      "execution": null,
+      "evidence_track": "firmware",
+      "approval_scope": "emulator",
+      "default_effects": [
+        "write",
+        "actuate"
+      ],
+      "default_scope": "full-workflow",
+      "requires_calibration": false,
+      "has_case_file": true,
+      "single_image": true
     },
     {
       "id": "bme280",
@@ -35,7 +56,18 @@
       "mission_case": null,
       "truth_schema": null,
       "build_kind": null,
-      "calibration_kind": null
+      "calibration_kind": null,
+      "grading_method": "recorded-reuse",
+      "execution": null,
+      "evidence_track": "physical",
+      "approval_scope": "bound-device",
+      "default_effects": [
+        "write"
+      ],
+      "default_scope": "full-workflow",
+      "requires_calibration": false,
+      "has_case_file": true,
+      "single_image": false
     },
     {
       "id": "tq9-v2",
@@ -47,7 +79,16 @@
       "mission_case": null,
       "truth_schema": null,
       "build_kind": null,
-      "calibration_kind": "reference"
+      "calibration_kind": "reference",
+      "grading_method": "fresh-final",
+      "execution": null,
+      "evidence_track": null,
+      "approval_scope": null,
+      "default_effects": null,
+      "default_scope": "full-workflow",
+      "requires_calibration": true,
+      "has_case_file": true,
+      "single_image": true
     },
     {
       "id": "tq9-v3",
@@ -59,7 +100,16 @@
       "mission_case": null,
       "truth_schema": null,
       "build_kind": null,
-      "calibration_kind": "reference"
+      "calibration_kind": "reference",
+      "grading_method": "fresh-final",
+      "execution": null,
+      "evidence_track": null,
+      "approval_scope": null,
+      "default_effects": null,
+      "default_scope": "full-workflow",
+      "requires_calibration": true,
+      "has_case_file": true,
+      "single_image": true
     },
     {
       "id": "sampled-sensor-v1",
@@ -71,7 +121,16 @@
       "mission_case": null,
       "truth_schema": "benchmark-family-truth/1",
       "build_kind": null,
-      "calibration_kind": "family"
+      "calibration_kind": "family",
+      "grading_method": "fresh-final",
+      "execution": null,
+      "evidence_track": null,
+      "approval_scope": null,
+      "default_effects": null,
+      "default_scope": "full-workflow",
+      "requires_calibration": true,
+      "has_case_file": true,
+      "single_image": true
     },
     {
       "id": "parameter-store-v1",
@@ -83,7 +142,16 @@
       "mission_case": null,
       "truth_schema": "benchmark-family-truth/1",
       "build_kind": null,
-      "calibration_kind": "family"
+      "calibration_kind": "family",
+      "grading_method": "fresh-final",
+      "execution": null,
+      "evidence_track": null,
+      "approval_scope": null,
+      "default_effects": null,
+      "default_scope": "full-workflow",
+      "requires_calibration": true,
+      "has_case_file": true,
+      "single_image": true
     },
     {
       "id": "zephyr-modbus-v1",
@@ -95,7 +163,16 @@
       "mission_case": null,
       "truth_schema": "benchmark-upstream-truth/1",
       "build_kind": "zephyr-modbus",
-      "calibration_kind": "upstream"
+      "calibration_kind": "upstream",
+      "grading_method": "fresh-final",
+      "execution": null,
+      "evidence_track": null,
+      "approval_scope": null,
+      "default_effects": null,
+      "default_scope": "full-workflow",
+      "requires_calibration": true,
+      "has_case_file": true,
+      "single_image": true
     },
     {
       "id": "generated",
@@ -107,7 +184,16 @@
       "mission_case": null,
       "truth_schema": "generated-answer-key/2",
       "build_kind": null,
-      "calibration_kind": "set"
+      "calibration_kind": "set",
+      "grading_method": "fresh-final",
+      "execution": "actual-agent-emulation",
+      "evidence_track": "firmware",
+      "approval_scope": "emulator",
+      "default_effects": ["write", "actuate"],
+      "default_scope": "full-workflow",
+      "requires_calibration": true,
+      "has_case_file": true,
+      "single_image": true
     }
   ]
 }

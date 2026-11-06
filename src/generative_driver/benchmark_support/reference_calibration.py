@@ -15,9 +15,9 @@ import tempfile
 
 from .grader_identity import grader_identity
 from .snapshots import canonical_digest
-# The evaluator admits tq9-v2 by these, so they are defined in its calibration module and imported here.
-from .calibration import (CORE_MUTANTS, REQUIRED_SCENARIOS, input_hashes, tq9_candidate, tq9_execution_inputs,
-                          validate_record)
+from .calibration import REQUIRED_SCENARIOS, input_hashes
+# The evaluator admits tq9-v2 by these, so they are defined in its family and imported here.
+from .tq9_v2 import CORE_MUTANTS, tq9_candidate, tq9_execution_inputs, validate_record
 
 
 def model_invoker(model_dir, capabilities, binding, output_dir, probes):
@@ -67,14 +67,13 @@ def run_reference(pin, truth, model, capabilities, *, renode, image, output_dir,
     from .behavior import validate_records
     from .calibration import reference_model_bytes
     from .case_assets import write_json
-    from .emulated_actions import execute_plan, run_call
-    from .execution import start_session
-    from .instruments import family_for
+    from .emulated_actions import run_call
+    from .families import family_for
     from .integrity import digest
     candidate = {**model, 'channel': {'type': 'tcp'}}
     if not validate_model(candidate)['ok']:
         raise ValueError('Reference candidates must be structurally valid before native calibration')
-    family = family_for(pin.get('case_id', 'tq9-v2'))
+    family = family_for(pin.get('case_id'))
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     model_dir = output/'model'
@@ -83,7 +82,7 @@ def run_reference(pin, truth, model, capabilities, *, renode, image, output_dir,
     (model_dir/'model.json').write_bytes(reference_model_bytes(candidate))
     model_hash = hashlib.sha256((model_dir/'model.json').read_bytes()).hexdigest()
     probes = []
-    session = start_session(renode=renode, image=image, recipe=truth['recipe'], private_dir=private_dir)
+    session = family.start_session(renode=renode, image=image, recipe=truth['recipe'], private_dir=private_dir)
     try:
         package = contract = records = grade = None
         if phase == 'final':
@@ -102,8 +101,8 @@ def run_reference(pin, truth, model, capabilities, *, renode, image, output_dir,
             invoke = model_invoker(model_dir, capabilities, session.binding, output/'tools', probes)
             local = {**truth, 'artifact_sha256': model_hash}
             contract = family.contract(pin, local, phase)
-            records = execute_plan(session, invoke, family.build_plan(pin, local, phase), contract,
-                output/'raw.json', family.observations, truth['contracts']['time_policy']['sample_settle_seconds'])
+            records = family.execute(session, invoke, pin, contract, local, output/'raw.json', phase=phase,
+                                     healthy_device_failures=False)
             grade = validate_records(contract, records)
         runtime_root = Path(interface_runtime.__file__).parent
         runtime_hash = canonical_digest({p.name: hashlib.sha256(p.read_bytes()).hexdigest()
@@ -146,7 +145,7 @@ def calibration_run(pin, truth, model, capabilities, *, renode, image, output_di
 def calibrate(case_id, options):
     """Build, analyze and execute references/mutants; emit an evaluator-only release.
 
-    Required options: evaluator_password_file, renode, ghidra_home, java_home,
+    Required options: evaluator_password, renode, ghidra_home, java_home,
     output. Compiler comes from compiler, ARM_NONE_EABI_GCC, or PATH.
     """
     import re
@@ -154,12 +153,12 @@ def calibrate(case_id, options):
     from .authoring import evaluator_directory, build_case
     from .registry import resolve_case, pin_case
     from .emulator import truth_for_case
-    from .truth import seal
     from .cases import _write
     from ..benchmark import case_root
     from ..toolkit import resources_root
     definition=resolve_case(case_id)
-    from .registrations import family_module, registration_for
+    from .families import family_for
+    from .registrations import registration_for
     registration = registration_for(case_id)
     family_case = registration.calibration_kind == 'family'
     if family_case:
@@ -168,7 +167,7 @@ def calibrate(case_id, options):
         from .asset_build import build_family, inventory
         truth = hydrate_truth(authoring_payload(evaluator_directory(options['authoring_root'])))
     elif registration.calibration_kind == 'reference':
-        truth=truth_for_case(case_root(),definition.manifest,options)
+        truth=truth_for_case(case_root(),definition.manifest,options['evaluator_password'])
     else:
         raise ValueError('No reference calibration recipe registered for this case')
     output=evaluator_directory(options['output'])
@@ -179,7 +178,9 @@ def calibrate(case_id, options):
     record={'schema':'benchmark-calibration/1','status':'pending','case':case_id,'evaluator_version':definition.evaluator_version,
         'execution':'reference-calibration','backend':'native-renode','images':definition.manifest['images'],
         'input_hashes':truth['input_hashes'] if family_case else input_hashes(truth),'evaluator_identity':identity,'native_process_observed':False,
-        'references':[],'mutants':[],'scenarios':{},'required_mutants':sorted(family_module(truth['family']).REQUIRED_MUTANTS if family_case else set(CORE_MUTANTS)|set(truth['mutations']['required'])),
+        'references':[],'mutants':[],'scenarios':{},
+        'required_mutants':sorted(family_for(case_id).required_mutants if family_case
+                                  else set(CORE_MUTANTS)|set(truth['mutations']['required'])),
         'tools':{},'runs':[]}
     def save():_write(output/'calibration-record.json',record)
     save()
@@ -198,7 +199,7 @@ def calibrate(case_id, options):
         author=output/'authoring';author.mkdir()
         if family_case:
             source = evaluator_directory(options['authoring_root'])
-            for name in sorted(inventory(truth['family'])):
+            for name in sorted(inventory(case_id)):
                 target = author/name; target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source/name,target)
             built=build_family(author,Path(compiler),output/'build')
@@ -278,7 +279,7 @@ def calibrate(case_id, options):
                     'passed':all(passes),'runs':run_ids,'execution_inputs':execution_inputs})
                 save()
             mutants=truth['mutations']['mutants']
-            required=family_module(truth['family']).REQUIRED_MUTANTS
+            required=family_for(case_id).required_mutants
             if {m['id'] for m in mutants}!=required or len(mutants)!=len(required):
                 raise ValueError('Private required mutant inventory mismatch')
             for mutation in mutants:
@@ -347,7 +348,7 @@ def calibrate(case_id, options):
     if record['status']=='passed':
         manifest['calibration'].update(evidence_sha256=canonical_digest(record),input_hashes=record['input_hashes'])
         manifest['limitations']=[x for x in manifest['limitations'] if x not in ('Calibration and actual-agent admission pending','Reference calibration pending')]
-    manifest['truth']['sha256']=seal(truth,output/(case_id+'.enc'),Path(options['evaluator_password_file']).read_text().strip())
+    manifest['truth']['sha256']=options['evaluator_password'].seal(truth,output/(case_id+'.enc'))
     _write(output/'case.json',manifest)
     return {'ok':record['status']=='passed','verdict':'passed' if record['status']=='passed' else 'failed',
             'execution':'reference-calibration','model_benchmark':False,'output':str(output),

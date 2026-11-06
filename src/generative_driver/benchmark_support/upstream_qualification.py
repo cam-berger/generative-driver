@@ -22,7 +22,7 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
     from .calibration import apply_mutation, execution_input_identity, validate_calibration
     from .grader_identity import grader_identity
     from .reference_calibration import calibration_run
-    from .registrations import family_module
+    from .families import family_for
     from .upstream import hydrate_truth
     from ..toolkit import resources_root
     truth = hydrate_truth(payload)
@@ -55,7 +55,7 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
         'evaluator_version': manifest['evaluator_version'], 'execution': 'reference-calibration',
         'backend': 'native-sim' if native else 'native-renode', 'images': manifest['images'], 'input_hashes': truth['input_hashes'],
         'evaluator_identity': identity, 'native_process_observed': False, 'references': [], 'mutants': [],
-        'scenarios': {}, 'required_mutants': sorted(family_module(truth['family']).REQUIRED_MUTANTS),
+        'scenarios': {}, 'required_mutants': sorted(family_for(manifest['id']).required_mutants),
         'tools': tools, 'runs': [], 'analysis': {}}
     def save():
         _write(output/'calibration-record.json', record)
@@ -147,9 +147,8 @@ def calibrate(case, options):
     from ..benchmark import case_root
     from .registry import resolve_case
     from .emulator import truth_for_case
-    from .truth import seal
     definition = resolve_case(case)
-    payload = truth_for_case(case_root(), definition.manifest, options)
+    payload = truth_for_case(case_root(), definition.manifest, options['evaluator_password'])
     output = Path(options['output']).expanduser().resolve()
     record = qualify(payload, definition.manifest, definition.root/artifact_name(definition.manifest), output,
                      **{key: options[key] for key in ('renode', 'ghidra_home', 'java_home')})
@@ -159,8 +158,7 @@ def calibrate(case, options):
     manifest['calibration'] = {'status': record['status']}
     if record['status'] == 'passed':
         manifest['calibration'].update(input_hashes=record['input_hashes'], evidence_sha256=canonical_digest(record))
-    manifest['truth']['sha256'] = seal(payload, output/(case + '.enc'),
-        Path(options['evaluator_password_file']).read_text(encoding='utf-8').strip())
+    manifest['truth']['sha256'] = options['evaluator_password'].seal(payload, output/(case + '.enc'))
     _write(output/'case.json', manifest)
     return {'ok': record['status'] == 'passed', 'execution': 'reference-calibration', 'model_benchmark': False,
             'case': case, 'status': record['status'], 'evidence_sha256': canonical_digest(record),

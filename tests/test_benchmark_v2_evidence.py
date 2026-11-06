@@ -3,6 +3,7 @@ import json
 import unittest
 
 from generative_driver.benchmark_support import evidence
+from generative_driver.benchmark_support.truth import EvaluatorPassword
 
 
 class V2EvidenceTests(unittest.TestCase):
@@ -47,8 +48,9 @@ class SealedEvidenceFixture:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.password = self.root / 'password'
-        self.password.write_text('test-only password')
+        self.password = EvaluatorPassword('test-only password')
+        self.password_file = self.root / 'password'
+        self.password_file.write_text('test-only password')
 
     def payload(self, scenario='original', repaired=False):
         from generative_driver.benchmark_support.snapshots import canonical_digest, execution_provenance
@@ -99,7 +101,7 @@ class SealedEvidenceTests(SealedEvidenceFixture, unittest.TestCase):
         report, path = self.sealed(payload)
         with patch('generative_driver.client.call', side_effect=AssertionError('service invoked')), \
              patch('subprocess.Popen', side_effect=AssertionError('process invoked')):
-            self.assertEqual(score(report, self.password, evidence_path=path)['verdict'], 'passed')
+            self.assertEqual(score(report, self.password_file, evidence_path=path)['verdict'], 'passed')
         payload['evaluations'][0]['records'][0]['value'] = 1
         report, path = self.sealed(payload)
         report['verdict'] = report['final_evaluation']['verdict'] = 'passed'
@@ -196,7 +198,6 @@ class SealedEvidenceTests(SealedEvidenceFixture, unittest.TestCase):
 
     def test_report_ciphertext_snapshot_and_evaluator_identity_are_verified(self):
         import copy
-        from generative_driver.benchmark_support.truth import seal
         payload = self.payload()
         report, path = self.sealed(payload)
         for field in ('scenario_id', 'case_id', 'manifest_sha256', 'truth_sha256'):
@@ -212,11 +213,11 @@ class SealedEvidenceTests(SealedEvidenceFixture, unittest.TestCase):
         with self.assertRaises(ValueError):
             evidence.regrade_v2(changed, path, self.password)
         payload['execution_snapshot']['executed']['evaluator_revision'] = 'f'*64
-        digest = seal(payload, path, 'test-only password')
+        digest = EvaluatorPassword('test-only password').seal(payload, path)
         report['final_evaluation']['evidence_sha256'] = digest
         with self.assertRaises(ValueError):
             evidence.regrade_v2(report, path, self.password)
-        seal(self.payload(), path, 'test-only password')
+        EvaluatorPassword('test-only password').seal(self.payload(), path)
         with self.assertRaisesRegex(ValueError, 'hash'):
             evidence.regrade_v2(report, path, self.password)
 

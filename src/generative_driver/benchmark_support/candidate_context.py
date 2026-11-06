@@ -7,9 +7,9 @@ from pathlib import Path
 from .cases import _state, _write
 
 
-def task_contract(case_id, effects):
+def task_contract(case_id, effects, run_dir=None):
     from .missions import load_mission
-    mission = load_mission(case_id)
+    mission = load_mission(case_id, run_dir)
     contract = {'schema': 'candidate-task-contract/1', 'tasks': mission['tasks'],
             'effect_grants': list(effects),
             'instructions': 'These are requested observable behaviors, not protocol facts or hidden test values. '
@@ -65,8 +65,9 @@ def remember(run_dir, stage, files, report=None, workspace=None):
     _write(path, state)
 
 
-def repair_sources(run_dir, workspace, feedback):
-    """Reverify this run's saved evidence before interpretation seals its copy; `feedback` is the device diff."""
+def repair_sources(run_dir, workspace, feedback, *, readings=True):
+    """Reverify this run's saved evidence before interpretation seals its copy; `feedback` is the device diff.
+    `readings` says whether the device offers instrument readings, of which the journals then hold some."""
     _, state = _state(run_dir)
     sources, history = {}, []
     for index, entry in enumerate(state.get('candidate_history', [])):
@@ -91,9 +92,11 @@ def repair_sources(run_dir, workspace, feedback):
         'evidence_policy': 'DEFECTS.json is what the device did that the previous candidate did not predict, '
             'from the configurator\'s own record of the device connection it supplied, and defects its own '
             'validation of the candidate found: device evidence, not a grade. The history holds this run\'s '
-            'previous candidates with their probe records and live journals; instrument readings in those journals '
-            'are readings of the emulated device, device evidence like any other. Use them to correct the latest '
-            'candidate. Worker reports are claims; compare them with the observed records. Do not access other '
+            'previous candidates with their probe records and live journals'
+            + ('; instrument readings in those journals are readings of the emulated device, device evidence like any '
+               'other' if readings else '')
+            + '. Use them to correct the latest candidate. Worker reports are claims; compare them with the observed '
+            'records. Do not access other '
             'runs, evaluator passwords, plaintext oracle files or hidden final answers. Preserve sealed inputs; '
             'write corrected outputs at the workspace root and explain each correction in NOTES.md.'})
     sources['REPAIR_CONTEXT.json'] = str(context)

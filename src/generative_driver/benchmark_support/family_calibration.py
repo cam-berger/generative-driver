@@ -11,6 +11,7 @@ def calibrate(case_id, *, authoring_root, renode, ghidra_home, java_home, output
     from . import authoring
     from .asset_build import require_private_root, _disjoint
     from .registry import resolve_case
+    from .truth import read_password
     if case_id not in ('sampled-sensor-v1','parameter-store-v1'):raise ValueError('Unknown authored family')
     tool_paths={'renode':Path(renode),'ghidra_home':Path(ghidra_home),'java_home':Path(java_home)}
     compiler=Path(compiler or os.environ.get('ARM_NONE_EABI_GCC',''))
@@ -26,10 +27,13 @@ def calibrate(case_id, *, authoring_root, renode, ghidra_home, java_home, output
     if output.exists() and (not output.is_dir() or any(output.iterdir())):raise ValueError('Calibration output must be empty')
     payload=authoring_payload(root)
     if payload['case_id']!=case_id:raise ValueError('Authoring case mismatch')
-    password=root.parent/(case_id+'.password')
-    if not password.is_file() or not password.read_text().strip():raise ValueError('Evaluator password handle required')
+    handle=root.parent/(case_id+'.password')
+    if not handle.is_file():raise ValueError('Evaluator password handle required')
+    try:password=read_password(handle)
+    except ValueError:password=None
+    if password is None:raise ValueError('Evaluator password handle required')
     authoring.calibrate(case_id,{'authoring_root':str(root),**{k:str(v.resolve()) for k,v in tool_paths.items()},
-        'output_dir':str(output),'output':str(output),'compiler':str(compiler),'evaluator_password_file':str(password)})
+        'output_dir':str(output),'output':str(output),'compiler':str(compiler),'evaluator_password':password})
     record_path=output/'calibration-record.json'
     if record_path.is_symlink() or not record_path.is_file():raise ValueError('Measured private calibration record missing')
     record=json.loads(record_path.read_text())

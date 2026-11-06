@@ -15,16 +15,19 @@ from pathlib import Path
 from unittest.mock import patch
 
 import generative_driver
-from generated_fixtures import (FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, PASSWORD, REFERENCE_A, fixture_mission,
-                                fixture_start, write_fixture_set)
+from generated_fixtures import (FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, PASSWORD, PASSWORD_TEXT, REFERENCE_A, FixtureDevice,
+                                fixture_mission, fixture_start, registrations_table, write_fixture_set)
 from generative_driver.benchmark import main
-from generative_driver.benchmark_support import generated_sets, set_qualification, truth
+from generative_driver.benchmark_support import generated_sets, reference_calibration, set_qualification, truth
 from generative_driver.benchmark_support.grader_identity import grader_identity
+from generative_driver.benchmark_support.generated_sets import qualification_reasons
 from generative_driver.benchmark_support.set_qualification import qualify, sample
+from generative_driver.benchmark_support.truth import EvaluatorPassword, read_password
 
 SET = 'fixture-v1'
 START = 'generative_driver.benchmark_support.native.NativeSession.start'
 MUTANTS = [mutant['id'] for mutant in FIXTURE_ANSWER_KEY['mutants']]
+BOOT_PC = 0x08000100  # what a fixture device's monitor answers to `cpu PC`
 
 
 def write_set(root, keys):
@@ -41,6 +44,18 @@ def run_qualify(root, registrations, output, **device):
     """qualify(...) of set fixture-v1 under `root`; each emulator it starts is a fresh FixtureDevice(**device)."""
     with patch(START, side_effect=fixture_start(**device)):
         return qualify(root, SET, PASSWORD, renode=Path('/toy'), output_dir=output, registrations=registrations)
+
+
+def booting(reading, *, whole_run=False):
+    """A stand-in for `NativeSession.start` whose emulators are fresh fixture devices, each with the program counter
+    `reading(run, session)` gives: `run` the run's name below its device (with the device, under `whole_run`), `session`
+    the session's directory, `session` for the grade and `session-emission` for the emission."""
+    def start(*, recipe, private_dir=None, **_):
+        session = Path(private_dir)
+        run = session.parent.name
+        named = session.parent.parent.name + '/' + run if whole_run else run
+        return FixtureDevice(pc=hex(reading(named, session.name))).session(recipe, private_dir)
+    return start
 
 
 def files(root):
@@ -70,7 +85,7 @@ class QualifiedSetTests(Workspace, unittest.TestCase):
         cls.out.chmod(0o755)
         cls.registered = {SET: write_fixture_set(cls.root)}
         cls.before = files(cls.root)
-        cls.record = run_qualify(cls.root, cls.registered, cls.out)
+        cls.record = run_qualify(cls.root, cls.registered, cls.out, process=True)
 
     def admitted(self, device_id='0000d001', *, root=None, password=PASSWORD, registrations=None):
         return generated_sets.admitted(root or self.root, SET, device_id, password,
@@ -107,7 +122,7 @@ class QualifiedSetTests(Workspace, unittest.TestCase):
         # The record is sealed beside the manifest. The manifest and the device files stay as registered, so
         # requalifying never changes the manifest hash.
         sealed = self.root / 'qualification.enc'
-        self.assertEqual(truth.unlock(sealed, PASSWORD, hashlib.sha256(sealed.read_bytes()).hexdigest()), record)
+        self.assertEqual(PASSWORD.unlock(sealed, hashlib.sha256(sealed.read_bytes()).hexdigest()), record)
         after = files(self.root)
         after.pop('qualification.enc')
         self.assertEqual(after, self.before)
@@ -115,12 +130,6 @@ class QualifiedSetTests(Workspace, unittest.TestCase):
         # Each device's decrypted image was removed after its runs.
         images = [path for path in self.out.rglob('*') if path.is_file() and path.read_bytes() == FIXTURE_IMAGE]
         self.assertEqual(images, [])
-
-    def test_each_run_records_its_backend_and_whether_a_native_emulator_process_ran(self):
-        # Catches a record made on test fixtures that reads like one made under Renode: every run here was graded on an
-        # attached fixture session, so no native emulator process was observed.
-        self.assertEqual(self.record['runs'], {run: {'backend': 'native-renode', 'native_process_observed': False}
-                                               for run in self.record['seconds']})
 
     def test_the_output_and_the_run_directories_in_it_are_private(self):
         # Catches the reference drivers and hidden checks left readable by other users: an existing empty output kept
@@ -172,7 +181,7 @@ class QualifiedSetTests(Workspace, unittest.TestCase):
             generated_sets.seal_qualification(resealed[name], record, PASSWORD)
         malformed = ('another schema', 'a missing field', 'devices that are no map', 'no object')
         rows = [('no qualification', {'root': unqualified}, ['qualification unreadable: FileNotFoundError']),
-                ('another password', {'password': 'another credential'}, ['qualification unreadable: ValueError']),
+                ('another password', {'password': truth.EvaluatorPassword('another credential')}, ['qualification unreadable: ValueError']),
                 ('a changed byte', {'root': changed}, ['qualification unreadable: ValueError']),
                 ('a nested record', {'root': nested_record}, ['qualification unreadable: RecursionError']),
                 ('a nested registered manifest',
@@ -195,8 +204,331 @@ class QualifiedSetTests(Workspace, unittest.TestCase):
                 patch.object(generated_sets, 'grader_identity', side_effect=ValueError('Grader module missing')):
             self.assertEqual(self.admitted(), ['grader identity unavailable: ValueError'])
 
+    def resealed(self, change):
+        """A copy of the qualified set whose record `change` altered, sealed again under its password."""
+        root, record = self.copy(), copy.deepcopy(self.record)
+        change(record)
+        generated_sets.seal_qualification(root, record, PASSWORD)
+        return root
+
+    def test_04_B3_admission_checks_the_whole_record_and_not_only_the_asked_for_device(self):
+        def drop_required(record):
+            record['mutants'] = [row for row in record['mutants']
+                                 if (row['device'], row['id']) != ('0000d002', 'wrong-state')]
+            del record['runs']['0000d002/mutant-wrong-state']
+
+        def skip_all(record):
+            record['mutants'] = []
+            record['runs'] = {name: row for name, row in record['runs'].items() if 'mutant' not in name}
+
+        def not_native(record):
+            for row in record['runs'].values():
+                row['native_process_observed'] = False
+        rows = [('a failure', lambda record: record['failures'].append('/private/path'),
+                 ['qualification failures recorded']),
+                ('another device failed', lambda record: record['devices']['0000d002'].update(b=False),
+                 ['references not passed:0000d002']),
+                ('a required mutant skipped', drop_required, ['required mutant missing:0000d002']),
+                ('every mutant skipped', skip_all,
+                 ['required mutant missing:0000d001', 'required mutant missing:0000d002']),
+                ('no native process', not_native,
+                 ['native process not observed:0000d001', 'native process not observed:0000d002']),
+                ('runs of a field of no shape', lambda record: record.update(runs=7),
+                 ['qualification runs differ from the manifest and mutants'])]
+        for name, change, reasons in rows:
+            with self.subTest(name):
+                self.assertEqual(self.admitted('0000d001', root=self.resealed(change)), reasons)
+
+    def test_04_B3_todays_reasons_stay_without_repeats(self):
+        def pending(record):
+            record['status'] = 'pending'
+            record['devices']['0000d001'] = {'a': False, 'b': True}
+        self.assertEqual(self.admitted('0000d001', root=self.resealed(pending)),
+                         ['qualification pending', 'references not passed:0000d001'])
+
+    def test_04_B3_a_refused_manifest_has_no_other_reason_from_the_record(self):
+        def not_native(record):
+            record['failures'].append('anything')
+        self.assertEqual(self.admitted(root=self.resealed(not_native), registrations={SET: '0' * 64}),
+                         ['manifest refused: ValueError'])
+
+    def test_04_B4_admission_refuses_runs_whose_boot_readings_differ_or_are_missing(self):
+        def differs(record):
+            record['runs']['0000d002/reference-a']['boot_reading'] = {'pc': 1}
+
+        def missing(record):
+            del record['runs']['0000d001/reference-b']['boot_reading']
+        self.assertEqual(self.admitted('0000d001', root=self.resealed(differs)), ['boot reading differs:0000d002'])
+        self.assertEqual(self.admitted('0000d002', root=self.resealed(missing)), ['boot reading missing:0000d001'])
+
+
+def clean_record():
+    """(a record `qualification_reasons` has nothing to say of, its manifest): three devices of one level and framing,
+    the third outside the sample. Each sampled device has the required mutants and one more."""
+    ids = ('0000d001', '0000d002', '0000d003')
+    manifest = {'schema': 'generated-set-manifest/1', 'set': SET, 'manifest_sha256': 'a' * 64,
+                'devices': [{'id': identity, 'level': 1, 'framing': 'text-lines'} for identity in ids]}
+    mutants = [{'device': device, 'id': mutant, 'rejected': True, 'failed_checks': ['s1/1/answer']}
+               for device in ids[:2] for mutant in ('constant-output', 'wrong-scale', 'wrong-state', 'extra')]
+    names = [device + '/reference-' + name for device in ids for name in 'ab']
+    names += [row['device'] + '/mutant-' + row['id'] for row in mutants]
+    return ({'schema': 'generated-set-qualification/1', 'registration': SET, 'manifest_sha256': 'a' * 64,
+             'grader_identity': {'sha256': 'b' * 64}, 'status': 'passed', 'failures': [],
+             'devices': {device: {'a': True, 'b': True} for device in ids}, 'sample': list(ids[:2]), 'mutants': mutants,
+             'seconds': dict.fromkeys(names, 1.0),
+             'runs': {name: {'backend': 'native-renode', 'native_process_observed': True, 'boot_reading': {'pc': 1}}
+                      for name in names}}, manifest)
+
+
+def changed(change):
+    """What `qualification_reasons` gives for the clean record once `change(record)` altered it."""
+    record, manifest = clean_record()
+    change(record)
+    return qualification_reasons(record, manifest)
+
+
+def drop_mutant(record, device, mutant):
+    record['mutants'] = [row for row in record['mutants'] if (row['device'], row['id']) != (device, mutant)]
+    del record['runs'][device + '/mutant-' + mutant]
+
+
+def add_mutant(record, device, mutant, **row):
+    record['mutants'].append({'device': device, 'id': mutant, 'rejected': True, 'failed_checks': [], **row})
+    record['runs'][device + '/mutant-' + mutant] = {'backend': 'native-renode', 'native_process_observed': True,
+                                                    'boot_reading': {'pc': 1}}
+
+
+class QualificationReasonsTests(unittest.TestCase):
+    def test_04_B3_a_complete_record_has_no_reason(self):
+        self.assertEqual(qualification_reasons(*clean_record()), [])
+
+    def test_04_B3_it_gives_a_reason_for_each_thing_the_whole_record_must_show(self):
+        def set_field(field, value):
+            return lambda record: record.update({field: value})
+
+        def reference(device, name, value):
+            return lambda record: record['devices'][device].update({name: value})
+
+        def row(index, **fields):
+            return lambda record: record['mutants'][index].update(fields)
+
+        def extra_run(record):
+            record['runs']['0000d003/reference-c'] = dict(record['runs']['0000d003/reference-a'])
+
+        def missing_run(record):
+            del record['runs']['0000d002/reference-b']
+
+        def repeated(record):
+            record['mutants'].append(dict(record['mutants'][0]))
+
+        def not_native(name, value):
+            return lambda record: record['runs'][name].update(native_process_observed=value)
+        runs_differ = 'qualification runs differ from the manifest and mutants'
+        rows = [
+            ('a failure recorded', set_field('failures', ['anything']), ['qualification failures recorded']),
+            ('a device missing', lambda record: record['devices'].pop('0000d003'),
+             ['qualification devices differ from the manifest', 'references not passed:0000d003']),
+            ('a device the manifest does not list',
+             lambda record: record['devices'].update({'0000dfff': {'a': True, 'b': True}}),
+             ['qualification devices differ from the manifest']),
+            ('a reference of an unasked device failed', reference('0000d003', 'b', False),
+             ['references not passed:0000d003']),
+            ('a reference passes as a number', reference('0000d002', 'a', 1), ['references not passed:0000d002']),
+            ('another sample', set_field('sample', ['0000d001', '0000d003']),
+             ['qualification sample differs from the manifest']),
+            ('a mutant not rejected', row(0, rejected=False), ['mutant not rejected:0000d001']),
+            ('a mutant rejected as a number', row(4, rejected=1), ['mutant not rejected:0000d002']),
+            ('a mutant row repeated', repeated, ['mutant repeated:0000d001']),
+            ('a required mutant skipped', lambda record: drop_mutant(record, '0000d002', 'wrong-state'),
+             ['required mutant missing:0000d002']),
+            ('a mutant outside the sample', lambda record: add_mutant(record, '0000d003', 'extra'),
+             ['mutant outside the sample:0000d003']),
+            ('a run too many', extra_run, [runs_differ]),
+            ('a run missing', missing_run, [runs_differ]),
+            ('a run of no native process', not_native('0000d003/reference-a', False),
+             ['native process not observed:0000d003']),
+            ('a native process as a number', not_native('0000d001/mutant-extra', 1),
+             ['native process not observed:0000d001']),
+            ('a native process unknown', not_native('0000d001/mutant-extra', None),
+             ['native process not observed:0000d001'])]
+        for name, change, reasons in rows:
+            with self.subTest(name):
+                self.assertEqual(changed(change), reasons)
+
+    def test_04_B3_a_dropped_extra_mutant_is_not_detected(self):
+        # The record holds no list of the key's mutants, and its tag authenticates it.
+        self.assertEqual(changed(lambda record: drop_mutant(record, '0000d001', 'extra')), [])
+
+    def test_04_B3_it_never_reads_the_backend(self):
+        def another(record):
+            for row in record['runs'].values():
+                row['backend'] = 'anything at all'
+        self.assertEqual(changed(another), [])
+        def absent(record):
+            for row in record['runs'].values():
+                del row['backend']
+        self.assertEqual(changed(absent), [])
+
+    def test_04_B3_a_reason_names_at_most_a_device_id_and_copies_nothing_from_the_record(self):
+        private = '/Users/someone/vault/set'
+
+        def change(record):
+            record['failures'] = ['reference a error:0000d001 (OSError: ' + private + ')']
+            record['devices'][private] = {'a': False, 'b': False}
+            record['sample'] = [private]
+            add_mutant(record, private, private, rejected=private)
+            record['mutants'].append(dict(record['mutants'][-1]))
+            record['runs'][private + '/reference-a'] = {'native_process_observed': private, 'boot_reading': private}
+            record['runs'][private + '/reference-b'] = {'native_process_observed': False,
+                                                        'boot_reading': {'pc': private}}
+        reasons = changed(change)
+        self.assertGreater(len(reasons), 4)
+        self.assertNotIn('someone', json.dumps(reasons))
+        self.assertEqual({reason for reason in reasons if ':' in reason}, set())
+
+    def test_04_B3_it_never_raises_whatever_the_shape_of_a_field(self):
+        deep = current = []
+        for _ in range(100000):
+            current.append([])
+            current = current[0]
+        shapes = (None, 0, 1.5, True, '', 'text', [], {}, [None], [[]], [{}], {'0000d001': None}, {'a/b': 7},
+                  {'0000d001/reference-a': []}, [{'device': []}], [{'device': 'x', 'id': []}],
+                  [{'device': {}, 'id': {}}], deep)
+        for field in ('failures', 'devices', 'sample', 'mutants', 'runs', 'schema', 'seconds'):
+            for shape in shapes:
+                with self.subTest(field=field, shape=type(shape).__name__ if shape is deep else shape):
+                    self.assertIsInstance(changed(lambda record: record.update({field: shape})), list)
+        for record in (None, [], 'text'):
+            with self.subTest(record=record):
+                self.assertEqual(qualification_reasons(record, clean_record()[1]), ['qualification malformed'])
+        self.assertIn('qualification failures recorded', qualification_reasons({}, clean_record()[1]))
+        with self.subTest('readings too deep to compare'):
+            def deep_readings(record):
+                for row in record['runs'].values():
+                    nested = current = []
+                    for _ in range(100000):
+                        current.append([])
+                        current = current[0]
+                    row['boot_reading'] = {'pc': nested}
+            self.assertEqual(changed(deep_readings), ['qualification malformed'])
+
+    def test_04_B4_a_devices_runs_must_all_show_the_same_reading(self):
+        def reading(name, value):
+            return lambda record: record['runs'][name].update(boot_reading=value)
+
+        def absent(record):
+            del record['runs']['0000d002/reference-a']['boot_reading']
+        rows = [('one run differs', reading('0000d002/mutant-extra', {'pc': 2}), ['boot reading differs:0000d002']),
+                ('another key', reading('0000d003/reference-b', {'sp': 1}), ['boot reading differs:0000d003']),
+                ('a missing reading', absent, ['boot reading missing:0000d002']),
+                ('a reading of None', reading('0000d001/reference-a', None), ['boot reading missing:0000d001']),
+                ('an empty reading', reading('0000d001/reference-a', {}), ['boot reading missing:0000d001']),
+                ('a reading that is no object', reading('0000d001/reference-a', 7), ['boot reading missing:0000d001'])]
+        for name, change, reasons in rows:
+            with self.subTest(name):
+                self.assertEqual(changed(change), reasons)
+
+    def test_04_B4_devices_may_read_differently_from_each_other(self):
+        def by_device(record):
+            for name, row in record['runs'].items():
+                row['boot_reading'] = {'pc': int(name[7])}
+        self.assertEqual(changed(by_device), [])
+
 
 class PendingSetTests(Workspace, unittest.TestCase):
+    def test_04_B5_a_record_of_fixture_devices_with_no_process_stand_in_is_refused(self):
+        root, out = self.workspace()
+        registered = write_set(root, {'0000d001': FIXTURE_ANSWER_KEY})
+        record = run_qualify(root, registered, out)
+        self.assertEqual((record['status'], record['failures']), ('passed', []))
+        self.assertEqual(generated_sets.admitted(root, SET, '0000d001', PASSWORD, registrations=registered),
+                         ['native process not observed:0000d001'])
+        # The same set qualified with the stand-in is admitted.
+        record = run_qualify(root, registered, out.with_name('again'), process=True)
+        self.assertEqual((record['status'], record['failures']), ('passed', []))
+        self.assertEqual(generated_sets.admitted(root, SET, '0000d001', PASSWORD, registrations=registered), [])
+
+    def test_04_B8_each_run_records_its_backend_whether_a_native_emulator_process_ran_and_its_boot_reading(self):
+        # Catches a record made on test fixtures that reads like one made under Renode: every run here was graded on an
+        # attached fixture session, so no native emulator process was observed.
+        root, out = self.workspace()
+        record = run_qualify(root, write_set(root, {'0000d001': FIXTURE_ANSWER_KEY}), out)
+        self.assertEqual(record['runs'], {run: {'backend': 'native-renode', 'native_process_observed': False,
+                                                'boot_reading': {'pc': BOOT_PC}}
+                                          for run in record['seconds']})
+        self.assertEqual((record['schema'], record['status'], record['failures']),
+                         ('generated-set-qualification/1', 'passed', []))
+
+    def test_04_B8_a_run_that_raised_has_no_reading_even_if_it_left_partial_evidence(self):
+        # On PING the machine stops, in each grade's second sequence, so each grade raises with its evidence saved.
+        root, out = self.workspace()
+        record = run_qualify(root, write_set(root, {'0000d001': FIXTURE_ANSWER_KEY}), out, dies_on='PING')
+        self.assertEqual(record['runs'], {run: {'backend': None, 'native_process_observed': None, 'boot_reading': None}
+                                          for run in record['seconds']})
+        partial = json.loads((out / 'runs/0000d001/reference-a/raw.json').read_text(encoding='utf-8'))
+        self.assertEqual((partial['incomplete'], partial['boot_reading']), (True, {'pc': BOOT_PC}))
+        # A run with no reading is compared with nothing, so no boot reading failure is added for it.
+        self.assertEqual([failure for failure in record['failures'] if 'boot reading' in failure], [])
+
+    def test_04_B8_readings_that_differ_add_one_failure_after_all_the_devices_runs_and_no_run(self):
+        root, out = self.workspace()
+        registered = write_set(root, {'0000d001': FIXTURE_ANSWER_KEY})
+        start = booting(lambda run, session: 0x08000200 if run == 'mutant-refusal-as-value' else BOOT_PC)
+        with patch(START, side_effect=start):
+            record = qualify(root, SET, PASSWORD, renode=Path('/toy'), output_dir=out, registrations=registered)
+        self.assertEqual((record['status'], record['failures']), ('pending', ['boot reading differs:0000d001']))
+        runs = ['reference-a', 'reference-b'] + ['mutant-' + mutant for mutant in MUTANTS]
+        self.assertEqual(list(record['runs']), ['0000d001/' + run for run in runs])
+        self.assertEqual(record['runs']['0000d001/mutant-refusal-as-value']['boot_reading'], {'pc': 0x08000200})
+        self.assertEqual(record['runs']['0000d001/reference-a']['boot_reading'], {'pc': BOOT_PC})
+        self.assertEqual((record['schema'], record['devices']),
+                         ('generated-set-qualification/1', {'0000d001': {'a': True, 'b': True}}))
+        self.assertTrue(all(row['rejected'] for row in record['mutants']))
+
+    def test_04_B8_a_finished_run_whose_evidence_cannot_be_read_has_no_reading_and_admission_refuses(self):
+        # The evidence of three finished runs is gone, is not JSON and holds no object: each row says so, and the
+        # qualification goes on to its end instead of raising.
+        root, out = self.workspace()
+        registered = write_set(root, {'0000d001': FIXTURE_ANSWER_KEY})
+        real = reference_calibration.calibration_run
+        spoiled = {'reference-a': None, 'reference-b': b'not json', 'mutant-wrong-scale': b'[]'}
+
+        def spoiling(*arguments, output_dir, **keywords):
+            result = real(*arguments, output_dir=output_dir, **keywords)
+            evidence = Path(output_dir) / 'raw.json'
+            if Path(output_dir).name in spoiled:
+                evidence.unlink()
+                if spoiled[Path(output_dir).name] is not None:
+                    evidence.write_bytes(spoiled[Path(output_dir).name])
+            return result
+        with patch.object(reference_calibration, 'calibration_run', spoiling), \
+                patch(START, side_effect=fixture_start(process=True)):
+            record = qualify(root, SET, PASSWORD, renode=Path('/toy'), output_dir=out, registrations=registered)
+        self.assertEqual((record['status'], record['failures']), ('passed', []))
+        for run, row in record['runs'].items():
+            reading = None if run.partition('/')[2] in spoiled else {'pc': BOOT_PC}
+            expected = {'backend': 'native-renode', 'native_process_observed': True, 'boot_reading': reading}
+            self.assertEqual(row, expected, run)
+        self.assertEqual(generated_sets.admitted(root, SET, '0000d001', PASSWORD, registrations=registered),
+                         ['boot reading missing:0000d001'])
+
+    def test_04_B8_readings_compare_within_a_device_and_only_on_the_grading_session(self):
+        # Two devices boot differently, and each run's emission session reads another value: neither is a failure.
+        root, out = self.workspace()
+        registered = write_set(root, dict.fromkeys(('0000d001', '0000d002'), FIXTURE_ANSWER_KEY))
+        readings = iter(range(0x09000000, 0x0a000000))
+
+        def reading(run, session):
+            if session == 'session-emission':
+                return next(readings)
+            return BOOT_PC if run.startswith('0000d001') else 0x08000200
+        with patch(START, side_effect=booting(reading, whole_run=True)):
+            record = qualify(root, SET, PASSWORD, renode=Path('/toy'), output_dir=out, registrations=registered)
+        self.assertEqual((record['status'], record['failures']), ('passed', []))
+        read = {device: {row['boot_reading']['pc'] for run, row in record['runs'].items() if run.startswith(device)}
+                for device in ('0000d001', '0000d002')}
+        self.assertEqual(read, {'0000d001': {BOOT_PC}, '0000d002': {0x08000200}})
+
     def test_a_failing_reference_or_a_passing_mutant_leaves_the_set_pending(self):
         reference_b_fails = copy.deepcopy(FIXTURE_ANSWER_KEY)  # its reference b reports the mode in another unit
         reference_b_fails['references']['b']['model']['operations']['query']['outputs']['current']['unit'] = 'count'
@@ -218,8 +550,8 @@ class PendingSetTests(Workspace, unittest.TestCase):
                                  ('pending', [failure], {'0000d001': references}))
                 self.assertEqual([row for row in record['mutants'] if not row['rejected']], unrejected)
                 # A pending set admits no device.
-                self.assertEqual(generated_sets.admitted(root, SET, '0000d001', PASSWORD, registrations=registered),
-                                 reasons)
+                admission = generated_sets.admitted(root, SET, '0000d001', PASSWORD, registrations=registered)
+                self.assertLessEqual(set(reasons), set(admission))
 
     def test_undecided_checks_and_run_errors_neither_pass_a_reference_nor_reject_a_mutant(self):
         # The device cannot read its mode while in mode 3. Both references set mode 3, so two of their state checks are
@@ -254,7 +586,8 @@ class PendingSetTests(Workspace, unittest.TestCase):
                          + ['0000d001/mutant-' + mutant['id'] for mutant in key['mutants']])
         # A run that raised left no result to say how it ran.
         self.assertEqual((list(record['runs']), record['runs']['0000d001/mutant-invalid-model']),
-                         (list(record['seconds']), {'backend': None, 'native_process_observed': None}))
+                         (list(record['seconds']),
+                          {'backend': None, 'native_process_observed': None, 'boot_reading': None}))
 
     def test_a_device_outside_the_sample_runs_no_mutant(self):
         # 0000d001 and 0000d002 are the sample of (level 1, text lines); 0000d003 lies outside it.
@@ -278,8 +611,8 @@ class PendingSetTests(Workspace, unittest.TestCase):
             record = run_qualify(root, registered, out)
         self.assertEqual((record['status'], record['failures'], record['grader_identity']),
                          ('pending', ['grader identity changed during qualification'], identity))
-        self.assertEqual(generated_sets.admitted(root, SET, '0000d001', PASSWORD, registrations=registered),
-                         ['qualification pending'])
+        self.assertIn('qualification pending',
+                      generated_sets.admitted(root, SET, '0000d001', PASSWORD, registrations=registered))
 
     def test_a_decrypted_image_the_qualification_could_not_remove_leaves_the_set_pending(self):
         # A removal that fails, as on Windows while another process holds the file, is one that removes nothing here.
@@ -331,7 +664,7 @@ class PendingSetTests(Workspace, unittest.TestCase):
         rows = [('an output inside the repository', {'output_dir': inside}, 'outside repository'),
                 ('an output that is not empty', {'output_dir': crowded}, 'empty output directory'),
                 ('a set that is not registered', {'registrations': {}}, 'not registered'),
-                ('another password', {'password': 'another credential'}, 'Cannot unlock')]
+                ('another password', {'password': truth.EvaluatorPassword('another credential')}, 'Cannot unlock')]
         for name, change, pattern in rows:
             arguments = {'password': PASSWORD, 'output_dir': out, 'registrations': registered, **change}
             with self.subTest(name), patch(START) as start:
@@ -372,19 +705,131 @@ class PendingSetTests(Workspace, unittest.TestCase):
         self.assertFalse(out.exists())
 
 
+class RedoingAPassedQualificationTests(Workspace, unittest.TestCase):
+    """A set whose table is the one `_SETS_FILE` reads, as `qualify` reads the mark from there. Past the check,
+    `qualify` opens the set's devices, so a refused `open_device` shows how far it got."""
+
+    def scoring_set(self, *, scoring=True):
+        """A one-device set under the patched table, with its mark: (root, output, table)."""
+        root, out = self.workspace()
+        registered = write_set(root, {'0000d001': FIXTURE_ANSWER_KEY})
+        table = root.with_name('sets.json')
+        table.write_text(registrations_table(registered, scoring=scoring), encoding='utf-8')
+        guard = patch.object(generated_sets, '_SETS_FILE', table)
+        guard.start()
+        self.addCleanup(guard.stop)
+        return root, out, registered
+
+    @staticmethod
+    def seal(root, **fields):
+        record = {'status': 'passed', 'grader_identity': grader_identity(case_id='generated'), **fields}
+        generated_sets.seal_qualification(root, record, PASSWORD)
+        return (root / 'qualification.enc').read_bytes()
+
+    def assertReachesOpening(self, root, out, password=PASSWORD, **arguments):
+        with patch.object(set_qualification, 'open_device', side_effect=ValueError('Reached the devices')):
+            with self.assertRaisesRegex(ValueError, '^Reached the devices$'):
+                qualify(root, SET, password, renode=Path('/toy'), output_dir=out, **arguments)
+
+    def test_04_B12_a_passed_record_of_a_scoring_set_is_not_replaced_by_accident(self):
+        root, out, _ = self.scoring_set()
+        sealed = self.seal(root)
+        with patch(START) as start, \
+                patch.object(set_qualification, 'open_device', side_effect=AssertionError('opened')):
+            with self.assertRaisesRegex(ValueError, 'already passed.*' + SET):
+                qualify(root, SET, PASSWORD, renode=Path('/toy'), output_dir=out)
+            start.assert_not_called()
+        self.assertEqual((root / 'qualification.enc').read_bytes(), sealed)
+        self.assertFalse(out.exists())
+
+    def test_04_B12_replace_qualifies_it_again(self):
+        root, out, _ = self.scoring_set()
+        sealed = self.seal(root)
+        with patch(START, side_effect=fixture_start(process=True)):
+            record = qualify(root, SET, PASSWORD, renode=Path('/toy'), output_dir=out, replace=True)
+        self.assertEqual((record['status'], record['failures']), ('passed', []))
+        self.assertNotEqual((root / 'qualification.enc').read_bytes(), sealed)
+        self.assertEqual(generated_sets.admitted(root, SET, '0000d001', PASSWORD), [])
+
+    def test_04_B12_every_other_record_qualifies_as_it_did(self):
+        # No RED of their own: each pins that the check lets it by. A mutation shows they can fail.
+        root, out, _ = self.scoring_set()
+        self.seal(root, grader_identity={**grader_identity(case_id='generated'), 'sha256': 'f' * 64})
+        with self.subTest('another identity'):
+            self.assertReachesOpening(root, out)
+        self.seal(root, status='pending')
+        with self.subTest('a pending record'):
+            self.assertReachesOpening(root, out)
+        generated_sets.seal_qualification(root, ['no object'], PASSWORD)
+        with self.subTest('a record that is no object'):
+            self.assertReachesOpening(root, out)
+        self.seal(root)
+        changed_byte = bytearray((root / 'qualification.enc').read_bytes())
+        changed_byte[len(changed_byte) // 2] ^= 1
+        (root / 'qualification.enc').write_bytes(bytes(changed_byte))
+        with self.subTest('an unreadable record'):
+            self.assertReachesOpening(root, out)
+        (root / 'qualification.enc').unlink()
+        with self.subTest('no record'):
+            self.assertReachesOpening(root, out)
+        self.seal(root)
+        with self.subTest('a passed record another password does not unlock'):
+            self.assertReachesOpening(root, out, password=EvaluatorPassword('another credential'))
+
+    def test_04_B12_a_development_set_qualifies_as_it_did(self):
+        root, out, _ = self.scoring_set(scoring=False)
+        self.seal(root)
+        self.assertReachesOpening(root, out)
+
+    def test_04_B12_a_call_with_its_own_registrations_counts_as_a_development_set(self):
+        root, out, registered = self.scoring_set()
+        self.seal(root)
+        self.assertReachesOpening(root, out, registrations=registered)
+
+
 class CommandTests(Workspace, unittest.TestCase):
-    def command(self, root, password_file, out):
+    def command(self, root, password_file, out, *more):
         """`benchmark set qualify` as the command line runs it: (exit code, what it printed, what it logged)."""
         printed, logged = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(logged):
             code = main(['set', 'qualify', '--set', SET, '--root', str(root), '--password-file', str(password_file),
-                         '--renode', '/toy', '--output', str(out)])
+                         '--renode', '/toy', '--output', str(out), *more])
         return code, printed.getvalue(), logged.getvalue()
 
     def password_file(self, root):
         path = root.with_name('set.password')
-        path.write_text(PASSWORD + '\n', encoding='utf-8')
+        path.write_text(PASSWORD_TEXT + '\n', encoding='utf-8')
         return path
+
+    def test_04_B12_without_the_flag_the_command_refuses_a_passed_scoring_set_and_with_it_goes_on(self):
+        root, out = self.workspace()
+        registered = write_set(root, {'0000d001': FIXTURE_ANSWER_KEY})
+        table = root.with_name('sets.json')
+        table.write_text(registrations_table(registered, scoring=True), encoding='utf-8')
+        generated_sets.seal_qualification(
+            root, {'status': 'passed', 'grader_identity': grader_identity(case_id='generated')}, PASSWORD)
+        sealed = (root / 'qualification.enc').read_bytes()
+        with patch.object(generated_sets, '_SETS_FILE', table):
+            code, printed, _ = self.command(root, self.password_file(root), out)
+            self.assertEqual(code, 1)
+            self.assertRegex(json.loads(printed)['error'], 'already passed.*--replace-passed')
+            self.assertEqual((root / 'qualification.enc').read_bytes(), sealed)
+            with patch(START, side_effect=fixture_start(process=True)):
+                code, printed, _ = self.command(root, self.password_file(root), out, '--replace-passed')
+        self.assertEqual((code, json.loads(printed)['status']), (0, 'passed'))
+        self.assertNotEqual((root / 'qualification.enc').read_bytes(), sealed)
+
+    def test_02_B9_the_command_reads_its_file_once(self):
+        root, out = self.workspace()
+        write_fixture_set(root)
+        handle = self.password_file(root)
+        real = truth.read_password
+        with patch.object(truth, 'read_password', side_effect=real) as reading, \
+                patch('generative_driver.benchmark_support.set_qualification.qualify',
+                      return_value={'status': 'passed', 'failures': [], 'seconds': {}}):
+            code, _, _ = self.command(root, handle, out)
+        self.assertEqual(code, 0)
+        reading.assert_called_once_with(str(handle))
 
     def test_the_command_refuses_a_set_the_shipped_table_does_not_register(self):
         root, out = self.workspace()
@@ -393,7 +838,7 @@ class CommandTests(Workspace, unittest.TestCase):
             code, printed, logged = self.command(root, self.password_file(root), out)
         self.assertEqual((code, json.loads(printed)), (1, {'ok': False, 'error': 'Generated set not registered: ' + SET}))
         start.assert_not_called()
-        self.assertNotIn(PASSWORD, printed + logged)
+        self.assertNotIn(PASSWORD_TEXT, printed + logged)
         self.assertFalse((root / 'qualification.enc').exists())
 
     def test_the_command_prints_the_status_and_each_runs_seconds_and_never_the_password(self):
@@ -405,11 +850,15 @@ class CommandTests(Workspace, unittest.TestCase):
                                                            'seconds': seconds}) as qualifying:
                 exit_code, printed, logged = self.command(root, self.password_file(root), out)
                 # The password reaches the qualifier without its file's trailing newline.
-                qualifying.assert_called_once_with(root, SET, PASSWORD, renode=Path('/toy'), output_dir=out)
+                self.assertEqual(qualifying.call_count, 1)
+                (called_root, called_set, called), keywords = qualifying.call_args
+                self.assertEqual((called_root, called_set, keywords), (root, SET, {'renode': Path('/toy'), 'output_dir': out}))
+                sealed = called.seal({'a': 1}, out.with_name('sealed.enc'))
+                self.assertEqual(PASSWORD.unlock(out.with_name('sealed.enc'), sealed), {'a': 1})
                 self.assertEqual((exit_code, json.loads(printed)),
                                  (code, {'ok': status == 'passed', 'status': status, 'failures': failures,
                                          'seconds': seconds}))
-                self.assertNotIn(PASSWORD, printed + logged)
+                self.assertNotIn(PASSWORD_TEXT, printed + logged)
 
 
 if __name__ == '__main__':

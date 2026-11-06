@@ -7,18 +7,19 @@ import unittest
 from generative_driver.benchmark_support.asset_build import inventory
 from generative_driver.benchmark_support.snapshots import canonical_digest
 from generative_driver.benchmark_support.calibration import decode_inventory
+from generative_driver.benchmark_support.truth import EvaluatorPassword, read_password
 
 class InventoryTests(unittest.TestCase):
     def fixture(self):
         entries = {name: {'sha256': hashlib.sha256(b'{}').hexdigest(),
                           'base64': base64.b64encode(b'{}').decode()}
-                   for name in inventory('sampled-sensor')}
+                   for name in inventory('sampled-sensor-v1')}
         return {'schema': 'benchmark-family-truth/1', 'case_id': 'sampled-sensor-v1',
                 'family': 'sampled-sensor', 'inventory_state': 'pending', 'inventory': entries,
                 'inventory_sha256': canonical_digest({k:v['sha256'] for k,v in entries.items()})}
 
     def test_exact_authenticated_inventory_decodes(self):
-        self.assertEqual(set(decode_inventory(self.fixture())), inventory('sampled-sensor'))
+        self.assertEqual(set(decode_inventory(self.fixture())), inventory('sampled-sensor-v1'))
 
     def test_invalid_inventory_cannot_be_used(self):
         for defect in ('extra','missing','base64','hash','commitment','state','entry'):
@@ -74,7 +75,7 @@ class AdmissionTests(unittest.TestCase):
 
     def test_store_qualification_requires_named_scenario_evidence(self):
         from generative_driver.benchmark_support.calibration import validate_calibration
-        manifest, record = self.fixture()
+        manifest, record = self.fixture('parameter-store-v1')
         manifest['family'] = 'parameter-store'
         names = ['constant','scale','order','wrong-bank','abort','idle-only-update','short-rejection-frame']
         base = copy.deepcopy(record['mutants'][0])
@@ -218,7 +219,7 @@ class MutationTests(unittest.TestCase):
 
 class DispatchTests(unittest.TestCase):
     def test_family_dispatch_uses_family_phase_and_measured_oracle(self):
-        from generative_driver.benchmark_support.instruments import family_for
+        from generative_driver.benchmark_support.families import family_for
         sensor=family_for('sampled-sensor-v1')
         result=sensor.observations({'values':{'latched_q4':65520,'acquisition_counter':8}},
             {'ok':True,'outputs':{'temperature':-1,'sequence':8}}, {})
@@ -522,12 +523,12 @@ class ReferenceExecutionTests(unittest.TestCase):
                 accept_frozen_package(package,frozen)
 
 class FamilyAdmissionBoundaryTests(unittest.TestCase):
-    def test_registry_admission_consumes_family_validator_and_authenticated_inputs(self):
-        from unittest.mock import patch
-        from generative_driver.benchmark_support.registry import require_calibration
+    def family_admission_fixture(self):
+        """(manifest, record, truth, pin, phase) of a family-truth case whose evidence admits it."""
         manifest,record=AdmissionTests().fixture()
         manifest.update(schema='benchmark-case/2')
         manifest['calibration'].update(status='passed',evidence_sha256=canonical_digest(record))
+        manifest['truth']={'path':'groundtruth/sampled-sensor-v1.enc','sha256':'d'*64}
         pin={'case_id':'sampled-sensor-v1','scenario_id':'original','case_seed':0,'manifest':manifest,
              'calibration':manifest['calibration']}
         truth={'calibration':record,'images':manifest['images'],'input_hashes':record['input_hashes'],
@@ -568,8 +569,15 @@ class FamilyAdmissionBoundaryTests(unittest.TestCase):
             measured['checks']=[failed.get(name,{'id':name,'passed':True}) for name in identifiers]
             measured['contract_sha256']=canonical_digest({**phase['contract'],'artifact_sha256':measured['package_sha256'] or measured['model_sha256']})
         manifest['calibration']['evidence_sha256']=canonical_digest(record)
+        return manifest,record,truth,pin,phase
+
+    def test_registry_admission_consumes_family_validator_and_authenticated_inputs(self):
+        from unittest.mock import patch
+        from generative_driver.benchmark_support.registry import require_calibration
+        manifest,record,truth,pin,phase=self.family_admission_fixture()
         with patch('generative_driver.benchmark_support.registry.pin_case',return_value=pin),patch(
-                'generative_driver.benchmark_support.emulator.truth_for_case',return_value=truth):
+                'generative_driver.benchmark_support.emulator.truth_for_case',return_value=truth),patch(
+                'generative_driver.benchmark_support.calibration.hydrate_truth',side_effect=lambda unlocked:unlocked):
             self.assertTrue(require_calibration(pin,{})['ok'])
             for index in (0,2,4,7):
                 measured=record['runs'][index]
@@ -739,17 +747,16 @@ class TruthBoundaryTests(unittest.TestCase):
     def test_authenticated_but_nonexecutable_family_inventory_is_refused(self):
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.truth import seal
-        from generative_driver.benchmark_support.evaluator import case_truth
+        from generative_driver.benchmark_support.registry import case_truth
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);password=root/'password';password.write_text('toy')
-            digest=seal(InventoryTests().fixture(),root/'truth.enc','toy')
+            digest=EvaluatorPassword('toy').seal(InventoryTests().fixture(), root/'truth.enc')
             manifest={'truth':{'path':'truth.enc','sha256':digest}}
             with patch('generative_driver.benchmark_support.case_assets.case_inputs',return_value=(root,manifest)),patch(
                     'generative_driver.benchmark_support.case_assets.case_root',return_value=root):
                 with self.assertRaises((ValueError,KeyError)):
-                    case_truth('sampled-sensor-v1',root,{'evaluator_password_file':str(password)})
+                    case_truth('sampled-sensor-v1',root,read_password(password))
 
 class PublicObservationTests(unittest.TestCase):
     def test_public_package_feedback_uses_selected_family_monitor(self):
@@ -857,14 +864,13 @@ class FailedProducerTests(unittest.TestCase):
         import json,tempfile
         from pathlib import Path
         from generative_driver.benchmark_support.authoring import calibrate
-        from generative_driver.benchmark_support.truth import unlock
         from benchmark_family_fixtures import toy_sensor_phase
         _,truth=toy_sensor_phase();phase=truth['phases']['diagnostic']
         phase['actions']=[{'kind':'reset','values':{}},{'kind':'call','task':'toy','inputs':{},'grants':[]},
                           {'kind':'observe','checks':[c['id'] for c in phase['contract']['checks']]}]
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);author=root/'author';author.mkdir();password=root/'password';password.write_text('toy-password')
-            for name in inventory('sampled-sensor'):
+            for name in inventory('sampled-sensor-v1'):
                 path=author/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('{}')
             values={'AUTHORING.json':{'schema':'benchmark-authoring/1','id':'sampled-sensor-v1',
                 'family':'sampled-sensor','execution':'reference-build'},
@@ -873,9 +879,9 @@ class FailedProducerTests(unittest.TestCase):
             for name,value in values.items():(author/name).write_text(json.dumps(value))
             result=calibrate('sampled-sensor-v1',{'authoring_root':str(author),'output':str(root/'out'),
                 'compiler':'/missing-compiler','renode':'/missing-renode','ghidra_home':'/missing-ghidra',
-                'java_home':'/missing-java','evaluator_password_file':str(password)})
+                'java_home':'/missing-java','evaluator_password':read_password(password)})
             self.assertFalse(result['ok'])
             manifest=json.loads((root/'out/case.json').read_text())
-            payload=unlock(root/'out/sampled-sensor-v1.enc','toy-password',manifest['truth']['sha256'])
+            payload=EvaluatorPassword('toy-password').unlock(root/'out/sampled-sensor-v1.enc', manifest['truth']['sha256'])
             self.assertEqual(payload['inventory_state'],'pending')
             self.assertNotIn('calibration/calibration.json',payload['inventory'])

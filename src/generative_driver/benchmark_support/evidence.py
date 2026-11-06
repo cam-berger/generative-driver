@@ -8,7 +8,8 @@ COUNTS = ('verdict', 'passed', 'total')
 USAGE = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens',
          'total_tokens', 'observed_total_tokens', 'reported_attempts', 'attempts', 'coverage', 'counting')
 PIN = ('case_id', 'case_version', 'manifest_sha256', 'scenario_id', 'scenario_sha256',
-       'case_seed', 'truth_sha256', 'evaluator_version', 'family', 'variant', 'execution', 'evidence_track', 'scope')
+       'case_seed', 'truth_sha256', 'evaluator_version', 'family', 'variant', 'execution', 'evidence_track', 'scope',
+       'set', 'device_id')
 
 
 def _scalars(value, fields):
@@ -209,10 +210,9 @@ def _validate_payload_v2(payload):
         raise ValueError('Evaluated artifact differs from the accepted emit package')
 
 
-def seal_run_evidence_v2(payload: dict, path: Path, password_file: Path) -> dict:
+def seal_run_evidence_v2(payload: dict, path: Path, password) -> dict:
     """Seal benchmark-run-evidence/2 after re-hashing every accepted artifact it names. An identity that does not hold or
     an accepted record whose bytes changed raises IntegrityError: no retry seals it."""
-    from .truth import seal
     from .integrity import IntegrityError, digest as artifact_digest
     try:
         _validate_payload_v2(payload)
@@ -239,18 +239,17 @@ def seal_run_evidence_v2(payload: dict, path: Path, password_file: Path) -> dict
         if (final.get('generated_reuse_required') is not True or
                 final.get('generated_reuse_verified') is not verified(proof, final['frozen_artifact_sha256'])):
             raise IntegrityError('Generated MCP proof differs from the final evaluation')
-    digest = seal(payload, path, Path(password_file).read_text(encoding='utf-8').strip())
+    digest = password.seal(payload, path)
     return {'path': Path(path).name, 'sha256': digest}
 
 
-def seal_run_evidence(payload: dict, path: Path, password_file: Path) -> dict:
-    from .truth import seal
+def seal_run_evidence(payload: dict, path: Path, password) -> dict:
     _validate_payload(payload)
     from .integrity import digest as artifact_digest
     for artifact in payload.get('accepted_artifacts', []):
         if 'path' in artifact and artifact_digest(Path(artifact['path'])) != artifact['sha256']:
             raise ValueError('Accepted artifact bytes changed before sealing')
-    digest = seal(payload, path, Path(password_file).read_text(encoding='utf-8').strip())
+    digest = password.seal(payload, path)
     return {'path': Path(path).name, 'sha256': digest}
 
 
@@ -323,18 +322,16 @@ def _installed_evaluator(snapshot):
         raise ValueError('Installed evaluator implementation hash mismatch')
 
 
-def regrade_v2(report: dict, evidence_path: Path, password_file: Path) -> dict:
+def regrade_v2(report: dict, evidence_path: Path, password) -> dict:
     """Regrade an earlier-protocol report (benchmark-report/2) from its sealed benchmark-run-evidence/1 by its gates and
     final evaluations. A run that names its protocol, as an assistive run does, is reported as benchmark-report/3 and is
     never scored here; no run of the earlier protocol names one."""
-    from .truth import unlock
     from .behavior import validate_records
     if (report.get('progress') or {}).get('protocol') is not None:
         raise ValueError('A run that names its protocol is reported and scored as benchmark-report/3; reports never mix protocols')
-    if not evidence_path or not password_file:
+    if not evidence_path or not password:
         raise ValueError('V2 scoring requires evidence and password-file paths')
-    payload = unlock(evidence_path, Path(password_file).read_text(encoding='utf-8').strip(),
-                     report['final_evaluation']['evidence_sha256'])
+    payload = password.unlock(evidence_path, report['final_evaluation']['evidence_sha256'])
     _validate_payload(payload)
     _installed_evaluator(payload['execution_snapshot'])
     if report.get('schema') != 'benchmark-report/2':
@@ -360,7 +357,7 @@ def regrade_v2(report: dict, evidence_path: Path, password_file: Path) -> dict:
                              'evidence_sha256': report['final_evaluation']['evidence_sha256']}})
 
 
-def regrade_v3(report: dict, evidence_path: Path, password_file: Path) -> dict:
+def regrade_v3(report: dict, evidence_path: Path, password) -> dict:
     """Regrade an assistive run's report (benchmark-report/3) from the benchmark-run-evidence/2 its recorded verdict
     names, sealed by the evaluator in the trial directory. The evidence must hold the report's run, protocol, case pin,
     snapshot and executed identity, an installed evaluator of the snapshot's revision, and the run's single final
@@ -371,7 +368,6 @@ def regrade_v3(report: dict, evidence_path: Path, password_file: Path) -> dict:
     The regrade must give the status the verdict was sealed with. A verdict sealed without a final (no driver emitted, no
     capability mapping, an invalid model) is not equivalent. A report with no recorded verdict (awaiting its grade,
     unscored or stopped) names no evidence: it stays unscored and nothing is unlocked."""
-    from .truth import unlock
     from .evaluator import final_record
     from .behavior import _sha
     if report.get('schema') != 'benchmark-report/3' or not isinstance(report.get('protocol'), str) or not report['protocol']:
@@ -379,11 +375,11 @@ def regrade_v3(report: dict, evidence_path: Path, password_file: Path) -> dict:
     recorded = public_equivalence(report.get('equivalence'))
     if recorded is None:
         return public_v3_report({**report, 'verdict': None})
-    if not evidence_path or not password_file:
+    if not evidence_path or not password:
         raise ValueError('Assistive scoring requires evidence and password-file paths')
     if not _sha(recorded.get('evidence_sha256')):
         raise ValueError('The recorded verdict names no sealed evidence')
-    payload = unlock(evidence_path, Path(password_file).read_text(encoding='utf-8').strip(), recorded['evidence_sha256'])
+    payload = password.unlock(evidence_path, recorded['evidence_sha256'])
     _validate_payload_v2(payload)
     _installed_evaluator(payload['execution_snapshot'])
     # The regraded report says how the run executed as the sealed snapshot does, whether or not the report said so.

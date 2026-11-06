@@ -1,0 +1,59 @@
+{
+  "goal": "Implement the next step of the benchmark: build step 5, the bench harness that runs trials on generated devices",
+  "slug": "bench-harness",
+  "branch": "mdk/bench-harness",
+  "stage": "done",
+  "awaiting": null,
+  "current": null,
+  "features": [
+    {
+      "id": "01",
+      "slug": "family-seam",
+      "status": "done",
+      "base": "6b4ad0ce227fce553591f079ee991a1580799f1b"
+    },
+    {
+      "id": "02",
+      "slug": "unlocked-keys",
+      "status": "done",
+      "base": "2817f390b3edeb36637b7a713c8c046ceba6f61f"
+    },
+    {
+      "id": "03",
+      "slug": "generated-trials",
+      "status": "done",
+      "base": "c4b6e2bf616c3bc27b1f140992d20d6a1e072501"
+    },
+    {
+      "id": "04",
+      "slug": "set-admission",
+      "status": "done",
+      "base": "f8640222527109a6222d0609deca5be2ba7bb30c"
+    },
+    {
+      "id": "05",
+      "slug": "vault-gate",
+      "status": "done",
+      "base": "d3a9143d310530b6ebe95410cd941a4e4a7f976b"
+    },
+    {
+      "id": "06",
+      "slug": "slot-policy",
+      "status": "done",
+      "base": "04b87dd5da1c84bb0a5bc8774d8041f7dac1ef47"
+    },
+    {
+      "id": "07",
+      "slug": "trial-sealing",
+      "status": "done",
+      "base": "73727de4f01579bd8582872696ce220bce0ecfb1"
+    },
+    {
+      "id": "08",
+      "slug": "output-measure",
+      "status": "done",
+      "base": "7f9a742beb7e0f88c0a534cb4c0f4ae71e4263cc"
+    }
+  ],
+  "escalation": null
+}

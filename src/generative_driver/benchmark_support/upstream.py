@@ -1,7 +1,7 @@
 """Authenticated, evaluator-owned upstream case inventories.
 
 This is data validation, not a plugin loader. Native families remain code-owned
-in registrations.py; neither a catalog nor an encrypted bundle selects Python code.
+in families.py; neither a catalog nor an encrypted bundle selects Python code.
 """
 import copy
 from .snapshots import canonical_digest
@@ -10,7 +10,8 @@ from .snapshots import canonical_digest
 def hydrate_truth(payload):
     from .behavior import _check_contract
     from .calibration import apply_mutation
-    from .registrations import registration_for, native_family_for
+    from .families import family_for
+    from .registrations import registration_for
     try:
         fields = {'schema', 'case_id', 'family', 'inventory_state', 'images', 'source', 'build',
                   'recipe', 'phases', 'references', 'mutations', 'public_mission'}
@@ -21,7 +22,7 @@ def hydrate_truth(payload):
         registration = registration_for(payload['case_id'])
         if registration.truth_schema != payload['schema'] or registration.family != payload['family']:
             raise ValueError('Invalid upstream truth identity')
-        required_mutants = native_family_for(registration.id).REQUIRED_MUTANTS
+        required_mutants = family_for(registration.id).required_mutants
         if set(payload['references']) != {'a', 'b'} or set(payload['phases']) != {'diagnostic', 'final'}:
             raise ValueError('Upstream truth requires two references and disjoint phases')
         for phase in payload['phases'].values():

@@ -11,12 +11,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from generative_driver.benchmark_support.families import family_for
+from generative_driver.benchmark_support.truth import UnlockedTruth
+
 RECIPE = {'observations': {'compare': {'command': 'compare', 'width': 32, 'count': 1},
                            'reload': {'command': 'reload', 'width': 32, 'count': 1},
                            'temperature': {'kind': 'scalar', 'command': 'temperature', 'unit': 'degC'}}}
 MONITOR = {'reads', 'command', 'commands', 'response', 'responses', 'monitor_port', 'private_dir', 'argv', 'pid',
            'compare', 'reload', 'temperature', 'controls'}
 SOURCE = Path(__file__).resolve().parents[1]/'src/generative_driver/benchmark_support'
+# Modules that decrypt a truth or lead to one: the device provider must load none of them.
+DECRYPTING_MODULES = {'truth', 'emulator', 'calibration', 'reference_calibration', 'evidence', 'emulated_evidence',
+                      'evaluator', 'emulated', 'emulated_recovery', 'registry', 'cases', 'configurator'}
 
 
 def keys(value):
@@ -75,7 +81,7 @@ class ProviderFixture(unittest.TestCase):
         self.start = start
         # The provider takes the recipe only: no stage of its life may unlock the case truth.
         for target in ('generative_driver.benchmark_support.emulator.truth_for_case',
-                       'generative_driver.benchmark_support.truth.unlock',
+                       'generative_driver.benchmark_support.truth.EvaluatorPassword.unlock',
                        'generative_driver.benchmark_support.calibration.hydrate_truth'):
             guard = patch(target, side_effect=AssertionError('truth unlocked by the device provider'))
             guard.start(); self.addCleanup(guard.stop)
@@ -202,7 +208,7 @@ class DeviceProviderTests(ProviderFixture):
                 provider = self.provider(case_id, recipe, start=lambda **kwargs: Raw(kwargs['recipe'], values))
                 provider.start()
                 observed = provider.observe()
-                named = dict(instruments.family_for(case_id).observations.monitor_units)
+                named = dict(family_for(case_id).observations.monitor_units)
                 self.assertEqual(set(observed), {'schema', 'session_id', 'values', 'units', 'time'})
                 self.assertEqual((set(observed['values']), observed['units']), (set(named), named))
                 self.assertEqual(provider.start()['instrument']['units'], named)
@@ -382,8 +388,7 @@ class DeviceProviderTests(ProviderFixture):
         self.assertEqual(provider.stop(), {'stopped': True, 'confirmed': True})
 
     def test_the_provider_imports_nothing_that_decrypts_truth(self):
-        forbidden = {'truth', 'emulator', 'calibration', 'reference_calibration', 'evidence', 'emulated_evidence', 'evaluator',
-                     'emulated', 'emulated_recovery', 'registry', 'cases', 'configurator'}
+        forbidden = DECRYPTING_MODULES
         for name in ('device_provider.py', 'instruments.py'):
             tree = ast.parse((SOURCE/name).read_text(encoding='utf-8'))
             imported = set()
@@ -427,8 +432,8 @@ class HarnessDelegationTests(ProviderFixture):
         from generative_driver.benchmark_support import emulated, harness
         from generative_driver.device_client import DeviceUnavailable, open_device
         from generative_driver.toolkit import call_tool
-        with patch('generative_driver.benchmark_support.evaluator.case_truth', return_value=self.truth) as unlocked:
-            self.assertEqual(harness.device_recipe('tq9-v2', self.trial, {}), RECIPE)
+        with patch('generative_driver.benchmark_support.registry.case_truth', return_value=UnlockedTruth(self.truth, 'a' * 64)) as unlocked:
+            self.assertEqual(harness.device_recipe('tq9-v2', unlocked()), RECIPE)
         unlocked.assert_called_once()
         self.assertFalse(hasattr(emulated, '_session'))
         self.device.start()
@@ -475,7 +480,7 @@ class HarnessDelegationTests(ProviderFixture):
         self.assertEqual(len(self.peers), 2)
         self.assertEqual(self.device.status()['session_id'], receipt['new_session_id'])
         # The harness stops the device, confirmed; the configurator only releases it.
-        done = harness.finish(self.device, 'tq9-v2', None, [], None, {'status': 'completed'})
+        done = harness.finish(self.device, 'tq9-v2', None, [], None, {'status': 'completed'}, truth_source=None)
         self.assertEqual(done['device_stop'], {'stopped': True, 'confirmed': True})
         self.assertTrue(self.peers[1].closed)
         self.assertEqual(self.journal(self.trial)[-1]['kind'], 'stopped')
@@ -523,7 +528,7 @@ class HarnessDelegationTests(ProviderFixture):
         self.assertTrue(held)
         with self.assertRaisesRegex(RuntimeError, 'stop'):
             self.device.stop()
-        done = harness.finish(self.device, 'tq9-v2', None, [], None)
+        done = harness.finish(self.device, 'tq9-v2', None, [], None, truth_source=None)
         self.assertEqual((done['status'], done['device']['session_id']), ('stop-unconfirmed', held))
         # The owner keeps its session: no second start launches another emulator, and the configurator starts none.
         self.assertEqual(self.device.start()['session_id'], held)

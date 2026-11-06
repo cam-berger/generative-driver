@@ -9,40 +9,31 @@ import json
 import shutil
 from pathlib import Path
 
-from .case_assets import write_json
-from .instruments import family_for
+from .case_assets import NOT_JUDGED, write_json
+from .families import family_for
+from .registrations import registered_case_ids, registration_for
 
 DRAFT, EVIDENCE = 'evaluator-draft.enc', 'run-evidence.enc'
 SCHEMA = 'equivalence/1'
 TEXT = 300  # The configurator's limit on an equivalence/1 text field.
 OWNER_PROOF = 'Missing or inconsistent owner proof of generated MCP reuse'
-# Cases graded from the fresh reuse their run recorded; every other case is graded on a fresh emulator.
-RECORDED = {'tq9': 'recorded-reuse', 'bme280': 'recorded-reuse'}
 
 
 def method_for(case_id):
-    """How the evaluator grades a case's frozen driver."""
-    return RECORDED.get(case_id, 'fresh-final')
+    """How the evaluator grades a case's frozen driver, as its registration says: from the fresh reuse its run recorded
+    or on a fresh emulator, which is also how a run that names no registered case would be graded."""
+    return registration_for(case_id).grading_method if case_id in registered_case_ids() else 'fresh-final'
 
 
-def case_truth(case_id, run_dir, options):
-    """The case truth, unlocked with the evaluator password file in `options`: the bench harness takes the device recipe
-    from it, and the evaluator grades with it. The manifest is the run's pinned snapshot when `run_dir` holds one. The
-    truth is hydrated as the case's registered `truth_schema` says; a truth whose registered schema is none, or one that
-    is hydrated nowhere here, is returned as unlocked."""
-    from .case_assets import case_inputs, case_root
-    from .emulator import truth_for_case
-    from .registrations import registration_for
-    _, manifest = case_inputs(case_id, run_dir)
-    truth = truth_for_case(case_root(), manifest, options)
-    schema = registration_for(case_id).truth_schema
-    if schema == 'benchmark-upstream-truth/1':
-        from .upstream import hydrate_truth
-        return hydrate_truth(truth)
-    if schema == 'benchmark-family-truth/1':
-        from .calibration import hydrate_truth
-        return hydrate_truth(truth)
-    return truth
+def answer_key(truth_source, pin):
+    """The answer key to grade the run of `pin` with: the payload of the `UnlockedTruth` that `truth_source()` returns.
+    The grader never decrypts one (Feature 02, unlocked keys). One unlocked under another hash than the pin's raises
+    IntegrityError, and is not graded."""
+    from .integrity import IntegrityError
+    truth = truth_source()
+    if truth.sha256 != pin.get('truth_sha256'):
+        raise IntegrityError('The unlocked answer key is not the one the run pinned')
+    return truth.payload
 
 
 def accept_frozen_package(package, expected_sha256):
@@ -57,22 +48,20 @@ def accept_frozen_package(package, expected_sha256):
 
 
 def reference_execute(pin, truth, capabilities, *, renode, image, output_dir, package, expected_package_sha256,
-                      private_dir=None, healthy_device_failures=False):
+                      private_dir=None, healthy_device_failures=False, meter=None):
     """Grade a frozen package's final phase on a fresh emulator it starts and stops, through the package's own bundled
-    runtime. A family with its own step executor (`execute`, the generated devices') runs it, every other family's plan
-    runs through `execute_plan`. The emulator session keeps its files (its log, the monitor commands it rendered) in
-    `private_dir` when given. Candidate models and reference emission run outside the grader
-    (`reference_calibration.run_reference`)."""
+    runtime, by the family's `execute`. The emulator session keeps its files (its log, the monitor commands it rendered)
+    in `private_dir` when given. A `meter` goes to the invoker, which adds to it what each package call printed.
+    Candidate models and reference emission run outside the grader (`reference_calibration.run_reference`)."""
     if pin.get('scenario_id') != 'original':
         raise ValueError('Unknown case scenario')
-    from .execution import start_session
-    from .emulated_actions import execute_plan, canonical_package_invoker
+    from .emulated_actions import canonical_package_invoker
     from .behavior import validate_records
     from .snapshots import canonical_digest
     from .integrity import digest
     if not expected_package_sha256 or digest(package) != expected_package_sha256:
         raise ValueError('Frozen package changed before reference execution')
-    family = family_for(pin.get('case_id', 'tq9-v2'))
+    family = family_for(pin.get('case_id'))
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     model_dir = output/'model'
@@ -80,22 +69,17 @@ def reference_execute(pin, truth, capabilities, *, renode, image, output_dir, pa
     # A frozen package's model is its own bytes, whatever newline convention the host that wrote them used.
     (model_dir/'model.json').write_bytes((Path(package)/'driver/model.json').read_bytes())
     model_hash = hashlib.sha256((model_dir/'model.json').read_bytes()).hexdigest()
-    session = start_session(renode=renode, image=image, recipe=truth['recipe'], private_dir=private_dir)
+    session = family.start_session(renode=renode, image=image, recipe=truth['recipe'], private_dir=private_dir)
     try:
         frozen = accept_frozen_package(package, expected_package_sha256)
-        invoke = canonical_package_invoker(package, capabilities, session.binding)
+        invoke = canonical_package_invoker(package, capabilities, session.binding, meter=meter)
         runtime_root = Path(package)/'interface_runtime'
         runtime_hash = canonical_digest({p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                                          for p in sorted(runtime_root.glob('*.py'))})
         local = {**truth, 'artifact_sha256': frozen}
         contract = family.contract(pin, local, 'final')
-        if hasattr(family, 'execute'):
-            records = family.execute(session, invoke, contract, local, output/'raw.json',
-                                     healthy_device_failures=healthy_device_failures)
-        else:
-            records = execute_plan(session, invoke, family.build_plan(pin, local, 'final'), contract,
-                output/'raw.json', family.observations, truth['contracts']['time_policy']['sample_settle_seconds'],
-                healthy_device_failures=healthy_device_failures)
+        records = family.execute(session, invoke, pin, contract, local, output/'raw.json', phase='final',
+                                 healthy_device_failures=healthy_device_failures)
         if digest(package) != frozen:
             raise ValueError('Frozen package changed during final episode')
         result = {'execution': 'reference-calibration',
@@ -111,17 +95,15 @@ def reference_execute(pin, truth, capabilities, *, renode, image, output_dir, pa
         session.stop()
 
 
-def _draft(trial_dir, password_file, value=None):
+def _draft(trial_dir, password, value=None):
     """The evaluator's encrypted draft in the trial directory: every final it graded, with its records and raw evidence."""
-    from .truth import seal, unlock
     path = Path(trial_dir)/DRAFT
-    password = Path(password_file).read_text(encoding='utf-8').strip()
     if value is not None:
-        seal(value, path, password)
+        password.seal(value, path)
         return value
     if not path.exists():
         return {'evaluations': []}
-    return unlock(path, password, hashlib.sha256(path.read_bytes()).hexdigest())
+    return password.unlock(path, hashlib.sha256(path.read_bytes()).hexdigest())
 
 
 def emitted(accepted):
@@ -199,10 +181,17 @@ def unscored(reason, frozen, method='fresh-final', *, protocol: str):
 def reuse_mission(case_id, run_dir, accepted, frozen, capabilities):
     """Whether fresh reuse did the public mission with the frozen package, from the package events the run recorded for
     its accepted reuse assignment. The grade reports it beside the verdict, as the record's `mission`; required
-    generated reuse also needs the owner's proof."""
+    generated reuse also needs the owner's proof. A family whose `reuse_passed` returns None does not judge fresh reuse,
+    whatever the run did, and no other family returns None: it returns False or raises, as `_mission` handles."""
     from .case_assets import reuse_mission as _mission
     from .mcp_reuse import owner_evidence, required, verified
     from .snapshots import read_snapshot
+    try:
+        judged = family_for(case_id).reuse_passed([], {}) is not None
+    except (KeyError, TypeError, ValueError, AttributeError, IndexError):
+        judged = True
+    if not judged:
+        return {'name': 'fresh_worker_mission', 'passed': None, 'reason': NOT_JUDGED}
     proof = owner_evidence(run_dir, accepted)
     snapshot = read_snapshot(run_dir) if (Path(run_dir)/'benchmark/execution.json').is_file() else {}
     if required(proof, snapshot) and not verified(proof, frozen):
@@ -225,7 +214,7 @@ def _held(draft, run_id, sha):
                  == (run_id, 'final', sha)), None)
 
 
-def needs_grading(trial_dir, result, *, password_file):
+def needs_grading(trial_dir, result, *, password):
     """Whether concluding this run would grade its frozen driver on a fresh emulator: a completed run whose verdict is
     pending, which emitted a package and handed on the mapping of its model, and whose final the draft does not hold."""
     if (result.get('equivalence') is not None or result.get('status') != 'completed'
@@ -236,7 +225,7 @@ def needs_grading(trial_dir, result, *, password_file):
     frozen = emitted(accepted)
     if frozen is None or mapping(accepted, frozen[3]) is None:
         return False
-    return _held(_draft(trial_dir, password_file), result['run_id'], frozen[1]) is None
+    return _held(_draft(trial_dir, password), result['run_id'], frozen[1]) is None
 
 
 def accepted_driver(case_id, trial_dir, run_dir, result):
@@ -248,7 +237,6 @@ def accepted_driver(case_id, trial_dir, run_dir, result):
     mapping sha256 or None). A changed record or grader raises IntegrityError."""
     from .grader_identity import grader_identity
     from .integrity import IntegrityError
-    from .registry import pin_case
     from .snapshots import require_snapshot
     trial_dir, run_dir = Path(trial_dir), Path(run_dir)
     pin = result['case_pin']
@@ -258,7 +246,8 @@ def accepted_driver(case_id, trial_dir, run_dir, result):
         raise IntegrityError('Execution snapshot unverifiable: ' + str(error)) from None
     if snapshot['snapshot_sha256'] != result.get('snapshot_sha256'):
         raise IntegrityError('Execution snapshot differs from the run record')
-    if pin_case(case_id, pin.get('scenario_id'), pin.get('case_seed', 0)) != pin:
+    # The answer key is already in memory: a worker changing its file must not turn a failing run into a fault.
+    if pin.get('case_id') != case_id or family_for(case_id).current_pin(pin, check_truth=False) != pin:
         raise IntegrityError('The installed case differs from the run\'s pinned case')
     if snapshot['executed'].get('evaluator_revision') != grader_identity(case_id=case_id)['sha256']:
         # A grader edited during the trial never seals a verdict under the revision the run started with.
@@ -282,15 +271,17 @@ def accepted_driver(case_id, trial_dir, run_dir, result):
     return snapshot, (package, sha, revision, capabilities, capabilities_sha)
 
 
-def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
+def grade(case_id, trial_dir, run_dir, result, *, password, truth_source, renode=None, meter=None):
     """Grade a completed run's frozen driver once, on a fresh emulator: (public equivalence/1 without its evidence hash,
-    the final evaluation for the seal or None). It takes the accepted driver (`accepted_driver`), unlocks the truth and
-    runs the final phase on a fresh emulator; a driver without a capability mapping, or whose model is missing or not a
-    JSON object, fails before either. A final the draft already holds for this run and package is rebuilt and never graded
-    again. A changed record, or a grader other than the evaluator revision the run was stamped with, raises IntegrityError;
-    a model file the grader cannot read raises its OSError, a host fault. Every record names the protocol the run's
-    progress names, and a result that names none raises ValueError. Legacy tq9 and bme280 are graded from their recorded
-    reuse by `recorded_grading.grade` instead."""
+    the final evaluation for the seal or None). It takes the accepted driver (`accepted_driver`), asks `truth_source`
+    for the answer key (`answer_key`) and runs the final phase on a fresh emulator; a driver without a capability
+    mapping, or whose model is missing or not a JSON object, fails before either. A final the draft already holds for
+    this run and package is rebuilt and never graded again. A changed record, an answer key the pin does not name, or a
+    grader other than the evaluator revision the run was stamped with, raises IntegrityError; a model file the grader
+    cannot read raises its OSError, a host fault. Every record names the protocol the run's progress names, and a result
+    that names none raises ValueError. A `meter` is added to by each package call of a grading on a fresh emulator
+    (`emulated_actions.OutputMeter`), and nothing of it reaches the return value. Legacy tq9 and bme280 are graded from
+    their recorded reuse by `recorded_grading.grade` instead."""
     from .case_assets import case_inputs
     protocol = _protocol(result)
     trial_dir, run_dir = Path(trial_dir), Path(run_dir)
@@ -317,15 +308,15 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
         # The model is the driver's own bytes, parsed from bytes as the runtime parses them (a byte-order mark or UTF-16
         # reads), but only as far as JSON: the runtime also rejects duplicate keys, non-finite constants and a file over
         # its size bound, and this check does not. One that is missing, not a file or not a JSON object fails the grade,
-        # before any truth is unlocked or device touched. Any other read error is the host's, since this is the grader's
-        # own private copy, and propagates.
+        # before any answer key is asked for or device touched. Any other read error is the host's, since this is the
+        # grader's own private copy, and propagates.
         reason = "the frozen driver's model is missing or not JSON"
         return record('graded', False, [], [{'id': 'frozen_package', 'reason': reason}], sha, capabilities_sha, checked,
                       protocol=protocol), None
-    draft = _draft(trial_dir, password_file)
+    draft = _draft(trial_dir, password)
     final = _held(draft, result['run_id'], sha)
     if final is None:
-        truth = case_truth(case_id, run_dir, {'evaluator_password_file': str(password_file)})
+        truth = answer_key(truth_source, pin)
         inputs, manifest = case_inputs(case_id, run_dir)
         from .execution import artifact_name
         output = private/'final'
@@ -334,13 +325,13 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
         evaluation = reference_execute({**pin, 'revision': revision}, truth, capabilities, renode=renode,
                                        image=inputs/artifact_name(manifest), output_dir=output, package=package,
                                        expected_package_sha256=sha, private_dir=private/'native',
-                                       healthy_device_failures=True)
+                                       healthy_device_failures=True, meter=meter)
         raw = output/'raw.json'
         final = {'run_id': result['run_id'], 'phase': 'final', 'revision': revision, 'frozen_artifact_sha256': sha,
                  'capabilities_sha256': capabilities_sha, 'contract': evaluation['contract'], 'records': evaluation['records'],
                  'raw': json.loads(raw.read_text(encoding='utf-8')) if raw.is_file() else None}
         draft['evaluations'].append(final)
-        _draft(trial_dir, password_file, draft)
+        _draft(trial_dir, password, draft)
     from .mcp_reuse import owner_evidence, required, verified
     proof = owner_evidence(run_dir, accepted)
     if required(proof, snapshot):
@@ -350,9 +341,12 @@ def grade(case_id, trial_dir, run_dir, result, *, password_file, renode=None):
 
 def _generated_mission(mission, proved):
     """The mission of a final that requires generated MCP reuse: the fresh worker's own result when the owner's proof of
-    that reuse holds, else failed for want of the proof, whatever the worker's result."""
+    that reuse holds, else failed for want of the proof, whatever the worker's result. A case that does not judge fresh
+    reuse keeps that mission, proof or none."""
     found = mission if isinstance(mission, dict) else {}
     name = found.get('name', 'fresh_worker_mission')
+    if found.get('reason') == NOT_JUDGED:
+        return found
     if not proved:
         return {'name': name, 'passed': False, 'reason': OWNER_PROOF}
     return {'name': name, 'passed': found.get('passed'), **{key: found[key] for key in ('reason', 'fault') if key in found}}
@@ -409,7 +403,7 @@ def evidence(trial_dir, run_dir, result, *, final=None, equivalence=None, missio
                        'journal_sha256': hashlib.sha256(journal.read_bytes()).hexdigest() if journal.is_file() else None}}
 
 
-def seal(trial_dir, run_dir, result, *, password_file, **content):
+def seal(trial_dir, run_dir, result, *, password, **content):
     """Seal the run evidence in the trial directory: {path, sha256}. Nothing is sealed whose identity does not hold."""
     from .evidence import seal_run_evidence_v2
-    return seal_run_evidence_v2(evidence(trial_dir, run_dir, result, **content), Path(trial_dir)/EVIDENCE, password_file)
+    return seal_run_evidence_v2(evidence(trial_dir, run_dir, result, **content), Path(trial_dir)/EVIDENCE, password)

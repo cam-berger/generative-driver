@@ -13,7 +13,7 @@ class UpstreamModbusTests(unittest.TestCase):
         self.assertTrue({'write', 'actuate'} <= set(case.default_effects))
 
     def test_monitor_values_do_not_trust_driver_claims_or_require_one_wire_encoding(self):
-        from generative_driver.benchmark_support.instruments import family_for
+        from generative_driver.benchmark_support.families import family_for
         family = family_for('zephyr-modbus-v1')
         raw = {'values': {'register_pair0': 0xabcd1234, 'register_pair1': 0,
                           'register_pair2': 0, 'register_pair3': 0xffff0000, 'gpio_d': 0x5000}}

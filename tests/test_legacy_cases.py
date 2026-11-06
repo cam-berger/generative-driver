@@ -17,7 +17,10 @@ from test_configurator import WORKFLOW_TIMEOUT, context_of, gateway_identity, sc
 from test_device_provider import MONITOR, keys
 from test_device_recovery import FORBIDDEN, imported
 from test_harness import SOURCE
+from suite_fixtures import file_changes, legacy_case, symlinks_refused
 from tq9_workflow_fixture import Silicon, legacy_capabilities, legacy_truth, model as tq9_model, replies
+from generative_driver.benchmark_support.registry import pin_case
+from generative_driver.benchmark_support.truth import EvaluatorPassword, UnlockedTruth, read_password
 
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 REUSE_CHECKS = ['fresh_package_temperature', 'fresh_package_requested_output', 'fresh_package_disarm']
@@ -49,9 +52,10 @@ class LegacyDeviceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve(); trial = root / 'trial'; peers = []
             password = root / 'password'; password.write_text('synthetic fixture credential')
-            with patch('generative_driver.benchmark_support.evaluator.case_truth', return_value=legacy_truth()), \
+            sealed = pin_case('tq9', None, 0)['truth_sha256']
+            with patch('generative_driver.benchmark_support.registry.case_truth', return_value=UnlockedTruth(legacy_truth(), sealed)), \
                  patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=silicon_start(self, peers, root)):
-                recipe = harness.device_recipe('tq9', trial, {'evaluator_password_file': str(password)})
+                recipe = harness.device_recipe('tq9', UnlockedTruth(legacy_truth(), sealed))
                 self.assertEqual(recipe, {'source_files': {'sensor.cs': '// toy sensor model', 'device.resc': '# toy setup'},
                     'includes': ['sensor.cs'], 'setup': 'device.resc', 'observations': {
                         'compare': {'command': 'sysbus ReadDoubleWord 0x40000034', 'width': 32, 'count': 1},
@@ -62,7 +66,7 @@ class LegacyDeviceTests(unittest.TestCase):
                 from generative_driver.benchmark_support.device_provider import DeviceProvider
                 with self.assertRaisesRegex(ValueError, 'recipe only'):
                     DeviceProvider('tq9', root / 'image', legacy_truth(), None, root / 'device')
-                provider, admission = harness.admit('tq9', {}, trial, password_file=password, renode=str(root / 'renode'))
+                provider, admission, _ = harness.admit('tq9', {}, trial, password=read_password(password), renode=str(root / 'renode'))
                 self.assertEqual(admission, {})
                 descriptor = provider.start()
                 self.assertEqual((descriptor['kind'], descriptor['instrument']['units']), ('provided-emulator', {'duty': 'fraction'}))
@@ -77,10 +81,12 @@ class LegacyDeviceTests(unittest.TestCase):
                 self.assertTrue(peers[0].closed)
 
 
-class LegacyTrialTests(unittest.TestCase):
+class LegacyTrialFixture(unittest.TestCase):
     """A legacy tq9 trial the bench harness runs in this process: it provides the legacy emulator, the configurator runs
     scripted stages on it with the real stage preparations and observations, and the harness grades the recorded fresh
     reuse once after the run."""
+
+    toy_truth = True
 
     def setUp(self):
         from generative_driver.configurator import Controller
@@ -92,16 +98,19 @@ class LegacyTrialTests(unittest.TestCase):
         self.home = self.root / 'home'; self.home.mkdir(mode=0o700)
         (self.home / 'config.json').write_text(json.dumps({'executors': {'codex': {'command': ['scripted-runtime']}}}))
         self.peers, self.unlocked = [], []
-        def case_truth(case_id, where, options):
-            # The harness unlocks the truth to project the recipe and, once the run has ended, to grade.
+        self.truth_sha256 = None
+        def case_truth(case_id, where, password):
+            # The harness unlocks the truth once, at admission, for the recipe and the grade.
             caller = {frame.function for frame in inspect.stack()}
             run = self.run_id and self.controller.call('status', {'run_id': self.run_id})
-            self.unlocked.append((case_id, 'device_recipe' in caller, 'grade' in caller, run and run['status']))
-            return legacy_truth()
-        for target, effect in (('generative_driver.benchmark_support.evaluator.case_truth', case_truth),
-                               ('generative_driver.benchmark_support.native.NativeSession.start', silicon_start(self, self.peers, self.root)),
-                               # Nothing in the configurator or a stage unlocks the case truth.
-                               ('generative_driver.benchmark_support.emulator.truth_for_case', AssertionError('truth unlocked in the run'))):
+            self.unlocked.append((case_id, 'admit' in caller, 'grade' in caller, run and run['status']))
+            return UnlockedTruth(legacy_truth(), self.truth_sha256 or pin_case('tq9', None, 0)['truth_sha256'])
+        patches = [('generative_driver.benchmark_support.native.NativeSession.start', silicon_start(self, self.peers, self.root))]
+        if self.toy_truth:
+            patches += [('generative_driver.benchmark_support.registry.case_truth', case_truth),
+                        # Nothing in the configurator or a stage unlocks the case truth.
+                        ('generative_driver.benchmark_support.emulator.truth_for_case', AssertionError('truth unlocked in the run'))]
+        for target, effect in patches:
             guard = patch(target, side_effect=effect); guard.start(); self.addCleanup(guard.stop)
         self.run_id = None
         self.controller = Controller(self.home)
@@ -119,8 +128,9 @@ class LegacyTrialTests(unittest.TestCase):
     def tool(self, request, name, arguments):
         return self.controller.call('tool', {**gateway_identity(request), 'name': name, 'arguments': arguments})
 
-    def trial(self, *, duty=370, disarm=True):
-        """Run one trial with scripted workers; the reuse worker requests `duty` permille and disarms when `disarm`."""
+    def trial(self, *, duty=370, disarm=True, name='trial', after_acquire=None):
+        """Run one trial with scripted workers; the reuse worker requests `duty` permille and disarms when `disarm`, and
+        `after_acquire()` runs in the acquire worker, once it has acquired the firmware."""
         from generative_driver.benchmark_support import harness
         real_check, self.objectives = self.controller._check, {}
         def work(request):
@@ -132,6 +142,8 @@ class LegacyTrialTests(unittest.TestCase):
             self.objectives[request.stage] = task.get('objective')
             if request.stage == 'acquire':
                 self.tool(request, 'acquire_firmware_artifact', task['context'])
+                if after_acquire:
+                    after_acquire()
             elif request.stage == 'probe':
                 model_dir = task['context']['model_dir']
                 self.assertTrue(self.tool(request, 'interface_execute', {'model_dir': model_dir, 'operation': 'measure', 'parameters': {}})['ok'])
@@ -160,19 +172,73 @@ class LegacyTrialTests(unittest.TestCase):
                                     '_request_id': gateway_identity(request)['assignment_id']+':'+operation})
                                 self.assertTrue(result.structured_content['ok'], result)
                 asyncio.run(reuse())
-        request = {'trial_id': 'trial-legacy', 'home': str(self.home), 'goal': 'Legacy scripted contract', 'case': 'tq9',
+        request = {'trial_id': 'trial-legacy' if name == 'trial' else name, 'home': str(self.home), 'goal': 'Legacy scripted contract', 'case': 'tq9',
                    'executor': 'codex', 'budget_seconds': 120, 'effects': ['write', 'actuate'], 'case_options': {},
                    'scoped_tool_approval': 'emulator', 'password_file': str(self.password), 'renode': str(self.root / 'renode')}
         from owner_ipc_fixture import owner_ipc
         with owner_ipc(self.controller), \
                 scripted_stages(self.controller, check=real_check, prepare=lambda original, *args: original(*args), work=work):
-            record = harness.run_trial(self.root / 'trial', request, call=self.configurator)
+            record = harness.run_trial(self.root / name, request, call=self.configurator)
         return record, self.controller.call('result', {'run_id': record['run_id']})
+
+
+class LegacyUnlockOnceTests(LegacyTrialFixture):
+    """The same trial through the real admission, with the answer key really sealed."""
+
+    toy_truth = False
+
+    def setUp(self):
+        super().setUp()
+        self.literal = EvaluatorPassword(self.password.read_text())
+        self.truth_file = legacy_case(self, self.root / 'resources', 'tq9', self.literal, legacy_truth())
+        self.opened = []
+        real, opened = EvaluatorPassword.unlock, self.opened
+        def unlock(password, path, expected):
+            opened.append(Path(path))
+            return real(password, path, expected)
+        guard = patch.object(EvaluatorPassword, 'unlock', unlock); guard.start(); self.addCleanup(guard.stop)
+
+    def test_02_B11_a_recorded_reuse_trial_decrypts_its_answer_key_once(self):
+        record, result = self.trial()
+        self.assertEqual((record['status'], result['equivalence']['equivalent']), ('evaluated', True), record)
+        self.assertEqual(self.opened.count(self.truth_file), 1)
+
+    def test_02_B12_a_worker_changing_the_files_during_the_stages_changes_neither_grade_nor_seal(self):
+        _, undisturbed = self.trial(duty=500, disarm=False, name='undisturbed')
+        self.assertEqual((undisturbed['status'], undisturbed['equivalence']['status'],
+                          undisturbed['equivalence']['equivalent']), ('completed', 'graded', False), undisturbed['reason'])
+        refused = symlinks_refused(self.root)
+        for name, change, undo in file_changes(self.truth_file, self.password, self.root / 'outside-the-root.bin'):
+            with self.subTest(change=name):
+                if name == 'symlink' and refused:
+                    self.skipTest('The system refuses a symlink: ' + refused)
+                try:
+                    record, result = self.trial(duty=500, disarm=False, name=name, after_acquire=change)
+                finally:
+                    undo()
+                self.assertEqual((result['status'], [h['stage'] for h in result['accepted_handoffs']]),
+                                 ('completed', list(STAGES)), result['reason'])
+                self.assertEqual((record['status'], record['sealed']), ('evaluated', True), record)
+                without_seal = lambda equivalence: {key: value for key, value in equivalence.items()
+                                                    if key != 'evidence_sha256'}
+                self.assertEqual(without_seal(record['equivalence']), without_seal(undisturbed['equivalence']))
+                sealed = self.literal.unlock(self.root / name / 'run-evidence.enc', record['evidence']['sha256'])
+                self.assertIsNone(sealed['evaluation_error'])
+                self.assertIsNotNone(sealed['final'])
+
+
+class LegacyTrialTests(LegacyTrialFixture):
+    def test_02_B15_an_answer_key_the_pin_does_not_name_is_not_graded(self):
+        self.truth_sha256 = 'f' * 64
+        record, result = self.trial()
+        equivalence = record['equivalence']
+        self.assertEqual((record['status'], equivalence['status'], equivalence['method']), ('unscored', 'unscored', 'recorded-reuse'), record)
+        self.assertTrue(equivalence['diff'][0]['reason'].startswith('integrity: '), equivalence)
+        self.assertIs(record['sealed'], True)
 
     def test_a_legacy_trial_runs_on_the_harness_device_and_is_graded_from_its_recorded_reuse_once_after_the_run(self):
         # Catches a legacy run that unlocks truth or grades inside its stages, stops on a quality judgement, or is
         # never graded; and a grade that does not come from the recorded fresh reuse of the accepted package.
-        from generative_driver.benchmark_support.truth import unlock
         record, result = self.trial()
         self.assertEqual(record['status'], 'evaluated', record)
         # The configurator validates the assigned model on its own copy; the probe worker gets no validator that may
@@ -193,11 +259,8 @@ class LegacyTrialTests(unittest.TestCase):
         self.assertEqual([h['stage'] for h in result['accepted_handoffs']], list(STAGES))
         emitted = next(h for h in result['accepted_handoffs'] if h['stage'] == 'emit')
         self.assertEqual(equivalence['frozen_artifact_sha256'], emitted['artifacts'][0]['sha256'])
-        # The truth was unlocked twice, by the harness alone: to project the device recipe before the run, and to grade
-        # once the run had completed.
-        self.assertEqual([(case, recipe, grading) for case, recipe, grading, _ in self.unlocked],
-                         [('tq9', True, False), ('tq9', False, True)])
-        self.assertEqual(self.unlocked[1][3], 'completed')
+        # The truth was unlocked once, by the harness alone, at admission: for the device recipe and the grade.
+        self.assertEqual([(case, admitting, grading) for case, admitting, grading, _ in self.unlocked], [('tq9', True, False)])
         # Its stages are observed: no stage verdict and no graded check anywhere in the run.
         state = json.loads((self.home / 'runs' / record['run_id'] / 'benchmark/state.json').read_text())
         self.assertNotIn('stage_verdicts', state)
@@ -219,7 +282,7 @@ class LegacyTrialTests(unittest.TestCase):
             for secret in (b'SENTINEL', b'reuse_goal', str(self.password).encode()):
                 self.assertNotIn(secret, content, path)
         # The sealed evidence holds the single final, graded from the recorded reuse.
-        sealed = unlock(self.root / 'trial/run-evidence.enc', self.password.read_text(), record['evidence']['sha256'])
+        sealed = read_password(self.password).unlock(self.root / 'trial/run-evidence.enc', record['evidence']['sha256'])
         self.assertEqual((sealed['final']['method'], sealed['final']['phase']), ('recorded-reuse', 'final'))
         self.assertEqual([c['id'] for c in sealed['final']['contract']['checks']], REUSE_CHECKS)
         self.assertFalse((self.root / 'trial/private').exists())
@@ -360,8 +423,8 @@ class ConcludeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, \
              patch.object(recorded_grading, 'grade', side_effect=recorded_grading.Unscorable(reason)), \
              patch.object(evaluator, 'seal', return_value={'path': 'run-evidence.enc', 'sha256': 'e' * 64}) as seal:
-            done = harness.conclude(Path(temporary), 'bme280', Path(temporary) / 'run', result, password_file='unused',
-                                    token='token', call=call)
+            done = harness.conclude(Path(temporary), 'bme280', Path(temporary) / 'run', result, password=EvaluatorPassword('unused'),
+                                    truth_source=None, token='token', call=call)
         self.assertEqual(done['status'], 'unscored')
         self.assertEqual((done['equivalence']['status'], done['equivalence']['method'], done['equivalence']['diff']),
                          ('unscored', 'recorded-reuse', [{'id': 'evaluation', 'reason': reason}]))
@@ -435,15 +498,19 @@ class BoundDeviceFixture(unittest.TestCase):
         """Only the bench harness unlocks the (toy) truth, through the evaluator, and nothing in the run does; every
         unlock is recorded with whether the harness admitted or graded and the run's status then."""
         from contextlib import ExitStack
-        def case_truth(case_id, where, options):
+        marker = self.root / 'password-marker.enc'
+        sealed = read_password(self.password).seal({'marker': True}, marker)
+        def case_truth(case_id, where, password):
             callers = {frame.function for frame in inspect.stack()}
             run = self.status()
             self.unlocked.append(('admit' in callers, 'grade' in callers, run and run['status']))
-            if Path(options['evaluator_password_file']).read_text() != self.password.read_text():
-                raise ValueError('The evaluator password does not unlock the case truth')
-            return json.loads(json.dumps(PHYSICAL_TRUTH))
+            try:
+                password.unlock(marker, sealed)
+            except ValueError:
+                raise ValueError('The evaluator password does not unlock the case truth') from None
+            return UnlockedTruth(json.loads(json.dumps(PHYSICAL_TRUTH)), pin_case('bme280', None, 0)['truth_sha256'])
         stack = ExitStack()
-        stack.enter_context(patch('generative_driver.benchmark_support.evaluator.case_truth', side_effect=case_truth))
+        stack.enter_context(patch('generative_driver.benchmark_support.registry.case_truth', side_effect=case_truth))
         stack.enter_context(patch('generative_driver.benchmark_support.emulator.truth_for_case',
                                   side_effect=AssertionError('truth unlocked in the run')))
         return stack
@@ -474,8 +541,9 @@ class PhysicalTrialTests(BoundDeviceFixture):
             self.assertEqual((record['status'], record['run_id'], calls), ('failed', None, ['ping']), record)
             self.assertFalse((self.root / 'refused' / harness.TOKEN).exists())
             # The password the truth is sealed under admits the case; the operator's board gets no provider.
-            self.assertEqual(harness.admit('bme280', {}, self.root / 'admitted', password_file=secret['evaluator_password_file']),
-                             (None, {}))
+            provider, admission, _ = harness.admit('bme280', {}, self.root / 'admitted',
+                                                   password=read_password(secret['evaluator_password_file']))
+            self.assertEqual((provider, admission), (None, {}))
 
     def test_a_bound_device_trial_is_graded_after_its_run_without_the_harness_touching_the_board(self):
         from generative_driver.benchmark_support import harness
@@ -634,10 +702,10 @@ class PhysicalTrialTests(BoundDeviceFixture):
         self.assertEqual((equivalence['status'], equivalence['equivalent'], equivalence['method'],
                           [c['id'] for c in equivalence['checks']]),
                          ('graded', True, 'recorded-reuse', ['temperature', 'humidity', 'pressure']))
-        # Sealed before it was posted, and the evaluator unlocked the truth once more only after the run completed.
+        # Sealed before it was posted, from the truth admission unlocked: nothing was decrypted again.
         sealed = self.root / 'trial' / evaluator.EVIDENCE
         self.assertEqual(equivalence['evidence_sha256'], hashlib.sha256(sealed.read_bytes()).hexdigest())
-        self.assertEqual(self.unlocked, [(True, False, None), (False, True, 'completed')])
+        self.assertEqual(self.unlocked, [(True, False, None)])
         self.assertFalse((self.root / 'trial' / 'private').exists())
         self.assertNotIn('password', self.controller._row(record['run_id'])['spec'].lower())
 
@@ -723,28 +791,28 @@ class PhysicalTrialTests(BoundDeviceFixture):
             # Nothing is graded while the run is stopped: its operator answers and resumes it first. No device is provided
             # anew for the operator's board, and the refusal leaves the trial as it was.
             with self.assertRaisesRegex(ValueError, 'has not completed'):
-                harness.resume(trial, password_file=self.password, call=self.configurator)
+                harness.resume(trial, password=read_password(self.password), call=self.configurator)
             with self.assertRaisesRegex(ValueError, 'no device to provide anew'):
-                harness.reattach(trial, password_file=self.password, call=self.configurator)
+                harness.reattach(trial, password=read_password(self.password), call=self.configurator)
             self.assertEqual(harness.read_trial(trial), record)
             self.controller.call('resume', {**run, 'budget_seconds': 360, 'budget_reason': 'The operator resumes the run'})
             self.assertEqual(wait_stopped(self.controller, run)['status'], 'completed')
             # The configurator takes a grade only under the case's method.
-            token = harness.evaluation_token(trial, self.password, 'trial-stopped')
+            token = harness.evaluation_token(trial, read_password(self.password), 'trial-stopped')
             other = {'schema': 'equivalence/1', 'status': 'no-driver', 'equivalent': False, 'basis': 'evaluator',
                      'method': 'fresh-final', 'checks': [], 'diff': [{'id': 'frozen_package', 'reason': 'no driver emitted'}],
                      'passed': 0, 'total': 0, 'mission': None, 'frozen_artifact_sha256': None, 'capabilities_sha256': None,
                      'evidence_sha256': 'e' * 64, 'protocol': 'assistive/1'}
             with self.assertRaisesRegex(ValueError, 'recorded-reuse'):
                 self.controller.call('record_evaluation', {**run, 'token': token, 'equivalence': other})
-            done = harness.resume(trial, password_file=self.password, call=self.configurator)
+            done = harness.resume(trial, password=read_password(self.password), call=self.configurator)
         self.assertEqual((done['status'], done['device_stop'], done['sealed']), ('evaluated', UNHELD, True), done)
         self.assertNotIn('sealing_failed', done)
         equivalence = self.controller.call('result', run)['equivalence']
         self.assertEqual((equivalence['status'], equivalence['method']), ('no-driver', 'recorded-reuse'))
         self.assertEqual(attempts.count('acquire'), 2)
         # Graded once: a second resume finds the verdict recorded.
-        self.assertEqual(harness.resume(trial, password_file=self.password, call=self.configurator)['equivalence'], equivalence)
+        self.assertEqual(harness.resume(trial, password=read_password(self.password), call=self.configurator)['equivalence'], equivalence)
 
 
 class PhysicalRepairTests(BoundDeviceFixture):

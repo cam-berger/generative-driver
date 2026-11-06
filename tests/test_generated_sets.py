@@ -9,12 +9,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from generated_fixtures import FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, PASSWORD, fixture_mission, write_fixture_set
-from generative_driver.benchmark_support import generated_sets, truth
+from generated_fixtures import (FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, PASSWORD, fixture_mission, registrations_table,
+                                write_fixture_set)
+from generative_driver.benchmark_support import generated_sets
 from generative_driver.benchmark_support.generated_device import FRAMINGS
-from generative_driver.benchmark_support.generated_sets import (load_set, open_device, seal_device, set_registrations,
-                                                                write_manifest)
+from generative_driver.benchmark_support.generated_sets import (is_scoring, load_set, open_device, seal_device,
+                                                                set_registrations, write_manifest)
 from generative_driver.benchmark_support.snapshots import canonical_digest
+from generative_driver.benchmark_support.truth import EvaluatorPassword
 
 SET = 'fixture-v1'
 
@@ -32,34 +34,74 @@ class RegistrationTableTests(unittest.TestCase):
         # A deliberate tripwire: the first real registration updates this test.
         shipped = Path(generated_sets.__file__).resolve().parents[1] / 'resources' / 'registrations' / 'sets.json'
         self.assertEqual(json.loads(shipped.read_text(encoding='utf-8')),
-                         {'schema': 'generated-set-registrations/1', 'sets': {}})
+                         {'schema': 'generated-set-registrations/2', 'sets': {}})
         self.assertEqual(set_registrations(), {})
 
-    def test_a_malformed_table_is_refused(self):
-        pin = 'a' * 64
+    def test_04_B1_the_table_gives_each_sets_hash_and_its_mark(self):
+        path = self.write(json.dumps({
+            'schema': 'generated-set-registrations/2',
+            'sets': {'scoring-v1': {'manifest_sha256': 'a' * 64, 'scoring': True},
+                     'development-v1': {'manifest_sha256': 'b' * 64, 'scoring': False}}}))
+        self.assertEqual(set_registrations(path), {'scoring-v1': 'a' * 64, 'development-v1': 'b' * 64})
+        self.assertIs(is_scoring('scoring-v1', path), True)
+        self.assertIs(is_scoring('development-v1', path), False)
 
-        def table(sets=None, schema='generated-set-registrations/1', **more):
-            return json.dumps({'schema': schema, 'sets': {SET: pin} if sets is None else sets, **more})
+    def test_04_B1_is_scoring_reads_the_code_owned_table_by_default(self):
+        path = self.write(registrations_table({'scoring-v1': 'a' * 64}, scoring=True))
+        with patch.object(generated_sets, '_SETS_FILE', path):
+            self.assertIs(is_scoring('scoring-v1'), True)
+
+    def test_04_B1_an_unregistered_name_has_no_mark(self):
+        path = self.write(registrations_table({'scoring-v1': 'a' * 64}))
+        with self.assertRaisesRegex(ValueError, '^Generated set not registered: other-v1$'):
+            is_scoring('other-v1', path)
+
+    def test_04_B1_a_malformed_table_is_refused(self):
+        pin = 'a' * 64
+        entry = {'manifest_sha256': pin, 'scoring': False}
+
+        def table(sets=None, schema='generated-set-registrations/2', **more):
+            return json.dumps({'schema': schema, 'sets': {SET: entry} if sets is None else sets, **more})
 
         self.assertEqual(set_registrations(self.write(table())), {SET: pin})
+        self.assertIs(is_scoring(SET, self.write(table())), False)
         # A JSON reader that keeps the last of two equal keys would register the second pin for the set.
-        same_set_twice = table().replace('"%s"' % pin, '"%s", "%s": "%s"' % (pin, SET, 'b' * 64))
+        one = json.dumps(entry)
+        same_set_twice = ('{"schema": "generated-set-registrations/2", "sets": {"%s": %s, "%s": %s}}'
+                          % (SET, one, SET, one))
         same_field_twice = table().replace('"sets"', '"schema": "other", "sets"', 1)
-        rows = [('a set registered twice', same_set_twice), ('a field given twice', same_field_twice),
-                ('another schema', table(schema='generated-set-registrations/2')),
-                ('an unknown field', table(extra=1)),
-                ('a missing field', json.dumps({'schema': 'generated-set-registrations/1'})),
-                ('sets as a list', table(sets=[SET])), ('no object', '[]'), ('truncated JSON', '{')]
+        unsupported = 'Unsupported generated set registrations'
+        pinned = '^A generated set registration holds its manifest_sha256.*: ' + SET + '$'
+        rows = [('a set registered twice', same_set_twice, 'Duplicate key'),
+                ('a field given twice', same_field_twice, 'Duplicate key'),
+                ('another schema', table(schema='generated-set-registrations/1'), unsupported),
+                ('the earlier form', json.dumps({'schema': 'generated-set-registrations/1', 'sets': {SET: pin}}),
+                 unsupported),
+                ('an unknown field', table(extra=1), unsupported),
+                ('a missing field', json.dumps({'schema': 'generated-set-registrations/2'}), unsupported),
+                ('sets as a list', table(sets=[SET]), unsupported), ('no object', '[]', unsupported),
+                ('truncated JSON', '{', 'Cannot read'),
+                ('a bare hash under the new schema', table(sets={SET: pin}), pinned),
+                ('an entry with no mark', table(sets={SET: {'manifest_sha256': pin}}), pinned),
+                ('an entry with no hash', table(sets={SET: {'scoring': True}}), pinned),
+                ('an unknown field of an entry', table(sets={SET: {**entry, 'level': 1}}), pinned)]
         # A pin is 64 lowercase hexadecimal characters, and a trailing newline does not make it one.
-        rows += [('the pin ' + repr(bad), table(sets={SET: bad}))
+        rows += [('the pin ' + repr(bad), table(sets={SET: {**entry, 'manifest_sha256': bad}}), pinned)
                  for bad in ('A' * 64, 'a' * 63, 'a' * 65, 'g' * 64, pin + '\n', '', 5, None)]
-        for name, text in rows:
-            with self.subTest(name), self.assertRaises(ValueError):
-                set_registrations(self.write(text))
+        # A mark is True or False, never something that reads like one.
+        rows += [('the mark ' + repr(bad), table(sets={SET: {**entry, 'scoring': bad}}), pinned)
+                 for bad in (1, 0, 'true', None, [])]
+        for name, text, pattern in rows:
+            path = self.write(text)
+            with self.subTest(name):
+                with self.assertRaisesRegex(ValueError, pattern):
+                    set_registrations(path)
+                with self.assertRaisesRegex(ValueError, pattern):
+                    is_scoring(SET, path)
 
     def test_a_case_root_override_never_replaces_the_registrations(self):
         # The table is read beside the code, not through case_root(), which an environment variable redirects.
-        forged = json.dumps({'schema': 'generated-set-registrations/1', 'sets': {'forged-v1': 'a' * 64}})
+        forged = registrations_table({'forged-v1': 'a' * 64})
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             for folder in (root / 'registrations', root / 'bench' / 'registrations'):
@@ -269,7 +311,7 @@ class SetBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'pinned hash'):
             open_device(self.root, manifest, '0000d002', PASSWORD)
         self.assertEqual(open_device(self.root, manifest, '0000d001', PASSWORD)['image'], FIXTURE_IMAGE)  # 0000d001 is untouched
-        for password in ('wrong', ''):
+        for password in (EvaluatorPassword('wrong'),):
             for answer in (False, True):
                 with self.subTest(password=password, answer=answer), self.assertRaisesRegex(ValueError, 'password'):
                     open_device(self.root, manifest, '0000d001', password, answer=answer)
@@ -281,7 +323,7 @@ class SetBundleTests(unittest.TestCase):
         manifest = load_set(self.root, SET, registrations=self.write())
         inputs = {'image_base64': base64.b64encode(FIXTURE_IMAGE).decode('ascii'), 'mission': fixture_mission('0000d001')}
         self.assertEqual(open_device(self.root, manifest, '0000d001', PASSWORD)['mission'], inputs['mission'])
-        truth.seal(inputs, self.root / 'devices' / '0000d001.inputs.enc', PASSWORD)  # the same content, another salt and nonce
+        PASSWORD.seal(inputs, self.root / 'devices' / '0000d001.inputs.enc')  # the same content, another salt and nonce
         with self.assertRaisesRegex(ValueError, 'pinned hash'):
             open_device(self.root, manifest, '0000d001', PASSWORD)
 
@@ -326,7 +368,7 @@ class SetBundleTests(unittest.TestCase):
                 ('level 6', {**good, 'level': 6}, {}, 'level'),
                 ('a framing that does not exist', {**good, 'framing': 'morse'}, {}, 'framing'),
                 ('a text image', good, {'image': 'text'}, 'image'), ('a list mission', good, {'mission': []}, 'mission'),
-                ('no answer key', good, {'answer_key': None}, 'answer key'), ('no password', good, {'password': ''}, 'password')]
+                ('no answer key', good, {'answer_key': None}, 'answer key')]
         for name, device, changes, pattern in rows:
             with self.subTest(name), self.assertRaisesRegex(ValueError, pattern):
                 seal_device(self.root, device, **{**content, **changes})

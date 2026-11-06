@@ -13,12 +13,15 @@ from types import MappingProxyType
 from unittest.mock import patch
 
 import generative_driver
-from generative_driver.benchmark_support import registrations, sampled_sensor
+import interface_runtime
+from generative_driver.benchmark_support import registrations, sampled_sensor, snapshots
 from generative_driver.benchmark_support.calibration import hydrate_truth, inventory, validate_calibration
-from generative_driver.benchmark_support.evaluator import case_truth
+from generative_driver.benchmark_support.registry import case_truth
+from generative_driver.benchmark_support.families import family_for
 from generative_driver.benchmark_support.generated_sets import set_registrations
 from generative_driver.benchmark_support.grader_identity import (ENTRY_MODULES, SYSTEM_MODULES, grader_closure,
                                                                  grader_identity)
+from generative_driver.benchmark_support.integrity import tree_hash
 from generative_driver.benchmark_support.snapshots import canonical_digest
 
 
@@ -29,6 +32,54 @@ class PackageCopy:
         root = Path(directory.name) / 'generative_driver'
         shutil.copytree(Path(generative_driver.__file__).parent, root, ignore=shutil.ignore_patterns('__pycache__'))
         return root
+
+
+class ToolchainRevisionTests(PackageCopy, unittest.TestCase):
+    """What `execution_provenance` hashes, on a copy of the package and `interface_runtime`: the shipped file is never
+    edited."""
+
+    def setUp(self):
+        self.root = self.copy_package()
+        shutil.copytree(Path(interface_runtime.__file__).parent, self.root.parent / 'interface_runtime',
+                        ignore=shutil.ignore_patterns('__pycache__'))
+        self.table = self.root / 'resources' / 'registrations' / 'sets.json'
+
+    def provenance(self):
+        with patch.object(snapshots, '__file__', str(self.root / 'benchmark_support' / 'snapshots.py')):
+            return snapshots.execution_provenance({}, case_ids=('tq9-v2',))
+
+    def write_table(self, sets):
+        self.table.write_text(json.dumps({'schema': 'generated-set-registrations/2', 'sets': sets}), encoding='utf-8')
+
+    def test_04_B2_any_change_to_the_set_table_leaves_every_dimension_as_it_was(self):
+        self.write_table({'one-v1': {'manifest_sha256': 'a' * 64, 'scoring': False}})
+        before = self.provenance()
+        for name, sets in (('another set added', {'one-v1': {'manifest_sha256': 'a' * 64, 'scoring': False},
+                                                  'two-v1': {'manifest_sha256': 'b' * 64, 'scoring': False}}),
+                           ('another set changed', {'one-v1': {'manifest_sha256': 'a' * 64, 'scoring': False},
+                                                    'two-v1': {'manifest_sha256': 'c' * 64, 'scoring': False}}),
+                           ('a mark changed', {'one-v1': {'manifest_sha256': 'a' * 64, 'scoring': True},
+                                               'two-v1': {'manifest_sha256': 'c' * 64, 'scoring': False}})):
+            self.write_table(sets)
+            with self.subTest(name):
+                self.assertEqual(self.provenance(), before)
+
+    def test_04_B2_any_other_change_under_the_package_still_moves_the_toolchain_revision(self):
+        before = self.provenance()['toolchain_revision']
+        for name in ('resources/registrations/cases.json', 'resources/sets.json', 'configurator.py',
+                     '../interface_runtime/engine.py'):
+            path = self.root / name
+            kept = path.read_bytes() if path.exists() else None
+            path.write_bytes((kept or b'') + b'\n')
+            with self.subTest(name):
+                self.assertNotEqual(self.provenance()['toolchain_revision'], before)
+            path.write_bytes(kept) if kept is not None else path.unlink()
+        self.assertEqual(self.provenance()['toolchain_revision'], before)
+
+    def test_04_B2_the_exporters_tree_hash_still_covers_the_set_table(self):
+        before = tree_hash(self.root)
+        self.write_table({'one-v1': {'manifest_sha256': 'a' * 64, 'scoring': False}})
+        self.assertNotEqual(tree_hash(self.root), before)
 
 
 class GraderClosureTests(PackageCopy, unittest.TestCase):
@@ -143,7 +194,8 @@ class GraderClosureTests(PackageCopy, unittest.TestCase):
         # Catches reporting code (the outcomes, the audit, the pairing, the scorecard, the suite report and the corpus) that a
         # grading module comes to import without the boundary test failing: every change to it would then change the grader's
         # identity and void a qualification, though it grades nothing.
-        for name in ('outcomes', 'audit', 'pairing', 'scorecard', 'suite_reporting', 'corpus'):
+        for name in ('outcomes', 'audit', 'pairing', 'scorecard', 'suite_reporting', 'corpus', 'trial_store',
+                     'generated_trials'):
             with self.subTest(name):
                 root = self.copy_package()
                 self.import_from_grading(root, 'from . import ' + name)
@@ -209,7 +261,8 @@ class CaseIdentityTests(PackageCopy, unittest.TestCase):
         root = self.copy_package()
         table = root / 'resources' / 'registrations' / 'sets.json'
         self.assertTrue(table.is_file())  # the copy holds the shipped table, which this replaces
-        table.write_text(json.dumps({'schema': 'generated-set-registrations/1', 'sets': {'generated-scoring-v1': 'a' * 64}},
+        table.write_text(json.dumps({'schema': 'generated-set-registrations/2',
+                                     'sets': {'generated-scoring-v1': {'manifest_sha256': 'a' * 64, 'scoring': True}}},
                                     indent=2) + '\n', encoding='utf-8')
         self.assertEqual(set_registrations(table), {'generated-scoring-v1': 'a' * 64})  # a genuine registration
         self.assertEqual(grader_identity(root)['sha256'], grader_identity()['sha256'])
@@ -250,11 +303,11 @@ class CaseIdentityTests(PackageCopy, unittest.TestCase):
 
     def test_a_case_without_a_native_module_is_graded_by_the_core_alone(self):
         root = self.copy_package()
-        identity = grader_identity(root, case_id='tq9')  # the legacy case names no native module
+        identity = grader_identity(root, case_id='bme280')  # the physical legacy case names no native module
         self.assertEqual(set(identity['modules']), self.hashed(grader_closure(root, families=())))
         for name in {case.native_module for case in registrations._CASES if case.native_module}:
             self.touch(root / 'benchmark_support' / (name + '.py'))
-        self.assertEqual(grader_identity(root, case_id='tq9')['sha256'], identity['sha256'])
+        self.assertEqual(grader_identity(root, case_id='bme280')['sha256'], identity['sha256'])
 
     def test_a_case_identity_names_its_case_and_holds_only_its_own_entry(self):
         identity = grader_identity(case_id='zephyr-modbus-v1')
@@ -276,14 +329,14 @@ class CaseIdentityTests(PackageCopy, unittest.TestCase):
 
 
 class FamilyRoutingTests(unittest.TestCase):
-    """The shared core reaches a family's code through the registrations, by name, so that it imports none."""
+    """The shared core reaches a family's code through `families`, by name, so that it imports none."""
 
     def family_truth(self, family):
         """A family-truth payload whose scored phases only have complete reset/call/observe coverage, so that nothing
         but the family's own phase rules can refuse them."""
         phase = {'contract': {'checks': [{'id': 'toy/ok'}]},
                  'actions': [{'kind': 'reset'}, {'kind': 'call'}, {'kind': 'observe', 'checks': ['toy/ok']}]}
-        files = {name: b'{}' for name in inventory(family)}
+        files = {name: b'{}' for name in inventory(family + '-v1')}
         recipe = {'source_file_paths': {'device.resc': 'native/device.resc'}}
         files['native/observation-map.json'] = json.dumps(recipe).encode()
         files['diagnostic/episodes.json'] = files['final/episodes.json'] = json.dumps(phase).encode()
@@ -303,52 +356,37 @@ class FamilyRoutingTests(unittest.TestCase):
 
     def truth_of(self, case_id, unlocked):
         """`case_truth` of `case_id` when its sealed truth unlocks to `unlocked`, with no vault, case files or run."""
-        with patch('generative_driver.benchmark_support.case_assets.case_inputs', return_value=(Path('inputs'), {})), \
+        with patch('generative_driver.benchmark_support.case_assets.case_inputs',
+                   return_value=(Path('inputs'), {'truth': {'sha256': 'a' * 64}})), \
                 patch('generative_driver.benchmark_support.case_assets.case_root', return_value=Path('root')), \
                 patch('generative_driver.benchmark_support.emulator.truth_for_case', return_value=unlocked):
-            return case_truth(case_id, Path('run'), {})
-
-    def test_a_family_resolves_to_the_one_native_module_its_cases_name(self):
-        # tq9-v2 and tq9-v3 both name tq9_v2; the legacy tq9 case names none.
-        for family, module in (('tq9', 'tq9_v2'), ('sampled-sensor', 'sampled_sensor'),
-                               ('parameter-store', 'parameter_store'), ('zephyr-modbus', 'zephyr_modbus')):
-            with self.subTest(family):
-                self.assertEqual(registrations.family_module(family).__name__,
-                                 'generative_driver.benchmark_support.' + module)
-
-    def test_a_family_without_exactly_one_native_module_is_refused(self):
-        for family in ('bme280', 'setup-smoke', 'unregistered-family'):
-            with self.subTest(family), self.assertRaisesRegex(ValueError, 'No native module registered'):
-                registrations.family_module(family)
-        elsewhere = replace(registrations.registration_for('tq9-v2'), id='tq9-elsewhere', native_module='sampled_sensor')
-        with patch.object(registrations, '_CASES', registrations._CASES + (elsewhere,)), \
-                self.assertRaisesRegex(ValueError, 'Several native modules.*sampled_sensor, tq9_v2'):
-            registrations.family_module('tq9')
+            return case_truth(case_id, Path('run'), None).payload
 
     def test_each_family_declares_the_mutants_its_qualification_requires(self):
         required = {
-            'tq9': {'wrong-scale', 'constant-output', 'wrong-state', 'unsigned-temperature', 'wrong-temperature-scale',
-                    'wrong-temperature-unit', 'wrong-temperature-byteorder', 'wrong-crc', 'wrong-duty-effect'},
-            'sampled-sensor': {'constant', 'scale', 'signedness', 'stale'},
-            'parameter-store': {'constant', 'scale', 'order', 'wrong-bank', 'abort', 'idle-only-update',
-                                'short-rejection-frame'},
-            'zephyr-modbus': {'constant-read', 'wrong-byteorder', 'wrong-register', 'wrong-coil', 'omit-write',
-                              'wrong-request-crc'}}
-        for family, mutants in required.items():
-            with self.subTest(family):
-                declared = registrations.family_module(family).REQUIRED_MUTANTS
+            'tq9-v2': {'wrong-scale', 'constant-output', 'wrong-state', 'unsigned-temperature',
+                       'wrong-temperature-scale', 'wrong-temperature-unit', 'wrong-temperature-byteorder', 'wrong-crc',
+                       'wrong-duty-effect'},
+            'sampled-sensor-v1': {'constant', 'scale', 'signedness', 'stale'},
+            'parameter-store-v1': {'constant', 'scale', 'order', 'wrong-bank', 'abort', 'idle-only-update',
+                                   'short-rejection-frame'},
+            'zephyr-modbus-v1': {'constant-read', 'wrong-byteorder', 'wrong-register', 'wrong-coil', 'omit-write',
+                                 'wrong-request-crc'}}
+        for case_id, mutants in required.items():
+            with self.subTest(case_id):
+                declared = family_for(case_id).required_mutants
                 self.assertIsInstance(declared, frozenset)
                 self.assertEqual(declared, mutants)
 
-    def test_every_registered_native_module_declares_its_required_mutants_as_a_frozenset(self):
-        # Catches a registered family without REQUIRED_MUTANTS, whose qualification record would read as malformed
-        # calibration evidence instead of naming the missing declaration.
-        for name in sorted({case.native_module for case in registrations._CASES if case.native_module}):
-            with self.subTest(name):
-                declared = getattr(importlib.import_module('generative_driver.benchmark_support.' + name),
-                                   'REQUIRED_MUTANTS', None)
-                self.assertIsInstance(declared, frozenset)
-                self.assertTrue(declared)
+    def test_every_graded_case_declares_its_required_mutants_as_a_frozenset(self):
+        # Catches a graded case without them, whose qualification record would read as malformed calibration evidence
+        # instead of naming the missing declaration.
+        for case in registrations._CASES:
+            if case.adapter_key == 'emulator-v2':
+                with self.subTest(case.id):
+                    declared = family_for(case.id).required_mutants
+                    self.assertIsInstance(declared, frozenset)
+                    self.assertTrue(declared)
 
     def test_qualification_requires_the_mutants_the_family_declares(self):
         manifest = {'id': 'sampled-sensor-v1', 'family': 'sampled-sensor', 'evaluator_version': '1',
@@ -357,7 +395,7 @@ class FamilyRoutingTests(unittest.TestCase):
         def refuses_the_inventory(declared, listed):
             """Whether a record that lists `listed` mutants fails the family's mutant inventory when the family declares
             `declared`. The record stops short of its runs, which ends the validation right after that inventory."""
-            with patch.object(sampled_sensor, 'REQUIRED_MUTANTS', frozenset(declared)):
+            with patch.dict(sampled_sensor.HOOKS, {'required_mutants': frozenset(declared)}):
                 record = {'input_hashes': {}, 'required_mutants': listed}
                 return 'family mutant inventory' in validate_calibration(manifest, record)['failures']
 
@@ -372,15 +410,15 @@ class FamilyRoutingTests(unittest.TestCase):
             hydrate_truth(self.family_truth('parameter-store'))
 
     def test_only_the_family_kind_cases_have_an_authoring_inventory(self):
-        for family in ('sampled-sensor', 'parameter-store'):
-            self.assertIn('AUTHORING.json', inventory(family))
-        for family in ('tq9', 'zephyr-modbus', 'bme280', 'unregistered-family'):
-            with self.subTest(family), self.assertRaisesRegex(ValueError, 'Unsupported family'):
-                inventory(family)
+        for case_id in ('sampled-sensor-v1', 'parameter-store-v1'):
+            self.assertIn('AUTHORING.json', inventory(case_id))
+        for case_id in ('tq9-v2', 'zephyr-modbus-v1', 'bme280', 'unregistered-family'):
+            with self.subTest(case_id), self.assertRaisesRegex(ValueError, 'Unsupported family'):
+                inventory(case_id)
 
-    def test_a_case_is_hydrated_as_its_registered_truth_schema_says_whatever_its_id(self):
-        self.register('another-sensor-v1', truth_schema='benchmark-family-truth/1')
-        self.register('another-upstream-v1', truth_schema='benchmark-upstream-truth/1')
+    def test_a_case_is_hydrated_by_its_family_whatever_its_id(self):
+        self.register('another-sensor-v1', native_module='sampled_sensor')
+        self.register('another-upstream-v1', native_module='zephyr_modbus')
         unlocked = {'schema': 'unlocked'}
         with patch('generative_driver.benchmark_support.calibration.hydrate_truth', return_value='family') as family, \
                 patch('generative_driver.benchmark_support.upstream.hydrate_truth', return_value='upstream') as upstream:

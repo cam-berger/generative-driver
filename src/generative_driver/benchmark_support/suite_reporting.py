@@ -97,6 +97,7 @@ def _experiment(value):
         from .registry import validate_public_workflow_identity
         validate_public_workflow_identity(pin)
         if any(pin.get(k)!=entry[v] for k,v in (('case_id','case'),('scenario_id','scenario'),('case_seed','case_seed'))):raise ValueError('Entry pin mismatch')
+        if pin.get('device_id')!=entry.get('device_id'):raise ValueError('Entry pin mismatch')
         if any(pin.get(k)!=identity[k] for k in ('execution','evidence_track','scope')) or not pin.get('family'):raise ValueError('Mixed or missing pin scope')
         if any(not _sha(pin.get(k)) for k in ('manifest_sha256','truth_sha256','pin_sha256')) or not pin.get('case_version') or not pin.get('evaluator_version'):raise ValueError('Incomplete pin identity')
         if not isinstance(pin.get('image_hashes'),dict) or any(not _sha(v) for v in pin['image_hashes'].values()):raise ValueError('Invalid image identities')
@@ -240,8 +241,10 @@ def _outcome(trial,report,equivalent):
     """A planned trial of an assistive suite as its count holds it: not_run, equivalent (settled and qualified),
     not_equivalent (a recorded grade, or no driver), unknown (a recorded grade with no failed step and an undecided one),
     unqualified (a claimed equivalent that is not counted), unscored (a completed run awaiting or without its grade),
-    stopped or running."""
-    if not trial.get('run_id'):return 'not_run'
+    stopped or running. A scoring suite's slot adds two: one that never got a run and says why is stopped, and one the
+    audit flagged is flagged, whatever its child's own outcome."""
+    if not trial.get('run_id'):return 'stopped' if trial.get('no_run_reason') else 'not_run'
+    if trial['status']=='flagged':return 'flagged'
     if trial in equivalent:return 'equivalent'
     status=report.get('workflow_status',trial['status']);verdict=report.get('verdict')
     if status in ('blocked','failed','cancelled'):return 'stopped'
@@ -251,6 +254,8 @@ def _outcome(trial,report,equivalent):
     return 'unscored' if status=='completed' else 'running'
 
 
+# The slot statuses that say a slot is done with: `flagged` is a scoring suite's, which reruns no such slot.
+SETTLED=('finished','flagged')
 # Why a trial's claimed equivalent verdict is not counted: the run's own reason names only its verdict.
 UNQUALIFIED='Not counted: the equivalent verdict is not a settled, qualified record'
 
@@ -262,13 +267,15 @@ def _outcomes(trials,reports,equivalent):
             'no_driver':0,'unknown':0,'unqualified':0,'unscored':0,'running':0,'stopped':{}}
     unscored=[]
     for trial in trials:
-        counts['finished']+=trial['status']=='finished'
+        counts['finished']+=trial['status'] in SETTLED
         report=reports.get(trial.get('run_id')) or {}
         outcome=_outcome(trial,report,equivalent)
         if outcome=='not_run':
             counts['not_run']+=1;continue
-        counts['started']+=1
-        if outcome=='stopped':
+        counts['started']+=bool(trial.get('run_id'))
+        if outcome=='flagged':
+            counts['flagged']=counts.get('flagged',0)+1
+        elif outcome=='stopped':
             category=trial.get('outcome_category') if isinstance(trial.get('outcome_category'),str) else 'unknown'
             counts['stopped'][category]=counts['stopped'].get(category,0)+1
         elif outcome=='not_equivalent':
@@ -299,7 +306,7 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
     passed=[trial for trial in trials if trial['status']=='finished' and trial['outcome_category']=='completed'
             and success(reports.get(trial.get('run_id'),{}))]
     started=[trial for trial in trials if trial.get('run_id')]
-    finished=[trial for trial in trials if trial['status']=='finished']
+    finished=[trial for trial in trials if trial['status'] in SETTLED]
     observed=[reports[trial['run_id']] for trial in started if trial['run_id'] in reports]
     families=sorted({trial['family'] for trial in trials})
     rates={family:sum(t['family']==family for t in passed)/sum(t['family']==family for t in trials) for family in families}
@@ -315,7 +322,7 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
         counts,unscored=_outcomes(trials,reports,passed)
         missions=[public_equivalence((reports.get(t.get('run_id')) or {}).get('equivalence')) or {} for t in trials]
         mission=sum((m.get('mission') or {}).get('passed') is True for m in missions)
-        # A trial the audit flagged is an integrity fault, not graded: earlier studies counted one as no success out of all
+        # A trial the audit flagged is counted and not graded: earlier studies counted one as no success out of all
         # planned trials, so it is none here, though the evaluator's own counts above keep its driver.
         reused=[t for t in passed if not t.get('audit')
                 and (reports[t['run_id']]['equivalence'].get('mission') or {}).get('passed') is True]
@@ -349,7 +356,9 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
         report=reports.get(trial.get('run_id'),{})
         # An assistive trial that has no report yet carries no verdict, not even an unscored one.
         safe=(public_v3_report(report) if report else {}) if protocol else public_v2_report(report)
-        row={key:trial[key] for key in ('trial_key','ordinal','entry_index','repeat_index','case','family','scenario','case_seed','run_id','status','outcome_category')}
+        row={key:trial[key] for key in ('trial_key','ordinal','entry_index','repeat_index','case','device_id','family',
+                                        'scenario','case_seed','run_id','status','outcome_category',
+                                        'attempt','first_attempt','no_run_reason') if key in trial}
         # `workflow_status` and `effective_budget_seconds` let the row alone repeat the outcome its report gave.
         row.update({key:safe[key] for key in ('verdict','equivalence','equivalence_status','stages','final_evaluation','elapsed_seconds',
             'worker_seconds','tool_seconds','usage','workflow_status','effective_budget_seconds') if key in safe})
@@ -359,14 +368,20 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
             # scrubbed by `report_run`), the stage where it stopped and the repairs it used.
             outcome=_outcome(trial,report,passed);repairs=(safe.get('progress') or {}).get('repairs');audit=trial.get('audit')
             row.update(equivalent_and_mission=trial in reused,
-                       outcome=outcome,reason=UNQUALIFIED if outcome=='unqualified' else safe.get('reason'),
+                       outcome=outcome,
+                       reason=UNQUALIFIED if outcome=='unqualified' else (safe.get('reason')
+                                                                          or trial.get('no_run_reason')),
                        stopped_stage=safe.get('stopped_stage'),repairs=repairs if type(repairs) is int else None,
                        # From the slot and the full report, with the verdict the row carries: a claimed equivalent the count
                        # refuses is unqualified here as in `report_suite`, so its passes are the equivalent drivers counted.
                        # A trial whose transcripts the audit flagged is not graded, whatever its grade.
-                       scored=classify(trial,{**report,'verdict':row.get('verdict')},flagged=bool(audit)))
+                       scored=classify(trial,{**report,'verdict':row.get('verdict')},flagged=bool(audit),
+                                       unscored_integrity_fails='scoring_set' in experiment['comparison_identity']))
             # The findings of an audit that ran, none when it found nothing; a trial that nothing audited has no key.
-            if audit is not None:row['audit']=[{key:finding[key] for key in ('transcript','command')} for finding in audit]
+            # One the harness stored names its command by hash alone, as the command holds the set's root.
+            if audit is not None:
+                row['audit']=[{key:finding[key] for key in ('transcript','command','command_sha256') if key in finding}
+                              for finding in audit]
         row['report_sha256']=_digest(_public_report(report)) if report else None
         row['interventions']=[{key:item[key] for key in ('event_id','kind','time','effect_resolution','scoped_tool_approval','old_budget_seconds','new_budget_seconds','extension_seconds','old_deadline','new_deadline','stage','uncertain_effect','has_observation')
             if key in item and (item[key] is None or type(item[key]) in (str,int,float,bool))} for item in trial.get('interventions',[])]
@@ -443,7 +458,8 @@ def _saved_report(value):
             # to a row with no run and to no other.
             # A pass is also a counted equivalent driver: the row's own verdict, status and category must show what its label says.
             # A counted driver whose transcripts the audit flagged scores `flagged`, which is no pass, and no other outcome.
-            if any(t['scored']!=classify(t,t,flagged=bool(t.get('audit')))
+            scoring='scoring_set' in experiment['comparison_identity']
+            if any(t['scored']!=classify(t,t,flagged=bool(t.get('audit')),unscored_integrity_fails=scoring)
                    or t['scored']=='pass' and not counted(t) or counted(t) and t['scored'] not in ('pass','flagged')
                    for t in report['trials']):
                 raise ValueError('Saved outcome differs from the trial it scores')
@@ -648,23 +664,74 @@ def _summary(result):
     return '\n'.join(lines)+'\n\n'+(f'Unscored: {unscored}.\n\n' if unscored else '')
 
 
-def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_files=None,audit_paths=()):
-    """Export a suite's measurements from its configured owner. An earlier suite's regrade needs the sealed evidence of
-    every started trial; an assistive suite's, that of exactly the trials whose verdict was recorded (each names its
-    evidence), since an unscored or stopped trial has no verdict to authenticate.
+def _union_of_findings(stored,found):
+    """The findings a harness stored of a trial with those a report's audit paths found. A stored one a report's audit
+    found again, by its transcript and its command's hash, is that report's, which quotes the command."""
+    from .harness import stored_finding
+    again=[stored_finding(finding) for finding in found]
+    return [*found,*(finding for finding in stored if finding not in again)]
+
+
+def _refuse_scoring_report(suite_id,root,output,password,set_root,vault):
+    """A scoring suite's report holds per-trial data, so it is written only inside the open vault: it needs the password
+    file, the set root and a vault folder holding both the root and the output, and nothing of the suite may still run
+    (`refuse_unsettled_scoring`). These paths never reach the configurator."""
+    from pathlib import Path
+    from .suites import refuse_unsettled_scoring
+    if password is None or not set_root or not vault:
+        raise ValueError("A scoring suite's report needs its set's password file, its set root and a vault folder: "
+                         +suite_id)
+    folder=Path(vault).expanduser().resolve()
+    if not Path(set_root).expanduser().resolve().is_relative_to(folder):
+        raise ValueError("A scoring suite's report needs its set root under the vault folder: "+suite_id)
+    if not output.is_relative_to(folder):
+        raise ValueError("A scoring suite's report is written only under the vault folder: "+suite_id)
+    refuse_unsettled_scoring(suite_id,root)
+
+def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_files=None,audit_paths=(),password=None,
+                 set_root=None,vault=None):
+    """Export a suite's measurements from its configured owner (`_export_suite`). A scoring suite's report needs
+    `password` (the set's `EvaluatorPassword`, apart from `password_files`, which switches on regrading), `set_root` and
+    `vault`, and refuses as `_refuse_scoring_report` says; `suite compare` still works from it, since only its counts
+    leave."""
+    if output is None or not str(output).strip():raise ValueError('Suite export requires an explicit output directory')
+    from pathlib import Path
+    from ..client import default_home
+    root=Path(home or default_home()).resolve()
+    # One path, so that the folder the check approves is the one the export writes.
+    output=Path(output).expanduser().resolve()
+    return _export_suite(suite_id,home=root,output=output,evidence_files=evidence_files,password_files=password_files,
+                         audit_paths=audit_paths,password=password,vault=vault,
+                         check=lambda:_refuse_scoring_report(suite_id,root,output,password,set_root,vault))
+
+def _audited(root,suite_id,run_id,audit_paths,password,vault):
+    """What the audit finds in a run's transcripts. A scoring suite's are read through `trial_store.opened`, as they may
+    be sealed, so it needs `password`."""
+    if password is None:raise ValueError("A scoring suite's audit needs its set's password file: "+suite_id)
+    from .trial_store import opened
+    with opened(root,suite_id,run_id,password,vault=vault) as held:
+        return audit_commands(held/'run',audit_paths)
+
+def _export_suite(suite_id,*,home,output,evidence_files=None,password_files=None,audit_paths=(),password=None,
+                  vault=None,check=None):
+    """The export `report_suite` and a scorecard's temporary one share, the owner's home being `home`. `check()` runs
+    once the owner says the suite is a scoring suite, before anything is written. An earlier suite's regrade needs the
+    sealed evidence of every started trial; an assistive suite's, that of exactly the trials whose verdict was recorded
+    (each names its evidence), since an unscored or stopped trial has no verdict to authenticate.
 
     With `audit_paths` (forbidden paths, private to the operator), each trial's run directory in the owner's home is
     audited (`audit_commands`): every row of the export carries its `audit` findings, and a trial with any is `flagged`,
-    not graded. A report without `audit_paths` has no `audit` on its rows. The paths are in no output but the commands
-    that name them, which the findings quote."""
-    if output is None or not str(output).strip():raise ValueError('Suite export requires an explicit output directory')
+    not graded. A report without `audit_paths` has no `audit` on its rows but what a scoring suite's harness stored, and
+    these paths never overwrite that: a row holds the union of the two. The paths are in no output but the commands that
+    name them, which the findings quote."""
     audit_paths=forbidden_paths(audit_paths)
     from pathlib import Path
     from tempfile import TemporaryDirectory
-    from ..client import call,default_home
+    from ..client import call
     from ..reporting import report_run,_public,_tree_hash
     from .evidence import regrade_v2,regrade_v3
-    root=Path(home or default_home()).resolve();destination=Path(output).resolve()
+    from .truth import read_password
+    root=home;destination=Path(output).resolve()
     regrading=evidence_files is not None or password_files is not None
     if regrading and (not isinstance(evidence_files,dict) or not isinstance(password_files,dict)):
         raise ValueError('Regrade requires trial-keyed evidence and case-keyed password files')
@@ -678,6 +745,7 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
         if following is None:break
         if type(following) is not int or following<=offset:raise ValueError('Invalid suite pagination')
         offset=following
+    if check and 'scoring_set' in ((first.get('experiment') or {}).get('comparison_identity') or {}):check()
     experiment=_experiment(first['experiment']);identity=experiment['comparison_identity'];manifest=identity['manifest']
     expected=identity['trials']
     if len(rows)!=len(expected):raise ValueError('Missing owner suite slots')
@@ -685,13 +753,19 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
     _validate_trials(manifest,trials,{},experiment)
     started=[trial for trial in trials if trial.get('run_id')]
     protocol=identity.get('protocol');keys={trial['trial_key'] for trial in started}
+    # One password seals every device of a set, so a set suite's file is keyed by the set.
+    keyed=lambda case:manifest.get('set',case)
     if regrading and ((set(evidence_files)-keys if protocol else set(evidence_files)!=keys)
-            or set(password_files)-{trial['case'] for trial in trials}):
+            or set(password_files)-{keyed(trial['case']) for trial in trials}):
         raise ValueError('Regrade evidence must cover every started trial exactly')
     if audit_paths and not protocol:raise ValueError('The transcript audit covers assistive suites only')
     if audit_paths:
-        for trial in trials:trial['audit']=[]
-    reports={};regraded=set()
+        for trial in trials:trial['audit']=list(trial.get('audit') or [])
+    reports={};regraded=set();held={}
+    def password_of(case):
+        # One file per case, read once across all its trials, and only if a trial of the case regrades.
+        if case not in held:held[case]=read_password(password_files[case])
+        return held[case]
     with TemporaryDirectory(prefix='gd-suite-report-') as temporary:
         for trial in started:
             rid=trial['run_id'];pin=identity['entry_pins'][trial['entry_index']]
@@ -727,14 +801,14 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
             if regrading and protocol:
                 if (report.get('equivalence') or {}).get('evidence_sha256'):
                     if trial['trial_key'] not in evidence_files:raise ValueError('Regrade evidence must cover every trial with a recorded verdict exactly')
-                    if trial['case'] not in password_files:raise ValueError('Missing case password handle')
-                    report=regrade_v3(report,Path(evidence_files[trial['trial_key']]),Path(password_files[trial['case']]))
+                    if keyed(trial['case']) not in password_files:raise ValueError('Missing case password handle')
+                    report=regrade_v3(report,Path(evidence_files[trial['trial_key']]),password_of(keyed(trial['case'])))
                     regraded.add(trial['trial_key'])
                 qualified=settled and _report_equivalent(report)
             elif regrading:
                 if report.get('schema')!='benchmark-report/2':raise ValueError('Legacy trials do not support sidecar regrade')
                 if trial['case'] not in password_files:raise ValueError('Missing case password handle')
-                report=regrade_v2(report,Path(evidence_files[trial['trial_key']]),Path(password_files[trial['case']]))
+                report=regrade_v2(report,Path(evidence_files[trial['trial_key']]),password_of(trial['case']))
                 qualified=settled and _report_success(report)
             else:
                 qualified=_recorded_equivalence(owner,events,report) if protocol else _recorded_success(owner,events,report)
@@ -742,7 +816,10 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
             trial['outcome_category']=owner.get('outcome_category','unknown')
             if owner.get('stopping') is not False or owner.get('uncertain_effect') is not False:trial['status']='blocked'
             # The run directory is where the owner keeps what the run's workers left (`runs/<run_id>` in its home).
-            if audit_paths:trial['audit']=audit_commands(root/'runs'/rid,audit_paths)
+            if audit_paths:
+                found=(_audited(root,suite_id,rid,audit_paths,password,vault) if 'scoring_set' in identity
+                       else audit_commands(root/'runs'/rid,audit_paths))
+                trial['audit']=_union_of_findings(trial['audit'],found)
             reports[rid]=report
         if regrading and protocol and set(evidence_files)!=regraded:
             raise ValueError('Regrade evidence must cover every trial with a recorded verdict exactly')

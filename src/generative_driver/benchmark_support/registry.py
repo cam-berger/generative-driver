@@ -1,11 +1,13 @@
 """Static, read-only benchmark case admission and identity."""
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 import copy
 import hashlib
 import json
 import re
-from .registrations import native_family_for, registered_case_ids, registration_for
+from .families import family_for
+from .registrations import registered_case_ids, registration_for
 
 
 @dataclass(frozen=True)
@@ -44,7 +46,7 @@ def validate_workflow_manifest(manifest):
     if scenarios != ['original']:
         raise ValueError('Unsupported case scenario inventory: original is required')
     from .execution import artifact_name
-    if case_id != 'bme280' and list(manifest.get('images', {})) != [artifact_name(manifest)]:
+    if registration_for(case_id).single_image and list(manifest.get('images', {})) != [artifact_name(manifest)]:
         raise ValueError('Stable case requires one original firmware image')
 
 
@@ -75,13 +77,14 @@ def case_descriptors() -> list[dict]:
     root = case_root()
     rows = []
     for case_id in case_ids():
-        if case_id != 'setup-smoke' and not (root/'cases'/case_id/'case.json').is_file():
+        registration = registration_for(case_id)
+        if registration.has_case_file and not (root/'cases'/case_id/'case.json').is_file():
             rows.append({'id': case_id, 'status': 'pending'})
             continue
         try:
             case = resolve_case(case_id)
         except ValueError as error:
-            if case_id in ('tq9', 'bme280'):
+            if not registration.requires_calibration:
                 raise
             rows.append({'id': case_id, 'status': 'pending' if isinstance(error, PendingCaseError) else 'invalid',
                          'error': str(error)})
@@ -99,17 +102,31 @@ def case_descriptors() -> list[dict]:
              'authenticated_admission': 'not-checked'} for row in rows]
 
 
-def resolve_case(case_id: str) -> CaseDefinition:
-    registration_for(case_id)
+def resolve_case(case_id: str, *, check_truth: bool = True) -> CaseDefinition:
+    registration = registration_for(case_id)
     from .case_assets import case_root
     root = case_root()
-    if case_id == 'setup-smoke':
-        return CaseDefinition(case_id, 'setup-smoke', '1', '1', 'scripted-replay', 'recorded-replay',
-                              'smoke', None, (), root/'cases'/case_id, {}, '')
+    if not registration.has_case_file:
+        return CaseDefinition(case_id, registration.family, registration.version, registration.version,
+                              registration.execution, registration.evidence_track, registration.adapter_key,
+                              registration.approval_scope, tuple(registration.default_effects), root/'cases'/case_id,
+                              {}, '')
     path = root/'cases'/case_id/'case.json'
     if not path.is_file():
         raise PendingCaseError('Benchmark case is pending: ' + case_id)
-    return load_definition(path, resource_root=root)
+    return load_definition(path, resource_root=root, check_truth=check_truth)
+
+
+def case_selection(case_id: str) -> SimpleNamespace:
+    """The `id`, `execution`, `evidence_track`, `approval_scope` and `default_effects` of a case, for a site that reads
+    only those. A row that fills them all (a generated case's: it has no manifest to read) answers alone. Any other
+    answers with `resolve_case` for what its row leaves null, so such a site still refuses a changed case."""
+    row, names = registration_for(case_id), ('execution', 'evidence_track', 'approval_scope', 'default_effects')
+    values = {name: getattr(row, name) for name in names}
+    if None in values.values():
+        definition = resolve_case(case_id)
+        values = {name: getattr(definition, name) if value is None else value for name, value in values.items()}
+    return SimpleNamespace(id=case_id, **values)
 
 
 def resource_path(root: Path, relative: str) -> Path:
@@ -123,6 +140,15 @@ def resource_path(root: Path, relative: str) -> Path:
     if not candidate.resolve().is_relative_to(root.resolve()):
         raise ValueError('Case resource path escapes root')
     return candidate
+
+
+def _refuse_unsafe_path(relative) -> None:
+    """The lexical refusals of `resource_path`, for a path whose file is not to be touched: the resolve in its
+    containment check would follow a symlink a worker planted."""
+    if not isinstance(relative, str) or not relative or Path(relative).is_absolute() or '\\' in relative:
+        raise ValueError('Invalid case resource path')
+    if any(part in ('.', '..') for part in Path(relative).parts):
+        raise ValueError('Case resource path escapes root')
 
 
 def _sha(value):
@@ -139,7 +165,10 @@ def _unique_object(pairs):
     return result
 
 
-def load_definition(path: Path, *, resource_root: Path) -> CaseDefinition:
+def load_definition(path: Path, *, resource_root: Path, check_truth: bool = True) -> CaseDefinition:
+    """The checked definition of the case whose manifest is at `path`. With `check_truth` False the truth file is
+    neither looked for, hashed nor resolved, so that stages and grading do not depend on a file a worker could change;
+    the manifest's truth hash and the truth path's form are still validated."""
     path = Path(path)
     root = Path(resource_root).resolve()
     if not path.resolve().is_relative_to(root):
@@ -210,15 +239,17 @@ def load_definition(path: Path, *, resource_root: Path) -> CaseDefinition:
     truth = manifest.get('truth', {})
     if truth:
         _sha(truth.get('sha256'))
-        truth_path = resource_path(root, truth.get('path'))
-        if not truth_path.is_file():
-            raise PendingCaseError('Case truth is unbuilt')
-        if hashlib.sha256(truth_path.read_bytes()).hexdigest() != truth['sha256']:
-            raise ValueError('Case truth hash mismatch')
-    if case_id == 'tq9':
-        family, track, approval, effects = 'tq9', 'firmware', 'emulator', ('write', 'actuate')
-    elif case_id == 'bme280':
-        family, track, approval, effects = 'bme280', 'physical', 'bound-device', ('write',)
+        if not check_truth:
+            _refuse_unsafe_path(truth.get('path'))
+        else:
+            truth_path = resource_path(root, truth.get('path'))
+            if not truth_path.is_file():
+                raise PendingCaseError('Case truth is unbuilt')
+            if hashlib.sha256(truth_path.read_bytes()).hexdigest() != truth['sha256']:
+                raise ValueError('Case truth hash mismatch')
+    if not registration.requires_calibration:
+        family, track = registration.family, registration.evidence_track
+        approval, effects = registration.approval_scope, tuple(registration.default_effects)
     else:
         family = manifest.get('family')
         track = manifest.get('evidence_track')
@@ -229,14 +260,15 @@ def load_definition(path: Path, *, resource_root: Path) -> CaseDefinition:
                           copy.deepcopy(manifest), hashlib.sha256(raw).hexdigest())
 
 
-def pin_case(case_id: str, scenario_id: str | None, case_seed: int) -> dict:
+def pin_case(case_id: str, scenario_id: str | None, case_seed: int, *, check_truth: bool = True) -> dict:
     if type(case_seed) is not int:
         raise ValueError('case_seed must be an integer')
     if scenario_id not in (None, 'original'):
         raise ValueError('Unknown case scenario')
-    definition = resolve_case(case_id)
-    if definition.id in ('tq9', 'bme280', 'setup-smoke'):
-        default = None if definition.id == 'setup-smoke' else 'original'
+    definition = resolve_case(case_id, check_truth=check_truth)
+    registration = registration_for(case_id)
+    if not registration.requires_calibration:
+        default = 'original' if registration.has_case_file else None
         if scenario_id not in (None, default) or case_seed != 0:
             raise ValueError('Legacy case does not support the selected scenario or seed')
         scenario_id = default
@@ -257,99 +289,56 @@ def pin_case(case_id: str, scenario_id: str | None, case_seed: int) -> dict:
             'image_hashes': copy.deepcopy(manifest.get('images', {})),
             'truth_sha256': manifest.get('truth', {}).get('sha256'),
             'execution': definition.execution, 'evidence_track': definition.evidence_track,
-            'scope': manifest.get('scope', 'full-workflow' if definition.id == 'tq9' else 'installation' if definition.id == 'setup-smoke' else 'full-workflow'),
+            'scope': manifest.get('scope', registration.default_scope),
             'time_policy': copy.deepcopy(manifest.get('time_policy', {})),
             'calibration': copy.deepcopy(calibration)}
 
 
-def require_calibration(pin: dict, options: dict) -> dict:
-    """Admission is evaluator-owned; public labels alone cannot launch an agent."""
-    current = pin_case(pin['case_id'], pin['scenario_id'], pin['case_seed'])
+def case_truth(case_id, run_dir, password):
+    """The case's `UnlockedTruth`, decrypted with `password`. The manifest is the run's pinned snapshot when `run_dir`
+    holds one. The truth is hydrated by the case's family; one that declares no `hydrate_truth` gets it back as
+    unlocked."""
+    from .case_assets import case_inputs, case_root
+    from .emulator import truth_for_case
+    from .truth import UnlockedTruth
+    _, manifest = case_inputs(case_id, run_dir)
+    return UnlockedTruth(family_for(case_id).hydrate_truth(truth_for_case(case_root(), manifest, password)),
+                         manifest['truth']['sha256'])
+
+
+def require_calibration(pin: dict, password) -> dict:
+    """The admission of `admitted_truth`, for a caller with no use for the truth."""
+    return admitted_truth(pin, password)[1]
+
+
+def admitted_truth(pin: dict, password) -> tuple:
+    """Admission is evaluator-owned; public labels alone cannot launch an agent. (`UnlockedTruth` or None, admission): a
+    changed pin, or a v2 pin without passed calibration, raises before anything is decrypted, and a schema-1 pin, which
+    has no calibration to authenticate, is admitted with None and nothing decrypted."""
+    current = family_for(pin['case_id']).current_pin(pin)
     if pin != current:
         raise ValueError('Calibration admission case pin changed')
     if pin['manifest'].get('schema') != 'benchmark-case/2':
-        return {'ok': True}
+        return None, {'ok': True}
     if pin.get('calibration', {}).get('status') != 'passed':
         raise ValueError('V2 case requires independently validated passed calibration before a run')
     from .case_assets import case_root
     from .emulator import truth_for_case
-    from .calibration import input_hashes, validate_record, CORE_MUTANTS, tq9_execution_inputs
+    from .execution import validate_setup
     from .snapshots import canonical_digest
+    from .truth import UnlockedTruth
     manifest = pin['manifest']
+    family = family_for(pin['case_id'])
     try:
-        truth = truth_for_case(case_root(), manifest, options)
-        if truth.get('schema') == 'benchmark-family-truth/1':
-            from .calibration import hydrate_truth
-            truth = hydrate_truth(truth)
-        elif truth.get('schema') == 'benchmark-upstream-truth/1':
-            from .upstream import hydrate_truth
-            truth = hydrate_truth(truth)
+        truth = family.hydrate_truth(truth_for_case(case_root(), manifest, password))
     except (OSError, ValueError) as error:
         raise ValueError('Authenticated calibration evidence requires the evaluator password file') from error
     record = truth.get('calibration', {})
-    from .execution import validate_setup
     validate_setup(manifest, truth)
     try:
-        if registration_for(pin['case_id']).truth_schema in ('benchmark-family-truth/1', 'benchmark-upstream-truth/1'):
-            from .calibration import validate_calibration, apply_mutation, execution_input_identity
-            expected = {r['id']: r['expected_failed_checks'] for r in truth['mutations']['mutants']}
-            changes = {}
-            mutant_inputs = {}
-            for mutation in truth['mutations']['mutants']:
-                source = truth['references'][mutation['reference']]
-                changed = apply_mutation(source['model'], source['capabilities'], mutation)
-                mutant_inputs[mutation['id']]=execution_input_identity(changed['model'],changed['capabilities'])
-                changes[mutation['id']] = (changed['source_sha256'], changed['mutated_sha256'])
-            valid = (truth.get('inventory_state') == 'qualified'
-                     and canonical_digest(record) == manifest['calibration']['evidence_sha256']
-                     and truth['input_hashes'] == record['input_hashes']
-                     and truth['images'] == manifest['images']
-                     and {r['id']: r['expected_failed_checks'] for r in record['mutants']} == expected
-                     and {r['id']: (r['source_sha256'], r['mutated_sha256']) for r in record['mutants']} == changes
-                     and {r['id']: r['model_sha256'] for r in record['references']} ==
-                         {name: canonical_digest(ref['model']) for name, ref in truth['references'].items()}
-                     and validate_calibration(manifest, record)['ok'])
-            from .instruments import family_for
-            family=family_for(pin['case_id'])
-            runs={r['id']:r for r in record['runs']}
-            for reference in record['references']:
-                source=truth['references'][reference['id']]
-                for name in reference['runs']:
-                    run=runs[name];model=source['model']
-                    valid = (valid and reference['execution_inputs'][name]==execution_input_identity(model,source['capabilities']))
-            for row in record['mutants']:
-                valid = (valid and row['execution_input']==mutant_inputs[row['id']])
-            for run in runs.values():
-                scenario=run['scenario']
-                artifact=run['package_sha256'] or run['model_sha256']
-                contract=family.contract({'family':manifest['family'],'scenario_id':scenario,'case_seed':0,'revision':0},
-                    {**truth,'artifact_sha256':artifact},run['phase'])
-                valid = (valid and canonical_digest(contract)==run['contract_sha256']
-                         and [c['id'] for c in contract['checks']]==run['check_ids'])
-            rows={r['id']:r for r in record['mutants']}
-            for mutation in truth['mutations']['mutants']:
-                run=runs[rows[mutation['id']]['run']]
-                valid = (valid and run['phase']==mutation['phase']
-                         and run['scenario']==mutation.get('scenario','original'))
-
-        else:
-            valid = (canonical_digest(record) == manifest['calibration']['evidence_sha256']
-                     and input_hashes(truth) == record['input_hashes']
-                     and truth['images'] == manifest['images']
-                     and set(record['required_mutants']) == set(CORE_MUTANTS) | set(truth['mutations']['required'])
-                     and record['execution_inputs']==tq9_execution_inputs(truth)
-                     and {r['id']: r['expected_failed_checks'] for r in record['mutants']} ==
-                         truth['mutations']['expected_failed_checks']
-                     and validate_record(manifest, record)['ok'])
-            tq9_contract = native_family_for(manifest['id']).contract
-            for run in record['runs']:
-                artifact=run['package_sha256'] or run['model_sha256']
-                contract=tq9_contract({'scenario_id':run['scenario'],'case_seed':0,'revision':0},
-                    {**truth,'artifact_sha256':artifact},run['phase'])
-                valid = (valid and canonical_digest(contract)==run['contract_sha256']
-                         and [c['id'] for c in contract['checks']]==run['check_ids'])
+        valid = family.admission_valid(pin, truth, record)
     except (KeyError, TypeError, ValueError):
         valid = False
     if not valid:
         raise ValueError('Calibration evidence is missing, stale, or incomplete; rerun native calibration')
-    return {'ok': True, 'evidence_sha256': canonical_digest(record)}
+    return UnlockedTruth(truth, manifest['truth']['sha256']), {'ok': True, 'evidence_sha256': canonical_digest(record)}

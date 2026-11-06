@@ -13,6 +13,7 @@ def check_corpus(plan, options=None):
     from .corpus import validate_plan
     from .registry import require_calibration
     from .suites import preflight_selection
+    from .truth import read_password
 
     plan = validate_plan(plan)
     if options is not None and not isinstance(options, dict):
@@ -36,6 +37,17 @@ def check_corpus(plan, options=None):
                       'status': available['status'] if choice['selected'] else 'excluded',
                       'blockers': copy.deepcopy(available['blockers']), 'reason': None})
     failures = []
+
+    held = {}
+
+    def password_in(path):
+        # Each file is read once, however many cases share it; one that cannot be read is held as None and fails each.
+        if path not in held:
+            try:
+                held[path] = read_password(path)
+            except (OSError, ValueError):
+                held[path] = None
+        return held[path]
 
     def fail(case, code, reason, status='unqualified'):
         case.update(status=status, reason=reason)
@@ -70,13 +82,16 @@ def check_corpus(plan, options=None):
                 if context_reason is not None:
                     case.update(status='unqualified', reason=context_reason)
                     continue
-                password = passwords.get(case['case'])
-                if password is None:
+                password_file = passwords.get(case['case'])
+                if password_file is None:
                     fail(case, 'missing-credential', 'No evaluator password file was supplied for this case.',
                          status='missing-credential')
                     continue
                 try:
-                    admitted = require_calibration(frozen_pin, {'evaluator_password_file': password})
+                    password = password_in(password_file)
+                    if password is None:
+                        raise ValueError('Unreadable evaluator password file')
+                    admitted = require_calibration(frozen_pin, password)
                 except (OSError, ValueError):
                     fail(case, 'qualification-failed',
                          'Authenticated qualification failed: the credential or reference and mutant evidence '

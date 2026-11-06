@@ -8,9 +8,53 @@ match the reference's. The answer is a value, a refusal (the device's, or the dr
 request), no reply, or an error, which never matches (decision 19). A check the evaluator cannot decide, a cell it
 cannot read or a sequence whose reset it could not verify, is undecided, never failed. Only the evaluator reads the
 state: workers see no instrument of a generated device (decision 15). What a valid answer key holds, and its check ids,
-are `generated_device`'s.
+are `generated_device`'s. A generated device has no manifest of its own: the template here makes its pin (Feature 03,
+generated trials), which never holds its level or framing, because a worker can read it.
 """
 from .generated_device import REQUIRED_MUTANTS, answer_key, checks  # noqa: F401  REQUIRED_MUTANTS: family interface
+
+
+# Copied from parameter-store-v1's manifest, as a pin's own field: every generated device runs under one time policy.
+_TIME_POLICY = {'probe': 'continuous emulator virtual time', 'package_calls': 'paused between calls',
+                'limitation': 'Thinking time excluded; not a real-time control benchmark'}
+ARTIFACT = 'firmware.bin'
+MISSION = 'mission.json'
+
+
+def device_pin(registration, device_id, *, manifest_sha256, truth_sha256, image_sha256, mission_sha256,
+               evidence_sha256):
+    """The pin of one generated device: the one template, and the hashes and ids that tell its device from another."""
+    identity = {'family': 'generated', 'execution': 'actual-agent-emulation', 'evidence_track': 'firmware',
+                'scope': 'full-workflow'}
+    return {'schema': 'benchmark-case-pin/1', 'case': 'generated', 'case_id': 'generated', 'case_version': '1',
+            'evaluator_version': '1', 'scenario_id': 'original', 'case_seed': 0, **identity,
+            'set': registration, 'device_id': device_id, 'manifest_sha256': manifest_sha256,
+            'truth_sha256': truth_sha256, 'image_hashes': {ARTIFACT: image_sha256},
+            'time_policy': dict(_TIME_POLICY), 'calibration': {'status': 'passed', 'evidence_sha256': evidence_sha256},
+            'manifest': {'schema': 'benchmark-case/2', 'id': 'generated', 'version': '1', 'evaluator_version': '1',
+                         **identity, 'scenarios': ['original'],
+                         'required_stages': ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse'],
+                         'images': {ARTIFACT: image_sha256}, 'assets': {MISSION: mission_sha256},
+                         'truth': {'sha256': truth_sha256}, 'default_effects': ['write', 'actuate']}}
+
+
+def current_pin(pin, *, check_truth=True):
+    """`pin`, once the template rebuilds it from its own hashes and `sets.json` registers its `manifest_sha256` for its
+    `set`; ValueError otherwise. It opens no file of the set, whose volume is unmounted while a trial runs: whether a
+    device's own hashes are its set's is for `admit`, which opens the set. `check_truth` has nothing to do here."""
+    from .generated_sets import set_registrations
+    try:
+        rebuilt = device_pin(pin['set'], pin['device_id'], manifest_sha256=pin['manifest_sha256'],
+                             truth_sha256=pin['truth_sha256'], image_sha256=pin['image_hashes'][ARTIFACT],
+                             mission_sha256=pin['manifest']['assets'][MISSION],
+                             evidence_sha256=pin['calibration']['evidence_sha256'])
+    except (KeyError, TypeError) as error:
+        raise ValueError('A generated device pin lacks a field: ' + type(error).__name__) from None
+    if pin != rebuilt:
+        raise ValueError('A generated device pin differs from its template')
+    if set_registrations().get(pin['set']) != pin['manifest_sha256']:
+        raise ValueError('A generated device pin names a manifest its set does not register: ' + str(pin['set']))
+    return rebuilt
 
 
 def contract(pin, truth, phase):
@@ -93,8 +137,15 @@ def classify_answer(result: dict, step: dict) -> str:
     return 'error'
 
 
-def execute(session, invoke, contract, truth, evidence_path, *, healthy_device_failures):
+def execute(session, invoke, pin, contract, truth, evidence_path, *, phase, healthy_device_failures):
     """Run the answer key's hidden sequences on the evaluator's device and return one record per check of `contract`.
+
+    `contract` already holds the final phase's checks, the only phase of a generated device, so neither `pin` nor
+    `phase` selects anything here.
+
+    First, on the fresh session, it reads the startup observation (`device_provider.observed_values`, the read recovery
+    compares), before any reset or call. Its values are `boot_reading` in the evidence, for set qualification to compare
+    across a device's runs; no check reads them. A read that raises is a run error, as other device errors are.
 
     Each sequence starts with `session.reset({})` and a read of the state. A state other than the key's `reset` leaves
     every record of the sequence undecided ('unverified reset') and its steps uncalled. Each step calls its task through
@@ -107,14 +158,15 @@ def execute(session, invoke, contract, truth, evidence_path, *, healthy_device_f
     only on a healthy device too. The raw evidence is written to `evidence_path` as the steps run."""
     from .behavior import _check_contract
     from .case_assets import write_json
+    from .device_provider import observed_values
     from .emulated_actions import _device_healthy, graded_result, run_call
     key = answer_key(truth)
     _check_contract(contract)
     checks = {check['id']: check for check in contract['checks']}
-    events, records = [], []
+    events, records, boot = [], [], {}
 
     def save(**extra):
-        write_json(evidence_path, {'schema': 'generated-step-evidence/1', 'events': events, 'records': records,
+        write_json(evidence_path, {'schema': 'generated-step-evidence/1', **boot, 'events': events, 'records': records,
                                    **extra})
 
     def read():
@@ -130,6 +182,7 @@ def execute(session, invoke, contract, truth, evidence_path, *, healthy_device_f
                         **({'undecided': undecided} if undecided else {})})
 
     try:
+        boot['boot_reading'] = observed_values(session)['values']
         for sequence in key['sequences']:
             event = {'sequence': sequence['id'], 'reset': session.reset({})}
             events.append(event)
@@ -175,5 +228,9 @@ observations.monitor_units = {}
 
 
 def reuse_passed(events, capabilities):
-    """Not judged yet: plan 4 judges fresh reuse by reading the device's memory after it."""
+    """None: fresh reuse of a generated device is not judged, since no Feature holds that judgement yet."""
     return None
+
+
+HOOKS = {'contract': contract, 'execute': execute, 'observations': observations, 'reuse_passed': reuse_passed,
+         'required_mutants': REQUIRED_MUTANTS, 'current_pin': current_pin}

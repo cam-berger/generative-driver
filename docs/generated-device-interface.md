@@ -86,7 +86,7 @@ A cell's value is an unsigned integer of the cell's width.
 - `source_files` holds Renode files by name, each name matching `[A-Za-z0-9_-]+\.(resc|repl|cs)`.
 - `setup` names the `.resc` that runs last, and `includes` lists the source files to include before it, in order. The evaluator writes the source files into a private directory and runs `$bin=<image>; $uart=<port>; include <each include>; include <setup>`. The setup loads `$bin`, serves the UART as a TCP server on `$uart` and starts the machine. The evaluator waits for Renode's log to say `Machine started`.
 - `reset_commands` are monitor commands that leave the firmware booted to idle, the last of them `emulation RunFor` over a boot interval. Renode keeps RAM across `machine Reset`, and the evaluator reads the reset state as soon as the reset commands return, with the emulator paused. Without the boot interval, that read shows the previous run's RAM.
-- `observations` names at least one monitor read for the evaluator's health check: `{<name>: {"command", "width", "count"}}`, with a width of 8, 16, 32 or 64 bits and a count of 1 to 4096, or `{<name>: {"kind": "scalar", "command", "unit"}}`.
+- `observations` names at least one monitor read for the evaluator's health check: `{<name>: {"command", "width", "count"}}`, with a width of 8, 16, 32 or 64 bits and a count of 1 to 4096, or `{<name>: {"kind": "scalar", "command", "unit"}}`. It must read the same value on every boot, since recovery compares a replacement's reading with the first boot's, and each grade reads it once on its fresh session, before any reset or call. Pick a read that is stable at boot, such as a word of the image's vector table, not the program counter or anything else that running firmware or a timer moves: the machine has been started when this read comes, set qualification compares a device's readings across its runs, and a difference leaves the set pending.
 - `backend`, if present, is `renode`. A generated recipe has no `stimuli`.
 
 Every monitor command is a single command, without a line break, `;`, NUL or braces, and finishes within the evaluator's 5-second monitor timeout.
@@ -153,6 +153,11 @@ Beyond each field's own shape, the validator checks that the parts agree:
 | Every correct driver captures a refusal as the same bytes | Self-delimiting replies and rule 6. Both references must forward each refused request and, on text lines, capture `refusal_rx_hex` in two receive modes |
 | Cells are real | Rule 7: Renode reads an unmapped address as 0, so a misplaced cell fails the references |
 | The hidden sequences catch wrong drivers | Every sampled mutant fails, on at least its expected checks |
+| A boot reads the same every time | Each grade records its startup observation, and a device's graded runs must all show the same one |
+
+A set is registered in `resources/registrations/sets.json`, `generated-set-registrations/2`: `{"schema", "sets": {<name>: {"manifest_sha256", "scoring"}}}`, where `scoring` is true for a scoring set and false for a development set.
+
+Admission reads the whole record, not only the device it is asked about. Beyond the [record's identity and status](benchmark-case-authoring.md#generated-sets), it refuses a set whose record holds a failure; whose devices or sample are not the manifest's; where any device's two references did not both pass; where a mutant row was not rejected, repeats another or lies outside the sample, or a sampled device lacks a required mutant; whose runs are not exactly each device's two references and each mutant row; where any run's `native_process_observed` is not `true`; or where a device's runs show boot readings (a boot reading is the startup observation's values, read at the start of a grade) that differ, are missing or are empty. A record does not list a key's mutants, so a mutant dropped beyond the required ones is not detected. These checks read the record correctly; only a real qualification shows that Renode ran.
 
 ## Generator duties
 
@@ -168,7 +173,7 @@ Nothing in this repository can check these, so the generator's own tests must:
 
 ## What a trial and a verdict reveal
 
-A trial's worker receives the image and the mission, and a pin that names only the set, its manifest hash and the device id, never the level or framing. The bench harness reads a suite's manifests and sealed files into memory before the answer vault unmounts, and refuses to start while a set's directory is still reachable.
+A trial's worker receives the image and the mission, and a pin that names the set, its manifest hash, the device id, and the hashes of the image, the answer file and the qualification record, never the level or framing. The bench harness holds a suite's manifest, qualification record and sealed files in memory, and waits until the set's folder is out of reach before it starts the suite. The operator closes the vault by hand; the harness only watches the path.
 
 A verdict publishes each check's id, whether it passed, and a reason for each check that failed or was undecided. The ids are `<sequence>/<step>/answer`, `<sequence>/<step>/out:<output>` and `<sequence>/<step>/state:<cell>`, with steps numbered from 1. They show:
 - how many sequences, steps and cells a device has;

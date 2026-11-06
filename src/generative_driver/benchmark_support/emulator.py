@@ -20,10 +20,7 @@ def _path(value):
     return '@' + text.replace(' ', '\\ ')
 
 
-def truth_for_case(case_root, manifest, options):
-    from .truth import unlock
-    password_file = options.get('evaluator_password_file')
-    if not password_file:
+def truth_for_case(case_root, manifest, password):
+    if password is None:
         raise ValueError('Evaluator password file is required; candidate workers must not receive it')
-    password = Path(password_file).read_text().strip()
-    return unlock(Path(case_root) / manifest['truth']['path'], password, manifest['truth']['sha256'])
+    return password.unlock(Path(case_root) / manifest['truth']['path'], manifest['truth']['sha256'])

@@ -1,5 +1,5 @@
 """Evaluator-owned volatile parameter-store transaction oracle."""
-from .family_support import integer, integer_vector, private_phase, signed16
+from .family_support import admission_valid, hydrate_family_truth, integer, integer_vector, private_phase, signed16
 
 REQUIRED_MUTANTS = frozenset({"constant", "scale", "order", "wrong-bank", "abort", "idle-only-update",
                               "short-rejection-frame"})
@@ -107,8 +107,8 @@ def reuse_passed(events, capabilities):
     return progress==4 and events[-1]['observation'].get('pending_active') is False
 
 
-REQUIRED_SCENARIOS = {'idle-update', 'pending-same-bank-update', 'pending-different-bank-update',
-                      'stage-commit', 'stage-abort', 'rejection'}
+REQUIRED_SCENARIOS = frozenset({'idle-update', 'pending-same-bank-update', 'pending-different-bank-update',
+                                'stage-commit', 'stage-abort', 'rejection'})
 
 
 def validate_phase(phase):
@@ -164,3 +164,9 @@ def validate_phase(phase):
     all_observed = [i for a in phase['actions'] if a['kind']=='observe' for i in a['checks']]
     if set(all_observed)!={c['id'] for c in contract['checks']} or len(all_observed)!=len(set(all_observed)):
         raise ValueError('Unobserved or duplicate scenario checks')
+
+
+HOOKS = {'contract': contract, 'build_plan': build_plan, 'observations': observations, 'reuse_passed': reuse_passed,
+         'required_mutants': REQUIRED_MUTANTS, 'hydrate_truth': hydrate_family_truth,
+         'admission_valid': admission_valid,
+         'validate_phase': validate_phase, 'required_scenarios': REQUIRED_SCENARIOS}

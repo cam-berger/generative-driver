@@ -61,6 +61,10 @@ CLAIM = {'claimed_success': 'Fresh-reuse worker claimed success', 'mission_passe
 # its trials executed (a replay suite's say that no model ran).
 GROUPS = ('family', 'level', 'framing')
 LABELS = ('execution', 'model_benchmark')
+# What reading a trial's record or a run's kept snapshot can meet: each reads as a figure not known, so a card never
+# fails on one (Feature 08, output measure). A snapshot that is no object has no `items`, and JSON nested too deeply
+# for the reader is a RecursionError.
+UNREADABLE = (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError)
 
 
 def _decoded(payload):
@@ -321,9 +325,44 @@ def _claim(handoffs, reports, final):
             'agrees': None if claimed is None or passed is None else claimed == passed}
 
 
-def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None) -> dict:
-    """The metrics of one run, schema `benchmark-trial-metrics/1`: its `repairs`, its `claim` and, for each stage in
-    order:
+def _largest_output(trial_dir) -> int | None:
+    """The largest output a trial's grading measured, from the `package_output` of the record in its folder, or None
+    when there is no such figure to read: no folder or record, or a stub, a stopped run or a no-driver grade."""
+    try:
+        record = json.loads((Path(trial_dir) / 'trial.json').read_text(encoding='utf-8'))
+        largest = record['package_output']['largest_bytes']
+    except UNREADABLE:
+        return None
+    return largest if type(largest) is int else None
+
+
+def _firmware_bytes(run_dir: Path) -> int | None:
+    """The size of the firmware of a run: its pin's images summed, from the kept `benchmark/inputs/` once
+    `read_snapshot` has checked them. None when an image cannot be read or is not the one pinned, when there are none,
+    or when they come to no bytes."""
+    from .registry import resource_path
+    from .snapshots import read_snapshot
+    try:
+        snapshot = read_snapshot(run_dir)
+        images = snapshot['case_pin']['manifest']['images']
+        if any(snapshot['public_files'][name] != images[name] for name in images):
+            return None
+        return sum(resource_path(run_dir / 'benchmark/inputs', name).stat().st_size for name in images) or None
+    except UNREADABLE:
+        return None
+
+
+def _package_output(largest, firmware) -> dict:
+    """A trial's output figures: its largest output, its firmware's size and the first divided by the second, which
+    needs both."""
+    return {'largest_bytes': largest, 'firmware_bytes': firmware,
+            'ratio': None if largest is None or firmware is None else largest / firmware}
+
+
+def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None, run_dir: Path | None = None) -> dict:
+    """The metrics of one run, schema `benchmark-trial-metrics/1`: its `repairs`, its `claim`, its `package_output` and,
+    for each stage in order (`run_dir` is where the run's files are read, if not in `home`: `trial_store.opened`'s copy
+    of a scoring run):
 
     - `attempts`: the `stage.assigned` events. `wall_seconds`: from the first of them to the last `stage.accepted` or
       `stage.skipped` event. `worker_seconds` and `tokens`: the workers' reports summed.
@@ -360,9 +399,13 @@ def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None) -> 
     A call is its `tool.started` event and its `tool.finished` event, paired by `dispatch_id`; one that never finished,
     as when its tool raised, still counts as a call, and one finished twice counts once.
 
+    `package_output` always holds `largest_bytes`, `firmware_bytes` and `ratio`, each None when it is not known: the
+    first is what the trial's record in `trial_dir` says its grading measured (`_largest_output`), the second the size
+    of the images kept under the run's folder in `home` (`_firmware_bytes`), which `run_dir`'s copy never holds.
+
     Raises FileNotFoundError for a `home` with no database and ValueError for a `run_id` the database does not hold."""
     home = Path(home)
-    run_dir = home / 'runs' / run_id
+    run_dir = home / 'runs' / run_id if run_dir is None else Path(run_dir)
     events, reports, handoffs, final, progress = _records(home, run_id)
     assigned, begun, ended = {stage: [] for stage in STAGES}, {}, {stage: [] for stage in STAGES}
     managed, device = {stage: {} for stage in STAGES}, {stage: dict.fromkeys(DEVICE, 0) for stage in STAGES}
@@ -427,7 +470,9 @@ def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None) -> 
                          'device': device[stage], 'tokens': _tokens(rows, len(assigned[stage]))}
     repairs = (progress or {}).get('repairs')
     return {'schema': SCHEMA, 'run_id': run_id, 'repairs': repairs if type(repairs) is int else None,
-            'claim': _claim(handoffs, reports, final), 'stages': stages}
+            'claim': _claim(handoffs, reports, final),
+            'package_output': _package_output(_largest_output(trial_dir), _firmware_bytes(home / 'runs' / run_id)),
+            'stages': stages}
 
 
 _Figure = namedtuple('_Figure', 'total median measured')
@@ -479,14 +524,26 @@ def _run_figures(metrics):
     return {'repairs': repairs.total, 'claim': claim, 'measured': {'repairs': repairs.measured}}
 
 
+def _output_figures(metrics):
+    """The most and the median of each output figure, over the trials holding both of the figures their ratio needs,
+    with `measured` their number: each None, and 0, with none."""
+    rows = [trial['package_output'] for trial in metrics if trial['package_output']['ratio'] is not None]
+
+    def figures(key):
+        values = [row[key] for row in rows]
+        return {'max': max(values, default=None), 'median': _figure(values).median}
+    return {**{key: figures(key) for key in ('largest_bytes', 'firmware_bytes', 'ratio')}, 'measured': len(rows)}
+
+
 def bench_trial_dirs(report: dict, home: Path) -> dict[str, Path]:
     """Where the bench harness kept the directory of each started trial of a suite report, by trial key: the trial
     directory, under any suite of the bench home beside `home`, whose `trial.json` names the trial's run, found as the
     harness finds a trial for a run. A started trial with no directory there is left out, and its resets are then those
     the configurator recorded, a lower bound."""
-    from .harness import _trial_of, bench_home
-    suites = bench_home(home) / 'suites'
-    found = {row['trial_key']: _trial_of(suites, row['run_id']) for row in report['trials'] if row.get('run_id')}
+    from .harness import _trial_of
+    from .trial_store import trial_dirs
+    found = {row['trial_key']: _trial_of(trial_dirs(home), row['run_id']) for row in report['trials']
+             if row.get('run_id')}
     return {key: directory for key, directory in found.items() if directory is not None}
 
 
@@ -503,7 +560,34 @@ def _groups(rows):
     return groups
 
 
-def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | None = None) -> dict:
+def _reruns(rows):
+    """How many devices a scoring suite ran again (Feature 06, slot policy), and what their first attempts cost: the
+    tokens and wall seconds summed over those that gave them, with how many did under `measured`."""
+    first = [row.get('first_attempt') or {} for row in rows if row.get('attempt') == 2]
+    tokens, seconds = _figure(row.get('tokens') for row in first), _figure(row.get('seconds') for row in first)
+    return {'count': len(first), 'first_attempt_tokens': tokens.total, 'first_attempt_seconds': seconds.total,
+            'measured': {'first_attempt_tokens': tokens.measured, 'first_attempt_seconds': seconds.measured}}
+
+
+def _set_design(set_root, scoring_set):
+    """{device id: {level, framing}} of a scoring set, read from the manifest under `set_root` and held only for the
+    length of a scorecard. ValueError for a set other than the one the suite froze."""
+    from .generated_sets import load_set
+    manifest = load_set(Path(set_root), scoring_set['registration'])
+    if manifest['manifest_sha256'] != scoring_set['manifest_sha256']:
+        raise ValueError('The set root holds another manifest than the suite froze: ' + scoring_set['registration'])
+    return {device['id']: {key: device[key] for key in ('level', 'framing')} for device in manifest['devices']}
+
+
+def _scoring_metrics(home, suite_id, row, password, vault):
+    """A scoring trial's metrics, read from `trial_store.opened`'s copy, sealed or not."""
+    from .trial_store import opened
+    with opened(home, suite_id, row['run_id'], password, vault=vault) as root:
+        return trial_metrics(home, row['run_id'], trial_dir=root / 'trial', run_dir=root / 'run')
+
+
+def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | None = None, password=None,
+                    set_root=None, vault=None) -> dict:
     """The scorecard of a suite, schema `benchmark-scorecard/1`, from its `benchmark-suite-report/3` and the records of
     the runs its trials started. It says what it measures: the `suite_id`; whether the suite is still under way or was
     stopped before its slots settled (the report's `provisional` flag, the suite's `status` and its `reason`, None for a
@@ -517,8 +601,9 @@ def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | N
     report's `equivalent_and_mission` count of equivalent drivers with a successful fresh mission that earlier studies
     reported, when it has one; the `groups`, that pass rate by each value of each of `family`, `level` and `framing`
     that the trial rows carry; the report's `execution` and `model_benchmark` when it has them, which say that no model
-    ran a replay suite's trials; `measured_trials`; and the figures of `trial_metrics` added up over the trials, under
-    `run` (repairs and claim) and `stages` (each stage).
+    ran a replay suite's trials; `measured_trials`; the `reruns` (`_reruns`); the `package_output` (`_output_figures`);
+    and the figures of `trial_metrics` added up over the trials, under `run` (repairs and claim) and `stages` (each
+    stage), which count a rerun's run and not its first attempt's.
 
     The two `execution` fields differ for a replay suite: the card's own says how its trials were run
     (`replay-emulation`, from the report), and `conditions.execution` is what the frozen experiment declared
@@ -533,7 +618,11 @@ def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | N
     are never unknown (attempts, managed calls, device) are plain sums. In `run` the repairs are summed the same way, and
     each yes/no figure of the claim is how many trials answered true, false and unknown.
 
-    A report that carries a scoring set gives aggregates only: no `trials`, and no case, run id or trial key. Any other
+    A report that carries a scoring set gives aggregates only: no `trials`, and no case, run id or trial key. Its
+    figures are read through `trial_store.opened`, so it needs `password` (the set's `EvaluatorPassword`), and `vault`
+    once `trial_store.store` has run, and it raises with no password rather than give None figures. It needs `set_root`
+    to join each row's level and framing in memory for its `groups`, and saves neither anywhere. It refuses a suite with
+    anything still running (`refuse_unsettled_scoring`). Any other
     adds `trials`, a `{trial_key, scored, equivalent_and_mission, metrics}` row for each planned trial (the flag where
     the report's row has one), its metrics None without a run or while it runs. Audit findings quote raw worker commands
     and are in no scorecard.
@@ -544,9 +633,19 @@ def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | N
         raise ValueError("A scorecard needs a benchmark-suite-report/3, which stores each trial's scored outcome")
     rows, trial_dirs = report['trials'], trial_dirs or {}
     identity, dimensions = report['experiment']['comparison_identity'], report['experiment']['dimensions']
+    scoring = 'scoring_set' in identity
+    if scoring:
+        from .suites import refuse_unsettled_scoring
+        if password is None or not set_root:
+            raise ValueError("A scoring suite's scorecard needs its set's password file and its set root: "
+                             + str(report.get('suite_id')))
+        refuse_unsettled_scoring(report['suite_id'], home)
+        design = _set_design(set_root, identity['scoring_set'])
+        rows = [{**row, **design.get(row.get('device_id'), {})} for row in rows]
     budget, policy = identity['budgets']['effective'], identity['intervention_policy']
     rate = pass_rate([row.get('scored') for row in rows])
-    metrics = {row['trial_key']: trial_metrics(home, row['run_id'], trial_dir=trial_dirs.get(row['trial_key']))
+    metrics = {row['trial_key']: (_scoring_metrics(home, report['suite_id'], row, password, vault) if scoring else
+                                  trial_metrics(home, row['run_id'], trial_dir=trial_dirs.get(row['trial_key'])))
                for row in rows if row.get('run_id') and row.get('scored') != 'running'}
     measured = list(metrics.values())
     stages = {stage: _stage_figures([trial['stages'][stage] for trial in measured]) for stage in STAGES}
@@ -564,8 +663,8 @@ def suite_scorecard(report: dict, *, home: Path, trial_dirs: dict[str, Path] | N
     card = {'schema': SUITE_SCHEMA, 'suite_id': report['suite_id'], 'provisional': report.get('provisional'),
             'status': report.get('status'), 'reason': reason, 'system': system, 'conditions': conditions,
             **{key: report[key] for key in LABELS if key in report}, 'pass_rate': rate, 'pass_line': pass_rate_line(rate),
-            **joint, 'groups': _groups(rows), 'measured_trials': len(measured), 'run': _run_figures(measured),
-            'stages': stages}
+            **joint, 'groups': _groups(rows), 'measured_trials': len(measured), 'reruns': _reruns(rows),
+            'package_output': _output_figures(measured), 'run': _run_figures(measured), 'stages': stages}
     if 'scoring_set' not in identity:
         flag = lambda row: ({'equivalent_and_mission': row['equivalent_and_mission']}
                             if 'equivalent_and_mission' in row else {})
@@ -594,8 +693,11 @@ def scorecard_markdown(card: dict) -> str:
     when the card has one), and a suite no model ran says so on the next (`model_benchmark` is False). Under them, one
     line names the system (protocol, runtime and version, model and reasoning effort, and how it executed and on what
     evidence: the card's own `execution` when it has one, else the conditions', then the evidence track), one the scoring
-    set (its registration and the first 12 characters of its manifest hash) of a suite that ran one, and one gives the
-    joint verdict of earlier studies. Then come the pass line of each group, the run figures, a row of sums and one of
+    set (its registration and the first 12 characters of its manifest hash) of a suite that ran one, one the reruns of a
+    suite that ran any, with what their first attempts cost, one the package output of a suite that measured any, with
+    its ratio to three significant figures so that a small one does not read as zero, and one gives the joint verdict of
+    earlier studies. Then
+    come the pass line of each group, the run figures, a row of sums and one of
     medians for each stage, and the managed calls by tool. A figure that no trial measured reads `unknown`, and one that
     only some did is marked with how many (`n/N`)."""
     trials, stages, run = card['measured_trials'], card['stages'], card['run']
@@ -616,6 +718,19 @@ def scorecard_markdown(card: dict) -> str:
     if 'scoring_set' in card['conditions']:
         scoring = card['conditions']['scoring_set']
         lines.append(f"Scoring set: {scoring['registration']}, manifest {scoring['manifest_sha256'][:12]}")
+    reruns = card.get('reruns') or {'count': 0}
+    if reruns['count']:
+        cost = [_cell(reruns[key], reruns['measured'][key], reruns['count'])
+                for key in ('first_attempt_tokens', 'first_attempt_seconds')]
+        lines.append(f"Reruns: {reruns['count']}, whose first attempts took {cost[0]} tokens and {cost[1]} wall "
+                     'seconds, in no figure below')
+    output = card.get('package_output') or {'measured': 0}
+    if output['measured']:
+        size = lambda key, figure: _cell(output[key][figure], output['measured'], trials)
+        lines.append(f"Package output: largest {size('largest_bytes', 'max')} bytes at most, median "
+                     f"{size('largest_bytes', 'median')}; firmware {size('firmware_bytes', 'max')} bytes at most, "
+                     f"median {size('firmware_bytes', 'median')}; ratio {output['ratio']['max']:.3g} at most, median "
+                     f"{output['ratio']['median']:.3g}")
     if 'joint_verdict' in card:
         joint = card['joint_verdict']
         lines += ['', "Earlier studies' joint verdict (an equivalent driver and a successful fresh mission): "

@@ -163,7 +163,7 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
 def _public(value, home):
     if isinstance(value, dict):
         return {k: _public(v, home) for k, v in value.items()
-                if k not in {"evaluator_password_file", "authkey", "password"}}
+                if k not in {"evaluator_password", "evaluator_password_file", "authkey", "password"}}
     if isinstance(value, list):
         return [_public(v, home) for v in value]
     if isinstance(value, str):

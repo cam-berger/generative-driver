@@ -7,6 +7,7 @@ import json
 import signal
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ from generated_fixtures import (BOUNDED, FIXTURE_ANSWER_KEY, MODE_ADDRESS, MODE_
                                 REFERENCE_B, STEP, FixtureDevice, fixture_mission, fixture_start)
 from generative_driver.benchmark_support import generated, generated_device
 from generative_driver.benchmark_support.behavior import validate_records
+from generative_driver.benchmark_support.emulated_actions import OutputMeter
 from generative_driver.benchmark_support.evaluator import reference_execute
 from generative_driver.benchmark_support.generated import classify_answer
 from generative_driver.benchmark_support.integrity import digest
@@ -84,7 +86,25 @@ def add_to_bundled_runtime(package, code):
 
 
 class StepGradingTests(unittest.TestCase):
-    def grade(self, candidate, *, edit=None, healthy_device_failures=False, **device):
+    def test_08_B1_a_real_grading_gives_its_meter_each_package_call(self):
+        meter = OutputMeter()
+        self.grade(REFERENCE_A, meter=meter)
+        called = [event for event in self.raw['events'] if 'step' in event]
+        self.assertGreater(len(called), 0)
+        self.assertEqual(meter.calls, len(called))
+        self.assertGreater(meter.largest_bytes, 0)
+
+    def test_08_B3_a_real_grading_gives_the_same_grade_and_evidence_with_and_without_a_meter(self):
+        unmeasured = self.grade(REFERENCE_A)
+        evidence = self.raw
+        measured = self.grade(REFERENCE_A, meter=OutputMeter())
+        self.assertEqual((measured['records'], measured['grade']), (unmeasured['records'], unmeasured['grade']))
+        self.assertNotIn('largest_bytes', json.dumps(self.raw))
+        self.assertNotIn('package_output', json.dumps(self.raw))
+        self.assertEqual([event for event in self.raw['events'] if 'step' in event],
+                         [event for event in evidence['events'] if 'step' in event])
+
+    def grade(self, candidate, *, edit=None, healthy_device_failures=False, meter=None, **device):
         """The evaluation of `candidate`'s frozen package: emitted by the reference runner against a fixture device,
         then graded by reference_execute on a fresh one; both devices are FixtureDevice(**device). `edit` changes the
         package between the two. The evaluator's raw evidence is kept in self.raw."""
@@ -102,7 +122,7 @@ class StepGradingTests(unittest.TestCase):
                 return reference_execute(PIN, key, candidate['capabilities'], renode=Path('/toy'), image=Path('/toy'),
                                          output_dir=root/'final', package=package,
                                          expected_package_sha256=digest(package), private_dir=root/'native',
-                                         healthy_device_failures=healthy_device_failures)
+                                         healthy_device_failures=healthy_device_failures, meter=meter)
             finally:
                 raw = root/'final'/'raw.json'
                 self.raw = json.loads(raw.read_text(encoding='utf-8')) if raw.is_file() else None
@@ -245,8 +265,9 @@ class StepGradingTests(unittest.TestCase):
         truth = {**FIXTURE_ANSWER_KEY, 'artifact_sha256': 'a' * 64}
         self.addCleanup(device.close)
         with tempfile.TemporaryDirectory() as temp:
-            return generated.execute(device.session(truth['recipe']), invoke, generated.contract(PIN, truth, 'final'),
-                                     truth, Path(temp)/'raw.json', healthy_device_failures=True)
+            return generated.execute(device.session(truth['recipe']), invoke, PIN,
+                                     generated.contract(PIN, truth, 'final'), truth, Path(temp)/'raw.json',
+                                     phase='final', healthy_device_failures=True)
 
     def test_a_package_process_that_could_not_start_is_the_hosts_even_on_a_healthy_device(self):
         spawn = {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [],
@@ -254,10 +275,10 @@ class StepGradingTests(unittest.TestCase):
         device = FixtureDevice()
         with self.assertRaisesRegex(RuntimeError, 'behavioral grading is unavailable'):
             self.run_steps(device, lambda *call: dict(spawn))
-        # A reset with its boot interval, its observation and one read of the state, then the call's window; no health
-        # check follows.
-        self.assertEqual(device.commands, ['pause', 'machine Reset', 'emulation RunFor "00:00:00.1"', 'cpu PC',
-                                           'sysbus ReadDoubleWord 0x20000000', 'start', 'pause'])
+        # The boot reading, then a reset with its boot interval, its observation and one read of the state, then the
+        # call's window; no health check follows.
+        self.assertEqual(device.commands, ['cpu PC', 'pause', 'machine Reset', 'emulation RunFor "00:00:00.1"',
+                                           'cpu PC', 'sysbus ReadDoubleWord 0x20000000', 'start', 'pause'])
 
     def test_a_device_that_stops_before_its_state_is_read_leaves_no_grade(self):
         # Catches a dead evaluator device taken for an unreadable cell, which would leave an unknown grade that settles
@@ -268,6 +289,69 @@ class StepGradingTests(unittest.TestCase):
             return {'ok': True, 'outputs': {}, 'units': {}, 'transcript': []}
         with self.assertRaisesRegex(RuntimeError, 'the device state is unavailable'):
             self.run_steps(device, stops_the_machine)
+
+    def test_04_B7_it_reads_the_startup_observation_first_and_every_save_records_it(self):
+        device, saves = FixtureDevice(), []
+        truth = {**FIXTURE_ANSWER_KEY, 'artifact_sha256': 'a' * 64}
+        self.addCleanup(device.close)
+        with tempfile.TemporaryDirectory() as temp:
+            evidence = Path(temp) / 'raw.json'
+            calls = []
+
+            def invoke(task, inputs, grants):
+                calls.append(list(device.commands))
+                if evidence.is_file():
+                    saves.append(json.loads(evidence.read_text(encoding='utf-8')))
+                return {'ok': True, 'outputs': {}, 'units': {}, 'transcript': []}
+            generated.execute(device.session(truth['recipe']), invoke, PIN, generated.contract(PIN, truth, 'final'),
+                              truth, evidence, phase='final', healthy_device_failures=True)
+            saves.append(json.loads(evidence.read_text(encoding='utf-8')))
+        self.assertEqual(device.commands[0], 'cpu PC')
+        self.assertLess(device.commands.index('cpu PC'), device.commands.index('machine Reset'))
+        self.assertEqual(calls[0][0], 'cpu PC')
+        self.assertGreater(len(saves), 2)
+        self.assertEqual([save['boot_reading'] for save in saves], [{'pc': 0x08000100}] * len(saves))
+
+    def test_04_B7_an_incomplete_save_records_it_too(self):
+        device = FixtureDevice()
+        truth = {**FIXTURE_ANSWER_KEY, 'artifact_sha256': 'a' * 64}
+        self.addCleanup(device.close)
+
+        def stops_the_machine(task, inputs, grants):
+            device.dead = device.dead or task == 'ping'
+            return {'ok': True, 'outputs': {}, 'units': {}, 'transcript': []}
+        with tempfile.TemporaryDirectory() as temp:
+            evidence = Path(temp) / 'raw.json'
+            with self.assertRaisesRegex(RuntimeError, 'the device state is unavailable'):
+                generated.execute(device.session(truth['recipe']), stops_the_machine, PIN,
+                                  generated.contract(PIN, truth, 'final'), truth, evidence, phase='final',
+                                  healthy_device_failures=True)
+            saved = json.loads(evidence.read_text(encoding='utf-8'))
+        self.assertEqual((saved['incomplete'], saved['boot_reading']), (True, {'pc': 0x08000100}))
+
+    def test_04_B7_a_read_that_raises_is_a_run_error_before_any_reset_or_call(self):
+        device, truth = FixtureDevice(pc=None), {**FIXTURE_ANSWER_KEY, 'artifact_sha256': 'a' * 64}
+        self.addCleanup(device.close)
+        invoke = unittest.mock.Mock(side_effect=AssertionError('a call was made'))
+        with tempfile.TemporaryDirectory() as temp:
+            evidence = Path(temp) / 'raw.json'
+            with self.assertRaisesRegex(RuntimeError, 'Host fault: monitor rejected evaluator control'):
+                generated.execute(device.session(truth['recipe']), invoke, PIN, generated.contract(PIN, truth, 'final'),
+                                  truth, evidence, phase='final', healthy_device_failures=True)
+            saved = json.loads(evidence.read_text(encoding='utf-8'))
+        self.assertEqual(device.commands, ['cpu PC'])
+        invoke.assert_not_called()
+        self.assertEqual((saved['incomplete'], saved['events'], 'boot_reading' in saved), (True, [], False))
+
+    def test_04_B7_the_reading_changes_no_grade_or_check_id(self):
+        # No RED of its own: this pins what must stay. The boot read adds evidence, never a check.
+        truth = {**FIXTURE_ANSWER_KEY, 'artifact_sha256': 'a' * 64}
+        contract = generated.contract(PIN, truth, 'final')
+        answered = {'ok': True, 'outputs': {}, 'units': {}, 'transcript': []}
+        records = self.run_steps(FixtureDevice(), lambda *call: dict(answered))
+        self.assertEqual([record['id'] for record in records], [check['id'] for check in contract['checks']])
+        self.assertNotIn('boot_reading', json.dumps(contract))
+        self.assertEqual(self.grade(REFERENCE_A)['grade']['verdict'], 'passed')
 
     def test_every_mutant_of_the_fixture_fails_exactly_its_expected_checks(self):
         for mutant in FIXTURE_ANSWER_KEY['mutants']:
@@ -441,18 +525,20 @@ class AnswerKeyTests(unittest.TestCase):
 
 class RegistrationTests(unittest.TestCase):
     def test_the_generated_family_is_registered_unavailable_in_listings_and_shows_workers_no_instrument(self):
-        from generative_driver.benchmark_support.instruments import family_for, public_observation
+        from generative_driver.benchmark_support.families import family_for
+        from generative_driver.benchmark_support.instruments import public_observation
         from generative_driver.benchmark_support.missions import validate_mission
-        from generative_driver.benchmark_support.registrations import CaseRegistration, family_module, registration_for
+        from generative_driver.benchmark_support.registrations import CaseRegistration, registration_for
         from generative_driver.benchmark_support.registry import CURRENT_VERSIONS, case_descriptors
         # The fixture's public mission is one the mission validator accepts, with the unit of its one output.
         self.assertEqual(validate_mission(fixture_mission('0000d001'), 'generated'), fixture_mission('0000d001'))
         self.assertEqual(registration_for('generated'),
                          CaseRegistration('generated', 'generated', '1', 'emulator-v2', 'benchmark-case/2',
                                           native_module='generated', truth_schema='generated-answer-key/2',
-                                          calibration_kind='set'))
-        self.assertIs(family_for('generated'), generated)
-        self.assertIs(family_module('generated'), generated)
+                                          calibration_kind='set', execution='actual-agent-emulation',
+                                          evidence_track='firmware', approval_scope='emulator',
+                                          default_effects=['write', 'actuate']))
+        self.assertIs(family_for('generated').execute, generated.execute)
         self.assertEqual(CURRENT_VERSIONS['generated'], '1')
         rows = {row['id']: row for row in case_descriptors()}
         self.assertEqual({**rows['generated'], 'id': None}, {**rows['tq9-v3'], 'id': None})
@@ -467,9 +553,11 @@ class RegistrationTests(unittest.TestCase):
         core = {name for name in grader_closure(families=()) if not name.startswith('interface_runtime')}
         identity = grader_identity(case_id='generated')
         self.assertEqual(identity['scope'], 'generated')
-        # The family's grading module and the validator that defines a valid generated device (ADR 0007).
+        # The family's grading module, the validator that defines a valid generated device (ADR 0007) and the set table
+        # its pin hook reads (Feature 03).
         self.assertEqual(set(identity['modules']),
-                         core | {'benchmark_support.generated', 'benchmark_support.generated_device'})
+                         core | {'benchmark_support.generated', 'benchmark_support.generated_device',
+                                 'benchmark_support.generated_sets', 'benchmark_support.missions'})
 
 
 if __name__ == '__main__':

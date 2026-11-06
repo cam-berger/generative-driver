@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from generative_driver.benchmark import prepare_stage, observe_stage
+from generative_driver.benchmark_support.truth import EvaluatorPassword, read_password
 
 GRADES = {'passed', 'expected', 'checks', 'verdict', 'grade', 'absolute_tolerance', 'evaluator'}
 
@@ -223,7 +224,7 @@ class TQ9V2Tests(unittest.TestCase):
             self.assertEqual(device.stop(), {'stopped': True, 'confirmed': False})
             (root/'second').mkdir()
             device = provider(root/'second', [attached(2)]); device.start()
-            done = finish(device, 'tq9-v2', None, [], None, {'status': 'completed'})
+            done = finish(device, 'tq9-v2', None, [], None, {'status': 'completed'}, truth_source=None)
             self.assertEqual((done['status'], done['device_stop']['confirmed']), ('stop-unconfirmed', False))
 
     def test_final_plan_requires_permission_refusal_without_effect(self):
@@ -269,7 +270,7 @@ class TQ9V2Tests(unittest.TestCase):
         pin = pin_case('tq9-v2','original',0)
         pin['calibration'] = {'status':'passed','evidence_sha256':'a'*64}
         with self.assertRaises(ValueError):
-            require_calibration(pin, {'evaluator_password_file':'/does/not/exist'})
+            require_calibration(pin, EvaluatorPassword('not the case password'))
 
     def test_case_seed_reorders_only_independent_final_episodes(self):
         # Catches pinned seeds being ignored or dropping final coverage during variation.
@@ -363,7 +364,6 @@ class TQ9V2Tests(unittest.TestCase):
         import http.server, sys, threading, time
         from unittest.mock import patch
         import generative_driver
-        from generative_driver.benchmark_support.truth import seal, unlock
         from generative_driver.benchmark_support import harness
         from generative_driver import device_client
         from generative_driver.configurator import Controller
@@ -389,7 +389,7 @@ class TQ9V2Tests(unittest.TestCase):
                 truth={'private_sentinel':'EVALUATOR SENTINEL','images':manifest['images'],'recipe':recipe,
                     'contracts':{'units':{'temperature':'degC','duty':'permille'},'scenarios':{'original':{'phases':phases}},
                                  'time_policy':{'sample_settle_seconds':0}}}
-                manifest['truth']['sha256']=seal(truth,resources/manifest['truth']['path'],password.read_text())
+                manifest['truth']['sha256']=read_password(password).seal(truth, resources/manifest['truth']['path'])
                 (case/'case.json').write_text(json.dumps(manifest))
                 controller=Controller(root/'home');peers=[];worker_live=[]
                 from owner_ipc_fixture import owner_ipc
@@ -660,10 +660,10 @@ class TQ9V2Tests(unittest.TestCase):
                         changed=next(Path(a['path']) for a in interpreted.pop()['artifacts'] if a['path'].endswith('model.json'))
                         changed.write_text(changed.read_text()+' ')
                     return original_snapshot(*args,**kwargs)
-                # Only the harness unlocks the truth: to take the device recipe before the run, and to grade the frozen
-                # driver once after it. The configurator never does, and no stage runs the evaluator.
+                # Only the harness unlocks the truth, at admission, before the run: for the device recipe and for the
+                # grade after it. The configurator never does, and no stage runs the evaluator.
                 import inspect
-                from generative_driver.benchmark_support import emulator as emulator_module, evaluator
+                from generative_driver.benchmark_support import emulator as emulator_module, evaluator, registry
                 real_truth=emulator_module.truth_for_case;truth_callers=[]
                 def ended():
                     observed=controller.call('status',run)
@@ -671,8 +671,7 @@ class TQ9V2Tests(unittest.TestCase):
                 def truth_for_case(*args,**kwargs):
                     names={frame.function for frame in inspect.stack(0)}
                     truth_callers.append(names)
-                    admitting={'device_recipe','admit'}<=names;grading={'grade','conclude'}<=names and ended()
-                    if not (admitting or grading) or names&{'replace','recover_emulator','reconcile','_run','_prepare','_check','_dispatch'}:
+                    if 'admit' not in names or names&{'replace','recover_emulator','reconcile','_run','_prepare','_check','_dispatch'}:
                         raise AssertionError('Truth unlocked outside the harness')
                     return real_truth(*args,**kwargs)
                 from generative_driver.benchmark_support import evaluate as evaluate_module
@@ -697,7 +696,8 @@ class TQ9V2Tests(unittest.TestCase):
                     with patch.object(toolkit,'call_tool',side_effect=runtime_boundary),patch.object(device_client.DeviceClient,'replace',replace),patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
                          patch('generative_driver.benchmark_support.case_assets.case_root',return_value=resources),\
                          patch.object(controller,'_check',side_effect=check),patch.object(controller,'_verify_snapshot',side_effect=verify_snapshot),\
-                         patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True,'evidence_sha256':evidence}),\
+                         patch('generative_driver.benchmark_support.registry.admitted_truth',
+                               side_effect=lambda pin,secret:(registry.case_truth(pin['case_id'],root/'no-run',secret),{'ok':True,'evidence_sha256':evidence})),\
                          patch.object(emulator_module,'truth_for_case',side_effect=truth_for_case),\
                          patch.object(evaluator,'reference_execute',side_effect=reference),\
                          patch.object(evaluate_module,'adapt_model',side_effect=adapt),\
@@ -718,7 +718,7 @@ class TQ9V2Tests(unittest.TestCase):
                             with controller._db() as db:
                                 self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0],0)
                             continue
-                        provider,admission=harness.admit('tq9-v2',{'scenario_id':'original'},trial,password_file=password)
+                        provider,admission,unlocked=harness.admit('tq9-v2',{'scenario_id':'original'},trial,password=read_password(password))
                         provider.start()
                         if mode in ('concurrent-calls','cancel-in-call'):
                             # Every edge of the device's window and the run's release, as the provider receives them.
@@ -754,8 +754,8 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertFalse(graded)
                         # As the harness does once the run is terminal: stop the device, confirmed; grade a completed
                         # run's frozen driver once on a fresh emulator, seal the evidence and post the verdict.
-                        finished=harness.finish(provider,'tq9-v2',root/'home/runs'/run['run_id'],result,password,status,
-                            trial_dir=trial,token='scripted harness token',call=lambda method,params:controller.call(method,params))
+                        finished=harness.finish(provider,'tq9-v2',root/'home/runs'/run['run_id'],result,read_password(password),status,
+                            truth_source=lambda:unlocked,trial_dir=trial,token='scripted harness token',call=lambda method,params:controller.call(method,params))
                         graders=peers[run_peers:];del peers[run_peers:]
                         self.assertTrue(all(peer.closed for peer in graders))
                         graded_result=controller.call('result',run);equivalence=graded_result['equivalence']
@@ -925,11 +925,11 @@ class TQ9V2Tests(unittest.TestCase):
                                                  'Final verdict: not equivalent: '+'; '.join(d['reason'] for d in equivalence['diff']))
                                 self.assertEqual(equivalence['passed']+len(equivalence['diff']),equivalence['total'])
                                 # One grading run on one fresh emulator, after the run's own device stopped, and the
-                                # truth unlocked twice in all: the device recipe before the run, the grade after it.
+                                # truth unlocked once in all, at admission.
                                 self.assertEqual((graded,len(graders)),([run_peers],1))
                                 self.assertTrue(graders[0].private_dir and Path(graders[0].private_dir).is_relative_to(trial/'private'))
                                 self.assertFalse((trial/'private').exists())
-                                self.assertEqual([('admit' in names,'grade' in names) for names in truth_callers],[(True,False),(False,True)])
+                                self.assertEqual([('admit' in names,'grade' in names) for names in truth_callers],[(True,False)])
                                 note=next(c for c in result['accepted_handoffs'][-1]['checks'] if c['name']=='fresh_worker_mission')
                                 self.assertEqual(equivalence['mission'],note)
                             # The harness's verdict is recorded once: a repeat changes nothing; a forged token or another
@@ -941,7 +941,7 @@ class TQ9V2Tests(unittest.TestCase):
                                 post({**equivalence,'mission':{'name':'fresh_worker_mission','passed':None,'reason':'other'}})
                             self.assertEqual(len([e for e in controller.call('events',run)['events'] if e['kind']=='run.finalized']),1)
                             # The run evidence is sealed in the trial directory and names the graded driver.
-                            sealed=unlock(trial/'run-evidence.enc',password.read_text(),equivalence['evidence_sha256'])
+                            sealed=read_password(password).unlock(trial/'run-evidence.enc', equivalence['evidence_sha256'])
                             self.assertEqual((sealed['schema'],sealed['run_id']),('benchmark-run-evidence/2',run['run_id']))
                             self.assertEqual((sealed['final'] or {}).get('frozen_artifact_sha256'),driver)
                             self.assertEqual(sealed['device']['receipts'],result['progress']['device']['receipts'])
@@ -1246,7 +1246,7 @@ class TQ9V2Tests(unittest.TestCase):
                         # The harness sealed benchmark-run-evidence/2 in its trial directory, never in the run's: every
                         # accepted artifact and notes hash, the single final and the mission check beside it.
                         self.assertFalse((run_dir/'benchmark/run-evidence.enc').exists());self.assertNotIn('final_evaluation',state)
-                        sealed=unlock(trial/'run-evidence.enc',password.read_text(),equivalence['evidence_sha256'])
+                        sealed=read_password(password).unlock(trial/'run-evidence.enc', equivalence['evidence_sha256'])
                         if mode in ('generated-mcp', 'forged-mcp', 'reordered-mcp', 'mcp-reconnect'):
                             import copy
                             from generative_driver.benchmark_support.mcp_reuse import verified
@@ -1257,7 +1257,7 @@ class TQ9V2Tests(unittest.TestCase):
                             from generative_driver.benchmark_support.evidence import seal_run_evidence_v2
                             omitted = copy.deepcopy(sealed); omitted.pop('mcp_reuse')
                             with self.assertRaisesRegex(ValueError, 'generated|MCP|proof'):
-                                seal_run_evidence_v2(omitted, trial/'missing-proof.enc', password)
+                                seal_run_evidence_v2(omitted, trial/'missing-proof.enc', read_password(password))
                             for mutation in ('prefix', 'reorder', 'arguments', 'result', 'invented', 'missing'):
                                 tampered = copy.deepcopy(proof)
                                 if mutation == 'prefix': tampered['package_events'] = tampered['package_events'][:-1]
@@ -1305,16 +1305,16 @@ class TQ9V2Tests(unittest.TestCase):
                             from generative_driver.benchmark_support.mcp_reuse import verified
                             self.assertTrue(verified(sealed['mcp_reuse'], equivalence['frozen_artifact_sha256']))
                             # The offline regrade reports the verdict and the reuse as the live grade did.
-                            regraded = regrade_v3(report, trial/'run-evidence.enc', password)['equivalence']
+                            regraded = regrade_v3(report, trial/'run-evidence.enc', read_password(password))['equivalence']
                             self.assertEqual((regraded['equivalent'], regraded['mission']), (True, equivalence['mission']))
                             self.assertIs(regraded['mission']['passed'], mode == 'generated-mcp')
                             bad = copy.deepcopy(sealed)
                             bad['mcp_reuse']['package_events'] = bad['mcp_reuse']['package_events'][:-1]
                             forged_path = trial/'prefix-proof.enc'
-                            forged_sha = seal(bad, forged_path, password.read_text())
+                            forged_sha = read_password(password).seal(bad, forged_path)
                             forged_report = {**report, 'equivalence': {**report['equivalence'], 'evidence_sha256': forged_sha}}
                             # A proof cut short leaves the driver's verdict alone and fails the reuse it no longer establishes.
-                            forged = regrade_v3(forged_report, forged_path, password)['equivalence']
+                            forged = regrade_v3(forged_report, forged_path, read_password(password))['equivalence']
                             self.assertEqual((forged['equivalent'], forged['mission']['passed'], forged['mission']['reason']),
                                              (True, False, 'Missing or inconsistent owner proof of generated MCP reuse'))
                         # A driver awaiting its independent grade is never counted as a success.
@@ -1326,8 +1326,8 @@ class TQ9V2Tests(unittest.TestCase):
                         # A stopped trial's seal holds its handoffs alone, and no final.
                         for index,kept in enumerate((handoffs[:1],handoffs)):
                             folder=trial/('kept-'+str(index))
-                            kept_seal=evaluator.seal(folder,run_dir,{**result,'accepted_handoffs':kept},password_file=password)
-                            updated=unlock(folder/'run-evidence.enc',password.read_text(),kept_seal['sha256'])
+                            kept_seal=evaluator.seal(folder,run_dir,{**result,'accepted_handoffs':kept},password=read_password(password))
+                            updated=read_password(password).unlock(folder/'run-evidence.enc', kept_seal['sha256'])
                             self.assertIsNone(updated['final'])
                             self.assertEqual(len([r for r in updated['accepted_artifacts'] if r['kind']=='artifact']),sum(len(h['artifacts']) for h in kept))
                 finally:
@@ -1424,6 +1424,7 @@ class TQ9V2Tests(unittest.TestCase):
         record['input_hashes']=input_hashes(truth)
         manifest['calibration']={'status':'passed','input_hashes':record['input_hashes'],'evidence_sha256':canonical_digest(record)}
         truth['calibration']=record
+        manifest['truth']={'path':'groundtruth/tq9-v2.enc','sha256':'d'*64}
         pin={'case_id':'tq9-v2','scenario_id':'original','case_seed':0,'manifest':manifest,'calibration':manifest['calibration']}
         return manifest,record,truth,pin
 
@@ -1676,7 +1677,6 @@ class TQ9V2Tests(unittest.TestCase):
         # Synthetic encrypted authoring input, not a native qualification claim.
         from unittest.mock import patch
         from generative_driver.benchmark import case_root
-        from generative_driver.benchmark_support.truth import seal
         from generative_driver.benchmark_support.authoring import calibrate
         import shutil
         with tempfile.TemporaryDirectory() as temp:
@@ -1686,11 +1686,11 @@ class TQ9V2Tests(unittest.TestCase):
             truth={key:{} for key in ('source_hashes','contracts','recipe','references','build','analysis')}
             truth['mutations']={'required':[]}
             password=root/'password';password.write_text('synthetic calibration fixture')
-            manifest['truth']['sha256']=seal(truth,resources/manifest['truth']['path'],password.read_text())
+            manifest['truth']['sha256']=read_password(password).seal(truth, resources/manifest['truth']['path'])
             (case/'case.json').write_text(json.dumps(manifest))
             with patch('generative_driver.benchmark.case_root',return_value=resources), \
                     patch('generative_driver.benchmark_support.case_assets.case_root',return_value=resources):
-                result=calibrate('tq9-v2',{'evaluator_password_file':str(password),'output':str(root/'output'),
+                result=calibrate('tq9-v2',{'evaluator_password':read_password(password),'output':str(root/'output'),
                     'compiler':'/absent','renode':None,'ghidra_home':None,'java_home':None})
             self.assertFalse(result['ok'])
             self.assertEqual(result['calibration'],'pending')

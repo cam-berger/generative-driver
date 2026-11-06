@@ -24,6 +24,15 @@ def reading(observed):
             **({'condition': observed['condition']} if 'condition' in observed else {})}
 
 
+def offers_readings(device):
+    """Whether a device, as its descriptor describes it, offers workers instrument readings: its `instrument.units` name
+    some. A description with no `instrument` offers them, as it always has; a generated device names none (Feature 03,
+    generated trials)."""
+    if not isinstance(device, dict) or 'instrument' not in device:
+        return True
+    return bool((device['instrument'] or {}).get('units'))
+
+
 def descriptor_errors(device):
     """What is wrong with a `device-descriptor/1` of a provided emulator; empty when it can be used."""
     if not isinstance(device, dict) or device.get('schema') != DESCRIPTOR or device.get('kind') != 'provided-emulator':

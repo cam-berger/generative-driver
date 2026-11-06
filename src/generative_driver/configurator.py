@@ -103,8 +103,8 @@ def validate_scoped_approval(spec):
         raise ValueError('Unsupported scoped_tool_approval')
     if case_id is None:
         raise ValueError('Emulator approval requires a registered benchmark case such as tq9')
-    from .benchmark_support.registry import resolve_case
-    definition = resolve_case(case_id)
+    from .benchmark_support.registry import case_selection
+    definition = case_selection(case_id)
     if definition.execution != 'actual-agent-emulation' or definition.approval_scope != 'emulator':
         raise ValueError('scoped_tool_approval supports only a registered emulator profile')
     case_option_values=spec.get('case_options')
@@ -127,6 +127,8 @@ def case_options(spec):
     if spec.get('device') and spec.get('_device'):
         # The provided device as the configurator's durable record holds it now (a recovery changes its binding).
         options['device']={key:spec['_device'][key] for key in ('session_id','binding')}
+        if 'instrument' in spec['device']:
+            options['device']['instrument'] = copy.deepcopy(spec['device']['instrument'])
         if spec['device'].get('development_conditions'):
             options['device']['development_conditions'] = copy.deepcopy(spec['device']['development_conditions'])
     return {**options,'revision':spec.get('_revision',0),'feedback':spec.get('_feedback'),
@@ -138,13 +140,13 @@ def _replay_config(params, config, home):
     replay, nor a physical device. Its configuration names the candidate and the hash of its files; the candidate lies
     outside the bench home beside `home`, which holds evaluator records."""
     from .replay import candidate_config
-    from .benchmark_support.harness import bench_home
+    from .benchmark_support.trial_store import bench_home
     case = params.get('case')
     case_id = case.get('id') if isinstance(case, dict) else case
     if not case_id:
         raise ValueError('The replay executor runs emulated benchmark cases only; this start names no case')
-    from .benchmark_support.registry import resolve_case
-    if resolve_case(case_id).execution != 'actual-agent-emulation':
+    from .benchmark_support.registry import case_selection
+    if case_selection(case_id).execution != 'actual-agent-emulation':
         raise ValueError('The replay executor runs emulated benchmark cases only, never ' + str(case_id))
     return candidate_config(config, bench=bench_home(home))
 
@@ -154,7 +156,7 @@ def _replay_suite_config(manifest, options, home):
     checked first, then each stored by its hash in the configurator home, from which every child of that case takes its
     copy."""
     from .replay import stored_candidate, suite_candidates
-    from .benchmark_support.harness import bench_home
+    from .benchmark_support.trial_store import bench_home
     checked = suite_candidates({entry['case'] for entry in manifest['entries']},
                                options.get('replay_candidates') if isinstance(options, dict) else None,
                                bench=bench_home(home))
@@ -186,14 +188,14 @@ def _verify_candidate(config):
 
 
 def _refuse_secrets(spec):
-    """The configurator never holds a password, a password file or the emulator executable, for any case: the bench
-    harness does. The request itself is checked too, since the run keeps all of it as its spec."""
+    """The configurator never holds a password, a password file, the emulator executable or a set's root, for any case:
+    the bench harness does. The request itself is checked too, since the run keeps all of it as its spec."""
     case = spec.get('case')
     for options in (spec, spec.get('case_options'), case.get('options') if isinstance(case, dict) else None):
-        if isinstance(options, dict) and any('password' in str(key).lower() or str(key).lower() == 'renode'
-                                             for key in options):
-            raise ValueError('The configurator takes no password, password file or emulator executable; the bench '
-                             'harness holds them')
+        if isinstance(options, dict) and any('password' in str(key).lower()
+                                             or str(key).lower() in ('renode', 'set_root') for key in options):
+            raise ValueError('The configurator takes no password, password file, emulator executable or set root; the '
+                             'bench harness holds them')
 
 
 OLD_SUITE = ('This suite was frozen before the bench harness drove suites (it holds evaluator password files or no '
@@ -214,6 +216,11 @@ def _harness_identity(params, refusal):
     return token, pid, lock
 
 
+def _sealing(frozen):
+    """What tells a suite's harness that it seals concluded trials, and under whose password: a scoring suite's set."""
+    return {'scoring_set':frozen['scoring_set']['registration']} if 'scoring_set' in frozen else {}
+
+
 def _attached_to(suite, token_sha256):
     """Whether the bench harness holding `token_sha256` is the one attached to the suite."""
     held = suite['harness']['token_sha256']
@@ -230,6 +237,23 @@ def _assistive(suite):
 
 # A child whose recorded request differs from its frozen slot holds that slot's request_id for good.
 TAKEN = "; the slot's request_id is taken by that child, so start a new suite"
+
+
+def _expected_pin(case_id, options, expected):
+    """The pin a start names, once it is that start's own (its case, scenario and seed) and what the case's family holds
+    current: a frozen suite's child starts from it, and a generated device has no manifest to pin it from again."""
+    from .benchmark_support.families import family_for
+    if type(options.get('case_seed', 0)) is not int:
+        raise ValueError('case_seed must be an integer')
+    differs = ValueError('Expected case pin differs from current case inputs')
+    if (not isinstance(expected, dict) or expected.get('case_id') != case_id or 'scenario_id' not in expected
+            or options.get('scenario_id') not in (None, expected['scenario_id'])
+            or options.get('case_seed', 0) != expected.get('case_seed')):
+        raise differs
+    pin = family_for(case_id).current_pin(expected)
+    if _json(expected) != _json(pin):
+        raise differs
+    return pin
 
 
 def _provided_device(params, pin):
@@ -1219,6 +1243,8 @@ class Controller:
             columns = {row['name'] for row in db.execute('PRAGMA table_info(runs)')}
             if 'outcome_category' not in columns:
                 db.execute("ALTER TABLE runs ADD COLUMN outcome_category TEXT NOT NULL DEFAULT 'unknown'")
+            if 'sealed' not in columns:
+                db.execute('ALTER TABLE runs ADD COLUMN sealed INTEGER NOT NULL DEFAULT 0')
             for row in db.execute("SELECT * FROM runs WHERE status IN ('queued','running')").fetchall():
                 final = _final_verdict(db, row['id'])
                 if final:
@@ -1327,11 +1353,13 @@ class Controller:
         if method.startswith('device_'):
             return self.device_access.control(method, params)
         if method == 'benchmark_spawn':
-            from .benchmark_support.harness import bench_home, _spawn
+            from .benchmark_support.harness import _spawn
+            from .benchmark_support.trial_store import bench_home, solo_trial_dir, suite_dir
             kind = params.get('kind')
             directory = Path(params['directory']).resolve()
-            if kind not in ('trial', 'suite') or directory.parent != bench_home(self.home) / (
-                    'trials' if kind == 'trial' else 'suites'):
+            if kind not in ('trial', 'suite') or directory != (solo_trial_dir(bench_home(self.home), directory.name)
+                                                               if kind == 'trial'
+                                                               else suite_dir(self.home, directory.name)):
                 raise ValueError('A bench harness must launch in its owner\'s bench directory')
             channel = params.get('channel') or {}
             if (set(channel) != {'schema', 'port', 'token'} or channel['schema'] != 'bench-launch-channel/1'
@@ -1364,7 +1392,8 @@ class Controller:
                 row = self._row(run_id)
                 stopping = row['status'] in TERMINAL and (run_id in self._workers or run_id in self._inflight)
                 out = {'ok': True, **{k: row[k] for k in ('status', 'stage', 'reason', 'created', 'updated', 'outcome_category')},
-                       'run_id': run_id, 'uncertain_effect': bool(row['uncertain']), 'stopping': stopping}
+                       'run_id': run_id, 'uncertain_effect': bool(row['uncertain']), 'stopping': stopping,
+                       **({'sealed': True} if row['sealed'] else {})}
             with self._db() as db:
                 final = _final_verdict(db, run_id)
                 accepted = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM handoffs WHERE run_id=? ORDER BY created', (run_id,))]
@@ -1451,6 +1480,9 @@ class Controller:
                     db.execute('DELETE FROM pending_effects WHERE run_id=?',(run_id,))
                 self._event(run_id,'operator.response',{'message':message,'observation':observation,'effect_resolution':resolution},db)
             return self.call('status', {'run_id': run_id})
+        if method in ('attach_device', 'resume') and self._row(run_id)['sealed']:
+            # Before anything asks the device, so a stray resume cannot turn a fault into an integrity failure.
+            raise ValueError('A sealed run does not resume or take a device: ' + run_id)
         if method == 'attach_device':
             return self._attach_device(run_id, params)
         if method == 'record_evaluation':
@@ -1551,7 +1583,9 @@ class Controller:
         options=params.get('options',{})
         refuse_secrets(options)
         token,pid,lock=_harness_identity(params,'A suite is started and driven by its bench harness: `benchmark suite start`')
-        request={'manifest':manifest,'executor':executor,'options':options}
+        pins=params.get('device_pins')
+        request={'manifest':manifest,'executor':executor,'options':options,
+                 **({'device_pins':pins} if pins is not None else {})}
         with self._lock:
             saved=self._suites.find_request(params.get('request_id'),request)
             if saved is None:
@@ -1560,13 +1594,15 @@ class Controller:
                 if executor=='replay':
                     config=_replay_suite_config(manifest,options,self.home)
                 provenance=execution_provenance(config,case_ids=[entry['case'] for entry in manifest['entries']])
-                frozen=freeze_suite(manifest,executor,config,options,provenance,harness_token_sha256=token)
+                frozen=freeze_suite(manifest,executor,config,options,provenance,harness_token_sha256=token,
+                                    device_pins=pins)
                 saved=self._suites.create(frozen,params.get('request_id'),harness_pid=pid,harness_lock=lock)
                 if not saved['duplicate']:
                     self._suites.set_state(saved['suite_id'],'running')
-                    return {'ok':True,'suite_id':saved['suite_id'],'duplicate':False,'attached':True}
+                    return {'ok':True,'suite_id':saved['suite_id'],'duplicate':False,'attached':True,**_sealing(frozen)}
             # A repeated request. Its harness, sending it again after a lost reply, is told it still drives the suite.
-            return {'ok':True,'suite_id':saved['suite_id'],'duplicate':True,'attached':_attached_to(saved,token)}
+            return {'ok':True,'suite_id':saved['suite_id'],'duplicate':True,'attached':_attached_to(saved,token),
+                    **_sealing(saved['frozen'])}
 
     def _suite_lock(self, suite_id):
         with self._lock:
@@ -1687,7 +1723,10 @@ class Controller:
         if trial is None:
             return {'ok':True,'suite_id':suite_id,'status':status,'slot':None}
         return {'ok':True,'suite_id':suite_id,'status':status,
-                'slot':{key:trial[key] for key in ('ordinal','trial_key','case','child_request_id','run_id')},
+                # Fixed at freeze: the harness never reads the live table of sets for this.
+                'scoring':'scoring_set' in suite['frozen'],
+                'slot':{key:trial[key] for key in ('ordinal','trial_key','case','device_id','child_request_id','run_id',
+                                                   'attempt','regrade','audit') if key in trial},
                 'request':child_request(suite['frozen'],trial)}
 
     def _suite_expired(self, suite):
@@ -1821,31 +1860,40 @@ class Controller:
 
     def _suite_settle(self, suite_id, params):
         """Settle a slot from what the configurator reads itself, the child's status and its recorded evaluation; the
-        harness names only the slot. A child that may not advance blocks a running suite."""
-        from .benchmark_support.suites import child_disposition
+        harness names only the slot. On a scoring suite `scoring_disposition` decides, and a child that has already
+        ended settles before the suite's budget is checked, so a paid-for grade is not left unsettled. On any other
+        suite a child that may not advance blocks a running suite."""
+        from .benchmark_support.suites import child_disposition, scoring_disposition
         expired = None
         with self._suite_lock(suite_id):
             suite = self._suite_driver(suite_id, params)
             slot = self._slot(suite, params.get('ordinal'))
             if not slot['run_id']:
                 raise ValueError('Settlement does not match attached child')
-            if slot['status'] != 'finished' and suite['status'] == 'running' and not suite['cancelled']:
+            scoring = 'scoring_set' in suite['frozen']
+            settled = {'finished':'advance','faulted':'fault','flagged':'flag'}.get(slot['status'])
+            ended = scoring and not settled and self._child_ended(slot['run_id'])
+            if not settled and not ended and suite['status'] == 'running' and not suite['cancelled']:
                 # The suite's budget is checked before its child's outcome, as on every reservation.
                 expired = self._suite_expired(suite)
             if expired is not None:
                 decision = 'block'
-            elif slot['status'] == 'finished':
-                decision = 'advance'
+            elif settled:
+                decision = settled
             else:
                 # Every child is graded after its run: the configurator reads its recorded evaluation itself.
                 equivalence, unscored = self._child_evaluation(slot['run_id'])
-                observed = {**self.call('status',{'run_id':slot['run_id']}),'equivalence':equivalence}
-                decision = child_disposition(observed)
+                observed = {**self.call('status',{'run_id':slot['run_id']}),'equivalence':equivalence,
+                            'unscored':unscored}
+                decision = (scoring_disposition(self._budgeted(observed), slot) if scoring
+                            else child_disposition(observed))
                 mismatch = self._child_mismatch(suite, slot, slot['run_id']) if decision != 'wait' else None
                 if mismatch:
                     decision = 'block'
-                if decision == 'advance':
-                    self._suites.settle(suite_id,slot['ordinal'],observed)
+                if decision in ('advance','fault','regrade','flag'):
+                    history = decision in ('fault','regrade') and 'attempt' not in slot
+                    self._suites.settle(suite_id,slot['ordinal'],observed,disposition=decision,
+                                        first_attempt=self._first_attempt(slot) if history else None)
                 elif decision == 'block' and suite['status'] == 'running' and not suite['cancelled']:
                     stop = observed.get('reason')
                     reason = (mismatch + TAKEN if mismatch else
@@ -1858,6 +1906,117 @@ class Controller:
         if expired:
             self.call('cancel',{'run_id':expired})
         return {'ok':True,'suite_id':suite_id,'decision':decision,'status':status}
+
+    def _child_ended(self, run_id):
+        """Whether a suite's child has ended, with nothing of it left stopping."""
+        observed = self.call('status',{'run_id':run_id})
+        return observed['status'] in TERMINAL and observed['stopping'] is False
+
+    def _budgeted(self, observed):
+        """`observed` with the budget its report calls effective: an approved extension is already in the run's spec."""
+        spec = json.loads(self._row(observed['run_id'])['spec'])
+        return {**observed,'effective_budget_seconds':spec['budget_seconds']}
+
+    def _first_attempt(self, slot):
+        """A slot's first attempt, as the row keeps it once a rerun replaces it. Its tokens are None unless every worker
+        reported them, and the outcome a fault, which is the only first attempt a slot keeps."""
+        from .reporting import _usage
+        run_id, tokens, seconds = slot['run_id'], None, None
+        if run_id:
+            result = self.call('result',{'run_id':run_id})
+            tokens = _usage(result['worker_reports'])['total_tokens']
+            seconds = max(0,result['updated']-result['created'])
+        return {'run_id':run_id,'request_id':slot['child_request_id'],'outcome':'fault','tokens':tokens,
+                'seconds':seconds}
+
+    @staticmethod
+    def _reserved_for_scoring(suite, slot):
+        """Refuse a scoring suite's record of a slot unless the suite is one, still runs and has the slot reserved."""
+        if 'scoring_set' not in suite['frozen']:
+            raise ValueError('Only a scoring suite records this: ' + suite['suite_id'])
+        if suite['cancelled'] or suite['status'] != 'running':
+            raise ValueError('The suite is ' + suite['status'] + '; it records nothing of a slot')
+        if slot['status'] not in ('launching','running'):
+            raise ValueError('The suite slot is not reserved')
+
+    def _suite_no_run(self, suite_id, params):
+        """Record that a scoring suite's reserved slot never got a run, with one of the closed `NO_RUN` words: the
+        harness's text stays in its trial, since it may name a private path. A child that exists after all, its start's
+        reply lost, is attached rather than faulted: a child whose request is not the frozen slot's blocks the suite and
+        is cancelled instead."""
+        from .benchmark_support.suites import NO_RUN
+        live = mismatch = None
+        with self._suite_lock(suite_id):
+            suite = self._suite_driver(suite_id, params)
+            slot = self._slot(suite, params.get('ordinal'))
+            self._reserved_for_scoring(suite, slot)
+            if params.get('reason') not in NO_RUN:
+                raise ValueError('Not a reason a slot got no run: ' + str(params.get('reason')))
+            found = self.find_request(slot['child_request_id'])
+            if found:
+                mismatch = self._child_mismatch(suite, slot, found['run_id'])
+                if mismatch:
+                    mismatch += TAKEN
+                    self._suites.set_state(suite_id,'blocked',mismatch)
+                    live = found['run_id']
+                else:
+                    self._suites.attach(suite_id,slot['ordinal'],slot['child_request_id'],found['run_id'])
+            else:
+                settled = self._suites.settle_no_run(suite_id,slot['ordinal'],params['reason'],
+                                                     self._first_attempt(slot) if 'attempt' not in slot else None)
+        if mismatch:
+            # Cancellation can join a worker; never hold the suite lock meanwhile.
+            self._cancel_live(live)
+            raise ValueError(mismatch)
+        if found:
+            return {'ok':True,'suite_id':suite_id,'decision':'attached','run_id':found['run_id']}
+        return {'ok':True,'suite_id':suite_id,'decision':'fault' if settled == 'faulted' else 'advance'}
+
+    def _suite_flag(self, suite_id, params):
+        """Record what the transcript audit found of a scoring suite's reserved slot, each finding by its transcript's
+        name and its command's hash, so no record or call holds the set's root. They are stored first, and the slot
+        moves to `flagged` only if its child has ended with nothing uncertain; otherwise `scoring_disposition` flags it
+        after reconciliation. A child whose request is not the frozen slot's blocks the suite instead, as on
+        settling."""
+        from .benchmark_support.suites import scoring_disposition
+        with self._suite_lock(suite_id):
+            suite = self._suite_driver(suite_id, params)
+            slot = self._slot(suite, params.get('ordinal'))
+            self._reserved_for_scoring(suite, slot)
+            findings = params.get('findings')
+            if not slot['run_id'] or not isinstance(findings, list) or not findings or not all(
+                    isinstance(row, dict) and set(row) == {'transcript','command_sha256'}
+                    and isinstance(row['transcript'], str) and isinstance(row['command_sha256'], str)
+                    and re.fullmatch('[0-9a-f]{64}', row['command_sha256']) for row in findings):
+                raise ValueError('A flag names a slot with a child and findings of a transcript and a command hash')
+            self._suites.store_audit(suite_id,slot['ordinal'],findings)
+            observed = self._budgeted({**self.call('status',{'run_id':slot['run_id']}),'unscored':None})
+            decision = scoring_disposition(observed, {**slot,'audit':findings})
+            mismatch = self._child_mismatch(suite, slot, slot['run_id']) if decision == 'flag' else None
+            if mismatch:
+                decision = 'block'
+                self._suites.set_state(suite_id,'blocked',mismatch + TAKEN)
+            elif decision == 'flag':
+                self._suites.settle(suite_id,slot['ordinal'],observed,disposition='flag')
+        return {'ok':True,'suite_id':suite_id,'decision':decision}
+
+    def _suite_sealed(self, suite_id, params):
+        """Mark a run of a scoring suite sealed: `status` and `result` show it, and it no longer resumes or takes a
+        device. It takes the slot's run or its first attempt's, and it is repeatable, since a crash may send it again.
+        It needs the suite's token while a harness is attached; with none it takes none: it only restricts a run."""
+        with self._suite_lock(suite_id):
+            suite = self._suite(suite_id)
+            if 'scoring_set' not in suite['frozen']:
+                raise ValueError('Only a scoring suite seals its trials: ' + suite_id)
+            if self._harness_alive(suite):
+                self._suite_driver(suite_id, params)
+            slot = self._slot(suite, params.get('ordinal'))
+            run_id = params.get('run_id')
+            if not run_id or run_id not in (slot['run_id'], (slot.get('first_attempt') or {}).get('run_id')):
+                raise ValueError('The run is not a trial of this suite slot: ' + str(run_id))
+            with self._db() as db:
+                db.execute('UPDATE runs SET sealed=1 WHERE id=?',(run_id,))
+        return {'ok':True,'suite_id':suite_id,'run_id':run_id}
 
     def _suite_detach(self, suite_id, params):
         """The harness lets go of the suite; one that stops while the suite still runs leaves it blocked for a resume."""
@@ -1902,11 +2061,11 @@ class Controller:
             time.sleep(.05)
 
     def _verify_suite(self, suite):
-        from .benchmark_support.registry import pin_case
+        from .benchmark_support.families import family_for
         from .benchmark_support.snapshots import execution_provenance
         frozen = suite['frozen']
         for pin in frozen['entry_pins']:
-            if pin_case(pin['case_id'],pin['scenario_id'],pin['case_seed']) != pin:
+            if family_for(pin['case_id']).current_pin(pin) != pin:
                 raise ValueError('Frozen suite case pin changed')
         cases = [entry['case'] for entry in frozen['manifest']['entries']]
         if execution_provenance(frozen['executor_config'], case_ids=cases) != frozen['provenance']:
@@ -1928,19 +2087,23 @@ class Controller:
         """Resume a stopped suite for a newly launched bench harness, which takes over its scheduling with a token of its
         own. A suite frozen before the harness drove suites is read-only. A stopped child is left to the harness, which
         first attaches a device it provides anew and passes an approved child budget extension itself; a child recorded
-        with the earlier protocol's terminal final failure is settled as it stands."""
-        from .benchmark_support.suites import harness_driven
+        with the earlier protocol's terminal final failure is settled as it stands. A scoring suite refuses a child
+        budget extension here, the authority, since pairing calls any such override incompatible."""
+        from .benchmark_support.suites import NO_CHILD_EXTENSION, harness_driven
         with self._suite_lock(suite_id):
             suite = self._suite(suite_id)
             if not harness_driven(suite['frozen']):
                 raise ValueError(OLD_SUITE)
             if suite['status'] in ('queued','running') and _attached_to(suite, params.get('harness_token_sha256')):
                 # Its harness's resume again, the first reply lost: that harness still drives the suite.
-                return {**self._suite_call('suite_status',{'suite_id':suite_id}),'attached':True}
+                return {**self._suite_call('suite_status',{'suite_id':suite_id}),'attached':True,
+                        **_sealing(suite['frozen'])}
             if suite['status'] not in ('blocked','failed','cancelled'):
                 raise ValueError('Only a stopped incomplete suite can resume')
             if self._suite_call('suite_status',{'suite_id':suite_id})['stopping']:
                 raise ValueError('Previous suite work is still stopping')
+            if 'scoring_set' in suite['frozen'] and params.get('child_budget_seconds') is not None:
+                raise ValueError(NO_CHILD_EXTENSION)
             self._verify_suite(suite)
             active = next((t for t in suite['trials'] if t['status'] in ('launching','running')),None)
             found = self.find_request(active['child_request_id']) if active else None
@@ -1964,7 +2127,7 @@ class Controller:
                         self.call('status',{'run_id':found['run_id']}),terminal_final=True)
             self._suites.attach_harness(suite_id,token,pid,lock)
             self._suites.set_state(suite_id,'running')
-        return {**self._suite_call('suite_status',{'suite_id':suite_id}),'attached':True}
+        return {**self._suite_call('suite_status',{'suite_id':suite_id}),'attached':True,**_sealing(suite['frozen'])}
 
     def _suite_call(self,method,params):
         if method=='suite_start':return self.suite_start(params)
@@ -1977,6 +2140,9 @@ class Controller:
         if method=='suite_start_child':return self._suite_start_child(suite_id,params)
         if method=='suite_resume_child':return self._suite_resume_child(suite_id,params)
         if method=='suite_settle':return self._suite_settle(suite_id,params)
+        if method=='suite_no_run':return self._suite_no_run(suite_id,params)
+        if method=='suite_flag':return self._suite_flag(suite_id,params)
+        if method=='suite_sealed':return self._suite_sealed(suite_id,params)
         if method=='suite_detach':return self._suite_detach(suite_id,params)
         if method=='suite_events':
             # Each event says why the suite stopped where it did, with paths scrubbed as reports scrub them.
@@ -2000,7 +2166,8 @@ class Controller:
                 # Why the suite stopped (which child, and why it stopped or is unscored), with paths scrubbed.
                 'reason':None if suite['reason'] is None else _public(suite['reason'],self.home),
                 'active_child_id':active['run_id'] if active else None,
-                'planned':len(suite['trials']),'completed':sum(trial['status']=='finished' for trial in suite['trials']),
+                'planned':len(suite['trials']),
+                'completed':sum(trial['status'] in ('finished','flagged') for trial in suite['trials']),
                 # Equivalent drivers among the settled children, out of `planned`; none applies to a suite frozen before
                 # the harness drove suites, whose children were graded inside their runs.
                 'equivalent':sum(trial['status']=='finished' and (trial['result'] or {}).get('equivalent') is True
@@ -2028,7 +2195,9 @@ class Controller:
             if trial['run_id'] and trial['status'] != 'finished':
                 current = self.call('status',{'run_id':trial['run_id']})
                 trial['outcome_category'] = current['outcome_category']
-                if current['status'] in ('blocked','failed','cancelled','completed'):
+                # A slot settled `faulted` or `flagged` keeps saying so: its child's own status is in its report.
+                if (current['status'] in ('blocked','failed','cancelled','completed')
+                        and trial['status'] not in ('faulted','flagged')):
                     trial['status'] = current['status']
                 equivalence, unscored = self._child_evaluation(trial['run_id'])
                 if equivalence:
@@ -2061,6 +2230,7 @@ class Controller:
         return {'schema':'benchmark-suite-experiment/1',
             # Only a suite its bench harness drives, whose children are graded after their runs, names the assistive protocol.
             'comparison_identity':{**({'protocol':PROTOCOL} if _assistive(suite) else {}),
+                **({'scoring_set':frozen['scoring_set']} if 'scoring_set' in frozen else {}),
                 'manifest':manifest,'manifest_sha256':frozen['manifest_sha256'],
                 'entry_pins':[public_pin(pin) for pin in frozen['entry_pins']],
                 'trials':frozen['trials'],'repetitions':manifest['repetitions'],
@@ -2147,10 +2317,11 @@ class Controller:
                     from .benchmark_support.registry import pin_case
                     from .benchmark_support.snapshots import snapshot_case, execution_provenance
                     options = case_options(spec)
-                    pin = pin_case(case['id'] if isinstance(case, dict) else case,
-                                   options.get('scenario_id'), options.get('case_seed', 0))
-                    if 'case_pin' in params and _json(params['case_pin']) != _json(pin):
-                        raise ValueError('Expected case pin differs from current case inputs')
+                    case_id = case['id'] if isinstance(case, dict) else case
+                    if 'case_pin' in params:
+                        pin = _expected_pin(case_id, options, params['case_pin'])
+                    else:
+                        pin = pin_case(case_id, options.get('scenario_id'), options.get('case_seed', 0))
                     if pin['manifest'].get('schema') == 'benchmark-case/2':
                         required_effects = set(pin['manifest']['default_effects']) - {'read'}
                         if required_effects - set(effects):
@@ -2176,7 +2347,8 @@ class Controller:
                         config = spec['executor_config'] = _copy_candidate(config, self.home / 'runs' / run_id)
                     spec['_case_pin'] = pin
                     saved = snapshot_case(self.home / 'runs' / run_id, pin,
-                                          execution_provenance(config, case_ids=(pin['case_id'],)))
+                                          execution_provenance(config, case_ids=(pin['case_id'],)),
+                                          public_inputs=spec.get('public_inputs'))
                     spec['_snapshot_sha256'] = saved['snapshot_sha256']
                     spec['_execution_run_dir'] = str(self.home / 'runs' / run_id)
                     encoded = _json(spec)
@@ -2954,8 +3126,10 @@ class Controller:
         the reading after it. A provider that fails before the call refuses it (nothing reached the device, so nothing
         is uncertain); one that fails after the call leaves the call's own result to reconcile. Either is recorded and
         stops the stage for the operator. The caller holds the run's operation lock (every tool call does), so one live
-        call at a time is inside the window and its readings are its own."""
-        from .device_client import DeviceUnavailable, reading
+        call at a time is inside the window and its readings are its own. A device that offers no readings is still
+        observed, since that refuses a call when its provider fails, but neither its result nor the journal holds
+        them."""
+        from .device_client import DeviceUnavailable, offers_readings, reading
         started, result, before, after, lost = False, None, None, None, None
         try:
             if condition_id is not None:
@@ -2980,7 +3154,9 @@ class Controller:
         spec = json.loads(run['spec'])
         from .benchmark import record_call
         record_call(spec['_case_pin']['case_id'], self.home / 'runs' / run['id'], assignment['stage'], name, arguments,
-                    result, before, after, {'assignment_id': assignment['id']})
+                    result, before, after, {'assignment_id': assignment['id'], 'device': spec.get('device')})
+        if not offers_readings(spec.get('device')):
+            return result
         return {**result, 'before_observation': before, **({'observation': after} if after else {})}
 
     def _check(self, spec, stage, run_dir, workspace, report, accepted, assignment):

@@ -195,8 +195,8 @@ def prepare_execution(build_dir, password_file, output, *, native_record=None, r
     from .registry import resolve_case
     from .execution import artifact_name
     from .emulator import truth_for_case
-    from .truth import seal
-    from .rehosting import compare_executions
+    from .truth import read_password
+    from .native_comparison import compare_executions
     build_dir = Path(build_dir).resolve()
     record = json.loads((build_dir/'build-report.json').read_text(encoding='utf-8'))
     image = build_dir/'firmware.elf'
@@ -210,7 +210,8 @@ def prepare_execution(build_dir, password_file, output, *, native_record=None, r
     definition = resolve_case(CASE)
     if definition.manifest.get('execution_setup', {}).get('method', 'renode') != 'renode':
         raise ValueError('Prepare the variant from the original registered Renode case root')
-    payload = truth_for_case(case_root(), definition.manifest, {'evaluator_password_file': password_file})
+    password = read_password(password_file) if password_file else None
+    payload = truth_for_case(case_root(), definition.manifest, password)
     manifest = copy.deepcopy(definition.manifest)
     setup = copy.deepcopy(record['execution_setup'])
     setup['validated_behavior'] = []
@@ -248,8 +249,7 @@ def prepare_execution(build_dir, password_file, output, *, native_record=None, r
         *setup['hardware_gaps']]
     payload.update(images=record['images'], source=record['source'], build=record, recipe=recipe, inventory_state='pending')
     payload.pop('calibration', None)
-    manifest['truth']['sha256'] = seal(payload, output/manifest['truth']['path'],
-        Path(password_file).read_text(encoding='utf-8').strip())
+    manifest['truth']['sha256'] = password.seal(payload, output/manifest['truth']['path'])
     (case_dir/'case.json').write_text(json.dumps(manifest, indent=2)+'\n', encoding='utf-8')
     return {'ok': True, 'case': CASE, 'execution': 'native-case-authoring', 'model_benchmark': False,
             'resources_root': str(output), 'images': record['images'], 'calibration': 'pending',

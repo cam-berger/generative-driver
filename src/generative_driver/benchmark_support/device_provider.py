@@ -15,17 +15,15 @@ import uuid
 from pathlib import Path
 
 from . import instruments
+from .families import family_for
 
 DESCRIPTOR = 'device-descriptor/1'
 RECEIPT = 'emulator-recovery/2'
-# Public development inputs, selected independently of the evaluator's final cases.
-SENSOR_CONDITIONS = (('low', -12.0), ('high', 32.0), ('zero', 0.0),
-                     ('fractional', 7.5), ('fine_fraction', 18.5625))
 # Keys of a decrypted case truth (a legacy one's too) or a credential; a provider is given the device recipe and nothing
 # else.
 TRUTH_KEYS = ('recipe', 'contracts', 'phases', 'scenarios', 'images', 'references', 'input_hashes',
               'reuse_goal', 'max_tolerances', 'max_reference_age_seconds',
-              'evaluator_password_file', 'password', 'password_file')
+              'evaluator_password', 'evaluator_password_file', 'password', 'password_file')
 
 
 def observed_values(session):
@@ -53,10 +51,10 @@ def _sha256(value):
 
 
 class DeviceProvider:
-    """Owns one emulated device session at a time. `start` is the session factory (NativeSession.start by default),
-    called with renode, image, recipe and the session's own private directory (`sessions/<session_id>` under the
-    provider's, mode 0700), which holds the session's files (its log, rejected monitor commands) and is removed once its
-    stop is confirmed. Control calls are served one at a time."""
+    """Owns one emulated device session at a time. `start` is the session factory (by default the family's
+    `start_session`), called with renode, image, recipe and the session's own private directory
+    (`sessions/<session_id>` under the provider's, mode 0700), which holds the session's files (its log, rejected
+    monitor commands) and is removed once its stop is confirmed. Control calls are served one at a time."""
 
     def __init__(self, case_id, image, recipe, renode, private_dir, *, image_sha256=None, start=None):
         if not isinstance(recipe, dict) or any(key in recipe for key in TRUTH_KEYS):
@@ -77,8 +75,7 @@ class DeviceProvider:
         self.image_sha256 = actual
         start = self._start
         if start is None:
-            from .execution import start_session
-            start = start_session
+            start = family_for(self.case_id).start_session
         session_id = uuid.uuid4().hex
         private = self._session_dir(session_id)
         private.mkdir(parents=True, mode=0o700)
@@ -146,10 +143,7 @@ class DeviceProvider:
 
     def development_conditions(self):
         """A fixed public catalog of environmental inputs, with no register coordinates or commands."""
-        if self.case_id != 'sampled-sensor-v1' or 'source_q4' not in self.recipe.get('stimuli', {}):
-            return None
-        return {'schema': 'development-conditions/1', 'conditions': [
-            {'id': name, 'reference': {'value': value, 'unit': 'degC'}} for name, value in SENSOR_CONDITIONS]}
+        return family_for(self.case_id).development_conditions(self.recipe)
 
     def select_condition(self, condition_id, expected_session_id):
         """Set a catalog input between calls. This neither acquires a sample nor resets device state."""

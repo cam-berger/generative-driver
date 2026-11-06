@@ -13,6 +13,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from generative_driver.benchmark_support.truth import read_password
 
 EVIDENCE = 'e' * 64
 TIMEOUT = 120
@@ -59,7 +60,7 @@ class ReplayExecutionTests(unittest.TestCase):
         public_case_fixture(self.root / 'resources', calibration={'status': 'passed', 'evidence_sha256': EVIDENCE})
         for target, value in (('generative_driver.benchmark.case_root', {'return_value': self.root / 'resources'}),
                               ('generative_driver.benchmark_support.case_assets.case_root', {'return_value': self.root / 'resources'}),
-                              ('generative_driver.benchmark_support.registry.require_calibration',
+                              ('generative_driver.benchmark_support.registry.admitted_truth',
                                {'side_effect': AssertionError('the configurator admitted the case')}),
                               ('generative_driver.benchmark_support.emulator.truth_for_case',
                                {'side_effect': AssertionError('the configurator unlocked the case truth')})):
@@ -321,7 +322,6 @@ class Harnessed:
 
 
 def harnessed(test):
-    from generative_driver.benchmark_support.truth import seal
     from suite_fixtures import public_case_fixture
     from test_device_provider import RECIPE
     from test_harness import HARNESS_FIXTURE
@@ -347,7 +347,7 @@ def harnessed(test):
              'contracts': {'units': {'temperature': 'degC', 'duty': 'permille'},
                            'scenarios': {'original': {'phases': {'final': final}}},
                            'time_policy': {'sample_settle_seconds': 0}}}
-    manifest['truth']['sha256'] = seal(truth, resources / manifest['truth']['path'], bench.password.read_text())
+    manifest['truth']['sha256'] = read_password(bench.password).seal(truth, resources / manifest['truth']['path'])
     (resources / 'cases/tq9-v2/case.json').write_text(json.dumps(manifest))
     bench.fixture = root / 'harness_fixture.py'
     bench.fixture.write_text(HARNESS_FIXTURE.replace('TESTS', repr(str(Path(__file__).resolve().parent)))
@@ -355,7 +355,7 @@ def harnessed(test):
                              .replace('EVIDENCE', repr(EVIDENCE)))
     for target, value in (('generative_driver.benchmark.case_root', {'return_value': resources}),
                           ('generative_driver.benchmark_support.case_assets.case_root', {'return_value': resources}),
-                          ('generative_driver.benchmark_support.registry.require_calibration',
+                          ('generative_driver.benchmark_support.registry.admitted_truth',
                            {'side_effect': AssertionError('the configurator admitted the case')}),
                           ('generative_driver.benchmark_support.emulator.truth_for_case',
                            {'side_effect': AssertionError('the configurator unlocked the case truth')})):

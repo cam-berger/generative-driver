@@ -1,0 +1,26 @@
+name: Upstream tool releases
+# Weekly, opens one issue for each new upstream release of a tool pinned to a GitHub release in
+# .github/workflows or bench/README.md (see .github/scripts/tool_releases.py). Closing the issue
+# acknowledges that release; the check never reopens it. Dependabot covers Actions and Python packages.
+on:
+  schedule:
+    - cron: '23 7 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: tool-releases
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Open issues for new upstream releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 .github/scripts/tool_releases.py --open-issues

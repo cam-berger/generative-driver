@@ -15,6 +15,14 @@ python -m build
 
 Scripted workers and device replies test contracts. Model runs require explicit selection and retain configuration, budgets, usage, failures and evidence hashes.
 
+## Track tool releases
+
+Dependabot proposes GitHub Actions and Python lockfile updates weekly. The [upstream tool releases](.github/workflows/tool-releases.yml) workflow opens one issue for each new release of a tool pinned by a GitHub release link in `.github/workflows/` or `bench/README.md`. Close the issue once decided; it does not reopen for that release. An upgrade changes benchmark evidence, so bump every pin and SHA-256 together and re-run native calibration. To see the current state:
+
+```sh
+python .github/scripts/tool_releases.py
+```
+
 ## Add device support
 
 Extend the toolkit facade and packaged manifest, or an existing transport. Keep device facts in supplied evidence and evaluator-owned truth. Load optional dependencies at use time, launch processes with argument arrays, require explicit bindings, and write only to caller-owned output directories.

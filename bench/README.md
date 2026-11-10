@@ -37,7 +37,7 @@ Use a new output directory. Expect `scripted-replay`, `model_benchmark: false`, 
 
 ## Run an agent benchmark
 
-Install [Renode](https://github.com/renode/renode/releases), [Ghidra](https://github.com/NationalSecurityAgency/ghidra/releases) and compatible Java. Native reference setup uses Renode 1.16.1, Ghidra 12.1.3, Java 21 on macOS arm64; native Windows benchmark qualification remains separate. Authenticate/configure an exact runtime/model and total wall-clock budget:
+Install [Renode](https://github.com/renode/renode/releases), [Ghidra](https://github.com/NationalSecurityAgency/ghidra/releases) and compatible Java. Native reference setup uses [Renode 1.16.1](https://github.com/renode/renode/releases/tag/v1.16.1), [Ghidra 12.1.3](https://github.com/NationalSecurityAgency/ghidra/releases/tag/Ghidra_12.1.3_build), Java 21 on macOS arm64; native Windows benchmark qualification remains separate. Authenticate/configure an exact runtime/model and total wall-clock budget:
 
 ```sh
 generative-driver --home /operator/state/benchmark configure --executor codex --command /absolute/path/to/codex --provider openai --model YOUR_MODEL

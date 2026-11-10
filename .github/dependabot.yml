@@ -1,0 +1,22 @@
+# Weekly grouped pull requests for GitHub Actions and the uv lockfile. A release must be a week old
+# before it is proposed. Native tools (Ghidra, Renode, JDK, compilers) are watched by tool-releases.yml.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ['*']
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns: ['*']

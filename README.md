@@ -34,6 +34,16 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m generative_driver service start
 ```
 
+With [uv](https://docs.astral.sh/uv/), on either system, replace the environment and install lines with one `uv sync`, which installs the pinned versions in `uv.lock` into `.venv`:
+
+```sh
+uv sync --extra dev
+uv run generative-driver doctor
+uv run generative-driver benchmark run --case setup-smoke --output "smoke output"
+```
+
+On Windows, still run `uv run generative-driver service start` in a standalone PowerShell window.
+
 Use a new output directory each time. Smoke tests installation and recorded replay; it needs no AI account or hardware and measures no model performance.
 
 ## Next

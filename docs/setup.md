@@ -1,6 +1,6 @@
 # Installation and runtime setup
 
-[Install first](../README.md). Below, `python` means your installation’s executable: `.venv/bin/python` on macOS or `.venv\Scripts\python.exe` on Windows. Quote paths containing spaces. No activation is required.
+[Install first](../README.md). Below, `python` means your installation’s executable: `.venv/bin/python` on macOS or `.venv\Scripts\python.exe` on Windows. Quote paths containing spaces. No activation is required. With uv, use `uv run` in place of `python` from the checkout, for example `uv run python -m generative_driver doctor`; clients that need an absolute interpreter path take the same `.venv` executable.
 
 For an older Windows checkout created before `.gitattributes`, use a fresh clone: converted line endings can invalidate benchmark hashes.
 
@@ -39,6 +39,13 @@ From the checkout:
 ```sh
 python -m pip install -e ".[hardware,docs]"
 python -m generative_driver doctor
+```
+
+With uv, name every extra you want in one command, because `uv sync` removes extras it is not given:
+
+```sh
+uv sync --extra dev --extra hardware --extra docs
+uv run generative-driver doctor
 ```
 
 USB drivers, permissions, Ghidra, Java and Renode are separate installations. Follow vendor instructions and check [supported paths](support.md). Containers may host optional tools; native core operation does not require Docker or provide container USB forwarding.

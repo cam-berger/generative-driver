@@ -108,7 +108,7 @@ def doctor(home=None):
     purposes = {"codex": "Codex workers", "goose": "Goose workers",
                 "renode": "emulated STM32 benchmark", "java": "firmware analysis",
                 "arm-none-eabi-gcc": "rebuilding STM32 firmware",
-                "docker": "optional analysis containers"}
+                "podman": "optional analysis containers"}
     dependencies = {name: {"available": bool(shutil.which(name)), "path": shutil.which(name),
                             "required_for": purpose, "source": "PATH"}
                     for name, purpose in purposes.items()}

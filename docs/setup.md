@@ -1,6 +1,6 @@
 # Installation and runtime setup
 
-[Install first](../README.md). Below, `python` means your installation’s executable: `.venv/bin/python` on macOS or `.venv\Scripts\python.exe` on Windows. Quote paths containing spaces. No activation is required.
+[Install first](../README.md). Below, `python` means your installation’s executable: `.venv/bin/python` on macOS or `.venv\Scripts\python.exe` on Windows. Quote paths containing spaces. No activation is required. With uv, use `uv run` in place of `python` from the checkout, for example `uv run python -m generative_driver doctor`; clients that need an absolute interpreter path take the same `.venv` executable.
 
 For an older Windows checkout created before `.gitattributes`, use a fresh clone: converted line endings can invalidate benchmark hashes.
 
@@ -41,7 +41,14 @@ python -m pip install -e ".[hardware,docs]"
 python -m generative_driver doctor
 ```
 
-USB drivers, permissions, Ghidra, Java and Renode are separate installations. Follow vendor instructions and check [supported paths](support.md). Containers may host optional tools; native core operation does not require Docker or provide container USB forwarding.
+With uv, name every extra you want in one command, because `uv sync` removes extras it is not given:
+
+```sh
+uv sync --extra dev --extra hardware --extra docs
+uv run generative-driver doctor
+```
+
+USB drivers, permissions, Ghidra, Java and Renode are separate installations. Follow vendor instructions and check [supported paths](support.md). Optional analysis tools may run in [Podman](https://podman.io/) containers, which `doctor` reports; native core operation does not require containers or provide container USB forwarding.
 
 Supply the objective, exact serial/USB/FTDI binding and allowed effects. Reads are the default; discovery does not authorize a device. For approved noninteractive tools, set `scoped_tool_approval` to `"bound-device"` or `"emulator"`. The configurator enforces assigned tools, binding and effects without changing global Codex settings. Resume with `--approve-bound-device-tools` or `--approve-emulator-tools` when authorization is already established.
 

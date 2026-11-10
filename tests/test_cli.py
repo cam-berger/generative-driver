@@ -247,6 +247,18 @@ class CliTests(unittest.TestCase):
             self.assertTrue(Path(report["home"]).is_absolute())
             self.assertEqual(list(Path(temp).iterdir()), [])
 
+    def test_doctor_reports_podman_for_optional_analysis_containers(self):
+        from unittest.mock import patch
+        from generative_driver.setup import doctor
+        located = {"podman": "/opt/podman/bin/podman", "docker": "/usr/local/bin/docker"}
+        with tempfile.TemporaryDirectory() as home, \
+             patch("generative_driver.setup.shutil.which", side_effect=located.get):
+            report = doctor(home)
+        self.assertEqual(report["dependencies"]["podman"],
+                         {"available": True, "path": "/opt/podman/bin/podman",
+                          "required_for": "optional analysis containers", "source": "PATH"})
+        self.assertNotIn("docker", report["dependencies"])
+
     def test_doctor_lists_serial_ports_by_usb_identity(self):
         import types
         from unittest.mock import patch

@@ -2,9 +2,9 @@
   "goal": "Fix what the 2026-11-11 review found in the kit: installed-plugin drift, doctor, the smoke test, standardized public driver descriptions, input paths for interpretation, splitting interpretation into smaller tasks, service diagnosability and robustness, and packages that stop verifying after a runtime edit. Benchmark items are out: they are recorded in .scratch and move to a new repository.",
   "slug": "kit-fixes",
   "branch": "mdk/kit-fixes",
-  "stage": "breakdown",
+  "stage": "spec",
   "awaiting": null,
-  "current": null,
+  "current": "01",
   "features": [
     {
       "id": "01",

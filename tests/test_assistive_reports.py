@@ -423,7 +423,7 @@ class ProtocolSeparationTests(unittest.TestCase):
         repeat = compare(before, copy.deepcopy(before))
         self.assertEqual((repeat['compatible'], repeat['changed_dimensions'], repeat['comparison_kind']),
                          (True, [], 'repeat'))
-        for dimension, value in (('runtime', 'goose'), ('model', 'model-b'), ('provider', 'another-provider'),
+        for dimension, value in (('runtime', 'another-runtime'), ('model', 'model-b'), ('provider', 'another-provider'),
                                  ('version', '2'), ('reasoning_effort', 'high'), ('max_turns', 20),
                                  ('environment', {'system': 'Windows', 'architecture': 'AMD64', 'python': '3.13'}),
                                  ('original_budget_seconds', 90), ('effective_budget_seconds', 90),
@@ -441,7 +441,7 @@ class ProtocolSeparationTests(unittest.TestCase):
                                  (True, [dimension], dimension))
         # Saved public reports are sufficient; the old top-level agent alias is absent after export.
         after = copy.deepcopy(payload)
-        after['executed']['runtime_configuration'].update(runtime='goose', model='model-b')
+        after['executed']['runtime_configuration'].update(runtime='another-runtime', model='model-b')
         with tempfile.TemporaryDirectory() as directory:
             paths = [Path(directory) / name for name in ('before.json', 'after.json')]
             for path, report in zip(paths, (before, public_v3_report(after))):

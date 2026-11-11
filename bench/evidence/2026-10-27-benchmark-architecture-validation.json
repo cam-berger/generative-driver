@@ -331,7 +331,7 @@
     }
   ],
   "proxy_environment_fix": {
-    "public_seam": "Configured Codex and Goose child processes",
+    "public_seam": "Configured worker child processes",
     "observed_red": true,
     "adapter_tests_passed": 10,
     "qualified_grading_identity_unchanged": true,

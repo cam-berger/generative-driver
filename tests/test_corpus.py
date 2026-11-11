@@ -214,6 +214,12 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual([entry['case'] for entry in plan['runnable_suite']['entries']],
                          [inventory['catalog']['lineages'][-1]['case']])
         with patch('generative_driver.benchmark_support.corpus._availability',
+                   side_effect=inventory['availability']), \
+                patch('generative_driver.benchmark_support.suites.start_suite') as start:
+            with self.assertRaisesRegex(ValueError, 'require Codex'):
+                start_corpus(plan, executor='unknown-runtime')
+            start.assert_not_called()
+        with patch('generative_driver.benchmark_support.corpus._availability',
                    side_effect=inventory['availability']):
             excluded = plan_corpus(inventory['catalog'], repetitions=1,
                                    exclude={ready: 'Intake report only.'})
@@ -371,6 +377,7 @@ class CorpusTests(unittest.TestCase):
         for change in (
             lambda s: s['experiment']['comparison_identity']['entry_pins'][0].update(pin_sha256='0'*64),
             lambda s: s['experiment']['dimensions'].update(runtime='replay'),
+            lambda s: s['experiment']['dimensions'].update(runtime='unknown-runtime'),
             lambda s: s['trials'][0].update(case='parameter-store-v1'),
         ):
             changed = copy.deepcopy(suite); change(changed)

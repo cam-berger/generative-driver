@@ -6,5 +6,5 @@ project and is distributed under the Apache License, Version 2.0.
 
 Third-party materials retain their original notices and licenses. See
 bench/groundtruth/README.md and bundled benchmark evidence for the provenance of
-emulator models. External Codex, Goose, Ghidra, Renode, compiler, serial and USB
+emulator models. External Codex, Ghidra, Renode, compiler, serial and USB
 dependencies are separately distributed under their respective licenses.

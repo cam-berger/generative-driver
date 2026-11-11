@@ -14,7 +14,7 @@ Acquire → interpret → probe → ground → emit → reuse. One stage runs at
 
 ```mermaid
 flowchart TD
-    U[Codex, Goose or CLI] --> C[Background configurator]
+    U[Codex or CLI] --> C[Background configurator]
     C --> A[Stage workers]
     A --> T[Scoped tools and selected device]
     C --> E[Checked handoffs and evidence]
@@ -23,7 +23,7 @@ flowchart TD
     G[Private groundtruth] --> V
 ```
 
-The configurator owns workers, exclusive device access and durable runs. UI reconnection uses the same run ID. Codex and Goose launch configured command-line runtimes under one stage contract; runtime, provider and model identities are recorded separately. State and outputs live outside the installed package.
+The configurator owns workers, exclusive device access and durable runs. UI reconnection uses the same run ID. The configurator launches the configured Codex CLI under the stage contract and records the runtime, provider and model identities separately. State and outputs live outside the installed package.
 
 Assignments, reports, acceptance checks and routing are separate records. Accepted artifacts are immutable and hash-pinned. Model defects return to interpretation; host and operator faults wait for the relevant correction. Diagnostic feedback allows at most two repairs before emission. Independent final checks grade the frozen package; final failure is terminal.
 
@@ -37,9 +37,9 @@ Blind interpretation receives its prepared inputs and generic tools. Fresh reuse
 
 ## Repository and integrations
 
-`src/generative_driver/` contains the configurator, tools, runtime and packaged resources. `plugins/` supplies Codex/Goose integration; `docs/`, `tests/` and `bench/` hold guides, behavior tests and benchmark instructions. Original code is Apache-2.0. Preserve third-party notices and the source research checkout; import only selected reusable material.
+`src/generative_driver/` contains the configurator, tools, runtime and packaged resources. `plugins/` supplies the Codex integration. `docs/`, `tests/` and `bench/` hold guides, behavior tests and benchmark instructions. Original code is Apache-2.0. Preserve third-party notices and the source research checkout. Import only selected reusable material.
 
-Generic tools and skills ship to workers. Sources, answers, scorers and historical outputs stay evaluator-side. Codex uses plugin/MCP wiring; Goose uses a recipe and MCP. Both connect to the same configurator. Follow [setup](setup.md) through runtime configuration, dependency checks and installation smoke before a device trial.
+Generic tools and skills ship to workers. Sources, answers, scorers and historical outputs stay evaluator-side. The Codex plugin connects to the configurator through MCP. Follow [setup](setup.md) through runtime configuration, dependency checks and installation smoke before a device trial.
 
 ## Driver contracts and generated MCP — 2026-10-28
 

@@ -95,17 +95,10 @@ def read_activity(workspace):
             continue
         if not isinstance(event, dict):
             continue
-        message = event.get('message')
-        texts = [block['text'] for block in message.get('content', [])
-                 if isinstance(block, dict) and block.get('type') == 'text' and isinstance(block.get('text'), str)
-                 ] if isinstance(message, dict) and message.get('role') == 'assistant' else []
-        if isinstance(event.get('response'), str):
-            texts.append(event['response'])
         item = event.get('item') if isinstance(event.get('item'), dict) else {}
         completed = event.get('type') == 'item.completed'
-        if item.get('type') == 'agent_message' and isinstance(item.get('text'), str):
-            texts.append(item['text'])
-        for text in texts:
+        text = item.get('text')
+        if item.get('type') == 'agent_message' and isinstance(text, str):
             try:
                 report = json.loads(text)
                 if isinstance(report, dict) and 'status' in report:

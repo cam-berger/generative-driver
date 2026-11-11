@@ -2,7 +2,7 @@
 
 Status: needs-triage
 
-Parked on 2026-10-30 so work can focus on the benchmark, scorecard and device generator. Nothing here is accepted or implemented; the [accepted design](../../docs/design.md) still governs. Codex is the primary runtime for this work; Goose is out of scope. Evidence base: [firmware learning practice](../../docs/research/2026-10-30-firmware-learning-practice.md).
+Parked on 2026-10-30 so work can focus on the benchmark, scorecard and device generator. Nothing here is accepted or implemented; the [accepted design](../../docs/design.md) still governs. Codex is the runtime in scope. See the evidence on [firmware learning practice](../../docs/research/2026-10-30-firmware-learning-practice.md).
 
 ## Decisions the user made
 

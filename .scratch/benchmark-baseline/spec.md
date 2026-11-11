@@ -4,7 +4,7 @@ Status: ready-for-agent
 
 Approved by the user on 2026-10-30.
 
-Build a scorecard and a strong baseline of today's main, then grow the benchmark with a device generator, so later systems, starting with the parked learning loop, can be compared on functional equivalence with numbers that hold up. Codex is the only runtime in scope; Goose is out. The learning loop is parked in [its tabletop](../learning-loop/spec.md).
+Build a scorecard and a strong baseline of today's main, then grow the benchmark with a device generator, so later systems, starting with the parked learning loop, can be compared on functional equivalence with numbers that hold up. Codex is the only runtime in scope. The learning loop is parked in [its tabletop](../learning-loop/spec.md).
 
 ## Decisions
 

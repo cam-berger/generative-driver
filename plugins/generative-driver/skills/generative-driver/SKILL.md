@@ -5,7 +5,7 @@ description: Generate a device interface from firmware, reconnect to an existing
 
 # Generate a device interface
 
-1. Run `driver_doctor`; resolve profile dependencies and configure authenticated Codex/Goose. Credentials stay with that runtime.
+1. Run `driver_doctor` to check profile dependencies and configure an authenticated Codex runtime. Credentials stay with Codex.
 2. Establish objective, inputs, binding and effects. Reads are default; writes/actuation require task authorization. Grant `reset` only for devices that restart on port open. Smoke uses no inference. Real benchmarks send a password file path in options to a bench harness, which provides the device and grades once after the run; configurator/workers never receive the path/password. Keep answers out of candidate context.
 3. Start once with `driver_start` or `driver_benchmark_run`, stable request ID; save `run_id`. Configurator owns workers/access/handoffs. When authorized, use `scoped_tool_approval: "emulator"` for any emulated case or `"bound-device"` for the selected binding/effects, inside benchmark options or directly on generic starts. Preserve prior authorization.
 4. Follow status/events and stage notes, including failed/not-run checks and open questions. Worker reports never stop runs; only safety, integrity, operator and host faults do. Use `driver_respond` for requested observations, naming the observer. Never relay grades, evaluator output or answers through `driver_respond`. Cancel when asked; resolve causes before resuming. A stopped emulator needs a harness-attached device. Only a suite's harness attaches one; a stopped single trial is not continued, so start a new trial.

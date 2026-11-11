@@ -20,34 +20,27 @@ class CliTests(unittest.TestCase):
             root = Path(temp).resolve()
             selected = root / "selected state"
             inherited = root / "different inherited state"
-            async def doctor(connection, command_key, environment_key):
-                params = StdioServerParameters(command=connection[command_key], args=connection['args'],
+            async def doctor(connection):
+                params = StdioServerParameters(command=connection['command'], args=connection['args'],
                     cwd=str(root), env=package_env(**{'GENERATIVE_DRIVER_HOME': str(inherited),
-                                                      **connection.get(environment_key, {})}))
+                                                      **connection['env']}))
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
                         await session.initialize()
                         reply = await session.call_tool('driver_doctor', {})
                         self.assertFalse(reply.is_error, reply)
                         return json.loads(reply.content[0].text)
-            for host in ('codex', 'goose'):
-                output = root / host
-                generated = subprocess.run([sys.executable, '-m', 'generative_driver', '--home',
-                    'selected state', 'setup', '--host', host, '--output', str(output)],
-                    cwd=root, env={**os.environ, 'GENERATIVE_DRIVER_HOME': str(inherited)},
-                    capture_output=True, text=True, timeout=15)
-                self.assertEqual(generated.returncode, 0, generated.stderr)
-                if host == 'codex':
-                    connection = json.loads((output / 'plugins/generative-driver/.mcp.json').read_text(
-                        encoding='utf-8'))['mcpServers']['generative-driver']
-                    command_key, environment_key = 'command', 'env'
-                else:
-                    connection = json.loads((output / 'generative-driver.json').read_text(
-                        encoding='utf-8'))['extensions'][0]
-                    command_key, environment_key = 'cmd', 'envs'
-                report = asyncio.run(doctor(connection, command_key, environment_key))
-                self.assertEqual(report['home'], str(selected))
-                self.assertEqual(connection[environment_key], {'GENERATIVE_DRIVER_HOME': str(selected)})
+            output = root / 'codex'
+            generated = subprocess.run([sys.executable, '-m', 'generative_driver', '--home',
+                'selected state', 'setup', '--host', 'codex', '--output', str(output)],
+                cwd=root, env={**os.environ, 'GENERATIVE_DRIVER_HOME': str(inherited)},
+                capture_output=True, text=True, timeout=15)
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            connection = json.loads((output / 'plugins/generative-driver/.mcp.json').read_text(
+                encoding='utf-8'))['mcpServers']['generative-driver']
+            report = asyncio.run(doctor(connection))
+            self.assertEqual(report['home'], str(selected))
+            self.assertEqual(connection['env'], {'GENERATIVE_DRIVER_HOME': str(selected)})
 
     def test_service_commands_start_inspect_and_stop_an_independent_owner(self):
         with tempfile.TemporaryDirectory(prefix="service owner ") as temp:
@@ -193,46 +186,58 @@ class CliTests(unittest.TestCase):
     def test_setup_generates_host_assets_with_the_installed_interpreter(self):
         from generative_driver.setup import home_path
         with tempfile.TemporaryDirectory(prefix="plugin output ") as temp:
-            for host in ("codex", "goose"):
-                dest = Path(temp) / host
-                result = subprocess.run([sys.executable, "-m", "generative_driver", "setup",
-                                         "--host", host, "--output", str(dest)],
-                                        cwd=temp, capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                if host == "codex":
-                    plugin = Path(json.loads(result.stdout)["plugin"])
-                    marketplace = json.loads((dest / ".agents/plugins/marketplace.json").read_text())
-                    self.assertEqual((dest / marketplace["plugins"][0]["source"]["path"]).resolve(), plugin)
-                    config = json.loads((plugin / ".mcp.json").read_text())
-                    connection = config["mcpServers"]["generative-driver"]
-                    self.assertEqual(connection["command"], sys.executable)
-                    self.assertEqual(connection["args"], ["-m", "generative_driver.mcp"])
-                    self.assertEqual(connection["env"]["GENERATIVE_DRIVER_HOME"], str(home_path()))
-                    self.assertTrue((plugin / "skills/generative-driver/SKILL.md").exists())
-                else:
-                    recipe = json.loads((dest / "generative-driver.json").read_text())
-                    connection = recipe["extensions"][0]
-                    self.assertEqual(connection["cmd"], sys.executable)
-                    self.assertEqual(connection["args"], ["-m", "generative_driver.mcp"])
-                    self.assertEqual(connection["envs"]["GENERATIVE_DRIVER_HOME"], str(home_path()))
+            dest = Path(temp) / "codex"
+            result = subprocess.run([sys.executable, "-m", "generative_driver", "setup",
+                                     "--host", "codex", "--output", str(dest)],
+                                    cwd=temp, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            plugin = Path(json.loads(result.stdout)["plugin"])
+            marketplace = json.loads((dest / ".agents/plugins/marketplace.json").read_text())
+            self.assertEqual((dest / marketplace["plugins"][0]["source"]["path"]).resolve(), plugin)
+            config = json.loads((plugin / ".mcp.json").read_text())
+            connection = config["mcpServers"]["generative-driver"]
+            self.assertEqual(connection["command"], sys.executable)
+            self.assertEqual(connection["args"], ["-m", "generative_driver.mcp"])
+            self.assertEqual(connection["env"]["GENERATIVE_DRIVER_HOME"], str(home_path()))
+            self.assertTrue((plugin / "skills/generative-driver/SKILL.md").exists())
 
-    def test_configure_preserves_distinct_runtime_commands_and_arguments(self):
+    def test_configure_preserves_codex_command_and_arguments(self):
         with tempfile.TemporaryDirectory(prefix="driver config ") as temp:
             home = Path(temp) / "state"
-            for executor, command in [("codex", "C:/Program Files/Codex/codex.exe"),
-                                      ("goose", "/Applications/Goose CLI/goose")]:
-                result = subprocess.run([sys.executable, "-m", "generative_driver", "--home", str(home),
-                                         "configure", "--executor", executor, "--command", command,
-                                         "--model", "configured-model", *(["--reasoning-effort", "high"] if executor == "codex" else [])],
-                                        cwd=temp, capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
-            config = json.loads((home / "config.json").read_text())
-            self.assertEqual(config["executors"]["codex"]["command"],
-                             ["C:/Program Files/Codex/codex.exe"])
-            self.assertEqual(config["executors"]["goose"]["command"],
-                             ["/Applications/Goose CLI/goose"])
-            self.assertEqual(config["executors"]["goose"]["model"], "configured-model")
-            self.assertEqual(config["executors"]["codex"]["reasoning_effort"], "high")
+            command = "C:/Program Files/Codex/codex.exe"
+            result = subprocess.run([sys.executable, "-m", "generative_driver", "--home", str(home),
+                                     "configure", "--executor", "codex", "--command", command,
+                                     "--argument", "wrapper argument", "--model", "configured-model",
+                                     "--reasoning-effort", "high"],
+                                    cwd=temp, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config = json.loads((home / "config.json").read_text())["executors"]
+            self.assertEqual(config, {"codex": {"command": [command, "wrapper argument"],
+                                               "model": "configured-model", "reasoning_effort": "high"}})
+
+    def test_cli_setup_and_configure_refuse_unsupported_choices(self):
+        with tempfile.TemporaryDirectory() as temp:
+            for args in (("setup", "--host", "unknown-host", "--output", "plugin"),
+                         ("configure", "--executor", "unknown-runtime", "--command", sys.executable)):
+                with self.subTest(command=args[0]):
+                    result = subprocess.run([sys.executable, "-m", "generative_driver", "--home", "state", *args],
+                                            cwd=temp, capture_output=True, text=True, timeout=15)
+                    self.assertIn("invalid choice", result.stderr)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertEqual(list(Path(temp).iterdir()), [])
+
+    def test_benchmark_executor_options_refuse_unsupported_choices(self):
+        with tempfile.TemporaryDirectory() as temp:
+            for args in (("run", "--case", "setup-smoke", "--output", "smoke"),
+                         ("suite", "start", "--manifest", "suite.json"),
+                         ("corpus", "start", "--plan", "plan.json")):
+                with self.subTest(command=args[0]):
+                    result = subprocess.run([sys.executable, "-m", "generative_driver", "benchmark",
+                                             *args, "--executor", "unknown-runtime"],
+                                            cwd=temp, capture_output=True, text=True, timeout=15)
+                    self.assertIn("invalid choice", result.stderr)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertEqual(list(Path(temp).iterdir()), [])
 
     def test_doctor_reports_optional_dependencies_without_requiring_them(self):
         with tempfile.TemporaryDirectory(prefix="driver user space ") as temp:
@@ -242,8 +247,8 @@ class CliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(result.stdout)
             self.assertTrue(report["core"]["ok"])
-            self.assertFalse(report["dependencies"]["goose"]["available"])
-            self.assertEqual(report["dependencies"]["goose"]["required_for"], "Goose workers")
+            self.assertFalse(report["dependencies"]["codex"]["available"])
+            self.assertEqual(report["dependencies"]["codex"]["required_for"], "Codex workers")
             self.assertTrue(Path(report["home"]).is_absolute())
             self.assertEqual(list(Path(temp).iterdir()), [])
 
@@ -299,13 +304,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(report["serial_ports"], [])
         self.assertTrue(report["serial_ports_available"])
 
-    def test_skill_text_is_identical_in_resource_plugins_and_goose_recipe(self):
+    def test_client_skill_text_matches_the_codex_plugin(self):
         root = Path(__file__).resolve().parents[1]
         text = (root / "src/generative_driver/resources/client/skills/generative-driver/SKILL.md").read_text(encoding="utf-8")
-        for plugin in ("generative-driver", "goose"):
-            self.assertEqual((root / "plugins" / plugin / "skills/generative-driver/SKILL.md").read_text(encoding="utf-8"), text)
-        recipe = json.loads((root / "plugins/goose/generative-driver.json").read_text(encoding="utf-8"))
-        self.assertEqual(recipe["instructions"], text)
+        self.assertEqual((root / "plugins/generative-driver/skills/generative-driver/SKILL.md").read_text(
+            encoding="utf-8"), text)
         self.assertNotIn("authorizes it.  ", text)
 
 

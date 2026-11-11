@@ -15,6 +15,7 @@ from pathlib import Path
 
 # The evaluator uses these too, so they are defined in a module of its own and imported here under their old names.
 from .benchmark_support.case_assets import STAGES, case_root
+from .setup import SUPPORTED_EXECUTORS, resolve_executor
 
 
 def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=None):
@@ -89,7 +90,7 @@ def main(argv=None):
     preparing_execution.add_argument('--output', required=True)
     corpus_start = corpus_actions.add_parser('start', help='Run admitted cases from an unchanged frozen plan')
     corpus_start.add_argument('--plan', required=True)
-    corpus_start.add_argument('--executor', choices=['codex', 'goose'])
+    corpus_start.add_argument('--executor', choices=['codex'])
     corpus_start.add_argument('--options')
     corpus_start.add_argument('--request-id')
     corpus_check = corpus_actions.add_parser('check', help='Authenticate selected case qualification without launching agents')
@@ -105,8 +106,8 @@ def main(argv=None):
     suites = commands.add_parser('suite').add_subparsers(dest='action', required=True)
     starting = suites.add_parser('start')
     starting.add_argument('--manifest', required=True)
-    starting.add_argument('--executor', choices=['codex', 'goose', 'replay'],
-                          help='Default: the one configured runtime; replay runs options.replay_candidates without a model')
+    starting.add_argument('--executor', choices=SUPPORTED_EXECUTORS,
+                          help='Defaults to codex. Replay runs options.replay_candidates without a model')
     starting.add_argument('--options', help='JSON file of suite options. The evaluator password files, the emulator '
                           'executable and a set suite\'s set_root go to the bench harness on its stdin')
     starting.add_argument('--request-id')
@@ -185,8 +186,8 @@ def main(argv=None):
     running.add_argument('--scenario')
     running.add_argument('--case-seed', type=int, default=0)
     running.add_argument('--output')
-    running.add_argument('--executor', choices=['codex', 'goose', 'replay'],
-                         help='Default: the one configured runtime; replay runs --replay-candidate without a model')
+    running.add_argument('--executor', choices=SUPPORTED_EXECUTORS,
+                         help='Defaults to codex. Replay runs --replay-candidate without a model')
     running.add_argument('--replay-candidate', help='Saved candidate directory for --executor replay: replay.json and '
                          'the worker outputs it names')
     running.add_argument('--budget-seconds', type=int, default=10800)
@@ -414,6 +415,7 @@ def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, aut
     from .benchmark_support.registry import resolve_case, pin_case
     options = dict(options or {})
     definition = resolve_case(case)
+    executor = resolve_executor(executor)
     if executor == 'replay' and definition.execution != 'actual-agent-emulation':
         raise ValueError('The replay executor runs emulated benchmark cases only; ' + case + ' is ' + definition.execution)
     pin_case(case, options.get('scenario_id'), options.get('case_seed', 0))

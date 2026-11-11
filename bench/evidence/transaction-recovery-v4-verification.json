@@ -58,7 +58,6 @@
       "setup_smoke": true,
       "relocated_package_replay": true,
       "codex_setup": true,
-      "goose_setup": true,
       "authenticated_admissions": 3,
       "candidate_inference": false,
       "physical_devices": false,
@@ -70,7 +69,6 @@
       "setup_smoke": true,
       "relocated_package_replay": true,
       "codex_setup": true,
-      "goose_setup": true,
       "authenticated_admissions": 3,
       "candidate_inference": false,
       "physical_devices": false,
@@ -255,6 +253,6 @@
     "Evaluator-only store reply fixtures cover every operation structurally, but inherited generic robustness checks remain unqualified for five acknowledgment-only/empty-output operations in each reference; native functional qualification/admission passed. Those diagnostic reports are retained privately.",
     "Regenerated ELF bytes differ from original authoring ELF bytes; firmware sources and loaded flash binaries are byte-identical.",
     "Passwords/encryption establish evaluator separation and provenance; worker filesystem isolation remains unverified.",
-    "Codex/Goose setup checks generate and verify installation assets; live client behavior is not measured."
+    "Codex setup checks verified the installation assets. Client execution was outside the test scope."
   ]
 }

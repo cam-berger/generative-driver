@@ -179,7 +179,6 @@
     "physical device performance",
     "native Windows Renode/Ghidra",
     "Windows11 workstation UI",
-    "live Goose execution",
     "worker OS filesystem isolation"
   ],
   "publication_exception": "Other owner untracked docs/research draft preserved outside tracked export and archives.",

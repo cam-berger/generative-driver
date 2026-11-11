@@ -84,7 +84,7 @@
     "Historical model trials retain their original implementations and coverage; no new candidate trial was launched.",
     "Two of three v5 family workflows completed; parameter-store final behavior was not reached and uncertainty remains unresolved.",
     "Local checks are on macOS. Current macOS/Windows matrix status is provided by PR checks, not inferred from earlier branches.",
-    "No physical devices, native Windows analysis tools or live Goose were tested."
+    "Physical devices and native Windows analysis tools were outside the test scope."
   ],
   "reporting_order": "Integration metrics and publication/handoff prose follow the tested archive construction; final publication checks verify unchanged runtime/resource payloads."
 }

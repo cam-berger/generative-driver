@@ -1197,8 +1197,8 @@ def launch(case, output_dir=None, executor=None, options=None, approval=None, *,
         raise ValueError('Unsupported options for a benchmark trial: ' + ', '.join(sorted(options)))
     if request_id is not None and (not isinstance(request_id, str) or not request_id.strip()):
         raise ValueError('request_id must be a nonblank string')
-    from ..setup import configured_executor
-    executor = configured_executor(executor, home)
+    from ..setup import resolve_executor
+    executor = resolve_executor(executor)
     if (executor == 'replay') != (candidate is not None):
         raise ValueError('Only the replay executor takes a saved candidate, and it needs one: replay_candidate')
     trial_id = 'trial-' + uuid.uuid4().hex[:16]

@@ -22,13 +22,13 @@ def _call(method, **params):
 
 
 @server.tool()
-def driver_start(goal: str, executor: Literal["codex", "goose"] | None = None, inputs: dict | None = None,
+def driver_start(goal: str, executor: Literal["codex"] | None = None, inputs: dict | None = None,
                  binding: dict | None = None, effects: list[str] | None = None,
                  budget_seconds: int = 10800, request_id: str | None = None,
                  scoped_tool_approval: Literal["bound-device"] | None = None,
                  ghidra_home: str | None = None, java_home: str | None = None) -> str:
     """Start a durable six-stage run using a configured runtime. Save the returned run_id.
-    executor defaults to the one runtime configured with `generative-driver configure`; an unconfigured one is refused.
+    Configure the Codex executor with `generative-driver configure` before starting a run.
     Supply explicit inputs and operator binding; effects default to read. request_id deduplicates starts.
     Effects are read, write, actuate and reset; grant reset only for devices that restart when their port opens.
     ghidra_home and java_home optionally select native analysis installations for the sealed firmware worker.
@@ -89,10 +89,10 @@ def driver_respond(run_id: str, observation: dict) -> str:
 
 
 @server.tool()
-def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = None,
+def driver_benchmark_run(profile: str = "setup-smoke", executor: Literal["codex", "replay"] | None = None,
                          output_dir: str | None = None, options: dict | None = None) -> str:
     """Run installation replay or start a configured real-agent benchmark.
-    setup-smoke uses no inference. tq9 and bme280 require explicit runtime and documented options.
+    setup-smoke uses no inference. Actual-agent cases default to the configured Codex runtime.
     Supply evaluator password FILE paths through options, never the password itself.
     Every real-agent case starts a bench harness that holds the password file path, admits the case and, after the
     run, grades the frozen driver once and posts the run's verdict; the configurator never receives the path. For an
@@ -129,7 +129,7 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: str | None = No
 
 
 @server.tool()
-def driver_benchmark_suite_start(manifest: dict, executor: Literal['codex', 'goose', 'replay'] | None = None,
+def driver_benchmark_suite_start(manifest: dict, executor: Literal['codex', 'replay'] | None = None,
                                  options: dict | None = None, request_id: str | None = None) -> str:
     """Start a durable emulated suite; save suite_id, or a set suite's request_id, to reconnect from either client.
 

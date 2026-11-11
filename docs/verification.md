@@ -111,7 +111,7 @@ New runs use `assistive/1`: notes accompany handoffs, device differences drive b
 
 `benchmark run --executor replay` and replay suites have scripted TCP/toy-truth coverage through all six stages, final grading and sealing. Reports label `replay-emulation`; comparisons reject mixing replay and model evidence. Those tests do not establish native replay or model performance.
 
-The dashboard at `0b9fb96` observed one original-image TQ9 model trial (Codex CLI 0.159.2, `gpt-6.1-sol`, medium): six stages, zero repairs, 10.05 minutes, fresh reuse and regraded 9/9. Nineteen sampled browser snapshots agreed with bracketing owner state; stale status and reconnection preserved the completed run. Final source and installed Python 3.11/3.13 suites ran 430 tests each, zero archive skips. Hosted startup exposed reverse DNS blocking; a no-name-service regression validated loopback startup without that dependency. The precise initial hosted cause remains an inference; unchanged cleanup/reconnect failures and retries remain recorded. No scheduler fix or Windows workstation/live Goose observation is claimed. See [dashboard evidence](../bench/evidence/dashboard-verification.json) and [usage](dashboard.md).
+The dashboard at `0b9fb96` observed one original-image TQ9 model trial (Codex CLI 0.159.2, `gpt-6.1-sol`, medium): six stages, zero repairs, 10.05 minutes, fresh reuse and regraded 9/9. Nineteen sampled browser snapshots agreed with bracketing owner state; stale status and reconnection preserved the completed run. Final source and installed Python 3.11/3.13 suites ran 430 tests each, zero archive skips. Hosted startup exposed reverse DNS blocking; a no-name-service regression validated loopback startup without that dependency. The precise initial hosted cause remains an inference; unchanged cleanup/reconnect failures and retries remain recorded. The workstation observations cover the macOS dashboard. See [dashboard evidence](../bench/evidence/dashboard-verification.json) and [usage](dashboard.md).
 
 An earlier ESP32-S3/BME280/SH1106 physical exploration did not achieve the requested end-to-end generated interface. It exposed acquisition/reset, optional-dependency, device-health and grounding gaps; some were later superseded by the consolidated pipeline. It is historical failure evidence, not an admitted physical benchmark or present-day support claim. Private captures/backups remain operator-owned. No physical operations ran in either 2026-10-27 study.
 
@@ -132,7 +132,7 @@ These development reruns used familiar cases and medium-reasoning `gpt-6.1-sol`;
 | V5 model trial, `272c1b1` | 2/3 in 35.2 min; TQ9 9/9 after repair/recovery, sensor 85/85 after repair. Store stopped at 364/366 diagnostics after idle-commit rejection and exhausted repairs; final not graded. All 23 attempts reported usage; 127 calls finished. Original 3/3 publication condition unmet; later user-authorized integration preserved 2/3. | [Trial index](../bench/evidence/transaction-recovery-trial-verification.json) |
 | PR #5 integration | Combined pipeline/dashboard; no new model/native trial. Source and installed 3.11/3.13: 471 tests each, zero archive skips; replay and three admissions passed. | [Integration index](../bench/evidence/pr5-integration-verification.json) |
 
-Historical dependency versions and package hashes belong to these measured environments, not new project pins. Intermittent reconnect/cancellation ordering failures have unchanged rerun evidence; no scheduler correction is claimed. Physical accuracy, Windows Renode model performance, Windows 11 UI setup, live Goose and worker filesystem read isolation remain unverified.
+Historical dependency versions and package hashes belong to these measured environments, not new project pins. Intermittent reconnect/cancellation ordering failures have unchanged rerun evidence; no scheduler correction is claimed. Physical accuracy, Windows Renode model performance, Windows 11 UI setup and worker filesystem read isolation remain unverified.
 
 ## Reproduce software checks
 
@@ -148,7 +148,6 @@ Set `GD_TEST_WHEEL` and `GD_TEST_SDIST` to absolute archive paths; run `python -
 python -m generative_driver benchmark cases
 python -m generative_driver benchmark run --case setup-smoke --output "smoke output"
 python -m generative_driver setup --host codex --output "codex setup"
-python -m generative_driver setup --host goose --output "goose setup"
 ```
 
 Use new output directories; run `python -m driver replay` inside `smoke output/relocated package`. These checks use no inference or physical devices. See [qualification/scoring](../bench/groundtruth/README.md), [benchmark operation](../bench/README.md) and [upstream case authoring](benchmark-case-authoring.md).

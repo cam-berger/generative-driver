@@ -112,9 +112,8 @@
   ],
   "limitations": [
     "Historical observer qualification used a separate qualified pipeline installation. PR #5 subsequently includes that implementation and its unchanged three-family trial results; integration checks are recorded separately.",
-    "One descriptive observer example; no model reliability/physical/Windows UI/general Goose claims.",
+    "One descriptive observer example. Model reliability, physical devices and Windows UI were outside its scope.",
     "macOS live browser only; Windows compatibility is checked separately in CI.",
-    "Goose activity parsing has scripted contracts; no live Goose trial was run.",
     "Reply deadlines begin after native IPC connection/authentication; they are not a complete connection deadline."
   ],
   "private_evidence_hashes": {

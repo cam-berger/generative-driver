@@ -15,7 +15,7 @@ GRADED = ('diagnostic feedback', 'diagnostic observation', 'evaluator observatio
 # The gated protocol's stage checks, which the current docs no longer describe as a gate.
 GATED = ('checked stage progression', 'checked handoff', 'until its handoff is accepted')
 # Docs that describe current behaviour; design.md and verification.md also retain dated history.
-CURRENT = ('README.md', 'bench/README.md', 'docs/support.md', 'docs/goose.md', 'docs/codex.md', 'docs/setup.md',
+CURRENT = ('README.md', 'bench/README.md', 'docs/support.md', 'docs/codex.md', 'docs/setup.md',
            'docs/dashboard.md', SKILL)
 DOCS = (*CURRENT, 'docs/design.md', 'docs/verification.md')
 CHANGE = (r'assistive/1', r'new series', r'not read-isolated', r'password-based')
@@ -26,7 +26,7 @@ EFFECT_LABELS = (r'`read` label is [^.]*claim', r'interrupted read is never [^.]
 REQUIRED = {'bench/README.md': CHANGE + LIMITS, 'docs/design.md': CHANGE + LIMITS + EFFECT_LABELS,
             'docs/support.md': EFFECT_LABELS,
             'docs/verification.md': CHANGE[:3] + LIMITS[:2],
-            'docs/goose.md': CHANGE + LIMITS[4:], 'docs/codex.md': CHANGE + LIMITS[4:],
+            'docs/codex.md': CHANGE + LIMITS[4:],
             'README.md': CHANGE[2:], SKILL: CHANGE + (r'self-evidence', r'bench harness', r'notes',
                                                   r'[Nn]ever relay[^.]*`driver_respond`',
                                                   r'[Oo]nly a suite.s harness attaches one',

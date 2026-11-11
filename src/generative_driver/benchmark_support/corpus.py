@@ -312,8 +312,8 @@ def start_corpus(plan, executor=None, options=None, request_id=None, *, home=Non
     plan = validate_plan(plan)
     if plan['runnable_suite'] is None:
         raise ValueError('Corpus has no runnable, qualified cases')
-    if executor == 'replay' or (options or {}).get('replay_candidates') is not None:
-        raise ValueError('Corpus model measurements require an actual agent runtime')
+    if executor not in (None, 'codex') or (options or {}).get('replay_candidates') is not None:
+        raise ValueError('Corpus model measurements require Codex')
     plan = validate_plan(plan, current=True)
     return {**start_suite(plan['runnable_suite'], executor, options, request_id, home=home),
             'corpus_plan_sha256': plan['plan_sha256']}
@@ -342,7 +342,7 @@ def report_corpus(plan, suite=None):
             if (identity['manifest'] != plan['runnable_suite'] or identity.get('protocol') != 'assistive/1'
                     or identity['execution'] != 'actual-agent-emulation' or identity['evidence_track'] != 'firmware'
                     or identity['scope'] != 'full-workflow'
-                    or suite['experiment']['dimensions'].get('runtime') not in ('codex', 'goose')
+                    or suite['experiment']['dimensions'].get('runtime') != 'codex'
                     or [p['pin_sha256'] for p in identity['entry_pins']] != [_digest(a['case_pin']) for a in ready]):
                 raise ValueError('Suite does not match the frozen corpus and actual-agent execution')
             trials = {(ready[t['entry_index']]['lineage'], t['repeat_index']): t for t in suite['trials']}

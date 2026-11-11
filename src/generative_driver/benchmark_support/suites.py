@@ -136,8 +136,8 @@ def start_suite(manifest: dict, executor: str | None = None, options: dict | Non
     from .harness import launch_suite
     normalized = normalize_manifest(manifest)
     directory, selected, passwords, renode, set_root = _launch_options(options, home)
-    from ..setup import configured_executor
-    executor = configured_executor(executor, directory)
+    from ..setup import resolve_executor
+    executor = resolve_executor(executor)
     if executor != 'replay' and 'replay_candidates' in selected:
         raise ValueError('Only a replay suite takes replay_candidates')
     if executor == 'replay':
@@ -307,7 +307,7 @@ def freeze_suite(manifest: dict, executor: str, executor_config: dict,
         if not _replay_candidates(executor_config, normalized):
             raise ValueError('A replay suite takes one saved candidate per case: options.replay_candidates '
                              '{case: directory}')
-    elif (executor not in ('codex', 'goose') or not isinstance(executor_config, dict)
+    elif (executor != 'codex' or not isinstance(executor_config, dict)
             or not isinstance(executor_config.get('command'), list) or not executor_config['command']
             or any(not isinstance(arg, str) or not arg.strip() for arg in executor_config['command'])):
         raise ValueError('Configure a worker runtime command before starting a suite')

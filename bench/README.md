@@ -24,7 +24,7 @@ The [upstream corpus](../docs/benchmark-corpus.md) adds seven lineages: one upst
 
 ## Install and check
 
-Use Python 3.11+ and one environment. Follow [setup](../docs/setup.md), [Codex](../docs/codex.md) or [Goose](../docs/goose.md).
+Use Python 3.11+ in one environment. Follow [setup](../docs/setup.md). To use Codex as a client, follow the [connection guide](../docs/codex.md).
 
 ```sh
 python -m pip install -e ".[dev]"
@@ -45,7 +45,7 @@ generative-driver --home /operator/state/benchmark benchmark cases
 generative-driver --home /operator/state/benchmark benchmark run --case tq9-v2 --scenario original --case-seed 0 --executor codex --budget-seconds 10800 --password-file /private/evaluator/tq9-v2.password --renode /absolute/path/to/renode --ghidra-home /absolute/path/to/ghidra --java-home /absolute/path/to/java-home --approve-emulator-tools
 ```
 
-Replace placeholder paths with your own absolute paths; quote paths containing spaces. Keep the same absolute global `--home` through configure, start, status, resume and report. Use `--executor goose` for configured Goose. Emulator approval covers assigned emulator tools only; MCP uses `scoped_tool_approval: "emulator"`. V2 families use `original`; `case_seed` changes evaluator episodes, not model sampling.
+Replace placeholder paths with your own absolute paths. Quote paths containing spaces. Keep the same absolute global `--home` through configure, start, status, resume and report. Emulator approval covers assigned emulator tools only. MCP uses `scoped_tool_approval: "emulator"`. Use `original` for V2 families. The `case_seed` controls evaluator episodes.
 
 A detached bench harness receives password-file/Renode paths on stdin, authenticates admission, starts the device and passes only its descriptor/hashes to the configurator. The configurator never receives the password or its path. Legacy TQ9 uses its legacy recipe through the same harness.
 

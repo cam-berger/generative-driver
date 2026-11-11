@@ -62,7 +62,7 @@ Create `/operator/private/corpus-options.json` outside the checkout and worker d
 }
 ```
 
-`home` must equal the absolute `--home` used to configure and control the owner. Configure Goose with `--executor goose` and its executable instead if desired. Password handles go only to the operator check and detached bench harness; neither passwords nor their paths go to the configurator or assignments. Keep decrypted bundles, reference logs, upstream source/build trees and credentials outside worker inputs and enforce host access controls. Hashes establish integrity; workers are not filesystem-isolated by this implementation.
+`home` must equal the absolute `--home` used to configure Codex and control the owner. Password paths and values stay with the operator check and detached bench harness. Keep decrypted bundles, reference logs, upstream source/build trees and credentials outside worker inputs and enforce host access controls. Hashes establish integrity. Workers have no filesystem isolation in this implementation.
 
 ```sh
 generative-driver --home /operator/state/corpus benchmark corpus check --plan /operator/reports/corpus-plan.json --options /operator/private/corpus-options.json

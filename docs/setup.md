@@ -4,24 +4,23 @@
 
 For an older Windows checkout created before `.gitattributes`, use a fresh clone: converted line endings can invalidate benchmark hashes.
 
-## Select an agent runtime
+## Configure Codex
 
-Install and authenticate Codex or Goose separately. [Verify the OpenAI CLI](codex.md#verify-the-openai-cli) before selecting a command named `codex`.
+Install and authenticate the Codex CLI. [Verify the OpenAI CLI](codex.md#verify-the-openai-cli) before selecting a command named `codex`.
 
 ```sh
 python -m generative_driver configure --executor codex --command "/absolute/path/to/codex" --model YOUR_MODEL
-python -m generative_driver configure --executor goose --command "/absolute/path/to/goose" --model YOUR_MODEL --provider YOUR_PROVIDER
 ```
 
-Only configured runtimes may launch. Without an executor selection, use the single configured runtime, or Codex if both exist. Use the installed `.exe` path on Windows. Wrapper arguments use repeated `--argument`; commands are stored as argument arrays. Credentials stay with the runtime. Select the model explicitly; Codex also accepts supported `--reasoning-effort` values. Goose reasoning settings stay in its provider setup.
+Model runs default to the configured Codex executor. Use the installed `.exe` path on Windows. Pass wrapper arguments with repeated `--argument` flags. Credentials stay with Codex. Select the model explicitly and optionally set `--reasoning-effort`.
 
-Configured runtimes inherit standard `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY` settings, including lowercase forms, so provider connections work through the operator's proxy. Other environment filtering still applies.
+Codex workers inherit standard `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY` settings, including lowercase forms, so provider connections work through the operator's proxy.
 
 State defaults to `~/Library/Application Support/GenerativeDriver` on macOS and `%LOCALAPPDATA%\GenerativeDriver` on Windows. Use a leading `--home DIRECTORY` or `GENERATIVE_DRIVER_HOME` for another location. Configure all clients against the same location.
 
 ## Start the configurator
 
-On Windows, run this in a standalone PowerShell window opened separately from Codex or Goose:
+On Windows, open a standalone PowerShell window separately from Codex and run these commands.
 
 ```powershell
 python -m generative_driver service start

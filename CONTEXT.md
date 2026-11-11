@@ -2,7 +2,7 @@
 
 | Term | Meaning |
 |---|---|
-| Configurator | Background owner of runs, workers and exclusive device access. Codex, Goose and CLI are clients. |
+| Configurator | Background owner of runs, workers and exclusive device access. Codex and the CLI are clients. |
 | Runtime / provider / model | Worker application, AI service and selected model; record separately. |
 | Stage / assignment | Acquire, interpret, probe, ground, emit or reuse; one active worker with bounded inputs/tools/effects. |
 | Handoff | Immutable artifacts and hashed notes: worker checks, truth-free configurator checks and open questions. Empty stages still hand off. |

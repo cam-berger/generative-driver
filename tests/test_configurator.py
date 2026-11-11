@@ -3385,24 +3385,49 @@ class ConfiguratorTests(unittest.TestCase):
             finally:
                 controller.close()
 
-    def test_an_unconfigured_executor_is_refused_and_the_only_configured_one_is_the_default(self):
+    def test_codex_is_the_default_even_with_an_old_executor_configuration(self):
         from generative_driver.configurator import Controller
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             controller = Controller(home)
             try:
-                # Nothing named codex was configured, so whatever `codex` resolves to on PATH is never launched.
-                with self.assertRaisesRegex(ValueError, 'codex is not configured'):
-                    controller.call('start', {'goal': 'Unconfigured runtime', 'executor': 'codex'})
+                (home / 'config.json').write_text(json.dumps({'executors': {
+                    'unknown-runtime': {'command': ['missing-configured-runtime']}}}), encoding='utf-8')
+                for request in ({'goal': 'Default executor'}, {'goal': 'Null executor', 'executor': None},
+                                {'goal': 'Unconfigured Codex', 'executor': 'codex'}):
+                    with self.subTest(request=request), self.assertRaisesRegex(
+                            ValueError, 'codex is not configured.*configure --executor codex --command <path>'):
+                        controller.call('start', request)
+                with self.assertRaisesRegex(ValueError, 'Unsupported executor'):
+                    controller.call('start', {'goal': 'Unsupported executor', 'executor': 'unknown-runtime'})
                 self.assertEqual(list((home / 'runs').glob('*')) if (home / 'runs').exists() else [], [])
-                configure('goose', ['missing-goose-runtime'], home=home)
-                for request in ({'goal': 'The one configured runtime'}, {'goal': 'Omitted', 'executor': None}):
-                    run = controller.call('start', request)
-                    self.assertEqual(controller.call('result', run)['agent']['runtime'], 'goose')
-                    wait_stopped(controller, run)
-                with self.assertRaisesRegex(ValueError, 'codex is not configured'):
-                    controller.call('start', {'goal': 'Named but unconfigured', 'executor': 'codex'})
+                configure('codex', ['missing-codex-runtime'], home=home)
+                run = controller.call('start', {'goal': 'Default after configuration'})
+                self.assertEqual(wait_stopped(controller, run)['agent']['runtime'], 'codex')
+            finally:
+                controller.close()
+
+    def test_saved_run_with_an_unsupported_executor_is_readable_but_cannot_resume_work(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory))
+            try:
+                run = controller.call('start', {'goal': 'Saved worker fixture',
+                    'executor_config': {'command': ['missing-contract-runtime']}})
+                wait_stopped(controller, run)
+                run_id = run['run_id']
+                spec = json.loads(controller._row(run_id)['spec'])
+                spec['executor'] = spec['executor_config']['runtime'] = 'unknown-runtime'
+                with controller._db() as db:
+                    db.execute('UPDATE runs SET spec=? WHERE id=?', (json.dumps(spec), run_id))
+                saved = controller.call('result', run)
+                self.assertEqual(saved['agent']['runtime'], 'unknown-runtime')
+                with unittest.mock.patch.object(controller, '_resume_device') as device:
+                    with self.assertRaisesRegex(ValueError, 'unsupported executor'):
+                        controller.call('resume', run)
+                    device.assert_not_called()
+                self.assertEqual(controller.call('result', run), saved)
             finally:
                 controller.close()
 

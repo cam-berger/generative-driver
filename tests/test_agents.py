@@ -8,7 +8,7 @@ import time
 
 
 class AgentAdapterTests(unittest.TestCase):
-    def test_configured_runtimes_preserve_standard_proxy_environment_without_extra_configuration(self):
+    def test_codex_preserves_standard_proxy_environment_without_extra_configuration(self):
         import os
         from unittest.mock import patch
         from generative_driver.agents import StageRequest, execute
@@ -36,13 +36,11 @@ for name in ('UNRELATED_SESSION_FLAG', 'BENCH_EVALUATOR_TOKEN', 'GROUNDTRUTH_PAS
             if 'SYSTEMROOT' in os.environ:
                 environment['SYSTEMROOT'] = os.environ['SYSTEMROOT']
             with patch.dict(os.environ, environment, clear=True):
-                for runtime in ('codex', 'goose'):
-                    with self.subTest(runtime=runtime):
-                        result = execute(StageRequest(stage='interpret', workspace=root/runtime,
-                            prompt='scripted environment contract', report_required=False),
-                            {'runtime': runtime, 'command': [sys.executable, str(fake)],
-                             'env_keys': ['SELECTED_RUNTIME_FLAG', 'BENCH_EVALUATOR_TOKEN', 'GROUNDTRUTH_PASSWORD']})
-                        self.assertEqual(result['status'], 'completed', Path(result['stderr']).read_text())
+                result = execute(StageRequest(stage='interpret', workspace=root/'codex',
+                    prompt='scripted environment contract', report_required=False),
+                    {'runtime': 'codex', 'command': [sys.executable, str(fake)],
+                     'env_keys': ['SELECTED_RUNTIME_FLAG', 'BENCH_EVALUATOR_TOKEN', 'GROUNDTRUTH_PASSWORD']})
+                self.assertEqual(result['status'], 'completed', Path(result['stderr']).read_text())
 
     def test_a_runtime_without_a_configured_command_is_never_looked_up_on_path(self):
         # Whatever has the runtime's name on PATH may be another program: with no configured command the stage stops
@@ -51,11 +49,10 @@ for name in ('UNRELATED_SESSION_FLAG', 'BENCH_EVALUATOR_TOKEN', 'GROUNDTRUTH_PAS
         from generative_driver.agents import StageRequest, execute
         with tempfile.TemporaryDirectory(prefix='unconfigured runtime ') as directory, \
                 patch('subprocess.Popen', side_effect=AssertionError('a runtime was launched')):
-            for runtime in ('codex', 'goose'):
-                blocked = execute(StageRequest(stage='acquire', workspace=Path(directory)/runtime, prompt='fixture'),
-                                  {'runtime': runtime})
-                self.assertEqual((blocked['status'], blocked['cause']), ('blocked', 'runtime_unavailable'), blocked)
-                self.assertIn('configure', blocked['reason'])
+            blocked = execute(StageRequest(stage='acquire', workspace=Path(directory)/'codex', prompt='fixture'),
+                              {'runtime': 'codex'})
+            self.assertEqual((blocked['status'], blocked['cause']), ('blocked', 'runtime_unavailable'), blocked)
+            self.assertIn('configure --executor codex --command <path>', blocked['reason'])
 
     def test_launcher_failure_is_a_blocker_while_runtime_exit_remains_a_failure(self):
         from generative_driver.agents import StageRequest, execute
@@ -136,46 +133,14 @@ assert any(a.startswith('developer_instructions=') and 'Do not read personal ski
             self.assertIn(result['status'],('blocked','completed'))
             self.assertLess(time.monotonic()-started,2,'A child kept the output pipe open past the run budget')
 
-    def test_current_goose_complete_event_retains_cumulative_usage(self):
+    def test_unsupported_worker_is_refused_before_workspace_creation(self):
         from generative_driver.agents import StageRequest, execute
-        with tempfile.TemporaryDirectory() as root:
-            root=Path(root)
-            fake=root/'usage.py'
-            fake.write_text('''import json
-print(json.dumps({'type':'complete','total_tokens':150,'input_tokens':100,'output_tokens':50,'cache_read_input_tokens':20,'cache_write_input_tokens':5,'cost_usd':0.03}))
-''')
-            result=execute(StageRequest(stage='interpret',workspace=root/'work',prompt='fixture',report_required=False),
-                           {'runtime':'goose','command':[sys.executable,str(fake)]})
-            self.assertEqual(result['usage']['input_tokens'],100)
-            self.assertEqual(result['usage']['cached_input_tokens'],20)
-            self.assertEqual(result['usage']['output_tokens'],50)
-            self.assertEqual(result['usage']['total_tokens'],150)
-            self.assertEqual(result['reported_cost_usd'],.03)
-
-    def test_goose_recipe_uses_explicit_extensions_and_does_not_invent_cumulative_usage(self):
-        from generative_driver.agents import StageRequest, execute
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
-            fake = root / 'goose_contract.py'
-            # Goose 1.53 --no-profile also drops recipe extensions, leaving the
-            # worker without its developer tools and stage gateway.
-            fake.write_text('''import json,sys,pathlib
-assert '--no-profile' not in sys.argv
-assert '--no-session' in sys.argv
-r=json.loads(pathlib.Path(sys.argv[sys.argv.index('--recipe')+1]).read_text())
-assert [e['name'] for e in r['extensions']]==['developer']
-assert r['settings']['goose_provider']=='fixture-provider'
-assert r['settings']['goose_model']=='fixture-model'
-report={'status':'blocked','summary':'contract fixture','artifacts':[],'checks':[],'unresolved':['fixture']}
-print(json.dumps({'type':'message','message':{'role':'assistant','content':[{'type':'text','text':json.dumps(report)}]}}))
-print(json.dumps({'type':'complete','total_tokens':42}))
-''')
-            result = execute(StageRequest(stage='reuse',workspace=root/'work',prompt='contract test'),
-                {'runtime':'goose','command':[sys.executable,str(fake)],'provider':'fixture-provider','model':'fixture-model'})
-            self.assertEqual(result['status'],'completed',result)
-            self.assertEqual(result['report']['status'],'blocked')
-            self.assertIsNone(result['usage'])
-            self.assertEqual(result['runtime_usage']['reported_total_tokens'],42)
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / 'stage'
+            request = StageRequest(stage='interpret', workspace=workspace, prompt='fixture', report_required=False)
+            with self.assertRaisesRegex(ValueError, 'Unsupported executor'):
+                execute(request, {'runtime': 'unknown-runtime', 'command': [sys.executable, '-c', 'pass']})
+            self.assertFalse(workspace.exists())
 
     def test_structured_but_incomplete_report_is_rejected(self):
         from generative_driver.agents import StageRequest, execute

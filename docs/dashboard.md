@@ -1,10 +1,10 @@
 # Run dashboard
 
-The dashboard is a local observer of one configurator run. It shows the six stages, run status, elapsed time, model repairs, recent run events and current Codex or Goose activity. It refreshes every second. It uses the installed Python package and your browser; no web service, container or additional runtime is required.
+The dashboard is a local observer of one configurator run. It shows the six stages, run status, elapsed time, model repairs, recent run events and current Codex activity. It refreshes every second and runs with the installed Python package and your browser.
 
 ## Open it
 
-Use the same Python environment and state home that started the run. Take `RUN_ID` from the run-start result in Codex, Goose or the CLI. For a benchmark suite, use `active_child_id` from `driver_benchmark_suite_status`; the dashboard follows that one child run:
+Use the same Python environment and state home that started the run. Take `RUN_ID` from the run-start result in Codex or the CLI. For a benchmark suite, use `active_child_id` from `driver_benchmark_suite_status` to follow that child run.
 
 ```sh
 python -m generative_driver dashboard RUN_ID
@@ -32,6 +32,6 @@ Every stage hands off its artifacts with notes: the worker's checks, the configu
 
 The run log retains the latest 200 configurator events. Uncheck “Follow” to read earlier entries without automatic scrolling. Agent activity shows the latest 12 progress messages and command/tool status entries from the current worker. Full command arguments, outputs and evaluator payloads stay in their original run artifacts.
 
-The dashboard observes status and logs. Use the existing Codex, Goose or CLI run tools when you need to respond, resume or cancel.
+Use the Codex or CLI run tools to respond, resume or cancel.
 
 See [recorded dashboard verification](verification.md#analysis-client-and-protocol-evidence) for the measured browser/run observation and its limits.

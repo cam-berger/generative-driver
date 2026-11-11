@@ -122,7 +122,7 @@ class FreezeTests(unittest.TestCase):
         manifest['entries'].clear(); config['command'].clear(); options['ghidra_home'] = 'changed'
         provenance['environment']['python'] = 'changed'
         self.assertEqual(frozen, original)
-        other = freeze_suite(original['manifest'], 'goose', {'command': ['other-toy']}, {}, {}, harness_token_sha256=TOKEN)
+        other = freeze_suite(original['manifest'], 'codex', {'command': ['other-toy']}, {}, {}, harness_token_sha256=TOKEN)
         self.assertEqual(other['manifest_sha256'], digest)
 
     def test_replay_physical_unknown_and_bad_scenario_do_not_create_home(self):

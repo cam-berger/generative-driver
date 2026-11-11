@@ -455,8 +455,11 @@ class McpTests(unittest.TestCase):
 
     async def check_installation(self):
         with tempfile.TemporaryDirectory(prefix="MCP user space ") as temp:
+            (Path(temp) / "config.json").write_text(json.dumps({"executors": {
+                "unknown-runtime": {"command": [sys.executable]}}}), encoding="utf-8")
             params = StdioServerParameters(command=sys.executable,
-                                           args=["-m", "generative_driver.mcp"], cwd=temp, env=package_env())
+                                           args=["-m", "generative_driver.mcp"], cwd=temp,
+                                           env=package_env(GENERATIVE_DRIVER_HOME=temp))
             async with stdio_client(params) as (reader, writer):
                 async with ClientSession(reader, writer) as session:
                     await session.initialize()
@@ -466,4 +469,25 @@ class McpTests(unittest.TestCase):
                     self.assertFalse(reply.is_error)
                     report = json.loads(reply.content[0].text)
                     self.assertTrue(report["core"]["ok"])
-                    self.assertIn("goose", report["dependencies"])
+                    self.assertIn("codex", report["dependencies"])
+                    self.assertNotIn("unknown-runtime", report["dependencies"])
+
+    def test_executor_schemas_list_only_supported_runtimes(self):
+        async def check():
+            with tempfile.TemporaryDirectory() as temp:
+                params = StdioServerParameters(command=sys.executable, args=["-m", "generative_driver.mcp"],
+                                               cwd=temp, env=package_env())
+                async with stdio_client(params) as (reader, writer):
+                    async with ClientSession(reader, writer) as session:
+                        await session.initialize()
+                        return {tool.name: tool.input_schema for tool in (await session.list_tools()).tools}
+
+        schemas = asyncio.run(check())
+        for tool, expected in (("driver_start", {"codex"}),
+                               ("driver_benchmark_run", {"codex", "replay"}),
+                               ("driver_benchmark_suite_start", {"codex", "replay"})):
+            with self.subTest(tool=tool):
+                branches = schemas[tool]["properties"]["executor"]["anyOf"]
+                choices = {value for branch in branches for value in branch.get("enum", [])}
+                choices.update(branch["const"] for branch in branches if "const" in branch)
+                self.assertEqual(choices, expected)

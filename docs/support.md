@@ -6,7 +6,7 @@ The core targets native macOS and Windows 11+. Development uses Apple silicon ma
 |---|---|
 | Configurator | Durable background owner; native socket or Windows named pipe. Windows MCP needs an independently started owner. |
 | Suites | Sequential emulated workflows, reconnect, exports and offline comparison; matching authenticated calibration required |
-| Codex / Goose | Installed, authenticated command-line runtime; Goose contract tests do not establish live execution |
+| Codex | Installed and authenticated CLI for model runs |
 | Firmware | Pinned local import; operator owns acquisition rights. ESP acquisition needs esptool and rejects incomplete app carving. |
 | Datasheets | Registered vendor fetch, hash and extraction; optional PDF dependency; PDFs not bundled |
 | USB | Explicit read-only discovery; control/bulk/interrupt execution via PyUSB/libusb |

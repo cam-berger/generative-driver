@@ -50,6 +50,28 @@ class StoreTests(unittest.TestCase):
                 self.assertEqual(_experiment(experiment)['comparison_identity']['evaluator_revision'],'e'*64)
             finally:controller.close()
 
+    def test_saved_suite_with_an_unsupported_executor_is_readable_but_cannot_resume(self):
+        from generative_driver.benchmark_support.snapshots import execution_provenance
+        from generative_driver.benchmark_support.suites import freeze_suite
+        with tempfile.TemporaryDirectory() as temporary:
+            controller = Controller(Path(temporary))
+            try:
+                config = {'command': ['scripted'], 'runtime': 'unknown-runtime'}
+                provenance = execution_provenance(config, case_ids=['tq9'])
+                frozen = freeze_suite(legacy_manifest(), 'codex', config, {}, provenance, harness_token_sha256=TOKEN)
+                frozen['executor'] = frozen['request']['executor'] = 'unknown-runtime'
+                suite_id = controller._suites.create(frozen)['suite_id']
+                controller._suites.set_state(suite_id, 'blocked')
+                params = {'suite_id': suite_id}
+                saved = controller.call('suite_result', params)
+                self.assertEqual(saved['experiment']['dimensions']['runtime'], 'unknown-runtime')
+                with self.assertRaisesRegex(ValueError, 'unsupported executor'):
+                    controller.call('suite_resume', {**params, 'harness_token_sha256': 'b2' * 32,
+                                                      'harness_pid': os.getpid()})
+                self.assertEqual(controller.call('suite_result', params), saved)
+            finally:
+                controller.close()
+
     def test_duplicate_request_returns_original_frozen_inputs_and_conflicts_refuse(self):
         from copy import deepcopy
         from generative_driver.benchmark_support.suites import freeze_suite

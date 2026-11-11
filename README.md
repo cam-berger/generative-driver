@@ -2,7 +2,7 @@
 
 [Driver contracts and application MCP authoring](docs/extending-drivers-and-mcp.md) · [Generated MCP verification](bench/evidence/2026-10-29-driver-contract-mcp-verification.json)
 
-Turn a supported device’s firmware or documentation into a portable driver, with evidence that it works. Use Codex, Goose or the command line.
+Turn a supported device’s firmware or documentation into a portable driver, with evidence that it works. Use Codex or the command line.
 
 The workflow reads the input, infers commands, tests the device, checks independent observations, builds a package, and asks a fresh agent to use it. This is an experimental tool; see [supported paths](docs/support.md).
 
@@ -50,7 +50,7 @@ Use a new output directory each time. Smoke tests installation and recorded repl
 
 | Task | Guide |
 |---|---|
-| Connect a client | [Codex](docs/codex.md) · [Goose](docs/goose.md) |
+| Connect a client | [Codex](docs/codex.md) |
 | Configure AI or hardware | [Setup and recovery](docs/setup.md) |
 | Evaluate a run | [Benchmarks](bench/README.md) · [Recorded results](docs/verification.md) |
 | Broaden firmware coverage | [Upstream corpus](docs/benchmark-corpus.md) · [Recorded coverage](docs/verification.md) |

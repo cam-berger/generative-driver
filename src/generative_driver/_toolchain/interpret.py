@@ -25,10 +25,8 @@ FRONT_ENDS = EXECUTABLE | {"interpret-datasheet", "interpret-firmware", "interpr
 # interpret-interface stays on schema 5: its brief names schemas 4 and 5 and nothing newer.
 MODEL_DOCS = {"interpret-interface": ("INTERFACE_MODEL_V5.md", "INTERFACE_MODEL_V4.md", "INTERFACE_MODEL_V3.md"),
               "interpret-selfdescribing": ("INTERFACE_MODEL_V6.md",)}
-# Directories a workspace may not lie in: a Claude Code session scratch tree, whose path every agent of every session
-# is told to use and which can hold the parent's own working files (answer keys included), and the Claude
-# configuration tree, which holds memory files and other sessions' transcripts.
-SCRATCH_TREES = tuple(str(Path.home() / name) for name in (".claude", ".codex", ".config/goose"))
+# Personal agent directories may contain caller files, instructions and other sessions' transcripts.
+SCRATCH_TREES = tuple(str(Path.home() / name) for name in (".claude", ".codex"))
 RESERVED = {"BRIEF.md", "INTERFACE_MODEL.md", "INPUT_HASHES.json", "validate.py", "qualify.py",
             "image_map_check.py", "WIRING.md", "defects.json", "_toolkit"}
 # defects.json is the control file the retry loop writes and the schema-1 validator rewrites; a change to it
@@ -372,8 +370,7 @@ def interpret_run(run_dir, front_end, inputs, wiring=None, attempt=1, defects=No
         elif _under(root, REPOSITORY):
             refused = "workspace_root must lie outside the repository"
         elif any(_under(root, tree) for tree in SCRATCH_TREES):
-            refused = ("workspace_root must not lie in a Claude Code scratch or configuration tree: agents are told to "
-                       "use the session scratchpad, and it can hold the caller's own files")
+            refused = "workspace_root must lie outside personal Claude Code and Codex directories"
         elif len(name) >= 3 and (name in os.path.realpath(root).lower() or name in root.lower()):
             refused = "workspace_root must not carry the run name: the prompt shows the workspace path"
         elif record.exists() or record.is_symlink():

@@ -131,7 +131,8 @@ print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text
             rows = [json.dumps({'type': 'item.completed', 'item': {
                 'type': 'agent_message', 'text': 'Analyzing the firmware'}}),
                 json.dumps({'type': 'item.completed', 'item': {'type': 'command_execution',
-                    'command': 'tool --password PRIVATE', 'aggregated_output': 'PRIVATE', 'exit_code': 0}})]
+                    'command': 'tool --password PRIVATE', 'aggregated_output': 'PRIVATE', 'exit_code': 0}}),
+                json.dumps({'type': 'unrecognized', 'response': 'PRIVATE'})]
             (root / '_agent_events.jsonl').write_text('x' * 100000 + '\n' + '\n'.join(rows) + '\n{', encoding='utf-8')
             activity = dashboard.read_activity(root)
             self.assertEqual(activity['entries'], ['Analyzing the firmware', 'Shell command finished (exit 0)'])
@@ -285,20 +286,6 @@ print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text
             finally:
                 release.touch()
                 call('shutdown', home=home)
-
-    def test_goose_assistant_activity_keeps_prompt_and_tool_payloads_private(self):
-        with tempfile.TemporaryDirectory(prefix='dashboard goose ') as directory:
-            root = Path(directory).resolve()
-            rows = [
-                {'type': 'message', 'message': {'role': 'user', 'content': [{'type': 'text', 'text': 'PRIVATE INPUT'}]}},
-                {'type': 'message', 'message': {'role': 'assistant', 'content': [
-                    {'type': 'text', 'text': 'Inspecting the supplied image'},
-                    {'type': 'toolRequest', 'toolCall': {'name': 'analysis', 'arguments': {'secret': 'PRIVATE'}}}]}},
-                {'type': 'complete', 'response': 'Preparing the driver package'}]
-            (root / '_agent_events.jsonl').write_text('\n'.join(json.dumps(row) for row in rows), encoding='utf-8')
-            activity = self.dashboard().read_activity(root)
-            self.assertEqual(activity['entries'], ['Inspecting the supplied image', 'Preparing the driver package'])
-            self.assertNotIn('PRIVATE', str(activity))
 
     def test_reconnect_only_read_has_a_reply_deadline_without_retrying_the_owner(self):
         from generative_driver.client import call

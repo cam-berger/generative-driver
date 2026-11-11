@@ -846,9 +846,8 @@ class TrialMetricsTests(unittest.TestCase):
                 self.assertEqual(interpreted(), {'command_execution': 1, 'mcp_tool_call': 0, 'file_change': 1})
 
     def test_a_transcript_that_holds_no_codex_record_leaves_the_actions_unknown(self):
-        # Nothing says a worker did nothing when its transcript is no Codex stream: the events of another runtime (Goose),
-        # text the runtime printed, which `agents.execute` keeps as unparsed_stdout, and an empty file. The Codex stream of
-        # a worker that took no action does say so.
+        # A Codex stream can establish zero actions. Unrecognized records, unparsed output and an empty file leave
+        # the count unknown.
         streams = {'acquire': [json.dumps({'type': 'message', 'message': {'role': 'assistant', 'content': []}}),
                                json.dumps({'type': 'complete', 'total_tokens': 15})],
                    'interpret': [json.dumps({'type': 'unparsed_stdout', 'text': 'plain text'}), 'not json'],

@@ -18,7 +18,7 @@ import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from .setup import configured_executor
+from .setup import SUPPORTED_EXECUTORS, resolve_executor
 from .agents import StageRequest, execute
 # The evaluator uses these too, so they are defined in modules of their own and imported here under their old names.
 from .benchmark_support.integrity import IntegrityError, digest
@@ -1488,6 +1488,10 @@ class Controller:
         if method == 'record_evaluation':
             return self._record_evaluation(run_id, params)
         if method == 'resume':
+            if row['status'] in ('blocked', 'failed', 'cancelled') and not row['uncertain']:
+                saved_executor = json.loads(row['spec']).get('executor', 'codex')
+                if saved_executor not in SUPPORTED_EXECUTORS and self._workflow_progress(run_id)['next_stage'] in STAGES:
+                    raise ValueError('The saved run uses an unsupported executor. Start a new run with Codex.')
             self._resume_device(run_id)
             with self._lock:
                 row=self._row(run_id)
@@ -1579,7 +1583,7 @@ class Controller:
         from .benchmark_support.suites import normalize_manifest,freeze_suite,refuse_secrets
         from .benchmark_support.snapshots import execution_provenance
         manifest=normalize_manifest(params.get('manifest'))
-        executor=configured_executor(params.get('executor'),self.home)
+        executor=resolve_executor(params.get('executor'))
         options=params.get('options',{})
         refuse_secrets(options)
         token,pid,lock=_harness_identity(params,'A suite is started and driven by its bench harness: `benchmark suite start`')
@@ -2094,6 +2098,8 @@ class Controller:
             suite = self._suite(suite_id)
             if not harness_driven(suite['frozen']):
                 raise ValueError(OLD_SUITE)
+            if suite['frozen']['executor'] not in SUPPORTED_EXECUTORS:
+                raise ValueError('The saved suite uses an unsupported executor. Start a new suite with Codex.')
             if suite['status'] in ('queued','running') and _attached_to(suite, params.get('harness_token_sha256')):
                 # Its harness's resume again, the first reply lost: that harness still drives the suite.
                 return {**self._suite_call('suite_status',{'suite_id':suite_id}),'attached':True,
@@ -2269,9 +2275,7 @@ class Controller:
             value = params.get(key)
             if value is not None and (not isinstance(value, str) or not Path(value).is_absolute()):
                 raise ValueError(key + ' must be an absolute path to the selected installation')
-        executor = configured_executor(params.get('executor'), self.home)
-        if executor not in ('codex', 'goose', 'replay'):
-            raise ValueError('executor must be codex, goose or replay')
+        executor = resolve_executor(params.get('executor'))
         budget = params.get('budget_seconds', 10800)
         if type(budget) not in (int, float) or not 0 < budget <= 7 * 86400:
             raise ValueError('budget_seconds must be positive and no more than seven days')
@@ -2338,10 +2342,10 @@ class Controller:
                     elif 'evaluation_token_sha256' in spec and not (isinstance(spec['evaluation_token_sha256'], str) and
                             re.fullmatch('[0-9a-f]{64}', spec['evaluation_token_sha256'])):
                         raise ValueError('evaluation_token_sha256 must be the sha256 of the bench harness evaluation token')
-                if executor != 'replay' and not config.get('command'):
+                if executor == 'codex' and not config.get('command'):
                     # Never fall back to whatever program of that name is on PATH: it may be something else entirely.
-                    raise ValueError(f'{executor} is not configured; run `generative-driver configure {executor} <command>` '
-                                     'with the runtime this configurator should launch')
+                    raise ValueError('codex is not configured. Run '
+                                     '`generative-driver configure --executor codex --command <path>`.')
                 if case:
                     if executor == 'replay':
                         config = spec['executor_config'] = _copy_candidate(config, self.home / 'runs' / run_id)

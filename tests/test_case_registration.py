@@ -10,6 +10,16 @@ from unittest.mock import patch
 
 
 class CaseRegistrationTests(unittest.TestCase):
+    def test_benchmark_run_refuses_unsupported_executor_before_creating_output_or_a_harness(self):
+        from generative_driver.benchmark import run
+        with tempfile.TemporaryDirectory() as temp, \
+                patch('generative_driver.benchmark_support.harness.launch') as launch:
+            for case in ('setup-smoke', 'tq9'):
+                with self.subTest(case=case), self.assertRaisesRegex(ValueError, 'Unsupported executor'):
+                    run(case, Path(temp) / 'output', executor='unknown-runtime')
+            launch.assert_not_called()
+            self.assertEqual(list(Path(temp).iterdir()), [])
+
     def test_counterfeit_family_is_refused_before_a_benchmark_harness_starts(self):
         from generative_driver.benchmark import run
         from suite_fixtures import public_case_fixture

@@ -1,0 +1,77 @@
+{
+  "goal": "Fix what the 2026-11-11 review found in the kit: installed-plugin drift, doctor, the smoke test, standardized public driver descriptions, input paths for interpretation, splitting interpretation into smaller tasks, service diagnosability and robustness, and packages that stop verifying after a runtime edit. Benchmark items are out: they are recorded in .scratch and move to a new repository.",
+  "slug": "kit-fixes",
+  "branch": "mdk/kit-fixes",
+  "stage": "breakdown",
+  "awaiting": null,
+  "current": null,
+  "features": [
+    {
+      "id": "01",
+      "slug": "doctor-identity",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "02",
+      "slug": "plugin-freshness",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "03",
+      "slug": "service-smoke",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "04",
+      "slug": "service-log",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "05",
+      "slug": "bounded-calls",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "06",
+      "slug": "runtime-compat",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "07",
+      "slug": "driver-contract-guide",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "08",
+      "slug": "export-once",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "09",
+      "slug": "interpret-tasks",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "10",
+      "slug": "supporting-documents",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "11",
+      "slug": "device-first-path",
+      "status": "pending",
+      "base": null
+    }
+  ],
+  "escalation": null
+}

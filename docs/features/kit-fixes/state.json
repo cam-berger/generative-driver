@@ -26,49 +26,25 @@
     },
     {
       "id": "04",
-      "slug": "service-log",
+      "slug": "service-diagnostics",
       "status": "pending",
       "base": null
     },
     {
       "id": "05",
-      "slug": "bounded-calls",
+      "slug": "driver-package",
       "status": "pending",
       "base": null
     },
     {
       "id": "06",
-      "slug": "runtime-compat",
-      "status": "pending",
-      "base": null
-    },
-    {
-      "id": "07",
-      "slug": "driver-contract-guide",
-      "status": "pending",
-      "base": null
-    },
-    {
-      "id": "08",
-      "slug": "export-once",
-      "status": "pending",
-      "base": null
-    },
-    {
-      "id": "09",
       "slug": "interpret-tasks",
       "status": "pending",
       "base": null
     },
     {
-      "id": "10",
-      "slug": "supporting-documents",
-      "status": "pending",
-      "base": null
-    },
-    {
-      "id": "11",
-      "slug": "device-first-path",
+      "id": "07",
+      "slug": "input-paths",
       "status": "pending",
       "base": null
     }

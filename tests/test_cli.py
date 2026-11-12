@@ -123,16 +123,19 @@ class CliTests(unittest.TestCase):
             finally:
                 call("shutdown", {}, temp)
 
-    def test_doctor_finds_a_configured_runtime_outside_the_app_search_path(self):
+    def test_01_B3_doctor_finds_a_configured_runtime_outside_the_app_search_path(self):
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix="configured doctor ") as temp:
-            configure("codex", [sys.executable], model="selected-model", home=temp)
+            stand_in = Path(temp) / "stand_in.py"
+            stand_in.write_text('print("codex-cli 1.2.3")\n', encoding="utf-8")
+            configure("codex", [sys.executable, str(stand_in)], model="selected-model", home=temp)
             result = subprocess.run([sys.executable, "-m", "generative_driver", "--home", temp,
                                      "doctor", "--json"], cwd=temp,
-                                    env=dict(os.environ, PATH=""), capture_output=True, text=True)
+                                    env=dict(os.environ, PATH="", **package_env()), capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             configured = json.loads(result.stdout)["dependencies"]["codex"]
             self.assertTrue(configured["available"])
+            self.assertEqual(configured["version"], "1.2.3")
             self.assertEqual(configured["source"], "configuration")
             self.assertEqual(configured["model"], "selected-model")
 

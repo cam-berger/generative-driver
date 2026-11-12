@@ -97,10 +97,19 @@ def _codex_selection(config_path):
     if not config_path.is_file():
         return None
     config = json.loads(config_path.read_text(encoding='utf-8'))
-    executors = config.get('executors', {}) if isinstance(config, dict) else None
+    if not isinstance(config, dict):
+        raise ValueError('A configuration is a JSON object: ' + _json_type(config))
+    executors = config.get('executors', {})
     if not isinstance(executors, dict):
-        raise ValueError('Expected a JSON object holding an object of executors')
+        raise ValueError('A configuration holds its executors in a JSON object: ' + _json_type(executors))
     return executors.get('codex')
+
+
+def _json_type(value):
+    """The JSON name of the type of `value`, a value `json.loads` returned. It names what a file holds without
+    quoting the file."""
+    return {dict: 'object', list: 'array', str: 'string', bool: 'boolean', int: 'number', float: 'number',
+            type(None): 'null'}[type(value)]
 
 
 def _codex(home):

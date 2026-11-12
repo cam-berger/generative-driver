@@ -4,12 +4,12 @@
   "branch": "mdk/kit-fixes",
   "stage": "spec",
   "awaiting": null,
-  "current": "01",
+  "current": "02",
   "features": [
     {
       "id": "01",
       "slug": "doctor-identity",
-      "status": "escalated",
+      "status": "done",
       "base": "783f05a289e7fd45bd5e6fa1490849ee8d557e30"
     },
     {
@@ -73,9 +73,5 @@
       "base": null
     }
   ],
-  "escalation": {
-    "feature": "01",
-    "reason": "Feature 01, 01-B12 on Windows. doctor launches the configured Codex command directly, while a start on Windows launches it through _windows_worker.py from the stage workspace. A configured command that is a relative path with a directory part (for example tools/codex) can therefore answer doctor's check and be reported available on Windows although a start would not find it, and the test for that case is skipped on Windows. The Spec does not settle it: 01-B3 gives an answering command reason null, while 01-B12 says a relative command's reason must say the path must be absolute. Options: (a) accept the Windows gap; (b) launch the check through the Windows wrapper as a start does, which cannot be run on this machine; (c) report any relative command with a directory part as unavailable on every platform without launching it, with 01-B12 taking precedence over 01-B3. The review otherwise passed every Deviation and the check printed PASS. Two Standards must-fixes wait for the next fix round: the ValueError message at src/generative_driver/setup.py:102 names no offending value, and the docs of the helpers program, codex_on_path and stand_in in tests/test_doctor.py do not lead with what they return.",
-    "at": "2026-11-11T20:27:57+00:00"
-  }
+  "escalation": null
 }

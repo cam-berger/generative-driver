@@ -39,3 +39,22 @@ Tests attach at those three places: the function with a temporary home, the comm
 - How a start refuses a runtime that is not configured.
 
 ## Deviations
+
+- The check is `generative_driver.agents.codex_identity(config)`, with the 10-second limit in `agents.VERSION_ANSWER_SECONDS`, imported by `setup.doctor` at call time — the Spec names no module, and sharing the launch's environment filter and process-tree stop is how the check finds what a start would find.
+- `_command(config)` and `_OWN_GROUP` were pulled out of the launch code, and `_command` raises `ValueError` where a missing or non-object config raised `KeyError` or `TypeError` — doctor accepts exactly the commands a launch accepts, the message text is unchanged, and `execute` refuses a missing command before reaching it.
+- 01-B4: a command `shutil.which` cannot find is not launched — the Spec asks for no launch there, and nothing would start.
+- 01-B12: the "must be absolute" sentence is added whenever no version was obtained, including the not-found case — this is the amended Spec's own wording.
+- 01-B12 on Windows: the stored command is launched directly, not through the start's wrapper, and the relative-path test is skipped there — the human accepted this gap on 2026-11-11 and the amended 01-B12 states it.
+- 01-B12's "a command that answers is reported as 01-B3 says, whatever its path" is tested only through 01-B3's absolute-path stand-ins — on macOS a relative command cannot answer from the check's empty directory, and the code adds nothing once a version is obtained.
+- `model` and `provider` appear only when `configured` is true — the Spec lists them for 01-B3 only.
+- 01-B9 also covers an unreadable file, a file that is not a JSON object, `executors` that is not an object and a Codex entry that is not an object; a `null` entry counts as none — each crashed doctor before, which the Intent and 01-B10 rule out.
+- 01-B9 reasons also give the `configure` command, with "Fix or remove it" first for a file `configure` cannot rewrite — the next step for an operator whose start failed.
+- 01-B9 reasons for a non-object file or `executors` name the JSON type found, never text from the file — the Standards rule on `ValueError` messages, without exposing the operator's file in `reason`.
+- `version` is the rest of the first standard-output line after `codex-cli `, stripped — the Spec gives no version grammar.
+- 01-B5: the quoted line is standard output's first line, else standard error's, "It printed nothing." when neither, and the exit status is added — 01-B5's rule with more detail.
+- `extras[*].required_for` wording is the implementer's, and the package-to-extra table is a literal in `setup.py` held to `pyproject.toml` by its test — an installed package has no `pyproject.toml` to read.
+- New tests are in `tests/test_doctor.py`; the `tests/test_cli.py` test is rewritten in place with `package_env()` — the Spec asks for the rewrite and STANDARDS for that environment.
+- 01-B10's test runs its child with `python -S` and checks the extras keys, not their values — values depend on how the package is installed.
+- 01-B11's test leaves `core.platform` out of the comparison — the value is cached per process from the `PATH` it first saw.
+- 01-B12's first test patches `shutil.which` — the host's executable lookup is a system boundary, and the test still fails if the resolved path is launched.
+- RED order: 01-B11 failed before the 01-B3 code, 01-B10 before 01-B9, and the kept 01-B6 failure is on behaviour — disclosed, and each kept failure is for its Behaviour's reason.

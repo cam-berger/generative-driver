@@ -21,8 +21,8 @@ CONFIGURE = 'generative-driver configure --executor codex --command <path>'
 
 
 def program(path, action):
-    """Write a program the operating system launches directly, a shell script or on Windows a batch file, and return
-    its path. `action` is one line both shells understand."""
+    """The path of a new program at `path` that the operating system launches directly: a shell script, or on Windows
+    a batch file. `action` is one line both shells understand."""
     path.parent.mkdir(exist_ok=True)
     if os.name == 'nt':
         path = path.with_suffix('.cmd')
@@ -34,12 +34,12 @@ def program(path, action):
 
 
 def codex_on_path(directory, marker):
-    """Put an executable named `codex` in `directory` that leaves `marker` behind if anything runs it."""
+    """The path of a new executable named `codex` in `directory`, which leaves `marker` behind if anything runs it."""
     return program(directory / 'codex', 'echo ran > "' + str(marker) + '"')
 
 
 def stand_in(directory, body):
-    """Write a script that stands in for the worker runtime, and return the command that runs it."""
+    """The command that runs a new script with `body` in `directory`, standing in for the worker runtime."""
     script = Path(directory) / 'stand_in.py'
     script.write_text(body, encoding='utf-8')
     return [sys.executable, str(script)]
@@ -171,6 +171,8 @@ class DoctorCodexTests(unittest.TestCase):
             'a list holding a number': '{"executors": {"codex": {"command": ["codex", 5]}}}',
             'a number': '{"executors": {"codex": {"command": 5}}}',
         }
+        # What was found in place of an object, named by its JSON type and never quoted from the file.
+        found = {'not a JSON object': 'JSON object: array', 'executors that are not an object': 'JSON object: array'}
         with tempfile.TemporaryDirectory(prefix='doctor unusable config ') as temp:
             home = Path(temp) / 'home'
             home.mkdir()
@@ -183,6 +185,8 @@ class DoctorCodexTests(unittest.TestCase):
                     expected = {'configured': False, 'available': False, 'version': None, 'path': None}
                     self.assertEqual({key: entry[key] for key in expected}, expected)
                     self.assertIn(str(config.resolve()), entry['reason'])
+                    if label in found:
+                        self.assertIn(found[label], entry['reason'])
                     self.assertIn(CONFIGURE, entry['reason'])
                     self.assertEqual(sorted(report), ['core', 'dependencies', 'extras', 'home', 'serial_ports',
                                                       'serial_ports_available'])

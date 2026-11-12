@@ -28,7 +28,13 @@ codex plugin marketplace add ./codex-install
 
 For the bundled executable, use `"$CODEX_CLI" plugin marketplace add ./codex-install`. Restart Codex, open Plugins Directory, install **Generative Driver**, then start a new chat. See [official plugin instructions](https://developers.openai.com/plugins/build/plugins).
 
-Generated assets pin Python and the state directory. Supply a leading `--home DIRECTORY` for a custom location; regenerate into a new directory after moving the Python environment. The checked-in plugin instead expects `generative-driver-mcp` on PATH.
+Generated assets pin Python and the state directory. Supply a leading `--home DIRECTORY` for a custom location. The plugin's version is its build: the package version, `+`, and 12 hex digits that change whenever a generated file changes. The checked-in plugin instead expects `generative-driver-mcp` on PATH.
+
+## Update the plugin
+
+After upgrading the package or moving the Python environment, run the same `setup` command again. It replaces the plugin it generated in that folder, so the registered marketplace holds the new build; it refuses a folder holding a plugin or marketplace file it did not generate. Then reinstall or refresh **Generative Driver** in Codex and start a new chat.
+
+`driver_doctor` called from Codex reports `plugin.state`: `current`, or `stale` with the command to run again. `python -m generative_driver doctor` from a terminal checks only the plugin `setup` last generated: `stale` when it is out of date, `unchecked` otherwise.
 
 ## MCP-only setup
 

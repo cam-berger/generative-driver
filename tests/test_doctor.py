@@ -188,8 +188,8 @@ class DoctorCodexTests(unittest.TestCase):
                     if label in found:
                         self.assertIn(found[label], entry['reason'])
                     self.assertIn(CONFIGURE, entry['reason'])
-                    self.assertEqual(sorted(report), ['core', 'dependencies', 'extras', 'home', 'serial_ports',
-                                                      'serial_ports_available'])
+                    self.assertEqual(sorted(report), ['core', 'dependencies', 'extras', 'home', 'plugin',
+                                                      'serial_ports', 'serial_ports_available'])
                     self.assertEqual(sorted(report['dependencies']),
                                      ['arm-none-eabi-gcc', 'codex', 'java', 'podman', 'renode'])
                     self.assertTrue(report['core']['ok'])

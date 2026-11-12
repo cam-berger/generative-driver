@@ -47,3 +47,20 @@ Tests attach at `integration_assets` and `doctor` with temporary homes and outpu
 - The `runtime_version` a run records, noticed in Feature 01.
 
 ## Deviations
+
+- The plugin build is `__version__ + '+'` and the first 12 hex digits of a SHA-256 over every file `setup` writes (path, length, bytes) with the build left empty, rendered in memory — the Spec names no digest; hashing every file's content is what 02-B2 asks, and rendering in memory keeps `doctor` read-only.
+- A new kit version alone changes the build, so an upgraded kit reads `stale` until `setup` runs again — the Spec's format puts the version in the build, and reporting a plugin older than the installed kit is the Intent.
+- Tests patch `setup._SKILLS`, and 02-B2 also patches `_MANIFEST` and `_MARKETPLACE` — `_SKILLS` is the seam the Spec allows; 02-B2 names the manifest as content that must change the build, which a test cannot vary without a seam, and only tests use them.
+- The new plugin is built in a `.setup-*` folder inside DIR; the swap moves the earlier plugin aside, the new one in, then the same for the marketplace file, and a failure undoes the renames in reverse and removes any folder `setup` created — this is how 02-B5 is met, including "nothing new" on a first run.
+- A failed record write also rolls DIR back, and the earlier plugin is deleted only after the record is written — 02-B6 requires the record, and treating its failure as a 02-B5 failure keeps DIR and the record consistent.
+- A hard kill between renames can leave a lone marketplace file and a `.setup-*` folder, and the next `setup` then refuses — no code can undo a SIGKILL or power loss; refusing is the safe 02-B4 outcome and destroys nothing.
+- 02-B4 names the path that fails its name check, the plugin folder first, or the only one of the two that exists — a plugin folder without the marketplace file is not "a plugin it generated" by the Spec's definition, and the message names a path as required.
+- `replaced_build` is null for a missing or unreadable earlier `.mcp.json` or a non-string build, and a dangling symlink counts as present and is refused — fits "or null when it has none" and errs toward refusing.
+- The record is `setup.json` in the home, `{output, build, command, args}`, written atomically, and `setup` now creates a missing home with mode 0o700 — the Spec leaves the layout to the builder, and 02-B6 needs the home to exist.
+- A record that cannot be read, is not JSON or an object, or has fields of the wrong type counts as unreadable, and the reason adds "The record of the last setup cannot be read: <path>." — fits 02-B10.
+- An empty `GENERATIVE_DRIVER_PLUGIN_BUILD` counts as null — an empty value names no build, and `setup` never writes one.
+- The command single-quotes paths on both platforms (POSIX `'"'"'` escaping, PowerShell `''` doubling, `& ` before the interpreter on Windows), with the placeholder `<directory>` — 02-B8 asks for quoting for the platform's shell with `&` on Windows; the placeholder matches Feature 01's `<path>`.
+- A stale reason names both builds, then says to run the command, reinstall or refresh in Codex and start a new chat, and uses the recorded output whenever there is a record — this is what 02-B8 says.
+- The 01-B9 test's exact key list now includes `plugin` — the Spec's Interface adds that key.
+- The 02-B5 test that locks folders is skipped on Windows and for root; the test whose home is a file runs everywhere — a choice of coverage, and nothing is claimed about Windows.
+- 02-B1 first passed with a fixed digest, 02-B6 with `up_to_date: True` and a record written outside the rollback, each replaced by a later Behaviour's test; 02-B9 has no code of its own and its RED was kept between the 02-B7 and 02-B8 code — every Behaviour still has its own RED.

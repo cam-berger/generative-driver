@@ -12,7 +12,9 @@ server = MCPServer("generative-driver")
 
 @server.tool()
 def driver_doctor() -> str:
-    """Check installed core and optional agent, analysis and emulator dependencies."""
+    """Check the configured worker runtime, the optional packages and the plugin build, with core Python and the
+    optional analysis and emulator tools. plugin.state is stale when the plugin in use is not what setup writes now;
+    plugin.reason then gives the setup command to run again."""
     return json.dumps(doctor(), default=str)
 
 

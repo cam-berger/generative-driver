@@ -4,7 +4,7 @@
   "branch": "mdk/kit-fixes",
   "stage": "spec",
   "awaiting": null,
-  "current": "02",
+  "current": "03",
   "features": [
     {
       "id": "01",
@@ -15,8 +15,8 @@
     {
       "id": "02",
       "slug": "plugin-freshness",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "29f3f238beef22885d82d869b4ec25636df58e09"
     },
     {
       "id": "03",

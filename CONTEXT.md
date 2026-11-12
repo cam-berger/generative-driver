@@ -7,6 +7,8 @@
 | Stage / assignment | Acquire, interpret, probe, ground, emit or reuse; one active worker with bounded inputs/tools/effects. |
 | Handoff | Immutable artifacts and hashed notes: worker checks, truth-free configurator checks and open questions. Empty stages still hand off. |
 | Worker report | A claim, never a reason by itself to stop a run. |
+| Scripted worker | A program the kit ships that the configurator launches in place of the Codex CLI, doing a stage's work by a fixed script with no model. Its runs show the kit's machinery works, never a model's ability. |
+| Stand-in device | A fictional line-protocol device served on a localhost TCP port for one smoke. Its exchanges are not physical evidence. |
 | Equivalence | One final verdict: evaluator grade for benchmarks, self-evidence for generic runs. Completion alone does not mean success. |
 | Interface model / binding | Byte operations, decoding and effects / operator-selected host connection. |
 | Driver contract | Authoritative public operations, meanings, value schemas, units, scoped caveats and preconditions. |

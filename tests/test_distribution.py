@@ -23,6 +23,14 @@ class DistributionTests(unittest.TestCase):
                              "generative_driver/resources/registrations/sets.json"):
                 self.assertIn(resource, names)
 
+    @unittest.skipUnless(os.environ.get("GD_TEST_WHEEL"), "Set GD_TEST_WHEEL for the release archive gate")
+    def test_03_B8_the_wheel_ships_the_smoke_its_scripted_worker_and_stand_in_model(self):
+        with zipfile.ZipFile(os.environ["GD_TEST_WHEEL"]) as archive:
+            names = archive.namelist()
+        for resource in ("generative_driver/smoke.py", "generative_driver/scripted_worker.py",
+                         "generative_driver/stand_in_device.py", "generative_driver/resources/smoke/model.json"):
+            self.assertIn(resource, names)
+
     @unittest.skipUnless(os.environ.get("GD_TEST_SDIST"), "Set GD_TEST_SDIST for the source archive gate")
     def test_source_archive_includes_linked_verification_record(self):
         with tarfile.open(os.environ["GD_TEST_SDIST"]) as archive:

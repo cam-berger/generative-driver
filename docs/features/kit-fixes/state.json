@@ -4,7 +4,7 @@
   "branch": "mdk/kit-fixes",
   "stage": "spec",
   "awaiting": null,
-  "current": "03",
+  "current": "04",
   "features": [
     {
       "id": "01",
@@ -21,8 +21,8 @@
     {
       "id": "03",
       "slug": "service-smoke",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "e4205f209864f9b6745c1cc45e1682362d852f73"
     },
     {
       "id": "04",

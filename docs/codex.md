@@ -44,6 +44,22 @@ codex mcp add generative-driver -- /absolute/path/to/python -m generative_driver
 
 Use the Windows Python path on Windows. App configuration uses that executable plus separate `-m` and `generative_driver.mcp` arguments. Set `GENERATIVE_DRIVER_HOME` for a custom state directory. Copy the generated `skills/generative-driver` folder into the project’s `.agents/skills/`. See [official MCP setup](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
 
+## Check the service path
+
+After `python -m generative_driver doctor`, and before a first run:
+
+```sh
+python -m generative_driver smoke
+```
+
+It runs one whole six-stage run through a background service of its own, in a new temporary folder, with a scripted worker in place of Codex and a stand-in device served on a localhost port. It needs no model, Codex sign-in or hardware, and leaves your state directory, configuration and runs alone. `"ok": true` shows that the service, its worker launch and the tool gateways work on this machine; it shows nothing about a model, a firmware image or a real device.
+
+A failure prints `"ok": false` with `failed_stage`, `reason` and `logs`, and keeps the folder named by `home` so the logs can be read:
+
+- No `failed_stage`, and the service or the run could not be started: read the service log, `logs.service`. The local socket or named pipe, the Python installation or the temporary folder is at fault.
+- A `failed_stage`: read that stage's worker output, `logs.worker_stderr` and `logs.worker_events`. The worker launch, the stage's tool gateway or its tools broke there, such as the sealed interpretation workspace or the generated tool catalog at reuse.
+- `service.stopped` is `false`: the service stopped answering during the run, or did not stop within 30 seconds of the smoke's request and was terminated. Read `logs.service`; workers or gateways it started may still run.
+
 ## First conversation
 
 > Use Generative Driver to check my installation, help me select a benchmark or supported device, and start a run. Save its run ID and show the accepted evidence when it finishes.

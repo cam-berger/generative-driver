@@ -34,6 +34,8 @@ def main(argv=None):
     setup.add_argument("--output", required=True)
     service = commands.add_parser("service", help="Manage the independent background configurator")
     service.add_argument("action", choices=["start", "status", "stop"])
+    commands.add_parser("smoke", help="Run one whole run through a service of its own, with a scripted worker and a "
+                                      "stand-in device; no model, Codex or hardware")
     dashboard = commands.add_parser("dashboard", help="Watch one run's stages and logs in a local browser")
     dashboard.add_argument("run_id")
     dashboard.add_argument("--port", type=int, default=0, help="Local port; default selects an available port")
@@ -76,6 +78,12 @@ def main(argv=None):
     if args.command == "setup":
         print(json.dumps(integration_assets(args.host, args.output, home=args.home), indent=2))
         return 0
+    if args.command == "smoke":
+        # The smoke never uses the operator's home, so the global --home does not apply to it.
+        from .smoke import smoke
+        report = smoke()
+        print(json.dumps(report, indent=2))
+        return 0 if report["ok"] else 1
     if args.command == "report":
         from .reporting import report_run
         print(json.dumps(report_run(args.run_id, home=args.home, output=args.output), indent=2))

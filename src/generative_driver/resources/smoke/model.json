@@ -1,0 +1,78 @@
+{
+  "schema": "interface-model/3",
+  "device": {
+    "name": "stand-in device"
+  },
+  "channel": {
+    "type": "tcp"
+  },
+  "identity": {
+    "operation": "identify"
+  },
+  "operations": {
+    "identify": {
+      "effect": "read",
+      "parameters": {},
+      "steps": [
+        {
+          "op": "exchange",
+          "tx": [
+            {
+              "text": "ID?\n"
+            }
+          ],
+          "rx": {
+            "mode": "until",
+            "delimiter_hex": "0a",
+            "max_bytes": 128
+          },
+          "timeout_ms": 2000,
+          "capture": "id",
+          "expect": {
+            "equals_hex": "44454d4f2d34320a"
+          }
+        }
+      ],
+      "outputs": {}
+    },
+    "measure": {
+      "effect": "read",
+      "parameters": {},
+      "steps": [
+        {
+          "op": "exchange",
+          "tx": [
+            {
+              "text": "T\n"
+            }
+          ],
+          "rx": {
+            "mode": "until",
+            "delimiter_hex": "0a",
+            "max_bytes": 128
+          },
+          "timeout_ms": 2000,
+          "capture": "reply"
+        }
+      ],
+      "outputs": {
+        "temperature": {
+          "from": "reply",
+          "kind": "ascii_number",
+          "prefix": "T:",
+          "unit": "degC"
+        }
+      }
+    }
+  },
+  "provenance": [
+    {
+      "item": "operations.identify",
+      "source": "stand-in device of generative-driver smoke"
+    },
+    {
+      "item": "operations.measure",
+      "source": "stand-in device of generative-driver smoke"
+    }
+  ]
+}

@@ -14,3 +14,9 @@
 - 02: lines over 120 columns that predate this Feature — `tests/test_cli.py:87, 91, 97, 317` and `src/generative_driver/mcp.py:47, 65`.
 - 02: the checked-in `plugins/generative-driver/.codex-plugin/plugin.json` keeps version `0.1.0` and carries no build, so `doctor` reports `unchecked` for it (out of scope by the Spec).
 - 02: `src/generative_driver/setup.py:232-233` — the new result keys use double quotes, following the older return dict, where the rest of the new code uses single quotes.
+- 03: `src/generative_driver/client.py:287` — on macOS the service socket is `tempfile.gettempdir()/gd-<20 hex>/owner.sock`; a temporary directory longer than about 70 bytes gives "AF_UNIX path too long" and the service cannot start (the smoke reports it as a start failure).
+- 03: `src/generative_driver/client.py:287-288` — every service home leaves an empty `gd-<identity>` folder in the system temporary directory, so each smoke leaves one.
+- 03: `src/generative_driver/configurator.py:2908` — every interpret stage leaves its sealed `gd-candidate-*` workspace in the system temporary directory and nothing removes it, so each smoke, like each real run, leaves one.
+- 03: `src/generative_driver/client.py:368` — `call(..., autostart=False)` reports a dead service as an ordinary `{'ok': False, 'reason': 'Configurator is not reachable…'}` reply with no field a caller can test; the smoke tells the two apart by checking the service lock.
+- 03: `tests/test_generated_trials.py` — an earlier Run's tests already use the names `test_03_B1` to `test_03_B25`, so the Done check's lookup of `03-B1`..`03-B8` would pass even without this Feature's tests.
+- 03: `tests/test_distribution.py:13` — the existing wheel test carries no Behaviour ID.

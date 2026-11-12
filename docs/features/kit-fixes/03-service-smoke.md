@@ -67,3 +67,18 @@ Tests run the command as a child process with `package_env()` and attach to its 
 - A service log beyond the existing `daemon.log`, and deadlines on tool calls, which are Features 04 and 05.
 
 ## Deviations
+
+- The test seams are one JSON environment variable, `_GENERATIVE_DRIVER_SMOKE_TEST`, with keys `keep`, `replies`, `worker` (`--idle STAGE`, `--hang STAGE`), `budget_seconds`, `run_budget_seconds`, `grace_seconds`, `error_in`, `kill_in`, `ignore_shutdown` and `stop_seconds` — the Spec allows seams only tests use and leaves their form open; each key serves a case the Spec needs tested and acts only when set.
+- The scripted worker writes `_scripted_worker.json` in its workspace: its launch arguments, the gateway command and arguments, the tools it listed and called, the `generative_driver` file it imported and its `PYTHONPATH` — this is the Spec's "what the scripted worker records of its launch".
+- Probe and ground call `probe_run` once per model operation — still "runs the model's operations with `probe_run`"; the gateway refuses a call that names no operation.
+- The stand-in model is interface-model/3 over TCP with identify (`ID?` → `DEMO-42`) and measure (`T` → `T:21.5`, degC); the firmware stand-in is a short text file; the run asks for `['read']` effects and a fixed goal — details the Spec leaves open.
+- After the 60-second grace the smoke cancels the run and waits up to 30 seconds before reading it — a bounded wait so 03-B6 can name the running stage.
+- `failed_checks` lists the configurator checks' `name`s — stage checks carry only `name` (configurator.py:3427), while the verdict's checks carry the `id` that `verdict.failed_checks` uses.
+- On Ctrl-C or an error in the smoke itself, `failed_stage` is the stage the run was in, with "The smoke was interrupted (Ctrl-C) while the run was in …" or "The smoke itself failed: …" and that stage's worker logs — consistent with 03-B5's "the stage the run stopped in" and 03-B7's "interrupted".
+- A further Ctrl-C is ignored while the smoke stops the service — serves 03-B7's "on every exit … stops the service".
+- After 30 seconds the service process alone is killed (SIGKILL, or `taskkill /F` on Windows), only while it still holds its home's `service.lock`, else by pid; the reason says workers or gateways may still run — matches 03-B7's "terminates the service process" and the Out-of-scope line on leftover workers.
+- `service.stopped` is true only once the smoke sees the service release its lock — this is the Spec's definition, "whether the smoke saw the process end".
+- `docs/codex.md` writes the command as `python -m generative_driver smoke` — the same command, written as the rest of that page writes commands.
+- A service that stops answering is treated as a stop at once (an `ok: false` reply while its home's lock is free): the smoke follows the run's events while it waits and reports the stage it was in, the attempts already done, and that workers or gateways may still run — applies 03-B5's "the stage the run stopped in" and the Intent's "names the first stage that broke".
+- A service that stopped answering on its own gets `service.stopped: false` although its process ended — keeps 03-B7's promise that a stopped service leaves no worker running, and matches the Out-of-scope line where `stopped: false` signals possible leftovers.
+- A failing report's `evidence` says the run "can show at most whether" the service path works; a passing report keeps the Spec's sentence — keeps the Intent's "its report says so" true for failures.

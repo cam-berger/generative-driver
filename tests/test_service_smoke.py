@@ -97,6 +97,22 @@ class SmokeCase(unittest.TestCase):
                       + completed.stdout[-3000:] + '\n' + completed.stderr[-3000:])
         return completed.returncode, report
 
+    def hung_in(self, stage, budgets=(4, 16, 64), **seam):
+        """Exit status and report of a smoke whose scripted worker waits without end in `stage`, so that the run is
+        there when the smoke's budget is spent. The budget is the first of `budgets` in which the run got that far:
+        the stages before it take about a second on one machine and several on another. A longer budget cannot help
+        a run that stops earlier for any other reason."""
+        earlier = STAGES[:STAGES.index(stage)]
+        for attempt, budget in enumerate(budgets):
+            if attempt:  # a temporary directory of its own: the folder the shorter budget's smoke kept is not counted
+                self.temp = self.root / ('t' + str(attempt))
+                self.temp.mkdir()
+            code, report = self.smoke(env=self.environment({'budget_seconds': budget, 'worker': ['--hang', stage],
+                                                            **seam}))
+            if report.get('failed_stage') not in earlier:
+                break
+        return code, report
+
     def homes(self):
         """The smoke folders left in the child's temporary directory."""
         return sorted(self.temp.glob('generative-driver-smoke-*'))
@@ -330,8 +346,7 @@ class SmokeTests(SmokeCase):
         self.assertNotIn('max_revisions', spec)
 
     def test_03_B6_a_run_whose_budget_is_spent_is_stopped_by_the_configurator(self):
-        code, report = self.smoke(env=self.environment({'budget_seconds': 4, 'worker': ['--hang', 'probe']}),
-                                  timeout=120)
+        code, report = self.hung_in('probe')
         self.assertEqual((code, report['ok'], report['failed_stage']), (1, False, 'probe'), report)
         self.assertIn('Stage exhausted the remaining run time budget', report['reason'])
         self.assertIn('operator', report['reason'])
@@ -340,9 +355,7 @@ class SmokeTests(SmokeCase):
     def test_03_B6_a_run_not_ended_after_its_budget_and_grace_is_cancelled(self):
         """The service gets a longer budget than the smoke waits for, so the run is still running when the smoke's
         wait ends."""
-        code, report = self.smoke(env=self.environment({'budget_seconds': 3, 'grace_seconds': 2,
-                                                        'run_budget_seconds': 300, 'worker': ['--hang', 'probe']}),
-                                  timeout=120)
+        code, report = self.hung_in('probe', grace_seconds=2, run_budget_seconds=300)
         self.assertEqual((code, report['ok'], report['failed_stage']), (1, False, 'probe'), report)
         self.assertIn('did not end in time', report['reason'])
         home = self.assert_kept(report, 'probe')
@@ -365,7 +378,7 @@ class SmokeTests(SmokeCase):
         self.assert_nothing_running(report)
 
     def test_03_B7_a_failing_smoke_keeps_its_folder_and_leaves_nothing_running(self):
-        code, report = self.smoke(env=self.environment({'budget_seconds': 4, 'worker': ['--hang', 'ground']}))
+        code, report = self.hung_in('ground')
         self.assertEqual((code, report['ok'], report['failed_stage']), (1, False, 'ground'), report)
         self.assertIs(report['service']['stopped'], True)
         self.assertEqual([home.resolve() for home in self.homes()], [Path(report['home']).resolve()])

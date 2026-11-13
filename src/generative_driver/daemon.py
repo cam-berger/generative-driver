@@ -29,6 +29,14 @@ def _hold_home(home):
         time.sleep(.01)  # A client may be testing the lock just now; a running configurator holds it for good.
 
 
+def _named(method, params):
+    """What a log entry may name of a request: its method, its run and, for a gateway call, its tool. Nothing else of
+    the request's parameters reaches the log."""
+    params = params if isinstance(params, dict) else {}
+    return {'method': method if isinstance(method, str) else 'request', 'run_id': params.get('run_id'),
+            'tool': params.get('name') if method in ('tool', 'mcp_tool') else None}
+
+
 def serve(home):
     home = Path(home).resolve()
     endpoint = json.loads((home / 'service.json').read_text(encoding='utf-8'))
@@ -36,7 +44,8 @@ def serve(home):
         # The starting client loaded other code than this process imports: serving would mislabel every reply.
         raise RuntimeError('service.json records other generative-driver code than this configurator runs; '
                            'start the service again from one installation')
-    controller = Controller(home)
+    controller = Controller(home, for_service=True)
+    log = controller.log
     # Queue concurrent worker, harness and UI handshakes rather than refusing a
     # burst before the ordinary/tool capacity limits can handle the requests.
     listener = Listener(endpoint['address'], family=endpoint['family'], authkey=bytes.fromhex(endpoint['authkey']), backlog=64)
@@ -52,6 +61,7 @@ def serve(home):
                 try:
                     result = controller.call(method, params)
                 except Exception as exc:
+                    log.replied(exc, **_named(method, params))
                     result = {'ok':False,'error':type(exc).__name__,'reason':str(exc)}
                 try:
                     conn.send_bytes(json.dumps(result,allow_nan=False).encode())
@@ -69,6 +79,7 @@ def serve(home):
                 continue
             try:
                 shutdown = False
+                method = params = None
                 try:
                     if not conn.poll(10):
                         continue
@@ -98,6 +109,7 @@ def serve(home):
                         conn = None
                         continue
                 except Exception as exc:
+                    log.replied(exc, **_named(method, params))
                     result = {'ok': False, 'error': type(exc).__name__, 'reason': str(exc)}
                 try:
                     conn.send_bytes(json.dumps(result, allow_nan=False).encode())

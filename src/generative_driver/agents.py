@@ -12,6 +12,7 @@ import threading
 import time
 import sys
 
+from . import service_log
 from .setup import SUPPORTED_EXECUTORS
 
 
@@ -54,6 +55,8 @@ class StageRequest:
     allowed_tools: list = field(default_factory=list)
     gateway: dict | None = None
     approve_scoped_tools: bool = False
+    # Called with each event the worker prints on its output, as `execute`'s `on_event` is.
+    on_event: object = None
 
 
 def _environment(config):
@@ -262,6 +265,7 @@ def execute(request, config, cancel_event=None, on_event=None):
                 'reason': 'No Codex command is configured. Run `generative-driver configure --executor codex --command <path>`.'}
     launch = _replay_launch if runtime == 'replay' else _codex_launch
     command, env, prompt = launch(request, config)
+    on_event = on_event or getattr(request, 'on_event', None)
     work = Path(request.workspace).resolve()
     transcript = work / '_agent_events.jsonl'
     stderr_path = work / '_agent_stderr.txt'
@@ -280,6 +284,7 @@ def execute(request, config, cancel_event=None, on_event=None):
         proc = subprocess.Popen(command, cwd=work, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', **_OWN_GROUP)
     except OSError as exc:
+        service_log.caught(exc, step='launch')
         return {**result, 'status': 'blocked', 'cause': 'runtime_unavailable',
                 'reason': 'Cannot start configured runtime: ' + str(exc), 'elapsed_seconds': 0}
     messages = queue.Queue()
@@ -345,6 +350,8 @@ def execute(request, config, cancel_event=None, on_event=None):
     if outcome:
         return {**result, 'status': outcome[0], 'reason': outcome[1], 'cause': outcome[2]}
     if launch_error is not None:
+        # The Windows wrapper caught the launch's exception in its own process and reported the message alone.
+        service_log.caught(OSError(launch_error), step='launch')
         return {**result, 'status': 'blocked', 'cause': 'runtime_unavailable', 'reason': 'Cannot start configured runtime: ' + launch_error}
     for text in reversed(text_parts):
         try:

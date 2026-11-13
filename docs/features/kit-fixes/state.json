@@ -4,7 +4,7 @@
   "branch": "mdk/kit-fixes",
   "stage": "spec",
   "awaiting": null,
-  "current": "04",
+  "current": "05",
   "features": [
     {
       "id": "01",
@@ -27,8 +27,8 @@
     {
       "id": "04",
       "slug": "service-diagnostics",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "940c14bdc444b53bfd58aa9c5791e32cf3687956"
     },
     {
       "id": "05",

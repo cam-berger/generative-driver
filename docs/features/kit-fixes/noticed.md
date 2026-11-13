@@ -20,3 +20,15 @@
 - 03: `src/generative_driver/client.py:368` — `call(..., autostart=False)` reports a dead service as an ordinary `{'ok': False, 'reason': 'Configurator is not reachable…'}` reply with no field a caller can test; the smoke tells the two apart by checking the service lock.
 - 03: `tests/test_generated_trials.py` — an earlier Run's tests already use the names `test_03_B1` to `test_03_B25`, so the Done check's lookup of `03-B1`..`03-B8` would pass even without this Feature's tests.
 - 03: `tests/test_distribution.py:13` — the existing wheel test carries no Behaviour ID.
+- 04: `src/generative_driver/configurator.py` (`Controller._prepare`, about line 2940) — preparation still runs `interpret_run` inside the service with no deadline in a generic run; the Spec covers only the three check tools.
+- 04: worker-chosen sizes and waits are unbounded — `random_files` (`_toolchain/interpret.py:171`, `:247`), `n` (`_toolchain/probe.py:63`), `seeds` (`_toolchain/emit.py:370`, `:438`), `delay_ms` (`resources/tools/model_exec.py:79`). In a generic run the 570-second limit bounds each call; nothing bounds the values.
+- 04: `src/generative_driver/resources/tools/model_exec.py:56` — a conversion module may be named outside its model's folder; `conversion.module` is joined unchecked (also read at `_toolchain/interpret.py:228` and `emit.py:264`, `:332`).
+- 04: `src/generative_driver/configurator.py:1326`, `:1344` — a resume refused for integrity on a cancelled run records no stop: `_state` changes nothing while the run's `cancelled` flag is set, so the run stays `cancelled`.
+- 04: `src/generative_driver/daemon.py:67` — a reply that cannot be serialised (a NaN in a result) raises `ValueError` outside the `except (OSError, EOFError)`, so the request thread dies and the client reports a lost reply.
+- 04: `src/generative_driver/_windows_worker.py:56` — the Windows launch wrapper reports only the message of a launch that failed, so the service can log no traceback for it there.
+- 04: each of the service's checks gets its own 570 seconds, so a model whose conversion module loops costs up to 570 s at interpret and again at each later stage that validates it, until the run's budget ends.
+- 04: `src/generative_driver/tool_process.py:24` — a tool child costs about 0.05 to 0.3 s to start here, and a tool whose limit passes still returns its result if its process ends before the next 0.05 s poll.
+- 04: `src/generative_driver/agents.py:325` — a worker's standard error is not a sign of life in `status.worker`.
+- 04: `src/generative_driver/mcp.py:70` — the `driver_result` description is 129 columns and predates this Feature.
+- 04: `tests/test_service_lifecycle.py` — draining at shutdown for calls that stay inline (benchmark runs, device sessions) no longer has a test.
+- 04: `tests/test_run_status.py:164`, `tests/test_service_log.py:285`, `:301`, `:334`, `tests/test_tool_process.py:126-175` — tests replace `Controller._suite_call`, call `_release`, `_device_call` and `reconcile` directly, and write run rows into the home's database, because the public route needs benchmark fixtures; a refactor of those names or of the schema breaks them.

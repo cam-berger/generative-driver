@@ -79,3 +79,22 @@ Tests attach at the configurator (an in-process controller) for status fields an
 - The dashboard, suite replies, a field telling a client that the service could not be reached, and recording a run's runtime version.
 
 ## Deviations
+
+- The existing test `test_shutdown_drains_an_accepted_tool_before_confirming_exit` in `tests/test_service_lifecycle.py` was replaced by `test_04_B7_shutdown_stops_an_accepted_tool_call_at_once_and_then_confirms_exit`, although the Spec says no existing test changes — the old test asserted the opposite of 04-B7's "the service shutting down stops it at once"; it is a kit test, and draining at shutdown for calls that stay inline no longer has a test.
+- Only a controller the service built (`Controller(home, for_service=True)`, passed by `daemon.serve` alone) runs tools in child processes and answers a raised call with the 04-B8 reply; any other controller records `tool.abandoned` and its log entry and then lets the original exception reach its caller — 04-B8 specifies the worker's reply, which only the service gives, and 04-B7 says a controller built elsewhere runs tools inline as today; benchmark tests that expect the raise keep passing.
+- A dispatched call that raises is recorded as abandoned in every run, benchmark runs included, so through the service a benchmark worker now gets `{"ok": false, "abandoned": "raised", "reason": ...}` in place of the `error` reply — 04-B8 carries no "in a generic run" limit, and Out of scope reserves only today's inline path; recorded in the benchmark notes.
+- A worker that cannot be launched leaves a full entry (`step=launch`) where the service catches the `OSError`; on Windows, where the launch wrapper catches it, the entry has the message and no traceback, untested here — it is a 04-B1 catch, and no Windows claim is made.
+- `tool_process.run` checks a call's limits before it starts the process, so a tool whose limits have passed is not started: a gateway call in that state is abandoned and a check is a failed check — 04-B7's deadline applied one step earlier; the refusal that leaves nothing uncertain is still made before dispatch.
+- Every `Controller` writes to `daemon.log` in its home, not only the service's — in `src` only `daemon.serve` builds one, and the Spec's own log tests need it at a controller.
+- A call or check the service stopped, or whose process returned nothing, also gets a one-line `abandoned` entry in the log — serves the Intent's diagnosis aim, and holds only the run, stage, tool, reason and exit status.
+- `worker.last_activity` kind `output` counts standard output only, and kind `tool` covers refused calls and is kept in memory — 04-B5 says "printed a line on its output", a refused call is still a sign of life, and `worker` is null once no worker runs.
+- `repairs` is `{"used": n, "budget": null}` when a saved run's `max_revisions` is not a number — "reading these fields never makes `status` fail".
+- The four added keys are dropped from every `suite_*` reply — "suite replies stay as they are".
+- The tool child catches `BaseException`, and a process that returns nothing is named `ToolProcessExit` with `exit status N` or `signal N` — 04-B8 asks for a type and message that name the exception or the child's exit status.
+- `tool.abandoned` also carries `actor: 'worker'` — matches the other tool events.
+- The refusal of a call whose deadline passed before dispatch exists only where tools run in child processes, and names a spent budget separately — it is part of 04-B7, which covers the service's generic runs.
+- On Windows the job wrapper ends a tool's leftover processes when the call ends, on success too; on POSIX only when the service stops the call — the same wrapper stage workers use.
+- `docs/codex.md` also names `deadline`, `repairs` and `worker`, and says benchmark runs keep no limit on tool calls — accurate, short, and the three required statements are there.
+- Several tests of constraints the earlier code already met show RED by mutation, each reverted — the excerpts fail for the Behaviour's reason; one (the exiting conversion module's probe-stage check) is thin, and 04-B9 has fitting REDs from its other tests.
+- Nothing ran on Windows — the Standards defer it to CI; the 04-B7 and 04-B9 tests are written portably and unproven there.
+- Tests still replace `Controller._suite_call` and call `_release`, `_device_call` and `reconcile` directly — the public route to each needs benchmark fixtures this Run may not edit.

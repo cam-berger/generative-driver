@@ -293,7 +293,8 @@ def _start(home, timeout=30):
         env = os.environ.copy()
         env['PYTHONPATH'] = str(Path(__file__).resolve().parents[1])
         options = {'creationflags': subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
-        with (home / 'daemon.log').open('ab') as log:
+        from .service_log import open_for_service
+        with open_for_service(home) as log:
             process = subprocess.Popen([sys.executable, '-m', 'generative_driver.daemon', '--home', str(home), '--wait-for-startup'],
                              cwd=home, env=env, stdin=subprocess.PIPE, stdout=log, stderr=log, **options)
         threading.Thread(target=process.wait, daemon=True).start()

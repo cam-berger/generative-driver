@@ -67,3 +67,9 @@ A failure prints `"ok": false` with `failed_stage`, `reason` and `logs`, and kee
 The configurator launches workers and retains progress after disconnect. [Benchmark instructions](../bench/README.md) cover replay, calibrated agent trials and private evaluator inputs. Plugin installation does not install optional native tools. The plugin format and stdio connection have automated checks; UI labels may vary.
 
 For emulated benchmarks, `driver_benchmark_run` sends the evaluator password file path to a bench harness. The configurator never receives the password or its path. The harness provides the device and grades once after the run; workers see instrument readings, not grades. Current `assistive/1` results form a new series. Workers are not read-isolated; answer-key separation is password-based, not a sandbox. Fresh native calibration is required because the recorded calibration predates this protocol. See [trial commands and scoring](../bench/README.md#run-an-agent-benchmark).
+
+## When a run fails
+
+`driver_status`, or `python -m generative_driver status RUN_ID`, names the service's log as `log`: `daemon.log` in the state directory. The traceback behind a failed run is there, in an entry that names the run and its stage. Older entries may be in `daemon.log.1` beside it: a log over 10 MB is set aside under that name when the service starts. The same status gives `deadline`, `repairs` and `worker`, which tell a slow stage from a stuck one.
+
+A worker's tool call has 570 seconds. The service stops a call that takes longer, or that still runs when the run is cancelled or out of budget, and records it as abandoned; an effect it might have had stays uncertain until you confirm it. Benchmark runs are the exception: their tool calls still have no limit.

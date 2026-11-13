@@ -22,6 +22,7 @@ Line numbers are those of `46c2b2e`. "Read" means the code path was read for thi
 | [10](issues/10-harness-size-and-operation.md) | The bench harness holds about fifteen jobs in one file and needs hand steps at every stop | reported |
 | [11](issues/11-calibration-staleness-is-hidden.md) | A stale calibration reads as passed until the password is supplied | read |
 | [12](issues/12-one-case-gets-extra-help.md) | One case's workers get an extra input file that the others do not | read |
+| [13](issues/13-kit-changes-not-adopted.md) | Kit changes from the `kit-fixes` Run that benchmark runs have not adopted | read |
 
 Suggested order: 02 and 03 before the baseline runs, because its numbers are fixed once it does and both sit outside the grader identity. Then 04 to 06, which decide how far "workers see only the UART" can be claimed. 07 is cheapest while every calibration is already stale.
 

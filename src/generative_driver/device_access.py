@@ -158,7 +158,7 @@ class DeviceAccess:
 
     def open(self, params):
         from .configurator import _json
-        from ._toolchain.interface import _snapshot
+        from ._toolchain.interface import _copy
         from interface_runtime.evidence import read_json
         from interface_runtime.package import digest
         from interface_runtime.transports import validate_binding
@@ -182,7 +182,8 @@ class DeviceAccess:
             storage = self.owner.home/'devices'/session_id
             storage.mkdir(parents=True)
             try:
-                snapshot, manifest, refused = _snapshot(package, None, pin, storage)
+                # The session keeps the package's own files, so a later kit runs its runtime over the same data.
+                snapshot, manifest, refused = _copy(package, None, pin, storage)
                 if refused is not None:
                     raise ValueError(str(refused))
                 if manifest['schema'] != 'interface-package/2':
@@ -260,7 +261,8 @@ class DeviceAccess:
                     'dispatch_id': str(dispatch), 'evidence_id': str(evidence)}
 
     def invoke_package(self, package, pin, operation, parameters, binding, effects):
-        """Trusted package subprocess; callers hold the owner lease and journal dispatch."""
+        """The installed runtime and driver entry over the package's data, in a subprocess; callers hold the owner lease
+        and journal dispatch."""
         from ._toolchain.interface import _snapshot, _live_call, BOOT
         with tempfile.TemporaryDirectory(dir=self.owner.home) as temporary:
             snapshot, manifest, refused = _snapshot(package, None, pin, temporary)

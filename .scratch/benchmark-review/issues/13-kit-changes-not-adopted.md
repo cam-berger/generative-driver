@@ -32,6 +32,14 @@ Adopting it means letting case runs through `Controller._limits`, and running th
 - A run's `status` adds `deadline`, `repairs`, `worker` and `log`. Suite replies are unchanged.
 - Shutdown no longer waits for a generic run's accepted tool call; it stops it. Draining for inline calls is untested.
 
+## Driver packages (Feature 05)
+
+These entries name functions rather than lines.
+
+- **Benchmark interpret workers are not taught the contract.** A generic run's interpret workspace now holds `CONTRACT.md` and `contract.py`, its `TASKS.json` and repair instructions tell the worker to write `contract.json`, and emit merges that file with the model (`driver_contract.py`). Benchmark interpret workspaces get none of this, so benchmark packages keep the contract the kit imports from the model: generic descriptions, a `semantics_unknown` caveat on every operation, and the model's units. A benchmark worker that writes `contract.json` without `protocol.json` is still refused by `emit_package`.
+- **`emit_check` now replays a package whose bundled copy differs.** It used to stop at integrity, with `replay_status` `not_run`. It now replays on the installed runtime and reports `passed` or `failed`, with a `replay_reason` that says so; `runtime_current` stays false. The benchmark's emit gate (`emulated.py`, stage `emit`) still requires `runtime_current`, so its verdicts are unchanged. Its rejection reason comes from the shared `configurator._emit_check_failure`, though, and for that case it now reads "the package carries a runtime other than this kit's" instead of "runtime is not current, so replay did not run".
+- **Renderer `3` changes new catalogs and the toolchain revision.** New packages' `mcp-tools.json` names renderer version `3`. For benchmark packages the rendered text is unchanged, because their contracts carry no `unit_not_stated` caveat. The catalog's bytes and hashes change all the same, and with them the manifest's. The runtime and toolchain changes also change the toolchain revision, which is a comparison dimension. Earlier packages keep renderer `2` and still verify.
+
 ## Direction
 
 Decide these in the new repository, with the run-side call sites and `SYSTEM_MODULES` as the boundary. The deadline matters most before long unattended suites: one hung tool call there holds a slot until the suite's budget.

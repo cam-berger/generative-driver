@@ -609,11 +609,12 @@ def _device_diff(events, assignment, contracts=None, writers=None):
     return diff
 
 
-def _notes(result, checked, outcome, *, refusals=(), missing=()):
+def _notes(result, checked, outcome, *, refusals=(), missing=(), contract=()):
     """stage-notes/1: worker claims, truth-free configurator checks, open questions and the outcome.
 
     `missing` names stage inputs that were absent; `refusals` are the gateway's refusals of this worker's tool calls.
-    The configurator's `records` bind each probe record a stage hands on to the digest of the model that wrote it.
+    The configurator's `records` bind each probe record a stage hands on to the digest of the model that wrote it, and
+    its `driver_contract` notes say which operations a generic emit packages with the contract the kit imports.
     """
     report = result.get('report') if isinstance(result.get('report'), dict) else {}
     listed = lambda key: report[key] if isinstance(report.get(key), list) else []
@@ -630,7 +631,8 @@ def _notes(result, checked, outcome, *, refusals=(), missing=()):
                        'checks': listed('checks'), 'unresolved': unresolved},
             'configurator': {'checks': observed.get('checks', []), 'dropped_artifacts': observed.get('dropped_artifacts', []),
                              'records': observed.get('records', []),
-                             'tool_refusals': list(refusals), 'device_diff': checked.get('device_diff')},
+                             'tool_refusals': list(refusals), 'device_diff': checked.get('device_diff'),
+                             **({'driver_contract': list(contract)} if contract else {})},
             'open_questions': questions, 'outcome': {'kind': outcome.kind, 'reason': outcome.reason}}
 
 
@@ -761,7 +763,7 @@ def _emit_check_failure(result):
     if result.get('integrity_ok') is False:
         return 'package integrity failed'
     if result.get('runtime_current') is False:
-        return 'runtime is not current, so replay did not run'
+        return "the package carries a runtime other than this kit's"
     if result.get('replay_status') not in (None, 'passed'):
         return 'replay ' + str(result['replay_status'])
     return 'seeded check failed' if 'seeds_run' in result else 'emit_check reported failure'
@@ -889,7 +891,8 @@ def _live_outcome(event):
 
 def _frozen_package(package, strict=False):
     """What judging a run of a frozen package needs, read from its bytes: its content digest, its manifest's digest
-    (which the snapshot emit_test_live executes carries), its driver directory's digest (which interface_execute runs
+    (which emit_test_live reports as `manifest_sha256` when it runs the installed runtime over the package's data),
+    its driver directory's digest (which interface_execute runs
     as a model), its identity operation, each operation's declared effect (absent is actuate, as the gateway reads it),
     whether its channel declares that opening it resets the device (its runtime then needs the reset grant for every
     operation) and its functions: the operations beyond identity with a step that reaches the device (an exchange or
@@ -2579,7 +2582,8 @@ class Controller:
                         rows = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='tool.refused' ORDER BY seq", (run_id,)).fetchall()
                     refusals = [{'name': event.get('name'), 'reason': event.get('reason')} for event in (json.loads(r['payload']) for r in rows)
                                 if event.get('assignment_id') == attempt and event.get('actor') == 'worker']
-                    notes = _notes(result, checked, outcome, refusals=refusals, missing=prepared.get('input_notes', ()))
+                    notes = _notes(result, checked, outcome, refusals=refusals, missing=prepared.get('input_notes', ()),
+                                   contract=prepared.get('driver_contract', ()))
                     if outcome.kind == 'revise':
                         # The partial handoff, the new revision and the route to interpret commit together.
                         progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=outcome.diff)
@@ -2900,14 +2904,16 @@ class Controller:
                                 'an evidence-backed exchange. The configurator supplies the endpoint separately.'
                         }, indent=1), encoding='utf-8')
                         inputs['BINDING_CONTEXT.json'] = str(binding_context)
+            from . import driver_contract
             tasks = run_dir / 'preparation' / workspace.name / 'context' / 'TASKS.json'
             tasks.parent.mkdir(parents=True, exist_ok=True)
             tasks.write_text(json.dumps({'schema': 'candidate-task-contract/1',
                 'tasks': {'requested': {'meaning': spec['goal']}}, 'effect_grants': spec.get('effects', ['read']),
                 'instructions': 'The objective describes requested behavior, not protocol evidence. Recover bytes, '
                     'decoders and units from supplied evidence. Report unsupported behavior. Do not execute or '
-                    'relabel effects outside the grants.'}, indent=1), encoding='utf-8')
+                    'relabel effects outside the grants. ' + driver_contract.TASK}, indent=1), encoding='utf-8')
             inputs['TASKS.json'] = str(tasks)
+            inputs.update(driver_contract.interpret_inputs())
             previous = next((a['path'] for h in reversed(accepted) if h['stage'] == 'interpret' for a in h['artifacts']
                              if (Path(a['path']) / 'model.json').is_file()), None)
             if previous:
@@ -2936,7 +2942,7 @@ class Controller:
                                     'supplied in this workspace: read them and leave them unchanged; changing any sealed '
                                     'input stops the run. Write the revised model.json, and replies.json when BRIEF.md '
                                     'asks for it, at the workspace root, and record which evidence each correction '
-                                    'addresses in NOTES.md.'}, indent=1), encoding='utf-8')
+                                    'addresses in NOTES.md. ' + driver_contract.REPAIR}, indent=1), encoding='utf-8')
                 inputs['REPAIR_CONTEXT.json'] = str(context)
             prepared = call_tool('interpret_run',{'run_dir':str(tool_run),'front_end':'interpret-interface','inputs':inputs,
                 **({'defects':defects} if defects else {}),'mode':'prepare','workspace_root':tempfile.mkdtemp(prefix='gd-candidate-')})
@@ -2968,6 +2974,10 @@ class Controller:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(path, target) if path.is_dir() else shutil.copy2(path, target)
             inputs.append(str(target))
+        contract_notes = []
+        if stage == 'emit':
+            from . import driver_contract
+            contract_notes = driver_contract.emit_inputs(inputs)
         context = {'stage': stage, 'acceptance': ('Report evidence and checks for this stage honestly. Observed tool '
                    'evidence is handed on; every report is kept as notes and the run continues.')}
         if spec.get('binding'):
@@ -2986,7 +2996,9 @@ class Controller:
         if prior:
             context['prior_notes'] = prior
         prepared = {'objective': GROUND_OBJECTIVE + spec['goal'] if stage == 'ground' else spec['goal'], 'inputs': inputs,
-                'allowed_tools': STAGE_TOOLS[stage], 'context': context, **({'input_notes': missing} if missing else {})}
+                'allowed_tools': STAGE_TOOLS[stage], 'context': context,
+                **({'input_notes': missing} if missing else {}),
+                **({'driver_contract': contract_notes} if contract_notes else {})}
         return self._generated_reuse(prepared) if stage == 'reuse' else prepared
 
     @staticmethod

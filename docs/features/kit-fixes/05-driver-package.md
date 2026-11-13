@@ -100,3 +100,20 @@ Docs:
 - Loading optional transport libraries (for example the serial library) in managed sessions; the builder lists what it sees under Noticed.
 
 ## Deviations
+- The kit checks the whole package against its manifest, copies it, then builds a run folder from its installed `interface_runtime` and driver template plus the package's data files, and a `-I -B` child runs it (`-I -S -B` in sessions) — the builder's choice the Spec allows; nothing puts the package's Python on the import path, and the 300 s and 260 s limits are unchanged.
+- A session's `open` keeps the package's verified copy, and each execution rebuilds the run folder from it and the kit installed at that moment — this is how 05-B1 covers a session opened before the kit changed, and 05-B2 still catches an altered kept copy.
+- `emit_test_live`'s `manifest_sha256` names the package's own manifest, not the run folder's — it keeps the value the reuse verdict compares against.
+- A model format the kit does not know is refused by name, and `is_interface_package` accepts any `interface-package/*` so an unknown package format is refused by name rather than sent to the register-package refusal — 05-B4.
+- New refusal wording names the unknown package, catalog, renderer, contract, protocol or model format — 05-B4.
+- `contracts.py` gains public `describes` and `check_preconditions` — they serve 05-B7 and 05-B8; new packages bundle them like any runtime change.
+- `emit_check`'s `replay_reason` reads "The replay ran on the installed runtime, because the package carries another copy of the runtime" — it carries the meaning 05-B3 asks for.
+- `_emit_check_failure` is shared with the benchmark's emit gate, so its rejection text for a package with another runtime changes too — it traces to 05-B3; benchmark verdicts do not change, no benchmark code or test changed, and issue 13 records it.
+- Renderer `3` is the default, and the `unit_not_stated` text applies to every known version except `2` — renderer versions are limited to `2` and `3`, so this is exactly 05-B9; SDK application tools also render as `3`.
+- 05-B8's notes go under `configurator.driver_contract`; an operation the contract describes but the model lacks is left out with a note; a merged contract that still fails the final compile falls back to the full import; emit preparation writes the model-derived `protocol.json`; a folder whose model the runtime refuses is left as it is — all within the 05-B8 rule.
+- `contract.py` prints JSON reports, takes an optional model-folder argument and reaches the runtime through the workspace's `_toolkit`; the guide and tool live in `resources/toolchain/contract/`; `test_configurator`'s interpret input lists gain both files; `MANIFEST.in` grafts `tests/fixtures`; docs beyond the Spec's list were kept accurate — the builder's choice or a direct consequence, with no scope change.
+- 05-B2's RED comes from a temporary mutation, and two guard tests (05-B6 benchmark workspaces, 05-B8 `emit_package`'s refusal) have none — 05-B2 keeps today's behaviour, so a mutation is the right proof; 05-B6 and 05-B8 have other tests with valid RED.
+- The upgrade test runs its child with `PYTHONPATH` set to a copy of the kit, not `package_env()` — it has to run a different kit, and an assertion proves which kit ran.
+- The fresh-reuse tests run through `scripted_stages` — the fresh-reuse seam the Spec names, without a model run.
+- Fix round 1: eight lines wrapped to 120 columns; four stale docstrings and comments rewritten; three module-only names made private; the new tests' temporary folders tolerate cleanup errors — no change to behaviour; addresses the Standards and the Windows cleanup risk.
+- `tools.json` is left stale and unedited — benchmark workers read it and the Spec keeps their instructions unchanged; it is listed in Noticed.
+- Nothing ran on Windows — the Windows CI run is the first check there.

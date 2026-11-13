@@ -59,8 +59,7 @@
         "temperature": {
           "from": "reply",
           "kind": "ascii_number",
-          "prefix": "T:",
-          "unit": "degC"
+          "prefix": "T:"
         }
       }
     }

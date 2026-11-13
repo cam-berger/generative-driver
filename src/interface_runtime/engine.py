@@ -388,7 +388,7 @@ def _decoder(decoder, captures, where, schema4=False, schema6=False):
 def _validate(model):
     _json_model(model)
     _fields(model, ("schema", "device", "channel", "identity", "operations", "provenance"), (), "model")
-    _require(model["schema"] in SCHEMAS, "schema", "unsupported model schema")
+    _require(model["schema"] in SCHEMAS, "schema", "unsupported model schema: " + repr(model["schema"])[:120])
     level = int(model["schema"].rsplit("/", 1)[1])
     schema4, schema5, schema6 = level >= 4, level >= 5, level >= 6
     _fields(model["device"], ("name",), (), "device")

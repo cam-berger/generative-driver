@@ -4,7 +4,7 @@
   "branch": "mdk/kit-fixes",
   "stage": "spec",
   "awaiting": null,
-  "current": "05",
+  "current": "06",
   "features": [
     {
       "id": "01",
@@ -33,8 +33,8 @@
     {
       "id": "05",
       "slug": "driver-package",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "d9617ab7d5241a41f286566ffbe1906eb4cb4bdd"
     },
     {
       "id": "06",

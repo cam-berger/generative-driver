@@ -1,0 +1,56 @@
+{
+  "schema": "driver-contract/1",
+  "device": {
+    "name": "stand-in device"
+  },
+  "identity": {
+    "operation": "identify"
+  },
+  "operations": {
+    "identify": {
+      "effect": "read",
+      "description": "Execute public operation identify.",
+      "uncertainties": [
+        {
+          "code": "semantics_unknown",
+          "message": "Operation identify meaning and operating assumptions are not documented.",
+          "evidence_refs": []
+        }
+      ],
+      "parameters": {},
+      "outputs": {}
+    },
+    "measure": {
+      "effect": "read",
+      "description": "Execute public operation measure.",
+      "uncertainties": [
+        {
+          "code": "semantics_unknown",
+          "message": "Operation measure meaning and operating assumptions are not documented.",
+          "evidence_refs": []
+        }
+      ],
+      "parameters": {},
+      "outputs": {
+        "temperature": {
+          "schema": {
+            "type": "number"
+          },
+          "description": "Decoded output temperature.",
+          "unit": "degC",
+          "uncertainties": []
+        }
+      }
+    }
+  },
+  "provenance": [
+    {
+      "item": "operations.identify",
+      "source": "stand-in device of generative-driver smoke"
+    },
+    {
+      "item": "operations.measure",
+      "source": "stand-in device of generative-driver smoke"
+    }
+  ]
+}

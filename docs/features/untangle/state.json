@@ -3,12 +3,69 @@
   "slug": "untangle",
   "branch": "mdk/untangle",
   "stage": "breakdown",
-  "awaiting": {
-    "kind": "breakdown",
-    "feature": null,
-    "sha256": "bbaf3d8fad5116d9787cb911af7d7bb1d3218ade4f78977bb8d35f3e7325a19e"
-  },
+  "awaiting": null,
   "current": null,
-  "features": [],
+  "features": [
+    {
+      "id": "01",
+      "slug": "deletion-marking",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "02",
+      "slug": "shared-helpers",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "03",
+      "slug": "client-interface",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "04",
+      "slug": "supplied-device-stages",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "05",
+      "slug": "benchmark-runs",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "06",
+      "slug": "suites",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "07",
+      "slug": "reports",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "08",
+      "slug": "commands",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "09",
+      "slug": "two-folders",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "10",
+      "slug": "two-packages",
+      "status": "pending",
+      "base": null
+    }
+  ],
   "escalation": null
 }

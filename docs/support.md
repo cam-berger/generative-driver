@@ -23,6 +23,8 @@ Effect grants bound the effects a model declares. Only a register model's write 
 
 Local macOS scripted CLI/MCP tests cover suite reconnection, owner loss, Windows missing-owner policy, pagination, exports and offline comparison. Simulated Windows policy checks are not native Windows results. TQ9 v2 native qualification uses GCC/Renode/Ghidra/Java and authenticates the installed evaluator; it measures reference behavior, not model or physical performance.
 
+<!-- legacy-benchmark:begin -->
 [Benchmark reports](../bench/README.md) distinguish replay, scripted workers, model execution, emulation and physical observations.
+<!-- legacy-benchmark:end -->
 
 The generic managed interpreter currently requires one firmware binary. Acquired USB descriptors, datasheet pages and FTDI scans remain evidence; automatic selection of their non-firmware front-ends is absent. Acquisition alone does not establish a generated driver.

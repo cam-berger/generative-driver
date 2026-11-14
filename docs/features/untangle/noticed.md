@@ -1,0 +1,13 @@
+# Noticed during the untangle Run
+
+- 01: `docs/verification.md:90,94,100,102,154` — the kept record links to benchmark items. ADR 0001 is ready now, so its link at line 100 breaks at the deletion; the others break when their targets are freed.
+- 01: `.venv/lib/python3.13/site-packages/__editable__.generative_driver-0.1.0.pth` (and site-packages in the hosted run) — the tree the copy was made from stays on `sys.path` behind the copy's `src`. Today nothing leaks, because both top-level packages exist in the copy. A top-level package deleted from the copy, such as `firmware_bench` after Feature 10, would still import in 01-B7's children.
+- 01: `tests/test_distribution.py:12-56` — in the hosted run the children inherit `GD_TEST_WHEEL` and `GD_TEST_SDIST`, so in the copy this module checks the archives built from the whole tree, not from the copy.
+- 01: `tests/test_checkout.py:44-50` — passes with no case at all, so it will not notice when `resources/bench` is removed.
+- 01: `tests/test_cli.py:180-189,236-245` and `tests/test_tool_process.py:137,465-470,725-728` — tool tests that run benchmark commands or benchmark runs without importing the benchmark package. They are not 01-B3 items and need Feature 08 or 09.
+- 01: `docs/support.md:8`, `docs/support.md:24`, `README.md:47`, `docs/design.md:52-66` — benchmark content that never says `bench`, so `Passages` does not count it.
+- 01: `docs/features/untangle/01-deletion-marking.md:58` — the notice's link, as printed in the Spec, points to `docs/features/docs/…` from the Spec's own folder. Harmless while the folder is kept.
+- 01: `.scratch/effect-labels/issues/01-observe-read-state-changes.md:3` — about code under `benchmark_support`, inside a folder the Spec keeps.
+- 01: `src/generative_driver/cli.py:50` — the tool's `report` command describes itself as exporting benchmark metrics; it is not a benchmark command under 01-B8.
+- 01: `STANDARDS.md:38` against 01-B7 — the rule asks for `package_env`'s environment, the Spec for a `PYTHONPATH` of the copy's `src` only.
+- 01: `STANDARDS.md:27` — the Done check stops at 9 minutes; the Test command now takes about 7 min 20 s here, up from about 340 s.

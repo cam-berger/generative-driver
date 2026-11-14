@@ -80,3 +80,28 @@ In these Behaviours, "the files" are the files git tracks plus the untracked fil
 - Running the dashboard's JavaScript test in the copy.
 
 ## Deviations
+
+- `problems` checks the list's form first (missing list, missing table, wrong columns, a row with the wrong number of cells) and returns only those faults when there are any — 01-B1 says the list holds six tables with those columns, and a list that breaks the form cannot be held to the tree.
+- A benchmark item under `tests/` is found through any chain of imports between files under `tests/`, not one level — it applies 01-B3's "a file under `tests/` that imports such a file" repeatedly, so no test that reaches the benchmark runs in the copy.
+- A Python file that does not parse is a problem — 01-B3 accounts for every Python file, and an unreadable one cannot be accounted for.
+- The marker form is chosen by file name: `.md` takes the HTML comment, every other file the `#` comment. A marker in the other form is plain text and is counted as an unmarked line — 01-B4 says "the file's own comment form" and gives exactly these two forms.
+- A stray marker (no partner, or nested) is reported once under 01-B4 and not also counted under 01-B5 — one fault gives one sentence and no failure is hidden.
+- An `Unmarked lines` figure must be a whole number, and a row for a file with nothing countable is held to zero — 01-B5's sum needs numbers and already says zero for a file with no row.
+- `strip` raises `ValueError` when the destination is the tree, lies inside it, or exists and is not empty — 01-B6 says it never writes inside the tree it reads, and a used destination could pass a link check on stale files.
+- `strip` also returns the list's form faults as failures — otherwise a missing list gives a full copy that passes as stripped, against the Intent's proof.
+- The link check covers inline links, images and reference definitions. It skips fenced blocks, code spans, links with a scheme, `#` anchors and paths that start with `/`. `pyproject.toml` is parsed when the copy has one, and file modes are copied — a reading of 01-B6's "relative link to a file the copy lacks" that adds no scope.
+- 01-B8 takes `src/generative_driver` of the tree as the tool. It asks the command line with `python -m generative_driver benchmark --help` and the MCP server over stdio. A tree without those files offers no command. The `Where` column is not checked — 01-B8 names no check of `Where`, and the Spec tests each rule on small trees.
+- Children get a `PYTHONPATH` of the `src` of the tree under check, not the environment of `tests/package_env.py`, for 01-B8 as for 01-B7 — 01-B7 states this environment in its own words, and the 01-B8 children must answer for a small tree.
+- The runner of 01-B7 lives in `tests/test_deletion_marking.py`. A module has 300 s, a timeout is a failure, and the last 40 lines of output are kept — the Spec gives the helper three functions and says the test runs the modules.
+- An extra 01-B9 test checks that every test file left in the copy imports only test files left there — it checks a rule 01-B9 states and adds no behaviour.
+- The notice is written as a block quote — the text is the Spec's, word for word, in both READMEs.
+- "Uses both the tool and the benchmark" counts tool use reached through any imported file under `tests/`, other test modules included. That gives 57 test modules that use both and 15 that use only the benchmark — the 8 modules this adds to "both" are kept rather than deleted, and Feature 09 settles them.
+- Of the 15 benchmark-only test modules, 3 are still used, `09`, because still-used modules import them: `test_benchmark_native`, `test_emulator_recovery` and `test_corpus_preflight`. The other 12 are ready — this is 01-B9's own rule for an item that only a still-used item needs.
+- `tests/test_benchmark_family_runtime.py` has a benchmark name but imports only `interface_runtime`. It is still used, `09`, and runs in the copy — 01-B2 requires an entry for its name and 01-B7 runs it.
+- A link from a covered document does not make its target still used. So ADR 0001 is ready though `docs/verification.md` links to it — 01-B6 checks only uncovered Markdown, and 01-B10 has still-used `bench/README.md` link to the ready list. No tool document, test, workflow or build file names a ready item.
+- Every still-used item is `09`. The tool modules are `02` (`replay`, `scripted_worker`), `07` (`configurator`, `reporting`) and `08` (`cli`, `mcp`). Nothing is `10` — the import lines match the Breakdown, and its Feature 09 has the tool's tests pass without the benchmark.
+- Under `Passages`, `08` is only for lines that are a command invocation. Prose that names a benchmark command is `09` — 01-B9 says 08 frees command lines and hosted-test lines.
+- `stays` is used for three lines whose only `bench` is the path of the kept `bench/evidence/` — the Breakdown keeps that path unchanged, so no Feature can free them.
+- Only two passages are marked, in `docs/support.md` and `docs/setup.md`. Other whole blocks are counted instead: one a still-used test requires, the benchmark items of `docs/design.md`, the ignore rules for plaintext answers in `.gitignore` and `MANIFEST.in`, and both copies of the client skill — 01-B9 says "marked only when", and both marked passages are whole paragraphs that no test requires.
+- The Spec's starting classification was checked by reading each file it names, and no difference was found. The base commit tracks 439 files — every row of the Spec's table matches the list's entries.
+- One sentence of the list's prose was reworded after the whole Test command ran — the Done check passed afterwards.

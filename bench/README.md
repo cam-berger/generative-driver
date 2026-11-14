@@ -1,5 +1,7 @@
 # Benchmark
 
+> **This is the legacy copy of the benchmark.** The benchmark is moving to a repository of its own. This copy will be deleted once the move is complete. The [deletion list](../docs/benchmark-deletion-list.md) says what goes.
+
 The [native Modbus pilot](../docs/benchmark-case-authoring.md#native-zephyr-execution) uses the same registry, provider, six-stage runner and reports with an explicitly pinned native executable.
 
 Recover a device interface, emit a portable driver, and have a fresh agent use it. Judge outputs/effects, not source-code similarity.

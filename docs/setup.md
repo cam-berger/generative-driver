@@ -67,7 +67,9 @@ python -m generative_driver resume RUN_ID --budget-seconds 21600 --budget-reason
 
 This sets six hours total, not six additional hours. The maximum is seven days; repeating a total adds nothing. MCP uses `budget_seconds` and `budget_reason`. Extensions retain start time, attempts and evidence and record a `run.budget_extended` event.
 
+<!-- legacy-benchmark:begin -->
 A detached bench harness drives suites; resume relaunches it and retains the current child. Suites use the same owner. Save `suite_id` and use suite status/events/result/cancel/resume. Suite and child budgets are separate; extend each explicitly. Keep CLI `--home` and MCP `GENERATIVE_DRIVER_HOME` consistent; conflicting `options.home` is refused. See [suite commands](../bench/README.md#run-a-repeated-suite).
+<!-- legacy-benchmark:end -->
 
 ## Developer command line
 

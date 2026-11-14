@@ -63,6 +63,16 @@ class Workers:
                     and now >= worker['last_activity']):
                 worker.update(last_activity=now, last_activity_kind=kind)
 
+    def task(self, run_id, task):
+        """The run's stage worker now runs `task`, an interpret task ({kind, command}), or none (docs/features/
+        kit-fixes/06-interpret-tasks.md, 06-B10)."""
+        with self._lock:
+            worker = self._running.get(run_id)
+            if worker is not None:
+                worker.pop('task', None)
+                if task is not None:
+                    worker['task'] = dict(task)
+
     def printed(self, run_id):
         """The run's stage worker printed a line on its output."""
         self._seen(run_id, 'output')
@@ -73,11 +83,13 @@ class Workers:
         self._seen(run_id, 'tool', assignment_id)
 
     def of(self, run_id):
-        """The run's running stage worker as `status` gives it, or None when none runs."""
+        """The run's running stage worker as `status` gives it, or None when none runs; `task` names the interpret task
+        it runs, when it runs one."""
         with self._lock:
             worker = self._running.get(run_id)
             return None if worker is None else {key: worker[key] for key in
-                                                ('stage', 'started', 'last_activity', 'last_activity_kind')}
+                                                ('stage', 'started', 'last_activity', 'last_activity_kind', 'task')
+                                                if key in worker}
 
 
 def without(reply):

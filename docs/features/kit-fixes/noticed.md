@@ -39,3 +39,8 @@
 - 05: `src/generative_driver/_toolchain/emit.py:336-344` — register packages (`interface-model/1`) keep the template currency check, so an earlier register package still stops after any kit upgrade.
 - 05: `tests/test_vault_gate.py` and other earlier Runs' modules use `test_05_B*` names, so the Done check's lookup of this Feature's IDs could be satisfied by them.
 - 05: `src/generative_driver/resources/toolchain/contract/CONTRACT.md` lives outside `resources/toolchain/skills/`, so the graded-phrase scan in `tests/test_assistive_wording.py:50-52` does not cover it; it contains none of those phrases today.
+- 06: `src/generative_driver/reporting.py:81` (`summarize`) — every `reports` row of a stage counts as an attempt (`attempts`, `attempt_count`, `workflow_status`), so a task-mode stage reports one attempt per task; its token sums are right.
+- 06: `src/generative_driver/tool_process.py:114` — before this Feature, stopping a kit tool's child on POSIX killed only its process group, so a process the tool started in a session of its own (as ghidra_run starts analyzeHeadless) outlived a stopped gateway call; fixed in this Feature for every kit tool.
+- 06: `docs/codex.md:7-18` tells users to run `codex --version`, although an unrelated program of that name may be on PATH; the doc does warn about it.
+- 06: task workspaces (`gd-task-*`) and interpret workspaces (`gd-candidate-*`) accumulate in the system temporary folder (out of scope).
+- 06: `src/generative_driver/configurator.py` has 257 lines over 120 columns that this Feature did not add or change, some beside its edits (for example the `worker.finished` event near line 2556, 164 columns).

@@ -134,3 +134,28 @@ No test needs a real Ghidra, a model or a device. The smoke, which names no Ghid
 - The register-model front ends, and runs without exactly one acquired image (Feature 07).
 
 ## Deviations
+- New modules `kit_analysis.py`, `analysis_index.py` and `interpret_tasks.py`, instructions under `resources/interpret_tasks/`, calls from configurator, run_status and mcp, and the event kinds `kit_analysis.started`/`finished` and `task.started`/`finished` — the Spec leaves layout and event names to the builder.
+- On POSIX, stopping a kit tool's child process now also kills every process group its descendants lead (`tool_process._stop`), and this applies to Feature 04's gateway calls too — 06-B1 needs it, because the Ghidra helper starts analyzeHeadless in a session of its own. It also makes 04-B7's "every process it started" true. Benchmark tools run inline and are unaffected.
+- The helper always runs in Feature 04's child process, bounded by its own 1800 s plus 60 s grace, the run's budget, cancel and shutdown. A budget that runs out blocks the run as a stage's would, and a stopped analysis's folder is removed so that a resume makes it again — this is how the configurator runs the helper, which the Spec leaves to the builder, and it matches 06-B1.
+- ELF images (ARM, AArch64, Xtensa) load with ElfLoader and are still passed the helper's `-loader-baseAddr`, the lowest PT_LOAD address. Raw images load with BinaryLoader and SeedCortexM.java — this is 06-B1's list, and the helper's command line is frozen. It was not checked against a real Ghidra. If Ghidra refused the option, the run would fall back as helper_failed.
+- The analysis is kept under `kit-analysis/<key>/`. The key covers the image, the resolved homes, the script hashes and the load decision. The analysis is re-hashed on every reuse, and a change stops the run for integrity — the key is 06-B1's, and the stop follows the sealed-input rule.
+- The handoff's notes carry `configurator.interpretation`. It holds the requested and actual mode, notes, whether the kit analysis was made or why not, and in task mode the paths and hashes of the record, inventory and fragments — these are the notes 06-B2, 06-B5 and 06-B11 require.
+- Dispatcher ranking scores 2 for each distinct switch case value and 1 for each command-like string. Over the bound, the index drops the other functions first, then candidates from the lowest rank, and says so in `omitted` — the ranking rule is the builder's choice.
+- Code excerpts cut a function at a line break, under a head note that counts toward the bound. strings.tsv keeps whole rows, and the task says how many were left out — within 06-B6, 06-B7 and 06-B9.
+- The single worker's TASKS.json gains a `kit_analysis` entry that tasks do not get. Handler tasks and the cross-check also get `_toolkit/`. REPAIR_CONTEXT.json marks every directory input with "/" — the entry is 06-B4; validate.py and qualify.py need the runtime; the mark is on the generic path only.
+- An inventory also counts as unreadable when it lists over 64 commands, names an identity that is not one of its commands, has an unknown schema, names a refused channel, or has bad names or handlers — these are 06-B6's limits, and such an inventory cannot become a model.
+- A usable fragment is an `interpret-fragment/1` object, and its operation name may differ from its command's. An identity fragment that does not validate on its own sends the attempt to the single worker. Validation is `validate_candidate`. replies.json is interface-replies/2 when any reply is hex — this follows 06-B7's rule for an unusable identity fragment, and `validate_candidate` is the check validate.py runs.
+- Task output goes into the single worker's sealed workspace. A cross-check is usable when its model validates. Files that would replace sealed inputs are skipped with a note — 06-B9 says the output is collected and checked as today.
+- When tasks wrote report rows of their own, the attempt-level row is left out. `worker.finished` stays one per attempt, with the tasks' usage summed. `status.worker.task` appears only while a task runs — this is 06-B10, without counting tokens twice.
+- Repairs:
+  - The rules for keeping operations follow 06-B11.
+  - Repair tasks get MODEL_FRAME, IDENTITY, DIFFERENCES and PREVIOUS_FRAGMENT inputs.
+  - Records are kept under `interpret-tasks/<revision>/<attempt>/` and re-hashed when read.
+  - A repair with no task record runs the single worker.
+
+  — within 06-B11; the layout is the builder's choice.
+- `interpretation` is checked at start. Case runs accept it and ignore it, and `driver_start` passes it on only when it is given — 06-B5 and 06-B12.
+- Test-first exceptions: 06-B12, one 06-B10 budget test and the 06-B10 service test show RED only by mutation, and two inventory sub-cases show none — every Behaviour still has a real RED, the mutations fail for their Behaviour's reason, and the two sub-cases fail on broken code.
+- docs/codex.md gains a section on the kit analysis and task mode, and issue 13 gains a Feature 06 section — the Spec requires both.
+- On Windows the temporary folder is under the user's profile. A user name with a space therefore gives the helper a path it refuses, and the run falls back as helper_failed — this follows from the Spec's choice of folder, and 06-B2 keeps the run going. Not testable here.
+- Fix round 1 wrapped lines to 120 columns, some through a local name or an if/return. It made seven internal names private, renamed one 06-B10 test, and rewrote five docstrings to lead with their result — formatting and Standards only; every value is unchanged.

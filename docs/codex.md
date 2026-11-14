@@ -70,6 +70,20 @@ The configurator launches workers and retains progress after disconnect. [Benchm
 
 For emulated benchmarks, `driver_benchmark_run` sends the evaluator password file path to a bench harness. The configurator never receives the password or its path. The harness provides the device and grades once after the run; workers see instrument readings, not grades. Current `assistive/1` results form a new series. Workers are not read-isolated; answer-key separation is password-based, not a sandbox. Fresh native calibration is required because the recorded calibration predates this protocol. See [trial commands and scoring](../bench/README.md#run-an-agent-benchmark).
 
+## Firmware analysis and interpret tasks
+
+Name `ghidra_home` and `java_home` in `driver_start`, and the configurator analyzes the acquired firmware once, before the first interpret worker, with the kit's Ghidra helper. It does so for an ELF of 32-bit ARM, AArch64 or Xtensa, and for a raw Cortex-M image whose vector table is at its first byte. Every interpret worker of the run, repairs included, reads that analysis and its index, `ANALYSIS_INDEX.json`, instead of running Ghidra again. When the analysis cannot be made, interpretation goes on as before, and the interpret stage's notes say why under `configurator.interpretation.kit_analysis`.
+
+Interpretation runs as one worker unless the run starts with `interpretation` set to `tasks`:
+
+```json
+{"goal": "...", "ghidra_home": "/absolute/path/to/ghidra", "java_home": "/absolute/path/to/jdk", "interpretation": "tasks"}
+```
+
+A task-mode attempt is an inventory of the firmware's commands, one fresh worker per command, and a cross-check of the model the configurator assembles from their pieces. A repair re-runs only the commands the device contradicted. The mode needs the analysis; without it, or when an inventory or the identity command's piece is unusable, the attempt runs the single worker and its notes say so. While a task runs, `driver_status` names it in `worker.task`.
+
+Task mode is unmeasured: whether it costs fewer tokens or makes better drivers than the single worker is a hypothesis until model runs compare them. Each task's token use is recorded for that comparison, in its `task.finished` event and in a `reports` row of its own under the stage's assignment. Benchmark runs use neither the analysis nor task mode.
+
 ## When a run fails
 
 `driver_status`, or `python -m generative_driver status RUN_ID`, names the service's log as `log`: `daemon.log` in the state directory. The traceback behind a failed run is there, in an entry that names the run and its stage. Older entries may be in `daemon.log.1` beside it: a log over 10 MB is set aside under that name when the service starts. The same status gives `deadline`, `repairs` and `worker`, which tell a slow stage from a stuck one.

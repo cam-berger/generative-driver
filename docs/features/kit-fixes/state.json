@@ -4,7 +4,7 @@
   "branch": "mdk/kit-fixes",
   "stage": "spec",
   "awaiting": null,
-  "current": "06",
+  "current": "07",
   "features": [
     {
       "id": "01",
@@ -39,8 +39,8 @@
     {
       "id": "06",
       "slug": "interpret-tasks",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "24067f091dbcb6039822e272759211832364a6c2"
     },
     {
       "id": "07",

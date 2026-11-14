@@ -40,6 +40,14 @@ These entries name functions rather than lines.
 - **`emit_check` now replays a package whose bundled copy differs.** It used to stop at integrity, with `replay_status` `not_run`. It now replays on the installed runtime and reports `passed` or `failed`, with a `replay_reason` that says so; `runtime_current` stays false. The benchmark's emit gate (`emulated.py`, stage `emit`) still requires `runtime_current`, so its verdicts are unchanged. Its rejection reason comes from the shared `configurator._emit_check_failure`, though, and for that case it now reads "the package carries a runtime other than this kit's" instead of "runtime is not current, so replay did not run".
 - **Renderer `3` changes new catalogs and the toolchain revision.** New packages' `mcp-tools.json` names renderer version `3`. For benchmark packages the rendered text is unchanged, because their contracts carry no `unit_not_stated` caveat. The catalog's bytes and hashes change all the same, and with them the manifest's. The runtime and toolchain changes also change the toolchain revision, which is a comparison dimension. Earlier packages keep renderer `2` and still verify.
 
+## Firmware analysis and interpret tasks (Feature 06)
+
+These entries name functions rather than lines.
+
+- **Benchmark runs get neither the kit analysis nor the task mode.** A generic run that names `ghidra_home` and `java_home` now has the configurator analyze the acquired image once (`kit_analysis.prepare`), and its interpret workers get the export and its index, `ANALYSIS_INDEX.json`, as sealed inputs. A generic run started with `interpretation: tasks` interprets as an inventory, a handler task per command and a cross-check (`interpret_tasks.run`). A run with a case returns from `Controller._prepare` before either, so its interpret workers still get the analysis kit and run Ghidra themselves, and every repair runs it again. `interpretation` is accepted at start and ignored there.
+- **Adopting them** means giving the adapters' interpret preparation (`prepare_stage`) the analysis inputs and their `TASKS.json` entry, and their `observe_stage` a collection that reads a task-mode attempt's output. A benchmark comparison of task mode with the single worker would also need each task's `reports` row counted under its stage attempt: `reporting.summarize` counts every row of a stage as an attempt.
+- **What benchmark readers now see.** Nothing in a case run changes. A generic run's `status.worker` may add `task`, and its events add `kit_analysis.started`, `kit_analysis.finished`, `task.started` and `task.finished`.
+
 ## Direction
 
 Decide these in the new repository, with the run-side call sites and `SYSTEM_MODULES` as the boundary. The deadline matters most before long unattended suites: one hung tool call there holds a slot until the suite's budget.

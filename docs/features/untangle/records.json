@@ -5,6 +5,12 @@
       "feature": null,
       "sha256": "bbaf3d8fad5116d9787cb911af7d7bb1d3218ade4f78977bb8d35f3e7325a19e",
       "at": "2026-11-14T17:01:31+00:00"
+    },
+    {
+      "kind": "spec",
+      "feature": "01",
+      "sha256": "cea702eb721064cd8e6639645635e039fb5d00308a61325f1cb0664385f6c77e",
+      "at": "2026-11-14T20:43:31+00:00"
     }
   ],
   "done": []

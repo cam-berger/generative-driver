@@ -1,0 +1,74 @@
+{
+  "approvals": [
+    {
+      "kind": "breakdown",
+      "feature": null,
+      "sha256": "12d42a9c40d8c72a34df2dfb48dd401cb6a1fb7e1f08eadb6f2c9995bd9c2cae",
+      "at": "2026-11-11T19:26:37+00:00"
+    },
+    {
+      "kind": "spec",
+      "feature": "01",
+      "sha256": "77c0e223a57d1c7db79ce76b75212babd3a6a6071785134e5ea0b57f0cdc222b",
+      "at": "2026-11-11T19:38:23+00:00"
+    },
+    {
+      "kind": "spec",
+      "feature": "01",
+      "sha256": "3c36a83665c055b7e78fe585f83d21df0976fea87473168dc6142902b93cfbbb",
+      "at": "2026-11-12T02:35:06+00:00"
+    },
+    {
+      "kind": "spec",
+      "feature": "02",
+      "sha256": "86124df40c05fdac5f5634c553f44c13d22d8ee835d7a723a15fab16c935c229",
+      "at": "2026-11-12T03:18:42+00:00"
+    },
+    {
+      "kind": "spec",
+      "feature": "03",
+      "sha256": "fc8eaf2223c8227c44d0d475b5060ded21717ea6c391bdaf313439a75fcd6c49",
+      "at": "2026-11-12T13:23:51+00:00"
+    },
+    {
+      "kind": "breakdown",
+      "feature": null,
+      "sha256": "e45c16a0cba93dde32c9a927359061f76161e8731e29e04eece8d65975353e84",
+      "at": "2026-11-12T16:01:48+00:00"
+    },
+    {
+      "kind": "spec",
+      "feature": "04",
+      "sha256": "3cce728950567371a094bb6f87390da67d1960c0b2bcb6f96c64879f1c61dc49",
+      "at": "2026-11-12T20:30:30+00:00"
+    },
+    {
+      "kind": "spec",
+      "feature": "04",
+      "sha256": "cef6c47f6c482c19a0f07c03a659bc81b68b1122d0f7479dd8006539fe64ef4f",
+      "at": "2026-11-12T21:02:49+00:00"
+    }
+  ],
+  "done": [
+    {
+      "feature": "01",
+      "sha256": "df93b601473b8512eacb41985995798852c0aab85885fd9bf5920116b66aaf2f",
+      "at": "2026-11-12T02:59:10+00:00"
+    },
+    {
+      "feature": "02",
+      "sha256": "61843537cc87710a364ea3954084a32d6e2d5f3c9aca1e19c641e63390420328",
+      "at": "2026-11-12T04:07:55+00:00"
+    },
+    {
+      "feature": "03",
+      "sha256": "4fb43c88685196a6dc676f8e3309b979cd54a2f2be79f2f12f8f60cf6ef2c4bb",
+      "at": "2026-11-12T15:07:05+00:00"
+    },
+    {
+      "feature": "04",
+      "sha256": "a9bfc0ef9031393e8646a8924d634cc669561f63e5f6a39bf4e8b773167c5450",
+      "at": "2026-11-13T15:10:17+00:00"
+    }
+  ]
+}

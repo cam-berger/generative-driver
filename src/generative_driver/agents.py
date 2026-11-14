@@ -4,12 +4,15 @@ import json
 import os
 from pathlib import Path
 import queue
+import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 import sys
 
+from . import service_log
 from .setup import SUPPORTED_EXECUTORS
 
 
@@ -52,6 +55,8 @@ class StageRequest:
     allowed_tools: list = field(default_factory=list)
     gateway: dict | None = None
     approve_scoped_tools: bool = False
+    # Called with each event the worker prints on its output, as `execute`'s `on_event` is.
+    on_event: object = None
 
 
 def _environment(config):
@@ -117,13 +122,19 @@ def _replay_launch(request, config):
     return command, env, request.prompt
 
 
-def _codex_launch(request, config):
-    command = config['command']
+def _command(config):
+    """The argument list a launch runs for `config`: its `command`, a single string becoming a one-item list. Anything
+    but a non-empty string or a non-empty list of non-empty strings raises `ValueError`."""
+    command = config.get('command') if isinstance(config, dict) else None
     if isinstance(command, str):
         command = [command]
     if not isinstance(command, list) or not command or not all(isinstance(v, str) and v for v in command):
         raise ValueError('executor command must be a nonempty argument array')
-    command = list(command)
+    return list(command)
+
+
+def _codex_launch(request, config):
+    command = _command(config)
     work = Path(request.workspace).resolve()
     work.mkdir(parents=True, exist_ok=True)
     env = _environment(config)
@@ -162,6 +173,10 @@ def _codex_launch(request, config):
     return command, env, request.prompt
 
 
+# `_terminate` stops a process with its children, which it can reach only while the process leads its own group.
+_OWN_GROUP = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
+
+
 def _terminate(proc):
     try:
         if os.name == 'nt':
@@ -184,6 +199,57 @@ def _terminate(proc):
                 pass
 
 
+VERSION_ANSWER_SECONDS = 10
+
+
+def codex_identity(config):
+    """What the configured Codex command says it is: the `path` its first item resolves to and the `version` it
+    reports, or the `reason` it reported none.
+
+    `doctor` asks this so that its answer is what a start would find (Feature 01 of the kit fixes). The stored command
+    itself is launched, as a start launches it, never the path it resolved to: the two can differ, as for a name
+    that resolves to a Windows batch file."""
+    command = _command(config)
+    path = shutil.which(command[0])
+    if path is None:
+        version, reason = None, 'The configured Codex executable was not found: ' + command[0]
+    else:
+        version, reason = _reported_version(command, config)
+    if version is None and os.path.dirname(command[0]) and not os.path.isabs(command[0]):
+        reason += ' A start runs from another directory, so the path must be absolute.'
+    return {'path': path, 'version': version, 'reason': reason}
+
+
+def _reported_version(command, config):
+    """The version `command` reports for `--version` and None, or None and the reason it reported none.
+
+    It is asked as a worker is launched, with the same environment, but where it can change nothing: it gets no input
+    and a new empty directory, removed afterwards. One that has not exited after `VERSION_ANSWER_SECONDS` is stopped
+    with its child processes."""
+    with tempfile.TemporaryDirectory(prefix='generative-driver-doctor-') as empty:
+        try:
+            proc = subprocess.Popen([*command, '--version'], cwd=empty, env=_environment(config),
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, encoding='utf-8', errors='replace', **_OWN_GROUP)
+        except OSError as error:
+            return None, f'Cannot start the configured Codex command: {error}'
+        with proc:
+            try:
+                answers = proc.communicate(timeout=VERSION_ANSWER_SECONDS)
+            except subprocess.TimeoutExpired:
+                _terminate(proc)
+                return None, ('The configured command gave no answer to `--version` in time and was stopped after '
+                              f'{VERSION_ANSWER_SECONDS} seconds.')
+    first, other = ((text.splitlines() or [''])[0].strip() for text in answers)
+    version = first.removeprefix('codex-cli ').strip() if first.startswith('codex-cli ') else ''
+    if proc.returncode == 0 and version:
+        return version, None
+    printed = first or other
+    return None, ('The configured command did not answer `--version` as the Codex CLI '
+                  f'(exit status {proc.returncode}). '
+                  + ('It printed: ' + printed[:200] if printed else 'It printed nothing.'))
+
+
 def execute(request, config, cancel_event=None, on_event=None):
     """Execute exactly one fresh external session and retain its actual output.
 
@@ -199,6 +265,7 @@ def execute(request, config, cancel_event=None, on_event=None):
                 'reason': 'No Codex command is configured. Run `generative-driver configure --executor codex --command <path>`.'}
     launch = _replay_launch if runtime == 'replay' else _codex_launch
     command, env, prompt = launch(request, config)
+    on_event = on_event or getattr(request, 'on_event', None)
     work = Path(request.workspace).resolve()
     transcript = work / '_agent_events.jsonl'
     stderr_path = work / '_agent_stderr.txt'
@@ -213,11 +280,11 @@ def execute(request, config, cancel_event=None, on_event=None):
     started = time.monotonic()
     if os.name == 'nt':
         command = [sys.executable,str(Path(__file__).with_name('_windows_worker.py')),*command]
-    launch_options = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
     try:
         proc = subprocess.Popen(command, cwd=work, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', **launch_options)
+                                stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', **_OWN_GROUP)
     except OSError as exc:
+        service_log.caught(exc, step='launch')
         return {**result, 'status': 'blocked', 'cause': 'runtime_unavailable',
                 'reason': 'Cannot start configured runtime: ' + str(exc), 'elapsed_seconds': 0}
     messages = queue.Queue()
@@ -283,6 +350,8 @@ def execute(request, config, cancel_event=None, on_event=None):
     if outcome:
         return {**result, 'status': outcome[0], 'reason': outcome[1], 'cause': outcome[2]}
     if launch_error is not None:
+        # The Windows wrapper caught the launch's exception in its own process and reported the message alone.
+        service_log.caught(OSError(launch_error), step='launch')
         return {**result, 'status': 'blocked', 'cause': 'runtime_unavailable', 'reason': 'Cannot start configured runtime: ' + launch_error}
     for text in reversed(text_parts):
         try:

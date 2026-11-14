@@ -138,6 +138,8 @@ def tool(name):
                 out["_exit"] = exit_code
                 return out
             except Exception as e:  # a tool that throws is still an event
+                from ..service_log import caught
+                caught(e, tool=name)
                 ev = log_event(run, name, kw, {"error": f"{type(e).__name__}: {e}"}, 1, time.monotonic() - t0)
                 return {"_event": ev["seq"], "_exit": 1, "error": f"{type(e).__name__}: {e}"}
         wrapper.__name__ = fn.__name__

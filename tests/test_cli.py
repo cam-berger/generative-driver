@@ -33,14 +33,16 @@ class CliTests(unittest.TestCase):
             output = root / 'codex'
             generated = subprocess.run([sys.executable, '-m', 'generative_driver', '--home',
                 'selected state', 'setup', '--host', 'codex', '--output', str(output)],
-                cwd=root, env={**os.environ, 'GENERATIVE_DRIVER_HOME': str(inherited)},
+                cwd=root, env={**os.environ, **package_env(GENERATIVE_DRIVER_HOME=str(inherited))},
                 capture_output=True, text=True, timeout=15)
             self.assertEqual(generated.returncode, 0, generated.stderr)
             connection = json.loads((output / 'plugins/generative-driver/.mcp.json').read_text(
                 encoding='utf-8'))['mcpServers']['generative-driver']
             report = asyncio.run(doctor(connection))
             self.assertEqual(report['home'], str(selected))
-            self.assertEqual(connection['env'], {'GENERATIVE_DRIVER_HOME': str(selected)})
+            build = json.loads(generated.stdout)['build']
+            self.assertEqual(connection['env'], {'GENERATIVE_DRIVER_HOME': str(selected),
+                                                 'GENERATIVE_DRIVER_PLUGIN_BUILD': build})
 
     def test_service_commands_start_inspect_and_stop_an_independent_owner(self):
         with tempfile.TemporaryDirectory(prefix="service owner ") as temp:
@@ -123,16 +125,19 @@ class CliTests(unittest.TestCase):
             finally:
                 call("shutdown", {}, temp)
 
-    def test_doctor_finds_a_configured_runtime_outside_the_app_search_path(self):
+    def test_01_B3_doctor_finds_a_configured_runtime_outside_the_app_search_path(self):
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix="configured doctor ") as temp:
-            configure("codex", [sys.executable], model="selected-model", home=temp)
+            stand_in = Path(temp) / "stand_in.py"
+            stand_in.write_text('print("codex-cli 1.2.3")\n', encoding="utf-8")
+            configure("codex", [sys.executable, str(stand_in)], model="selected-model", home=temp)
             result = subprocess.run([sys.executable, "-m", "generative_driver", "--home", temp,
                                      "doctor", "--json"], cwd=temp,
-                                    env=dict(os.environ, PATH=""), capture_output=True, text=True)
+                                    env=dict(os.environ, PATH="", **package_env()), capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             configured = json.loads(result.stdout)["dependencies"]["codex"]
             self.assertTrue(configured["available"])
+            self.assertEqual(configured["version"], "1.2.3")
             self.assertEqual(configured["source"], "configuration")
             self.assertEqual(configured["model"], "selected-model")
 
@@ -186,10 +191,12 @@ class CliTests(unittest.TestCase):
     def test_setup_generates_host_assets_with_the_installed_interpreter(self):
         from generative_driver.setup import home_path
         with tempfile.TemporaryDirectory(prefix="plugin output ") as temp:
-            dest = Path(temp) / "codex"
+            dest, home = Path(temp) / "codex", Path(temp) / "state"
+            # Setup records what it generated in the home, so the child's default home is a temporary one.
             result = subprocess.run([sys.executable, "-m", "generative_driver", "setup",
                                      "--host", "codex", "--output", str(dest)],
-                                    cwd=temp, capture_output=True, text=True)
+                                    cwd=temp, env={**os.environ, **package_env(GENERATIVE_DRIVER_HOME=str(home))},
+                                    capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             plugin = Path(json.loads(result.stdout)["plugin"])
             marketplace = json.loads((dest / ".agents/plugins/marketplace.json").read_text())
@@ -198,7 +205,7 @@ class CliTests(unittest.TestCase):
             connection = config["mcpServers"]["generative-driver"]
             self.assertEqual(connection["command"], sys.executable)
             self.assertEqual(connection["args"], ["-m", "generative_driver.mcp"])
-            self.assertEqual(connection["env"]["GENERATIVE_DRIVER_HOME"], str(home_path()))
+            self.assertEqual(connection["env"]["GENERATIVE_DRIVER_HOME"], str(home_path(home)))
             self.assertTrue((plugin / "skills/generative-driver/SKILL.md").exists())
 
     def test_configure_preserves_codex_command_and_arguments(self):

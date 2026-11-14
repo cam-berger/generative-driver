@@ -20,6 +20,8 @@ from dataclasses import dataclass
 
 from .setup import SUPPORTED_EXECUTORS, resolve_executor
 from .agents import StageRequest, execute
+from . import run_status, service_log, tool_process
+from .service_log import LOG_NAME, ServiceLog
 # The evaluator uses these too, so they are defined in modules of their own and imported here under their old names.
 from .benchmark_support.integrity import IntegrityError, digest
 from .benchmark_support.labels import equivalence_label, verdict_reason as _verdict_reason
@@ -1201,11 +1203,19 @@ def _has_terminal_final_failure(db, run_id):
 
 
 class Controller:
-    """Public request interface; the daemon owns this object, clients do not."""
-    def __init__(self, home):
+    """Public request interface; the daemon owns this object, clients do not.
+
+    The service builds it with `for_service` on. It then runs a generic run's kit tools in child processes with a
+    deadline (`tool_process`), and answers a gateway call that ended without a result with the worker's reply. Built
+    any other way, as a test builds one, it runs every tool inline, so that a replacement for `toolkit.call_tool`
+    takes effect, and what such a call raises still reaches its caller once the call is on record as abandoned."""
+    def __init__(self, home, *, for_service=False):
+        self._for_service = for_service
         self.home = Path(home).expanduser().resolve()
         self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.db_path = self.home / 'runs.sqlite3'
+        self.log = ServiceLog(self.home / LOG_NAME)
+        self._stage_workers = run_status.Workers()
         self._lock = threading.RLock()
         self._workers = {}
         self._suite_locks = {}
@@ -1268,6 +1278,7 @@ class Controller:
                 try:
                     progress = self._workflow_progress(row['id'], db)
                 except ValueError as error:
+                    self.log.error(error, step='recover', run_id=row['id'], stage=row['stage'])
                     reason = str(error)
                 else:
                     if progress['next_stage'] in ('finalize', None):
@@ -1374,17 +1385,22 @@ class Controller:
         if method == 'start':
             return self.start(params)
         if method.startswith('suite_'):
-            return self._suite_call(method,params)
+            return run_status.without(self._suite_call(method,params))
         run_id = params.get('run_id')
         row = self._row(run_id)
         if method in ('tool', 'tools', 'mcp_tool', 'mcp_tools'):
+            # A call's time counts from here, where its request arrives, through any wait behind another call of its
+            # run; its arrival is also a sign of life of the worker that makes it (`status`).
+            expires = time.monotonic() + tool_process.LIMIT_SECONDS
+            if method in ('tool', 'mcp_tool'):
+                self._stage_workers.called(run_id, params.get('assignment_id'))
             with self._lock:
                 operation_lock = self._operations.setdefault(run_id,threading.RLock())
             with operation_lock:
                 if method in ('tools', 'mcp_tools'):
                     return self._tool(method,params,self._row(run_id))
                 with self._active_operation(run_id):
-                    return self._tool(method, params, self._row(run_id))
+                    return self._tool(method, params, self._row(run_id), expires)
         if method == 'status':
             with self._lock:
                 # Cleanup updates the durable outcome and worker ownership under
@@ -1397,8 +1413,11 @@ class Controller:
             with self._db() as db:
                 final = _final_verdict(db, run_id)
                 accepted = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM handoffs WHERE run_id=? ORDER BY created', (run_id,))]
+                saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run_id,)).fetchone()
             # The final verdict and the latest notes of each stage; neither is an evaluator stage verdict.
-            return {**out, 'equivalence': final['equivalence'] if final else None, 'stage_notes': stage_notes(accepted)}
+            return {**out, 'equivalence': final['equivalence'] if final else None, 'stage_notes': stage_notes(accepted),
+                    **run_status.added(row, saved['payload'] if saved else None, self._stage_workers.of(run_id),
+                                       self.log.path)}
         if method == 'events':
             with self._db() as db:
                 events = db.execute('SELECT * FROM events WHERE run_id=? AND seq>? ORDER BY seq LIMIT 500',
@@ -1531,6 +1550,7 @@ class Controller:
                         for handoff in self.call('result',{'run_id':run_id})['accepted_handoffs']:
                             self._verify_handoff(handoff)
                 except IntegrityError as error:
+                    self.log.error(error, method='resume', run_id=run_id)
                     self._state(run_id, 'blocked', str(error), outcome_category='integrity')
                     raise
                 budget_change=None
@@ -2391,8 +2411,10 @@ class Controller:
         thread.start()
 
     def _run(self, run_id, cancel):
-        spec = None
+        spec = stage = None
         run_dir = self.home / 'runs' / run_id
+        # This thread runs nothing but this run: what a kit tool catches in its checks is logged with the run.
+        running = service_log.here(self.log, run_id)
         try:
             row = self._row(run_id)
             spec = json.loads(row['spec'])
@@ -2403,7 +2425,7 @@ class Controller:
             queue = list(STAGES[STAGES.index(progress['next_stage']):]) if progress['next_stage'] in STAGES else []
             completion = 'Fresh reuse accepted'
             while queue:
-                stage = queue.pop(0)
+                stage = running.stage = queue.pop(0)
                 if cancel.is_set():
                     return
                 remaining = row['created'] + spec['budget_seconds'] - time.time()
@@ -2461,10 +2483,11 @@ class Controller:
                     assignment['device_mcp'] = prepared['device_mcp']
                 if prepared.get('collection'):
                     assignment['collection'] = prepared['collection']
+                began = time.time()
                 with self._db() as db:
                     self._claim_binding(assignment.get('binding'),run_id,db)
                     db.execute('INSERT INTO assignments VALUES(?,?,?,?,?,?)',
-                               (attempt, run_id, stage, 'active', _json(assignment), time.time()))
+                               (attempt, run_id, stage, 'active', _json(assignment), began))
                     self._event(run_id, 'stage.assigned', assignment, db)
                 self._state(run_id, 'running', stage=stage)
                 prompt = prepared.get('prompt')
@@ -2484,12 +2507,18 @@ class Controller:
                     '--home',str(self.home),'--run',run_id,'--assignment',attempt]}
                 if assignment.get('device_mcp'):
                     gateway['args'][1] = gateway['args'][1].replace('generative_driver.worker_tools', 'generative_driver.device_mcp')
-                result = execute(StageRequest(stage=stage, workspace=workspace, prompt=prompt,
-                                budget_seconds=max(0.01, row['created'] + spec['budget_seconds'] - time.time()),
-                                report_required=assignment['report_required'], allowed_tools=assignment['allowed_tools'],
-                                gateway=gateway if assignment['allowed_tools'] else None,
-                                approve_scoped_tools=spec.get('scoped_tool_approval') in ('emulator','bound-device')),
-                                spec['executor_config'], cancel)
+                # `status` shows the worker's signs of life while it runs; the launch reports each line it prints.
+                self._stage_workers.began(run_id, attempt, stage, began)
+                try:
+                    result = execute(StageRequest(
+                        stage=stage, workspace=workspace, prompt=prompt,
+                        budget_seconds=max(0.01, row['created'] + spec['budget_seconds'] - time.time()),
+                        report_required=assignment['report_required'], allowed_tools=assignment['allowed_tools'],
+                        gateway=gateway if assignment['allowed_tools'] else None,
+                        approve_scoped_tools=spec.get('scoped_tool_approval') in ('emulator','bound-device'),
+                        on_event=lambda event: self._stage_workers.printed(run_id)), spec['executor_config'], cancel)
+                finally:
+                    self._stage_workers.ended(run_id)
                 record = {'assignment_id': attempt, 'stage': stage, 'revision':revision,'workspace': str(workspace), **result}
                 with self._db() as db:
                     db.execute('INSERT INTO reports VALUES(?,?,?,?,?)', (attempt, run_id, stage, _json(record), time.time()))
@@ -2564,6 +2593,7 @@ class Controller:
                         raise
                     # Nothing of the recovery committed, whether the stage's observation or the commit failed: the write
                     # stays uncertain and is never re-executed, and the run stops for safety (integrity when a hash changed).
+                    self.log.error(error, step='emulator-recovery', run_id=run_id, stage=stage)
                     abandon(type(error).__name__ + ': ' + str(error))
                     if isinstance(error, IntegrityError):
                         raise
@@ -2577,6 +2607,7 @@ class Controller:
                     revision, queue = progress['revision'], list(STAGES[1:])
             if cancel.is_set():
                 return
+            stage = running.stage = 'finalize'
             final = self._finalize(run_id, spec, accepted)
             if final:
                 # Once recorded, the verdict completes the run even if a cancellation landed after it.
@@ -2591,6 +2622,7 @@ class Controller:
             # A provided device that cannot be reached or verified is the operator's to restore: nothing was dispatched.
             category = ('integrity' if isinstance(exc, IntegrityError) else 'safety' if isinstance(exc, SafetyError)
                         else 'operator' if isinstance(exc, DeviceUnavailable) else 'host')
+            self.log.error(exc, step='run', run_id=run_id, stage=stage)
             self._state(run_id, 'failed' if category == 'host' else 'blocked', type(exc).__name__ + ': ' + str(exc),
                         outcome_category=category)
         finally:
@@ -2598,6 +2630,7 @@ class Controller:
                 try:
                     failures = self._release(run_id, spec, run_dir)
                 except Exception as exc:
+                    self.log.error(exc, step='release', run_id=run_id, stage=stage)
                     failures = [('cleanup.failed', type(exc).__name__ + ': ' + str(exc), None)]
                 self._settle_release(run_id, failures)
             with self._lock:
@@ -2678,6 +2711,7 @@ class Controller:
                     held = (json.loads(saved['payload']) if saved else {}).get('device') or {}
                     open_device(spec['device']).release(held.get('session_id'))
             except Exception as error:
+                self.log.error(error, step='release', run_id=run_id)
                 failures.append(('device.release_failed', type(error).__name__ + ': ' + str(error), None))
         return failures
 
@@ -3015,8 +3049,11 @@ class Controller:
             self._device_ready({**spec, '_device': progress.get('device')})
         except DeviceUnavailable as error:
             reason = str(error) if str(error).endswith('attach a verified device') else str(error) + '; attach a verified device'
+            self.log.error(error, method='resume', run_id=run_id)
             self._state(run_id, 'blocked', reason, outcome_category='operator')
-            raise ValueError(reason) from None
+            refusal = ValueError(reason)
+            self.log.written(refusal)  # The stop's entry above is the refusal's entry too.
+            raise refusal from None
 
     def _attach_device(self, run_id, params):
         """The bench harness attaches a device it provides anew to a stopped run of its trial, after the device the run
@@ -3146,6 +3183,7 @@ class Controller:
         except DeviceUnavailable as error:
             if started and result is None:
                 raise  # The call's own outcome is unknown: its effect stays uncertain.
+            self.log.error(error, tool=name, run_id=run['id'], stage=assignment['stage'])
             lost = ('after' if started else 'before', str(error))
         if lost:
             self._event(run['id'], 'device.unavailable', {'stage': assignment['stage'], 'assignment_id': assignment['id'],
@@ -3214,18 +3252,21 @@ class Controller:
             prepared = assignment.get('collection')
             if not prepared:
                 return handed([], [{'name':'sealed_model_collection','passed':False,'reason':'No pinned interpretation preparation record'}])
-            result = call_tool('interpret_collect',{'run_dir':prepared['run_dir'],
-                'expected_seal_sha256':prepared['expected_seal_sha256'],'seal_kind':'instruction'})
+            result = self._check_tool(call_tool, run_dir.name, stage, 'interpret_collect', {
+                'run_dir':prepared['run_dir'],'expected_seal_sha256':prepared['expected_seal_sha256'],
+                'seal_kind':'instruction'})
             reason = result.get('reason') or result.get('error')
             if not result.get('ok') and re.search(r'(?i)seal|changed|differ', str(result.get('reason') or '')):
                 return changed('Sealed interpretation evidence changed or is unverifiable: ' + str(reason))
             model = Path(prepared['model_dir'])
             present = bool((result.get('ok') or result.get('sealed_inputs_unchanged') is True) and (model / 'model.json').is_file())
-            validation = call_tool('model_validate',{'run_dir':str(workspace/'checks'),'model_dir':str(model)}) if present else {}
+            validation = self._check_tool(call_tool, run_dir.name, stage, 'model_validate',
+                                          {'run_dir':str(workspace/'checks'),'model_dir':str(model)}) if present else {}
             return handed([str(model)] if present else [], [
                 {'name':'sealed_model_collection','passed':bool(result.get('ok')),**({} if result.get('ok') else {'reason':reason})},
                 {'name':'executable_model_contract','passed':bool(validation.get('ok')),
                  **({'defects':validation['defects']} if validation.get('defects') else {}),
+                 **({'reason':validation['error']} if validation.get('unfinished') else {}),
                  **({} if present else {'reason':'No model.json to validate'})}],
                 scope='Sealed-input integrity and executable model contract; meaning requires probe and independent ground evidence')
         report = report if isinstance(report, dict) else {}
@@ -3298,8 +3339,10 @@ class Controller:
             for package in candidates:
                 # The check's own records go outside the worker's workspace, so nothing the worker leaves there can
                 # make the configurator's check fail for the host.
-                result = call_tool('emit_check',{'package_dir':str(package),'run_dir':str(run_dir/'checks'/assignment['id'])})
-                if _host_fault(result):
+                result = self._check_tool(call_tool, run_dir.name, stage, 'emit_check',
+                                          {'package_dir':str(package),'run_dir':str(run_dir/'checks'/assignment['id'])})
+                # A check that did not finish says nothing about the host: the package is rejected with the cause.
+                if not result.get('unfinished') and _host_fault(result):
                     # The host could not run the check, which says nothing about the package: stop for the host
                     # (resumable) rather than reject the package.
                     raise RuntimeError('emit_check could not run on this host for ' + package.name + ': '
@@ -3376,7 +3419,8 @@ class Controller:
                 shutil.copytree(raw, model)
                 if digest(model) != expected:
                     return changed('Assigned model differs from its recorded hash: ' + raw)
-                validation = call_tool('model_validate', {'run_dir': str(scratch), 'model_dir': str(model)})
+                validation = self._check_tool(call_tool, run_dir.name, stage, 'model_validate',
+                                              {'run_dir': str(scratch), 'model_dir': str(model)})
             contracts[raw] = _replaced(validation, [(str(model), raw)])
         if contracts:
             checks.append({'name':'executable_model_contract','passed':all(v.get('ok') is True for v in contracts.values()),
@@ -3538,7 +3582,8 @@ class Controller:
             shutil.copyfile(source, model / 'model.json')
             if digest(model / 'model.json') != expected:
                 raise IntegrityError('Accepted interpretation bytes changed: ' + source.name)
-            validation = _replaced(call_tool('model_validate', {'run_dir': str(scratch), 'model_dir': str(model)}),
+            validation = _replaced(self._check_tool(call_tool, run_dir.name, None, 'model_validate',
+                                                    {'run_dir': str(scratch), 'model_dir': str(model)}),
                                    [(str(model), 'model')])
         defects = validation.get('defects') if validation.get('ok') is not True and isinstance(validation.get('defects'), list) else []
         found = {'name': 'model.json', 'sha256': expected, 'passed': validation.get('ok') is True,
@@ -3584,20 +3629,91 @@ class Controller:
                     resets, overridden = False, True
         return {'listened': listened, 'resets_on_open': resets, 'unheard': not listened and (failed or bool(pending))}
 
-    def _tool(self, method, params, run):
-        """The worker gateway. A refusal before dispatch is recorded so that stage's notes can name it."""
-        marker = {}
+    def _limits(self, run_id, spec, created, expires):
+        """The limits of one kit tool the configurator runs for a run, in a child process: None for a controller built
+        outside the service and for a benchmark run, which run their tools inline with none. `expires` is when the
+        tool's `LIMIT_SECONDS` end, on the monotonic clock."""
+        if not self._for_service or spec.get('case'):
+            return None
+        with self._lock:
+            worker = self._workers.get(run_id)
+        cancel = worker[0] if worker else None
+        return tool_process.Limits(expires=expires, budget_ends=created + spec['budget_seconds'],
+                                   cancelled=lambda: cancel is not None and cancel.is_set(),
+                                   closing=lambda: self._closing)
+
+    def _kit_tool(self, call_tool, name, arguments, *, run_id, stage, limits):
+        """The result of a kit tool the configurator runs for a run: within `limits` in a child process, which raises
+        `tool_process.Unfinished` when the tool is stopped or ends without a result, or inline with `call_tool` when
+        there are none (`_limits`)."""
+        if limits is None:
+            return call_tool(name, arguments)
+        return tool_process.run(name, arguments, directory=self.home / 'runs' / run_id / 'tool-calls', stop=limits.stop,
+                                context={'log': str(self.log.path), 'run_id': run_id, 'stage': stage})
+
+    def _check_tool(self, call_tool, run_id, stage, name, arguments):
+        """The result of a kit tool one of the configurator's own checks runs, within the limits of a gateway call
+        counted from now (`_limits`). A check the configurator stopped, or whose process ended without a result, gives
+        a failed result instead: its `error` names the tool and the cause and `unfinished` holds the reason, for the
+        stage's notes. It is a failed check, never a stop."""
+        limits = None
+        if self._for_service:
+            row = self._row(run_id)
+            limits = self._limits(run_id, json.loads(row['spec']), row['created'],
+                                  time.monotonic() + tool_process.LIMIT_SECONDS)
         try:
-            return self._dispatch(method, params, run, marker)
+            return self._kit_tool(call_tool, name, arguments, run_id=run_id, stage=stage, limits=limits)
+        except tool_process.Unfinished as unfinished:
+            self.log.abandoned(unfinished, run_id=run_id, stage=stage, step='check')
+            return {'ok': False, '_exit': 1, 'error': str(unfinished), 'unfinished': unfinished.reason}
+
+    def _abandoned(self, run, marker, name, error):
+        """Record a dispatched gateway call that ended without a result as `tool.abandoned`, never as finished, and
+        return the reply its worker gets. `error` is what ended it: `tool_process.Unfinished` when the service stopped
+        its process or the process returned nothing, or the exception it raised inside the configurator. Its outcome is
+        unknown, so the effect recorded as pending when it was dispatched stays uncertain until the operator confirms
+        it."""
+        assignment = marker['assignment']
+        unfinished = error if isinstance(error, tool_process.Unfinished) else tool_process.Unfinished(
+            name, 'raised', type(error).__name__, str(error))
+        if unfinished is error:
+            self.log.abandoned(unfinished, run_id=run['id'], stage=assignment['stage'])
+        else:
+            self.log.error(error, tool=name, run_id=run['id'], stage=assignment['stage'])
+        self._event(run['id'], 'tool.abandoned', {
+            'stage': assignment['stage'], 'assignment_id': assignment['id'], 'name': name,
+            'dispatch_id': str(marker['dispatched']), 'reason': unfinished.reason,
+            **({'type': unfinished.kind, 'message': unfinished.message} if unfinished.reason == 'raised' else {}),
+            'actor': 'worker'})
+        return {'ok': False, 'abandoned': unfinished.reason, 'reason': str(unfinished),
+                **({'uncertain_effect': True} if marker.get('effectful') else {})}
+
+    def _tool(self, method, params, run, expires=None):
+        """The worker gateway. A refusal before dispatch is recorded so that stage's notes can name it."""
+        marker = {'expires': expires}
+        calling = method in ('tool', 'mcp_tool')
+        try:
+            with service_log.running(self.log, run['id'], run['stage']):
+                return self._dispatch(method, params, run, marker)
         except Exception as error:
-            if method in ('tool', 'mcp_tool') and 'assignment' in marker and 'dispatched' not in marker:
+            if calling and 'assignment' in marker and 'dispatched' not in marker:
                 # A refusal the runtime owns (no port matches the bound device) names its fault.
                 fault = getattr(error, 'fault', None)
                 self._event(run['id'], 'tool.refused', {'stage': marker['assignment']['stage'],
                     'assignment_id': marker['assignment']['id'], 'name': params.get('name'), 'reason': str(error),
                     **({'fault': fault} if fault in ('operator', 'host') else {}), 'actor': 'worker'})
+                self.log.replied(error, method=method, run_id=run['id'], stage=marker['assignment']['stage'],
+                                 tool=params.get('name'))
+            elif calling and 'dispatched' in marker:
+                reply = self._abandoned(run, marker, params.get('name'), error)
+                if self._for_service:
+                    # Only the service answers a worker. Any other caller gets the exception, as it always did.
+                    return reply
             raise
         finally:
+            if calling:
+                # The call's end is a sign of life too, as its arrival was.
+                self._stage_workers.called(run['id'], params.get('assignment_id'))
             if 'snapshot' in marker:
                 shutil.rmtree(marker['snapshot'], ignore_errors=True)
 
@@ -3777,6 +3893,9 @@ class Controller:
                      'operation': arguments.get('operation'), 'parameters': copy.deepcopy(arguments.get('parameters', {}))}
                     if device is not None else {}),
                  **({'condition_id': condition_id} if condition_requested else {})}
+        # A generic run's kit tool runs in a child process within the call's limits, when the service turned that on.
+        kit_tool = device is None and name != 'benchmark_package_execute'
+        limits = self._limits(run['id'], spec, run['created'], marker['expires']) if kit_tool else None
         # The uncertain flag is persisted before dispatch. A crash or cancellation
         # cannot turn an outstanding physical effect into an automatic retry.
         with self._lock:
@@ -3790,6 +3909,11 @@ class Controller:
                         or assignment['stage'] != active['stage']
                         or assignment.get('revision', 0) != (json.loads(saved['payload']) if saved else {}).get('revision', 0)):
                     raise ValueError('Worker assignment became inactive before dispatch')
+                passed = limits.passed() if limits is not None else None
+                if passed:
+                    # Refused, never started: nothing is marked, so the call leaves no uncertain effect.
+                    late = "The run's budget ran out" if passed == 'budget' else "The call's deadline passed"
+                    raise ValueError(late + ' before it was dispatched; nothing was dispatched')
                 if (effectful or condition_requested) and active['uncertain']:
                     raise ValueError('Outstanding effect is uncertain; another effectful operation is refused until operator reconciliation')
                 if effectful:
@@ -3799,7 +3923,7 @@ class Controller:
                     **facts, 'actor':'worker'}, db)
                 if effectful:
                     db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(dispatch_id,run['id'],assignment['id'],'worker'))
-        marker['dispatched'] = dispatch_id
+        marker.update(dispatched=dispatch_id, effectful=effectful)
         if device is not None:
             result = self._device_call(run, assignment, name, arguments, device, invoke,
                 condition_id=condition_id, expected_session_id=(progress.get('device') or {}).get('session_id'))
@@ -3814,7 +3938,8 @@ class Controller:
             result = package_execute(case['id'] if isinstance(case,dict) else case,
                                      stage=assignment['stage'],options=options,**arguments)
         else:
-            result = call_tool(name, arguments)
+            result = self._kit_tool(call_tool, name, arguments, run_id=run['id'], stage=assignment['stage'],
+                                    limits=limits)
         observed_artifacts = {}
         for key in ('artifact','provenance','pages','pages_dir','manifest','package_dir','probe','model_dir','transcript'):
             raw = result.get(key)

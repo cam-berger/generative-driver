@@ -12,7 +12,9 @@ server = MCPServer("generative-driver")
 
 @server.tool()
 def driver_doctor() -> str:
-    """Check installed core and optional agent, analysis and emulator dependencies."""
+    """Check the configured worker runtime, the optional packages and the plugin build, with core Python and the
+    optional analysis and emulator tools. plugin.state is stale when the plugin in use is not what setup writes now;
+    plugin.reason then gives the setup command to run again."""
     return json.dumps(doctor(), default=str)
 
 
@@ -42,7 +44,12 @@ def driver_start(goal: str, executor: Literal["codex"] | None = None, inputs: di
 
 @server.tool()
 def driver_status(run_id: str) -> str:
-    """Reconnect to the current stage, status, blockers, uncertain effects, latest stage notes and final verdict of a durable run."""
+    """Reconnect to the current stage, status, blockers, uncertain effects, latest stage notes and final verdict of a
+    durable run. It also gives `deadline`, when the run's budget runs out (seconds since the epoch, like `created`);
+    `repairs`, the repairs `used` and the repair `budget`; `worker`, null unless a stage worker is running, else its
+    `stage`, when it `started`, its `last_activity` and whether that was `output`, a `tool` call or its start; and
+    `log`, the path of the service's log, which holds the traceback behind a failed run.
+    """
     return _call("status", run_id=run_id)
 
 

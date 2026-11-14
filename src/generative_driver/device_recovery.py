@@ -171,6 +171,7 @@ def reconcile(controller, run_id, spec, assignment, run_dir, progress):
             return {'recovery':{'assignment_id':assignment['id'],'receipt':receipt,
                                 'unresolved_evidence_ids':evidence,'unresolved_dispatch_ids':dispatches}}
         except Exception as error:
+            controller.log.error(error, step='emulator-recovery', run_id=run_id, stage=assignment.get('stage'))
             controller._event(run_id,'emulator.recovery_failed',{'assignment_id':assignment['id'],
                 'reason':type(error).__name__+': '+str(error)})
             return {'stop':{'category':'safety','reason':'Emulator recovery unverified: '+str(error)}}

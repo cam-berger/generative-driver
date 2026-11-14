@@ -148,6 +148,7 @@ Set `GD_TEST_WHEEL` and `GD_TEST_SDIST` to absolute archive paths; run `python -
 python -m generative_driver benchmark cases
 python -m generative_driver benchmark run --case setup-smoke --output "smoke output"
 python -m generative_driver setup --host codex --output "codex setup"
+python -m generative_driver smoke
 ```
 
 Use new output directories; run `python -m driver replay` inside `smoke output/relocated package`. These checks use no inference or physical devices. See [qualification/scoring](../bench/groundtruth/README.md), [benchmark operation](../bench/README.md) and [upstream case authoring](benchmark-case-authoring.md).

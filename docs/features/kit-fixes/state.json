@@ -1,0 +1,53 @@
+{
+  "goal": "Fix what the 2026-11-11 review found in the kit: installed-plugin drift, doctor, the smoke test, standardized public driver descriptions, input paths for interpretation, splitting interpretation into smaller tasks, service diagnosability and robustness, and packages that stop verifying after a runtime edit. Benchmark items are out: they are recorded in .scratch and move to a new repository.",
+  "slug": "kit-fixes",
+  "branch": "mdk/kit-fixes",
+  "stage": "spec",
+  "awaiting": null,
+  "current": "05",
+  "features": [
+    {
+      "id": "01",
+      "slug": "doctor-identity",
+      "status": "done",
+      "base": "783f05a289e7fd45bd5e6fa1490849ee8d557e30"
+    },
+    {
+      "id": "02",
+      "slug": "plugin-freshness",
+      "status": "done",
+      "base": "29f3f238beef22885d82d869b4ec25636df58e09"
+    },
+    {
+      "id": "03",
+      "slug": "service-smoke",
+      "status": "done",
+      "base": "e4205f209864f9b6745c1cc45e1682362d852f73"
+    },
+    {
+      "id": "04",
+      "slug": "service-diagnostics",
+      "status": "done",
+      "base": "940c14bdc444b53bfd58aa9c5791e32cf3687956"
+    },
+    {
+      "id": "05",
+      "slug": "driver-package",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "06",
+      "slug": "interpret-tasks",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "07",
+      "slug": "input-paths",
+      "status": "pending",
+      "base": null
+    }
+  ],
+  "escalation": null
+}

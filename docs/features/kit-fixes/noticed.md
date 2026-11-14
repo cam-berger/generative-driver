@@ -1,0 +1,34 @@
+# Noticed during the kit-fixes Run
+
+- 01: `src/generative_driver/agents.py` — a run's `runtime_version` is read from `config.get('version')`, a key `configure` never writes, so it is always null.
+- 01: `src/generative_driver/setup.py` — `core.platform` comes from `platform.platform()`, which on macOS runs `uname -p` and `file -b <python>` from `PATH`, so `doctor` still runs two programs the operator did not configure and the value changes with `PATH`.
+- 01: `src/generative_driver/setup.py` (`configure`) — raises `JSONDecodeError` on a `config.json` that is not valid JSON and reads it without an encoding, so a file doctor now names has to be fixed or removed by hand.
+- 01: `src/generative_driver/configurator.py` (`_configured_executors`) — raises on a `config.json` that is not valid JSON or not an object, so a start fails with an unhandled error where doctor now gives a reason.
+- 01: `src/generative_driver/mcp.py` — the `driver_doctor` tool description does not mention the configured runtime's answer or `extras`; possibly Feature 02's.
+- 01: `tests/test_family_seam.py` — an earlier Run's tests already use the names `test_01_B1` to `test_01_B17`, so the Done check's lookup of `01-B1`..`01-B12` would be satisfied by them even if a kit-fixes test were missing.
+- 01: `tests/test_cli.py` (several tests) — children started with `python -m generative_driver` get the inherited environment, not `package_env()` as STANDARDS.md asks.
+- 01: `config/` in the project root — the folder the unrelated `codex` on `PATH` writes, hidden by `.git/info/exclude`; it predates this build.
+- 02: `src/generative_driver/cli.py:76-78` — the `setup` command prints a raw traceback for the 02-B4 `ValueError`, as it did before for `FileExistsError`; a one-line message would be friendlier.
+- 02: `src/generative_driver/setup.py:33-58` — `configure` writes `config.json` with the same temp-file-then-`os.replace` pattern as the new `_record`; they could share a helper.
+- 02: `docs/verification.md:150-153` — the release check still says to use new output directories for `setup`, which is no longer needed.
+- 02: lines over 120 columns that predate this Feature — `tests/test_cli.py:87, 91, 97, 317` and `src/generative_driver/mcp.py:47, 65`.
+- 02: the checked-in `plugins/generative-driver/.codex-plugin/plugin.json` keeps version `0.1.0` and carries no build, so `doctor` reports `unchecked` for it (out of scope by the Spec).
+- 02: `src/generative_driver/setup.py:232-233` — the new result keys use double quotes, following the older return dict, where the rest of the new code uses single quotes.
+- 03: `src/generative_driver/client.py:287` — on macOS the service socket is `tempfile.gettempdir()/gd-<20 hex>/owner.sock`; a temporary directory longer than about 70 bytes gives "AF_UNIX path too long" and the service cannot start (the smoke reports it as a start failure).
+- 03: `src/generative_driver/client.py:287-288` — every service home leaves an empty `gd-<identity>` folder in the system temporary directory, so each smoke leaves one.
+- 03: `src/generative_driver/configurator.py:2908` — every interpret stage leaves its sealed `gd-candidate-*` workspace in the system temporary directory and nothing removes it, so each smoke, like each real run, leaves one.
+- 03: `src/generative_driver/client.py:368` — `call(..., autostart=False)` reports a dead service as an ordinary `{'ok': False, 'reason': 'Configurator is not reachable…'}` reply with no field a caller can test; the smoke tells the two apart by checking the service lock.
+- 03: `tests/test_generated_trials.py` — an earlier Run's tests already use the names `test_03_B1` to `test_03_B25`, so the Done check's lookup of `03-B1`..`03-B8` would pass even without this Feature's tests.
+- 03: `tests/test_distribution.py:13` — the existing wheel test carries no Behaviour ID.
+- 04: `src/generative_driver/configurator.py` (`Controller._prepare`, about line 2940) — preparation still runs `interpret_run` inside the service with no deadline in a generic run; the Spec covers only the three check tools.
+- 04: worker-chosen sizes and waits are unbounded — `random_files` (`_toolchain/interpret.py:171`, `:247`), `n` (`_toolchain/probe.py:63`), `seeds` (`_toolchain/emit.py:370`, `:438`), `delay_ms` (`resources/tools/model_exec.py:79`). In a generic run the 570-second limit bounds each call; nothing bounds the values.
+- 04: `src/generative_driver/resources/tools/model_exec.py:56` — a conversion module may be named outside its model's folder; `conversion.module` is joined unchecked (also read at `_toolchain/interpret.py:228` and `emit.py:264`, `:332`).
+- 04: `src/generative_driver/configurator.py:1326`, `:1344` — a resume refused for integrity on a cancelled run records no stop: `_state` changes nothing while the run's `cancelled` flag is set, so the run stays `cancelled`.
+- 04: `src/generative_driver/daemon.py:67` — a reply that cannot be serialised (a NaN in a result) raises `ValueError` outside the `except (OSError, EOFError)`, so the request thread dies and the client reports a lost reply.
+- 04: `src/generative_driver/_windows_worker.py:56` — the Windows launch wrapper reports only the message of a launch that failed, so the service can log no traceback for it there.
+- 04: each of the service's checks gets its own 570 seconds, so a model whose conversion module loops costs up to 570 s at interpret and again at each later stage that validates it, until the run's budget ends.
+- 04: `src/generative_driver/tool_process.py:24` — a tool child costs about 0.05 to 0.3 s to start here, and a tool whose limit passes still returns its result if its process ends before the next 0.05 s poll.
+- 04: `src/generative_driver/agents.py:325` — a worker's standard error is not a sign of life in `status.worker`.
+- 04: `src/generative_driver/mcp.py:70` — the `driver_result` description is 129 columns and predates this Feature.
+- 04: `tests/test_service_lifecycle.py` — draining at shutdown for calls that stay inline (benchmark runs, device sessions) no longer has a test.
+- 04: `tests/test_run_status.py:164`, `tests/test_service_log.py:285`, `:301`, `:334`, `tests/test_tool_process.py:126-175` — tests replace `Controller._suite_call`, call `_release`, `_device_call` and `reconcile` directly, and write run rows into the home's database, because the public route needs benchmark fixtures; a refactor of those names or of the schema breaks them.

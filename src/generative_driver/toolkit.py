@@ -103,4 +103,6 @@ def call_tool(name: str, arguments: dict) -> dict:
         result.setdefault("_exit", 0)
         return result
     except (ValueError, TypeError, OSError, ImportError) as exc:
+        from .service_log import caught
+        caught(exc, tool=name)
         return {"ok": False, "_exit": 1, "error": str(exc)}

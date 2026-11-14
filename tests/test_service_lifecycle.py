@@ -315,13 +315,16 @@ class ServiceLifecycleTests(unittest.TestCase):
             finally:
                 call('shutdown', {}, home)
 
-    def test_shutdown_drains_an_accepted_tool_before_confirming_exit(self):
+    def test_04_B7_shutdown_stops_an_accepted_tool_call_at_once_and_then_confirms_exit(self):
+        # Before the kit fixes' Feature 04 a shutdown waited for an accepted tool, which had no deadline, so a tool that
+        # never returned kept the service from stopping. The service now stops the call's process, answers the call
+        # as abandoned and only then confirms its exit.
         from generative_driver.client import call
         entered, release = threading.Event(), threading.Event()
         class Source(BaseHTTPRequestHandler):
             def do_GET(self):
                 entered.set()
-                release.wait(5)
+                release.wait(60)
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b'scripted source')
@@ -333,7 +336,8 @@ class ServiceLifecycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             tool_thread = stop_thread = None
             try:
-                run = call('start', {'goal':'Scripted shutdown drain', 'executor_config':{
+                service = call('ping', {}, home)['pid']
+                run = call('start', {'goal':'Scripted shutdown of an accepted tool call', 'executor_config':{
                     'command':[sys.executable, '-c', 'import time; time.sleep(30)']}}, home)
                 deadline = time.monotonic() + 5
                 assignments = []
@@ -362,14 +366,15 @@ class ServiceLifecycleTests(unittest.TestCase):
                     stopped.set()
                 stop_thread = threading.Thread(target=shutdown)
                 stop_thread.start()
-                self.assertFalse(stopped.wait(.3), 'shutdown returned with an accepted tool still running')
-                release.set()
-                stop_thread.join(10)
+                # The source never answers: the call ends because the service stopped it.
+                self.assertTrue(stopped.wait(20), 'shutdown still waits for an accepted tool call')
                 tool_thread.join(10)
-                self.assertFalse(stop_thread.is_alive())
+                self.assertFalse(release.is_set())
                 self.assertFalse(tool_thread.is_alive())
                 self.assertTrue(replies['shutdown'].get('stopped'), replies)
-                self.assertIn('_exit', replies['tool'], replies)
+                self.assertEqual((replies['tool'].get('ok'), replies['tool'].get('abandoned')), (False, 'shutdown'),
+                                 replies)
+                self.assertFalse(process_alive(service), 'shutdown acknowledged while the service still runs')
             finally:
                 release.set()
                 if tool_thread:

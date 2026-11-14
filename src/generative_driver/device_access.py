@@ -338,7 +338,7 @@ class DeviceAccess:
         if dispatch is None:
             return self._invocation(run['id'], request_id, operation, arguments, run['uncertain'])[1]
         if marker is not None:
-            marker['dispatched'] = dispatch
+            marker.update(dispatched=dispatch, effectful=effectful)
         proof = {'schema': 'driver-mcp-call/1', 'tool_name': name,
                  'catalog_sha256': configured['catalog_sha256'], 'manifest_sha256': configured['manifest_sha256'],
                  'contract_sha256': configured['contract_sha256'], 'session_id': run['id'],

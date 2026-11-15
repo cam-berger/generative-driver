@@ -44,3 +44,4 @@
 - 06: `docs/codex.md:7-18` tells users to run `codex --version`, although an unrelated program of that name may be on PATH; the doc does warn about it.
 - 06: task workspaces (`gd-task-*`) and interpret workspaces (`gd-candidate-*`) accumulate in the system temporary folder (out of scope).
 - 06: `src/generative_driver/configurator.py` has 257 lines over 120 columns that this Feature did not add or change, some beside its edits (for example the `worker.finished` event near line 2556, 164 columns).
+- 07: `src/generative_driver/_toolchain/acquire.py:284` and `:287`: `acquire_datasheet` writes each page file and index.json through `open(...)` without closing them; tests show a ResourceWarning, and on Windows the files can stay locked until garbage collection.

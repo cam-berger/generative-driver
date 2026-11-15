@@ -103,9 +103,9 @@ def refusal(model, operation, effects_found):
     entry = operations.get(operation) if isinstance(operations, dict) and operation is not None else None
     declared = entry.get('effect') if isinstance(entry, dict) else None
     named = (repr(operation) + ' declares ' + (repr(declared) if declared else 'no effect') if operation is not None
-             else 'the model declares ' + ', '.join(sorted(set(effects_found) - {'read'})))
-    return ('Device-first interpretation runs only operations declared read, whatever the run\'s grants, and '
-            + named + '; nothing was dispatched. Probe and ground test it under the run\'s grants.')
+             else 'the model declares ' + ', '.join(map(repr, sorted(set(effects_found) - {'read'}))))
+    return ('Device-first interpretation runs only operations declared read, whatever the run\'s grants; nothing was '
+            'dispatched: ' + named)
 
 
 def calls(started, finished):

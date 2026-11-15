@@ -133,6 +133,30 @@ class DocumentImportTests(RunCase):
         self.assertNotIn('inputs_dir', listed['inputSchema']['properties'])
         self.assertNotIn('run_dir', listed['inputSchema']['properties'])
 
+    def test_07_B1_an_existing_tool_given_a_stray_inputs_dir_ignores_it_as_before(self):
+        from generative_driver.toolkit import call_tool
+        firmware = b'\x00firmware stand-in\xff'
+
+        def imported(worker):
+            return worker.tool('acquire_firmware_artifact', source_path=worker.task['inputs'][0],
+                               origin='provided_binary', expected_sha256=sha256(firmware), inputs_dir=str(self.root))
+        # Through the gateway: a folder outside the workspace, which only acquire_document's inputs_dir is checked for.
+        seen, result = self.acquire({'firmware.bin': firmware}, lambda worker: [imported(worker)])
+        [answer] = seen['results']
+        self.assertIsInstance(answer, dict, answer)
+        self.assertIs(answer.get('available'), True, answer)
+        self.assertEqual({a['sha256'] for a in self.handoffs(result, 'acquire')[0]['artifacts']} & {sha256(firmware)},
+                         {sha256(firmware)})
+        # Through call_tool: a relative path, which only acquire_document's inputs_dir must not be.
+        (self.root / 'direct.bin').write_bytes(firmware)
+        arguments = {'run_dir': str(self.root / 'direct'), 'inputs_dir': 'relative/inputs'}
+        direct = call_tool('acquire_firmware_artifact', {
+            **arguments, 'source_path': str(self.root / 'direct.bin'), 'origin': 'provided_binary',
+            'expected_sha256': sha256(firmware)})
+        self.assertIs(direct.get('available'), True, direct)
+        refused = call_tool('acquire_document', {**arguments, 'name': 'notes.md'})
+        self.assertEqual(refused.get('error'), 'inputs_dir must be an absolute path', refused)
+
 
 SPLIT_SPEC = ('# Demo line protocol\n\nIntroduction.\n\n## Identify\n\nSend `ID?`; the device answers its name.\n\n'
               '## Measure\n\nSend `T`; the reply is `T:` and the temperature in degrees Celsius.\n').encode('utf-8')
@@ -590,11 +614,13 @@ class DeviceFirstLimitTests(RunCase):
                  run('interface_execute', 'mystery', effectful_model(no_effect=True)),
                  run('probe_run', 'set_rate', effectful_model()), run('interface_execute', 'identify')]
         results, lines, result = self.calls_on(effectful_model(), calls, device, effects=['read', 'write', 'actuate'])
-        for refused, declared in zip(results[:4], ("'write'", "'actuate'", 'no effect', "'write'")):
-            with self.subTest(declared=declared):
+        # A ValueError in sentence case, with no final period and the operation and its effect after a colon.
+        for refused, offending in zip(results[:4], ("'set_rate' declares 'write'", "'beep' declares 'actuate'",
+                                                    "'mystery' declares no effect", "'set_rate' declares 'write'")):
+            with self.subTest(offending=offending):
                 self.assertIsInstance(refused, ValueError, refused)
-                self.assertIn('runs only operations declared read', str(refused))
-                self.assertIn('declares ' + declared, str(refused))
+                self.assertEqual(str(refused), "Device-first interpretation runs only operations declared read, "
+                                               "whatever the run's grants; nothing was dispatched: " + offending)
         # Nothing reached the device until the read operation ran, and the run's grants did not change that.
         self.assertEqual(lines[4], [])
         self.assertIs(results[4]['ok'], True, results[4])

@@ -38,6 +38,7 @@ Nothing that stays needs these. The deletion removes them.
 | `tests/test_benchmark_asset_build.py` | Tests only the benchmark. No file that stays imports it. |
 | `tests/test_benchmark_behavior.py` | Tests only the benchmark. No file that stays imports it. |
 | `tests/test_benchmark_ground.py` | Tests only the benchmark. No file that stays imports it. |
+| `tests/test_benchmark_helper_copies.py` | Holds the grader's helpers to the tool's answers. No file that stays imports it. |
 | `tests/test_benchmark_run.py` | Tests only the benchmark. No file that stays imports it. |
 | `tests/test_benchmark_truth.py` | Tests only the benchmark. No file that stays imports it. |
 | `tests/test_generated_device.py` | Tests only the benchmark. No file that stays imports it. |
@@ -53,8 +54,8 @@ The tool, its tests or its documents need these today. Deleting one now would br
 
 | Item | Used by | Freed by |
 |---|---|---|
-| `src/generative_driver/benchmark.py` | The six modules under `Tool modules that import the benchmark`, the commands under `Commands` and the still-used tests | 09 |
-| `src/generative_driver/benchmark_support/` | The six modules under `Tool modules that import the benchmark`, the commands under `Commands` and the still-used tests | 09 |
+| `src/generative_driver/benchmark.py` | The four modules under `Tool modules that import the benchmark`, the commands under `Commands` and the still-used tests | 09 |
+| `src/generative_driver/benchmark_support/` | The four modules under `Tool modules that import the benchmark`, the commands under `Commands` and the still-used tests | 09 |
 | `src/generative_driver/resources/bench/` | `benchmark.py` and `benchmark_support/` read it; `tests/test_service.py`, `tests/test_toolkit.py` and `tests/test_cli.py` use its smoke case; `tests/test_distribution.py` requires it in the wheel; `.github/workflows/test.yml` runs its smoke case | 09 |
 | `src/generative_driver/resources/registrations/` | `benchmark_support/` reads it on import; `tests/test_distribution.py` requires it in the wheel | 09 |
 | `bench/README.md` | `README.md`, `docs/codex.md`, `docs/codex-acceptance.md` and `docs/design.md` link to it; `.github/scripts/tool_releases.py` reads its pins; `tests/test_assistive_wording.py` requires its wording | 09 |
@@ -113,7 +114,6 @@ The tool, its tests or its documents need these today. Deleting one now would br
 | `tests/test_reporting.py` | Tests the tool and the benchmark together | 09 |
 | `tests/test_reuse_controller.py` | Tests the tool and the benchmark together | 09 |
 | `tests/test_scorecard.py` | Tests the tool and the benchmark together | 09 |
-| `tests/test_service_log.py` | Tests the tool and the benchmark together | 09 |
 | `tests/test_service_repair.py` | Tests the tool and the benchmark together | 09 |
 | `tests/test_slot_policy.py` | Tests the tool and the benchmark together | 09 |
 | `tests/test_slot_policy_flags.py` | Tests the tool and the benchmark together | 09 |
@@ -140,9 +140,7 @@ These modules stay. Each stops importing the benchmark package in the Feature na
 | `src/generative_driver/cli.py` | 08 |
 | `src/generative_driver/configurator.py` | 07 |
 | `src/generative_driver/mcp.py` | 08 |
-| `src/generative_driver/replay.py` | 02 |
 | `src/generative_driver/reporting.py` | 07 |
-| `src/generative_driver/scripted_worker.py` | 02 |
 
 ## Commands
 

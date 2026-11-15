@@ -22,9 +22,9 @@ from .setup import SUPPORTED_EXECUTORS, resolve_executor
 from .agents import StageRequest, execute
 from . import run_status, service_log, tool_process
 from .service_log import LOG_NAME, ServiceLog
-# The evaluator uses these too, so they are defined in modules of their own and imported here under their old names.
-from .benchmark_support.integrity import IntegrityError, digest
-from .benchmark_support.labels import equivalence_label, verdict_reason as _verdict_reason
+# Other modules take `digest`, `IntegrityError` and `equivalence_label` from the configurator, so it keeps these names.
+from .integrity import IntegrityError, digest
+from .verdict_labels import equivalence_label, verdict_reason as _verdict_reason
 
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 TERMINAL = {'completed', 'failed', 'cancelled', 'blocked'}

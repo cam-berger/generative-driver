@@ -54,7 +54,7 @@ def _task(prompt):
 
 
 def _sha256(path):
-    from .benchmark_support.integrity import digest
+    from .integrity import digest
     return digest(path)
 
 

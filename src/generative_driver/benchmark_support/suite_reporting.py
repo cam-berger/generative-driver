@@ -343,7 +343,7 @@ def aggregate_suite(manifest,trials,reports,qualification,*,experiment):
 
     if experiment['dimensions'].get('runtime')=='replay':
         # No model ran a replay suite's children: its results are never model performance.
-        from ..replay import execution_label
+        from .labels import execution_label
         result.update(execution=execution_label(experiment['comparison_identity']['execution'],'replay'),model_benchmark=False)
 
     def rates_by(key):

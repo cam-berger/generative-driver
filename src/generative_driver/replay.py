@@ -19,9 +19,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-# The evaluator uses these too, so they are defined in a module of its own and imported here under their old names.
-from .benchmark_support.labels import RUNTIME, execution_label
-
+# The runtime name a run records for the replay executor.
+RUNTIME = 'replay'
 SCHEMA = 'replay-candidate/1'
 SCRIPT = 'replay.json'
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')

@@ -186,7 +186,7 @@ class RunEntryTests(ControllerCase):
             self.assertRegex(written, r'File ".*agents\.py", line \d+, in execute')
 
     def test_04_B1_a_refusal_that_also_records_a_stop_gets_the_full_entry(self):
-        from generative_driver.benchmark_support.integrity import IntegrityError
+        from generative_driver.integrity import IntegrityError
         controller = self.controller()
         # A worker that ends at once in acquire and fails in every later stage, so the run has an accepted handoff
         # when it stops.

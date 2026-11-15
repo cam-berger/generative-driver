@@ -11,3 +11,12 @@
 - 01: `src/generative_driver/cli.py:50` — the tool's `report` command describes itself as exporting benchmark metrics; it is not a benchmark command under 01-B8.
 - 01: `STANDARDS.md:38` against 01-B7 — the rule asks for `package_env`'s environment, the Spec for a `PYTHONPATH` of the copy's `src` only.
 - 01: `STANDARDS.md:27` — the Done check stops at 9 minutes; the Test command now takes about 7 min 20 s here, up from about 340 s.
+- 02: `src/generative_driver/benchmark_support/integrity.py:1-2` and `labels.py:1-2` — the module docs still say the configurator uses them. They are grading code, so this Feature did not edit them.
+- 02: `tests/test_slot_policy.py:1110` (`test_06_B11_a_crash_repeats_the_regrade`) — fails with `Frozen suite implementation or execution environment changed` when any file under `src/generative_driver` is edited while it runs. It passes in the whole Test command.
+- 02: `tests/test_slot_policy.py:1168`, `tests/test_slot_policy_flags.py:134` and `:178` — they script a grading error with the class taken from `configurator`, now the tool's. They pass unchanged because `conclude` handles both classes, and they are the only tests that drive the tool's class through it.
+- 02: `src/generative_driver/scripted_worker.py:56-58` — `_sha256` still imports `digest` inside the function, though the reason to import at use is gone.
+- 02: `src/generative_driver/dashboard.py:15` and `src/generative_driver/reporting.py:196` — they take `equivalence_label` through `configurator`, which never calls it (`configurator.py:27`).
+- 02: `src/generative_driver/_toolchain/interface.py:20` — defines an unrelated `RUNTIME` (the path of `interface_runtime`), imported at `_toolchain/interpret.py:417` and `:434`.
+- 02: `src/generative_driver/replay.py:87,94,106` and `src/generative_driver/configurator.py:38,39,58` — lines over 120 columns, there before this Feature.
+- 02: `docs/benchmark-deletion-list.md:66` and `:74` — two `Still used by the tool` rows whose files import nothing from the benchmark package. They hold their rows by their benchmark names.
+- 02: `STANDARDS.md:27` — the Test command took 461 s here, up from about 440 s; the Done check stops at 540 s.

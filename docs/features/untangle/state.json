@@ -4,7 +4,7 @@
   "branch": "mdk/untangle",
   "stage": "spec",
   "awaiting": null,
-  "current": "02",
+  "current": "03",
   "features": [
     {
       "id": "01",
@@ -15,8 +15,8 @@
     {
       "id": "02",
       "slug": "shared-helpers",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "b7ab65d165a6fdcbf1398c9405556ba9bca6fea7"
     },
     {
       "id": "03",

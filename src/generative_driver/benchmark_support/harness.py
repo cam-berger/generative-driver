@@ -286,6 +286,9 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
     from ..configurator import IntegrityError, _evaluation_errors
     from . import evaluator, recorded_grading
     from .emulated_actions import OutputMeter
+    from .integrity import IntegrityError as GraderIntegrityError
+    # Grading code raises the grader's own class and code outside it the configurator's: either is an integrity stop.
+    integrity_stop = (GraderIntegrityError, IntegrityError)
     if result.get('equivalence') is not None:
         # The configurator already holds this run's verdict: nothing is graded, sealed or posted again. Its seal is the
         # evidence the verdict names, when the trial directory holds exactly that (a harness may have died after the
@@ -320,7 +323,7 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
                                                                     password=password, truth_source=truth_source,
                                                                     renode=renode, meter=meter)
                 content['mission'] = equivalence.get('mission')
-            except IntegrityError as error:
+            except integrity_stop as error:
                 equivalence, content['error'] = evaluator.unscored('integrity: ' + str(error), frozen, method,
                                                                     protocol=protocol), str(error)
             except recorded_grading.Unscorable as error:
@@ -341,7 +344,7 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
             content['equivalence'] = equivalence
         try:
             done.update(sealed=True, evidence=evaluator.seal(trial_dir, run_dir, result, password=password, **content))
-        except IntegrityError as error:
+        except integrity_stop as error:
             done.update(sealed=False, sealing_failed='integrity: ' + str(error))
             if equivalence is not None and not (equivalence['status'] == 'unscored'
                                                 and equivalence['diff'][0]['reason'].startswith('integrity: ')):

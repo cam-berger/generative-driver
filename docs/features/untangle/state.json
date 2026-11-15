@@ -26,42 +26,48 @@
     },
     {
       "id": "04",
-      "slug": "supplied-device-stages",
+      "slug": "legacy-cases",
       "status": "pending",
       "base": null
     },
     {
       "id": "05",
-      "slug": "benchmark-runs",
+      "slug": "supplied-device-stages",
       "status": "pending",
       "base": null
     },
     {
       "id": "06",
-      "slug": "suites",
+      "slug": "benchmark-runs",
       "status": "pending",
       "base": null
     },
     {
       "id": "07",
-      "slug": "reports",
+      "slug": "suites",
       "status": "pending",
       "base": null
     },
     {
       "id": "08",
-      "slug": "commands",
+      "slug": "reports",
       "status": "pending",
       "base": null
     },
     {
       "id": "09",
-      "slug": "two-folders",
+      "slug": "commands",
       "status": "pending",
       "base": null
     },
     {
       "id": "10",
+      "slug": "two-folders",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "11",
       "slug": "two-packages",
       "status": "pending",
       "base": null

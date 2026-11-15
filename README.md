@@ -52,6 +52,7 @@ Use a new output directory each time. Smoke tests installation and recorded repl
 |---|---|
 | Connect a client | [Codex](docs/codex.md) |
 | Configure AI or hardware | [Setup and recovery](docs/setup.md) |
+| Supply your own device and mission | [Client interface](docs/client-interface.md) |
 | Evaluate a run | [Benchmarks](bench/README.md) · [Recorded results](docs/verification.md) |
 | Broaden firmware coverage | [Upstream corpus](docs/benchmark-corpus.md) · [Recorded coverage](docs/verification.md) |
 | Contribute | [Development](CONTRIBUTING.md) · [Design](docs/design.md) |

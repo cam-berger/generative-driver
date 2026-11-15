@@ -283,7 +283,8 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
     plaintext evaluation never outlives this call. A grading that counted package calls returns `package_output`, its
     largest output and its calls, for the trial record alone: however the grade or seal or post ended, and never in what
     is sealed or posted."""
-    from ..configurator import IntegrityError, _evaluation_errors
+    from ..configurator import IntegrityError
+    from ..client_interface import verdict_errors
     from . import evaluator, recorded_grading
     from .emulated_actions import OutputMeter
     from .integrity import IntegrityError as GraderIntegrityError
@@ -334,8 +335,8 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
                 equivalence = evaluator.unscored('evaluator host fault: ' + type(error).__name__, frozen, method,
                                                  protocol=protocol)
                 content['error'] = type(error).__name__ + ': ' + str(error)
-            errors = _evaluation_errors({**equivalence, 'evidence_sha256': None if equivalence['status'] == 'unscored'
-                                         else '0' * 64})
+            errors = verdict_errors({**equivalence, 'evidence_sha256': None if equivalence['status'] == 'unscored'
+                                     else '0' * 64})
             if errors:
                 # Every resume would rebuild the same record and have it refused: it is unscored, and why stays sealed.
                 equivalence = evaluator.unscored('evaluator host fault: invalid evaluation record', frozen, method,

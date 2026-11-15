@@ -4,7 +4,7 @@
   "branch": "mdk/untangle",
   "stage": "spec",
   "awaiting": null,
-  "current": "03",
+  "current": "04",
   "features": [
     {
       "id": "01",
@@ -21,8 +21,8 @@
     {
       "id": "03",
       "slug": "client-interface",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "3bd7d3bd52cb9cd3d24bb7eeb02e7b63d5f58142"
     },
     {
       "id": "04",

@@ -1330,7 +1330,7 @@ class UndecidedCheckTests(unittest.TestCase):
         # driver, an unknown grade the configurator refuses, an undecided check that outweighs a failed one, and a failed
         # one beside it that the configurator refuses, which the harness would turn into an unscored fault.
         from generative_driver.benchmark_support.evaluator import final_record
-        from generative_driver.configurator import _evaluation_errors
+        from generative_driver.client_interface import verdict_errors
         contract = contract_of(('s1/0/answer', 'value'), ('s1/0/state:mode', 2))
         decided = [record_for(contract, 's1/0/answer', 'value')]
         undecided = decided + [{**record_for(contract, 's1/0/state:mode', None), 'undecided': 'unreadable state'}]
@@ -1338,13 +1338,13 @@ class UndecidedCheckTests(unittest.TestCase):
         self.assertEqual((made['status'], made['equivalent'], [c['passed'] for c in made['checks']]), ('unknown', None, [True, None]))
         self.assertEqual((made['passed'], made['total']), (1, 2))
         self.assertEqual(made['diff'], [{'id': 's1/0/state:mode', 'reason': 'unreadable state'}])
-        self.assertEqual(_evaluation_errors({**made, 'evidence_sha256': 'a' * 64}), [])
+        self.assertEqual(verdict_errors({**made, 'evidence_sha256': 'a' * 64}), [])
         failed = final_record(final_of(contract, [record_for(contract, 's1/0/answer', 'error')] + undecided[1:]), protocol='assistive/1')
         self.assertEqual((failed['status'], failed['equivalent']), ('graded', False))
         self.assertEqual((failed['passed'], [c['passed'] for c in failed['checks']]), (0, [False, None]))
         self.assertEqual(failed['diff'], [{'id': 's1/0/answer', 'reason': 'value mismatch'},
                                           {'id': 's1/0/state:mode', 'reason': 'unreadable state'}])
-        self.assertEqual(_evaluation_errors({**failed, 'evidence_sha256': 'a' * 64}), [])
+        self.assertEqual(verdict_errors({**failed, 'evidence_sha256': 'a' * 64}), [])
         # Every check decided is the grade it always was.
         every = final_record(final_of(contract, decided + [record_for(contract, 's1/0/state:mode', 2)]), protocol='assistive/1')
         self.assertEqual((every['status'], every['equivalent'], every['diff']), ('graded', True, []))
@@ -1404,7 +1404,7 @@ class UndecidedCheckTests(unittest.TestCase):
         # passed null in any grade but an unknown one or a driver graded not equivalent beside a failed check, and that
         # driver graded equivalent or without a difference for each undecided check.
         from generative_driver.benchmark_support.evaluator import final_record
-        from generative_driver.configurator import _evaluation_errors
+        from generative_driver.client_interface import verdict_errors
         contract = contract_of(('s1/0/answer', 'value'), ('s1/0/state:mode', 2), ('s1/0/state:level', 3))
         decided = record_for(contract, 's1/0/answer', 'value')
         mode = {**record_for(contract, 's1/0/state:mode', None), 'undecided': 'unreadable state'}
@@ -1413,16 +1413,16 @@ class UndecidedCheckTests(unittest.TestCase):
                                    'evidence_sha256': 'a' * 64}
         good = sealed(decided, mode, level)
         self.assertEqual((good['status'], good['equivalent'], good['passed'], good['total']), ('unknown', None, 1, 3))
-        self.assertEqual(_evaluation_errors(good), [])
+        self.assertEqual(verdict_errors(good), [])
         # Every check undecided is as well-formed.
         every = sealed({**decided, 'value': None, 'undecided': 'unverified reset'}, mode, level)
         self.assertEqual(([c['passed'] for c in every['checks']], every['passed']), ([None, None, None], 0))
-        self.assertEqual(_evaluation_errors(every), [])
+        self.assertEqual(verdict_errors(every), [])
         # A failed check outweighs the undecided ones: the driver is graded not equivalent, and its difference names each.
         failed = sealed({**decided, 'value': 'error'}, mode, level)
         self.assertEqual((failed['status'], failed['equivalent'], [c['passed'] for c in failed['checks']], failed['passed']),
                          ('graded', False, [False, None, None], 0))
-        self.assertEqual(_evaluation_errors(failed), [])
+        self.assertEqual(verdict_errors(failed), [])
         checks, diff, failed_diff = good['checks'], good['diff'], failed['diff']
         with_check = lambda index, **change: [{**c, **change} if i == index else c for i, c in enumerate(checks)]
         for name, record, message in (
@@ -1456,7 +1456,7 @@ class UndecidedCheckTests(unittest.TestCase):
                  {**failed, 'status': 'unscored', 'equivalent': None, 'evidence_sha256': None}, 'checks are'),
                 ('an undecided check counted as passed beside a failed one', {**failed, 'passed': 3}, 'count the checks')):
             with self.subTest(name=name):
-                errors = _evaluation_errors(record)
+                errors = verdict_errors(record)
                 self.assertTrue(errors, 'a malformed record was accepted')
                 self.assertRegex(' | '.join(errors), message)
 
@@ -1468,7 +1468,7 @@ class UndecidedCheckTests(unittest.TestCase):
         # unknown otherwise, and always one the schema accepts.
         import itertools
         from generative_driver.benchmark_support.evaluator import final_record
-        from generative_driver.configurator import _evaluation_errors
+        from generative_driver.client_interface import verdict_errors
         contract = contract_of(('s1/0/answer', 'value'), ('s1/0/state:mode', 2), ('s1/0/state:level', 3))
         right = {'s1/0/answer': 'value', 's1/0/state:mode': 2, 's1/0/state:level': 3}
         wrong = {'s1/0/answer': 'error', 's1/0/state:mode': 9, 's1/0/state:level': 9}
@@ -1489,7 +1489,7 @@ class UndecidedCheckTests(unittest.TestCase):
                 with self.subTest(how=how, extra=extra):
                     made = final_record(final_of(contract, records(how, extra)), protocol='assistive/1')
                     self.assertEqual((made['status'], made['equivalent']), expected)
-                    self.assertEqual(_evaluation_errors({**made, 'evidence_sha256': 'a' * 64}), [])
+                    self.assertEqual(verdict_errors({**made, 'evidence_sha256': 'a' * 64}), [])
         self.assertEqual(seen, {('graded', True), ('graded', False), ('unknown', None)})
 
     def test_an_unknown_grade_reads_unknown_and_its_reason_names_each_undecided_check(self):

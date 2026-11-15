@@ -37,6 +37,7 @@ Nothing that stays needs these. The deletion removes them.
 | `tests/test_audit.py` | Tests only the benchmark. No file that stays imports it. |
 | `tests/test_benchmark_asset_build.py` | Tests only the benchmark. No file that stays imports it. |
 | `tests/test_benchmark_behavior.py` | Tests only the benchmark. No file that stays imports it. |
+| `tests/test_benchmark_client_interface.py` | Holds the benchmark and this list to the client interface. No file that stays imports it. |
 | `tests/test_benchmark_ground.py` | Tests only the benchmark. No file that stays imports it. |
 | `tests/test_benchmark_helper_copies.py` | Holds the grader's helpers to the tool's answers. No file that stays imports it. |
 | `tests/test_benchmark_run.py` | Tests only the benchmark. No file that stays imports it. |

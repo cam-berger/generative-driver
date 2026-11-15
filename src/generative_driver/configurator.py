@@ -25,11 +25,12 @@ from .service_log import LOG_NAME, ServiceLog
 # Other modules take `digest`, `IntegrityError` and `equivalence_label` from the configurator, so it keeps these names.
 from .integrity import IntegrityError, digest
 from .verdict_labels import equivalence_label, verdict_reason as _verdict_reason
+# The client interface defines the protocol's label, the rules of a posted verdict and the driver it must name. Other
+# modules take `PROTOCOL` from the configurator, so it keeps the name.
+from .client_interface import PROTOCOL, frozen_driver, verdict_errors
 
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 TERMINAL = {'completed', 'failed', 'cancelled', 'blocked'}
-# Runs record their protocol; a run saved without this label used the earlier gated stage progression.
-PROTOCOL = 'assistive/1'
 # Generic stage inputs, each taken from the latest accepted handoff of its stage that has artifacts. Emit's are a model
 # and a record it wrote (`Controller._emit_inputs`).
 STAGE_INPUTS = {'probe': (('interpret', 'interpreted model'),),
@@ -681,72 +682,6 @@ UNCERTAIN_AWAITING = ('Outstanding effect is uncertain after fresh reuse; reconc
 def _final_verdict(db, run_id):
     row = db.execute('SELECT payload FROM verdicts WHERE id=?', (run_id + FINAL,)).fetchone()
     return json.loads(row['payload']) if row else None
-
-
-# The public evaluation record the bench harness posts after a run: check ids with passed flags (null for a check the
-# evaluator could not decide) and failing and undecided ids with a reason. Expected values, tolerances, witnesses and
-# raw records stay sealed, so no other field is accepted.
-EVALUATION = {'schema', 'status', 'equivalent', 'basis', 'method', 'checks', 'diff', 'passed', 'total', 'mission',
-              'frozen_artifact_sha256', 'capabilities_sha256', 'evidence_sha256', 'protocol'}
-
-
-# How the evaluator grades a frozen driver: on a fresh emulator of its own, or (legacy tq9 and bme280) from the fresh
-# reuse the run recorded.
-METHODS = ('fresh-final', 'recorded-reuse')
-
-
-def _evaluation_errors(record):
-    """Why a posted evaluation is not a well-formed equivalence/1 record, or []."""
-    sha = lambda value: value is None or isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None
-    text = lambda value: isinstance(value, str) and 0 < len(value) <= 300
-    if not isinstance(record, dict) or set(record) != EVALUATION:
-        return ['an equivalence/1 record has exactly the fields ' + ', '.join(sorted(EVALUATION))]
-    errors = []
-    if (record['schema'], record['basis'], record['protocol']) != ('equivalence/1', 'evaluator', PROTOCOL) or \
-            record['method'] not in METHODS:
-        errors.append('schema equivalence/1, basis evaluator, method ' + ' or '.join(METHODS) + ' and protocol ' + PROTOCOL
-                      + ' are required')
-    checks, diff = record['checks'], record['diff']
-    status, equivalent = record['status'], record['equivalent']
-    # A check's passed flag is true or false, or null for a check the evaluator could not decide. An unknown grade holds
-    # such checks beside passed ones, a driver graded not equivalent beside a failed one, and no other record holds one.
-    null_ok = status == 'unknown' or status == 'graded' and equivalent is False and isinstance(checks, list) and any(
-        isinstance(c, dict) and c.get('passed') is False for c in checks)
-    passed_flag = lambda value: type(value) is bool or value is None and null_ok
-    if not isinstance(checks, list) or any(not isinstance(c, dict) or set(c) != {'id', 'passed'} or not text(c['id'])
-                                           or not passed_flag(c['passed']) for c in checks):
-        errors.append('checks are [{id, passed}], with passed null only for an undecided check in an unknown grade or '
-                      'beside a failed one')
-        checks = []
-    if not isinstance(diff, list) or any(not isinstance(d, dict) or set(d) != {'id', 'reason'} or not text(d['id'])
-                                         or not text(d['reason']) for d in diff):
-        errors.append('diff is [{id, reason}]')
-        diff = []
-    if any(type(record[key]) is not int for key in ('passed', 'total')) or \
-            (record['passed'], record['total']) != (sum(c['passed'] is True for c in checks), len(checks)):
-        errors.append('passed and total count the checks')
-    undecided, named = {c['id'] for c in checks if c['passed'] is None}, {d['id'] for d in diff}
-    if (status, type(equivalent)) not in (('graded', bool), ('no-driver', bool), ('unknown', type(None)),
-                                          ('unscored', type(None))) or status == 'no-driver' and equivalent is not False:
-        errors.append('status graded or no-driver with equivalent true or false, or unscored or unknown with equivalent null')
-    elif equivalent is True and (not checks or not all(c['passed'] for c in checks) or diff):
-        errors.append('an equivalent driver passed every check, with no difference')
-    elif equivalent is not True and not diff:
-        errors.append('a driver that is not judged equivalent names its differences')
-    elif status == 'unknown' and (not undecided or any(c['passed'] is False for c in checks) or not undecided <= named):
-        errors.append('an unknown grade has no failed check, at least one undecided check and a difference for each')
-    elif status == 'graded' and not undecided <= named:
-        errors.append('a graded driver has a difference for each undecided check')
-    mission = record['mission']
-    if mission is not None and (not isinstance(mission, dict) or not set(mission) <= {'name', 'passed', 'reason', 'fault'}
-                                or type(mission.get('passed')) not in (bool, type(None))
-                                or any(not isinstance(mission[k], str) or len(mission[k]) > 300 for k in set(mission) - {'passed'})):
-        errors.append('mission is {name, passed, reason, fault}')
-    if not all(sha(record[key]) for key in ('frozen_artifact_sha256', 'capabilities_sha256', 'evidence_sha256')):
-        errors.append('hashes are sha256 hex or null')
-    elif status != 'unscored' and record['evidence_sha256'] is None:
-        errors.append('a grade names the evidence it was sealed in')
-    return errors
 
 
 def _packages(handoff):
@@ -3113,7 +3048,7 @@ class Controller:
         if not isinstance(token, str) or not hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(),
                                                                  spec['evaluation_token_sha256']):
             raise ValueError('record_evaluation requires the run\'s evaluation token')
-        errors = _evaluation_errors(record)
+        errors = verdict_errors(record)
         if errors:
             raise ValueError('Invalid evaluation record: ' + '; '.join(errors))
         # The method keeps grades on a fresh emulator apart from grades of recorded reuse: the run's pinned case names it.
@@ -3136,7 +3071,7 @@ class Controller:
                 if progress.get('equivalence') != 'pending':
                     raise ValueError('The run awaits no independent evaluation')
                 accepted = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM handoffs WHERE run_id=? ORDER BY created', (run_id,))]
-                frozen = next((h['artifacts'][0]['sha256'] for h in reversed(accepted) if h['stage'] == 'emit' and h['artifacts']), None)
+                frozen = (frozen_driver(accepted) or {}).get('sha256')
                 if record['frozen_artifact_sha256'] != frozen:
                     raise IntegrityError('The evaluated package is not the run\'s accepted emitted package')
                 if record['status'] == 'unscored':

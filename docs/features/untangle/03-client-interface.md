@@ -104,3 +104,15 @@ In these Behaviours, "the interface module" is `generative_driver.client_interfa
 - Any edit to grading code, and anything that changes a grader identity.
 
 ## Deviations
+
+- Six lines inserted and five removed in the benchmark's folder, where the Spec names four: `harness.py:286`, `:287`, `:338` and `:339`, and `suite_reporting.py:192` and `:200` — same two files and the same two names, neither in the grader closure; the extra lines are the second half of one import and the re-indented continuation of one call, so no behaviour and no scope changes.
+- Five lines over 120 columns are kept in the moved `verdict_errors` — the Spec says the code stays as it is, which is what makes "no behaviour changes" checkable.
+- Comments are reworded as they moved, and `verdict_errors` has a new docstring — the Spec orders both; no code or returned sentence changed.
+- `_record_evaluation` reads `frozen = (frozen_driver(accepted) or {}).get('sha256')` — the Spec says to use `frozen_driver` there; the value is the same as before.
+- The document holds sentences the Spec's list does not name, among them what `call` itself answers with no `error`, what `record_evaluation` answers, the 300-character limit of the `mission` texts, the defaults of `effects`, `budget_seconds` and `executor`, the forms of `binding`, when the service sends `release`, and a five-line example — each says what the client sends, gets back or is refused, and each is true of the code; none adds scope.
+- The README row has no test of its own — no Behaviour names it; Feature 01's check and the removal's link check hold it.
+- The 03-B6 test also asserts that `EVALUATION` and `METHODS` left the service — the Spec says so under Interface and seams.
+- The 03-B1 constants test ties its own two literals together — harmless beside real assertions on the module.
+- `tests/test_benchmark_client_interface.py` imports helpers from `tests/test_deletion_marking.py` and `tests/deletion_marking.py` and reads benchmark modules as source — it is a benchmark item, all three are removed together, and it reads the list by heading as the Spec says.
+- Order of work: one 03-B1 test stayed red until 03-B4, and the service kept a temporary alias `_evaluation_errors = verdict_errors` between 03-B2 and 03-B6 — the alias is not in the final tree.
+- The service-facing parts of 03-B1 and 03-B2 were red only for the missing interface names — it follows from "no behaviour changes"; the missing names are the new part of each Behaviour.

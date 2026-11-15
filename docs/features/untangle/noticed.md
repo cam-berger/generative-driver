@@ -20,3 +20,13 @@
 - 02: `src/generative_driver/replay.py:87,94,106` and `src/generative_driver/configurator.py:38,39,58` — lines over 120 columns, there before this Feature.
 - 02: `docs/benchmark-deletion-list.md:66` and `:74` — two `Still used by the tool` rows whose files import nothing from the benchmark package. They hold their rows by their benchmark names.
 - 02: `STANDARDS.md:27` — the Test command took 461 s here, up from about 440 s; the Done check stops at 540 s.
+- 03: `src/generative_driver/client.py:368-369` — `call` with `autostart=False` also answers `{'ok': False, 'reason': ...}` with no `error`, when the service is not reachable. The interface document names three such cases and not this one.
+- 03: `src/generative_driver/configurator.py:3055` — a run with no case that was started with `evaluation_token_sha256` answers a posted `fresh-final` verdict with "The run's case is graded by method recorded-reuse, not fresh-final", although it has no case.
+- 03: `src/generative_driver/configurator.py:2297` — the form of `evaluation_token_sha256` is checked only for a run that names a case; a run with no case accepts any value under that key.
+- 03: `src/generative_driver/configurator.py:3002` and `:3046` — refusals a client of the interface meets name the bench harness. Feature 05 is the place to change them.
+- 03: `src/generative_driver/device_client.py:1-5` and `:37` — the module doc names the bench harness, and `help(client_interface.device_errors)` shows the docstring of `descriptor_errors`.
+- 03: `src/generative_driver/benchmark_support/harness.py:281` and `src/generative_driver/benchmark_support/suite_reporting.py:197` — a docstring and a comment still call the verdict rules "the configurator's schema".
+- 03: `tests/test_evaluation.py:1401` and `:1463` — test names and comments say "the configurator accepts" while the tests now call `verdict_errors` of the interface.
+- 03: `src/generative_driver/benchmark_support/evaluator.py:109` — `emitted` finds the frozen driver by a rule of its own beside `frozen_driver`. It is grading code, which may not import the tool.
+- 03: `docs/superpowers/plans/2026-11-01-generated-grader.md:196` and `:216` — a plan record still names `_evaluation_errors`.
+- 03: `src/generative_driver/configurator.py:2566-2572` — the service sends `release` to a supplied device whenever the run's worker ends, also when the run only stops, not just when it completes. The interface document says so.

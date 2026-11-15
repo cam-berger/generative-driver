@@ -189,7 +189,7 @@ def _report_success(report):
 def _report_equivalent(report,protocol=None):
     """An assistive report's success: its one recorded verdict, a well-formed evaluator grade of a completed run, holds
     the frozen driver equivalent. The report and its grade name `protocol`, by default this installation's."""
-    from ..configurator import PROTOCOL,_evaluation_errors
+    from ..client_interface import PROTOCOL,verdict_errors
     protocol=protocol or PROTOCOL
     equivalence=report.get('equivalence')
     return (report.get('schema')=='benchmark-report/3' and report.get('protocol')==protocol
@@ -197,7 +197,7 @@ def _report_equivalent(report,protocol=None):
         # A grade names the protocol of its report. The configurator's schema holds a grade to this installation's, so it
         # checks the rest of the record with that field set to its own.
         and isinstance(equivalence,dict) and equivalence.get('protocol')==protocol
-        and not _evaluation_errors({**equivalence,'protocol':PROTOCOL})
+        and not verdict_errors({**equivalence,'protocol':PROTOCOL})
         and equivalence['status']=='graded' and equivalence['equivalent'] is True)
 
 def _validate_trials(manifest,trials,reports,experiment):

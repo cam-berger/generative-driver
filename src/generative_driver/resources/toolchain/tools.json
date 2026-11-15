@@ -1553,6 +1553,32 @@
           }
         }
       }
+    },
+    {
+      "name": "acquire_document",
+      "description": "Stage 1. Import a document the operator passed with the run: name a file in the acquire workspace's inputs/ folder, as the stage's inputs list it. A PDF becomes the text of each page (it needs pypdf), a .txt or .md file in UTF-8 one page; any other path or file is refused with the reason. The original and its pages, with an index, are recorded as acquisition evidence and handed on to interpretation as a supplementary document.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "run_dir",
+          "inputs_dir",
+          "name"
+        ],
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "inputs_dir": {
+            "type": "string",
+            "description": "Absolute path of the acquire workspace's inputs folder."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name of a file in the inputs folder, not a path."
+          }
+        }
+      }
     }
   ]
 }

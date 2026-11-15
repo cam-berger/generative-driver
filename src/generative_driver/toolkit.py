@@ -16,6 +16,7 @@ _MODULE_TOOLS = {
     "acquire": ("acquire_firmware_artifact", "acquire_flash", "acquire_serial_listen", "acquire_datasheet",
                 "acquire_selfdescription", "acquire_protocol_spec", "acquire_classify",
                 "acquire_bus_scan", "acquire_register_sweep"),
+    "documents": ("acquire_document",),
     "bench": ("bus_prepare",),
     "firmware": ("firmware_prepare", "firmware_collect", "firmware_validate"),
     "interpret": ("interpret_run", "interpret_collect", "model_validate", "model_provenance_audit"),
@@ -29,7 +30,7 @@ _MODULE_TOOLS = {
 _DISPATCH = {name: module for module, names in _MODULE_TOOLS.items() for name in names}
 _PATH_ARGUMENTS = {"run_dir", "source_path", "artifact", "model_dir", "probe", "probe_json", "package_dir", "image",
                    "workspace", "workspace_root", "ghidra_path", "java_home", "export_dir", "script_path",
-                   "wiring", "transcript", "replies", "bus", "replay"}
+                   "wiring", "transcript", "replies", "bus", "replay", "inputs_dir"}
 
 
 def resources_root() -> Path:

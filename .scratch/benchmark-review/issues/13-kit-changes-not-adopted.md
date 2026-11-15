@@ -48,6 +48,14 @@ These entries name functions rather than lines.
 - **Adopting them** means giving the adapters' interpret preparation (`prepare_stage`) the analysis inputs and their `TASKS.json` entry, and their `observe_stage` a collection that reads a task-mode attempt's output. A benchmark comparison of task mode with the single worker would also need each task's `reports` row counted under its stage attempt: `reporting.summarize` counts every row of a stage as an attempt.
 - **What benchmark readers now see.** Nothing in a case run changes. A generic run's `status.worker` may add `task`, and its events add `kit_analysis.started`, `kit_analysis.finished`, `task.started` and `task.finished`.
 
+## Input paths (Feature 07)
+
+These entries name functions rather than lines.
+
+- **Benchmark runs get neither documents nor device-first interpretation.** A generic run's interpret workers now get the text of every supplementary document the acquire handoff carries, under `documents/` with `DOCUMENTS.json` (`supplementary_documents.sealed_inputs`). A generic run with no single image and a device binding interprets device first (`device_first`). A run with a case returns from `Controller._prepare` before either, so the physical case's interpreter still reads only its datasheet and `pages`, and a case run that acquires no image skips interpretation as before. Its acquire workers' tools are unchanged: `acquire_document` is listed only for generic runs.
+- **A benchmark acquire worker given `acquire_protocol_spec` would now hand its files on.** The tool now returns the fetched source files and their sections directory under `artifacts`, so the gateway records them and the acquire handoff carries them. No case gives its acquire worker this tool today.
+- **What benchmark readers now see.** Nothing in a case run changes. A generic run's interpret handoff notes may add the mode `device` and its `device_calls`.
+
 ## Direction
 
 Decide these in the new repository, with the run-side call sites and `SYSTEM_MODULES` as the boundary. The deadline matters most before long unattended suites: one hung tool call there holds a slot until the suite's budget.

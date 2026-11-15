@@ -18,6 +18,9 @@ Every file here is a sealed input: read it and leave it unchanged. Changing one 
   Its first comment says which functions it holds and which it cut or left out.
 - `STRINGS.json`: the strings those functions reference.
 - `TASKS.json`: the run's objective and effect grants. The objective says what is wanted, not how the device speaks.
+- `DOCUMENTS.json` and the `documents/` pages your command's evidence cites, when supplied: supplementary documents,
+  evidence of meanings, units and framing as `TASKS.json` describes them; the firmware wins where they disagree.
+  `TASK.json` names any cited page its size bound left out.
 - `INTERFACE_MODEL.md`: the model document. `CONTRACT.md` and `contract.py`: how to describe an operation for the
   driver contract. `validate.py` and `qualify.py`, with the `_toolkit/` they use: the model's validator and offline
   qualifier.

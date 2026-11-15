@@ -45,9 +45,13 @@
     {
       "id": "07",
       "slug": "input-paths",
-      "status": "pending",
-      "base": null
+      "status": "escalated",
+      "base": "32099d21df8baaf347a5c81e83bf58381fd1f49e"
     }
   ],
-  "escalation": null
+  "escalation": {
+    "feature": "07",
+    "reason": "Device-first interpretation (07-B6) gives its worker its own prompt, but the interpret seal (attemptN.seal.json, written by the shared interpret_run tool) still records interpret_run's prompt, which says the worker has no access to the device. Nothing records the prompt the worker actually got. The Spec keeps interpret_run's parameters unchanged because benchmark runs share it, so the fix needs a decision: (a) let interpret_run take a configurator-only prompt so the seal records the real one, benchmark seals staying byte-identical; (b) keep the seal and add a separate device-first prompt record plus a note that the seal's prompt was replaced; or (c) accept the seal as is. Open fix-round findings to apply after the decision: inputs_dir must be path-checked for acquire_document only, not added to the global _PATH_ARGUMENTS (it now refuses a stray inputs_dir on every existing tool, benchmark runs included); device_first.py:107-108 refusal message must end without a period with the operation and its effect after a colon; prefer a stand-in datasheet registry over patching benchmark_support.physical._datasheet_sha256.",
+    "at": "2026-11-14T22:01:20+00:00"
+  }
 }

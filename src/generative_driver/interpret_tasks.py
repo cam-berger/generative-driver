@@ -17,7 +17,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from . import analysis_index
+from . import analysis_index, supplementary_documents
 from .benchmark_support.integrity import IntegrityError
 
 # The values of the `interpretation` start parameter; the first is the default.
@@ -127,6 +127,7 @@ class _Attempt:
         self.notes = list(plan['interpretation'].get('notes', ()))
         self.results = []  # (task, runtime result) of each task run so far
         self.task_notes = {}  # each completed task's NOTES.md, by task
+        self.ignored = set()  # (command, path) of each citation of no forwarded document page, noted once
         self.kept = {'inventory': None, 'fragments': {}}  # what this attempt's records hold, as the notes name it
         tasks = json.loads((self.source / 'TASKS.json').read_text(encoding='utf-8'))
         tasks.pop('kit_analysis', None)  # It tells the single worker of the export, which no task gets.
@@ -150,15 +151,16 @@ class _Attempt:
         """The inventory the inventory task wrote, once that task has run (06-B6)."""
         candidates = [candidate['function'] for candidate in self.export.candidates()]
         strings, left = self.export.strings_table()
+        documents, entry = self.documents()
         workspace = self.task({'kind': 'inventory'}, 'INVENTORY.md', {
             'ANALYSIS_INDEX.json': Path(self.plan['index']),
             'DISPATCHERS.c': self.export.excerpt(candidates, 'The decompiled code of the top-ranked dispatcher '
                                                             'candidates, by rank'),
             'strings.tsv': strings, 'TASKS.json': self.tasks_json,
-            **{name: self.source / name for name in EVIDENCE if (self.source / name).is_file()},
+            **{name: self.source / name for name in EVIDENCE if (self.source / name).is_file()}, **documents,
             'TASK.json': {'schema': 'interpret-task/1', 'kind': 'inventory', 'writes': ['inventory.json', 'NOTES.md'],
                           'max_commands': MAX_COMMANDS, 'dispatcher_candidates': candidates,
-                          'strings_left_out': left}})
+                          'strings_left_out': left, **entry}})
         inventory, why = _read_inventory(workspace / 'inventory.json')
         if inventory is None:
             raise _Fallback(why)
@@ -190,15 +192,16 @@ class _Attempt:
         run. `identity` is the identity operation ({operation, model}) for every task but the identity command's;
         `repair` holds the previous fragment, operation and differences."""
         functions = self.export.nearest(command['handlers'])
+        documents, entry = self.documents([command])
         workspace = self.task({'kind': 'handler', 'command': command['name']}, 'HANDLER.md', {
             'MODEL_FRAME.json': frame, 'COMMAND.json': command, **({'IDENTITY.json': identity} if identity else {}),
             'CODE.c': self.export.excerpt(functions, 'The decompiled code of the handler functions of '
                                           + command['name'] + ' and of the functions they call, nearest first'),
             'STRINGS.json': self.export.strings_used(functions), 'TASKS.json': self.tasks_json, **self.kit(),
-            **(repair or {}),
+            **(repair or {}), **documents,
             'TASK.json': {'schema': 'interpret-task/1', 'kind': 'handler', 'command': command['name'],
                           'repair': bool(repair), 'writes': ['fragment.json', 'NOTES.md'],
-                          'fragment_schema': FRAGMENT_SCHEMA}})
+                          'fragment_schema': FRAGMENT_SCHEMA, **entry}})
         return _read_fragment(workspace / 'fragment.json')
 
     def keep_fragment(self, command, fragment):
@@ -291,13 +294,14 @@ class _Attempt:
         assembled files with a note when it leaves no usable result (06-B9)."""
         handlers = list(dict.fromkeys(address for command in _identity_first(inventory)
                                       for address in command['handlers']))
+        documents, entry = self.documents(_identity_first(inventory))
         workspace, sealed = self.task({'kind': 'cross-check'}, 'CROSS_CHECK.md', {
             'VALIDATION.json': validation, 'inventory.json': inventory, 'ANALYSIS_INDEX.json': Path(self.plan['index']),
             'HANDLERS.c': self.export.excerpt(handlers, 'The decompiled code of every handler function'),
             **{'notes/' + name + '.md': text for name, text in self.task_notes.items()},
-            'TASKS.json': self.tasks_json, **self.kit(), **(repair or {}),
+            'TASKS.json': self.tasks_json, **self.kit(), **(repair or {}), **documents,
             'TASK.json': {'schema': 'interpret-task/1', 'kind': 'cross-check', 'repair': bool(repair),
-                          'writes': ['model.json', 'replies.json', 'contract.json', 'NOTES.md']}},
+                          'writes': ['model.json', 'replies.json', 'contract.json', 'NOTES.md'], **entry}},
             editable=assembled, with_seal=True)
         try:
             defects = _validation(json.loads((workspace / 'model.json').read_text(encoding='utf-8')))['defects']
@@ -370,6 +374,22 @@ class _Attempt:
         """The model document, the contract guide and tool, the validator and the qualifier with the runtime they use,
         as the single worker's workspace has them."""
         return {name: self.source / name for name in KIT}
+
+    def documents(self, commands=None):
+        """A task's supplementary documents (07-B4) by workspace name, and the `documents` entry of its TASK.json ({}
+        without documents): the inventory's are taken from every forwarded page, a handler task's and the cross-check's
+        from the pages the inventory's `commands` cite. A citation that names no forwarded page is ignored, with a
+        note."""
+        cited = None if commands is None else [(command['name'], path) for command in commands
+                                               for path in supplementary_documents.citations(command.get('evidence'))]
+        inputs, entry, unknown = supplementary_documents.for_task(
+            self.source, None if cited is None else [path for _, path in cited])
+        for name, path in cited or ():
+            if path in unknown and (name, path) not in self.ignored:
+                self.ignored.add((name, path))
+                self.notes.append('The inventory cites ' + path + ' for ' + name + ', which names no forwarded '
+                                  'document page; the citation is ignored.')
+        return inputs, ({'documents': entry} if entry else {})
 
     def task(self, task, instructions, inputs, editable=None, with_seal=False):
         """The workspace of one task (and its seal, when `with_seal`), once the task's fresh worker completed with

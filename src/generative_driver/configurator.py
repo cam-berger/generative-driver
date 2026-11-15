@@ -35,7 +35,8 @@ PROTOCOL = 'assistive/1'
 STAGE_INPUTS = {'probe': (('interpret', 'interpreted model'),),
                 'ground': (('interpret', 'interpreted model'), ('probe', 'probe records'))}
 STAGE_TOOLS = {
-    'acquire': ['acquire_serial_listen','acquire_firmware_artifact','acquire_datasheet','acquire_protocol_spec','acquire_classify'],
+    'acquire': ['acquire_serial_listen','acquire_firmware_artifact','acquire_datasheet','acquire_protocol_spec',
+                'acquire_classify','acquire_document'],
     'interpret': ['firmware_prepare','firmware_collect','firmware_validate','model_validate','model_provenance_audit','ghidra_run','image_map_check'],
     # Probe and ground workers get no model_validate: the register validator writes beside the model it checks, which
     # would alter an assigned input. The configurator validates each assigned model on its own copy and notes it.
@@ -47,6 +48,9 @@ STAGE_TOOLS = {
 # Tools whose `address` and `serial_number` select a USB device (vid:pid and serial). The configurator owns that
 # selection as it owns the serial port: a worker names a transport, and only the operator's bound identity is read.
 USB_SELECTING = ('acquire_classify', 'acquire_selfdescription')
+# The tool that imports a document passed with the run reads only the acquire workspace's inputs folder, which the
+# configurator names: a worker names a file in it (07-B1).
+DOCUMENT_IMPORT = 'acquire_document'
 GROUND_OBJECTIVE = ('Test the meanings the interpreted model gives the device: units, scaling and the effects of its '
                     'operations. Run the model on the device with probe_run and interface_execute through the '
                     'configurator-owned connection, compare the outputs with the probe records and with operator '
@@ -2500,6 +2504,9 @@ class Controller:
                     assignment['device_mcp'] = prepared['device_mcp']
                 if prepared.get('collection'):
                     assignment['collection'] = prepared['collection']
+                if prepared.get('device_first'):
+                    assignment.update(device_first=prepared['device_first'],
+                                      effects=prepared['device_first']['effects'])
                 began = time.time()
                 with self._db() as db:
                     self._claim_binding(assignment.get('binding'),run_id,db)
@@ -2610,6 +2617,10 @@ class Controller:
                         rows = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='tool.refused' ORDER BY seq", (run_id,)).fetchall()
                     refusals = [{'name': event.get('name'), 'reason': event.get('reason')} for event in (json.loads(r['payload']) for r in rows)
                                 if event.get('assignment_id') == attempt and event.get('actor') == 'worker']
+                    if assignment.get('device_first'):
+                        from . import device_first
+                        prepared['interpretation'] = {**prepared['interpretation'], 'device_calls': device_first.calls(
+                            self._started(run_id, assignment), self._finished(run_id, assignment))}
                     notes = _notes(result, checked, outcome, refusals=refusals, missing=prepared.get('input_notes', ()),
                                    contract=prepared.get('driver_contract', ()),
                                    interpretation=prepared.get('interpretation'))
@@ -2903,15 +2914,19 @@ class Controller:
             images = named if len(named) == 1 else [p for p in artifacts if p.suffix.lower() in ('.bin', '.elf')]
             if spec.get('front_end','interpret-interface') != 'interpret-interface':
                 return {'skip':'Interpretation skipped: generic blind interpretation supports only front_end=interpret-interface'}
-            if len(images) != 1:
+            # With no single image but a device binding, the worker interprets the device first (07-B5).
+            from . import device_first, kit_analysis
+            device = device_first.applies(spec, images)
+            if len(images) != 1 and not device:
                 return {'skip':'Interpretation skipped: no single acquired binary to interpret (' + str(len(images)) + ' candidates)'}
-            from . import kit_analysis
-            analysis = self._kit_analysis(spec, run_dir, images[0])
-            # A repair keeps the sealed workspace and adds the device diff and the candidate it contradicts.
-            from .analysis import firmware_analysis_inputs
-            inputs = {'image.bin':str(images[0]),
-                      **firmware_analysis_inputs(run_dir / 'preparation' / workspace.name / 'context', spec),
-                      **kit_analysis.sealed_inputs(analysis)}
+            analysis, inputs = None, {}
+            if not device:
+                analysis = self._kit_analysis(spec, run_dir, images[0])
+                # A repair keeps the sealed workspace and adds the device diff and the candidate it contradicts.
+                from .analysis import firmware_analysis_inputs
+                inputs = {'image.bin':str(images[0]),
+                          **firmware_analysis_inputs(run_dir / 'preparation' / workspace.name / 'context', spec),
+                          **kit_analysis.sealed_inputs(analysis)}
             # A successful passive listen records transport settings and boot/reset evidence.
             # Keep that observed acquisition evidence in the sealed interpretation inputs.
             for artifact in artifacts:
@@ -2936,18 +2951,30 @@ class Controller:
                                 'an evidence-backed exchange. The configurator supplies the endpoint separately.'
                         }, indent=1), encoding='utf-8')
                         inputs['BINDING_CONTEXT.json'] = str(binding_context)
-            from . import driver_contract
+            # The supplementary documents the acquire handoff carries (07-B3), from the calls that wrote them.
+            from . import driver_contract, supplementary_documents
+            calls = [call for call in self._finished(run_dir.name, {'id': acquisition['assignment_id']})
+                     if call.get('ok')] if acquisition and acquisition.get('assignment_id') else []
+            documents = supplementary_documents.sealed_inputs(run_dir / 'preparation' / workspace.name / 'context',
+                                                              acquisition, calls)
+            inputs.update(documents)
             tasks = run_dir / 'preparation' / workspace.name / 'context' / 'TASKS.json'
             tasks.parent.mkdir(parents=True, exist_ok=True)
-            tasks.write_text(json.dumps({'schema': 'candidate-task-contract/1',
+            # A device-first worker has its own TASKS.json and instructions (07-B6).
+            tasks.write_text(json.dumps({**device_first.tasks(spec['goal'], spec.get('effects', ['read'])),
+                **({'documents': supplementary_documents.task_entry(device_first=True)} if documents else {})},
+                indent=1) if device else json.dumps({'schema': 'candidate-task-contract/1',
                 'tasks': {'requested': {'meaning': spec['goal']}}, 'effect_grants': spec.get('effects', ['read']),
                 'instructions': 'The objective describes requested behavior, not protocol evidence. Recover bytes, '
                     'decoders and units from supplied evidence. Report unsupported behavior. Do not execute or '
                     'relabel effects outside the grants. ' + driver_contract.TASK,
-                **({'kit_analysis': kit_analysis.task_entry(analysis)} if analysis['made'] else {})}, indent=1),
+                **({'kit_analysis': kit_analysis.task_entry(analysis)} if analysis and analysis['made'] else {}),
+                **({'documents': supplementary_documents.task_entry()} if documents else {})}, indent=1),
                 encoding='utf-8')
             inputs['TASKS.json'] = str(tasks)
             inputs.update(driver_contract.interpret_inputs())
+            if device:
+                inputs.update(device_first.sealed_inputs())
             previous = next((a['path'] for h in reversed(accepted) if h['stage'] == 'interpret' for a in h['artifacts']
                              if (Path(a['path']) / 'model.json').is_file()), None)
             if previous:
@@ -2983,9 +3010,21 @@ class Controller:
             if not prepared.get('ok'):
                 return {'skip':'Could not prepare a sealed interpretation workspace: '+
                         str(prepared.get('reason',prepared.get('error','unknown preparation error')))}
+            from . import interpret_tasks
+            if device:
+                return {'work_dir':prepared['workspace'],'prompt':device_first.prompt(Path(prepared['workspace'])),
+                    'report_required':False,
+                    'inputs':[str(Path(prepared['workspace'])/name) for name in prepared['sealed_inputs']],
+                    'allowed_tools':list(device_first.TOOLS),
+                    'collection':{'run_dir':str(tool_run),'expected_seal_sha256':prepared['seal_sha256'],
+                                  'model_dir':prepared['model_dir']},
+                    # Its calls run with these effects and keep their records outside its workspace (07-B7).
+                    'device_first':{'effects':device_first.effects(spec.get('effects', ['read'])),
+                                    'records':str(run_dir / device_first.FOLDER / workspace.name)},
+                    'interpretation': device_first.interpretation(
+                        spec.get('interpretation') or interpret_tasks.MODES[0], len(images))}
             # A run that asked for tasks runs this attempt as tasks (`interpret_tasks`), which leave their output in
             # the sealed workspace prepared here for the single worker; it is collected and checked the same way.
-            from . import interpret_tasks
             mode, notes, repairs = interpret_tasks.choose(spec, analysis, accepted)
             interpretation = {'requested': spec.get('interpretation') or interpret_tasks.MODES[0], 'mode': mode,
                               'kit_analysis': kit_analysis.note(analysis), 'notes': notes}
@@ -3030,6 +3069,10 @@ class Controller:
             # Workers learn that a device exists, never its connection.
             context['device'] = ('An operator-owned device binding is attached. The configurator supplies its '
                                  'connection to device tools; do not pass a port or binding.')
+        if stage == 'acquire' and inputs:
+            context['documents'] = ('Import each document among the inputs (a PDF, .txt or .md file) with '
+                                    'acquire_document, naming its file as the inputs list it, so interpretation '
+                                    'reads it as a supplementary document.')
         if spec.get('binding') and stage == 'acquire':
             context['serial'] = ('Listen first with acquire_serial_listen. If it reports unsolicited output the device '
                                  'resets on open, and every later connection needs the operator reset grant. '
@@ -3493,6 +3536,14 @@ class Controller:
             rows = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='tool.finished' ORDER BY seq", (run_id,)).fetchall()
         return [event for event in (json.loads(row['payload']) for row in rows) if event.get('assignment_id') == assignment['id']]
 
+    def _started(self, run_id, assignment):
+        """The configurator's tool.started records of one assignment, in order, each with its dispatch id."""
+        with self._db() as db:
+            rows = db.execute("SELECT seq, payload FROM events WHERE run_id=? AND kind='tool.started' ORDER BY seq",
+                              (run_id,)).fetchall()
+        return [{**event, 'dispatch_id': str(row['seq'])} for row in rows for event in [json.loads(row['payload'])]
+                if event.get('assignment_id') == assignment['id']]
+
     def _observe_device(self, stage, assignment, mine, accepted, run_dir, workspace):
         """Probe and ground evidence from the configurator's own record, for generic and benchmark runs alike: its
         validation of each assigned model, every probe record of the device answering on its connection, the device
@@ -3860,6 +3911,8 @@ class Controller:
             owned = ('run_dir','binding','allow_effects','bus_url','port','allow_reset')
             if contract['name'] in USB_SELECTING:
                 owned += ('address', 'serial_number')
+            if contract['name'] == DOCUMENT_IMPORT:
+                owned += ('inputs_dir',)
             for bound in owned:
                 schema.get('properties', {}).pop(bound, None)
                 if bound in schema.get('required', []):
@@ -3879,6 +3932,8 @@ class Controller:
             raise ValueError('Connection, output directory and effect grants are configurator-owned')
         if name in USB_SELECTING and {'address', 'serial_number'} & arguments.keys():
             raise ValueError('USB device selection is configurator-owned: a worker names a transport, never a device')
+        if name == DOCUMENT_IMPORT and 'inputs_dir' in arguments:
+            raise ValueError('The inputs folder is configurator-owned: a worker names a file in it, never a folder')
         workspace = Path(assignment['workspace'])
         from .toolkit import _PATH_ARGUMENTS
         for key in _PATH_ARGUMENTS & arguments.keys():
@@ -3956,7 +4011,11 @@ class Controller:
                 arguments['port'] = resolve_serial_port(binding)
                 if name != 'acquire_serial_listen':
                     arguments['allow_reset'] = granted
-        arguments['run_dir'] = str(workspace / 'tools')
+        # A device-first worker's records stay outside its workspace, so they never enter the model it hands on.
+        records = Path(assignment['device_first']['records']) if assignment.get('device_first') else None
+        arguments['run_dir'] = str(records or workspace / 'tools')
+        if name == DOCUMENT_IMPORT:
+            arguments['inputs_dir'] = str(workspace / 'inputs')
         if name == 'acquire_classify' and isinstance(binding.get('url'), str) and binding['url'].lower().startswith('ftdi://'):
             # The operator's bridge is the only bus a worker's acquisition walks, as the bound port is the only serial
             # endpoint: a worker's own bus_url is refused above.
@@ -3968,6 +4027,13 @@ class Controller:
             arguments['binding'] = assignment['binding']
             arguments['allow_effects'] = assignment['effects']
         effects=operation_effects(name,arguments,classified and classified[0]) if connected else set()
+        if connected and records:
+            # Device-first interpretation runs only operations declared read, whatever the run's grants (07-B7).
+            from . import device_first
+            refused = device_first.refusal(_model_json(Path(arguments['model_dir']) / 'model.json'),
+                                           arguments.get('operation'), effects)
+            if refused:
+                raise ValueError(refused)
         if effects-{'read'}-set(assignment['effects']):
             raise ValueError('Operation requires an effect grant the operator has not supplied')
         effectful=bool(effects & {'write','actuate'})
@@ -4045,16 +4111,17 @@ class Controller:
             result = self._kit_tool(call_tool, name, arguments, run_id=run['id'], stage=assignment['stage'],
                                     limits=limits)
         observed_artifacts = {}
+        kept = [workspace, *([records.resolve()] if records else [])]
         for key in ('artifact','provenance','pages','pages_dir','manifest','package_dir','probe','model_dir','transcript'):
             raw = result.get(key)
             if isinstance(raw,str) and Path(raw).is_absolute():
                 path = Path(raw).resolve()
-                if path.is_relative_to(workspace) and path.exists():
+                if any(path.is_relative_to(folder) for folder in kept) and path.exists():
                     observed_artifacts[str(path)] = digest(path)
         for raw in result.get('artifacts', []) if isinstance(result.get('artifacts'), list) else []:
             if isinstance(raw, str) and Path(raw).is_absolute():
                 path = Path(raw).resolve()
-                if path.is_relative_to(workspace) and path.exists():
+                if any(path.is_relative_to(folder) for folder in kept) and path.exists():
                     observed_artifacts[str(path)] = digest(path)
         with self._db() as db:
             cancelled = db.execute('SELECT cancelled FROM runs WHERE id=?',(run['id'],)).fetchone()['cancelled']

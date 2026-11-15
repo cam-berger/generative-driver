@@ -107,5 +107,6 @@ No test needs a model, real hardware or the network. The smoke keeps its firmwar
 - OCR, figures and tables beyond the text pypdf extracts, and searching the web for datasheets.
 - Running write, actuate or reset operations during device-first interpretation (declaring them is 07-B6), and task mode for it.
 - Size bounds on what acquire tools fetch, and a no-firmware smoke.
+- Recording the device-first worker's prompt. The interpret seal keeps the prompt that `interpret_run` writes into it, which is benchmark provenance and is being retired with the benchmark.
 
 ## Deviations

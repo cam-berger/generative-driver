@@ -19,6 +19,9 @@ and leave it unchanged. Changing one stops the run.
   or left out.
 - `notes/`: every task's `NOTES.md`, named by its task.
 - `TASKS.json`: the run's objective and effect grants.
+- `DOCUMENTS.json` and every `documents/` page a command's evidence cites, when supplied: supplementary documents,
+  evidence of meanings, units and framing as `TASKS.json` describes them; the firmware wins where they disagree.
+  `TASK.json` names any cited page its size bound left out.
 - `INTERFACE_MODEL.md`, `CONTRACT.md` and `contract.py`, `validate.py` and `qualify.py` with the `_toolkit/` they use.
 - `previous-model/` and `DIFFERENCES.json`, in a repair: the previous attempt's final model and everything the device
   did that contradicts it, including what no handler task was given: the channel, the transport, the identity and

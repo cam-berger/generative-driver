@@ -18,6 +18,9 @@ Every file here is a sealed input: read it and leave it unchanged. Changing one 
 - `TASKS.json`: the run's objective and effect grants. The objective says what is wanted, not how the device speaks.
 - `serial-listen.json` and `BINDING_CONTEXT.json`, when supplied: what the configurator observed of the device's
   channel during acquisition.
+- `DOCUMENTS.json` and `documents/`, when supplied: supplementary documents (datasheet pages, protocol
+  specifications, files the operator supplied), as `TASKS.json` describes them. `TASK.json` names the pages its size
+  bound left out. They are evidence of meanings, units and framing; the firmware wins where they disagree.
 
 ## Write `inventory.json`
 
@@ -45,6 +48,8 @@ Every file here is a sealed input: read it and leave it unchanged. Changing one 
 - `commands`: at most 64, each with a `name` (letters, digits and underscores, starting with a letter), the
   addresses of the functions that handle it as `ANALYSIS_INDEX.json` writes them, and the evidence for the command
   and each handler: a switch case, a string compare, a call.
+  To give a command's handler task a document page, add the page's path as `DOCUMENTS.json` lists it, such as
+  `documents/1-datasheet/002.txt`, as an entry of the command's evidence.
 
 List only commands the evidence shows. If you find no command, write an empty list: the run then interprets with a
 single worker. Write what you were unsure of in `NOTES.md`.

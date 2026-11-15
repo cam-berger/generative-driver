@@ -84,6 +84,18 @@ A task-mode attempt is an inventory of the firmware's commands, one fresh worker
 
 Task mode is unmeasured: whether it costs fewer tokens or makes better drivers than the single worker is a hypothesis until model runs compare them. Each task's token use is recorded for that comparison, in its `task.finished` event and in a `reports` row of its own under the stage's assignment. Benchmark runs use neither the analysis nor task mode.
 
+## Documents and runs without firmware
+
+Pass a manual, protocol notes or a datasheet with a run as a named input of `driver_start`:
+
+```json
+{"goal": "...", "inputs": {"firmware.bin": "/absolute/path/firmware.bin", "manual.pdf": "/absolute/path/manual.pdf"}}
+```
+
+The acquire worker imports each PDF, `.txt` or `.md` input with `acquire_document`, which splits it into page text. A PDF needs pypdf: install `generative-driver[docs]`. Every interpret worker reads the text of the run's documents, with the datasheet pages and protocol specifications the acquire stage fetched, under `documents/` with `DOCUMENTS.json`, up to 2 MiB in all. Documents are evidence of meanings, units and framing; where one disagrees with the firmware or the device, the worker follows the firmware or the device.
+
+A run that acquires no firmware image, or several, and names a device `binding` interprets device first: one worker writes the model from the device's replies to operations it declares `read`, with the listen evidence and the documents. The configurator refuses it any other operation, whatever the run's grants; probe and ground then test the model under those grants, and the run goes on as usual. The interpret stage's notes give the mode `device` and list each device call. A run with neither one image nor a binding skips interpretation and ends without a driver. Benchmark runs get neither documents nor device-first interpretation.
+
 ## When a run fails
 
 `driver_status`, or `python -m generative_driver status RUN_ID`, names the service's log as `log`: `daemon.log` in the state directory. The traceback behind a failed run is there, in an entry that names the run and its stage. Older entries may be in `daemon.log.1` beside it: a log over 10 MB is set aside under that name when the service starts. The same status gives `deadline`, `repairs` and `worker`, which tell a slow stage from a stuck one.

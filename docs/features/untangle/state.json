@@ -3,7 +3,11 @@
   "slug": "untangle",
   "branch": "mdk/untangle",
   "stage": "spec",
-  "awaiting": null,
+  "awaiting": {
+    "kind": "spec",
+    "feature": "06",
+    "sha256": "3708e87571ce78a5cd0abaf6720db8a7eaf538c7564f5a825af90e02552ca0ca"
+  },
   "current": "06",
   "features": [
     {

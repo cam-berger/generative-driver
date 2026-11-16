@@ -5,11 +5,12 @@ For the owner, who is moving the benchmark to a repository of its own and will e
 ## Out
 
 - Deleting the benchmark. That is a later step with its own go-ahead from the owner.
-- Any change in behaviour, with five exceptions the owner has decided:
+- Any change in behaviour, with six exceptions the owner has decided:
   - Benchmark runs and suites are started from the benchmark's own command.
   - The two legacy cases, the old tq9 and the physical BME280, can no longer be run, from Feature 04 on. The benchmark then has no case on real hardware until one is rebuilt.
   - The tool no longer judges the fresh worker's mission during a run, from Feature 05 on. It keeps recording the worker's calls and the readings after them, and the client judges the mission after the run and reports it in its verdict.
   - The records a client sends and reads, the verdict record and the device descriptor, are put in the tool's own terms in Feature 06.
+  - Four names that say `benchmark` in the tool are put in the tool's terms in Feature 06: the worker tool `benchmark_package_execute`, the schemas `benchmark-capabilities/2` and `benchmark-ground-evidence/3`, and the subfolder `benchmark/` of a run, where the tool keeps its own records. The owner decided this on 2026-11-16.
   - The benchmark package is renamed `firmware_bench`, with the command `firmware-bench`.
 
   The change to the records edits grading code, so it changes every grader identity and voids every admission from Feature 06 on, and the rename does so again. No generated set is registered, and the hand-made cases are due to be requalified in any case.
@@ -41,12 +42,14 @@ The published record of past results, `docs/verification.md` and `bench/evidence
 
 This Run goes side by side with `kit-fixes`. Features 03 and 05 are written against whatever `kit-fixes` Feature 05 has landed by then, and Features 06 and 07 against its Feature 06. If one of those lands later, this Run's Feature is the one brought up to date, since it changes no behaviour and the other does.
 
+On 2026-11-16 `main`, with `kit-fixes` Features 05 to 07, was merged into this Run at `d6eefa5`. Nine tests fail on that merge. The kit allows no source edit outside a Feature's Build, so the owner decided that Feature 06 brings what arrived in line with Features 01 to 05 as its first part. The owner also decided that Feature 06 stays one Feature, and that a run may carry a client record: a small JSON object the tool stores, never reads and gives back, where the bench harness keeps the case's name, its pin and the hash of its frozen inputs until the suite and report code no longer read them from the run.
+
 01. deletion-marking — one deletion list names every legacy benchmark item as ready to delete or as still used by the tool, with the Feature that frees it; one fixed marker sets off the benchmark passages of files that stay; a test deletes what is marked from a copy of the tree and runs the tool's tests on the rest; and the benchmark's folder and README say that this is the legacy copy
 02. shared-helpers — the helpers the tool needs for its own work, which hash an artifact, stop a run for integrity and word a verdict, get one home on the tool's side, and the tool stops importing those from the benchmark folder; the helpers that serve a benchmark case or the run report get no copy in the tool, and are settled with that code in later Features; grading code keeps its own copies, and one benchmark test holds them to the tool's answers
 03. client-interface — one short document and one module, with a version, say what a client that brings its own device and mission can ask of the tool and what it gets back: start a run on a supplied device, replace a device, post one final verdict, and read the run's records and its frozen driver
 04. legacy-cases — the old tq9 and the physical BME280 are dropped: they are no longer registered, the service loses the branches that exist only for them, and nothing that stays imports their code; their code and resources are on the deletion list as ready to delete, each marked as a dropped case that is not carried to the benchmark's repository; their tests are removed, and what a test covered with the old tq9 as a stand-in is covered on a current case
 05. supplied-device-stages — the code that runs the six stages on a supplied device moves to the tool's side, behind the interface, and works from the device and mission the client supplied; the tool no longer judges the fresh worker's mission during a run
-06. benchmark-runs — starting a benchmark run, freezing its inputs and recording its verdict leave the service, and the bench harness does them through the interface; the verdict record and the device descriptor are put in the tool's own terms, without the fields the benchmark shaped
+06. benchmark-runs — what arrived with `main` is brought in line with Features 01 to 05; starting a benchmark run, freezing its inputs and recording its verdict leave the service, and the bench harness does them through the interface, as a client that supplies the device, the firmware and the mission; the verdict record and the device descriptor are put in the tool's own terms, without the fields the benchmark shaped; and the four names that say `benchmark` in the tool are renamed
 07. suites — the bookkeeping of a suite leaves the service, to the home this Feature's Spec settles
 08. reports — the tool's report code and the benchmark's reports stop importing each other, after which the service imports no benchmark module and the benchmark calls the tool only through the interface
 09. commands — the benchmark's command line and MCP tools become its own entry point; the tool's command line and MCP server stop importing them and keep what a user with a device needs, plus the way to accept one verdict from an outside grader; and the benchmark's smoke case comes out of the tool's hosted tests, where the tool's own smoke stays

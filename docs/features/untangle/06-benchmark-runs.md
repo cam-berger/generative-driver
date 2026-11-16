@@ -1,0 +1,198 @@
+# 06. benchmark-runs
+
+## Intent
+
+Today a client can start a run on a device it supplies only by naming a registered benchmark case. The service then does the benchmark's work: it pins the case, checks the bench harness's admission, freezes the case's inputs in the run's folder, checks that snapshot before every stage, asks the benchmark for the firmware and the mission, and requires the grading method that fits the case. This Feature ends that. A client starts a run with the device, the firmware and the mission as data, and the service knows no case when it starts a run, runs its stages, handles its device or records its verdict. The bench harness becomes such a client: it pins, admits and freezes on its own side, and supplies what it froze.
+
+The owner decided five things on 2026-11-16, and this Spec follows them:
+
+- `main` was merged into this Run at `d6eefa5`, with the kit-fixes Run's Features 05 to 07. Nine tests fail on the merge. Bringing what arrived in line with Features 01 to 05 of this Run is the first part of this Feature.
+- Feature 06 stays one Feature.
+- The four names that carry the word `benchmark` in the tool are renamed in this Feature, on both sides at once.
+- A run may carry a client record: a small JSON object the tool stores, never reads and gives back. The harness keeps the case's name, its pin and the hash of its frozen inputs there, because the suite and report code read them from the run until Features 07 and 08.
+- The verdict record and the device descriptor are put in the tool's own terms, as the Breakdown says.
+
+What changes for a run, beyond who does the work:
+
+- The service no longer checks the benchmark's snapshot before each stage. It checks, before each stage, that the supplied firmware's file still has the hash it was started with. The harness checks its own snapshot, and that the implementation has not changed, before it resumes a trial and before it grades.
+- `result` no longer gives `case`, `case_pin` or `snapshot_sha256`. It gives `client_record`. The dashboard no longer names a case.
+- The verdict record loses `method` and `capabilities_sha256` and becomes `equivalence/2`. The device descriptor loses `kind`, names its hash `firmware_sha256`, takes no part the tool does not know, and becomes `device-descriptor/2`. This edits grading code, so every grader identity changes and every admission is void, as the Breakdown says.
+- The worker tool `benchmark_package_execute` becomes `package_execute`, the schemas `benchmark-capabilities/2` and `benchmark-ground-evidence/3` become `capabilities/2` and `ground-evidence/3`, and the tool's records of a supplied run move from the run's subfolder `benchmark/` to `supplied/`. The fresh worker's objective names the new tool, so its text changes by that one name.
+- A run started before this Feature on a case cannot be resumed or graded after it. The owner decided on 2026-11-15 that old records need not stay readable.
+
+What stays for later Features, and is not touched here beyond what this Spec lists: the suite code in the service, which keeps its own bookkeeping of cases and pins until Feature 07; `reporting.py` and `result`'s `benchmark_summary`, which use benchmark code until Feature 08; and `benchmark_spawn`, the command line and the MCP tools, until Feature 09.
+
+## Behaviours
+
+In these Behaviours, "the service" is the configurator, reached with `call` of `generative_driver.client`. "The benchmark package" is `generative_driver.benchmark` and everything under `generative_driver.benchmark_support`. A "tool module" is a Python file under `src/interface_runtime/`, or under `src/generative_driver/` outside the benchmark package. "The stage package" is `generative_driver.supplied`. "The stripped copy" is the copy of the tree that the Test command's last step makes, without the benchmark package. Line numbers are those of commit `d6eefa5`.
+
+A "supplied run" is a run whose `start` carried `device`, `firmware` and `mission`. "The hand-written device" is served by a test helper that imports nothing of the benchmark package: a control endpoint that answers the six requests as 06-B14 documents them, and a line device on a local TCP port as its binding. "The hand-written firmware" is a file with the bytes `supplied firmware`, with its SHA-256. "The hand-written mission" is the one of `tests/test_supplied_stages.py`, with the tasks `read_level` and `read_status`. A test of a supplied run through the service may stand in for the workers, as the service's other tests do, and for `interpret_run`.
+
+- **06-B1** — What arrived with `main` takes its integrity helpers from the tool.
+  - `generative_driver.interpret_tasks` and `generative_driver.kit_analysis` take `IntegrityError` and `digest` from `generative_driver.integrity`, and no tool module imports a name from the benchmark package's `integrity`.
+  - Through the service, a run whose inventory task changes a sealed input ends `blocked` with the outcome category `integrity`.
+  - `tests/test_input_paths.py` takes `digest` from `generative_driver.integrity`.
+- **06-B2** — The tests that arrived with `main` and hold a benchmark run unchanged run on what this Run left.
+  - `test_05_B6_benchmark_interpret_workspaces_get_neither_file` stays in `tests/test_contract_authoring.py`. It prepares interpret on the stage package with the hand-written firmware and mission and imports nothing of the benchmark package. The workspace holds none of `CONTRACT.md`, `contract.py` and `contract.json`, the prompt names none of them, `BRIEF.md` and `validate.py` hold the bytes they held, and `TASKS.json` holds exactly what the stage package wrote for that mission at commit `6bbdcae`.
+  - `test_06_B12_a_benchmark_run_prepares_runs_and_checks_interpretation_as_today` and `test_07_B9_an_emulated_benchmark_acquire_worker_gets_its_one_tool_as_before` move, with their names, to `tests/test_benchmark_runs_unchanged.py`, and run on `tq9-v2`, started as 06-B15 says. Between them they assert that the acquire worker's tools are `acquire_firmware_artifact` alone and that `acquire_document` is refused; that the interpret workspace holds no `DOCUMENTS.json`, no `DEVICE_FIRST.md`, no `documents/` and none of the three contract files; that the interpret assignment has no `device_first`; that the run reports no interpretation mode; and that the run has no event whose kind starts with `kit_analysis.` or `task.`.
+  - `test_07_B9_a_benchmark_run_gets_no_new_acquire_tool_and_its_interpreter_no_documents` and `test_07_B9_a_benchmark_run_that_names_a_binding_and_acquires_no_image_never_interprets_device_first` are removed: only the dropped `bme280` could show them, and what a current case can show of them is asserted above.
+  - `tests/test_contract_authoring.py`, `tests/test_input_paths.py` and `tests/test_interpret_tasks.py` import nothing of the benchmark package and name no registered case, and `tool_test_modules` names all three.
+- **06-B3** — `start` takes a run on a supplied device with the firmware and the mission as data.
+  - A `start` with a `goal`, a `device` without a fault (06-B9), a `firmware` (06-B5), a `mission` without a fault (06-B6) and an `evaluation_token_sha256` answers `{'ok': True, 'run_id': ..., 'duplicate': False}`. It may also carry `effects`, `budget_seconds`, `executor`, `executor_config`, `request_id`, `client_record`, `ghidra_home`, `java_home` and `scoped_tool_approval`.
+  - The run's progress holds `device` with the descriptor's `session_id` and `binding` and an empty `receipts` list, and the service leases that binding to the run.
+  - The same `start` again, with the same `request_id`, answers `duplicate` true with the same `run_id`.
+  - The service writes nothing into the run's folder at `start`, and asks the benchmark package for nothing: the test passes in the stripped copy.
+- **06-B4** — `start` refuses what a supplied run may not be. Each refusal is a `ValueError` with the text given, unless it says otherwise.
+  - One or two of `device`, `firmware` and `mission` without the rest: `A supplied run needs a device, a firmware and a mission together; this start lacks ` and the missing names in that order, joined by `, `.
+  - No `evaluation_token_sha256`, or one that is not 64 lowercase hex characters: `A run on a supplied device requires evaluation_token_sha256, the sha256 of the client's token`.
+  - A descriptor with a fault: `Invalid device descriptor: ` and the faults joined by `; `.
+  - A firmware with a fault: `Invalid firmware: ` and the faults joined by `; `.
+  - A mission with a fault: `Invalid mission: ` and the faults joined by `; `.
+  - A descriptor whose `firmware_sha256` is not the firmware's `sha256`: an `IntegrityError`, `The supplied device runs another firmware than the one supplied`.
+  - Any of the keys `case`, `case_options`, `case_pin`, `admission` and `public_inputs`: `start takes no ` and the first such key in that order, then `; a client supplies the device, the firmware and the mission`.
+  - A key that names a password, a `renode` key or a `set_root` key in the request: `The configurator takes no password, password file, emulator executable or set root; the client holds them`.
+  - A binding that another run or session holds is refused as it is today.
+- **06-B5** — The firmware is a file the client names with its hash, and the service holds the run to it.
+  - `firmware_errors(firmware)` of `generative_driver.client_interface` gives a firmware's faults as sentences, empty for an object with exactly `path`, an absolute path as text, and `sha256`, 64 lowercase hex characters. The faults are `a firmware has exactly path and sha256`, `path is an absolute path` and `sha256 is 64 lowercase hex characters`.
+  - At `start` the service also refuses a firmware with no file at `path`, as the fault `no file at path`, and one whose bytes do not hash to `sha256`, with an `IntegrityError`, `The supplied firmware's bytes do not hash to its sha256`.
+  - Before each stage of a supplied run the service hashes the file again. If it is gone or hashes differently, the run stops `blocked` with the outcome category `integrity` and a reason that holds `The supplied firmware changed after the run started`, and no worker is assigned.
+  - `resume` of a supplied run whose firmware file is gone or changed is refused with a reason that holds the same sentence.
+- **06-B6** — The tool checks a mission by rules of its own.
+  - `mission_errors(mission)` of `generative_driver.client_interface` gives a mission's faults as sentences, empty for a well-formed one. The service refuses a `start` by the same function.
+  - A mission is an object with `tasks` and `reuse_objective`, optionally `operating_conditions`, and no other key: otherwise `a mission has tasks and reuse_objective, and may have operating_conditions`, alone.
+  - `reuse_objective` is text that is not blank: otherwise `reuse_objective is text that is not blank`.
+  - `operating_conditions`, when present, is a list of 1 to 16 texts that are not blank, each of at most 1000 characters: otherwise `operating_conditions are 1 to 16 texts that are not blank, of at most 1000 characters each`.
+  - `tasks` is an object with at least one task: otherwise `tasks is an object with at least one task`. A task's name matches `[A-Za-z][A-Za-z0-9_]{0,63}`. A task is an object with `meaning`, text that is not blank, `inputs` and `outputs`, both objects, optionally `sampling`, which is `acquire` or `retained`, and no other key. Each input is an object whose `type` is `integer`, `number`, `string` or `bytes`. Each output is an object with a `unit` that is null or text that is not empty. An input and an output may hold other keys. A task that breaks one of these gives one fault, `invalid task: ` and its name.
+  - The hand-written mission has no fault. In a benchmark test, the mission that `benchmark.supplied_inputs` gives for each of `tq9-v2`, `sampled-sensor-v1`, `parameter-store-v1` and `zephyr-modbus-v1` has none.
+- **06-B7** — A supplied run's stages run on the stage package, from what the client supplied.
+  - Through the service, on the hand-written device: the service calls the stage package's `prepare_stage` and `observe_stage` with the `firmware` and the `mission` of the `start`, for every stage it prepares and checks.
+  - The acquire stage hands its worker the supplied firmware's bytes, and the interpret worker's `TASKS.json` holds the mission's tasks.
+  - The stage options hold `ghidra_home` and `java_home` from the `start`'s keys of those names, `configured_effects` with the run's effects, and `device` with the session, the binding, and the descriptor's `instrument` and `development_conditions` when it has them. They hold no `scenario_id`, no `case_seed` and no `_execution_run_dir`.
+  - The service runs a supplied run's kit tools as it ran a case run's: in its own process, without the limits of a run on a bound device.
+  - All of this passes in the stripped copy.
+- **06-B8** — The service knows no case outside its suite code.
+  - `generative_driver.configurator` has no `_supplied_inputs`, `_expected_pin`, `_provided_device`, `_v2`, `_emulated`, `_observed_case` and no `_verify_snapshot`.
+  - In the source of `configurator.py`, no function reads the keys `case`, `case_options`, `_case_pin`, `_snapshot_sha256` or `_execution_run_dir` of a run's spec, except a function whose name contains `suite` or `child`, and `_assistive`.
+  - In `configurator.py`, the imports of the benchmark package that remain are: those inside a function whose name contains `suite` or `child`; `_assistive`'s; the suite store's in `__init__`; `trial_store.bench_home` in `_replay_config`; and in `call`, the two of `benchmark_spawn` and `evidence.public_v2_report` for `result`'s `benchmark_summary`. No other function imports it. `device_access.py` reads no pin.
+- **06-B9** — The device descriptor is in the tool's terms, as `device-descriptor/2`.
+  - `device_errors(device)` gives no fault for an object with `schema` `device-descriptor/2`, `control` whose `endpoint_file` is text that is not empty, `session_id` as text that is not empty, `binding` as an object that is not empty, and `firmware_sha256` as 64 lowercase hex characters.
+  - It may also hold `instrument`, an object with exactly `units`, an object, and `development_conditions`, an object whose `conditions` is a list of at least one object, each with an `id` that is text, not empty and unlike the others. The catalog and its entries may hold other keys.
+  - Any other part is a fault, `a device-descriptor/2 has no part named ` and the name. So `kind`, `image_sha256`, `provider_id` and `time_policy` are faults.
+  - A descriptor of another schema gives the one fault `not a device-descriptor/2`. The other faults are `no control endpoint file`, `no session_id`, `no binding`, `no firmware_sha256`, `instrument is an object with exactly units` and `development_conditions holds a list of conditions with distinct ids`.
+  - A device offers readings as it does today: with no `instrument`, or with `units` that name some.
+  - The service replaces a failed device for a model fault on any supplied run, where today it asks for the kind `provided-emulator`.
+- **06-B10** — A supplied run waits for its client's verdict, and the verdict record is `equivalence/2`.
+  - Through the service, on the hand-written device: a supplied run whose stages are done ends `completed`, with the reason `Frozen driver awaits independent evaluation` and `"equivalence": "pending"` in `progress`. A run without a supplied device gets its self-evidence verdict as today.
+  - `VERDICT_FIELDS` is the twelve names `schema`, `status`, `equivalent`, `basis`, `checks`, `diff`, `passed`, `total`, `mission`, `frozen_artifact_sha256`, `evidence_sha256` and `protocol`. `verdict_errors` requires `schema` `equivalence/2`, and its first sentence is `an equivalence/2 record has exactly the fields ` with the names. The sentence about the schema is `schema equivalence/2, basis evaluator and protocol assistive/1 are required`. Every other rule of `verdict_errors` is as today.
+  - `record_evaluation` with a well-formed record about the run's frozen driver records the run's one final verdict, and `status` gives it as `equivalence`. It asks for no method.
+  - `record_evaluation` on a run started without an `evaluation_token_sha256` is refused with `Only a run started with an evaluation token can record an evaluation`. Its other refusals keep their texts.
+- **06-B11** — A supplied run's device is replaced, resumed on and released by the same rules, without a case.
+  - `attach_device` is refused for a run without a supplied device with `Only a run started on a supplied device can attach one`, for a descriptor with a fault with `Invalid device descriptor: ` and the faults, and for a descriptor whose `firmware_sha256` is not the run's firmware `sha256` with an `IntegrityError`, `The supplied device runs another firmware than the one supplied`. Its other checks and its answer are as today.
+  - `resume` of a stopped supplied run asks the device's `status`, as today, and continues only on a healthy device with the recorded session and binding.
+  - Whenever a supplied run stops, the service sends `release` with the recorded session to the control endpoint. A run without a supplied device sends nothing.
+  - `resume`, `attach_device` and `record_evaluation` on a stored run whose spec names a `case` are refused with `This run was started on a benchmark case by an earlier version; start a new run`.
+- **06-B12** — The replay executor and the emulator approval ask for a supplied device, where they asked for an emulated case.
+  - A `start` with the executor `replay` and no `device` is refused with `The replay executor runs on a supplied device only; this start names none`. With a supplied device, the candidate is checked, copied into the run and checked before every stage as today.
+  - A `start` with `scoped_tool_approval` `emulator` and no `device` is refused with `Emulator approval requires a supplied device`. With a `binding` key it is refused with today's text.
+- **06-B13** — A run carries its client's record, and the service reads none of it.
+  - `start` takes `client_record`, any JSON object of at most 262144 bytes as the service encodes its spec. `result` gives it back, equal, as `client_record`. A run started without one has no `client_record` in `result`.
+  - Anything else is refused with `client_record must be a JSON object of at most 262144 bytes`.
+  - A `start` repeated with the same `request_id` and another `client_record` is refused as a `request_id` used with different inputs.
+  - `result` has no `case`, no `case_pin` and no `snapshot_sha256`, for any run. `status` and `events` are unchanged. The dashboard's run summary has no `case`.
+  - Outside the suite code and `reporting.py`, no tool module reads a key of a client record.
+- **06-B14** — The interface document and module are version 2 and say all of this.
+  - `VERSION` is 2 and the document's title is `# Client interface, version 2`. `CALLS` is unchanged. `__all__` gains `firmware_errors` and `mission_errors`.
+  - The document's `start` table gains `firmware`, `mission` and `client_record`, and says that `device`, `firmware` and `mission` come together and need the token. It gives the mission's rules and the firmware's.
+  - The descriptor's table is that of 06-B9, with `instrument` and `development_conditions`.
+  - The document says what the endpoint file holds: a JSON object with `family`, `AF_UNIX` or `AF_PIPE`, `address`, and `authkey`, the key as hex. It says how the tool speaks to it: a connection of Python's `multiprocessing.connection` with that key, one request per connection, the request as the JSON bytes of an object with `method` and `params`, and the reply as the JSON bytes of `{"ok": true, "result": ...}` or `{"ok": false, "error": ..., "reason": ...}`, of at most 4 MiB.
+  - For each of the six requests it gives the params the tool sends, the parts of the answer the tool reads, and when the tool sends it: `status`, no params, `session_id`, `binding` and `healthy`; `observe`, no params, `session_id`, `values`, `units` and optionally `condition`; `select_condition`, `condition_id` and `expected_session_id`; `set_running`, `running`; `replace`, `expected_session_id`, `evidence_ids`, `dispatch_ids` and `deadline_seconds`, answered by a record with `schema` `emulator-recovery/2`, `old_session_id`, `new_session_id`, `binding`, and `old_owner_stopped` and `initial_state_verified`, both true; `release`, `session_id`.
+  - The verdict table has the twelve fields. The page says that `result` gives `client_record`.
+  - The section `Limits today` and its marked passage are gone, and the page has no marker and no line that says `bench`.
+- **06-B15** — The bench harness starts a benchmark run as a supplied run, and does first what the service did for it.
+  - Before it starts a device, the harness pins the case and admits it, and refuses with the texts the service used: `V2 case requires independently validated passed calibration before a run`; `Calibration admission evidence differs from the public case pin; the bench harness admits an emulated case`; `Case evaluator requires the declared write/actuate effect grants before admission`; `Expected case pin differs from current case inputs`, for a suite child's pin that is not the case's current pin or not the start's; and `scoped_tool_approval supports only a registered emulator profile`. A trial refused so ends with no run, as a refused admission does today.
+  - Before it sends `start`, the harness freezes the case's inputs in its trial folder with `snapshots.snapshot_case`, the trial folder as the target, so the snapshot lies under the trial folder's `benchmark/`.
+  - The `start` it sends has `device`, the `device-descriptor/2` of its provider; `firmware`, the frozen image's path with the pin's hash of it; `mission`, the `tasks`, the `reuse_objective` and any `operating_conditions` of the case's mission; `evaluation_token_sha256`; and `client_record` with exactly `case`, the case's id, `case_pin`, the pin, and `snapshot_sha256`, the snapshot's hash. It has no `case`, `case_options`, `case_pin`, `admission` or `public_inputs`. `ghidra_home` and `java_home` are keys of the `start` itself.
+  - A scripted `tq9-v2` trial run by the harness ends with a graded verdict, as today.
+- **06-B16** — The harness keeps the snapshot where its readers look, and checks it itself.
+  - After `start` answers, the harness copies `execution.json` and `inputs/` from its trial folder's `benchmark/` into the run's folder, under `benchmark/`. A trial that is reattached or resumed copies them if they are not there.
+  - Before the harness resumes a trial, and before it grades, it requires the run folder's snapshot against the `case_pin` and the `snapshot_sha256` of the run's client record, and against its trial folder's own snapshot. Before it resumes it also compares the snapshot's `executed` with the provenance of the installed code. On a difference the trial is not resumed, with the text the service used: `Execution snapshot implementation or runtime environment changed; start a new run`, or `Execution snapshot hash differs from saved run`.
+  - The tool writes nothing under a run's `benchmark/` folder.
+- **06-B17** — What read the case, the pin and the snapshot hash from a run reads them from its client record.
+  - `evaluator.needs_grading`, `evaluator.accepted_driver` and the harness's `reattach` and `resume` take the pin and the hash from `result['client_record']`.
+  - `reporting.report_run` and `suite_reporting` take `case`, `case_pin` and `snapshot_sha256` from the client record. A report of a scripted `tq9-v2` run holds what it held before this Feature, apart from the two fields the verdict record lost.
+  - `benchmark.py`'s comparison of reports reads what it read.
+- **06-B18** — The grader's verdict record is the tool's `equivalence/2`.
+  - `evaluator.record`, `evaluator.unscored` and `evaluator.final_record` give a record with exactly the twelve fields less `evidence_sha256`, and `schema` `equivalence/2`. They take no method and no capability hash.
+  - `evidence.EQUIVALENCE` and `evidence.VERDICT_IDENTITY` hold neither `method` nor `capabilities_sha256`.
+  - The hash of the capability mapping the grader used stays in the sealed final evaluation, where it is today. The regrade of sealed evidence passes for a run graded after this Feature.
+  - Every record the harness posts has no fault by `verdict_errors`.
+- **06-B19** — Suites run as today until Feature 07 moves them.
+  - `suites.HARNESS_KEYS` is `device`, `firmware`, `mission`, `evaluation_token_sha256` and `client_record`. The suite's check of a child's identity is otherwise unchanged, on the whole request the harness sends.
+  - The service starts a suite's child as a supplied run: the child's `start` is the request without `case`, `case_pin` and `case_options`, with `ghidra_home` and `java_home` taken out of `case_options` when it holds them. The run keeps the whole request as the intent it was submitted with, so every later check of the child against its slot is unchanged. A child's `executor_config` is taken as complete, as today for a start with a frozen pin.
+  - The suite's check on resume no longer reads a child run's pin or snapshot. It still checks each entry's pin against the current case and the suite's provenance, from the suite's own store.
+  - The suite's experiment record takes each trial's snapshot hash from the child run's client record.
+  - A scripted suite of two `tq9-v2` trials run by the harness completes, and each child's `result` holds a `client_record` with its `case`, `case_pin` and `snapshot_sha256`.
+- **06-B20** — The fresh worker's package tool is `package_execute`.
+  - The reuse stage assigns the tool `package_execute`, and its objective says `Use package_execute for each operation.` Nothing else in the objective changes.
+  - The service offers, dispatches and records the tool under that name. Its description and schema are those of today's tool.
+  - Outside the dropped modules `cases.py` and `physical.py`, no file under `src/` holds `benchmark_package_execute`.
+- **06-B21** — The capability mapping's schema is `capabilities/2` and the ground evidence's is `ground-evidence/3`.
+  - The capability rules accept a mapping with `schema` `capabilities/2` and refuse one with `benchmark-capabilities/2`. The tool's `supplied/capabilities.py` and the grader's `benchmark_support/capabilities.py` still hold the same bytes.
+  - The worker texts of probe name `capabilities/2`. The ground stage writes `ground-evidence/3`.
+  - No file under `src/` holds `benchmark-capabilities/2` or `benchmark-ground-evidence/3`.
+- **06-B22** — The tool keeps a supplied run's own records under the run's `supplied/` folder.
+  - `state.json`, `candidate-history/`, `tools/`, `live-observations-<revision>.jsonl`, `package-checks/` and `package-events.jsonl` lie under `supplied/` in the run's folder.
+  - The grader, the scorecard and the reports read those records there. A scripted `tq9-v2` trial's verdict still carries the grader's `mission`, judged from `supplied/package-events.jsonl`.
+- **06-B23** — The documents say what is true after this Feature.
+  - `CONTEXT.md`, `docs/design.md`, `docs/support.md`, `docs/codex.md`, `README.md`, `bench/README.md` and `docs/benchmark-case-authoring.md` do not say that the configurator pins or freezes a case, checks an admission or takes a case to start a run, and do not name `benchmark_package_execute`, `benchmark-capabilities/2`, `benchmark-ground-evidence/3`, `provided-emulator` or `equivalence/1`.
+  - `docs/benchmark-case-authoring.md` says that the bench harness freezes a case's inputs and supplies its firmware and mission.
+- **06-B24** — The deletion list is true after the merge and after this Feature, and the new tests are on the right side.
+  - `tests/test_benchmark_runs.py` and `tests/test_benchmark_runs_unchanged.py` have rows under `Ready to delete`. `tests/test_supplied_runs.py` and the helper `tests/supplied_device.py` are not on the list, and `tool_test_modules` names `test_supplied_runs`.
+  - `docs/adr/0008-run-the-installed-runtime-over-package-data.md` and `docs/adr/0009-device-first-interpretation.md` have one row each under `Kept`. The `Passages` rows count the unmarked lines that say `bench` in each file as they are after this Feature. Every count of files in a row's reason is true.
+  - `docs/client-interface.md` has no marked passage and no row.
+  - The check reports no problem on the repository, and the removal passes: every tool test module passes in the stripped copy.
+
+## Interface and seams
+
+- Tests attach at four seams: the service through `call` or an in-process controller, as its tests do today; the functions of `generative_driver.client_interface`; the harness's `run_trial` and `run_suite` with scripted workers and the benchmark's test devices; and source scans for 06-B8, 06-B20 and 06-B21. No test starts a model, real hardware or a real password.
+- New tests. `tests/test_supplied_runs.py` is a tool test module. It holds the tests of 06-B1's first two points, 06-B3 to 06-B5, 06-B6 without its last sentence, 06-B7 to 06-B14, and the tool-side points of 06-B20 to 06-B22. `tests/supplied_device.py` is its helper for the hand-written device. It works on macOS and Windows, as `harness.DeviceServer` does, and no benchmark test imports it. `tests/test_benchmark_runs.py` is a benchmark test module and holds the rest. Each test's name carries its Behaviour's ID as `test_06_B<n>_`.
+- The kit-fixes Run has tests named `test_06_B1_` to `test_06_B12_` in `tests/test_interpret_tasks.py`, `tests/test_interpret_tasks_service.py` and `tests/test_kit_analysis.py`. They are not this Feature's. The Reviewer checks each Behaviour's tests in this Feature's own two files.
+- The service, `configurator.py`. This list is complete for the paths outside the suite code.
+  - `_start_new` (`:2238-2336`): the case blocks at `:2257-2261`, `:2269-2273`, `:2276-2277`, `:2291-2309` and `:2314-2323` go. The checks of 06-B4, 06-B5, 06-B6 and 06-B13 come in. The replay candidate is copied for a supplied run. The device record is built from the descriptor as `_provided_device` built it.
+  - `validate_scoped_approval` (`:95-117`) and `_replay_config` (`:148-161`) follow 06-B12 and lose their registry imports. `_refuse_secrets` (`:200-208`) checks the request's own keys.
+  - `case_options` (`:128-145`) becomes the stage options of 06-B7. Its name may change; the benchmark no longer calls it.
+  - `_prepare` (`:2819-2836`), `_check` (`:3279-3311`), `_limits` (`:3717`), `_dispatch` (`:3822`, `:3969-3971`, `:3978-3980`), `_resume_device` (`:3102-3130`), `_attach_device` (`:3132-3174`), `_release` (`:2668-2691`), `_finalize` (`:2630`, `:2657`), the recovery in `__init__` (`:1235-1243`), `_run` (`:2590-2592`) and `_record_evaluation` (`:3176-3224`) ask whether the run has a supplied device, where they asked for a case, a pin or an emulated case. `_verify_snapshot` (`:2807-2816`) and its calls at `:1496` and `:2819` give way to the firmware check of 06-B5.
+  - `result` (`:1380-1407`) follows 06-B13. `benchmark_summary` is built for a supplied run, from `supplied/state.json`.
+  - The texts that name the bench harness, an emulated case or a provided device on these paths change as the Behaviours give them. `Invalid provided device descriptor: ` becomes `Invalid device descriptor: `. A text on these paths that the Behaviours do not give keeps its words, with `supplied device` for `provided device` and `client` for `bench harness`, and the build report lists each.
+  - `device_access.py:330` and `:353`, `device_recovery.py:11` and `:152`, and `dashboard.py:47` follow 06-B8, 06-B9, 06-B13 and 06-B20.
+- The suite code in the service changes only as 06-B19 says: `_suite_start_child` (`:1742-1770`), `_verify_suite` (`:2051`, `:2056`) and `_suite_experiment` (`:2200-2201`). The service's start takes the intent to store from the suite code, and the public `start` call cannot set it.
+- The stage package changes only by the renames and one text. `NO_DEVICE` (`supplied/stages.py:547-548`) becomes `This stage needs the supplied device, and this run has none: start the run with a device, a firmware and a mission`. Every other worker text keeps its words, the words about an emulator among them.
+- The tool's other modules. `client_interface.py` and `device_client.py` follow 06-B5, 06-B6, 06-B9 and 06-B10. `reporting.py` follows 06-B17 and 06-B22 and keeps its benchmark imports until Feature 08.
+- The benchmark package.
+  - `harness.py`: `admit` returns the pin; `run_trial` (`:490-583`), `reattach` (`:844-920`) and `resume` (`:934-1008`) follow 06-B15 to 06-B17; `DeviceServer.descriptor` (`:112-115`) gives the `device-descriptor/2` from its provider's own descriptor, whose form in `device_provider.py` does not change.
+  - `benchmark.supplied_inputs` and the adapters stay, and the harness calls them with its trial folder. The scenario refusal stays there.
+  - `suites.py`: `HARNESS_KEYS`, and its own check of the emulator approval where it called `configurator.validate_scoped_approval` with a case. `generated_trials.py` supplies a set device the same way, from its `public-inputs` folder.
+  - Grading code is edited where 06-B17, 06-B18, 06-B21 and 06-B22 need it: `evaluator.py`, `evidence.py`, `capabilities.py`, `mcp_reuse.py`, and readers of the run's records. `snapshots.py` and `case_assets.py` do not change. `grader_closure()` names the same 34 modules. The boundary test of grading code keeps passing.
+  - The dropped modules `cases.py`, `physical.py`, `recorded_grading.py` and `tq9_legacy.py` are not edited.
+- Rules for existing tests.
+  - A test that started a case run through the service starts a supplied run as the harness does, through one shared helper of the benchmark's tests. The helper pins the case, freezes it, builds the descriptor, the firmware, the mission and the client record, and can copy the snapshot into the run's folder. A test keeps its name and its assertions.
+  - A test of a refusal that moved to the harness asks the harness. A test of the service's snapshot check asks the harness's check of 06-B16, or the service's firmware check of 06-B5 where that is what it showed. A test that a resumed run uses the captured firmware after the installed case changed keeps showing that.
+  - A tool test that stood a stored run in for a benchmark run by a `case` in its spec stands it in for a supplied run, by its `device`, `firmware` and `mission`. `tests/test_service_log.py:210-230`, `:276-290` and `tests/test_tool_process.py:137-150` are the known ones.
+  - `tests/test_client_interface.py` follows version 2. `tests/test_benchmark_client_interface.py:80-87` and `tests/test_benchmark_legacy_cases_dropped.py:342-347` pinned the marked passage and lose those assertions.
+  - A test that names an old schema, field, tool or path follows the rename.
+  - No tool test module starts to import the benchmark package. The build report lists every existing test that changed, moved or went, with the rule that covers it.
+- The Test command takes about 450 seconds against the kit's 540. The build report gives its time.
+
+## Out of scope
+
+- The suite's own bookkeeping of cases, pins and replay candidates in the service, and the suite calls. Feature 07.
+- `reporting.py`'s imports of the benchmark package, `result`'s `benchmark_summary`, the report formats, and where the benchmark's reports find the snapshot. Feature 08. Until then the harness's copy of the snapshot lies in the run's folder.
+- `benchmark_spawn`, the benchmark's command line and the MCP tools. Feature 09.
+- The bench-home rule of the replay executor, and `replay.py`'s `bench` parameter.
+- What a run without a supplied device does with `evaluation_token_sha256`, `inputs`, `interpretation` and `front_end`. A supplied run ignores the last three, as a case run did.
+- The value `emulator` of `scoped_tool_approval`, the receipt's schema `emulator-recovery/2`, and the words about an emulator in the stage package's worker texts.
+- The registration field `grading_method` and `evaluator.method_for`.
+- Reading or resuming a run, a sealed trial or a report made before this Feature.
+- Renumbering. No Feature is added, and no Feature's number changes.
+
+## Deviations

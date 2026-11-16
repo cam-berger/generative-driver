@@ -18,28 +18,13 @@ from .benchmark_support.case_assets import STAGES, case_root
 from .setup import SUPPORTED_EXECUTORS, resolve_executor
 
 
-def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=None):
+def supplied_inputs(case_id, run_dir, options=None):
+    """The firmware and the mission of the registered case `case_id` for the run at `run_dir`, as the tool's stage
+    package takes them: a dict with `firmware` and `mission` and no other key. The configurator asks for them before
+    each stage. This is the one place where a case's name becomes the data its stages run on (Feature 05 of the
+    untangle Run, docs/features/untangle/05-supplied-device-stages.md)."""
     from .benchmark_support.adapters import adapter_for
-    return adapter_for(case_id).prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
-
-
-def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, options=None):
-    """Truth-free stage observation: the checked contract of the configurator's stage loop (artifacts, checks as
-    notes, optional stop). It runs no evaluator, grades nothing and records no stage verdict."""
-    from .benchmark_support.adapters import adapter_for
-    return adapter_for(case_id).observe_stage(case_id, stage, run_dir, workspace, report, accepted, options)
-
-
-def package_call(case_id, run_dir, stage, arguments):
-    """A provided device's package call, checked before anything is dispatched; returns the call to run."""
-    from .benchmark_support.adapters import adapter_for
-    return adapter_for(case_id).package_call(case_id, run_dir, stage, arguments)
-
-
-def record_call(case_id, run_dir, stage, name, arguments, result, before, after, options=None):
-    """Journal one live call on a provided device with the instrument readings around it."""
-    from .benchmark_support.adapters import adapter_for
-    return adapter_for(case_id).record_call(case_id, run_dir, stage, name, arguments, result, before, after, options)
+    return adapter_for(case_id).supplied_inputs(case_id, run_dir, options)
 
 
 def main(argv=None):
@@ -574,8 +559,8 @@ def score_observations(truth, observations):
 
 
 def cleanup(case_id, run_dir, options=None):
-    """No stage adapter owns a device. An emulated case's device belongs to the bench harness, which alone stops it, and
-    a bound device is the operator's: nothing here may stop or forget it, whatever a run state records."""
+    """No case's adapter owns a device. An emulated case's device belongs to the bench harness, which alone stops it,
+    and a bound device is the operator's: nothing here may stop or forget it, whatever a run state records."""
     from .benchmark_support.adapters import adapter_for
     adapter_for(case_id)
     raise RuntimeError('The bench harness owns this case\'s device; the configurator holds no ownership to clean up')

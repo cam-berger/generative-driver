@@ -161,7 +161,7 @@ class QuantityRepairTests(GatewayConditionFixture):
         self.assertEqual(difference['sequence'], {'before': 0, 'after': 1})
         self.assertEqual(_outcome('probe', {'status': 'completed'}, checked,
             uncertain=False, repairs=2, max_repairs=2).kind, 'advance')
-        from generative_driver.benchmark import prepare_stage
+        from benchmark_case_stages import prepare_stage
         import shutil
         prepared = prepare_stage('sampled-sensor-v1', 'interpret', self.run_dir, self.root/'repair',
             options={'revision': 1, 'feedback': differences})

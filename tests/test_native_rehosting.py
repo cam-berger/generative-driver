@@ -123,7 +123,8 @@ class NativeIdentityTests(unittest.TestCase):
     def test_acquisition_and_snapshot_supply_the_pinned_native_elf_and_disclose_substitutions(self):
         import os
         from unittest.mock import patch
-        from generative_driver.benchmark import case_root, prepare_stage
+        from benchmark_case_stages import prepare_stage
+        from generative_driver.benchmark import case_root
         from generative_driver.benchmark_support.registry import pin_case
         from generative_driver.benchmark_support.snapshots import snapshot_case
         with tempfile.TemporaryDirectory() as directory:

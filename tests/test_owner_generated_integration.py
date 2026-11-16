@@ -133,11 +133,11 @@ class OwnerGeneratedTests(unittest.TestCase):
         self.assertIs(verdict['mission']['passed'], False)
 
     def test_benchmark_journal_records_complete_generated_arguments_and_proof(self):
-        from generative_driver.benchmark_support.emulated import record_call
+        from generative_driver.supplied.stages import record_call
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary); (root/'benchmark').mkdir()
             (root/'benchmark/state.json').write_text(json.dumps({'package_sha256':'a'*64,'package_attempts':{'reuse':'attempt'}}))
-            record_call('tq9-v2',root,'reuse','benchmark_package_execute',
+            record_call(root,'reuse','benchmark_package_execute',
                 {'operation':'set_level','parameters':{'level':37},'mcp':{'dispatch_id':'12'}},
                 {'ok':True}, {'level':0},{'level':37},{'assignment_id':'reuse-1'})
             row=json.loads((root/'benchmark/package-events.jsonl').read_text())
@@ -145,7 +145,7 @@ class OwnerGeneratedTests(unittest.TestCase):
             self.assertEqual(row['mcp'],{'dispatch_id':'12'})
 
     def test_authored_contract_pair_survives_benchmark_adaptation_and_rejects_projection_mismatch(self):
-        from generative_driver.benchmark_support.emulated import adapt
+        from generative_driver.supplied.stages import adapt
         from interface_runtime.contracts import from_model, compile_contract
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary); candidate=root/'candidate';candidate.mkdir()

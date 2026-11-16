@@ -1,12 +1,13 @@
 """Public task semantics and sealed continuity for a candidate's own revisions, and the reader of a run's stage state
 file, which the stage code shares: it moved here when the legacy cases that held it were dropped (Feature 04 of the
-untangle Run, docs/features/untangle/04-legacy-cases.md)."""
+untangle Run, docs/features/untangle/04-legacy-cases.md). The tasks are those of the mission the stage code is given
+(Feature 05, docs/features/untangle/05-supplied-device-stages.md)."""
 import hashlib
 import json
 import tempfile
 from pathlib import Path
 
-from .case_assets import write_json as _write
+from ._files import write_json as _write
 
 
 def _state(run_dir):
@@ -15,9 +16,9 @@ def _state(run_dir):
     return path, json.loads(path.read_text()) if path.exists() else {}
 
 
-def task_contract(case_id, effects, run_dir=None):
-    from .missions import load_mission
-    mission = load_mission(case_id, run_dir)
+def task_contract(mission, effects):
+    """The `TASKS.json` a worker gets: the tasks of `mission`, the granted `effects` and how to read them, with the
+    mission's operating conditions when it has some."""
     contract = {'schema': 'candidate-task-contract/1', 'tasks': mission['tasks'],
             'effect_grants': list(effects),
             'instructions': 'These are requested observable behaviors, not protocol facts or hidden test values. '

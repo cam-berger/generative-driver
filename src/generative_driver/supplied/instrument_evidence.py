@@ -1,13 +1,16 @@
-"""Repair evidence from public task quantities and the configurator's live instrument readings.
+"""Repair evidence from the quantities a supplied mission states and the configurator's live instrument readings.
 
-No evaluator contracts, final vectors, source coordinates or worker discrepancy claims are read here.
+A task of the mission may state how it samples, and an output may name the instrument reading it is held to. Those
+keys of the mission decide what is compared, never the name of a case (Feature 05 of the untangle Run,
+docs/features/untangle/05-supplied-device-stages.md). No evaluator contracts, final vectors, source coordinates or
+worker discrepancy claims are read here.
 """
 import hashlib
 import json
 import math
 from pathlib import Path
 
-from .candidate_context import task_contract
+from ..integrity import IntegrityError, digest
 from .capabilities import bind_task
 
 
@@ -18,15 +21,19 @@ def _number(value):
         return False
 
 
-def discrepancies(case_id, assignment, events):
-    """Compare successful assigned-model calls with paired readings, through a checked capability mapping.
+def discrepancies(mission, assignment, events):
+    """The differences between the successful assigned-model calls among `events` and the instrument readings paired
+    with them, through the assignment's checked capability mapping: entries for the device diff, or `[]`.
 
-    The sensor's mapping identifies the promised quantity, never its expected value. A batch probe has only one
-    after-reading, so only its last result can be compared. Missing or ambiguous evidence supplies no repair claim.
+    Only the tasks of `mission` that state their `sampling` are compared, and of their outputs only those that name an
+    `instrument`. A mission with no such task gives `[]`, and nothing of the assignment is read for it. The mapping
+    identifies the promised quantity, never its expected value. A batch probe has only one after-reading, so only its
+    last result can be compared. Missing or ambiguous evidence supplies no repair claim.
     """
-    from ..configurator import IntegrityError, digest, _ran_assigned_model
+    from ..configurator import _ran_assigned_model
     stage = assignment.get('stage')
-    if case_id != 'sampled-sensor-v1' or stage not in ('probe', 'ground'):
+    tasks = {name: task for name, task in mission['tasks'].items() if 'sampling' in task}
+    if not tasks or stage not in ('probe', 'ground'):
         return []
     workspace = Path(assignment['workspace']).resolve()
     path = workspace/('capabilities.json' if stage == 'probe' else 'ground-evidence/capabilities.json')
@@ -56,7 +63,6 @@ def discrepancies(case_id, assignment, events):
                 models[expected] = json.loads(model.read_bytes())
             except (ValueError, UnicodeError):
                 continue  # The existing model-contract diff handles an invalid model.
-    tasks = task_contract(case_id, [])['tasks']
     diff = []
     for event in events:
         result = event.get('result') or {}
@@ -98,6 +104,8 @@ def discrepancies(case_id, assignment, events):
                     'no new acquisition' if first == last else 'retained read acquired a new sample'})
                 continue
             for quantity, required in contract['outputs'].items():
+                if 'instrument' not in required:
+                    continue
                 observation = required['instrument']
                 reference = after.get(observation)
                 if not _number(reference) or after.get('units', {}).get(observation) != required['unit']:

@@ -192,9 +192,14 @@ class GatewayConditionTests(GatewayConditionFixture):
         self.assertEqual(self.sensor.stimuli, [])
 
     def test_reuse_and_other_cases_have_no_condition_argument_or_control(self):
-        for stage, case_id in [('reuse', 'sampled-sensor-v1'), ('probe', 'tq9-v2')]:
+        # The device descriptor's catalog decides, not the case's name: reuse gets no conditions from a sensor's
+        # catalog, and a probe of another case runs on a descriptor that carries none.
+        sensor = self.spec['device']
+        without_catalog = {key: value for key, value in sensor.items() if key != 'development_conditions'}
+        for stage, case_id, device in [('reuse', 'sampled-sensor-v1', sensor), ('probe', 'tq9-v2', without_catalog)]:
             self.assignment['stage'] = stage
             self.spec['_case_pin']['case_id'] = case_id
+            self.spec['device'] = device
             with self.controller._db() as db:
                 db.execute('UPDATE runs SET stage=?,spec=? WHERE id=?', (stage, json.dumps(self.spec), 'run-fixture'))
                 db.execute('UPDATE assignments SET stage=?,payload=? WHERE id=?',
@@ -206,16 +211,17 @@ class GatewayConditionTests(GatewayConditionFixture):
         self.assertEqual(self.sensor.stimuli, [])
 
     def test_stage_guidance_carries_catalog_without_equipment_coordinates(self):
-        from unittest.mock import patch
+        from generative_driver import benchmark
         from generative_driver.configurator import case_options
-        from generative_driver.benchmark_support.emulated import prepare_stage
+        from generative_driver.supplied.stages import prepare_stage
         model = self.model_dir/'model.json'
         accepted = [{'stage': 'probe', 'artifacts': [{'path': str(model),
             'sha256': hashlib.sha256(model.read_bytes()).hexdigest()}]}]
         options = case_options({**self.spec, '_device': {'session_id': self.session, 'binding': self.sensor.binding}})
-        with patch('generative_driver.benchmark_support.emulated._inputs', return_value=(self.root, {})):
-            prepared = prepare_stage('sampled-sensor-v1', 'ground', self.root/'run', self.root/'ground',
-                                     accepted=accepted, options=options)
+        firmware = {'path': str(self.root/'firmware.bin'), 'sha256': hashlib.sha256(b'synthetic sensor').hexdigest()}
+        mission = benchmark.supplied_inputs('sampled-sensor-v1', self.root/'run')['mission']
+        prepared = prepare_stage('ground', self.root/'run', self.root/'ground', accepted=accepted, options=options,
+                                 firmware=firmware, mission=mission)
         catalog = json.loads(Path(prepared['context']['development_conditions']).read_text())
         self.assertEqual({c['id']: c['reference']['value'] for c in catalog['conditions']}, PANEL)
         self.assertIn('condition_id', prepared['objective'])

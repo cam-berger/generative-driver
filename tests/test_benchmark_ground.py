@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from generative_driver.benchmark import prepare_stage
+from benchmark_case_stages import prepare_stage
 
 
 class GroundEvidenceTests(unittest.TestCase):

@@ -429,13 +429,14 @@ class HarnessDelegationTests(ProviderFixture):
         return server
 
     def test_the_harness_provides_recovers_and_stops_the_device_from_the_recipe_alone(self):
-        from generative_driver.benchmark_support import emulated, harness
+        from generative_driver.benchmark_support import harness
+        from generative_driver.supplied import stages
         from generative_driver.device_client import DeviceUnavailable, open_device
         from generative_driver.toolkit import call_tool
         with patch('generative_driver.benchmark_support.registry.case_truth', return_value=UnlockedTruth(self.truth, 'a' * 64)) as unlocked:
             self.assertEqual(harness.device_recipe('tq9-v2', unlocked()), RECIPE)
         unlocked.assert_called_once()
-        self.assertFalse(hasattr(emulated, '_session'))
+        self.assertFalse(hasattr(stages, '_session'))
         self.device.start()
         server = self.serve()
         self.assertEqual(len(self.peers), 1)
@@ -487,7 +488,7 @@ class HarnessDelegationTests(ProviderFixture):
 
     def test_package_calls_run_in_the_window_and_carry_instrument_readings(self):
         from generative_driver.benchmark_support.case_assets import write_json as _write
-        from generative_driver.benchmark_support.emulated import package_call
+        from generative_driver.supplied.stages import package_call
         from generative_driver.configurator import digest
         from generative_driver.device_client import open_device
         package = self.root/'package'; package.mkdir(); (package/'toy').write_text('toy')
@@ -500,13 +501,13 @@ class HarnessDelegationTests(ProviderFixture):
             return lambda operation, parameters: running.append(self.peers[0].running) or {'ok': True, 'outputs': {}}
         arguments = {'package_dir': str(package), 'operation': 'measure', 'parameters': {}, 'binding': client.status()['binding'],
                      'allow_effects': []}
-        with patch('generative_driver.benchmark_support.emulated_actions.package_invoker', side_effect=invoker):
-            invoke = package_call('tq9-v2', self.run_dir, 'reuse', arguments)
+        with patch('generative_driver.supplied.package_runner.package_invoker', side_effect=invoker):
+            invoke = package_call(self.run_dir, 'reuse', arguments)
             result = self.controller._device_call(self.run, {'id': 'reuse-attempt', 'stage': 'reuse'},
                                                   'benchmark_package_execute', arguments, client, invoke)
             # Only the unchanged stage-assigned copy may run; anything else is refused before dispatch.
             with self.assertRaisesRegex(ValueError, 'stage-assigned package'):
-                package_call('tq9-v2', self.run_dir, 'reuse', {**arguments, 'package_dir': str(self.root)})
+                package_call(self.run_dir, 'reuse', {**arguments, 'package_dir': str(self.root)})
         self.assertEqual(running, [True]); self.assertFalse(self.peers[0].running)
         self.assertEqual(result['observation']['source'], 'instrument')
         row = json.loads((self.run_dir/'benchmark/package-events.jsonl').read_text())

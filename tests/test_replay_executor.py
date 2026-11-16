@@ -144,7 +144,18 @@ class ReplayExecutionTests(unittest.TestCase):
         self.assertTrue(all(e['connected'] and not e['refused_before_open'] for e in live), live)
         self.assertEqual({(e['result']['before_observation']['source'], e['result']['observation']['source'])
                           for e in live}, {('instrument', 'instrument')})
-        mission = next(c for c in result['accepted_handoffs'][5]['checks'] if c['name'] == 'fresh_worker_mission')
+        # The run records fresh reuse and does not judge it. The grader's judge finds the mission done, from the mapping
+        # the probe handed on and the calls the run recorded for its one reuse assignment.
+        from generative_driver.benchmark_support.case_assets import reuse_mission
+        reused = result['accepted_handoffs'][5]
+        self.assertEqual(reused['checks'], [])
+        mapping = next(Path(a['path']) for a in result['accepted_handoffs'][2]['artifacts']
+                       if a['path'].endswith('capabilities.json'))
+        recorded = self.home / 'runs' / started['run_id'] / 'benchmark' / 'package-events.jsonl'
+        calls = [row for row in map(json.loads, recorded.read_text().splitlines())
+                 if row['assignment_id'] == reused['assignment_id']]
+        self.assertEqual(len(calls), 4)
+        mission = reuse_mission('tq9-v2', calls, json.loads(mapping.read_text()))
         self.assertIs(mission['passed'], True, mission)
         # The run's execution snapshot names the copy it replays, taken into its run directory at start, by the saved
         # candidate's hash.

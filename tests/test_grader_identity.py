@@ -214,7 +214,7 @@ class GraderClosureTests(PackageCopy, unittest.TestCase):
 
     def test_system_change_keeps_identity(self):
         root = self.copy_package(); before = grader_identity(root)['sha256']
-        for name in ('configurator.py', 'toolkit.py', 'benchmark.py', 'benchmark_support/emulated.py',
+        for name in ('configurator.py', 'toolkit.py', 'benchmark.py', 'supplied/stages.py',
                      'benchmark_support/harness.py', 'benchmark_support/reference_calibration.py'):
             path = root / name; path.write_text(path.read_text(encoding='utf-8') + '\n# changed\n', encoding='utf-8')
         self.assertEqual(grader_identity(root)['sha256'], before)

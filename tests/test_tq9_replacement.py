@@ -51,7 +51,7 @@ class Tq9ReplacementTests(unittest.TestCase):
         self.assertEqual(load_mission('tq9-v3')['case_id'], 'tq9-v3')
 
     def test_replacement_interpreter_gets_the_same_public_tq9_tasks(self):
-        from generative_driver.benchmark import prepare_stage
+        from benchmark_case_stages import prepare_stage
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             public_case_fixture(root, 'tq9-v3', version='1', evaluator_version='1',

@@ -47,7 +47,7 @@ class CaseRegistrationTests(unittest.TestCase):
         self.assertEqual(observed['units'], {'reference_temperature': 'degC', 'monitor_sequence': 'count'})
 
     def test_unknown_reuse_case_cannot_inherit_the_tq9_mission(self):
-        from generative_driver.benchmark_support.emulated import _mission
+        from generative_driver.benchmark_support.case_assets import reuse_mission as _mission
         capabilities = {'tasks': {'temperature': {'operation': 'read',
             'outputs': {'temperature': {'output': 'reading'}}}}}
         events = [{'operation': 'read', 'result': {'ok': True, 'outputs': {'reading': 25}},

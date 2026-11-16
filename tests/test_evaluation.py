@@ -1546,7 +1546,7 @@ class PortableModelTests(unittest.TestCase):
         # Catches the probe's adapted model written through the host's newline translation: on Windows each '\n'
         # became '\r\n', and the package that carries those bytes no longer matched the portable reference bytes.
         from generative_driver.benchmark_support.calibration import reference_model_bytes
-        from generative_driver.benchmark_support.evaluate import adapt_model
+        from generative_driver.supplied.evaluate import adapt_model
         from tq9_workflow_fixture import model
         original = model()
         with tempfile.TemporaryDirectory() as temporary, windows_newlines():

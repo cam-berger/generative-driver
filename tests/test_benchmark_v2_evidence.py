@@ -243,7 +243,7 @@ class EvidenceBoundaryTests(unittest.TestCase):
         import hashlib
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.ground import device_evidence
+        from generative_driver.supplied.ground import device_evidence
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             model = root / 'model.json'

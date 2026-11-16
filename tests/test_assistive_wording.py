@@ -45,12 +45,12 @@ class WorkerFacingTextTests(unittest.TestCase):
     def test_worker_facing_text_names_no_evaluator_grade_as_feedback(self):
         from generative_driver.agents import STAGE_BOUNDARY
         from generative_driver.configurator import GROUND_OBJECTIVE
-        from generative_driver.benchmark_support.emulated import INSTRUMENT
+        from generative_driver.supplied.stages import INSTRUMENT
         texts = {'STAGE_BOUNDARY': STAGE_BOUNDARY, 'GROUND_OBJECTIVE': GROUND_OBJECTIVE, 'INSTRUMENT': INSTRUMENT}
         resources = PACKAGE / 'resources/toolchain'
         for path in (*sorted((resources / 'skills').rglob('*.md')), resources / 'tools.json'):
             texts[str(path.relative_to(ROOT))] = path.read_text(encoding='utf-8')
-        for module in ('agents.py', 'benchmark_support/emulated.py', 'benchmark_support/candidate_context.py',
+        for module in ('agents.py', 'supplied/stages.py', 'supplied/candidate_context.py',
                        '_toolchain/interpret.py'):
             texts[module] = (PACKAGE / module).read_text(encoding='utf-8')
         # The configurator writes repair contexts and objectives that workers read; its comments are not read by them.

@@ -1,11 +1,13 @@
-"""The bench wiring of an interpreted model to the emulator binding. Nothing here grades."""
+"""The wiring of an interpreted model to the TCP binding of a supplied device. Nothing here grades. It is part of the
+tool's stage package (Feature 05 of the untangle Run, docs/features/untangle/05-supplied-device-stages.md)."""
 import hashlib
 import json
 from pathlib import Path
 
 
 def adapt_model(original, destination):
-    """Explicit UART-to-TCP bench wiring; preserve inferred serial settings separately."""
+    """The record of the explicit UART-to-TCP wiring of the model at `original`, written into `destination` beside
+    the wired model. The inferred serial settings are kept in the record, apart from the model."""
     original, destination = Path(original), Path(destination)
     model = json.loads(original.read_text(encoding='utf-8'))
     channel = model['channel']

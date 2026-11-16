@@ -113,6 +113,14 @@ def validate_scoped_approval(spec):
         raise ValueError('Emulator tool approval cannot authorize an operator-supplied device binding')
 
 
+def _supplied_inputs(spec, run_dir):
+    """The firmware and the mission of a run's case, as the stage package takes them: `{'firmware', 'mission'}`. A run
+    still names a case, so the benchmark is asked for them here, and nowhere else on the stage path."""
+    from .benchmark import supplied_inputs
+    case = spec['case']
+    return supplied_inputs(case['id'] if isinstance(case, dict) else case, run_dir, case_options(spec))
+
+
 def case_options(spec):
     case=spec.get('case')
     options={**(case.get('options',{}) if isinstance(case,dict) else {}),**spec.get('case_options',{})}
@@ -2765,12 +2773,10 @@ class Controller:
 
     def _prepare(self, spec, stage, run_dir, workspace, accepted):
         self._verify_snapshot(spec, run_dir)
-        case = spec.get('case')
-        if case:
-            from .benchmark import prepare_stage
-            case_id = case['id'] if isinstance(case, dict) else case
-            options = case_options(spec)
-            prepared = prepare_stage(case_id, stage, run_dir, workspace, accepted, options)
+        if spec.get('case'):
+            from .supplied.stages import prepare_stage
+            prepared = prepare_stage(stage, run_dir, workspace, accepted, case_options(spec),
+                                     **_supplied_inputs(spec, run_dir))
             if spec.get('device') and prepared.get('binding') and not prepared.get('skip'):
                 # The stage runs on the provided device as the durable record holds it, and only while it answers.
                 if prepared['binding'] != (spec.get('_device') or {}).get('binding'):
@@ -3115,20 +3121,18 @@ class Controller:
                     'message': 'The device provider is unavailable; nothing was dispatched: ' + lost[1]}}
             return {'ok': False, 'results': [item], 'error': item['error']} if name == 'probe_run' else item
         spec = json.loads(run['spec'])
-        from .benchmark import record_call
-        record_call(spec['_case_pin']['case_id'], self.home / 'runs' / run['id'], assignment['stage'], name, arguments,
-                    result, before, after, {'assignment_id': assignment['id'], 'device': spec.get('device')})
+        from .supplied.stages import record_call
+        record_call(self.home / 'runs' / run['id'], assignment['stage'], name, arguments, result, before, after,
+                    {'assignment_id': assignment['id'], 'device': spec.get('device')})
         if not offers_readings(spec.get('device')):
             return result
         return {**result, 'before_observation': before, **({'observation': after} if after else {})}
 
     def _check(self, spec, stage, run_dir, workspace, report, accepted, assignment):
         if spec.get('case'):
-            # Truth-free observation, for every case: the adapter's case evidence and notes, and for probe and ground the
-            # configurator's own device evidence and diff. No evaluator runs and nothing is graded.
-            from .benchmark import observe_stage
-            case = spec['case']
-            case_id = case['id'] if isinstance(case, dict) else case
+            # Truth-free observation, for every case: the stage package's evidence and notes, and for probe and ground
+            # the configurator's own device evidence and diff. No evaluator runs and nothing is graded.
+            from .supplied.stages import observe_stage
             options = case_options(spec)
             lost = self._device_lost(run_dir.name, assignment) if spec.get('device') else None
             if lost:
@@ -3146,12 +3150,13 @@ class Controller:
                 # The packages it saw emit_package build in this assignment, by the hash it recorded when the tool
                 # returned: the only bytes a benchmark emit may hand on.
                 options['emit_builds'] = _emit_builds(self._finished(run_dir.name, assignment))
-            checked = observe_stage(case_id, stage, run_dir, workspace, report, accepted, options)
+            supplied = _supplied_inputs(spec, run_dir)
+            checked = observe_stage(stage, run_dir, workspace, report, accepted, options, **supplied)
             if checked.get('stop') or not device:
                 return checked
             if spec.get('device'):
-                from .benchmark_support.instrument_evidence import discrepancies
-                device['device_diff'].extend(discrepancies(case_id, assignment, mine))
+                from .supplied.instrument_evidence import discrepancies
+                device['device_diff'].extend(discrepancies(supplied['mission'], assignment, mine))
             checks, notes = [*checked['checks'], *device['checks']], checked.get('notes') or {}
             return {**checked, 'artifacts': list(dict.fromkeys([*checked['artifacts'], *device['artifacts']])),
                     'checks': checks, 'notes': {'checks': checks, 'records': device['records'],
@@ -3660,8 +3665,7 @@ class Controller:
         if method in ('mcp_tool', 'mcp_tools'):
             raise ValueError('No generated MCP gateway assigned')
         conditions = ((spec.get('device') or {}).get('development_conditions') or {}).get('conditions', []) \
-            if (assignment['stage'] in ('probe', 'ground')
-                and (spec.get('_case_pin') or {}).get('case_id') == 'sampled-sensor-v1') else []
+            if assignment['stage'] in ('probe', 'ground') else []
         condition_ids = [condition['id'] for condition in conditions]
         allowed=assignment['allowed_tools']
         contracts = [copy.deepcopy(t) for t in list_tools() if t['name'] in allowed]
@@ -3802,8 +3806,8 @@ class Controller:
             if arguments['binding'] != (progress.get('device') or {}).get('binding'):
                 raise ValueError('Assigned binding differs from the provided device')
             if name == 'benchmark_package_execute':
-                from .benchmark import package_call
-                invoke = package_call(spec['_case_pin']['case_id'], self.home / 'runs' / run['id'], assignment['stage'], arguments)
+                from .supplied.stages import package_call
+                invoke = package_call(self.home / 'runs' / run['id'], assignment['stage'], arguments)
             else:
                 invoke = lambda: call_tool(name, arguments)
             device = open_device(spec['device'])

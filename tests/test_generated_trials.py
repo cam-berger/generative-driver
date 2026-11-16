@@ -1069,7 +1069,7 @@ class SnapshotSourceTests(unittest.TestCase):
 
 class AdapterTests(unittest.TestCase):
     def test_03_B16_adapter_for_reads_the_registration_and_opens_no_file(self):
-        from generative_driver.benchmark_support import adapters, emulated
+        from generative_driver.benchmark_support import adapters
         opened = []
         real = Path.read_bytes
 
@@ -1082,8 +1082,9 @@ class AdapterTests(unittest.TestCase):
             (resources / 'cases/tq9-v2/case.json').write_text('{"a changed": "manifest"}')
             (resources / 'cases/tq9-v2/firmware.bin').unlink()
             opened.clear()
-            self.assertIs(adapters.adapter_for('tq9-v2'), emulated)
-            self.assertIs(adapters.adapter_for('generated'), emulated)
+            adapter = adapters.adapter_for('tq9-v2')
+            self.assertTrue(callable(adapter.supplied_inputs) and callable(adapter.score))
+            self.assertIs(adapters.adapter_for('generated'), adapter)
         self.assertEqual(opened, [])
         with self.assertRaisesRegex(ValueError, 'Unknown benchmark case'):
             adapters.adapter_for('unregistered')
@@ -1335,7 +1336,7 @@ class FreshReuseTests(GeneratedTrialFixture):
                 result = self.row_results(record['suite_id'])[1][0]
                 self.assertEqual(result['equivalence']['equivalent'], True, result['reason'])
                 self.assertEqual(result['equivalence']['mission'], NOT_JUDGED)
-                self.assertIn(NOT_JUDGED, self.checked['reuse']['checks'])
+                self.assertEqual(self.checked['reuse']['checks'], [])
                 # The scorecard's claim agreement treats it as any `passed: None`: neither agreement nor disagreement.
                 claim = trial_metrics(self.home, result['run_id'])['claim']
                 self.assertEqual((claim['mission_passed'], claim['agrees']), (None, None))
@@ -1703,7 +1704,7 @@ class WholeSuiteTests(unittest.TestCase):
 
 class RepairContextTests(unittest.TestCase):
     def test_03_B18_a_repair_context_mentions_readings_only_of_a_device_that_offers_them(self):
-        from generative_driver.benchmark_support.candidate_context import repair_sources
+        from generative_driver.supplied.candidate_context import repair_sources
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
             (root / 'run/benchmark').mkdir(parents=True)
@@ -1761,7 +1762,8 @@ class ReadingsStayTests(SealedTrialFixture):
         self.assertEqual(checked['probe']['validation_scope'], "The worker's mapping, the adapted model and the live "
                          'journal with instrument readings: device evidence, not a grade')
         self.assertEqual(checked['reuse']['validation_scope'],
-                         "The fresh worker's package calls and the instrument readings after them; a note, not a grade")
+                         "The fresh worker's package calls and the instrument readings after them, recorded and not "
+                         'judged')
         live = next(result for name, result in self.results if name == 'interface_execute')
         self.assertEqual(live['before_observation']['source'], 'instrument')
         self.assertEqual(live['observation']['source'], 'instrument')

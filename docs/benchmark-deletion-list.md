@@ -43,6 +43,7 @@ Nothing that stays needs these. The deletion removes them.
 | `tests/test_benchmark_helper_copies.py` | Holds the grader's helpers to the tool's answers. No file that stays imports it. |
 | `tests/test_benchmark_legacy_cases_dropped.py` | Holds the benchmark and this list to the drop of the two legacy cases. No file that stays imports it. |
 | `tests/test_benchmark_run.py` | Tests only the benchmark. No file that stays imports it. |
+| `tests/test_benchmark_supplied_stages.py` | Holds the benchmark and this list to the move of the stage code to the tool. No file that stays imports it. |
 | `tests/test_benchmark_truth.py` | Tests only the benchmark. No file that stays imports it. |
 | `tests/test_generated_device.py` | Tests only the benchmark. No file that stays imports it. |
 | `tests/test_generated_sets.py` | Tests only the benchmark. No file that stays imports it. |
@@ -74,6 +75,7 @@ The tool, its tests or its documents need these today. Deleting one now would br
 | `docs/benchmark-case-authoring.md` | `docs/design.md` links to it | 10 |
 | `docs/benchmark-corpus.md` | `README.md` links to it | 10 |
 | `.scratch/benchmark-lifecycle/` | `MANIFEST.in` puts it in the source archive, because `docs/verification.md` links to it | 10 |
+| `tests/benchmark_case_stages.py` | `tests/test_benchmark_stages.py` and 9 other test files import it | 10 |
 | `tests/benchmark_family_fixtures.py` | `tests/test_benchmark_family_calibration.py` and 6 other test files import it | 10 |
 | `tests/generated_fixtures.py` | `tests/test_generated_family.py` and 5 other test files import it | 10 |
 | `tests/native_benchmark_families.py` | `tests/test_distribution.py` requires it in the source archive | 10 |

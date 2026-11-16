@@ -53,17 +53,17 @@ class ImportBoundaryTests(unittest.TestCase):
 
     def test_the_in_process_device_and_evaluator_paths_are_gone(self):
         from generative_driver import benchmark
-        from generative_driver.benchmark_support import emulated
+        from generative_driver.supplied import stages
         from generative_driver.configurator import Controller
         self.assertIsNone(importlib.util.find_spec('generative_driver.benchmark_support.emulated_recovery'))
         # The evaluator grades after the run, in the harness: its code left the stage adapter.
         self.assertIsNone(importlib.util.find_spec('generative_driver.benchmark_support.emulated_evidence'))
         for name in ('_OWNERS', '_truth', '_session', 'cleanup', 'package_execute', 'worker_tool', 'recover_emulator',
                      'device_recipe', 'reference_execute', 'run_call'):
-            self.assertFalse(hasattr(emulated, name), name)
+            self.assertFalse(hasattr(stages, name), name)
         self.assertFalse(hasattr(benchmark, 'recover_emulator'))
         self.assertFalse(hasattr(Controller, '_evaluator_operation'))
-        for name in ('configurator.py', 'benchmark_support/emulated.py'):
+        for name in ('configurator.py', 'supplied/stages.py'):
             self.assertNotIn('start_device', (SOURCE / name).read_text(encoding='utf-8'), name)
 
 

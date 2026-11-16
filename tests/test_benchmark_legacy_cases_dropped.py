@@ -20,6 +20,8 @@ from deletion_marking import problems
 from test_deletion_marking import LIST, REPO, require_working_tree, stripped_repository, table
 
 SUPPORT = 'src/generative_driver/benchmark_support/'
+# The stage code, which Feature 05 moved from the benchmark's folder to the tool's stage package.
+STAGES = 'src/generative_driver/supplied/stages.py'
 DROPPED_MODULES = ('cases', 'physical', 'recorded_grading', 'tq9_legacy')
 DROPPED_FILES = tuple(name + '.py' for name in DROPPED_MODULES) + ('tq9.enc', 'bme280.enc')
 THIS_FILE = 'tests/test_benchmark_legacy_cases_dropped.py'
@@ -140,10 +142,11 @@ class RegistrationTests(unittest.TestCase):
                 controller.close()
 
     def test_04_B1_the_stage_adapters_are_the_current_one_and_the_smokes(self):
-        from generative_driver.benchmark_support import adapters, emulated, registrations
-        self.assertIs(adapters.adapter_for('tq9-v2'), emulated)
+        from generative_driver.benchmark_support import adapters, registrations
+        adapter = adapters.adapter_for('tq9-v2')
+        self.assertTrue(callable(adapter.supplied_inputs) and callable(adapter.score))
         with self.assertRaisesRegex(ValueError, '^Setup smoke has no agent stages$'):
-            adapters.adapter_for('setup-smoke').prepare_stage('setup-smoke', 'acquire', 'run', 'workspace')
+            adapters.adapter_for('setup-smoke').supplied_inputs('setup-smoke', 'run')
         for key in ('legacy-emulator', 'legacy-physical'):
             # No registered case has such a key any more, so a row with it is registered for as long as this runs.
             row = replace(registrations.registration_for('tq9-v2'), id='with-a-dropped-adapter', adapter_key=key)
@@ -154,10 +157,12 @@ class RegistrationTests(unittest.TestCase):
 
     def test_04_B1_the_benchmark_module_no_longer_has_package_execute(self):
         from generative_driver import benchmark
+        from generative_driver.supplied import stages
         self.assertFalse(hasattr(benchmark, 'package_execute'))
-        # The device tool of every case stays: its package call and the journal of its calls.
+        # The device tool of every case stays, in the tool's stage package: its package call and the journal of its
+        # calls.
         for name in ('prepare_stage', 'observe_stage', 'package_call', 'record_call'):
-            self.assertTrue(callable(getattr(benchmark, name)), name)
+            self.assertTrue(callable(getattr(stages, name)), name)
 
     def test_04_B1_the_truth_command_has_no_default_case_and_requires_one(self):
         from generative_driver import benchmark
@@ -211,7 +216,7 @@ class NothingReachesTheDroppedCasesTests(unittest.TestCase):
 
     def test_04_B3_no_code_that_stays_imports_a_dropped_module_or_names_it_or_an_answer_file(self):
         files = code_that_stays()
-        for file in (SUPPORT + 'emulated.py', SUPPORT + 'harness.py', 'src/generative_driver/configurator.py',
+        for file in (STAGES, SUPPORT + 'harness.py', 'src/generative_driver/configurator.py',
                      'tests/test_benchmark_tq9_v2.py', 'tests/suite_fixtures.py'):
             self.assertIn(file, files)
         for name in DROPPED_FILES[:4]:
@@ -221,9 +226,10 @@ class NothingReachesTheDroppedCasesTests(unittest.TestCase):
         self.assertEqual(len(found), 0, '\n'.join(found))
 
     def test_04_B3_the_stage_code_and_the_harness_keep_no_part_of_the_dropped_cases(self):
-        from generative_driver.benchmark_support import emulated, harness
+        from generative_driver.benchmark_support import harness
         from generative_driver.benchmark_support.truth import UnlockedTruth
-        self.assertFalse(hasattr(emulated, 'RECORDED'), 'emulated.py still names the cases graded from recorded reuse')
+        from generative_driver.supplied import stages
+        self.assertFalse(hasattr(stages, 'RECORDED'), 'stages.py still names the cases graded from recorded reuse')
         self.assertFalse(hasattr(harness, 'legacy_recipe'), 'harness.py still projects the old tq9 recipe')
         # The device recipe is the answer key's own, whatever the case is called.
         recipe = {'observations': {'reading': {'command': 'read', 'width': 32, 'count': 1}}}
@@ -286,8 +292,9 @@ class DeletionListTests(unittest.TestCase):
         for item in EIGHT_ITEMS:
             with self.subTest(item=item):
                 self.assertFalse((copy / item).exists(), 'The stripped copy still holds ' + item)
-        # The removal takes only them out of the two folders: what the tool still uses stays.
-        for path in (SUPPORT + 'emulated.py', SUPPORT + 'harness.py', RESOURCES + 'cases/tq9-v2/case.json',
+        # The removal takes only them out of the two folders: what the tool still uses stays, and so does the stage
+        # code, which is the tool's.
+        for path in (STAGES, SUPPORT + 'harness.py', RESOURCES + 'cases/tq9-v2/case.json',
                      RESOURCES + 'cases/setup-smoke/model.json', RESOURCES + 'groundtruth/tq9-v2.enc'):
             self.assertEqual((copy / path).read_bytes(), (REPO / path).read_bytes(), path)
 

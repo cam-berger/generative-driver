@@ -4,7 +4,7 @@
   "branch": "mdk/untangle",
   "stage": "spec",
   "awaiting": null,
-  "current": "05",
+  "current": "06",
   "features": [
     {
       "id": "01",
@@ -33,8 +33,8 @@
     {
       "id": "05",
       "slug": "supplied-device-stages",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "a9b8b27ed8be332bd75d76dc9077c1f7f6d6e805"
     },
     {
       "id": "06",

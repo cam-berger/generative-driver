@@ -609,13 +609,13 @@ class ReuseBoundaryTests(unittest.TestCase):
         import tempfile,json
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated import observe_stage
-        from generative_driver.benchmark_support.case_assets import write_json as _write
+        from benchmark_case_stages import observe_stage
+        from generative_driver.benchmark_support.case_assets import reuse_mission, write_json as _write
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp);caps=root/'caps.json'
-            _write(caps,{'tasks':{'measure':{'operation':'sample','outputs':{
-                'temperature':{'output':'t'},'sequence':{'output':'n'}}}}})
-            _write(root/'benchmark/state.json',{'package_attempts':{'reuse':'new'},'capabilities_path':str(caps),
+            root=Path(temp)
+            mapping={'tasks':{'measure':{'operation':'sample','outputs':{
+                'temperature':{'output':'t'},'sequence':{'output':'n'}}}}}
+            _write(root/'benchmark/state.json',{'package_attempts':{'reuse':'new'},
                 'package_copies':{'reuse':str(root/'package')}})
             def events(sequence):
                 return [{'actor':'worker','stage':'reuse','attempt_id':'new','revision':0,'operation':'sample',
@@ -626,7 +626,10 @@ class ReuseBoundaryTests(unittest.TestCase):
                     (root/'benchmark/package-events.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events(sequence)))
                     checked=observe_stage('sampled-sensor-v1','reuse',root,root,{'status':'completed'})
                     self.assertNotIn('stop',checked);self.assertNotIn('ok',checked)
-                    self.assertIs(next(c for c in checked['checks'] if c['name']=='fresh_worker_mission')['passed'],passed)
+                    # The reuse stage records the calls and judges nothing. The grader's judge gives the answer from the
+                    # same mapping and the same recorded calls.
+                    self.assertEqual(checked['checks'],[])
+                    self.assertIs(reuse_mission('sampled-sensor-v1',events(sequence),mapping)['passed'],passed)
 
 class StoreReuseTests(unittest.TestCase):
     def test_commit_read_and_abort_require_observed_state_and_bank_isolation(self):
@@ -677,7 +680,7 @@ class InterpretationHelperTests(unittest.TestCase):
     def test_family_preparation_supplies_and_seals_reachable_generic_prescript(self):
         import json,subprocess,sys,tempfile
         from pathlib import Path
-        from generative_driver.benchmark import prepare_stage,observe_stage
+        from benchmark_case_stages import prepare_stage,observe_stage
         from generative_driver.toolkit import resources_root
         packaged=resources_root()/'toolchain/skills/interpret-firmware-binary/SeedCortexM.java'
         for case in ('sampled-sensor-v1','parameter-store-v1'):
@@ -763,7 +766,7 @@ class PublicObservationTests(unittest.TestCase):
         import tempfile,json
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated import package_call
+        from generative_driver.supplied.stages import package_call
         from generative_driver.benchmark_support.device_provider import DeviceProvider
         from generative_driver.benchmark_support.case_assets import write_json as _write
         from generative_driver.configurator import Controller, digest
@@ -786,8 +789,8 @@ class PublicObservationTests(unittest.TestCase):
             # between instrument readings of the selected family.
             controller=Controller(root/'home');self.addCleanup(controller.close)
             arguments={'package_dir':str(package),'operation':'toy','parameters':{},'binding':{'host':'toy'},'allow_effects':[]}
-            with patch('generative_driver.benchmark_support.emulated_actions.package_invoker',return_value=lambda *args:{'ok':True,'outputs':{}}):
-                invoke=package_call('sampled-sensor-v1',run_dir,'reuse',arguments)
+            with patch('generative_driver.supplied.package_runner.package_invoker',return_value=lambda *args:{'ok':True,'outputs':{}}):
+                invoke=package_call(run_dir,'reuse',arguments)
                 result=controller._device_call({'id':'run-fixture','spec':json.dumps({'_case_pin':{'case_id':'sampled-sensor-v1'}})},
                                                {'id':'reuse-attempt','stage':'reuse'},'benchmark_package_execute',arguments,device,invoke)
             self.assertEqual(result['observation']['reference_temperature'],-5)

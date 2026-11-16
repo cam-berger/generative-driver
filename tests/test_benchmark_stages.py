@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from generative_driver.benchmark import observe_stage, prepare_stage
+from benchmark_case_stages import observe_stage, prepare_stage
 
 
 class StagePreparationTests(unittest.TestCase):
@@ -92,14 +92,15 @@ class StageBoundaryTests(unittest.TestCase):
         # harness and the evaluator may.
         from test_device_recovery import FORBIDDEN, imported
         from test_harness import SOURCE
-        for name in ('ground.py', 'emulated.py', 'candidate_context.py'):
-            found = imported(SOURCE / 'benchmark_support' / name)
+        for name in ('ground.py', 'stages.py', 'candidate_context.py'):
+            found = imported(SOURCE / 'supplied' / name)
             with self.subTest(module=name):
                 self.assertFalse({n for n in found if FORBIDDEN & set(n.split('.'))}, found)
 
     def test_the_in_loop_legacy_evaluator_paths_are_gone(self):
         from generative_driver import benchmark, configurator
-        from generative_driver.benchmark_support import evaluate, legacy
+        from generative_driver.benchmark_support import legacy
+        from generative_driver.supplied import evaluate
         from generative_driver.configurator import Controller
         from test_harness import SOURCE
         for owner, names in ((Controller, ('_managed_probe',)), (configurator, ('_adapter_verdict', 'LEGACY_CASES')),

@@ -87,7 +87,7 @@ class RegistryTests(unittest.TestCase):
                 load_definition(path, resource_root=root)
 
     def test_adapter_dispatch_rejects_unknown_case_before_stage_work(self):
-        from generative_driver.benchmark import prepare_stage
+        from benchmark_case_stages import prepare_stage
         with self.assertRaisesRegex(ValueError, 'Unknown benchmark case'):
             prepare_stage('not-installed', 'acquire', '/missing/run', '/missing/worker')
 
@@ -287,13 +287,12 @@ class RegistryTests(unittest.TestCase):
         # anything else is refused before the call exists to dispatch.
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark import package_call
+        from generative_driver.supplied.stages import package_call
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             with self.assertRaisesRegex(ValueError, 'stage-assigned package'):
-                package_call('tq9-v2', root, 'reuse', {'package_dir': str(root / 'unassigned'), 'operation': 'read',
-                                                       'binding': {'host': '127.0.0.1', 'port': 1},
-                                                       'allow_effects': []})
+                package_call(root, 'reuse', {'package_dir': str(root / 'unassigned'), 'operation': 'read',
+                                             'binding': {'host': '127.0.0.1', 'port': 1}, 'allow_effects': []})
 
     def test_v2_effect_defaults_must_be_a_grant_list(self):
         import json

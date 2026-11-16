@@ -16,7 +16,8 @@ class BenchmarkPackageGateTests(unittest.TestCase):
         # A package call on the device a case's bench harness provides: the stage-assigned copy, over the assigned
         # binding with the assigned grants. Read is implicit; write and actuate need their grants, and a refused effect
         # reaches no device.
-        from generative_driver.benchmark import run, package_call
+        from generative_driver.benchmark import run
+        from generative_driver.supplied.stages import package_call
         from generative_driver.configurator import digest
         from generative_driver.toolkit import call_tool
         received = []
@@ -52,8 +53,8 @@ class BenchmarkPackageGateTests(unittest.TestCase):
                 'package_copies': {'reuse': str(package)}, 'package_attempts': {'reuse': 'fixture-attempt'},
                 'package_sha256': digest(package)}))
             def call(operation, grants):
-                return package_call('tq9-v2', run_dir, 'reuse', {'package_dir': str(package), 'operation': operation,
-                                                             'parameters': {}, 'binding': binding, 'allow_effects': grants})()
+                return package_call(run_dir, 'reuse', {'package_dir': str(package), 'operation': operation,
+                                                   'parameters': {}, 'binding': binding, 'allow_effects': grants})()
             for operation in ('measure', 'write', 'actuate'):
                 result = call(operation, ['read', 'write', 'actuate'])
                 self.assertTrue(result['ok'], result)
@@ -67,7 +68,8 @@ class BenchmarkPackageGateTests(unittest.TestCase):
             self.assertEqual(len(received), before)
 
     def test_emit_uses_accepted_bytes_and_requires_matching_current_executable_package(self):
-        from generative_driver.benchmark import run, prepare_stage, observe_stage
+        from benchmark_case_stages import prepare_stage, observe_stage
+        from generative_driver.benchmark import run
         from generative_driver.configurator import digest
         from generative_driver.toolkit import call_tool
         # The configurator's record that an emit_package of the assignment built these package bytes, so the package

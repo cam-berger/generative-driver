@@ -325,11 +325,10 @@ class StartAdmissionTests(unittest.TestCase):
     def test_a_suite_holding_a_password_file_or_the_emulator_executable_is_refused_before_anything_is_stored(self):
         # Catches the configurator freezing and keeping evaluator password file and emulator paths for a suite, whose
         # emulated children the bench harness provides and grades with them; and a suite no harness drives.
-        from suite_fixtures import legacy_manifest
+        from suite_fixtures import scripted_manifest
         secret = self.root / 'private-password-handle'
         (self.root / 'home/config.json').write_text(json.dumps({'executors': {'codex': {'command': ['scripted-runtime']}}}))
-        manifest = legacy_manifest()
-        manifest['entries'] = [{'case': 'tq9-v2', 'scenario': 'original', 'case_seed': 0}]
+        manifest = scripted_manifest()
         token = hashlib.sha256(b'harness token').hexdigest()
         for options in ({'evaluator_password_files': {'tq9-v2': str(secret)}, 'renode': '/opt/renode-handle'},
                         {'renode': '/opt/renode-handle'}, {'Evaluator_Password_File': str(secret)}, {'password': 'plaintext'}):
@@ -390,6 +389,31 @@ class StartAdmissionTests(unittest.TestCase):
         self.assertNotIn('password', spec.lower())
         self.assertNotIn('renode', spec.lower())
         self.assertNotIn(json.loads((self.root / 'endpoint/control.json').read_text())['authkey'], spec)
+
+    def test_emulator_approval_is_explicit_persisted_and_cannot_authorize_physical_runs(self):
+        from test_configurator import wait_stopped
+        image = self.root / 'resources/cases/tq9-v2/firmware.bin'
+        token = hashlib.sha256(b'harness token').hexdigest()
+        params = {'goal': 'Approval contract only', 'case': 'tq9-v2', 'effects': ['write', 'actuate'],
+                  'executor_config': {'command': ['missing-contract-runtime']}}
+        # What the run's bench harness adds: its device, its admission and its token hash.
+        run = self.controller.call('start', {**params, 'admission': {'calibration_evidence_sha256': EVIDENCE},
+                                             'device': Device(self, image, self.root / 'first').server.descriptor,
+                                             'evaluation_token_sha256': token})
+        self.assertIsNone(wait_stopped(self.controller, run).get('scoped_tool_approval'))
+        # The stopped run released its device, so its harness attaches another before the resume.
+        self.controller.call('attach_device', {**run, 'token': 'harness token',
+                                               'device': Device(self, image, self.root / 'second').server.descriptor})
+        self.controller.call('resume', {**run, 'scoped_tool_approval': 'emulator'})
+        self.assertEqual(self.controller.call('result', run).get('scoped_tool_approval'), 'emulator')
+        events = self.controller.call('events', run)['events']
+        self.assertEqual(len([e for e in events if e['kind'] == 'run.authorization']), 1)
+        self.assertEqual(len([e for e in events if e['kind'] == 'operator.response']), 0)
+        with self.assertRaisesRegex(ValueError, 'emulator'):
+            self.controller.call('start', {**params, 'case': 'setup-smoke', 'scoped_tool_approval': 'emulator'})
+        with self.assertRaisesRegex(ValueError, 'binding'):
+            self.controller.call('start', {**params, 'scoped_tool_approval': 'emulator',
+                                           'binding': {'url': 'ftdi://ftdi:232h/1'}})
 
 
 

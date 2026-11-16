@@ -12,14 +12,17 @@ class RepairServiceTests(unittest.TestCase):
     def test_old_gateway_is_invalidated_when_a_model_defect_starts_a_new_revision(self):
         from generative_driver.client import call
         with tempfile.TemporaryDirectory() as home:
-            from suite_fixtures import write_scripted_case_worker
+            from suite_fixtures import provided_device, write_scripted_case_worker
+            from generative_driver.benchmark_support.registry import pin_case
             # The first interpretation is one the emulator binding cannot carry: probe skips, and the configurator's
             # model diff starts a new revision with no device.
             command=write_scripted_case_worker(home,hold_on_repair=True)
             script=Path(command[1])
             try:
-                run=call('start',{'goal':'Scripted revision contract, not a benchmark result','case':'tq9',
-                    'executor_config':{'command':[sys.executable,str(script)]}},home)
+                # The run starts on a device of synthetic peers, as its bench harness would provide one.
+                run=call('start',{'goal':'Scripted revision contract, not a benchmark result','case':'tq9-v2',
+                    'effects':['write','actuate'],'executor_config':{'command':[sys.executable,str(script)]},
+                    **provided_device(self,Path(home)/'fixture',pin_case('tq9-v2','original',0))},home)
                 assignments=[]
                 # Wait for each durable transition, not a total runtime guess
                 # spanning several external workers and their case checks.

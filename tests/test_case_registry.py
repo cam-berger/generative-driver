@@ -38,13 +38,13 @@ class RegistryTests(unittest.TestCase):
             default_effects=['write','actuate'])
 
     def test_legacy_current_version_and_emulator_grant_boundary(self):
-        self.assertEqual(resolve_case('tq9').version, '2')
-        self.assertEqual(resolve_case('tq9').family, 'tq9')
-        self.assertTrue({'setup-smoke', 'tq9', 'bme280'} <= set(case_ids()))
+        self.assertEqual(resolve_case('tq9-v2').version, '5')
+        self.assertEqual(resolve_case('tq9-v2').family, 'tq9')
+        self.assertTrue({'setup-smoke', 'tq9-v2'} <= set(case_ids()))
         with self.assertRaises(ValueError):
-            resolve_case('../tq9')
+            resolve_case('../tq9-v2')
         with self.assertRaises(ValueError):
-            validate_scoped_approval({'case': 'tq9',
+            validate_scoped_approval({'case': 'tq9-v2',
                 'scoped_tool_approval': 'emulator',
                 'binding': {'host': '127.0.0.1', 'port': 1234}})
 
@@ -72,7 +72,7 @@ class RegistryTests(unittest.TestCase):
                 outside.unlink()
         for seed in (True, 1.5, float('nan')):
             with self.subTest(seed=seed), self.assertRaises(ValueError):
-                pin_case('tq9', None, seed)
+                pin_case('tq9-v2', None, seed)
 
     def test_duplicate_manifest_ids_are_rejected(self):
         import tempfile
@@ -117,12 +117,12 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(status, 0)
         rows = json.loads(out.getvalue())
         self.assertIn('tq9-v2', {row['id'] for row in rows})
-        self.assertIn('tq9', {row['id'] for row in rows})
+        self.assertIn('tq9-v3', {row['id'] for row in rows})
 
     def test_legacy_run_rejects_unsupported_scenario_before_owner(self):
         from generative_driver.benchmark import run
         with self.assertRaisesRegex(ValueError, 'scenario'):
-            run('tq9', options={'scenario_id': 'semantic'}, autostart=False)
+            run('tq9-v2', options={'scenario_id': 'semantic'}, autostart=False)
 
     def test_cli_rejects_obsolete_scenario_for_legacy(self):
         import contextlib
@@ -131,7 +131,7 @@ class RegistryTests(unittest.TestCase):
         from generative_driver.benchmark import main
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            status = main(['run', '--case', 'tq9', '--scenario', 'semantic'])
+            status = main(['run', '--case', 'tq9-v2', '--scenario', 'semantic'])
         self.assertEqual(status, 1)
         self.assertIn('scenario', json.loads(out.getvalue())['error'])
 
@@ -195,19 +195,19 @@ class RegistryTests(unittest.TestCase):
     def test_emulator_approval_rejects_operator_binding_before_owner(self):
         from generative_driver.benchmark import run
         with self.assertRaisesRegex(ValueError, 'binding'):
-            run('tq9', options={'scoped_tool_approval': 'emulator',
-                                'binding': {'host': '127.0.0.1', 'port': 1234}}, autostart=False)
+            run('tq9-v2', options={'scoped_tool_approval': 'emulator',
+                                   'binding': {'host': '127.0.0.1', 'port': 1234}}, autostart=False)
 
     def test_emulator_approval_rejects_empty_binding_before_owner(self):
         from generative_driver.benchmark import run
         with self.assertRaisesRegex(ValueError, 'binding'):
-            run('tq9', options={'scoped_tool_approval': 'emulator', 'binding': {}}, autostart=False)
+            run('tq9-v2', options={'scoped_tool_approval': 'emulator', 'binding': {}}, autostart=False)
 
     def test_owner_rejects_present_empty_bindings_in_every_location(self):
         for case, top, case_options in (
-            ('tq9', {'binding': {}}, {}),
-            ('tq9', {}, {'binding': {}}),
-            ({'id': 'tq9', 'options': {'binding': {}}}, {}, {}),
+            ('tq9-v2', {'binding': {}}, {}),
+            ('tq9-v2', {}, {'binding': {}}),
+            ({'id': 'tq9-v2', 'options': {'binding': {}}}, {}, {}),
         ):
             with self.subTest(case=case, top=top, case_options=case_options):
                 with self.assertRaisesRegex(ValueError, 'binding'):
@@ -260,9 +260,9 @@ class RegistryTests(unittest.TestCase):
         from generative_driver.benchmark_support.registry import load_definition
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            path = root / 'tq9' / 'case.json'
+            path = root / 'tq9-v2' / 'case.json'
             path.parent.mkdir()
-            path.write_text('{"schema":"benchmark-case/1","id":"tq9"}')
+            path.write_text('{"schema":"benchmark-case/2","id":"tq9-v2"}')
             with self.assertRaisesRegex(ValueError, 'required'):
                 load_definition(path, resource_root=root)
 
@@ -283,7 +283,7 @@ class RegistryTests(unittest.TestCase):
                     pin_case('tq9-v2', 'original', 0)
 
     def test_extracted_legacy_package_checks_assignment_before_execution(self):
-        # A legacy tq9 package call runs on the device its bench harness provides, and only the stage-assigned copy:
+        # A package call runs on the device the case's bench harness provides, and only the stage-assigned copy:
         # anything else is refused before the call exists to dispatch.
         import tempfile
         from pathlib import Path
@@ -291,8 +291,9 @@ class RegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             with self.assertRaisesRegex(ValueError, 'stage-assigned package'):
-                package_call('tq9', root, 'reuse', {'package_dir': str(root / 'unassigned'), 'operation': 'read',
-                                                    'binding': {'host': '127.0.0.1', 'port': 1}, 'allow_effects': []})
+                package_call('tq9-v2', root, 'reuse', {'package_dir': str(root / 'unassigned'), 'operation': 'read',
+                                                       'binding': {'host': '127.0.0.1', 'port': 1},
+                                                       'allow_effects': []})
 
     def test_v2_effect_defaults_must_be_a_grant_list(self):
         import json
@@ -317,12 +318,8 @@ class RegistryTests(unittest.TestCase):
             for value in (None, [], 'invalid', 3):
                 with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as temp:
                     root = Path(temp)
-                    case = root / 'tq9'
-                    case.mkdir()
-                    manifest = {'schema': 'benchmark-case/1', 'id': 'tq9',
-                                'version': '1', 'evaluator_version': '1', 'execution': 'actual-agent-emulation',
-                                field: value}
-                    path = case / 'case.json'
+                    manifest = {**self._v2_case(root), field: value}
+                    path = root / 'cases' / 'tq9-v2' / 'case.json'
                     path.write_text(json.dumps(manifest))
                     with self.assertRaises(ValueError):
                         load_definition(path, resource_root=root)

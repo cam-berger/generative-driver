@@ -30,7 +30,7 @@ class InterpretationBindingTests(unittest.TestCase):
     def test_repair_does_not_follow_candidate_links_outside_the_workspace(self):
         # Catches turning a candidate symlink into host-copied repair evidence; a link is noted, never followed.
         from tq9_workflow_fixture import model
-        from generative_driver.benchmark_support.cases import _write
+        from generative_driver.benchmark_support.case_assets import write_json as _write
         from generative_driver.configurator import digest
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve(); ws = root/'worker'; ws.mkdir()
@@ -312,7 +312,7 @@ class DiagnosticRepairTests(unittest.TestCase):
 
     def test_ground_discrepancy_claim_is_a_note_and_never_routes_by_itself(self):
         # Catches a worker's own claim, or an evaluator diagnostic, routing the run: only a device diff repairs.
-        from generative_driver.benchmark_support.cases import _write
+        from generative_driver.benchmark_support.case_assets import write_json as _write
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             _write(root/'run/benchmark/state.json', {'diagnostic': {'passed': True}})
@@ -373,7 +373,7 @@ class DiagnosticRepairTests(unittest.TestCase):
         # Reproduces the live repair's wrong copy key and missing unit metadata.
         from tq9_workflow_fixture import model
         from generative_driver.benchmark_support.behavior import bind_task, validate_capabilities
-        from generative_driver.benchmark_support.cases import _write
+        from generative_driver.benchmark_support.case_assets import write_json as _write
         from hashlib import sha256
         candidate = model()
         candidate['operations']['measure']['outputs']['temperature']['unit'] = 'degC'
@@ -414,7 +414,7 @@ class DiagnosticRepairTests(unittest.TestCase):
 
     def test_malformed_or_unreadable_candidate_capabilities_are_notes(self):
         # Catches candidate JSON escaping as a host stop, or an unreadable worker file stopping the run.
-        from generative_driver.benchmark_support.cases import _write
+        from generative_driver.benchmark_support.case_assets import write_json as _write
         from hashlib import sha256
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); ws = root/'worker'; ws.mkdir()

@@ -63,21 +63,16 @@ BENCHMARK_PACKAGE_EXECUTE = {'name':'benchmark_package_execute','description':'E
         'properties':{'package_dir':{'type':'string'},'operation':{'type':'string'},'parameters':{'type':'object'}}}}
 # A benchmark run whose stages are observed without truth completes awaiting the independent grade after the run.
 PENDING = 'Frozen driver awaits independent evaluation'
-# What the start of an emulated run without the device its bench harness provides says: its workers run until probe.
-NO_HARNESS_DEVICE = ('This run has no device its bench harness provides: acquisition and interpretation run, and every '
-                     'device stage from probe on stops for the operator, so it never reaches a verdict. Start it with '
-                     '`benchmark run`, whose bench harness provides the emulator and grades the driver after the run.')
 
 
 def _observed_case(spec):
-    """Whether a run is a benchmark run. Every case's adapter, legacy tq9 and bme280 included, observes its stages
-    without truth; the bench harness grades the frozen driver once, after the run."""
+    """Whether a run is a benchmark run. Every case's adapter observes its stages without truth; the bench harness
+    grades the frozen driver once, after the run."""
     return bool(spec.get('case'))
 
 
 def _emulated(spec):
-    """Whether a benchmark run's device is an emulator the bench harness provides (the v2 cases and legacy tq9); a
-    bme280 run uses the operator's bound device."""
+    """Whether a benchmark run's device is an emulator the bench harness provides, as every registered case's is."""
     return (spec.get('_case_pin') or {}).get('execution') == 'actual-agent-emulation'
 
 
@@ -105,7 +100,7 @@ def validate_scoped_approval(spec):
     if scope!='emulator':
         raise ValueError('Unsupported scoped_tool_approval')
     if case_id is None:
-        raise ValueError('Emulator approval requires a registered benchmark case such as tq9')
+        raise ValueError('Emulator approval requires a registered benchmark case such as tq9-v2')
     from .benchmark_support.registry import case_selection
     definition = case_selection(case_id)
     if definition.execution != 'actual-agent-emulation' or definition.approval_scope != 'emulator':
@@ -2260,7 +2255,7 @@ class Controller:
         if 'device' in spec and not case:
             raise ValueError('A provided device descriptor belongs to an emulated benchmark case')
         encoded = _json(spec)
-        device = note = None
+        device = None
         with self._lock:
             if self._closing:
                 raise ValueError('Configurator is stopping')
@@ -2286,12 +2281,6 @@ class Controller:
                         if required_effects - set(effects):
                             raise ValueError('Case evaluator requires the declared write/actuate effect grants before admission')
                         device = _provided_device(spec, pin)
-                    elif 'device' in spec and pin.get('execution') == 'actual-agent-emulation':
-                        # Legacy tq9 on the emulator its bench harness provides. Started without one, its device stages
-                        # stop for the operator: the configurator never starts an emulator itself.
-                        device = _provided_device(spec, pin)
-                    elif pin.get('execution') == 'actual-agent-emulation':
-                        note = NO_HARNESS_DEVICE
                     elif 'device' in spec:
                         raise ValueError('A provided device descriptor belongs to an emulated benchmark case')
                     elif 'evaluation_token_sha256' in spec and not (isinstance(spec['evaluation_token_sha256'], str) and
@@ -2319,10 +2308,9 @@ class Controller:
                            (run_id, params.get('request_id'), encoded, 'queued', 'acquire', now, now))
                 db.execute('INSERT INTO progress VALUES(?,?)',(run_id,_json({'revision':0,'next_stage':'acquire','repairs':0,
                     'feedback':None,'protocol':PROTOCOL,**({'device':device} if device else {})})))
-                self._event(run_id, 'run.started', {'goal': goal, 'executor': executor, 'budget_seconds': budget,
-                                                    **({'note': note} if note else {})}, db)
+                self._event(run_id, 'run.started', {'goal': goal, 'executor': executor, 'budget_seconds': budget}, db)
             self._spawn(run_id)
-        return {'ok': True, 'run_id': run_id, 'duplicate': False, **({'note': note} if note else {})}
+        return {'ok': True, 'run_id': run_id, 'duplicate': False}
 
     def _workflow_progress(self, run_id, db=None):
         if db is None:
@@ -2977,8 +2965,6 @@ class Controller:
         if progress['next_stage'] not in STAGES:
             return
         if not spec.get('device'):
-            if not _v2(spec):
-                return  # Legacy tq9 started without its bench harness: its device stages stop for the operator again.
             raise ValueError('This emulated run started before the bench harness provided devices; start a new trial')
         try:
             self._device_ready({**spec, '_device': progress.get('device')})
@@ -3862,16 +3848,6 @@ class Controller:
         if device is not None:
             result = self._device_call(run, assignment, name, arguments, device, invoke,
                 condition_id=condition_id, expected_session_id=(progress.get('device') or {}).get('session_id'))
-        elif name == 'benchmark_package_execute':
-            from .benchmark import package_execute
-            case = spec.get('case')
-            if not case:
-                raise ValueError('Benchmark package execution requires an assigned case')
-            options = case_options(spec)
-            options['assignment_id'] = assignment['id']
-            arguments['run_dir'] = str(self.home / 'runs' / run['id'])
-            result = package_execute(case['id'] if isinstance(case,dict) else case,
-                                     stage=assignment['stage'],options=options,**arguments)
         else:
             result = self._kit_tool(call_tool, name, arguments, run_id=run['id'], stage=assignment['stage'],
                                     limits=limits)

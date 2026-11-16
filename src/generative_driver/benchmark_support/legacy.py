@@ -1,6 +1,5 @@
 """Offline regrade of reports recorded under the earlier protocol, whose legacy stages were graded inside the run."""
 import json
-import math
 from pathlib import Path
 
 from ..benchmark import _read, case_root, score_observations
@@ -39,34 +38,7 @@ def score(report, password=None, *, evidence_path=None):
     from .emulator import truth_for_case
     truth = truth_for_case(case_root(), manifest, password)
     observations = data.get('observations', state.get('probe_evaluation', {}).get('observations', {}))
-    if case == 'bme280':
-        grounding = state.get('physical_grounding', {})
-        observations = state.get('physical_final', {}).get('observations', {})
-        reference = state.get('physical_final', {}).get('reference', grounding.get('reference', {})).get('reference', {})
-        if set(reference) != set(truth['max_tolerances']) or any(
-                type(v.get('absolute_tolerance')) not in (int,float) or not 0<v['absolute_tolerance']<=truth['max_tolerances'][k]
-                for k,v in reference.items()):
-            raise ValueError('Recorded physical reference is incomplete or exceeds evaluator uncertainty limits')
-        final=state.get('physical_final', {})
-        measured=final.get('measurement_time')
-        observed_at=final.get('reference', {}).get('observed_at')
-        if (type(measured) not in (int,float) or type(observed_at) not in (int,float)
-                or not math.isfinite(measured) or not math.isfinite(observed_at)
-                or abs(measured-observed_at)>truth['max_reference_age_seconds']):
-            raise ValueError('Recorded final measurement lacks a current independent reference')
-        from .recorded_grading import grade_physical_reference
-        saved_reference=dict(final.get('reference',{}))
-        if evidence_path is not None:
-            # The caller owns this resolution handle; the recorded digest, values
-            # and measurement time remain authoritative after relocation.
-            saved_reference['evidence_path']=str(evidence_path)
-        if (not saved_reference.get('evidence_sha256') or
-                not grade_physical_reference(saved_reference,truth,measured)['ok']):
-            raise ValueError('Recorded final independent reference evidence is missing or changed')
-        contract = {'checks':[{'id':k,'expected':v['value'],'absolute_tolerance':v['absolute_tolerance']} for k,v in reference.items()]}
-        grade = score_observations(contract, observations)
-    else:
-        grade = score_observations(truth, observations) if truth.get('checks') else {'verdict':'unscored','checks':[]}
+    grade = score_observations(truth, observations) if truth.get('checks') else {'verdict':'unscored','checks':[]}
     stages = data.get('stages', state.get('stage_verdicts', {}))
     missing = [s for s in manifest['required_stages']
                if stages.get(s, {}).get('evaluator_status', stages.get(s, {}).get('status')) != 'passed']

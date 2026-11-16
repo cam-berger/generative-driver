@@ -13,7 +13,7 @@ from contextlib import ExitStack
 
 class BenchmarkPackageGateTests(unittest.TestCase):
     def test_package_execute_treats_read_as_implicit_and_preserves_write_and_actuate(self):
-        # A legacy tq9 package call on the device its bench harness provides: the stage-assigned copy, over the assigned
+        # A package call on the device a case's bench harness provides: the stage-assigned copy, over the assigned
         # binding with the assigned grants. Read is implicit; write and actuate need their grants, and a refused effect
         # reaches no device.
         from generative_driver.benchmark import run, package_call
@@ -52,7 +52,7 @@ class BenchmarkPackageGateTests(unittest.TestCase):
                 'package_copies': {'reuse': str(package)}, 'package_attempts': {'reuse': 'fixture-attempt'},
                 'package_sha256': digest(package)}))
             def call(operation, grants):
-                return package_call('tq9', run_dir, 'reuse', {'package_dir': str(package), 'operation': operation,
+                return package_call('tq9-v2', run_dir, 'reuse', {'package_dir': str(package), 'operation': operation,
                                                              'parameters': {}, 'binding': binding, 'allow_effects': grants})()
             for operation in ('measure', 'write', 'actuate'):
                 result = call(operation, ['read', 'write', 'actuate'])
@@ -84,12 +84,12 @@ class BenchmarkPackageGateTests(unittest.TestCase):
             handoffs = [{'stage':'probe','artifacts':[{'path':str(path),
                 'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'kind':'file'} for path in (model, probe)]}]
             ws = root/'worker'
-            prepared = prepare_stage('tq9','emit',root/'run',ws,accepted=handoffs)
+            prepared = prepare_stage('tq9-v2','emit',root/'run',ws,accepted=handoffs)
             self.assertEqual((ws/'model/model.json').read_bytes(), model.read_bytes())
             self.assertEqual((ws/'probe.json').read_bytes(), probe.read_bytes())
             package = ws/'package'
             shutil.copytree(smoke['package'], package)
-            checked = observe_stage('tq9','emit',root/'run',ws,{'status':'completed'},accepted=handoffs,options=built(package))
+            checked = observe_stage('tq9-v2','emit',root/'run',ws,{'status':'completed'},accepted=handoffs,options=built(package))
             self.assertEqual([Path(a).name for a in checked['artifacts']],['package'],checked)
             self.assertEqual([(c['name'],c['passed']) for c in checked['checks']],[('package_integrity_and_replay',True)])
             # A valid, current package for different model bytes (emit_package run on another model) cannot replace
@@ -103,7 +103,7 @@ class BenchmarkPackageGateTests(unittest.TestCase):
             self.assertTrue(result['ok'],result)
             emitted = call_tool('emit_package',{'run_dir':str(root/'other'),'model_dir':str(other),'probe':result['probe']})
             shutil.rmtree(package); shutil.copytree(emitted['package_dir'],package)
-            rejected = observe_stage('tq9','emit',root/'run',ws,{'status':'completed'},accepted=handoffs,options=built(package))
+            rejected = observe_stage('tq9-v2','emit',root/'run',ws,{'status':'completed'},accepted=handoffs,options=built(package))
             self.assertEqual((rejected['artifacts'],rejected['checks'][0]['passed']),([],False),rejected)
             self.assertEqual(len(rejected['checks'][0]['rejected']),1,rejected)
             # Historical runtimes may have valid integrity but cannot satisfy the
@@ -118,6 +118,6 @@ class BenchmarkPackageGateTests(unittest.TestCase):
             integrity = call_tool('emit_check',{'run_dir':str(root/'historical-check'),'package_dir':str(package)})
             self.assertTrue(integrity['ok'],integrity)
             self.assertFalse(integrity['runtime_current'],integrity)
-            rejected = observe_stage('tq9','emit',root/'run',ws,{'status':'completed'},accepted=handoffs,options=built(package))
+            rejected = observe_stage('tq9-v2','emit',root/'run',ws,{'status':'completed'},accepted=handoffs,options=built(package))
             self.assertEqual((rejected['artifacts'],rejected['checks'][0]['passed']),([],False),rejected)
             self.assertEqual(len(rejected['checks'][0]['rejected']),1,rejected)

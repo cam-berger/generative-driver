@@ -42,14 +42,6 @@ def record_call(case_id, run_dir, stage, name, arguments, result, before, after,
     return adapter_for(case_id).record_call(case_id, run_dir, stage, name, arguments, result, before, after, options)
 
 
-def package_execute(case_id, run_dir, stage, package_dir, operation, parameters=None,
-                    binding=None, allow_effects=None, options=None):
-    """A package call on the operator's bound device (bme280), which the configurator dispatches itself."""
-    from .benchmark_support.adapters import adapter_for
-    return adapter_for(case_id).package_execute(case_id, run_dir, stage, package_dir,
-        operation, parameters, binding, allow_effects, options)
-
-
 def main(argv=None):
     from .benchmark_support.registry import case_ids, case_descriptors
     from .benchmark_support.registrations import build_case_ids
@@ -217,7 +209,7 @@ def main(argv=None):
     scoring.add_argument('--evidence', help='V2 sealed evidence, or the saved BME280 independent reference file (digest checked)')
     evaluator = commands.add_parser('truth')
     evaluator.add_argument('action', choices=['unlock','rekey','rebuild','calibrate'])
-    evaluator.add_argument('--case',default='tq9',choices=case_ids())
+    evaluator.add_argument('--case',required=True,choices=case_ids())
     evaluator.add_argument('--password-file')
     evaluator.add_argument('--output',required=True)
     evaluator.add_argument('--new-password-file')

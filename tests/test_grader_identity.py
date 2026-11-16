@@ -303,11 +303,11 @@ class CaseIdentityTests(PackageCopy, unittest.TestCase):
 
     def test_a_case_without_a_native_module_is_graded_by_the_core_alone(self):
         root = self.copy_package()
-        identity = grader_identity(root, case_id='bme280')  # the physical legacy case names no native module
+        identity = grader_identity(root, case_id='setup-smoke')  # the installation smoke names no native module
         self.assertEqual(set(identity['modules']), self.hashed(grader_closure(root, families=())))
         for name in {case.native_module for case in registrations._CASES if case.native_module}:
             self.touch(root / 'benchmark_support' / (name + '.py'))
-        self.assertEqual(grader_identity(root, case_id='bme280')['sha256'], identity['sha256'])
+        self.assertEqual(grader_identity(root, case_id='setup-smoke')['sha256'], identity['sha256'])
 
     def test_a_case_identity_names_its_case_and_holds_only_its_own_entry(self):
         identity = grader_identity(case_id='zephyr-modbus-v1')
@@ -412,7 +412,7 @@ class FamilyRoutingTests(unittest.TestCase):
     def test_only_the_family_kind_cases_have_an_authoring_inventory(self):
         for case_id in ('sampled-sensor-v1', 'parameter-store-v1'):
             self.assertIn('AUTHORING.json', inventory(case_id))
-        for case_id in ('tq9-v2', 'zephyr-modbus-v1', 'bme280', 'unregistered-family'):
+        for case_id in ('tq9-v2', 'zephyr-modbus-v1', 'setup-smoke', 'unregistered-family'):
             with self.subTest(case_id), self.assertRaisesRegex(ValueError, 'Unsupported family'):
                 inventory(case_id)
 

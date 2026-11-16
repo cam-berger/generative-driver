@@ -106,7 +106,7 @@ class ReportTests(unittest.TestCase):
         events = [{"kind": "tool.started", "time": 11, "data": {"stage": "acquire", "name": "import"}},
                   {"kind": "tool.finished", "time": 12.5, "data": {"stage": "acquire", "name": "import", "ok": True}},
                   {"kind": "operator.response", "time": 23, "data": {"message": "Checked installation"}}]
-        report = summarize(result, events, case_manifest={"id": "tq9", "version": "1", "evaluator_version": "1"})
+        report = summarize(result, events, case_manifest={"id": "tq9-v2", "version": "1", "evaluator_version": "1"})
         self.assertEqual(report["elapsed_seconds"], 15)
         self.assertEqual(report["worker_seconds"], 9)
         self.assertEqual(report["stages"]["acquire"]["tool_seconds"], 1.5)
@@ -149,10 +149,10 @@ class ReportTests(unittest.TestCase):
         import shutil
         from unittest.mock import patch
         from generative_driver.benchmark import case_root
-        # Import before patching case_root: the adapter keeps a module-level alias.
-        from generative_driver.benchmark_support import legacy
+        from generative_driver.benchmark_support.registry import pin_case
         from generative_driver.configurator import Controller
         from generative_driver.reporting import report_run
+        from suite_fixtures import provided_device
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             installed = root / 'installation'
@@ -165,8 +165,10 @@ class ReportTests(unittest.TestCase):
                     patch('generative_driver.configurator.execute', scripted):
                 controller = Controller(root / 'home')
                 try:
-                    run = controller.start({'goal': 'report pinned execution', 'case': 'tq9',
-                        'executor_config': {'model': 'original', 'command': ['scripted-codex']}})
+                    run = controller.start({'goal': 'report pinned execution', 'case': 'tq9-v2',
+                        'effects': ['write', 'actuate'],
+                        'executor_config': {'model': 'original', 'command': ['scripted-codex']},
+                        **provided_device(self, root / 'fixture', pin_case('tq9-v2', 'original', 0))})
                     until = time.monotonic() + 5
                     while time.monotonic() < until:
                         status = controller.call('status', run)
@@ -174,7 +176,7 @@ class ReportTests(unittest.TestCase):
                             break
                         time.sleep(.01)
                     saved = json.loads((root / 'home/runs' / run['run_id'] / 'benchmark/execution.json').read_text())
-                    manifest_path = installed / 'cases/tq9/case.json'
+                    manifest_path = installed / 'cases/tq9-v2/case.json'
                     manifest = json.loads(manifest_path.read_text())
                     manifest.update(version='exporter-new', evaluator_version='exporter-new', execution='wrong-exporter-track')
                     manifest_path.write_text(json.dumps(manifest))
@@ -186,13 +188,13 @@ class ReportTests(unittest.TestCase):
                             patch('generative_driver.benchmark_support.grader_identity.grader_identity',
                                   return_value={'sha256': 'exporter-new'}):
                         report = report_run(run['run_id'], home=root / 'home')
-                    self.assertEqual(report['case_version'], '2')
-                    self.assertEqual(report['evaluator_version'], '2')
+                    self.assertEqual(report['case_version'], '5')
+                    self.assertEqual(report['evaluator_version'], '5')
                     self.assertEqual(report['execution'], 'actual-agent-emulation')
                     self.assertEqual(report['snapshot_sha256'], saved['snapshot_sha256'])
                     self.assertEqual(report['toolchain_revision'], saved['executed']['toolchain_revision'])
                     self.assertEqual(report['evaluator_revision'], saved['executed']['evaluator_revision'])
-                    # An assistive legacy run's report is benchmark-report/3: its pin is the snapshot's, public fields only.
+                    # An assistive run's report is benchmark-report/3: its pin is the snapshot's, public fields only.
                     from generative_driver.benchmark_support.evidence import public_pin
                     self.assertEqual((report['schema'], report['protocol']), ('benchmark-report/3', 'assistive/1'))
                     self.assertEqual(report['case_pin'], public_pin(saved['case_pin']))

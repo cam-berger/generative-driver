@@ -10,7 +10,7 @@ class SnapshotTests(unittest.TestCase):
     def test_changed_input_cannot_resume_as_original(self):
         with tempfile.TemporaryDirectory(prefix='bench snapshot ') as temp:
             root = Path(temp)
-            pin = pin_case('tq9', None, 0)
+            pin = pin_case('tq9-v2', None, 0)
             saved = snapshot_case(root, pin, {'toolchain_revision': 'test-fixture'})
             self.assertEqual(saved['case_pin']['case_seed'], 0)
             image = root / 'benchmark' / 'inputs' / 'firmware.bin'
@@ -22,7 +22,7 @@ class SnapshotTests(unittest.TestCase):
         import copy
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            pin = pin_case('tq9', None, 0)
+            pin = pin_case('tq9-v2', None, 0)
             first = snapshot_case(root, pin, {'evaluator_revision': 'a'})
             self.assertEqual(snapshot_case(root, pin, {'evaluator_revision': 'a'}), first)
             for key, value in [('scenario_id', 'changed'), ('case_seed', 1)]:
@@ -36,7 +36,7 @@ class SnapshotTests(unittest.TestCase):
 
     def test_secrets_do_not_enter_snapshot(self):
         with tempfile.TemporaryDirectory() as temp:
-            saved = snapshot_case(Path(temp), pin_case('tq9', None, 0), {
+            saved = snapshot_case(Path(temp), pin_case('tq9-v2', None, 0), {
                 'runtime_configuration': {'model': 'scripted', 'password': 'secret-one',
                     'evaluator_password_file': '/secret-two', 'authkey': 'secret-three'}})
             text = (Path(temp) / 'benchmark/execution.json').read_text()
@@ -64,6 +64,21 @@ class SnapshotTests(unittest.TestCase):
         for field in ('toolchain_revision', 'skills_revision'):
             self.assertNotEqual(after[field], before[field])
         self.assertEqual(after['evaluator_revision'], before['evaluator_revision'])
+
+def case_start(test, root, **fields):
+    """A start request for the current case `tq9-v2` with what its bench harness adds: a device of synthetic peers under
+    `root`, the admission of the public pin and the token hash."""
+    from suite_fixtures import provided_device
+    return {'case': 'tq9-v2', 'effects': ['write', 'actuate'],
+            **provided_device(test, Path(root) / 'fixture', pin_case('tq9-v2', None, 0)), **fields}
+
+
+def attach_device(test, controller, run, root, image=None):
+    """Play the run's bench harness before a resume: the stopped run released its device, so another one is attached."""
+    from suite_fixtures import HARNESS_TOKEN, device_descriptor
+    controller.call('attach_device', {**run, 'token': HARNESS_TOKEN,
+                                      'device': device_descriptor(test, Path(root) / 'fixture', image)})
+
 
 def scripted_runtime(home):
     """A configured runtime for runs whose worker launch these tests replace; the configurator launches no other."""
@@ -99,7 +114,7 @@ class ControllerSnapshotTests(unittest.TestCase):
             try:
                 config = root / 'config.json'
                 config.write_text(json.dumps({'executors': {'codex': {'model': 'original', 'command': ['scripted-codex']}}}))
-                request = {'goal': 'snapshot contract', 'case': 'tq9', 'request_id': 'same-request'}
+                request = case_start(self, root, goal='snapshot contract', request_id='same-request')
                 run = controller.start(request)
                 self.wait_stopped(controller, run)
                 config.write_text('invalid edited configuration')
@@ -129,13 +144,13 @@ class ControllerSnapshotTests(unittest.TestCase):
                 controller = Controller(root)
                 scripted_runtime(root)
                 try:
-                    # The configurator takes no evaluator handle for any case, legacy ones included: the bench harness does.
+                    # The configurator takes no evaluator handle for any case: the bench harness does.
+                    request = case_start(self, root, goal='snapshot contract', executor_config={'model': 'scripted'})
                     with self.assertRaisesRegex(ValueError, 'password'):
-                        controller.start({'goal': 'snapshot contract', 'case': 'tq9', 'executor_config': {'model': 'scripted'},
+                        controller.start({**request,
                                           'case_options': {'evaluator_password_file': '/private/secret-handle'}})
                     self.assertFalse(list((root / 'runs').glob('*')) if (root / 'runs').exists() else [])
-                    run = controller.start({'goal': 'snapshot contract', 'case': 'tq9',
-                        'executor_config': {'model': 'scripted'}})
+                    run = controller.start(request)
                     result = self.wait_stopped(controller, run)
                     self.assertTrue(seen and seen[0][0], result)
                     snapshot, config = seen[0]
@@ -155,8 +170,9 @@ class ControllerSnapshotTests(unittest.TestCase):
             controller = Controller(Path(temp))
             scripted_runtime(Path(temp))
             try:
-                run = controller.start({'goal': 'resume integrity', 'case': 'tq9'})
+                run = controller.start(case_start(self, temp, goal='resume integrity'))
                 before = self.wait_stopped(controller, run)
+                attach_device(self, controller, run, temp)
                 image = Path(temp) / 'runs' / run['run_id'] / 'benchmark/inputs/firmware.bin'
                 image.write_bytes(b'tampered')
                 with self.assertRaisesRegex(ValueError, 'hash'):
@@ -186,7 +202,7 @@ class ControllerSnapshotTests(unittest.TestCase):
                 controller = Controller(root)
                 scripted_runtime(root)
                 try:
-                    run = controller.start({'goal': 'stage integrity', 'case': 'tq9'})
+                    run = controller.start(case_start(self, root, goal='stage integrity'))
                     result = self.wait_stopped(controller, run)
                     self.assertEqual((result['status'], result['outcome_category']), ('blocked', 'integrity'), result)
                     self.assertIn('hash', result['reason'])
@@ -215,11 +231,14 @@ class ControllerSnapshotTests(unittest.TestCase):
                 controller = Controller(root / 'home')
                 scripted_runtime(root / 'home')
                 try:
-                    run = controller.start({'goal': 'use captured firmware', 'case': 'tq9'})
+                    run = controller.start(case_start(self, root, goal='use captured firmware'))
                     self.wait_stopped(controller, run)
-                    image = installed / 'cases/tq9/firmware.bin'
+                    # The device its harness attaches for the resume runs the image the run captured.
+                    attach_device(self, controller, run, root,
+                                  root / 'home/runs' / run['run_id'] / 'benchmark/inputs/firmware.bin')
+                    image = installed / 'cases/tq9-v2/firmware.bin'
                     image.write_bytes(b'new installed firmware')
-                    manifest_path = installed / 'cases/tq9/case.json'
+                    manifest_path = installed / 'cases/tq9-v2/case.json'
                     manifest = json.loads(manifest_path.read_text())
                     manifest['images']['firmware.bin'] = hashlib.sha256(image.read_bytes()).hexdigest()
                     manifest_path.write_text(json.dumps(manifest))
@@ -237,8 +256,9 @@ class ControllerSnapshotTests(unittest.TestCase):
             controller = Controller(Path(temp))
             scripted_runtime(Path(temp))
             try:
-                run = controller.start({'goal': 'implementation identity', 'case': 'tq9'})
+                run = controller.start(case_start(self, temp, goal='implementation identity'))
                 before = self.wait_stopped(controller, run)
+                attach_device(self, controller, run, temp)
                 with patch('generative_driver.benchmark_support.integrity.tree_hash', return_value='changed-installation'):
                     with self.assertRaisesRegex(ValueError, 'implementation'):
                         controller.call('resume', run)
@@ -249,7 +269,7 @@ class ControllerSnapshotTests(unittest.TestCase):
     def test_snapshot_refuses_a_stale_pin_at_initial_capture(self):
         import copy
         with tempfile.TemporaryDirectory() as temp:
-            pin = copy.deepcopy(pin_case('tq9', None, 0))
+            pin = copy.deepcopy(pin_case('tq9-v2', None, 0))
             pin['manifest_sha256'] = '0' * 64
             with self.assertRaisesRegex(ValueError, 'pin'):
                 snapshot_case(Path(temp), pin, {})
@@ -266,12 +286,14 @@ class ControllerSnapshotTests(unittest.TestCase):
             controller = Controller(root)
             scripted_runtime(root)
             try:
-                run = controller.start({'goal': 'legacy fixture', 'case': 'tq9'})
+                run = controller.start(case_start(self, root, goal='legacy fixture'))
                 self.wait_stopped(controller, run)
-                # Model the persisted pre-snapshot schema, retaining actual controller storage.
+                # Model the persisted pre-snapshot schema, retaining actual controller storage. A run of that time
+                # had no device from a bench harness either.
                 with controller._db() as db:
                     spec = json.loads(db.execute('SELECT spec FROM runs WHERE id=?', (run['run_id'],)).fetchone()['spec'])
-                    for key in ('_snapshot_sha256', '_case_pin', '_execution_run_dir', '_submitted_intent'):
+                    for key in ('_snapshot_sha256', '_case_pin', '_execution_run_dir', '_submitted_intent',
+                                'device', 'admission', 'evaluation_token_sha256'):
                         spec.pop(key, None)
                     db.execute('UPDATE runs SET spec=? WHERE id=?', (json.dumps(spec), run['run_id']))
                 benchmark = root / 'runs' / run['run_id'] / 'benchmark'
@@ -317,8 +339,7 @@ class ControllerSnapshotTests(unittest.TestCase):
             controller = Controller(Path(temp))
             scripted_runtime(Path(temp))
             try:
-                request = {'goal': 'typed intent', 'case': 'tq9', 'request_id': 'typed',
-                           'case_options': {'case_seed': 0}}
+                request = case_start(self, temp, goal='typed intent', request_id='typed', case_options={'case_seed': 0})
                 run = controller.start(request)
                 self.wait_stopped(controller, run)
                 with self.assertRaisesRegex(ValueError, 'different inputs'):

@@ -610,7 +610,7 @@ class ReuseBoundaryTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from generative_driver.benchmark_support.emulated import observe_stage
-        from generative_driver.benchmark_support.cases import _write
+        from generative_driver.benchmark_support.case_assets import write_json as _write
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);caps=root/'caps.json'
             _write(caps,{'tasks':{'measure':{'operation':'sample','outputs':{
@@ -765,7 +765,7 @@ class PublicObservationTests(unittest.TestCase):
         from unittest.mock import patch
         from generative_driver.benchmark_support.emulated import package_call
         from generative_driver.benchmark_support.device_provider import DeviceProvider
-        from generative_driver.benchmark_support.cases import _write
+        from generative_driver.benchmark_support.case_assets import write_json as _write
         from generative_driver.configurator import Controller, digest
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp).resolve();package=root/'package';package.mkdir();(package/'toy').write_text('toy')

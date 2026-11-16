@@ -34,7 +34,7 @@ class QuantityRepairTests(GatewayConditionFixture):
         (self.workspace/'capabilities.json').write_text(json.dumps(self.mapping))
         self.assignment['inputs'] = {str(self.model_dir): digest(self.model_dir)}
         self.save_assignment()
-        from generative_driver.benchmark_support.cases import _write
+        from generative_driver.benchmark_support.case_assets import write_json as _write
         _write(self.run_dir/'benchmark/state.json', {'adapted_model_dir': str(self.model_dir),
             'adaptation': {'adapted_model_sha256': digest(self.model_dir/'model.json')}, 'revision': 0})
 

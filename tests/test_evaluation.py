@@ -256,7 +256,7 @@ class RecordEvaluationTests(PendingRunFixture):
                 ('mission verdict as a number', TOKEN, {**good, 'mission': {'name': 'fresh_worker_mission', 'passed': 0}},
                  ValueError, 'Invalid evaluation'),
                 ('another protocol', TOKEN, {**good, 'protocol': 'gated/0'}, ValueError, 'Invalid evaluation'),
-                # Only legacy tq9 and bme280 are graded from their recorded reuse; a v2 case on a fresh emulator.
+                # No registered case is graded from its recorded reuse; a v2 case is graded on a fresh emulator.
                 ('another method', TOKEN, {**good, 'method': 'recorded-reuse'}, ValueError, 'graded by method fresh-final'),
                 ('no record', TOKEN, 'equivalent', ValueError, 'Invalid evaluation')):
             with self.subTest(case=case), self.assertRaisesRegex(error, message):

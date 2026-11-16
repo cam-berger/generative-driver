@@ -50,8 +50,7 @@ class WorkerFacingTextTests(unittest.TestCase):
         resources = PACKAGE / 'resources/toolchain'
         for path in (*sorted((resources / 'skills').rglob('*.md')), resources / 'tools.json'):
             texts[str(path.relative_to(ROOT))] = path.read_text(encoding='utf-8')
-        for module in ('agents.py', 'benchmark_support/emulated.py', 'benchmark_support/cases.py',
-                       'benchmark_support/physical.py', 'benchmark_support/candidate_context.py',
+        for module in ('agents.py', 'benchmark_support/emulated.py', 'benchmark_support/candidate_context.py',
                        '_toolchain/interpret.py'):
             texts[module] = (PACKAGE / module).read_text(encoding='utf-8')
         # The configurator writes repair contexts and objectives that workers read; its comments are not read by them.

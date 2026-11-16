@@ -1620,7 +1620,7 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_fresh_reuse_acknowledgements_do_not_substitute_for_a_reading(self):
         # Public adapter seam: actuator ACK outputs alone do not finish the mission, which is a note, never a stop.
-        from generative_driver.benchmark_support.cases import _write
+        from generative_driver.benchmark_support.case_assets import write_json as _write
         from tq9_workflow_fixture import capabilities
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);caps=root/'caps.json';caps.write_text(json.dumps(capabilities()))
@@ -1829,7 +1829,7 @@ class ObservationTests(unittest.TestCase):
     def test_probe_hands_on_mapping_model_and_journal_and_notes_mapping_errors(self):
         # Structural notes only: the mapping, the adapted model's integrity and the live journal; no diagnostic.
         from generative_driver.benchmark_support import emulated
-        from generative_driver.benchmark_support.cases import _write
+        from generative_driver.benchmark_support.case_assets import write_json as _write
         from generative_driver.benchmark_support.evaluate import adapt_model
         from generative_driver.configurator import IntegrityError
         from unittest.mock import patch
@@ -1863,7 +1863,7 @@ class ObservationTests(unittest.TestCase):
         # Catches the mapping check assuming a valid model: an interpreted model that fails validation still reaches
         # probe when the emulator can carry it, and the worker's mapping of it must stay a note, not a host stop.
         from generative_driver.benchmark_support import emulated
-        from generative_driver.benchmark_support.cases import _write
+        from generative_driver.benchmark_support.case_assets import write_json as _write
         from generative_driver.benchmark_support.evaluate import adapt_model
         from generative_driver.toolkit import call_tool
         from tq9_workflow_fixture import model, capabilities
@@ -1908,7 +1908,7 @@ class ObservationTests(unittest.TestCase):
             package=root/'emitted/package';package.mkdir(parents=True);(package/'manifest.json').write_text('{}')
             accepted=[{'stage':'interpret','artifacts':[{'path':str(source/'0-model.json'),'sha256':digest(source/'0-model.json')}]},
                       {'stage':'emit','artifacts':[{'path':str(package),'sha256':digest(package)}]}]
-            from generative_driver.benchmark_support.cases import _write
+            from generative_driver.benchmark_support.case_assets import write_json as _write
             _write(root/'run/benchmark/state.json',{'package_sha256':digest(package)})
             device={'device':{'session_id':'provided','binding':{'host':'127.0.0.1','port':1}}}
             probe=prepare_stage('tq9-v2','probe',root/'run',root/'probe',accepted,device)
@@ -1930,7 +1930,7 @@ class ObservationTests(unittest.TestCase):
     def test_candidate_files_and_the_reuse_mapping_come_from_one_handoff(self):
         # Catches pairing one revision's replies, notes or mapping with another revision's files or model.
         from generative_driver.benchmark_support import emulated
-        from generative_driver.benchmark_support.cases import _write
+        from generative_driver.benchmark_support.case_assets import write_json as _write
         from generative_driver.configurator import digest
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary).resolve()

@@ -111,5 +111,5 @@ Nothing else in the tool is part of this interface. The operator clears an uncer
 The service accepts a supplied device only for a run that names a registered case. The verdict record's `method` and `capabilities_sha256` and the descriptor's `kind` are due to change in a later version of this interface.
 
 <!-- legacy-benchmark:begin -->
-Today the service takes these from a registered benchmark case: the `start` keys `case`, `case_options` and `admission`, the run's inputs and its mission, the pinned image that `image_sha256` must equal, the effects the case requires, which `effects` must grant, and the grading method that fits the case, which `method` must name. Features 04 and 05 of the [untangle Run](features/untangle/breakdown.md) replace the case with inputs and a mission the client supplies.
+Today the service takes these from a registered benchmark case: the `start` keys `case`, `case_options` and `admission`, the run's inputs and its mission, the pinned image that `image_sha256` must equal, the effects the case requires, which `effects` must grant, and the grading method that fits the case, which `method` must name. Features 05 and 06 of the [untangle Run](features/untangle/breakdown.md) replace the case with inputs and a mission the client supplies.
 <!-- legacy-benchmark:end -->

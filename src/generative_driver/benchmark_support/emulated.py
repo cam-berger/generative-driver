@@ -1,6 +1,5 @@
 """Native benchmark stages, observed without truth. The bench harness provides the emulator and the configurator reaches it
-through its device handle; this adapter starts, holds and stops no device, and unlocks no truth for the stages. Legacy
-tq9 (`cases.py`) shares its stages but interpretation and the probe's task mapping."""
+through its device handle; this adapter starts, holds and stops no device, and unlocks no truth for the stages."""
 import hashlib
 import re
 import shutil
@@ -8,9 +7,10 @@ import tempfile
 import json
 from pathlib import Path
 
-from .cases import _state, _write
+from .candidate_context import _state
 # The evaluator uses these too, so they are defined in a module of its own and imported here under their old names.
-from .case_assets import REUSE_EVENTS, accepted_artifact as _artifact, case_inputs as _inputs, reuse_mission as _mission
+from .case_assets import (accepted_artifact as _artifact, case_inputs as _inputs, reuse_mission as _mission,
+                          write_json as _write)
 from .execution import artifact_name
 from ..device_client import offers_readings
 
@@ -252,12 +252,12 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         _contract_pair(_handoff_with(accepted, ('probe',), 'model.json'), ws/'model')
         if _binding(options) is None:
             return {'blocked': NO_DEVICE}
-        if case_id not in RECORDED:  # The legacy adapter retains its original mapping contract.
-            from .candidate_context import task_contract
-            tasks = ws/'TASKS.json'
-            _write(tasks, task_contract(case_id, options.get('configured_effects', []), run_dir))
-            prepared['inputs'].append(str(tasks))
-            prepared['objective'] += ' Read TASKS.json for the required observable behaviors and any public quantity comparisons.'
+        from .candidate_context import task_contract
+        tasks = ws/'TASKS.json'
+        _write(tasks, task_contract(case_id, options.get('configured_effects', []), run_dir))
+        prepared['inputs'].append(str(tasks))
+        prepared['objective'] += (' Read TASKS.json for the required observable behaviors and any public quantity '
+                                  'comparisons.')
         return _development_conditions(case_id,
             {**prepared, 'allowed_tools': ['interface_execute', 'probe_run', 'probe_diff'],
              'binding': _binding(options)}, ws, options)
@@ -319,9 +319,7 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
         state['capabilities_path'] = str(capabilities[0]) if capabilities else None
         _write(path, state)
         from .missions import load_mission
-        from .registrations import registration_for
-        registration = registration_for(case_id)
-        public_mission = load_mission(registration.mission_case or case_id, run_dir)
+        public_mission = load_mission(case_id, run_dir)
         mission = public_mission['reuse_objective']
         if 'operating_conditions' in public_mission:
             mission += ('\nProvided operating conditions (public facts):\n'
@@ -367,18 +365,9 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
 
 
 def _mapping_errors(case_id, mapping, model, run_dir=None):
-    """The structural check of a probe's capability mapping against its model: {ok, errors}. Legacy tq9 maps its
-    tasks in the legacy form (`cases.mapping_errors`)."""
-    if case_id == 'tq9':
-        from .cases import mapping_errors
-        errors = mapping_errors(mapping, model)
-        return {'ok': not errors, 'errors': errors}
+    """The structural check of a probe's capability mapping against its model: {ok, errors}."""
     from .behavior import validate_capabilities
     return validate_capabilities(mapping, model, _required_tasks(case_id, run_dir))
-
-
-# Cases graded after the run from the fresh reuse the run recorded: their reuse hands on that record.
-RECORDED = ('tq9',)
 
 
 def _host(result):
@@ -569,14 +558,6 @@ def observe_stage(case_id, stage, run_dir, workspace, report, accepted=None, opt
             mission = _mission(case_id, events, mapping)
         package = Path(state.get('package_copies', {}).get(stage) or ws/'missing')
         handed = [package] if package.is_dir() else []
-        if case_id in RECORDED:
-            # This assignment's package calls with the instrument readings after them, as the configurator recorded them:
-            # the evaluator grades the frozen driver from this record after the run.
-            record = Path(run_dir)/'benchmark/reuse'/str(options.get('assignment_id'))/REUSE_EVENTS
-            record.parent.mkdir(parents=True, exist_ok=True)
-            record.write_text(''.join(json.dumps(e, allow_nan=False) + '\n' for e in events
-                                      if e.get('assignment_id') == options.get('assignment_id')), encoding='utf-8')
-            handed.append(record)
         return _observed(handed, [mission], scope='The fresh worker\'s package calls'
                          + (' and the instrument readings after them' if readings else '') + '; a note, not a grade')
     raise ValueError('Native stage is not implemented: ' + stage)

@@ -406,7 +406,7 @@ class RowTests(unittest.TestCase):
         validate_scoped_approval({'case': 'generated', 'scoped_tool_approval': 'emulator'})
 
     def test_03_B19_a_handmade_row_still_reads_its_changed_case(self):
-        for case in ('tq9', 'tq9-v2'):
+        for case in ('tq9-v2', 'sampled-sensor-v1'):
             with self.subTest(case), patch.object(registry, 'resolve_case', side_effect=ValueError('resolved')):
                 with self.assertRaisesRegex(ValueError, 'resolved'):
                     registry.case_selection(case)
@@ -1318,8 +1318,8 @@ class FreshReuseTests(GeneratedTrialFixture):
         with judged:
             found = case_assets.reuse_mission('tq9-v2', [], {})
         self.assertEqual(found['passed'], False)
-        self.assertEqual(case_assets.reuse_mission('bme280', [], {})['passed'], None)
-        self.assertNotEqual(case_assets.reuse_mission('bme280', [], {})['reason'], NOT_JUDGED['reason'])
+        self.assertEqual(case_assets.reuse_mission('setup-smoke', [], {})['passed'], None)
+        self.assertNotEqual(case_assets.reuse_mission('setup-smoke', [], {})['reason'], NOT_JUDGED['reason'])
         run = self.root / 'no-run'
         run.mkdir()
         self.assertEqual(evaluator.reuse_mission('tq9-v2', run, [], None, None)['reason'],

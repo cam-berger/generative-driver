@@ -4,12 +4,12 @@ It holds what the configurator never does. The evaluator password file path arri
 a record it writes; it reads that file once into an `EvaluatorPassword`, before it first contacts the configurator, and
 unlocks a trial's answer key once, at admission, to project the device recipe (for a bound device, to authenticate the
 password) and to hand to the grader after the run; and it owns an emulated case's device. In order, it: admits the case
-(`admit`); for an emulated case (v2, or legacy tq9 from the legacy recipe) starts the emulator through a
+(`admit`); for an emulated case starts the emulator through a
 recipe-only provider and serves the configurator a narrow control endpoint (status, observe, set_running, replace,
 release; stop and shutdown are owner-only); starts the configurator run with the device descriptor, the admission
 evidence hash and the sha256 of a random evaluation token it keeps sealed under the password; waits as a reconnecting
-client; stops the device once the run is terminal; grades a completed run's frozen driver once, on a fresh emulator or
-from the fresh reuse the run recorded; seals the run evidence and posts the verdict with `record_evaluation`. A bme280
+client; stops the device once the run is terminal; grades a completed run's frozen driver once, on a fresh emulator;
+seals the run evidence and posts the verdict with `record_evaluation`. A bme280
 trial runs on the operator's bound device, which the harness never touches: it waits while the operator answers the run
 and resumes it, until the run completes, and a trial whose harness stopped waiting first is graded by `resume` once the
 run has completed. Its state lives under a bench home beside the configurator home, never inside it.
@@ -188,19 +188,10 @@ class DeviceServer:
             shutil.rmtree(self._sockets, ignore_errors=True)
 
 
-def legacy_recipe(truth):
-    """The legacy tq9 emulator's recipe, projected from the legacy truth: its sensor model and Renode setup, and the PWM
-    timer's compare and reload registers read through the monitor. Nothing else of the truth goes with it."""
-    read = lambda address: {'command': 'sysbus ReadDoubleWord 0x{:08x}'.format(int(address)), 'width': 32, 'count': 1}
-    return {'source_files': {'sensor.cs': truth['source_files']['BME280Bench.cs'], 'device.resc': truth['renode_setup']},
-            'includes': ['sensor.cs'], 'setup': 'device.resc',
-            'observations': {'compare': read(truth['monitor']['pwm_compare']), 'reload': read(truth['monitor']['pwm_reload'])}}
-
-
 def device_recipe(case_id, truth):
     """The device definition of the `UnlockedTruth` `truth` and nothing else: everything but the recipe is dropped
     before a provider sees it."""
-    return legacy_recipe(truth.payload) if case_id == 'tq9' else truth.payload['recipe']
+    return truth.payload['recipe']
 
 
 def admit(case_id, options, trial_dir, *, password, renode=None, device=None, pin=None):
@@ -285,7 +276,7 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
     is sealed or posted."""
     from ..configurator import IntegrityError
     from ..client_interface import verdict_errors
-    from . import evaluator, recorded_grading
+    from . import evaluator
     from .emulated_actions import OutputMeter
     from .integrity import IntegrityError as GraderIntegrityError
     # Grading code raises the grader's own class and code outside it the configurator's: either is an integrity stop.
@@ -314,22 +305,13 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
     try:
         if pending and graded:
             try:
-                if method == 'recorded-reuse':
-                    # Legacy tq9 and bme280: graded from the fresh reuse the run recorded, outside the grader.
-                    equivalence, content['final'] = recorded_grading.grade(case_id, trial_dir, run_dir, result,
-                                                                          password=password, truth_source=truth_source,
-                                                                          protocol=protocol)
-                else:
-                    equivalence, content['final'] = evaluator.grade(case_id, trial_dir, run_dir, result,
-                                                                    password=password, truth_source=truth_source,
-                                                                    renode=renode, meter=meter)
+                equivalence, content['final'] = evaluator.grade(case_id, trial_dir, run_dir, result,
+                                                                password=password, truth_source=truth_source,
+                                                                renode=renode, meter=meter)
                 content['mission'] = equivalence.get('mission')
             except integrity_stop as error:
                 equivalence, content['error'] = evaluator.unscored('integrity: ' + str(error), frozen, method,
                                                                     protocol=protocol), str(error)
-            except recorded_grading.Unscorable as error:
-                # Recorded evidence that cannot grade the driver for a reason outside it; its message names no truth.
-                equivalence, content['error'] = evaluator.unscored(str(error), frozen, method, protocol=protocol), str(error)
             except Exception as error:
                 # The message stays sealed: it may name what only the evaluator holds.
                 equivalence = evaluator.unscored('evaluator host fault: ' + type(error).__name__, frozen, method,

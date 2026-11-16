@@ -103,8 +103,7 @@ def driver_benchmark_run(profile: str = "setup-smoke", executor: Literal["codex"
     Supply evaluator password FILE paths through options, never the password itself.
     Every real-agent case starts a bench harness that holds the password file path, admits the case and, after the
     run, grades the frozen driver once and posts the run's verdict; the configurator never receives the path. For an
-    emulated case (tq9, tq9-v2 and the v2 families) the harness provides the emulator; bme280 runs on the operator's
-    bound device (options.binding), which the harness never touches. They return trial_id and run_id; the
+    emulated case (tq9-v2 and the v2 families) the harness provides the emulator. They return trial_id and run_id; the
     same options.request_id with the same inputs returns that trial again and starts no second emulator.
     executor "replay" runs an emulated case without a model from options.replay_candidate, a saved candidate directory;
     its results are labelled replay-emulation and never count as model runs.

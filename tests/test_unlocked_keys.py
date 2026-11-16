@@ -16,11 +16,11 @@ from unittest.mock import patch
 
 from generative_driver.benchmark_support import evaluator, families, harness, registry, truth
 from generative_driver.benchmark_support.snapshots import canonical_digest
-from suite_fixtures import file_changes, legacy_case, public_case_fixture, symlinks_refused
+from suite_fixtures import file_changes, public_case_fixture, symlinks_refused
 from test_configurator import gateway_identity, scripted_stages, task_of
 from test_evaluation import CASE_TRUTH, FAIL, HarnessTrialFixture, PASS, PendingRunFixture, reference
-from test_legacy_cases import silicon_start
 from test_suite_harness import HarnessSuiteFixture, manifest as suite_manifest
+from tq9_workflow_fixture import silicon_start
 
 SECRET = 'synthetic-unlocked-keys-credential'
 SOURCE = Path(truth.__file__).resolve().parents[1]
@@ -220,7 +220,7 @@ class AdmissionTests(unittest.TestCase):
             registry.require_calibration(pin, self.password)
 
     def test_02_B19_a_schema_1_pin_is_admitted_without_decrypting(self):
-        pin = registry.pin_case('tq9', None, 0)
+        pin = registry.pin_case('setup-smoke', None, 0)  # the registered case whose pin is not of schema 2
         with UnlockSpy() as spy:
             self.assertEqual(registry.admitted_truth(pin, None), (None, {'ok': True}))
             self.assertEqual(registry.admitted_truth(pin, self.password), (None, {'ok': True}))
@@ -451,25 +451,6 @@ class AdmitTests(unittest.TestCase):
         self.assertEqual((unlocked.payload, unlocked.sha256), (toy_truth(), registry.pin_case('tq9-v2', 'original', 0)['truth_sha256']))
         self.assertNotIn(SENTINEL, json.dumps(provider.descriptor() if provider.session else provider.recipe))
 
-    def test_02_B20_a_legacy_emulated_case_decrypts_once(self):
-        from tq9_workflow_fixture import legacy_truth
-        path = legacy_case(self, self.root / 'resources', 'tq9', self.password, legacy_truth())
-        with UnlockSpy(path) as spy:
-            provider, admission, unlocked = harness.admit('tq9', {}, self.root / 'trial', password=self.password, renode='r')
-        self.assertEqual((spy.count, admission), (1, {}))
-        self.assertEqual(provider.recipe, harness.device_recipe('tq9', unlocked))
-        self.assertEqual(unlocked.payload, legacy_truth())
-        self.assertNotIn('reuse_goal', json.dumps(provider.recipe))
-
-    def test_02_B20_a_bound_device_case_authenticates_the_password_and_keeps_the_truth_for_its_grade(self):
-        payload = {'max_reference_age_seconds': 60, 'max_tolerances': {'temperature': .2}}
-        path = legacy_case(self, self.root / 'resources', 'bme280', self.password, payload)
-        with UnlockSpy(path) as spy:
-            provider, admission, unlocked = harness.admit('bme280', {}, self.root / 'trial', password=self.password)
-        self.assertEqual((provider, admission, unlocked.payload, spy.count), (None, {}, payload, 1))
-        with self.assertRaisesRegex(ValueError, 'invalid password'):
-            harness.admit('bme280', {}, self.root / 'trial', password=truth.EvaluatorPassword('another'))
-
 
 class SealedTrialFixture(HarnessTrialFixture):
     """A real admission of a case whose answer key is really sealed: the spies count real decryptions."""
@@ -618,7 +599,7 @@ class GraderSourceTests(unittest.TestCase):
                 and isinstance(node.func, (ast.Name, ast.Attribute))}
 
     def test_02_B13_the_grader_gets_the_answer_key_only_from_truth_source(self):
-        for module in ('evaluator.py', 'recorded_grading.py'):
+        for module in ('evaluator.py',):
             with self.subTest(module=module):
                 self.assertFalse(self.calls(module) & {'case_truth', 'truth_for_case', 'admitted_truth'})
                 self.assertIn('truth_source', (SOURCE / 'benchmark_support' / module).read_text(encoding='utf-8'))
@@ -752,7 +733,7 @@ class SuitePasswordTests(HarnessSuiteFixture):
         spy, paths = read_spy(before=lambda: seen.append(list(calls)))
         with spy, self.harness(PASS):
             record = self.drive(calls, manifest=suite_manifest(1), executor='codex', options={},
-                                password_files={'tq9-v2': str(self.password), 'tq9': str(other)})
+                                password_files={'tq9-v2': str(self.password), 'sampled-sensor-v1': str(other)})
         self.assertEqual(record['status'], 'finished', record)
         self.assertEqual(paths, [str(self.password), str(other)])
         self.assertEqual(seen, [[], []])
@@ -761,9 +742,9 @@ class SuitePasswordTests(HarnessSuiteFixture):
     def test_02_B5_a_file_two_cases_share_is_read_once(self):
         spy, paths = read_spy()
         with spy:
-            held = harness._supplied_passwords({'tq9-v2': str(self.password), 'tq9': str(self.password)})
+            held = harness._supplied_passwords({'tq9-v2': str(self.password), 'sampled-sensor-v1': str(self.password)})
         self.assertEqual(paths, [str(self.password)])
-        self.assertIs(held['tq9-v2'], held['tq9'])
+        self.assertIs(held['tq9-v2'], held['sampled-sensor-v1'])
 
     def test_02_B5_a_suite_whose_files_are_deleted_still_provides_grades_and_seals_each_trial(self):
         kept = self.password.read_text()
@@ -992,19 +973,6 @@ class CommandReadTests(unittest.TestCase):
         self.handle.write_text(SECRET)
         self.password = truth.EvaluatorPassword(SECRET)
 
-    def test_02_B22_score_goes_through_the_adapter_and_meets_the_files_own_errors(self):
-        from generative_driver import benchmark
-        from tq9_workflow_fixture import legacy_truth
-        path = legacy_case(self, self.root / 'resources', 'tq9', self.password, legacy_truth())
-        report = {'case': 'tq9', 'stages': {}}
-        self.assertEqual(benchmark.score(report, str(self.handle))['case'], 'tq9')
-        path.write_bytes(b'replaced')
-        with self.assertRaisesRegex(ValueError, 'does not match its pinned hash'):
-            benchmark.score(report, str(self.handle))
-        path.unlink()
-        with self.assertRaises(FileNotFoundError):
-            benchmark.score(report, str(self.handle))
-
     def test_02_B9_score_reads_its_file_once(self):
         from generative_driver import benchmark
         for schema, regrade in (('benchmark-report/3', 'regrade_v3'), ('benchmark-report/2', 'regrade_v2')):
@@ -1064,19 +1032,19 @@ class CommandReadTests(unittest.TestCase):
 
     def test_02_B9_manage_reads_its_file_once_and_rekey_each_file_once(self):
         from generative_driver.benchmark_support.evaluator_cli import manage
-        from tq9_workflow_fixture import legacy_truth
-        legacy_case(self, self.root / 'resources', 'tq9', self.password, legacy_truth())
+        sealed_case(self, self.root / 'resources', self.password)
         new = self.root / 'new-handle'
         new.write_text('another synthetic credential')
         spy, paths = read_spy()
         with spy:
-            manage('unlock', 'tq9', str(self.handle), self.root / 'unlocked')
+            manage('unlock', 'tq9-v2', str(self.handle), self.root / 'unlocked')
         self.assertEqual(paths, [str(self.handle)])
         spy, paths = read_spy()
         with spy:
-            result = manage('rekey', 'tq9', str(self.handle), self.root / 'rekeyed', str(new))
+            result = manage('rekey', 'tq9-v2', str(self.handle), self.root / 'rekeyed', str(new))
         self.assertEqual(paths, [str(self.handle), str(new)])
-        self.assertEqual(truth.EvaluatorPassword('another synthetic credential').unlock(result['ciphertext'], result['sha256']), legacy_truth())
+        rekeyed = truth.EvaluatorPassword('another synthetic credential').unlock(result['ciphertext'], result['sha256'])
+        self.assertEqual(rekeyed, toy_truth())
 
     def test_02_B9_manage_calibrate_reads_once_and_hands_the_object_to_the_native_calibration(self):
         from generative_driver.benchmark_support.evaluator_cli import manage

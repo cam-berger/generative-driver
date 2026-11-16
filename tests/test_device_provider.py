@@ -237,9 +237,9 @@ class DeviceProviderTests(ProviderFixture):
                         {**RECIPE, 'evaluator_password_file': 'p'}, 'recipe'):
             with self.subTest(refused=refused), self.assertRaisesRegex(ValueError, 'recipe'):
                 self.provider(recipe=refused)
-        # A case whose device the operator owns has no instrument and no provider.
+        # A case without a native family has no instrument and no provider.
         with self.assertRaisesRegex(ValueError, 'Unknown native family'):
-            self.provider('bme280')
+            self.provider('setup-smoke')
         # The pinned image only: a changed image starts nothing.
         self.image.write_bytes(b'another image')
         with self.assertRaisesRegex(ValueError, 'image'):
@@ -486,7 +486,7 @@ class HarnessDelegationTests(ProviderFixture):
         self.assertEqual(self.journal(self.trial)[-1]['kind'], 'stopped')
 
     def test_package_calls_run_in_the_window_and_carry_instrument_readings(self):
-        from generative_driver.benchmark_support.cases import _write
+        from generative_driver.benchmark_support.case_assets import write_json as _write
         from generative_driver.benchmark_support.emulated import package_call
         from generative_driver.configurator import digest
         from generative_driver.device_client import open_device

@@ -6,7 +6,8 @@ import tempfile
 import time
 import unittest
 
-from suite_fixtures import shutdown_owner, close_owner, drive_suite, legacy_devices, legacy_manifest, options, settled_suite, wait_owner_suite
+from suite_fixtures import (shutdown_owner, close_owner, drive_suite, harness_devices, options, scripted_manifest,
+                            settled_suite, wait_owner_suite)
 
 
 def owner_home(temporary):
@@ -18,8 +19,8 @@ def owner_home(temporary):
 
 class DecisionTests(unittest.TestCase):
     def test_a_stopped_child_never_advances_whatever_its_category(self):
-        # Catches the gated protocol's rule that a recorded model failure advances: every child, legacy tq9 included, is
-        # graded once after its run, so a stopped one blocks, and an unsettled one waits.
+        # Catches the gated protocol's rule that a recorded model failure advances: every child is graded once after
+        # its run, so a stopped one blocks, and an unsettled one waits.
         from generative_driver.benchmark_support.suites import child_disposition
         stopped = {'status':'blocked','stopping':False,'uncertain_effect':False,
                    'outcome_category':'model','reason':'Arbitrary localized message'}
@@ -95,28 +96,6 @@ class CategoryTests(unittest.TestCase):
             finally:
                 controller.close()
 
-    def test_an_unqualified_interpretation_is_a_note_and_a_device_stage_waits_for_the_harness_device(self):
-        # Catches the legacy qualification gate stopping or repairing the run: the candidate's failed qualification is a
-        # note, the run continues, and a legacy run started without its bench harness's device stops for the operator.
-        from generative_driver.client import call
-        from suite_fixtures import write_scripted_case_worker
-        with tempfile.TemporaryDirectory() as home:
-            try:
-                run=call('start',{'goal':'Scripted qualification contract','case':'tq9',
-                    'executor_config':{'command':write_scripted_case_worker(home)}},home)
-                deadline=time.monotonic()+15
-                while time.monotonic()<deadline:
-                    result=call('result',run,home)
-                    if result['status'] in ('blocked','failed') and not result['stopping']:break
-                    time.sleep(.02)
-                self.assertEqual((result['status'],result['outcome_category'],result['stage']),('blocked','operator','probe'),result)
-                self.assertEqual(result['progress']['repairs'],0)
-                self.assertIn('bench harness',result['reason'])
-                interpret=next(n for n in result['stage_notes'] if n['stage']=='interpret')
-                self.assertIn('predicted_reply_qualification',interpret['failed_checks'])
-            finally:
-                shutdown_owner(home)
-
 
 class ServiceTests(unittest.TestCase):
     def test_a_child_graded_after_its_run_finishes_a_measurement_and_starts_the_next_slot(self):
@@ -125,11 +104,11 @@ class ServiceTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import start_suite
         from suite_fixtures import write_scripted_case_worker, wait_suite
         with tempfile.TemporaryDirectory(prefix='suite scripted ') as temporary:
-            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
+            home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
             configure('codex',write_scripted_case_worker(home),home=home)
             try:
                 # A detached bench harness drives the suite, provides each child's device and grades it after its run.
-                suite=start_suite(legacy_manifest(2),'codex',options(secrets),'two-scripted-children',home=home)
+                suite=start_suite(scripted_manifest(2),'codex',options(secrets),'two-scripted-children',home=home)
                 self.assertTrue(suite['ok'],suite)
                 state=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='completed')
                 page=call('suite_result',{'suite_id':suite['suite_id'],'limit':100},home)
@@ -153,8 +132,8 @@ class ServiceTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import start_suite
         from suite_fixtures import write_scripted_case_worker, wait_suite
         with tempfile.TemporaryDirectory(prefix='suite retry ') as temporary:
-            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
-            request={'manifest':legacy_manifest(1),'executor':'codex','options':options(secrets),'request_id':'retry-after-refusal'}
+            home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
+            request={'manifest':scripted_manifest(1),'executor':'codex','options':options(secrets),'request_id':'retry-after-refusal'}
             try:
                 refused=start_suite(**request,home=home)
                 self.assertFalse(refused['ok'],refused)
@@ -175,9 +154,10 @@ class ServiceTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import wait_suite
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
+            home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
             configure('codex',['missing-first-runtime'],model='first-model',home=home)
-            request={'manifest':legacy_manifest(2),'executor':'codex','options':options(secrets),'request_id':'freeze'}
+            request={'manifest':scripted_manifest(2),'executor':'codex','options':options(secrets),
+                     'request_id':'freeze'}
             try:
                 suite=start_suite(**request,home=home)
                 blocked=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked' and not s['stopping'])
@@ -202,10 +182,10 @@ class ServiceTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import start_suite
         from suite_fixtures import wait_suite
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
+            home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
             configure('codex',[sys.executable,'-c','import time; time.sleep(120)'],home=home)
             try:
-                suite=start_suite(legacy_manifest(2),'codex',options(secrets),home=home)
+                suite=start_suite(scripted_manifest(2),'codex',options(secrets),home=home)
                 active=wait_suite(call,suite['suite_id'],home,lambda s:bool(s['active_child_id']))
                 stopped=call('suite_cancel',{'suite_id':suite['suite_id']},home)
                 self.assertTrue(stopped['ok'],stopped)
@@ -223,17 +203,19 @@ class ServiceTests(unittest.TestCase):
 class SummaryTests(unittest.TestCase):
     def test_owner_v2_summary_projects_only_gate_identity_and_final_counts(self):
         from generative_driver.configurator import Controller
+        from generative_driver.benchmark_support.registry import pin_case
+        from suite_fixtures import provided_device
         with tempfile.TemporaryDirectory() as home:
             owner=Controller(home)
             try:
-                run=owner.start({'goal':'Toy summary records','case':'tq9','executor_config':{'command':['missing-runtime']}})
+                run=owner.start({'goal':'Toy summary records','case':'tq9-v2','effects':['write','actuate'],
+                    'executor_config':{'command':['missing-runtime']},
+                    **provided_device(self,Path(home)/'fixture',pin_case('tq9-v2','original',0))})
                 result=wait_child(owner,run['run_id'])
-                self.assertNotIn('benchmark_summary',result)
+                # A v2 run projects its summary from the first result on: empty before any stage wrote state.
+                self.assertEqual(result['benchmark_summary'],
+                                 {'accepted_gates':[],'evaluations':[],'final_evaluation':{}})
                 # Public toy producer fixture: no private source, emulator, or scoring.
-                with owner._db() as db:
-                    spec=json.loads(db.execute('SELECT spec FROM runs WHERE id=?',(run['run_id'],)).fetchone()['spec'])
-                    spec['_case_pin']['manifest']['schema']='benchmark-case/2'
-                    db.execute('UPDATE runs SET spec=? WHERE id=?',(json.dumps(spec),run['run_id']))
                 safe={'accepted_gates':[{'stage':'reuse','revision':0,'assignment_id':'a','artifact_sha256':'a'*64,'verdict':'passed','passed':2,'total':2}],
                       'evaluations':[{'phase':'final','revision':0,'frozen_artifact_sha256':'a'*64,'verdict':'passed','passed':3,'total':3}],
                       'final_evaluation':{'verdict':'passed','passed':3,'total':3,'evidence_sha256':'e'*64}}
@@ -261,9 +243,9 @@ class BudgetTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import wait_suite
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
+            home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
             configure('codex',[sys.executable,'-c','import time; time.sleep(120)'],home=home)
-            manifest=legacy_manifest(2)
+            manifest=scripted_manifest(2)
             try:
                 suite={'suite_id':start_suite(manifest,options=options(secrets),home=home)['suite_id']}
                 running=wait_suite(call,suite['suite_id'],home,lambda s:bool(s['active_child_id']) and
@@ -315,11 +297,11 @@ class BudgetTests(unittest.TestCase):
         from generative_driver.configurator import Controller
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary);bench=Path(temporary)/'bench';secrets=legacy_devices(self,Path(temporary)/'fixture')
+            home=owner_home(temporary);bench=Path(temporary)/'bench';secrets=harness_devices(self,Path(temporary)/'fixture')
             configure('codex',['missing-runtime'],home=home)
             owner=Controller(home)
             try:
-                suite={'suite_id':drive_suite(owner,bench,{'manifest':legacy_manifest(),**secrets},wait=False)['suite_id']}
+                suite={'suite_id':drive_suite(owner,bench,{'manifest':scripted_manifest(),**secrets},wait=False)['suite_id']}
                 before=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
                 for fields in ({'suite_budget_seconds':True,'budget_reason':'x'},
                                {'suite_budget_seconds':float('inf'),'budget_reason':'x'},
@@ -342,13 +324,13 @@ class RecoveryTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import write_scripted_case_worker, wait_suite
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
+            home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
             command=write_scripted_case_worker(home);script=Path(command[1])
             # The first child's acquire, probe, ground and emit workers run; every later worker fails for the host.
             source=script.read_text().replace("    task=json.loads", "    counter=pathlib.Path("+repr(str(Path(home)/'counter'))+")\n    n=int(counter.read_text())+1 if counter.exists() else 1\n    counter.write_text(str(n))\n    if n>4: sys.exit(3)\n    task=json.loads")
             script.write_text(source);configure('codex',command,home=home)
             try:
-                suite={'suite_id':start_suite(legacy_manifest(3),options=options(secrets),home=home)['suite_id']}
+                suite={'suite_id':start_suite(scripted_manifest(3),options=options(secrets),home=home)['suite_id']}
                 blocked=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked' and not s['stopping'])
                 self.assertEqual(blocked['completed'],1)
                 trials=call('suite_result',suite,home)['trials']
@@ -365,10 +347,11 @@ class RecoveryTests(unittest.TestCase):
         from generative_driver.configurator import Controller
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary);bench=Path(temporary)/'bench';secrets=legacy_devices(self,Path(temporary)/'fixture')
+            home=owner_home(temporary);bench=Path(temporary)/'bench';secrets=harness_devices(self,Path(temporary)/'fixture')
             configure('codex',['missing-runtime'],home=home)
             owner=Controller(home)
-            suite={'suite_id':drive_suite(owner,bench,{'manifest':legacy_manifest(2),**secrets},wait=False)['suite_id']}
+            started=drive_suite(owner,bench,{'manifest':scripted_manifest(2),**secrets},wait=False)
+            suite={'suite_id':started['suite_id']}
             blocked=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
             child=blocked['active_child_id'];close_owner(owner)
             # Durable public toy final-verdict fixture and a lost attachment, not evaluation.
@@ -405,13 +388,13 @@ class RecoveryTests(unittest.TestCase):
         from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import wait_suite
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
+            home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
             marker=Path(home)/'worker.pid'
             code='import os,pathlib,time; p=pathlib.Path('+repr(str(marker))+'); p.write_text(str(os.getpid())); time.sleep(120)'
             configure('codex',[sys.executable,'-c',code],home=home)
             pid=None
             try:
-                suite={'suite_id':start_suite(legacy_manifest(2),options=options(secrets),home=home)['suite_id']}
+                suite={'suite_id':start_suite(scripted_manifest(2),options=options(secrets),home=home)['suite_id']}
                 active=wait_suite(call,suite['suite_id'],home,lambda s:bool(s['active_child_id']))
                 deadline=time.monotonic()+5
                 while not marker.exists() and time.monotonic()<deadline:time.sleep(.02)
@@ -446,11 +429,11 @@ class InterventionTests(unittest.TestCase):
         from generative_driver.configurator import Controller
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
+            home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
             configure('codex',['missing-runtime'],home=home)
             owner=Controller(home)
             try:
-                suite={'suite_id':drive_suite(owner,Path(temporary)/'bench',{'manifest':legacy_manifest(),**secrets},wait=False)['suite_id']}
+                suite={'suite_id':drive_suite(owner,Path(temporary)/'bench',{'manifest':scripted_manifest(),**secrets},wait=False)['suite_id']}
                 state=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
                 run={'run_id':state['active_child_id']}
                 owner.call('respond',{**run,'message':'PRIVATE-MESSAGE','observation':{'alien':'/PRIVATE/PATH'}})
@@ -472,11 +455,11 @@ class DelayedOperationTests(unittest.TestCase):
         from tq9_workflow_fixture import model as tq9_model
         entered,release=threading.Event(),threading.Event()
         with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary);secrets=legacy_devices(self,Path(temporary)/'fixture')
+            home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
             configure('codex',[sys.executable,'-c','import time; time.sleep(120)'],home=home)
             owner=Controller(home);worker=None
             try:
-                suite={'suite_id':drive_suite(owner,Path(temporary)/'bench',{'manifest':legacy_manifest(2),**secrets},wait=False)['suite_id']}
+                suite={'suite_id':drive_suite(owner,Path(temporary)/'bench',{'manifest':scripted_manifest(2),**secrets},wait=False)['suite_id']}
                 state=wait_owner_suite(owner,suite['suite_id'],lambda s:bool(s['active_child_id']))
                 run={'run_id':state['active_child_id']}
                 deadline=time.monotonic()+5;assignments=[];child_state={}
@@ -488,7 +471,7 @@ class DelayedOperationTests(unittest.TestCase):
                 self.assertTrue(assignments)
                 self.assertEqual((child_state.get('status'),child_state.get('stage')),('running','acquire'),child_state)
                 assignment=assignments[0]
-                peer=self.legacy_peers[-1];peer.gate=(entered,release)
+                peer=self.device_peers[-1];peer.gate=(entered,release)
                 # Public toy assignment fixture reaches the real managed path on the provided device without passing
                 # through any stage worker's model.
                 model=tq9_model();model['channel']={'type':'tcp'};model['operations']['measure']['effect']='write'
@@ -559,11 +542,11 @@ class CleanupFailureTests(unittest.TestCase):
         relaunches it, which provides the child's device anew."""
         from generative_driver.configurator import Controller
         from generative_driver.setup import configure
-        self.bench=Path(home)/'bench';self.secrets=legacy_devices(self,Path(home)/'fixture')
+        self.bench=Path(home)/'bench';self.secrets=harness_devices(self,Path(home)/'fixture')
         home=owner_home(home)
         configure('codex',['missing-runtime'],home=home)
         owner=Controller(home)
-        suite={'suite_id':drive_suite(owner,self.bench,{'manifest':legacy_manifest(2),**self.secrets},wait=False)['suite_id']}
+        suite={'suite_id':drive_suite(owner,self.bench,{'manifest':scripted_manifest(2),**self.secrets},wait=False)['suite_id']}
         state=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
         child=state['active_child_id']
         # Resume a durable exhausted stage queue so the real _run completion and

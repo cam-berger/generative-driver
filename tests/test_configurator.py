@@ -3499,7 +3499,7 @@ class ConfiguratorTests(unittest.TestCase):
             controller=Controller(Path(directory))
             try:
                 binding={'url':'ftdi://fixture-no-device/1'}
-                run=controller.call('start',{'goal':'No hardware contract','case':'bme280','binding':binding,'effects':['write'],
+                run=controller.call('start',{'goal':'No hardware contract','binding':binding,'effects':['write'],
                     'scoped_tool_approval':'bound-device','executor_config':{'command':['missing-contract-runtime']}})
                 until=time.monotonic()+5
                 while time.monotonic()<until and controller.call('status',run)['status']!='blocked': time.sleep(.01)
@@ -3525,34 +3525,6 @@ class ConfiguratorTests(unittest.TestCase):
                 self.assertEqual(controller.call('result',run)['scoped_tool_approval'],'bound-device')
                 with self.assertRaisesRegex(ValueError,'conflicting'):
                     controller.call('start',{**params,'binding':{'port':'COM9'},'case_options':{'binding':{'port':'COM10'}}})
-            finally:
-                controller.close()
-
-    def test_emulator_approval_is_explicit_persisted_and_cannot_authorize_physical_runs(self):
-        from generative_driver.configurator import Controller
-        with tempfile.TemporaryDirectory() as directory:
-            controller=Controller(Path(directory))
-            try:
-                params={'goal':'Approval contract only','case':'tq9','executor_config':{'command':['missing-contract-runtime']}}
-                run=controller.call('start',params)
-                until=time.monotonic()+5
-                while time.monotonic()<until and controller.call('status',run)['status']!='blocked': time.sleep(.01)
-                self.assertIsNone(controller.call('result',run).get('scoped_tool_approval'))
-                until=time.monotonic()+5
-                while time.monotonic()<until:
-                    try:
-                        controller.call('resume',{**run,'scoped_tool_approval':'emulator'})
-                        break
-                    except ValueError as exc:
-                        self.assertIn('stopping',str(exc)); time.sleep(.01)
-                self.assertEqual(controller.call('result',run).get('scoped_tool_approval'),'emulator')
-                events=controller.call('events',run)['events']
-                self.assertEqual(len([e for e in events if e['kind']=='run.authorization']),1)
-                self.assertEqual(len([e for e in events if e['kind']=='operator.response']),0)
-                with self.assertRaisesRegex(ValueError,'emulator'):
-                    controller.call('start',{**params,'case':'bme280','scoped_tool_approval':'emulator'})
-                with self.assertRaisesRegex(ValueError,'binding'):
-                    controller.call('start',{**params,'scoped_tool_approval':'emulator','binding':{'url':'ftdi://ftdi:232h/1'}})
             finally:
                 controller.close()
 

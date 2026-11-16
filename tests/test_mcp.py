@@ -125,7 +125,7 @@ class McpTests(unittest.TestCase):
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
                         await session.initialize()
-                        for profile in ('tq9', 'bme280'):
+                        for profile in ('tq9-v2', 'sampled-sensor-v1'):
                             reply = await session.call_tool('driver_benchmark_run', {
                                 'profile':profile, 'options':{'home':str(other)}})
                             self.assertFalse(reply.is_error, reply)
@@ -134,7 +134,7 @@ class McpTests(unittest.TestCase):
                             self.assertIn('configured MCP home', refused.get('reason', ''))
                             self.assertFalse(list((other/'runs').glob('*')))
                         reply = await session.call_tool('driver_benchmark_run', {
-                            'profile': 'tq9', 'options': {'home': str(owner),
+                            'profile': 'tq9-v2', 'options': {'home': str(owner),
                             'scoped_tool_approval': 'emulator', 'binding': {}}})
                         self.assertFalse(reply.is_error, reply)
                         refused = json.loads(reply.content[0].text)
@@ -145,12 +145,12 @@ class McpTests(unittest.TestCase):
                         # harness, which authenticates the evaluator password before any run exists.
                         for same_home in (str(owner), 'owner/.'):
                             reply = await session.call_tool('driver_benchmark_run', {
-                                'profile':'bme280', 'options':{'home':same_home}})
+                                'profile':'tq9-v2', 'options':{'home':same_home}})
                             self.assertFalse(reply.is_error, reply)
                             refused = json.loads(reply.content[0].text)
                             self.assertFalse(refused.get('ok'), refused)
                             self.assertNotIn('configured MCP home', refused.get('reason', ''))
-                            self.assertIn('password file is required', refused.get('reason', ''))
+                            self.assertIn('requires the evaluator password file', refused.get('reason', ''))
                             self.assertFalse(list((owner/'runs').glob('*')))
             finally:
                 for home in (owner, other):
@@ -233,7 +233,7 @@ class McpTests(unittest.TestCase):
                 async with stdio_client(params) as (reader, writer):
                     async with ClientSession(reader, writer) as session:
                         await session.initialize()
-                        for profile in ('tq9', 'bme280'):
+                        for profile in ('tq9-v2', 'sampled-sensor-v1'):
                             reply = await session.call_tool('driver_benchmark_run', {'profile':profile})
                             self.assertFalse(reply.is_error, reply)
                             refused = json.loads(reply.content[0].text)
@@ -250,7 +250,7 @@ class McpTests(unittest.TestCase):
                 # The final benchmark start must also refuse if the owner
                 # disappears after the MCP preflight has succeeded.
                 from generative_driver.benchmark import run
-                refused = run('tq9', options={'home':temp}, autostart=False)
+                refused = run('tq9-v2', options={'home':temp}, autostart=False)
                 self.assertFalse(refused.get('ok'), refused)
                 self.assertIn('service start', refused.get('reason', ''))
                 self.assertFalse((Path(temp)/'service.json').exists())
@@ -329,7 +329,7 @@ class McpTests(unittest.TestCase):
                         self.assertFalse(reply.is_error, reply)
                         refused = json.loads(reply.content[0].text)
                         self.assertFalse(refused["ok"])
-                        self.assertIn("tq9", refused["reason"].lower())
+                        self.assertIn("tq9-v2", refused["reason"].lower())
                         reply = await session.call_tool("driver_resume", {
                             "run_id": run["run_id"], "scoped_tool_approval": "bound-device"})
                         self.assertFalse(reply.is_error, reply)

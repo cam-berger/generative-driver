@@ -1,10 +1,18 @@
-"""Public task semantics and sealed continuity for a candidate's own revisions."""
+"""Public task semantics and sealed continuity for a candidate's own revisions, and the reader of a run's stage state
+file, which the stage code shares: it moved here when the legacy cases that held it were dropped (Feature 04 of the
+untangle Run, docs/features/untangle/04-legacy-cases.md)."""
 import hashlib
 import json
 import tempfile
 from pathlib import Path
 
-from .cases import _state, _write
+from .case_assets import write_json as _write
+
+
+def _state(run_dir):
+    """The path of a run's stage state file and what it holds, {} before the first stage writes it."""
+    path = Path(run_dir).resolve() / 'benchmark' / 'state.json'
+    return path, json.loads(path.read_text()) if path.exists() else {}
 
 
 def task_contract(case_id, effects, run_dir=None):

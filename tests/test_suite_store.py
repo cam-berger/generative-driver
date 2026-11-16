@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from generative_driver.configurator import Controller
-from suite_fixtures import drive_suite,legacy_devices,legacy_manifest,sqlite_context,wait_owner_suite
+from suite_fixtures import drive_suite,harness_devices,provided_device,scripted_manifest,sqlite_context,wait_owner_suite
 
 # The sha256 of the token of the bench harness a suite is frozen for.
 TOKEN='a1'*32
@@ -17,17 +17,19 @@ class StoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             home=Path(temporary);controller=Controller(home)
             try:
-                frozen=freeze_suite(legacy_manifest(),'codex',
+                frozen=freeze_suite(scripted_manifest(),'codex',
                     {'command':['missing-scripted-runtime'],'model':'frozen-model'},{},{},harness_token_sha256=TOKEN)
                 store=SuiteStore(sqlite_context(home/'runs.sqlite3'))
                 suite=store.create(frozen,'one-request')
                 store.set_state(suite['suite_id'],'running')
                 reserved=store.reserve(suite['suite_id'])
-                started=controller.call('start',child_request(frozen,reserved))
+                # What the slot's bench harness adds to the child request: its device, its admission and its token hash.
+                added=provided_device(self,home/'fixture',frozen['entry_pins'][0])
+                started=controller.call('start',{**child_request(frozen,reserved),**added})
                 reopened=SuiteStore(sqlite_context(home/'runs.sqlite3'))
                 same=reopened.reserve(suite['suite_id'])
                 self.assertEqual(same['child_request_id'],reserved['child_request_id'])
-                repeated=controller.call('start',child_request(frozen,same))
+                repeated=controller.call('start',{**child_request(frozen,same),**added})
                 self.assertEqual(repeated['run_id'],started['run_id'])
                 self.assertTrue(repeated['duplicate'])
                 reopened.attach(suite['suite_id'],same['ordinal'],same['child_request_id'],repeated['run_id'])
@@ -43,7 +45,7 @@ class StoreTests(unittest.TestCase):
             home=Path(temporary);controller=Controller(home)
             try:
                 provenance={'evaluator_revision':'e'*64,'toolchain_revision':'c'*64,'skills_revision':'b'*64}
-                frozen=freeze_suite(legacy_manifest(),'codex',{'command':['scripted']},{},provenance,harness_token_sha256=TOKEN)
+                frozen=freeze_suite(scripted_manifest(),'codex',{'command':['scripted']},{},provenance,harness_token_sha256=TOKEN)
                 sid=controller._suites.create(frozen,'frozen-before')['suite_id']
                 experiment=controller.call('suite_result',{'suite_id':sid})['experiment']
                 self.assertNotIn('evaluator_revisions',experiment)
@@ -57,8 +59,8 @@ class StoreTests(unittest.TestCase):
             controller = Controller(Path(temporary))
             try:
                 config = {'command': ['scripted'], 'runtime': 'unknown-runtime'}
-                provenance = execution_provenance(config, case_ids=['tq9'])
-                frozen = freeze_suite(legacy_manifest(), 'codex', config, {}, provenance, harness_token_sha256=TOKEN)
+                provenance = execution_provenance(config, case_ids=['tq9-v2'])
+                frozen = freeze_suite(scripted_manifest(), 'codex', config, {}, provenance, harness_token_sha256=TOKEN)
                 frozen['executor'] = frozen['request']['executor'] = 'unknown-runtime'
                 suite_id = controller._suites.create(frozen)['suite_id']
                 controller._suites.set_state(suite_id, 'blocked')
@@ -78,7 +80,7 @@ class StoreTests(unittest.TestCase):
         from generative_driver.benchmark_support.suite_store import SuiteStore
         with tempfile.TemporaryDirectory() as temporary:
             store=SuiteStore(sqlite_context(Path(temporary)/'runs.sqlite3'))
-            frozen=freeze_suite(legacy_manifest(2),'codex',{'command':['scripted'],'model':'original'},{},{},harness_token_sha256=TOKEN)
+            frozen=freeze_suite(scripted_manifest(2),'codex',{'command':['scripted'],'model':'original'},{},{},harness_token_sha256=TOKEN)
             first=store.create(frozen,'request')
             current=deepcopy(frozen);current['executor_config']['model']='changed'
             repeated=store.create(current,'request')
@@ -98,7 +100,7 @@ class StoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             db=sqlite_context(Path(temporary)/'runs.sqlite3')
             first,second=SuiteStore(db),SuiteStore(db)
-            suite=first.create(freeze_suite(legacy_manifest(2),'codex',{'command':['scripted']},{},{},harness_token_sha256=TOKEN))
+            suite=first.create(freeze_suite(scripted_manifest(2),'codex',{'command':['scripted']},{},{},harness_token_sha256=TOKEN))
             sid=suite['suite_id']
             self.assertIsNone(first.reserve(sid))
             first.set_state(sid,'running');barrier=Barrier(2)
@@ -123,7 +125,7 @@ class StoreTests(unittest.TestCase):
         from generative_driver.benchmark_support.suite_store import SuiteStore
         with tempfile.TemporaryDirectory() as temporary:
             store=SuiteStore(sqlite_context(Path(temporary)/'runs.sqlite3'))
-            frozen=freeze_suite(legacy_manifest(3),'codex',{'command':['PRIVATE-COMMAND']},{},{},harness_token_sha256=TOKEN)
+            frozen=freeze_suite(scripted_manifest(3),'codex',{'command':['PRIVATE-COMMAND']},{},{},harness_token_sha256=TOKEN)
             sid=store.create(frozen)['suite_id']
             for key,values in {'offset':[-1,True,1.5,'0'],'limit':[0,101,True,1.5,'2']}.items():
                 for value in values:
@@ -157,7 +159,7 @@ class StoreTests(unittest.TestCase):
         from generative_driver.benchmark_support.suite_store import SuiteStore
         with tempfile.TemporaryDirectory() as temporary:
             store=SuiteStore(sqlite_context(Path(temporary)/'runs.sqlite3'))
-            sid=store.create(freeze_suite(legacy_manifest(2),'codex',{'command':['scripted']},{},{},harness_token_sha256=TOKEN))['suite_id']
+            sid=store.create(freeze_suite(scripted_manifest(2),'codex',{'command':['scripted']},{},{},harness_token_sha256=TOKEN))['suite_id']
             store.set_state(sid,'running');slot=store.reserve(sid)
             store.attach(sid,0,slot['child_request_id'],'run-one')
             result={'run_id':'run-one','status':'failed','outcome_category':'model','stopping':False,'uncertain_effect':False}
@@ -180,7 +182,7 @@ class StoreTests(unittest.TestCase):
         from generative_driver.benchmark_support.suite_store import SuiteStore
         with tempfile.TemporaryDirectory() as temporary:
             db=sqlite_context(Path(temporary)/'runs.sqlite3');store=SuiteStore(db)
-            frozen=freeze_suite(legacy_manifest(),'codex',{'command':['scripted']},{},{},harness_token_sha256=TOKEN)
+            frozen=freeze_suite(scripted_manifest(),'codex',{'command':['scripted']},{},{},harness_token_sha256=TOKEN)
             queued=store.create(frozen)['suite_id'];running=store.create(frozen)['suite_id']
             done=store.create(frozen)['suite_id'];store.set_state(done,'completed')
             store.set_state(running,'running');reserved=store.reserve(running)
@@ -203,8 +205,9 @@ class ControllerStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             home=Path(temporary);controller=Controller(home)
             try:
-                frozen=freeze_suite(legacy_manifest(),'codex',{'command':['missing-scripted-runtime']},{},{},harness_token_sha256=TOKEN)
-                request=child_request(frozen,dict(frozen['trials'][0],child_request_id='pinned'))
+                frozen=freeze_suite(scripted_manifest(),'codex',{'command':['missing-scripted-runtime']},{},{},harness_token_sha256=TOKEN)
+                request={**child_request(frozen,dict(frozen['trials'][0],child_request_id='pinned')),
+                         **provided_device(self,home/'fixture',frozen['entry_pins'][0])}
                 changed=deepcopy(request);changed['case_pin']['manifest_sha256']='a'*64
                 with self.assertRaisesRegex(ValueError,'pin'):controller.start(changed)
                 self.assertFalse((home/'runs').exists())
@@ -222,16 +225,19 @@ class ControllerStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             home=Path(temporary);controller=Controller(home)
             try:
-                frozen=freeze_suite(legacy_manifest(),'codex',{'command':['missing-scripted-runtime'],'model':'frozen-model'},{},{},harness_token_sha256=TOKEN)
+                frozen=freeze_suite(scripted_manifest(),'codex',{'command':['missing-scripted-runtime'],'model':'frozen-model'},{},{},harness_token_sha256=TOKEN)
                 (home/'config.json').write_text(json.dumps({'executors':{'codex':{'model':'new-model','reasoning_effort':'high'}}}),encoding='utf-8')
-                request=child_request(frozen,dict(frozen['trials'][0],child_request_id='frozen'))
+                request={**child_request(frozen,dict(frozen['trials'][0],child_request_id='frozen')),
+                         **provided_device(self,home/'fixture',frozen['entry_pins'][0])}
                 missing=dict(request,request_id='missing-config');missing.pop('executor_config')
                 started=controller.start(request)
                 config=read_snapshot(home/'runs'/started['run_id'])['executed']['runtime_configuration']
                 self.assertEqual(config['model'],'frozen-model')
                 self.assertNotIn('reasoning_effort',config)
                 with self.assertRaisesRegex(ValueError,'executor_config'):controller.start(missing)
-                ordinary=dict(request,request_id='ordinary');ordinary.pop('case_pin');ordinary.pop('executor_config')
+                ordinary={**request,'request_id':'ordinary',
+                          **provided_device(self,home/'fixture',frozen['entry_pins'][0])}
+                ordinary.pop('case_pin');ordinary.pop('executor_config')
                 # Keep a missing executable while retaining ordinary model/reasoning defaults.
                 ordinary['executor_config']={'command':['missing-scripted-runtime']}
                 normal=controller.start(ordinary)
@@ -247,8 +253,8 @@ class ControllerStorageTests(unittest.TestCase):
             root=Path(temporary);home=root/'home';home.mkdir()
             config=home/'config.json'
             config.write_text(json.dumps({'executors':{'codex':{'command':['missing-scripted-runtime'],'model':'frozen-model'}}}),encoding='utf-8')
-            controller=Controller(home);secrets=legacy_devices(self,root/'fixture')
-            request={'manifest':legacy_manifest(2),'executor':'codex','request_id':'suite-request'}
+            controller=Controller(home);secrets=harness_devices(self,root/'fixture')
+            request={'manifest':scripted_manifest(2),'executor':'codex','request_id':'suite-request'}
             try:
                 # The bench harness starts and drives the suite; the configurator freezes and stores it.
                 started=drive_suite(controller,root/'bench',{**request,**secrets},wait=False);sid=started['suite_id']
@@ -260,7 +266,7 @@ class ControllerStorageTests(unittest.TestCase):
                 duplicate=controller.call('suite_start',{**request,'harness_token_sha256':'b2'*32,'harness_pid':os.getpid()})
                 self.assertTrue(duplicate['duplicate']);self.assertEqual(duplicate['suite_id'],sid)
                 with self.assertRaises(ValueError):
-                    controller.call('suite_start',dict(request,manifest=legacy_manifest(3),harness_token_sha256='b2'*32,harness_pid=os.getpid()))
+                    controller.call('suite_start',dict(request,manifest=scripted_manifest(3),harness_token_sha256='b2'*32,harness_pid=os.getpid()))
                 frozen=controller._suites.get(sid)['frozen']
                 controller._suites.set_state(sid,'running');slot=controller._suites.reserve(sid)
                 self.assertEqual(child_request(frozen,slot)['executor_config']['model'],'frozen-model')
@@ -293,7 +299,7 @@ class ControllerStorageTests(unittest.TestCase):
             controller=Controller(home)
             try:
                 # Evaluator handles and the emulator executable reach the bench harness only.
-                request={'manifest':legacy_manifest(3),'options':{},**legacy_devices(self,root/'PRIVATE-HANDLES')}
+                request={'manifest':scripted_manifest(3),'options':{},**harness_devices(self,root/'PRIVATE-HANDLES')}
                 sid=drive_suite(controller,root/'bench',request,wait=False)['suite_id']
                 state=wait_owner_suite(controller,sid,lambda s:s['status']=='blocked' and not s['stopping'])
                 frozen=controller._suites.get(sid)['frozen']
@@ -304,11 +310,11 @@ class ControllerStorageTests(unittest.TestCase):
                 # Each case's frozen revision, against which each of its trials is checked.
                 self.assertEqual(experiment['evaluator_revisions'],frozen['provenance']['evaluator_revisions'])
                 identity=experiment['comparison_identity']
-                # Its harness drives it and grades every child after its run, legacy tq9 included: the suite names the
-                # assistive protocol and counts equivalent drivers.
+                # Its harness drives it and grades every child after its run: the suite names the assistive protocol
+                # and counts equivalent drivers.
                 self.assertEqual(identity['protocol'],'assistive/1')
                 self.assertEqual(state['equivalent'],0)
-                self.assertEqual(identity['manifest'],legacy_manifest(3))
+                self.assertEqual(identity['manifest'],scripted_manifest(3))
                 self.assertEqual(identity['manifest_sha256'],frozen['manifest_sha256'])
                 self.assertEqual(identity['entry_pins'],[public_pin(pin) for pin in frozen['entry_pins']])
                 self.assertEqual(identity['trials'],frozen['trials'])
@@ -342,9 +348,9 @@ class ControllerStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);home=root/'home';home.mkdir()
             (home/'config.json').write_text(json.dumps({'executors':{'codex':{'command':['missing-scripted-runtime']}}}),encoding='utf-8')
-            controller=Controller(home);secrets=legacy_devices(self,root/'fixture')
+            controller=Controller(home);secrets=harness_devices(self,root/'fixture')
             try:
-                sid=drive_suite(controller,root/'bench',{'manifest':legacy_manifest(2),**secrets})['suite_id']
+                sid=drive_suite(controller,root/'bench',{'manifest':scripted_manifest(2),**secrets})['suite_id']
                 self.assertEqual(controller.call('suite_status',{'suite_id':sid})['status'],'blocked')
                 slot=controller._suites.get(sid)['trials'][0];rid=slot['run_id']
                 with controller._db() as db:
@@ -371,9 +377,9 @@ class ControllerStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);home=root/'home';home.mkdir()
             (home/'config.json').write_text(json.dumps({'executors':{'codex':{'command':['missing-scripted-runtime']}}}),encoding='utf-8')
-            controller=Controller(home);secrets=legacy_devices(self,root/'fixture')
+            controller=Controller(home);secrets=harness_devices(self,root/'fixture')
             try:
-                sid=drive_suite(controller,root/'bench',{'manifest':legacy_manifest(2),**secrets},wait=False)['suite_id']
+                sid=drive_suite(controller,root/'bench',{'manifest':scripted_manifest(2),**secrets},wait=False)['suite_id']
                 state=wait_owner_suite(controller,sid,lambda s:s['status']=='blocked' and not s['stopping'])
                 slot=controller._suites.get(sid)['trials'][0];rid=slot['run_id']
                 before=controller.call('suite_result',{'suite_id':sid})['experiment']

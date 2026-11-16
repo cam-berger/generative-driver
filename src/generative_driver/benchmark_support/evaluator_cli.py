@@ -37,7 +37,7 @@ def manage(action, case, password_file, output, new_password_file=None, compiler
     from ..benchmark import case_root
     from .registry import resolve_case
     from .emulator import truth_for_case
-    from .cases import _write
+    from .case_assets import write_json as _write
     if authoring_dir is not None:
         from .registry import case_ids
         from .authoring import build_case

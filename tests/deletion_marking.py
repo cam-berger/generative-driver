@@ -25,7 +25,7 @@ _COLUMNS = {_READY: ('Item', 'Note'), _STILL_USED: ('Item', 'Used by', 'Freed by
             _COMMANDS: ('Command', 'Where', 'Freed by'), _PASSAGES: ('File', 'Unmarked lines', 'Why', 'Freed by'),
             _KEPT: ('Item', 'Why')}
 _COVERING = (_READY, _STILL_USED, _KEPT)
-_FEATURES = tuple(f'{number:02d}' for number in range(2, 11))
+_FEATURES = tuple(f'{number:02d}' for number in range(2, 12))
 _CHILD_SECONDS = 120
 _series = ', '.join
 
@@ -43,6 +43,10 @@ class _Entry(namedtuple('_Entry', 'table cells')):
 
     def covers(self, file):
         return file.startswith(self.name) if self.name.endswith('/') else file == self.name
+
+    def holds(self, other):
+        """Whether the item of `other` lies inside the folder this entry names."""
+        return self.name.endswith('/') and other.name != self.name and other.name.startswith(self.name)
 
     def __str__(self):
         return f'`{self.name}` under {self.table}'
@@ -94,16 +98,22 @@ def _read_list(root):
 
 def _entry_problems(entries, files):
     """The entries that match no file, that cover a file another entry covers, that repeat a passage row, or whose
-    `Freed by` names no later Feature (01-B1)."""
+    `Freed by` names no later Feature (01-B1). A row under `Ready to delete` inside a still-used folder decides for
+    what it covers, so the two are no such pair (04-B8 of docs/features/untangle/04-legacy-cases.md)."""
     found = []
     for table in (*_COVERING, _MODULES, _PASSAGES):
         found += [f'{entry} matches no file' for entry in entries[table] if not any(map(entry.covers, files))]
     covering = [entry for table in _COVERING for entry in entries[table]]
     pairs = {}
     for file in files:
-        first, *others = [entry for entry in covering if entry.covers(file)] or [None]
-        for other in others:
-            pairs.setdefault((first, other), file)
+        over = [entry for entry in covering if entry.covers(file)]
+        ready = [entry for entry in over if entry.table == _READY]
+        # The still-used folders a narrower ready row decides for are held to each other alone.
+        decided = [entry for entry in over if entry.table == _STILL_USED and any(map(entry.holds, ready))]
+        for rows in ([entry for entry in over if entry not in decided], decided):
+            first, *others = rows or [None]
+            for other in others:
+                pairs.setdefault((first, other), file)
     found += [f'{first} and {other} both cover {file}' for (first, other), file in pairs.items()]
     rows = [(entry.name, entry.freed_by) for entry in entries[_PASSAGES]]
     found += [f'`{file}` under {_PASSAGES} has more than one row freed by {feature}'

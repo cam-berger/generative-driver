@@ -264,7 +264,7 @@ class ReplayStartTests(unittest.TestCase):
                 'effects': ['write', 'actuate'], 'case_options': {'scenario_id': 'original'}}
         refused = [
             ({'case': None}, 'emulated benchmark cases only'),
-            ({'case': 'bme280'}, 'emulated benchmark cases only'),
+            ({'case': 'setup-smoke'}, 'emulated benchmark cases only'),
             ({'executor_config': {}}, 'needs a saved candidate'),
             # A replay runs the installed replay worker only, never a command a request names.
             ({'executor_config': {'candidate': str(self.candidate), 'command': [sys.executable]}}, 'only its saved candidate'),
@@ -302,7 +302,8 @@ class ReplayStartTests(unittest.TestCase):
         inside = self.variant('home-bench/candidate', {})
         refused = (('replay', {}, 'one saved candidate per case'),
                    ('replay', {'replay_candidates': {'tq9-v2': str(self.candidate)}}, 'one saved candidate per case'),
-                   ('replay', {'replay_candidates': {**cases, 'bme280': str(self.candidate)}}, 'one saved candidate per case'),
+                   ('replay', {'replay_candidates': {**cases, 'zephyr-modbus-v1': str(self.candidate)}},
+                    'one saved candidate per case'),
                    ('replay', {'replay_candidates': {**cases, 'tq9-v2': inside}}, 'evaluator records'),
                    ('codex', {'replay_candidates': cases}, 'Only a replay suite'))
         for executor, options, message in refused:
@@ -552,8 +553,6 @@ class ReplayCommandTests(unittest.TestCase):
             for argv, message in ((['--case', 'tq9-v2', '--executor', 'replay'], 'saved candidate'),
                                   (['--case', 'tq9-v2', '--executor', 'codex', '--replay-candidate', candidate],
                                    'replay executor'),
-                                  (['--case', 'bme280', '--executor', 'replay', '--replay-candidate', candidate],
-                                   'emulated benchmark cases only'),
                                   (['--case', 'setup-smoke', '--executor', 'replay', '--replay-candidate', candidate],
                                    'emulated benchmark cases only')):
                 with self.subTest(argv=argv):

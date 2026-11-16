@@ -9,9 +9,10 @@ def pilot_manifest():
         'repetitions':3,'child_budget_seconds':10800,'suite_budget_seconds':108000,'max_active_children':1}
 
 
-def legacy_manifest(repetitions=1):
+def scripted_manifest(repetitions=1):
+    """A one-entry suite of the current case `tq9-v2` for scripted contract tests; its budgets are short."""
     return {'schema':'benchmark-suite/1','id':'scripted-contract','version':'1',
-        'entries':[{'case':'tq9','scenario':'original','case_seed':0}],
+        'entries':[{'case':'tq9-v2','scenario':'original','case_seed':0}],
         'repetitions':repetitions,'child_budget_seconds':120,
         'suite_budget_seconds':120,'max_active_children':1}
 
@@ -61,30 +62,6 @@ def public_case_fixture(root, case_id='tq9-v2', *, calibration=None, **changes):
     return manifest
 
 
-def legacy_case(test, resources, case_id, password, payload):
-    """An installed legacy case copied under `resources`, with its answer key resealed under `password` and the case root
-    patched to it: its truth file."""
-    import shutil
-    from pathlib import Path
-    from unittest.mock import patch
-    from generative_driver.toolkit import resources_root
-    resources = Path(resources)
-    installed = resources_root() / 'bench'
-    for name in (case_id, 'setup-smoke'):  # The stages' interpret assets are setup-smoke's public model.
-        shutil.copytree(installed / 'cases' / name, resources / 'cases' / name)
-    shutil.copytree(installed / 'missions', resources / 'missions', dirs_exist_ok=True)
-    manifest = json.loads((resources / 'cases' / case_id / 'case.json').read_text(encoding='utf-8'))
-    path = resources / manifest['truth']['path']
-    manifest['truth']['sha256'] = password.seal(payload, path)
-    (resources / 'cases' / case_id / 'case.json').write_text(json.dumps(manifest), encoding='utf-8')
-    # `legacy` holds its own name for it, bound when it was first imported, which may be long before this test.
-    for target in ('generative_driver.benchmark.case_root', 'generative_driver.benchmark_support.case_assets.case_root',
-                   'generative_driver.benchmark_support.legacy.case_root'):
-        guard = patch(target, return_value=resources)
-        guard.start(); test.addCleanup(guard.stop)
-    return path
-
-
 def file_changes(truth_file, password, outside):
     """The changes a worker could make to a trial's files, as (name, change, undo): both deleted, both replaced, and the
     truth file swapped for a symlink to `outside`, for which a test first asks `symlinks_refused`."""
@@ -117,7 +94,7 @@ def symlinks_refused(directory):
 
 
 def write_scripted_case_worker(directory, *, hold_on_repair=False):
-    """Write a subprocess contract fixture for legacy tq9 stages: it imports the supplied firmware at acquire, writes an
+    """Write a subprocess contract fixture for a case's stages: it imports the supplied firmware at acquire, writes an
     unrelated setup-smoke model at interpret (the real stage observation notes it unqualified) and reports every later
     stage blocked, with nothing to hand on. `hold_on_repair` makes the first interpretation one the emulator binding
     cannot carry, so probe skips and the configurator's model diff starts a repair, which it then holds."""
@@ -157,67 +134,99 @@ else:
     return [sys.executable, str(path)]
 
 
-LEGACY_DEVICE_FIXTURE = '''
-# Tests only: the bench harness's legacy tq9 device, a synthetic TCP peer per emulator session, and a toy legacy truth
-# for the device recipe and the grade. A spawned harness loads this through GD_TEST_HARNESS_FIXTURE.
+DEVICE_FIXTURE = '''
+# Tests only: the bench harness's device of the current case tq9-v2, a synthetic TCP peer per emulator session, and a
+# toy answer key for its admission and its device recipe. A spawned harness loads this through
+# GD_TEST_HARNESS_FIXTURE.
 import sys
 sys.path.insert(0, TESTS)
-from suite_fixtures import legacy_device_patches
-for patcher in legacy_device_patches(PRIVATE)[0]:
+from suite_fixtures import device_patches
+for patcher in device_patches(PRIVATE)[0]:
     patcher.start()
 '''
 
 
-def legacy_device_patches(private):
-    """([patchers], peers): a bench harness's legacy tq9 emulator sessions become synthetic TCP peers and its tq9 truth a
-    toy one; other cases' truth is unlocked as before."""
+def device_patches(private):
+    """([patchers], peers): a bench harness's emulator sessions become synthetic TCP peers, and its admission of
+    `tq9-v2` hands out a toy answer key whose recipe those peers serve, under the calibration evidence the case's public
+    pin names, so that nothing decrypts the installed answer file. Other cases are admitted as before."""
     from pathlib import Path
     from unittest.mock import patch
-    from tq9_workflow_fixture import Silicon, legacy_truth
+    from test_device_provider import RECIPE
+    from tq9_workflow_fixture import Silicon
     from generative_driver.benchmark_support import registry
     from generative_driver.benchmark_support.truth import UnlockedTruth
-    real, peers = registry.case_truth, []
+    real, peers = registry.admitted_truth, []
     def start(**kwargs):
         peer = Silicon(kwargs['image']); peers.append(peer)
-        session = peer.session(kwargs['recipe'], Path(kwargs.get('private_dir') or Path(private) / ('native-' + str(len(peers)))))
+        session = peer.session(kwargs['recipe'],
+                               Path(kwargs.get('private_dir') or Path(private) / ('native-' + str(len(peers)))))
         class Process:
             def poll(self):
                 return 0 if getattr(peer, 'closed', False) else None
         session.process = Process()
         return session
-    def case_truth(case_id, run_dir, password):
-        if case_id == 'tq9':
-            return UnlockedTruth(legacy_truth(), registry.resolve_case('tq9').manifest['truth']['sha256'])
-        return real(case_id, run_dir, password)
-    return ([patch('generative_driver.benchmark_support.registry.case_truth', side_effect=case_truth),
+    def admitted_truth(pin, password):
+        if pin['case_id'] == 'tq9-v2':
+            return (UnlockedTruth({'recipe': RECIPE}, pin['truth_sha256']),
+                    {'ok': True, 'evidence_sha256': pin['calibration']['evidence_sha256']})
+        return real(pin, password)
+    return ([patch('generative_driver.benchmark_support.registry.admitted_truth', side_effect=admitted_truth),
              patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=start)], peers)
 
 
-def legacy_devices(test, root):
-    """Have every bench harness of a test provide legacy tq9 devices of synthetic peers: patches in this process, for an
+def harness_devices(test, root):
+    """Have every bench harness of a test provide `tq9-v2` devices of synthetic peers: patches in this process, for an
     in-process harness, and a fixture file that a spawned harness loads. Returns the harness's secrets for the suite:
-    {'password_files': {'tq9': a synthetic credential file}, 'renode': an emulator path}, which `options()` turns into
-    suite start options."""
+    {'password_files': {'tq9-v2': a synthetic credential file}, 'renode': an emulator path}, which `options()` turns
+    into suite start options."""
     import os
     from pathlib import Path
     from unittest.mock import patch
     root = Path(root); root.mkdir(parents=True, exist_ok=True)
-    patchers, peers = legacy_device_patches(root / 'native')
+    patchers, peers = device_patches(root / 'native')
     for patcher in patchers:
         patcher.start(); test.addCleanup(patcher.stop)
     test.addCleanup(lambda: [peer.close() for peer in peers])
-    test.legacy_peers = peers  # The peers of devices an in-process harness provides.
-    fixture = root / 'legacy_harness_fixture.py'
-    fixture.write_text(LEGACY_DEVICE_FIXTURE.replace('TESTS', repr(str(Path(__file__).resolve().parent)))
+    test.device_peers = peers  # The peers of devices an in-process harness provides.
+    fixture = root / 'harness_fixture.py'
+    fixture.write_text(DEVICE_FIXTURE.replace('TESTS', repr(str(Path(__file__).resolve().parent)))
                        .replace('PRIVATE', repr(str(root / 'native'))), encoding='utf-8')
     environment = patch.dict(os.environ, {'GD_TEST_HARNESS_FIXTURE': str(fixture)})
     environment.start(); test.addCleanup(environment.stop)
-    password = root / 'legacy-password-handle'; password.write_text('synthetic fixture credential')
-    return {'password_files': {'tq9': str(password)}, 'renode': str(root / 'renode')}
+    password = root / 'password-handle'; password.write_text('synthetic fixture credential')
+    return {'password_files': {'tq9-v2': str(password)}, 'renode': str(root / 'renode')}
+
+
+# The evaluation token of the bench harness that `provided_device` plays: a run holds only its sha256.
+HARNESS_TOKEN = 'scripted harness token'
+
+
+def device_descriptor(test, root, image=None):
+    """The descriptor of another device of synthetic peers under `root`, started from `image`: by default the
+    installed `tq9-v2` image. A run that stopped has released its device, so a test attaches another one, with
+    `HARNESS_TOKEN`, before it resumes the run."""
+    from pathlib import Path
+    from test_harness import Device
+    from generative_driver.benchmark_support.registry import resolve_case
+    root = Path(root); root.mkdir(parents=True, exist_ok=True)
+    device = Device(test, image or resolve_case('tq9-v2').root / 'firmware.bin',
+                    root / ('device-' + str(len(list(root.glob('device-*'))))))
+    return device.server.descriptor
+
+
+def provided_device(test, root, pin):
+    """What the bench harness adds to a `tq9-v2` start request, for a test that starts the run itself: the descriptor of
+    a device of synthetic peers started from the installed image, the admission that the public `pin` names and the
+    sha256 of `HARNESS_TOKEN`. Each call provides another device under `root`."""
+    import hashlib
+    return {'device': device_descriptor(test, root),
+            'admission': {'calibration_evidence_sha256': pin['calibration']['evidence_sha256']},
+            'evaluation_token_sha256': hashlib.sha256(HARNESS_TOKEN.encode()).hexdigest()}
 
 
 def options(secrets, **extra):
-    """Suite start or resume options carrying the harness's secrets from `legacy_devices`."""
+    """Suite start or resume options carrying the harness's secrets from `harness_devices`."""
     return {'evaluator_password_files': dict(secrets['password_files']), 'renode': secrets['renode'], **extra}
 
 

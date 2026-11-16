@@ -75,8 +75,8 @@ class GroundEvidenceTests(unittest.TestCase):
                     self.assertIn('no interpreted model available', prepared['skip'])
 
     def test_legacy_ground_receives_worker_probes_and_device_readings_never_evaluator_observations(self):
-        # Catches legacy tq9 grounding from the evaluator's probe observations (its graded measurements and monitor
-        # reads), or ground bytes replaced after they were verified. Legacy ground is prepared as an emulated case's.
+        # Catches grounding from the evaluator's probe observations (its graded measurements and monitor reads), or
+        # ground bytes replaced after they were verified.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             accepted = root/'accepted'; accepted.mkdir()
@@ -99,7 +99,7 @@ class GroundEvidenceTests(unittest.TestCase):
                          for p in (stale, model_path, probe_path, mapping, live)]
             device = {'device': {'session_id': 'provided', 'binding': {'host': '127.0.0.1', 'port': 1}}}
             ws = root/'worker'
-            prepared = prepare_stage('tq9', 'ground', root/'run', ws, accepted=[{'stage': 'probe', 'artifacts': artifacts}],
+            prepared = prepare_stage('tq9-v2', 'ground', root/'run', ws, accepted=[{'stage': 'probe', 'artifacts': artifacts}],
                                      options=device)
             evidence = json.loads((ws/'ground-evidence/device-observations.json').read_text())
             self.assertEqual(prepared['binding'], device['device']['binding'])
@@ -111,7 +111,7 @@ class GroundEvidenceTests(unittest.TestCase):
             for forbidden in ('PRIVATE', 'expected', 'score', 'monitor_observations', 'requested_duty'):
                 self.assertNotIn(forbidden, text)
             # Without the device its bench harness provides, ground waits for the operator.
-            self.assertIn('blocked', prepare_stage('tq9', 'ground', root/'run', root/'no-device',
+            self.assertIn('blocked', prepare_stage('tq9-v2', 'ground', root/'run', root/'no-device',
                                                    accepted=[{'stage': 'probe', 'artifacts': artifacts}]))
             # A filesystem change after verification must not replace copied bytes.
             original_read = Path.read_bytes
@@ -125,6 +125,6 @@ class GroundEvidenceTests(unittest.TestCase):
                     model_path.write_text('{}')
                 return content
             with patch.object(Path, 'read_bytes', concurrent_change):
-                prepare_stage('tq9', 'ground', root/'run', root/'next-worker', accepted=[{'stage': 'probe', 'artifacts': artifacts}],
+                prepare_stage('tq9-v2', 'ground', root/'run', root/'next-worker', accepted=[{'stage': 'probe', 'artifacts': artifacts}],
                               options=device)
             self.assertEqual((root/'next-worker/model/model.json').read_bytes(), before)

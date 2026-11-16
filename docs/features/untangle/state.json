@@ -4,7 +4,7 @@
   "branch": "mdk/untangle",
   "stage": "spec",
   "awaiting": null,
-  "current": "04",
+  "current": "05",
   "features": [
     {
       "id": "01",
@@ -27,8 +27,8 @@
     {
       "id": "04",
       "slug": "legacy-cases",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "a76b5af852fe30864a9d5516f4e005212c838ced"
     },
     {
       "id": "05",

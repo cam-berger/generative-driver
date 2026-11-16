@@ -153,7 +153,7 @@ def calibrate(case_id, options):
     from .authoring import evaluator_directory, build_case
     from .registry import resolve_case, pin_case
     from .emulator import truth_for_case
-    from .cases import _write
+    from .case_assets import write_json as _write
     from ..benchmark import case_root
     from ..toolkit import resources_root
     definition=resolve_case(case_id)

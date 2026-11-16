@@ -24,9 +24,9 @@ EMULATOR = 'scripted-emulator-handle'
 ALTERATIONS = (
     ('model', lambda request: {**request, 'executor_config': {**request['executor_config'], 'model': 'SUBSTITUTED-MODEL'}}),
     ('budget', lambda request: {**request, 'budget_seconds': 999}),
-    ('legacy case', lambda request: {**{key: value for key, value in request.items()
-                                        if key not in ('case_pin', 'device', 'admission', 'evaluation_token_sha256')},
-                                     'case': 'tq9'}),
+    ('another case', lambda request: {**{key: value for key, value in request.items()
+                                         if key not in ('case_pin', 'device', 'admission', 'evaluation_token_sha256')},
+                                      'case': 'sampled-sensor-v1'}),
 )
 
 
@@ -761,7 +761,7 @@ class ChildStartReplyTests(HarnessSuiteFixture):
 class FrozenChildTests(HarnessSuiteFixture):
     def test_a_child_requested_with_other_inputs_than_its_frozen_slot_is_refused_before_it_exists(self):
         # Catches a configurator that starts, for a suite slot, whatever child its harness requests: a substituted
-        # model or budget, or a v2 slot run as a legacy case that no evaluation would ever grade. The request must
+        # model or budget, or a slot run as another case with nothing of what its harness adds. The request must
         # be the frozen slot's own, less only what the harness adds (device, admission, evaluation token hash).
         for name, alter in ALTERATIONS:
             with self.subTest(alteration=name):

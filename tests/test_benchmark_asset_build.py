@@ -353,20 +353,21 @@ class DistributedInventoryTests(unittest.TestCase):
 
     def test_every_registered_firmware_pin_has_only_its_original_image_and_truth(self):
         from generative_driver.benchmark import case_root
-        from generative_driver.benchmark_support.registry import pin_case
+        from generative_driver.benchmark_support.registry import case_ids, pin_case
         root=case_root()
-        cases={'tq9':'2','tq9-v2':'5','sampled-sensor-v1':'5','parameter-store-v1':'5','bme280':'3',
-               'zephyr-modbus-v1':'1'}
+        cases={'tq9-v2':'5','sampled-sensor-v1':'5','parameter-store-v1':'5','zephyr-modbus-v1':'1'}
         for case,version in cases.items():
             with self.subTest(case=case):
                 pin=pin_case(case,'original',0)
                 self.assertEqual(pin['manifest']['version'],version)
                 self.assertEqual(pin['manifest']['evaluator_version'],version)
-                expected={'case.json'} | ({'firmware.bin'} if case!='bme280' else set())
+                expected={'case.json','firmware.bin'}
                 if case == 'zephyr-modbus-v1':
                     expected |= {'NOTICE.md', 'licenses'}
                 self.assertEqual({p.name for p in (root/'cases'/case).iterdir()},expected)
-        self.assertEqual({p.name for p in (root/'groundtruth').iterdir()},{case+'.enc' for case in cases})
+        # The answer files of the registered cases: the folder may hold others, which no registration names.
+        registered={case+'.enc' for case in case_ids()}
+        self.assertEqual({p.name for p in (root/'groundtruth').iterdir()} & registered,{case+'.enc' for case in cases})
 
     def test_retired_scenario_engine_is_not_distributed(self):
         import importlib.util

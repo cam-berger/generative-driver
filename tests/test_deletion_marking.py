@@ -170,7 +170,7 @@ class DeletionListTests(SmallTreeCase):
             LIST: deletion_list(still_used=[('`docs/a.md`', '`README.md`', ''), ('`docs/b.md`', '`README.md`', '01'),
                                             ('`docs/c.md`', '`README.md`', 'stays'),
                                             ('`docs/d.md`', '`README.md`', '10')],
-                                modules=[('`src/tool.py`', '11'), ('`src/other.py`', '02')],
+                                modules=[('`src/tool.py`', '12'), ('`src/other.py`', '02')],
                                 passages=[('`src/tool.py`', 0, 'Not about the benchmark', 'stays'),
                                           ('`docs/d.md`', 0, 'Mixed lines', '9')])})
         found = sorted(problems(root))
@@ -182,6 +182,61 @@ class DeletionListTests(SmallTreeCase):
                                            '`src/tool.py` under Tool modules that import the benchmark')):
             self.assertIn(entry, sentence)
             self.assertIn('Freed by', sentence)
+
+    def test_04_B7_takes_02_to_11_as_a_freed_by_and_reports_12_as_no_later_feature(self):
+        numbers = [f'{number:02d}' for number in range(1, 13)]
+        root = self.tree({
+            **{f'docs/{number}.md': 'Text.\n' for number in numbers},
+            LIST: deletion_list(still_used=[(f'`docs/{number}.md`', '`README.md`', number) for number in numbers])})
+        found = sorted(problems(root))
+        self.assertEqual(len(found), 2, found)
+        for sentence, number in zip(found, ('01', '12')):
+            self.assertIn(f'`docs/{number}.md` under Still used by the tool', sentence)
+            self.assertIn('02, 03, 04, 05, 06, 07, 08, 09, 10, 11: ' + number, sentence)
+
+    def test_04_B8_a_ready_row_inside_a_still_used_folder_is_no_problem_and_the_removal_takes_it_out(self):
+        root = self.tree({
+            'src/support/old.py': 'VALUE = 1\n', 'src/support/live.py': 'VALUE = 2\n',
+            'src/support/cases/old/case.json': '{}\n', 'src/support/cases/old/image.bin': b'\x00\xff',
+            'src/support/cases/new/case.json': '{}\n',
+            LIST: deletion_list(ready=[('`src/support/old.py`', 'A dropped case'),
+                                       ('`src/support/cases/old/`', 'A dropped case')],
+                                still_used=[('`src/support/`', 'The tool', '10')])})
+        self.assertEqual(problems(root), [])
+        destination = root.parent / 'copy'
+        self.assertEqual(strip(root, destination), [])
+        self.assertEqual(snapshot(destination), {'src/support/live.py': b'VALUE = 2\n',
+                                                 'src/support/cases/new/case.json': b'{}\n'})
+
+    def test_04_B8_every_other_pair_of_rows_that_cover_one_file_is_still_reported(self):
+        files = {'src/support/old.py': 'VALUE = 1\n', 'src/support/deep/old.py': 'VALUE = 2\n'}
+        ready, still_used, kept = 'Ready to delete', 'Still used by the tool', 'Kept'
+        folder, deep, file = '`src/support/`', '`src/support/deep/`', '`src/support/deep/old.py`'
+        pairs = {
+            'two ready rows': ({ready: [folder, file]}, (f'{folder} under {ready}', f'{file} under {ready}')),
+            'two still-used rows': ({still_used: [folder, file]},
+                                    (f'{folder} under {still_used}', f'{file} under {still_used}')),
+            'two kept rows': ({kept: [folder, file]}, (f'{folder} under {kept}', f'{file} under {kept}')),
+            'a kept row inside a still-used folder': ({still_used: [folder], kept: [file]},
+                                                      (f'{folder} under {still_used}', f'{file} under {kept}')),
+            'a ready row inside a kept folder': ({ready: [file], kept: [folder]},
+                                                 (f'{file} under {ready}', f'{folder} under {kept}')),
+            'a kept row inside a ready folder': ({ready: [folder], kept: [file]},
+                                                 (f'{folder} under {ready}', f'{file} under {kept}')),
+            'a still-used row inside a ready folder': ({ready: [folder], still_used: [file]},
+                                                       (f'{folder} under {ready}', f'{file} under {still_used}')),
+            'one item under ready and still used': ({ready: [deep], still_used: [deep]},
+                                                    (f'{deep} under {ready}', f'{deep} under {still_used}')),
+            'two still-used folders around one ready row': ({ready: [file], still_used: [folder, deep]},
+                                                            (f'{folder} under {still_used}',
+                                                             f'{deep} under {still_used}')),
+        }
+        for name, (rows, named) in pairs.items():
+            with self.subTest(name):
+                text = deletion_list(ready=[(item, 'A note') for item in rows.get(ready, ())],
+                                     still_used=[(item, 'The tool', '10') for item in rows.get(still_used, ())],
+                                     kept=[(item, 'A record') for item in rows.get(kept, ())])
+                self.assert_one_problem(problems(self.tree({**files, LIST: text})), *named, 'both cover')
 
     def test_01_B2_names_each_file_with_a_benchmark_name_that_no_entry_covers(self):
         named = ('bench/README.md', 'src/tool/resources/registrations/cases.json', 'docs/bench-notes.md',

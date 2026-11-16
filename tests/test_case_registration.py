@@ -14,7 +14,7 @@ class CaseRegistrationTests(unittest.TestCase):
         from generative_driver.benchmark import run
         with tempfile.TemporaryDirectory() as temp, \
                 patch('generative_driver.benchmark_support.harness.launch') as launch:
-            for case in ('setup-smoke', 'tq9'):
+            for case in ('setup-smoke', 'tq9-v2'):
                 with self.subTest(case=case), self.assertRaisesRegex(ValueError, 'Unsupported executor'):
                     run(case, Path(temp) / 'output', executor='unknown-runtime')
             launch.assert_not_called()
@@ -105,13 +105,6 @@ class RegistrationTableTests(unittest.TestCase):
             CaseRegistration('setup-smoke', 'setup-smoke', '1', 'smoke', None, execution='scripted-replay',
                              evidence_track='recorded-replay', default_effects=[], default_scope='installation',
                              requires_calibration=False, has_case_file=False),
-            CaseRegistration('tq9', 'tq9', '2', 'legacy-emulator', 'benchmark-case/1', native_module='tq9_legacy',
-                             mission_case='tq9-v2', grading_method='recorded-reuse', evidence_track='firmware',
-                             approval_scope='emulator', default_effects=['write', 'actuate'],
-                             requires_calibration=False),
-            CaseRegistration('bme280', 'bme280', '3', 'legacy-physical', 'benchmark-case/1',
-                             grading_method='recorded-reuse', evidence_track='physical', approval_scope='bound-device',
-                             default_effects=['write'], requires_calibration=False, single_image=False),
             CaseRegistration('tq9-v2', 'tq9', '5', 'emulator-v2', 'benchmark-case/2',
                              native_module='tq9_v2', calibration_kind='reference'),
             CaseRegistration('tq9-v3', 'tq9', '1', 'emulator-v2', 'benchmark-case/2',

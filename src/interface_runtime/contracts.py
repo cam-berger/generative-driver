@@ -4,6 +4,7 @@ The executable model is a derived view. Public parameters, effects and units
 have one authority, independent of transport and decoder details.
 """
 from copy import deepcopy
+import json
 import math
 
 from .engine import validate_model
@@ -150,8 +151,10 @@ def compile_contract(contract, protocol):
     """Build and validate the engine view from its two authoritative documents."""
     _fields(contract, ('schema', 'device', 'identity', 'operations', 'provenance'))
     _fields(protocol, ('schema', 'runtime_schema', 'channel', 'operations'))
-    if contract.get('schema') != 'driver-contract/1' or protocol.get('schema') != 'driver-protocol/1':
-        raise ValueError('Unsupported driver contract or protocol schema')
+    if contract.get('schema') != 'driver-contract/1':
+        raise ValueError('Driver contract format is not one this kit knows: ' + repr(contract.get('schema'))[:120])
+    if protocol.get('schema') != 'driver-protocol/1':
+        raise ValueError('Driver protocol format is not one this kit knows: ' + repr(protocol.get('schema'))[:120])
     if contract['operations'].keys() != protocol['operations'].keys():
         raise ValueError('Contract and protocol operations differ')
     model = {'schema': protocol['runtime_schema'], 'device': deepcopy(contract['device']),
@@ -193,26 +196,86 @@ def compile_contract(contract, protocol):
 
 
 def _preconditions(contract, model):
+    for name in contract['operations']:
+        check_preconditions(contract, model, name)
+
+
+def check_preconditions(contract, model, name):
+    """Raise ValueError unless operation `name`'s preconditions hold across `contract`, over its compiled `model`."""
     from .engine import _arguments
-    for name, operation in contract['operations'].items():
-        conditions = operation.get('preconditions', [])
-        if type(conditions) is not list or len(conditions) > 16:
-            raise ValueError('Preconditions must be a bounded list')
-        seen = set()
-        for condition in conditions:
-            _fields(condition, ('id', 'description', 'observation', 'operator', 'expected'))
-            if (type(condition['id']) is not str or not condition['id'] or condition['id'] in seen
-                    or type(condition['description']) is not str or not condition['description'].strip()):
-                raise ValueError('Preconditions need unique identities and readable rules')
-            seen.add(condition['id'])
-            if condition['operator'] != 'eq':
-                raise ValueError('Unsupported precondition operator')
-            source = condition['observation']
-            _fields(source, ('operation', 'parameters', 'output'))
-            observed = contract['operations'].get(source['operation'])
-            if (observed is None or observed['effect'] != 'read' or observed.get('preconditions')
-                    or source['output'] not in observed['outputs']):
-                raise ValueError('Preconditions require a declared unguarded read observation')
-            _arguments(model['operations'][source['operation']]['parameters'], source['parameters'])
-            validate_value(condition['expected'], observed['outputs'][source['output']]['schema'],
-                           'precondition.expected')
+    conditions = contract['operations'][name].get('preconditions', [])
+    if type(conditions) is not list or len(conditions) > 16:
+        raise ValueError('Preconditions must be a bounded list')
+    seen = set()
+    for condition in conditions:
+        _fields(condition, ('id', 'description', 'observation', 'operator', 'expected'))
+        if (type(condition['id']) is not str or not condition['id'] or condition['id'] in seen
+                or type(condition['description']) is not str or not condition['description'].strip()):
+            raise ValueError('Preconditions need unique identities and readable rules')
+        seen.add(condition['id'])
+        if condition['operator'] != 'eq':
+            raise ValueError('Unsupported precondition operator')
+        source = condition['observation']
+        _fields(source, ('operation', 'parameters', 'output'))
+        observed = contract['operations'].get(source['operation'])
+        if (observed is None or observed['effect'] != 'read' or observed.get('preconditions')
+                or source['output'] not in observed['outputs']):
+            raise ValueError('Preconditions require a declared unguarded read observation')
+        _arguments(model['operations'][source['operation']]['parameters'], source['parameters'])
+        validate_value(condition['expected'], observed['outputs'][source['output']]['schema'],
+                       'precondition.expected')
+
+
+def describes(contract, model):
+    """For each operation of `model`, None when `contract`'s entry, compiled with the protocol `from_model` derives from
+    `model`, gives exactly the model's operation and passes the contract's own checks; otherwise why not: the check it
+    fails, its first difference from the model, or that the contract leaves it out. Preconditions span operations, so
+    `check_preconditions` checks them apart. Raises ValueError for a contract without an operations object."""
+    imported, protocol = from_model(model)
+    operations = contract.get('operations') if type(contract) is dict else None
+    if type(operations) is not dict:
+        raise ValueError('The contract has no operations object')
+    found = {}
+    for name, expected in model['operations'].items():
+        if name not in operations:
+            found[name] = 'the contract leaves it out'
+            continue
+        entry = operations[name]
+        trial = deepcopy(imported)
+        trial['operations'][name] = ({key: value for key, value in entry.items() if key != 'preconditions'}
+                                     if type(entry) is dict else entry)
+        try:
+            compiled = compile_contract(trial, protocol)['operations'][name]
+        except (ValueError, TypeError, KeyError, AttributeError, RecursionError) as error:
+            found[name] = str(error)
+            continue
+        found[name] = _first_difference(compiled, expected, 'operations.' + name)
+    return found
+
+
+def _shown(value):
+    return json.dumps(value, sort_keys=True)[:200]
+
+
+def _first_difference(actual, expected, path):
+    """Where a compiled operation first differs from the model's, in document order, or None."""
+    if type(actual) is dict and type(expected) is dict:
+        for key in [*expected, *(key for key in actual if key not in expected)]:
+            where = path + '.' + str(key)
+            if key not in actual:
+                return where + ': the contract gives nothing where model.json has ' + _shown(expected[key])
+            if key not in expected:
+                return where + ': the contract gives ' + _shown(actual[key]) + ' where model.json has nothing'
+            found = _first_difference(actual[key], expected[key], where)
+            if found:
+                return found
+        return None
+    if type(actual) is list and type(expected) is list and len(actual) == len(expected):
+        for index, (left, right) in enumerate(zip(actual, expected)):
+            found = _first_difference(left, right, path + '.' + str(index))
+            if found:
+                return found
+        return None
+    if actual != expected:
+        return path + ': the contract gives ' + _shown(actual) + ' where model.json has ' + _shown(expected)
+    return None

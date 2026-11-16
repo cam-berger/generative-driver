@@ -34,6 +34,8 @@ Generated assets pin Python and the state directory. Supply a leading `--home DI
 
 After upgrading the package or moving the Python environment, run the same `setup` command again. It replaces the plugin it generated in that folder, so the registered marketplace holds the new build; it refuses a folder holding a plugin or marketplace file it did not generate. Then reinstall or refresh **Generative Driver** in Codex and start a new chat.
 
+Drivers built before an upgrade keep working, in device sessions and in reuse: the kit runs its installed runtime over each package's data, and a package keeps the tool catalog it was built with. `emit_check` on such a package reports `runtime_current: false` and replays it on the installed runtime.
+
 `driver_doctor` called from Codex reports `plugin.state`: `current`, or `stale` with the command to run again. `python -m generative_driver doctor` from a terminal checks only the plugin `setup` last generated: `stale` when it is out of date, `unchecked` otherwise.
 
 ## MCP-only setup
@@ -67,6 +69,32 @@ A failure prints `"ok": false` with `failed_stage`, `reason` and `logs`, and kee
 The configurator launches workers and retains progress after disconnect. [Benchmark instructions](../bench/README.md) cover replay, calibrated agent trials and private evaluator inputs. Plugin installation does not install optional native tools. The plugin format and stdio connection have automated checks; UI labels may vary.
 
 For emulated benchmarks, `driver_benchmark_run` sends the evaluator password file path to a bench harness. The configurator never receives the password or its path. The harness provides the device and grades once after the run; workers see instrument readings, not grades. Current `assistive/1` results form a new series. Workers are not read-isolated; answer-key separation is password-based, not a sandbox. Fresh native calibration is required because the recorded calibration predates this protocol. See [trial commands and scoring](../bench/README.md#run-an-agent-benchmark).
+
+## Firmware analysis and interpret tasks
+
+Name `ghidra_home` and `java_home` in `driver_start`, and the configurator analyzes the acquired firmware once, before the first interpret worker, with the kit's Ghidra helper. It does so for an ELF of 32-bit ARM, AArch64 or Xtensa, and for a raw Cortex-M image whose vector table is at its first byte. Every interpret worker of the run, repairs included, reads that analysis and its index, `ANALYSIS_INDEX.json`, instead of running Ghidra again. When the analysis cannot be made, interpretation goes on as before, and the interpret stage's notes say why under `configurator.interpretation.kit_analysis`.
+
+Interpretation runs as one worker unless the run starts with `interpretation` set to `tasks`:
+
+```json
+{"goal": "...", "ghidra_home": "/absolute/path/to/ghidra", "java_home": "/absolute/path/to/jdk", "interpretation": "tasks"}
+```
+
+A task-mode attempt is an inventory of the firmware's commands, one fresh worker per command, and a cross-check of the model the configurator assembles from their pieces. A repair re-runs only the commands the device contradicted. The mode needs the analysis; without it, or when an inventory or the identity command's piece is unusable, the attempt runs the single worker and its notes say so. While a task runs, `driver_status` names it in `worker.task`.
+
+Task mode is unmeasured: whether it costs fewer tokens or makes better drivers than the single worker is a hypothesis until model runs compare them. Each task's token use is recorded for that comparison, in its `task.finished` event and in a `reports` row of its own under the stage's assignment. Benchmark runs use neither the analysis nor task mode.
+
+## Documents and runs without firmware
+
+Pass a manual, protocol notes or a datasheet with a run as a named input of `driver_start`:
+
+```json
+{"goal": "...", "inputs": {"firmware.bin": "/absolute/path/firmware.bin", "manual.pdf": "/absolute/path/manual.pdf"}}
+```
+
+The acquire worker imports each PDF, `.txt` or `.md` input with `acquire_document`, which splits it into page text. A PDF needs pypdf: install `generative-driver[docs]`. Every interpret worker reads the text of the run's documents, with the datasheet pages and protocol specifications the acquire stage fetched, under `documents/` with `DOCUMENTS.json`, up to 2 MiB in all. Documents are evidence of meanings, units and framing; where one disagrees with the firmware or the device, the worker follows the firmware or the device.
+
+A run that acquires no firmware image, or several, and names a device `binding` interprets device first: one worker writes the model from the device's replies to operations it declares `read`, with the listen evidence and the documents. The configurator refuses it any other operation, whatever the run's grants; probe and ground then test the model under those grants, and the run goes on as usual. The interpret stage's notes give the mode `device` and list each device call. A run with neither one image nor a binding skips interpretation and ends without a driver. Benchmark runs get neither documents nor device-first interpretation.
 
 ## When a run fails
 

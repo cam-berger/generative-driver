@@ -35,7 +35,8 @@ PROTOCOL = 'assistive/1'
 STAGE_INPUTS = {'probe': (('interpret', 'interpreted model'),),
                 'ground': (('interpret', 'interpreted model'), ('probe', 'probe records'))}
 STAGE_TOOLS = {
-    'acquire': ['acquire_serial_listen','acquire_firmware_artifact','acquire_datasheet','acquire_protocol_spec','acquire_classify'],
+    'acquire': ['acquire_serial_listen','acquire_firmware_artifact','acquire_datasheet','acquire_protocol_spec',
+                'acquire_classify','acquire_document'],
     'interpret': ['firmware_prepare','firmware_collect','firmware_validate','model_validate','model_provenance_audit','ghidra_run','image_map_check'],
     # Probe and ground workers get no model_validate: the register validator writes beside the model it checks, which
     # would alter an assigned input. The configurator validates each assigned model on its own copy and notes it.
@@ -47,6 +48,9 @@ STAGE_TOOLS = {
 # Tools whose `address` and `serial_number` select a USB device (vid:pid and serial). The configurator owns that
 # selection as it owns the serial port: a worker names a transport, and only the operator's bound identity is read.
 USB_SELECTING = ('acquire_classify', 'acquire_selfdescription')
+# The tool that imports a document passed with the run reads only the acquire workspace's inputs folder, which the
+# configurator names: a worker names a file in it (07-B1).
+DOCUMENT_IMPORT = 'acquire_document'
 GROUND_OBJECTIVE = ('Test the meanings the interpreted model gives the device: units, scaling and the effects of its '
                     'operations. Run the model on the device with probe_run and interface_execute through the '
                     'configurator-owned connection, compare the outputs with the probe records and with operator '
@@ -609,11 +613,14 @@ def _device_diff(events, assignment, contracts=None, writers=None):
     return diff
 
 
-def _notes(result, checked, outcome, *, refusals=(), missing=()):
+def _notes(result, checked, outcome, *, refusals=(), missing=(), contract=(), interpretation=None):
     """stage-notes/1: worker claims, truth-free configurator checks, open questions and the outcome.
 
     `missing` names stage inputs that were absent; `refusals` are the gateway's refusals of this worker's tool calls.
-    The configurator's `records` bind each probe record a stage hands on to the digest of the model that wrote it.
+    The configurator's `records` bind each probe record a stage hands on to the digest of the model that wrote it, and
+    its `driver_contract` notes say which operations a generic emit packages with the contract the kit imports. A
+    generic interpret stage's `interpretation` says whether the kit analysis was made, or why not, and whether the stage
+    interpreted as tasks, with the hashes of the records they kept (docs/features/kit-fixes/06-interpret-tasks.md).
     """
     report = result.get('report') if isinstance(result.get('report'), dict) else {}
     listed = lambda key: report[key] if isinstance(report.get(key), list) else []
@@ -630,7 +637,9 @@ def _notes(result, checked, outcome, *, refusals=(), missing=()):
                        'checks': listed('checks'), 'unresolved': unresolved},
             'configurator': {'checks': observed.get('checks', []), 'dropped_artifacts': observed.get('dropped_artifacts', []),
                              'records': observed.get('records', []),
-                             'tool_refusals': list(refusals), 'device_diff': checked.get('device_diff')},
+                             'tool_refusals': list(refusals), 'device_diff': checked.get('device_diff'),
+                             **({'driver_contract': list(contract)} if contract else {}),
+                             **({'interpretation': interpretation} if interpretation else {})},
             'open_questions': questions, 'outcome': {'kind': outcome.kind, 'reason': outcome.reason}}
 
 
@@ -761,7 +770,7 @@ def _emit_check_failure(result):
     if result.get('integrity_ok') is False:
         return 'package integrity failed'
     if result.get('runtime_current') is False:
-        return 'runtime is not current, so replay did not run'
+        return "the package carries a runtime other than this kit's"
     if result.get('replay_status') not in (None, 'passed'):
         return 'replay ' + str(result['replay_status'])
     return 'seeded check failed' if 'seeds_run' in result else 'emit_check reported failure'
@@ -889,7 +898,8 @@ def _live_outcome(event):
 
 def _frozen_package(package, strict=False):
     """What judging a run of a frozen package needs, read from its bytes: its content digest, its manifest's digest
-    (which the snapshot emit_test_live executes carries), its driver directory's digest (which interface_execute runs
+    (which emit_test_live reports as `manifest_sha256` when it runs the installed runtime over the package's data),
+    its driver directory's digest (which interface_execute runs
     as a model), its identity operation, each operation's declared effect (absent is actuate, as the gateway reads it),
     whether its channel declares that opening it resets the device (its runtime then needs the reset grant for every
     operation) and its functions: the operations beyond identity with a step that reaches the device (an exchange or
@@ -2295,6 +2305,9 @@ class Controller:
             value = params.get(key)
             if value is not None and (not isinstance(value, str) or not Path(value).is_absolute()):
                 raise ValueError(key + ' must be an absolute path to the selected installation')
+        from .interpret_tasks import MODES
+        if params.get('interpretation') is not None and params['interpretation'] not in MODES:
+            raise ValueError('interpretation must be single or tasks: ' + repr(params['interpretation'])[:60])
         executor = resolve_executor(params.get('executor'))
         budget = params.get('budget_seconds', 10800)
         if type(budget) not in (int, float) or not 0 < budget <= 7 * 86400:
@@ -2441,8 +2454,16 @@ class Controller:
                 with self._db() as db:
                     responses=db.execute("SELECT payload FROM events WHERE run_id=? AND kind='operator.response' ORDER BY seq",(run_id,)).fetchall()
                 current_spec['_operator_observations']=[value.get('observation') or {'message':value['message']} for value in (json.loads(r['payload']) for r in responses)]
-                with _integrity_checked():
-                    prepared = self._prepare(current_spec, stage, run_dir, workspace, accepted)
+                try:
+                    with _integrity_checked():
+                        prepared = self._prepare(current_spec, stage, run_dir, workspace, accepted)
+                except tool_process.Unfinished as unfinished:
+                    # The kit analysis was stopped (`_kit_analysis`): a cancel or a shutdown ends the run as it ends a
+                    # worker, and a spent budget blocks it as it blocks a stage.
+                    if unfinished.reason == 'budget':
+                        self._state(run_id, 'blocked', 'Run exhausted its wall-clock budget', stage,
+                                    outcome_category='operator')
+                    return
                 if prepared.get('blocked'):
                     # Preparation waits for the operator: a binding, a grant, a reference or the device the bench
                     # harness provides.
@@ -2483,6 +2504,9 @@ class Controller:
                     assignment['device_mcp'] = prepared['device_mcp']
                 if prepared.get('collection'):
                     assignment['collection'] = prepared['collection']
+                if prepared.get('device_first'):
+                    assignment.update(device_first=prepared['device_first'],
+                                      effects=prepared['device_first']['effects'])
                 began = time.time()
                 with self._db() as db:
                     self._claim_binding(assignment.get('binding'),run_id,db)
@@ -2510,18 +2534,32 @@ class Controller:
                 # `status` shows the worker's signs of life while it runs; the launch reports each line it prints.
                 self._stage_workers.began(run_id, attempt, stage, began)
                 try:
-                    result = execute(StageRequest(
-                        stage=stage, workspace=workspace, prompt=prompt,
-                        budget_seconds=max(0.01, row['created'] + spec['budget_seconds'] - time.time()),
-                        report_required=assignment['report_required'], allowed_tools=assignment['allowed_tools'],
-                        gateway=gateway if assignment['allowed_tools'] else None,
-                        approve_scoped_tools=spec.get('scoped_tool_approval') in ('emulator','bound-device'),
-                        on_event=lambda event: self._stage_workers.printed(run_id)), spec['executor_config'], cancel)
+                    ran = None
+                    if prepared.get('tasks'):
+                        # Interpretation as tasks: each task is a fresh worker recorded under this one assignment.
+                        from . import interpret_tasks
+                        ran = interpret_tasks.run(prepared['tasks'], launch=lambda task, where, words: self._task(
+                            run_id, assignment, task, where, words, row['created'] + spec['budget_seconds'],
+                            spec['executor_config'], cancel))
+                        prepared['interpretation'] = ran['interpretation']
+                        result = ran.get('result')
+                    if ran is None or ran.get('fallback'):
+                        result = execute(StageRequest(
+                            stage=stage, workspace=workspace, prompt=prompt,
+                            budget_seconds=max(0.01, row['created'] + spec['budget_seconds'] - time.time()),
+                            report_required=assignment['report_required'], allowed_tools=assignment['allowed_tools'],
+                            gateway=gateway if assignment['allowed_tools'] else None,
+                            approve_scoped_tools=spec.get('scoped_tool_approval') in ('emulator','bound-device'),
+                            on_event=lambda event: self._stage_workers.printed(run_id)),
+                            spec['executor_config'], cancel)
                 finally:
                     self._stage_workers.ended(run_id)
-                record = {'assignment_id': attempt, 'stage': stage, 'revision':revision,'workspace': str(workspace), **result}
+                record = {'assignment_id': attempt, 'stage': stage, 'revision':revision,'workspace': str(workspace),
+                          **result}
                 with self._db() as db:
-                    db.execute('INSERT INTO reports VALUES(?,?,?,?,?)', (attempt, run_id, stage, _json(record), time.time()))
+                    if not (ran and ran.get('result')):  # Tasks that ran to the end or stopped have rows of their own.
+                        db.execute('INSERT INTO reports VALUES(?,?,?,?,?)',
+                                   (attempt, run_id, stage, _json(record), time.time()))
                     self._event(run_id, 'worker.finished', {'stage':stage, 'runtime':result['runtime'], 'status':result['status'], 'usage':result.get('usage')}, db)
                 if cancel.is_set():
                     return
@@ -2579,7 +2617,13 @@ class Controller:
                         rows = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='tool.refused' ORDER BY seq", (run_id,)).fetchall()
                     refusals = [{'name': event.get('name'), 'reason': event.get('reason')} for event in (json.loads(r['payload']) for r in rows)
                                 if event.get('assignment_id') == attempt and event.get('actor') == 'worker']
-                    notes = _notes(result, checked, outcome, refusals=refusals, missing=prepared.get('input_notes', ()))
+                    if assignment.get('device_first'):
+                        from . import device_first
+                        prepared['interpretation'] = {**prepared['interpretation'], 'device_calls': device_first.calls(
+                            self._started(run_id, assignment), self._finished(run_id, assignment))}
+                    notes = _notes(result, checked, outcome, refusals=refusals, missing=prepared.get('input_notes', ()),
+                                   contract=prepared.get('driver_contract', ()),
+                                   interpretation=prepared.get('interpretation'))
                     if outcome.kind == 'revise':
                         # The partial handoff, the new revision and the route to interpret commit together.
                         progress.update(revision=revision+1,next_stage='interpret',repairs=progress['repairs']+1,feedback=outcome.diff)
@@ -2870,12 +2914,19 @@ class Controller:
             images = named if len(named) == 1 else [p for p in artifacts if p.suffix.lower() in ('.bin', '.elf')]
             if spec.get('front_end','interpret-interface') != 'interpret-interface':
                 return {'skip':'Interpretation skipped: generic blind interpretation supports only front_end=interpret-interface'}
-            if len(images) != 1:
+            # With no single image but a device binding, the worker interprets the device first (07-B5).
+            from . import device_first, kit_analysis
+            device = device_first.applies(spec, images)
+            if len(images) != 1 and not device:
                 return {'skip':'Interpretation skipped: no single acquired binary to interpret (' + str(len(images)) + ' candidates)'}
-            # A repair keeps the sealed workspace and adds the device diff and the candidate it contradicts.
-            from .analysis import firmware_analysis_inputs
-            inputs = {'image.bin':str(images[0]),
-                      **firmware_analysis_inputs(run_dir / 'preparation' / workspace.name / 'context', spec)}
+            analysis, inputs = None, {}
+            if not device:
+                analysis = self._kit_analysis(spec, run_dir, images[0])
+                # A repair keeps the sealed workspace and adds the device diff and the candidate it contradicts.
+                from .analysis import firmware_analysis_inputs
+                inputs = {'image.bin':str(images[0]),
+                          **firmware_analysis_inputs(run_dir / 'preparation' / workspace.name / 'context', spec),
+                          **kit_analysis.sealed_inputs(analysis)}
             # A successful passive listen records transport settings and boot/reset evidence.
             # Keep that observed acquisition evidence in the sealed interpretation inputs.
             for artifact in artifacts:
@@ -2900,14 +2951,30 @@ class Controller:
                                 'an evidence-backed exchange. The configurator supplies the endpoint separately.'
                         }, indent=1), encoding='utf-8')
                         inputs['BINDING_CONTEXT.json'] = str(binding_context)
+            # The supplementary documents the acquire handoff carries (07-B3), from the calls that wrote them.
+            from . import driver_contract, supplementary_documents
+            calls = [call for call in self._finished(run_dir.name, {'id': acquisition['assignment_id']})
+                     if call.get('ok')] if acquisition and acquisition.get('assignment_id') else []
+            documents = supplementary_documents.sealed_inputs(run_dir / 'preparation' / workspace.name / 'context',
+                                                              acquisition, calls)
+            inputs.update(documents)
             tasks = run_dir / 'preparation' / workspace.name / 'context' / 'TASKS.json'
             tasks.parent.mkdir(parents=True, exist_ok=True)
-            tasks.write_text(json.dumps({'schema': 'candidate-task-contract/1',
+            # A device-first worker has its own TASKS.json and instructions (07-B6).
+            tasks.write_text(json.dumps({**device_first.tasks(spec['goal'], spec.get('effects', ['read'])),
+                **({'documents': supplementary_documents.task_entry(device_first=True)} if documents else {})},
+                indent=1) if device else json.dumps({'schema': 'candidate-task-contract/1',
                 'tasks': {'requested': {'meaning': spec['goal']}}, 'effect_grants': spec.get('effects', ['read']),
                 'instructions': 'The objective describes requested behavior, not protocol evidence. Recover bytes, '
                     'decoders and units from supplied evidence. Report unsupported behavior. Do not execute or '
-                    'relabel effects outside the grants.'}, indent=1), encoding='utf-8')
+                    'relabel effects outside the grants. ' + driver_contract.TASK,
+                **({'kit_analysis': kit_analysis.task_entry(analysis)} if analysis and analysis['made'] else {}),
+                **({'documents': supplementary_documents.task_entry()} if documents else {})}, indent=1),
+                encoding='utf-8')
             inputs['TASKS.json'] = str(tasks)
+            inputs.update(driver_contract.interpret_inputs())
+            if device:
+                inputs.update(device_first.sealed_inputs())
             previous = next((a['path'] for h in reversed(accepted) if h['stage'] == 'interpret' for a in h['artifacts']
                              if (Path(a['path']) / 'model.json').is_file()), None)
             if previous:
@@ -2917,8 +2984,8 @@ class Controller:
             if previous or defects:
                 # Say what each repair input is, so the agent starts from the prior candidate, and that every repair
                 # input is sealed: the configurator re-hashes them after the agent, and a change stops the run.
-                sealed = [*(key + ('/' if key == 'previous-model' else '') for key in inputs), *(['defects.json'] if defects else []),
-                          'REPAIR_CONTEXT.json']
+                sealed = [*(key + ('/' if Path(inputs[key]).is_dir() else '') for key in inputs),
+                          *(['defects.json'] if defects else []), 'REPAIR_CONTEXT.json']
                 context = tool_run / 'repair' / 'REPAIR_CONTEXT.json'
                 context.parent.mkdir(parents=True, exist_ok=True)
                 context.write_text(json.dumps({'schema': 'device-repair-context/1', 'mode': 'repair',
@@ -2936,16 +3003,40 @@ class Controller:
                                     'supplied in this workspace: read them and leave them unchanged; changing any sealed '
                                     'input stops the run. Write the revised model.json, and replies.json when BRIEF.md '
                                     'asks for it, at the workspace root, and record which evidence each correction '
-                                    'addresses in NOTES.md.'}, indent=1), encoding='utf-8')
+                                    'addresses in NOTES.md. ' + driver_contract.REPAIR}, indent=1), encoding='utf-8')
                 inputs['REPAIR_CONTEXT.json'] = str(context)
             prepared = call_tool('interpret_run',{'run_dir':str(tool_run),'front_end':'interpret-interface','inputs':inputs,
                 **({'defects':defects} if defects else {}),'mode':'prepare','workspace_root':tempfile.mkdtemp(prefix='gd-candidate-')})
             if not prepared.get('ok'):
                 return {'skip':'Could not prepare a sealed interpretation workspace: '+
                         str(prepared.get('reason',prepared.get('error','unknown preparation error')))}
+            from . import interpret_tasks
+            if device:
+                return {'work_dir':prepared['workspace'],'prompt':device_first.prompt(Path(prepared['workspace'])),
+                    'report_required':False,
+                    'inputs':[str(Path(prepared['workspace'])/name) for name in prepared['sealed_inputs']],
+                    'allowed_tools':list(device_first.TOOLS),
+                    'collection':{'run_dir':str(tool_run),'expected_seal_sha256':prepared['seal_sha256'],
+                                  'model_dir':prepared['model_dir']},
+                    # Its calls run with these effects and keep their records outside its workspace (07-B7).
+                    'device_first':{'effects':device_first.effects(spec.get('effects', ['read'])),
+                                    'records':str(run_dir / device_first.FOLDER / workspace.name)},
+                    'interpretation': device_first.interpretation(
+                        spec.get('interpretation') or interpret_tasks.MODES[0], len(images))}
+            # A run that asked for tasks runs this attempt as tasks (`interpret_tasks`), which leave their output in
+            # the sealed workspace prepared here for the single worker; it is collected and checked the same way.
+            mode, notes, repairs = interpret_tasks.choose(spec, analysis, accepted)
+            interpretation = {'requested': spec.get('interpretation') or interpret_tasks.MODES[0], 'mode': mode,
+                              'kit_analysis': kit_analysis.note(analysis), 'notes': notes}
             return {'work_dir':prepared['workspace'],'prompt':prepared['prompt_for_agent'],'report_required':False,
                 'inputs':[str(Path(prepared['workspace'])/name) for name in prepared['sealed_inputs']], 'allowed_tools':[],
-                'collection':{'run_dir':str(tool_run),'expected_seal_sha256':prepared['seal_sha256'],'model_dir':prepared['model_dir']}}
+                'collection':{'run_dir':str(tool_run),'expected_seal_sha256':prepared['seal_sha256'],
+                              'model_dir':prepared['model_dir']},
+                'interpretation': interpretation,
+                **({'tasks': {'run_dir': str(run_dir), 'revision': spec.get('_revision', 0), 'attempt': workspace.name,
+                              'workspace': prepared['workspace'], 'index': analysis['index'],
+                              'export': analysis['export'], 'interpretation': interpretation, 'previous': repairs,
+                              'differences': defects}} if mode == 'tasks' else {})}
         # Reuse receives only the emitted package and never earlier notes. Acquire receives the operator inputs;
         # later stages receive what they need from the latest handoff that has it, and earlier notes.
         # Neither receives the prior conversation.
@@ -2968,12 +3059,20 @@ class Controller:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(path, target) if path.is_dir() else shutil.copy2(path, target)
             inputs.append(str(target))
+        contract_notes = []
+        if stage == 'emit':
+            from . import driver_contract
+            contract_notes = driver_contract.emit_inputs(inputs)
         context = {'stage': stage, 'acceptance': ('Report evidence and checks for this stage honestly. Observed tool '
                    'evidence is handed on; every report is kept as notes and the run continues.')}
         if spec.get('binding'):
             # Workers learn that a device exists, never its connection.
             context['device'] = ('An operator-owned device binding is attached. The configurator supplies its '
                                  'connection to device tools; do not pass a port or binding.')
+        if stage == 'acquire' and inputs:
+            context['documents'] = ('Import each document among the inputs (a PDF, .txt or .md file) with '
+                                    'acquire_document, naming its file as the inputs list it, so interpretation '
+                                    'reads it as a supplementary document.')
         if spec.get('binding') and stage == 'acquire':
             context['serial'] = ('Listen first with acquire_serial_listen. If it reports unsolicited output the device '
                                  'resets on open, and every later connection needs the operator reset grant. '
@@ -2986,8 +3085,56 @@ class Controller:
         if prior:
             context['prior_notes'] = prior
         prepared = {'objective': GROUND_OBJECTIVE + spec['goal'] if stage == 'ground' else spec['goal'], 'inputs': inputs,
-                'allowed_tools': STAGE_TOOLS[stage], 'context': context, **({'input_notes': missing} if missing else {})}
+                'allowed_tools': STAGE_TOOLS[stage], 'context': context,
+                **({'input_notes': missing} if missing else {}),
+                **({'driver_contract': contract_notes} if contract_notes else {})}
         return self._generated_reuse(prepared) if stage == 'reuse' else prepared
+
+    def _task(self, run_id, assignment, task, workspace, prompt, deadline, config, cancel):
+        """The runtime result of one interpret task's fresh worker, recorded under the stage attempt's one assignment:
+        an event when it starts and when it ends, a reports row of its own and, while it runs, `status.worker.task`
+        (06-B10). The worker is bounded by the run's budget (`deadline`) and stopped by a cancel as a stage worker
+        is."""
+        named = {'assignment_id': assignment['id'], 'stage': assignment['stage'], **task, 'workspace': str(workspace)}
+        self._event(run_id, 'task.started', named)
+        self._stage_workers.task(run_id, task)
+        try:
+            result = execute(StageRequest(stage=assignment['stage'], workspace=workspace, prompt=prompt,
+                                          budget_seconds=max(0.01, deadline - time.time()), report_required=False,
+                                          allowed_tools=[], on_event=lambda event: self._stage_workers.printed(run_id)),
+                             config, cancel)
+        finally:
+            self._stage_workers.task(run_id, None)
+        record = {'assignment_id': assignment['id'], 'stage': assignment['stage'], 'revision': assignment['revision'],
+                  'workspace': str(workspace), 'task': task, **result}
+        with self._db() as db:
+            db.execute('INSERT INTO reports VALUES(?,?,?,?,?)',
+                       (uuid.uuid4().hex, run_id, assignment['stage'], _json(record), time.time()))
+            finished = {**named, 'status': result['status'], 'usage': result.get('usage')}
+            self._event(run_id, 'task.finished', finished, db)
+        return result
+
+    def _kit_analysis(self, spec, run_dir, image):
+        """The run's kit analysis of its acquired `image` (`kit_analysis.prepare`), stopped at once by a cancel or a
+        shutdown and when the run's budget runs out, as a gateway call is."""
+        from . import kit_analysis
+        run_id = run_dir.name
+        with self._lock:
+            worker = self._workers.get(run_id)
+        cancel = worker[0] if worker else None
+        limits = []
+
+        def stop():
+            # The limits start when the helper is about to start: an analysis kept or not made needs none.
+            if not limits:
+                limits.append(tool_process.Limits(
+                    expires=time.monotonic() + kit_analysis.HELPER_TIMEOUT_SECONDS + kit_analysis.GRACE_SECONDS,
+                    budget_ends=self._row(run_id)['created'] + spec['budget_seconds'],
+                    cancelled=lambda: cancel is not None and cancel.is_set(), closing=lambda: self._closing))
+            return limits[0].stop()
+        return kit_analysis.prepare(run_dir, image, spec, stop=stop,
+                                    event=lambda kind, payload: self._event(run_id, kind, payload),
+                                    context={'log': str(self.log.path), 'run_id': run_id, 'stage': 'interpret'})
 
     @staticmethod
     def _generated_reuse(prepared):
@@ -3389,6 +3536,14 @@ class Controller:
             rows = db.execute("SELECT payload FROM events WHERE run_id=? AND kind='tool.finished' ORDER BY seq", (run_id,)).fetchall()
         return [event for event in (json.loads(row['payload']) for row in rows) if event.get('assignment_id') == assignment['id']]
 
+    def _started(self, run_id, assignment):
+        """The configurator's tool.started records of one assignment, in order, each with its dispatch id."""
+        with self._db() as db:
+            rows = db.execute("SELECT seq, payload FROM events WHERE run_id=? AND kind='tool.started' ORDER BY seq",
+                              (run_id,)).fetchall()
+        return [{**event, 'dispatch_id': str(row['seq'])} for row in rows for event in [json.loads(row['payload'])]
+                if event.get('assignment_id') == assignment['id']]
+
     def _observe_device(self, stage, assignment, mine, accepted, run_dir, workspace):
         """Probe and ground evidence from the configurator's own record, for generic and benchmark runs alike: its
         validation of each assigned model, every probe record of the device answering on its connection, the device
@@ -3756,6 +3911,8 @@ class Controller:
             owned = ('run_dir','binding','allow_effects','bus_url','port','allow_reset')
             if contract['name'] in USB_SELECTING:
                 owned += ('address', 'serial_number')
+            if contract['name'] == DOCUMENT_IMPORT:
+                owned += ('inputs_dir',)
             for bound in owned:
                 schema.get('properties', {}).pop(bound, None)
                 if bound in schema.get('required', []):
@@ -3775,6 +3932,8 @@ class Controller:
             raise ValueError('Connection, output directory and effect grants are configurator-owned')
         if name in USB_SELECTING and {'address', 'serial_number'} & arguments.keys():
             raise ValueError('USB device selection is configurator-owned: a worker names a transport, never a device')
+        if name == DOCUMENT_IMPORT and 'inputs_dir' in arguments:
+            raise ValueError('The inputs folder is configurator-owned: a worker names a file in it, never a folder')
         workspace = Path(assignment['workspace'])
         from .toolkit import _PATH_ARGUMENTS
         for key in _PATH_ARGUMENTS & arguments.keys():
@@ -3852,7 +4011,11 @@ class Controller:
                 arguments['port'] = resolve_serial_port(binding)
                 if name != 'acquire_serial_listen':
                     arguments['allow_reset'] = granted
-        arguments['run_dir'] = str(workspace / 'tools')
+        # A device-first worker's records stay outside its workspace, so they never enter the model it hands on.
+        records = Path(assignment['device_first']['records']) if assignment.get('device_first') else None
+        arguments['run_dir'] = str(records or workspace / 'tools')
+        if name == DOCUMENT_IMPORT:
+            arguments['inputs_dir'] = str(workspace / 'inputs')
         if name == 'acquire_classify' and isinstance(binding.get('url'), str) and binding['url'].lower().startswith('ftdi://'):
             # The operator's bridge is the only bus a worker's acquisition walks, as the bound port is the only serial
             # endpoint: a worker's own bus_url is refused above.
@@ -3864,6 +4027,13 @@ class Controller:
             arguments['binding'] = assignment['binding']
             arguments['allow_effects'] = assignment['effects']
         effects=operation_effects(name,arguments,classified and classified[0]) if connected else set()
+        if connected and records:
+            # Device-first interpretation runs only operations declared read, whatever the run's grants (07-B7).
+            from . import device_first
+            refused = device_first.refusal(_model_json(Path(arguments['model_dir']) / 'model.json'),
+                                           arguments.get('operation'), effects)
+            if refused:
+                raise ValueError(refused)
         if effects-{'read'}-set(assignment['effects']):
             raise ValueError('Operation requires an effect grant the operator has not supplied')
         effectful=bool(effects & {'write','actuate'})
@@ -3941,16 +4111,17 @@ class Controller:
             result = self._kit_tool(call_tool, name, arguments, run_id=run['id'], stage=assignment['stage'],
                                     limits=limits)
         observed_artifacts = {}
+        kept = [workspace, *([records.resolve()] if records else [])]
         for key in ('artifact','provenance','pages','pages_dir','manifest','package_dir','probe','model_dir','transcript'):
             raw = result.get(key)
             if isinstance(raw,str) and Path(raw).is_absolute():
                 path = Path(raw).resolve()
-                if path.is_relative_to(workspace) and path.exists():
+                if any(path.is_relative_to(folder) for folder in kept) and path.exists():
                     observed_artifacts[str(path)] = digest(path)
         for raw in result.get('artifacts', []) if isinstance(result.get('artifacts'), list) else []:
             if isinstance(raw, str) and Path(raw).is_absolute():
                 path = Path(raw).resolve()
-                if path.is_relative_to(workspace) and path.exists():
+                if any(path.is_relative_to(folder) for folder in kept) and path.exists():
                     observed_artifacts[str(path)] = digest(path)
         with self._db() as db:
             cancelled = db.execute('SELECT cancelled FROM runs WHERE id=?',(run['id'],)).fetchone()['cancelled']

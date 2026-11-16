@@ -3,6 +3,13 @@ import hashlib
 from pathlib import Path, PurePosixPath
 from .evidence import read_json
 
+_PACKAGE_FORMATS = ('interface-package/1', 'interface-package/2')
+
+
+def _named(value):
+    """A format name a package gives, bounded for a refusal's reason."""
+    return repr(value)[:120]
+
 
 def digest(path):
     h = hashlib.sha256()
@@ -34,11 +41,12 @@ def verify_package(root, expected_model_sha256=None, expected_manifest_sha256=No
         if (root/'manifest.json').is_symlink() or (root/'manifest.sha256').is_symlink():
             raise ValueError('manifest may not be a symlink')
         manifest = read_json(root/'manifest.json', 1048576)
+        if type(manifest) is dict and manifest.get('schema') not in _PACKAGE_FORMATS:
+            raise ValueError('package format is not one this kit knows: ' + _named(manifest.get('schema')))
         fields = {'schema','name','version','model_sha256','probe_sha256','source_evidence_kind','files'}
         if type(manifest) is dict and manifest.get('schema') == 'interface-package/2':
             fields |= {'contract_sha256', 'protocol_sha256', 'mcp_catalog_sha256'}
-        if (type(manifest) is not dict or set(manifest) != fields
-                or manifest['schema'] not in ('interface-package/1', 'interface-package/2')):
+        if type(manifest) is not dict or set(manifest) != fields:
             raise ValueError('invalid package manifest')
         actual_manifest = digest(root/'manifest.json')
         checksum = (root/'manifest.sha256').read_text(encoding="utf-8").strip()
@@ -73,12 +81,20 @@ def verify_package(root, expected_model_sha256=None, expected_manifest_sha256=No
             compiled = compile_contract(read_json(root/'driver/contract.json'), read_json(root/'driver/protocol.json'))
             if compiled != read_json(root/'driver/model.json'):
                 raise ValueError('model projection differs from driver contract and protocol')
-            from .catalog import render_catalog
+            from .catalog import render_catalog, RENDERERS
             catalog = read_json(root/'mcp-tools.json')
             if files.get('mcp-tools.json') != manifest['mcp_catalog_sha256']:
                 raise ValueError('manifest MCP catalog hash mismatch')
-            if catalog != render_catalog(read_json(root/'driver/contract.json'),
-                                         manifest['contract_sha256'], catalog.get('namespace')):
+            if type(catalog) is not dict or catalog.get('schema') != 'driver-mcp/1':
+                raise ValueError('MCP catalog format is not one this kit knows: '
+                                 + _named(catalog.get('schema') if type(catalog) is dict else catalog))
+            if catalog.get('renderer_version') not in RENDERERS:
+                raise ValueError('MCP catalog renderer version is not one this kit knows: '
+                                 + _named(catalog.get('renderer_version')))
+            # Each catalog is checked under the renderer it names, so a kit that renders new catalogs differently
+            # still verifies the ones it wrote before.
+            if catalog != render_catalog(read_json(root/'driver/contract.json'), manifest['contract_sha256'],
+                                         catalog.get('namespace'), catalog['renderer_version']):
                 raise ValueError('MCP catalog differs from the public driver contract')
         if manifest['source_evidence_kind'] not in ('live','replay'):
             raise ValueError('invalid package evidence kind')
@@ -95,8 +111,8 @@ def verify_package(root, expected_model_sha256=None, expected_manifest_sha256=No
 def inspect_package(root, trusted_python, expected_model_sha256=None, expected_manifest_sha256=None):
     """Non-executing integrity and currency check, including historical runtime inventories.
 
-    A matching self-contained manifest establishes integrity, not the trust to execute its Python.
-    Callers that execute must also require current trusted bytes and copy only their allowlisted files.
+    A matching self-contained manifest establishes integrity, not the trust to execute its Python. The kit therefore
+    never imports a package's Python: it runs its installed runtime over the package's data files (ADR 0008).
     """
     checked = verify_package(root, expected_model_sha256, expected_manifest_sha256)
     files = checked['manifest']['files'] if checked['ok'] else {}

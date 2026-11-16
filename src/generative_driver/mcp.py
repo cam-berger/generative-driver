@@ -28,18 +28,23 @@ def driver_start(goal: str, executor: Literal["codex"] | None = None, inputs: di
                  binding: dict | None = None, effects: list[str] | None = None,
                  budget_seconds: int = 10800, request_id: str | None = None,
                  scoped_tool_approval: Literal["bound-device"] | None = None,
-                 ghidra_home: str | None = None, java_home: str | None = None) -> str:
+                 ghidra_home: str | None = None, java_home: str | None = None,
+                 interpretation: Literal["single", "tasks"] | None = None) -> str:
     """Start a durable six-stage run using a configured runtime. Save the returned run_id.
     Configure the Codex executor with `generative-driver configure` before starting a run.
     Supply explicit inputs and operator binding; effects default to read. request_id deduplicates starts.
     Effects are read, write, actuate and reset; grant reset only for devices that restart when their port opens.
-    ghidra_home and java_home optionally select native analysis installations for the sealed firmware worker.
+    ghidra_home and java_home optionally select native analysis installations; the configurator then analyzes the
+    acquired firmware once for every interpret worker. interpretation is single (the default: one interpret worker) or
+    tasks: an inventory, one fresh worker per command and a cross-check, which needs that analysis. Task mode is
+    opt-in and its effect on cost and quality is unmeasured.
     Set bound-device approval only with the user's explicit consent to assigned tools for that binding/effect scope.
     """
     return _call("start", goal=goal, executor=executor, inputs=inputs or {}, binding=binding,
                  effects=effects if effects is not None else ["read"], budget_seconds=budget_seconds,
                  request_id=request_id, scoped_tool_approval=scoped_tool_approval,
-                 ghidra_home=ghidra_home, java_home=java_home)
+                 ghidra_home=ghidra_home, java_home=java_home,
+                 **({"interpretation": interpretation} if interpretation is not None else {}))
 
 
 @server.tool()
@@ -47,7 +52,8 @@ def driver_status(run_id: str) -> str:
     """Reconnect to the current stage, status, blockers, uncertain effects, latest stage notes and final verdict of a
     durable run. It also gives `deadline`, when the run's budget runs out (seconds since the epoch, like `created`);
     `repairs`, the repairs `used` and the repair `budget`; `worker`, null unless a stage worker is running, else its
-    `stage`, when it `started`, its `last_activity` and whether that was `output`, a `tool` call or its start; and
+    `stage`, when it `started`, its `last_activity` and whether that was `output`, a `tool` call or its start, and the
+    interpret `task` it runs ({kind, command}) when the run interprets as tasks; and
     `log`, the path of the service's log, which holds the traceback behind a failed run.
     """
     return _call("status", run_id=run_id)

@@ -9,6 +9,10 @@
 | Worker report | A claim, never a reason by itself to stop a run. |
 | Scripted worker | A program the kit ships that the configurator launches in place of the Codex CLI, doing a stage's work by a fixed script with no model. Its runs show the kit's machinery works, never a model's ability. |
 | Stand-in device | A fictional line-protocol device served on a localhost TCP port for one smoke. Its exchanges are not physical evidence. |
+| Kit analysis | The firmware analysis the configurator makes once per run, before interpretation, with its index of functions and likely command dispatchers. Workers read it; they do not rerun it unless the evidence contradicts how it loaded the image. |
+| Interpret task | One fresh worker inside an interpret stage attempt run in task mode: the inventory, one handler task per command, or the cross-check. Tasks are recorded under the stage's one assignment, never as stage attempts. |
+| Supplementary document | A datasheet, protocol specification or operator-supplied file acquired beside the firmware. Interpreters read it as evidence of meanings, units and framing; where it disagrees with the firmware or the device, the firmware or the device wins. |
+| Device-first interpretation | Interpretation in a generic run with no single firmware image: the interpret worker writes the model from the device's replies to operations it declares read-only, and hands it on as usual. |
 | Equivalence | One final verdict: evaluator grade for benchmarks, self-evidence for generic runs. Completion alone does not mean success. |
 | Interface model / binding | Byte operations, decoding and effects / operator-selected host connection. |
 | Driver contract | Authoritative public operations, meanings, value schemas, units, scoped caveats and preconditions. |

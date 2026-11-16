@@ -710,7 +710,8 @@ def acquire_protocol_spec(run_dir, key, **_):
         os.mkdir(sections_dir)
         for sec in sections:
             path = os.path.join(sections_dir, f"{sec['section']:03d}.txt")
-            with open(path, "x", encoding="utf-8") as fh:
+            # newline="" keeps each section byte for byte as in its source, on Windows too.
+            with open(path, "x", encoding="utf-8", newline="") as fh:
                 fh.write(sec.pop("_text"))
             files[path] = core.sha256(path)
         index = os.path.join(sections_dir, "index.json")

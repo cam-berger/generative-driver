@@ -1,0 +1,122 @@
+# 05. supplied-device-stages
+
+## Intent
+
+The code that runs the six stages of a benchmark case lives in the benchmark's folder, and the service imports it from there. That code finds its inputs by the case's name: the firmware image, the mission, and for one case some handling of its own. This Feature makes the code the tool's. It moves to a package of the tool and takes the firmware and the mission as data, beside the device the client supplied. It never sees a case's name.
+
+A run still names a case in this Feature. The service asks the benchmark, in one place, for the firmware and the mission of the run's case, and hands them to the stage code. Feature 06 takes the last step: the client supplies them when it starts the run, and the service forgets the case. Starting a run on a supplied device without a case is therefore not part of this Feature.
+
+The stage code calls three things that are grading code today: the rules that check a capability mapping, the function that runs an emitted package, and the function that finds an artifact in a handoff. Grading code may not import the tool, and the tool may not import the benchmark. So the tool gets its own of each, and grading code keeps its copies unedited. One benchmark test holds the grader's copies to the tool's, as Feature 02 did for the hash and the verdict words. Only what the stage code itself calls gets a home in the tool. The regrade of a saved report, which only the benchmark's command line calls, stays with the benchmark.
+
+The tool stops judging the fresh worker's mission during a run. The owner decided this on 2026-11-15 and the Breakdown names it as a change in behaviour. Today the reuse stage reads the worker's recorded calls, asks the case's family whether the mission was met, and writes the answer as a note. The note decides nothing: no stop, no repair and no worker's text depends on it, and the grader judges the mission again from the recorded calls after the run. From this Feature on the tool records the calls and the readings after them, as it does today, and writes no such note. Two things follow:
+
+- The reuse handoff carries no check. `status` and the dashboard no longer show `fresh_worker_mission` among the failed checks of a run.
+- The reuse stage's own code no longer reads the capability mapping, so it no longer checks that mapping's bytes a second time. Nothing is lost by that: the service re-hashes every accepted handoff before each stage, so a run whose accepted mapping changed still stops as it does today.
+
+Two places treat one case by its name, `sampled-sensor-v1`: the stage code and the service offer it development conditions, and the stage code compares its model's outputs with the instrument's readings. Both become rules about data. Conditions are offered when the device descriptor carries a catalog of them. Outputs are compared for the tasks of the mission that state how they sample. Today only that one case has such a descriptor and such a mission, so every current case runs as before.
+
+Nothing else changes for a run. Every current case gets the same worker texts, the same files and the same recorded calls. No grading code is edited, and no current case's grader identity changes. One difference in timing remains: the mission is read before every stage, where today acquire and emit do not read it. A case whose mission cannot be read stops at acquire, where today it stops at interpret.
+
+## Behaviours
+
+In these Behaviours, "the stage package" is `generative_driver.supplied`. "The stage functions" are `prepare_stage`, `observe_stage`, `package_call` and `record_call` of `generative_driver.supplied.stages`. "The benchmark package" is `generative_driver.benchmark` and everything under `generative_driver.benchmark_support`. A "tool module" is a Python file under `src/interface_runtime/`, or under `src/generative_driver/` outside `benchmark.py` and `benchmark_support/`. "The current cases" are the six registered cases whose stage adapter is `emulator-v2`.
+
+A "firmware" is a dict with `path`, the path of an image file as a string, and `sha256`, the SHA-256 its bytes must have. A "mission" is a dict with `tasks` and `reuse_objective`, and optionally `operating_conditions`, as the benchmark's public mission files hold them. Both are plain data that JSON can hold. "The hand-written firmware" is a file that holds the bytes `supplied firmware`, with its SHA-256. "The hand-written mission" has two tasks in this order, `read_level` and `read_status`, each with a meaning, no inputs and one output with a unit; the reuse objective `Read the level twice and report both readings.`; and the one operating condition `The device answers one request at a time.` Neither names a registered case.
+
+- **05-B1** — The stage code is a package of the tool.
+  - `generative_driver.supplied` can be imported, and no module of it imports the benchmark package, in any import statement at any depth.
+  - The benchmark package no longer holds it: `benchmark_support` has no module `emulated`, `candidate_context`, `ground`, `evaluate` or `instrument_evidence`, and `generative_driver.benchmark` no longer has the names `prepare_stage`, `observe_stage`, `package_call` and `record_call`.
+  - No tool module imports one of those five modules or four names from the benchmark package.
+- **05-B2** — The stage functions work from the firmware and the mission they are given, and none takes a case id. Their parameters are `prepare_stage(stage, run_dir, workspace, accepted=None, options=None, *, firmware, mission)`, `observe_stage(stage, run_dir, workspace, report, accepted=None, options=None, *, firmware, mission)`, `package_call(run_dir, stage, arguments)` and `record_call(run_dir, stage, name, arguments, result, before, after, options=None)`. With the hand-written firmware and mission:
+  - Preparing `acquire` copies the firmware to `description.bin` in the workspace and gives its hash as `expected_sha256` in the context. For a firmware whose file does not hash to its `sha256` it raises `ValueError` with `Supplied firmware hash mismatch`.
+  - Observing `acquire`, the check `imported_firmware_hash` passes when the workspace holds an imported `.bin` with the firmware's hash beside a `provenance.json`, and fails with the reason `No matching imported firmware` when it holds none.
+  - Preparing `interpret` hands the firmware's file to the kit's `interpret_run` as `image.bin`.
+  - The `TASKS.json` that `interpret`, `probe` and `ground` give their worker holds the mission's `tasks` and its `operating_conditions`.
+  - The `probe` objective names the mission's tasks as `read_level, read_status`, and the `validate_capabilities.py` it gives the worker holds those two names as the required tasks.
+  - The `reuse` objective holds the mission's reuse objective and its operating condition.
+
+  The test may stand in for the kit's `interpret_run`, as `tests/test_public_missions.py` does today. For `probe` and `ground` it builds accepted handoffs with a model the stage can wire.
+- **05-B3** — The service runs a case on the tool's stage code, and gets the case's firmware and mission from the benchmark in one place.
+  - `generative_driver.benchmark.supplied_inputs(case_id, run_dir, options=None)` returns a dict with `firmware` and `mission` and no other key. For each of `tq9-v2`, `sampled-sensor-v1`, `parameter-store-v1` and `zephyr-modbus-v1`, the file at the firmware's `path` hashes to its `sha256`, that hash is the image hash of the case's pin, and the mission's `tasks` and `reuse_objective` are those of the case's mission file.
+  - The mission holds `tasks`, `reuse_objective` and, where the case's mission file has them, `operating_conditions`, and no other key. So the case's name, which the mission file holds as `case_id`, does not reach the stage code.
+  - For a run that has an execution snapshot, the firmware's `path` lies in that run's `benchmark/inputs` folder.
+  - With options whose `scenario_id` is neither absent nor `original`, it raises `ValueError` with `Unknown case scenario`.
+  - For `setup-smoke` it raises `ValueError` with `Setup smoke has no agent stages`.
+  - `configurator` takes `supplied_inputs` from `generative_driver.benchmark`, and takes the stage functions and `discrepancies` from the stage package.
+- **05-B4** — The tool records fresh reuse and does not judge it.
+  - Observing `reuse` hands on the stage's package copy with no check: `checks` is `[]`, `notes` is `{'checks': [], 'dropped_artifacts': []}`, and the result has no `stop`. Its `validation_scope` is `The fresh worker's package calls and the instrument readings after them, recorded and not judged` for a device that offers readings, and `The fresh worker's package calls, recorded and not judged` for one that offers none.
+  - It gives that result whatever calls were recorded, and with or without a capability mapping among the accepted handoffs.
+  - Preparing `reuse` does not read the accepted capability mapping, and the run's stage state file no longer gets the key `capabilities_path`.
+  - `record_call` writes what it writes today. For `benchmark_package_execute` it appends one row to `benchmark/package-events.jsonl` in the run's folder with the keys `actor`, `stage`, `operation`, `revision`, `attempt_id`, `assignment_id`, `package_sha256`, `parameters` and `result`, and with `observation` and `before_observation` for a device that offers readings.
+  - No module of the stage package holds the string `fresh_worker_mission` or the name `reuse_mission`.
+  - Through the service, the reuse handoff of a scripted run of `tq9-v2` holds no check, and the verdict the bench harness records for that run still carries the `mission` the grader judged from the recorded calls.
+- **05-B5** — Data decides what a case's name decided.
+  - With the hand-written mission, preparing `probe` or `ground` gives the worker `DEVELOPMENT_CONDITIONS.json` and ends the objective with the guidance on `condition_id` when `options['device']['development_conditions']` holds a catalog. Without a catalog it gives neither.
+  - No tool module holds the string `sampled-sensor-v1`.
+  - `discrepancies(mission, assignment, events)` of `generative_driver.supplied.instrument_evidence` compares only the tasks of the mission that have `sampling`, and of their outputs only those that have `instrument`. For a mission none of whose tasks has `sampling` it returns `[]`.
+  - For a mission with one task whose `sampling` is `acquire` and whose one output has `instrument`, `unit` and `absolute_tolerance`, and a successful live call of the mapped operation: readings whose `monitor_sequence` did not advance give one entry with the quantity `sequence` and the reason `no new acquisition`; an output further from the instrument's reading than the tolerance gives one entry with the reason `value mismatch`; an output within the tolerance gives no entry.
+- **05-B6** — The tool has its own capability rules, package runner and artifact finder, and the grader's agree with them.
+  - `generative_driver.supplied.capabilities` offers `validate_capabilities` and `bind_task`. It imports only the standard library, and the file `probe` gives its worker as `_capability_rules.py` holds the same bytes as its file.
+  - `generative_driver.supplied.package_runner` offers `package_invoker(package, binding, grants)`.
+  - The tool's `supplied/capabilities.py` and the grader's `benchmark_support/capabilities.py` hold the same bytes. So a probe worker gets the rules file it gets today.
+  - The grader's `package_invoker` and the tool's give the same answer for the same call on each of these hand-written packages: one that prints a well-formed result; one whose result's error carries a `source`; one whose `outputs` is a list; one whose result is nested 70 levels deep; one whose result holds a number that is not finite; one that prints text that is not JSON and exits with status 3; one that prints nothing and exits with status 0; one that outlasts the call limit, with both limits set to one second; one whose process cannot start; and one whose process is killed by a signal. The last is skipped, with its reason, where the platform has no such signal.
+  - The grader's `case_assets.accepted_artifact` and the function the stage package uses in its place give the same answer for a handoff that holds the named artifact, one that holds it under a numbered prefix such as `2-model.json`, one that holds it with another hash than the one asked for, one that does not hold it, and no handoff.
+  - `grader_closure()` names the same 34 modules as before this Feature.
+- **05-B7** — The deletion list follows.
+  - `tests/test_benchmark_supplied_stages.py` is under `Ready to delete`.
+  - `tests/test_supplied_stages.py` and the stage package are not on the list, and `tool_test_modules` of Feature 01's check names `tests/test_supplied_stages.py` and does not name `tests/test_benchmark_supplied_stages.py`.
+
+## Interface and seams
+
+- The move. Five files move with `git mv`, so that the diff shows what changed inside them: `benchmark_support/emulated.py` becomes `supplied/stages.py`, and `candidate_context.py`, `ground.py`, `evaluate.py` and `instrument_evidence.py` move into the package. `supplied/__init__.py` holds the package's doc. The modules `stages`, `instrument_evidence`, `capabilities` and `package_runner` have the names given here; the other file names in the package are Build's choice.
+- What changes inside the moved code. This list is complete.
+  - The case id leaves every function. `prepare_stage` and `observe_stage` take `firmware` and `mission`. Each use of the case's inputs (`emulated.py:208`, `:211-218`, `:336`, `:410`, `:418`) reads the firmware. Each load of the mission (`emulated.py:46-47`, `:321-322`, `candidate_context.py:19-20`) reads the mission it was given, so `task_contract` takes the mission and the effects.
+  - The scenario check at `emulated.py:204-205` moves to the benchmark's `supplied_inputs`.
+  - `_development_conditions` loses the case test at `emulated.py:28`. `discrepancies` loses the case test at `instrument_evidence.py:29`, takes the mission, and skips a task without `sampling` and an output without `instrument`.
+  - Reuse: in `prepare_stage` the lines that verify and record the capability mapping go (`emulated.py:316-319`), and with them `_emitted_mapping` (`:158-161`), which nothing else that stays calls. In `observe_stage` the lines that read the recorded calls and the mapping and judge the mission go (`:546-558`), and the two `validation_scope` texts are those of 05-B4.
+  - `score` (`emulated.py:622-625`) does not move. It stays with the benchmark's adapter.
+  - Imports: `IntegrityError` and `digest` come from `generative_driver.integrity`. `write_json` and `accepted_artifact` get private homes in the package. The capability rules and the package runner come from the package's own modules. The four private helpers of the service that the stage code uses today, `_host_fault`, `_observed_packages`, `_emit_check_failure` and `_ran_assigned_model`, are still imported from `configurator` inside functions; the service is not reshaped for them.
+  - Module docs, function docs and comments are reworded to describe the tool's package. Every other string stays as it is: the objectives and guidance a worker gets, the names and contents of the files a worker gets, the stage state file's other keys, `NO_DEVICE` and the names that carry the word `benchmark`.
+- The tool's own copies.
+  - `supplied/capabilities.py` is a copy, byte for byte, of the grader's `benchmark_support/capabilities.py`, with the one-line doc that file has. A worker reads this file, so it gets no doc that cites this Spec: the package's doc in `supplied/__init__.py` says why the tool has it. It is the one module here that the Standards' rule on module docs does not reach.
+  - `supplied/package_runner.py` holds `package_invoker` with the helpers and the three limits it needs from `benchmark_support/emulated_actions.py`. It has no `meter` parameter, which only the bench harness uses.
+- The benchmark's side.
+  - `benchmark.py` loses the four dispatch functions and gains `supplied_inputs`, which asks the case's adapter.
+  - `benchmark_support/adapters.py`: an adapter offers `supplied_inputs` and `score`. The `emulator-v2` adapter returns the case's firmware and mission, from `case_assets.case_inputs`, `execution.artifact_name` and `missions.load_mission`, after the scenario check, and its `score` is the regrade that `emulated.score` was. The smoke adapter's `supplied_inputs` raises the refusal its stage functions raise today, and its other stage functions go. `adapter_for` and its refusal of a pending adapter key stay.
+  - No grading code is edited. `grader_identity.py` keeps naming `benchmark_support.emulated` and `benchmark_support.ground` among the system's modules. The dropped legacy modules `cases.py` and `physical.py` keep their imports of `emulated`; they are inert and are not edited.
+  - `docs/benchmark-case-authoring.md:25` no longer names `emulated.py` and its five functions. It says that the `emulator-v2` adapter in `adapters.py` offers `supplied_inputs` and `score`, and that the stages run on the tool's stage package.
+- The service, `configurator.py`. This list is complete.
+  - One private helper returns the firmware and the mission of a run's case. It calls `benchmark.supplied_inputs` with the case id, the run's folder and `case_options(spec)`, and it is the only place in the stage path that imports the benchmark package.
+  - `_prepare` (`:2769-2773`) calls the helper, then the stage package's `prepare_stage`. `_check` (`:3129-3154`) calls the helper, then `observe_stage`, and gives the mission to `discrepancies`. `_device_call` (`:3118-3120`) calls `record_call`, and `_dispatch` (`:3804-3806`) calls `package_call`, both without a case id.
+  - In `_dispatch` (`:3662-3664`) the test for the case's name goes: the conditions are those of the device descriptor's catalog, for probe and ground. The refusal text at `:3694` stays.
+  - Everything else the service does for a case stays for Feature 06: the pin, the snapshot and its verification, the admission, the wait for a verdict, the release, the resume, `attach_device` and `record_evaluation`.
+- `docs/client-interface.md` does not change. Nothing it says becomes untrue.
+- Existing tests. These rules decide each test that this Feature touches.
+  - A test that calls a stage function or a helper of the stage code calls it in the stage package, with the firmware and mission of its case from `benchmark.supplied_inputs` or with hand-written ones. It keeps its name and its assertions. The benchmark's tests may share one test helper that does this for a case.
+  - A patch of the stage code's lookup of a case's inputs (`_inputs`, in `tests/test_benchmark_tq9_v2.py`, `tests/test_public_missions.py` and `tests/test_development_conditions.py`) goes: the test passes the firmware and mission it wants.
+  - A test of the answer the in-run judgement gave keeps its name and its expected answers and asks the grader's judge: the verdict's `mission` where the test has a graded trial, otherwise `case_assets.reuse_mission` on the same mapping and on the recorded calls of the current attempt only. The in-run judgement dropped the calls of other attempts and revisions itself, and the grader's judge takes the rows it is given, so the test passes it only the rows that counted. The build report names the test that covers the grader's own choice of rows, by assignment and package hash, or says that none does. A test may be removed only where a named existing test already asserts the same answers from the grader's judge.
+  - An assertion that the reuse handoff or the reuse observation holds the mission check becomes the assertion that it holds no check. An assertion on the reuse `validation_scope` takes the new text.
+  - A test of which mapping the in-run judgement chose (`tests/test_benchmark_tq9_v2.py:1952-1960`, on `_emitted_mapping` and the state key `capabilities_path`) goes with that judgement. The build report names the test that covers the grader's own choice of mapping, or says that none does.
+  - A test that reads a moved file by path reads it at its new path.
+  - Feature 04's tests in `tests/test_benchmark_legacy_cases_dropped.py` follow the move. Where one asserts that the four dispatch names are callable on `generative_driver.benchmark` (`:159-160`), it asserts them on `generative_driver.supplied.stages`. Where one asserts that the adapter of `tq9-v2` is the module `emulated` (`:144`), it asserts that the adapter offers `supplied_inputs` and `score`. Where one calls the smoke adapter's `prepare_stage` for its refusal, it calls the adapter's `supplied_inputs`. Where one imports `emulated`, it imports `generative_driver.supplied.stages`. The rest of what they assert stays.
+  - `test_reuse_and_other_cases_have_no_condition_argument_or_control` (`tests/test_development_conditions.py:194-206`) keeps its name. Its `tq9-v2` half gives a sensor's catalog to another case and expects no conditions, which the case's name decided. That half now runs on a descriptor without `development_conditions` and keeps its assertions. Its reuse half is unchanged.
+  - A test module that imports nothing from the benchmark package today must not start to.
+- New tests.
+  - `tests/test_supplied_stages.py` tests 05-B1's first point, 05-B2, 05-B5 and the tool's side of 05-B4 and 05-B6: the first five points of 05-B4 and the first two of 05-B6. It imports nothing from the benchmark package and uses no file under `resources/bench`, so it runs in the stripped copy.
+  - `tests/test_benchmark_supplied_stages.py` tests the rest: the second and third points of 05-B1, 05-B3, the last point of 05-B4, the last four points of 05-B6, and 05-B7. It is a benchmark item.
+  - A test that starts a Python child gives it the environment of `tests/package_env.py`.
+- Test names of this Feature carry `05_B1` to `05_B7`. Another Run already has tests named `test_05_B…`, in `tests/test_vault_gate.py`, and the kit's check cannot tell the Runs apart. So the Reviewer checks that each Behaviour here has its test in the two files named above.
+- The build report lists every existing test it changed or removed, with what changed, and for a removed test the test that asserts the same.
+
+## Out of scope
+
+- Starting a run on a supplied device with a mission and no case, and everything the service still takes from a case. Feature 06.
+- Checking a mission's form in the tool. The benchmark's own rules check a case's mission today; the tool needs rules of its own when a client supplies the mission, in Feature 06.
+- Two additions to `docs/client-interface.md` that Feature 03's Spec expected from this Feature's Spec: the firmware and the mission a client supplies as data, and what the control endpoint's file holds and what each of its six answers must be. This Spec fixes the firmware and the mission as the stage functions take them. They join the document in Feature 06, with the start that takes them and with the first device that is not the bench harness's. No code that talks to the control endpoint moves in this Feature: `device_client.py` is a tool module already.
+- Renaming what carries the word `benchmark` in the tool: the worker's tool `benchmark_package_execute`, the mapping schema `benchmark-capabilities/2`, the evidence schema `benchmark-ground-evidence/3` and the run's subfolder `benchmark/`. Workers and the grader read these names, so renaming them changes records. Rewording `NO_DEVICE` and the other texts that name the bench harness or an evaluator is out for the same reason.
+- Any edit to grading code. The families' `reuse_passed` hooks and `case_assets.reuse_mission` stay: the grader judges the mission with them after the run.
+- The stage code of a run that names no case, which lives in the service, and the package runner of `device_access`. This Feature does not merge either with the moved code.
+- `evidence._gate_results` and `suite_reporting._recorded_success`, which look for the mission check in old reports.
+- The tool's smoke.
+
+## Deviations

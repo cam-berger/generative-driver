@@ -35,8 +35,10 @@ def acquisition(binding, effects=None, *, stage='acquire', **options):
         release = root / 'release'
         report = {'status': 'completed', 'summary': 'Scripted worker; no model',
                   'artifacts': [], 'checks': [], 'unresolved': []}
+        # An interpret prompt carries no JSON task: a run with a binding and no image now interprets device first.
         program = ("import json,pathlib,sys,time\n"
-                   "task = json.loads(sys.stdin.read().split('\\n', 1)[1])\n"
+                   "try:\n    task = json.loads(sys.stdin.read().split('\\n', 1)[1])\n"
+                   "except (IndexError, ValueError):\n    task = {'stage': 'interpret'}\n"
                    "while task['stage'] == sys.argv[3] and not pathlib.Path(sys.argv[1]).exists(): time.sleep(.02)\n"
                    "print(json.dumps({'type':'item.completed','item':"
                    "{'type':'agent_message','text':sys.argv[2]}}))\n")

@@ -710,7 +710,8 @@ def acquire_protocol_spec(run_dir, key, **_):
         os.mkdir(sections_dir)
         for sec in sections:
             path = os.path.join(sections_dir, f"{sec['section']:03d}.txt")
-            with open(path, "x", encoding="utf-8") as fh:
+            # newline="" keeps each section byte for byte as in its source, on Windows too.
+            with open(path, "x", encoding="utf-8", newline="") as fh:
                 fh.write(sec.pop("_text"))
             files[path] = core.sha256(path)
         index = os.path.join(sections_dir, "index.json")
@@ -718,11 +719,15 @@ def acquire_protocol_spec(run_dir, key, **_):
             json.dump(sections, fh, indent=1)
         files[index] = core.sha256(index)
         inputs["spec/sections"] = sections_dir
+    # Its source files and sections are recorded as acquisition evidence, so the acquire handoff carries them on
+    # (docs/features/kit-fixes/07-input-paths.md, 07-B2).
+    recorded = [path for name, path in inputs.items() if name != "spec/sections"]
+    recorded += [sections_dir] if sections_dir else []
     return {"available": True, "rung": "protocol_spec", "key": key, "title": entry.get("title"),
             "publisher": entry.get("publisher"), "rendered": entry.get("rendered"),
             "sources": [{"name": s["name"], "url": s["url"], "sha256": s["sha256"], "how": how} for s, _, how in fetched],
             "sections_dir": sections_dir, "section_count": len(sections),
-            "inputs_for_interpret": inputs, "_files": files}
+            "inputs_for_interpret": inputs, "artifacts": recorded, "_files": files}
 
 
 # ---------------------------------------------------------------- rung 4: nothing but the bus

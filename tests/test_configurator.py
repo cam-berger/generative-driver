@@ -1253,9 +1253,11 @@ class DeviceRepairTests(unittest.TestCase):
                         if e['kind'] == 'stage.assigned' and e['data']['stage'] == 'interpret']
             self.assertEqual(sorted(Path(p).relative_to(second).as_posix() for p in assigned[1]['inputs']
                                     if Path(p).relative_to(second).parts[0] != '_toolkit'),
-                             ['ANALYSIS_TOOLS.json', 'BRIEF.md', 'ExportDecomp.java', 'INTERFACE_MODEL.md',
-                              'REPAIR_CONTEXT.json', 'SeedCortexM.java', 'TASKS.json', 'defects.json', 'ghidra_run.py',
-                              'image.bin', 'image_map_check.py', 'previous-model/model.json', 'qualify.py', 'validate.py'])
+                             ['ANALYSIS_TOOLS.json', 'BRIEF.md', 'CONTRACT.md', 'ExportDecomp.java',
+                              'INTERFACE_MODEL.md', 'REPAIR_CONTEXT.json', 'SeedCortexM.java', 'TASKS.json',
+                              'contract.py', 'defects.json',
+                              'ghidra_run.py', 'image.bin', 'image_map_check.py', 'previous-model/model.json',
+                              'qualify.py', 'validate.py'])
             self.assertEqual(assigned[1]['collection']['expected_seal_sha256'], digest(Path(assigned[1]['collection']['run_dir']) / 'interpret/attempt1.seal.json'))
 
     def test_repair_context_names_every_sealed_repair_input_and_editing_one_stops_for_integrity(self):
@@ -1270,7 +1272,8 @@ class DeviceRepairTests(unittest.TestCase):
                 with self.repaired(edit) as (controller, run, result, sealed, probes, home):
                     context, = contexts
                     self.assertEqual(context['sealed_inputs'], ['image.bin', 'ghidra_run.py', 'ExportDecomp.java',
-                        'SeedCortexM.java', 'ANALYSIS_TOOLS.json', 'TASKS.json', 'previous-model/', 'defects.json', 'REPAIR_CONTEXT.json'])
+                        'SeedCortexM.java', 'ANALYSIS_TOOLS.json', 'TASKS.json', 'CONTRACT.md', 'contract.py',
+                        'previous-model/', 'defects.json', 'REPAIR_CONTEXT.json'])
                     for words in ('read them and leave them unchanged', 'changing any sealed input stops the run'):
                         self.assertIn(words, context['instructions'])
                     self.assertEqual((result['status'], result['outcome_category'], result['stage']), ('blocked', 'integrity', 'interpret'), result)

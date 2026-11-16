@@ -16,6 +16,7 @@ _MODULE_TOOLS = {
     "acquire": ("acquire_firmware_artifact", "acquire_flash", "acquire_serial_listen", "acquire_datasheet",
                 "acquire_selfdescription", "acquire_protocol_spec", "acquire_classify",
                 "acquire_bus_scan", "acquire_register_sweep"),
+    "documents": ("acquire_document",),
     "bench": ("bus_prepare",),
     "firmware": ("firmware_prepare", "firmware_collect", "firmware_validate"),
     "interpret": ("interpret_run", "interpret_collect", "model_validate", "model_provenance_audit"),
@@ -30,6 +31,8 @@ _DISPATCH = {name: module for module, names in _MODULE_TOOLS.items() for name in
 _PATH_ARGUMENTS = {"run_dir", "source_path", "artifact", "model_dir", "probe", "probe_json", "package_dir", "image",
                    "workspace", "workspace_root", "ghidra_path", "java_home", "export_dir", "script_path",
                    "wiring", "transcript", "replies", "bus", "replay"}
+# Path arguments of one tool only: any other tool ignores an argument of that name, as it always did.
+_TOOL_PATH_ARGUMENTS = {"acquire_document": {"inputs_dir"}}
 
 
 def resources_root() -> Path:
@@ -80,7 +83,7 @@ def call_tool(name: str, arguments: dict) -> dict:
             raise ValueError("run_dir must be an absolute path")
         if Path(run).resolve().is_relative_to(Path(__file__).resolve().parent):
             raise ValueError("run_dir must be outside installed resources")
-        for key in _PATH_ARGUMENTS & arguments.keys():
+        for key in (_PATH_ARGUMENTS | _TOOL_PATH_ARGUMENTS.get(name, set())) & arguments.keys():
             value = arguments[key]
             if value is not None and (not isinstance(value, str) or not Path(value).is_absolute()):
                 raise ValueError(f"{key} must be an absolute path")

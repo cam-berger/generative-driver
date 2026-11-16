@@ -488,9 +488,10 @@ def emit_test_live(package_dir, run_dir=None, binding=None, operations=None, par
                    model_dir=None, expected_manifest_sha256=None, **_):
     """Run the package's own regression suite on the live bus.
 
-    An interface package (manifest interface-package/1) has no suite: each of `operations` (default the model's
-    identity operation) runs once through the package's own command line with the caller's `binding`, the
-    `parameters` given for it and the `allow_effects` grants. Exit 4 means a transport fault, inconclusive."""
+    An interface package (manifest interface-package/1 or /2) has no suite: each of `operations` (default the model's
+    identity operation) runs once through the installed runtime and driver entry over the package's data, with the
+    caller's `binding`, the `parameters` given for it and the `allow_effects` grants; `manifest_sha256` names the
+    package's own manifest. Exit 4 means a transport fault, inconclusive."""
     pkg = package_dir if os.path.isabs(package_dir) else os.path.join(core.BENCH, package_dir)
     from . import interface
     if interface.is_interface_package(pkg):

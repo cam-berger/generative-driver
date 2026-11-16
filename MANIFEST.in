@@ -11,3 +11,4 @@ recursive-include bench *.md *.py *.json
 prune bench/runs
 prune bench/groundtruth/plaintext
 recursive-include tests *.py *.js
+graft tests/fixtures

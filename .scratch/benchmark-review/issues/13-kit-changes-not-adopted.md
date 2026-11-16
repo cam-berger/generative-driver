@@ -32,6 +32,30 @@ Adopting it means letting case runs through `Controller._limits`, and running th
 - A run's `status` adds `deadline`, `repairs`, `worker` and `log`. Suite replies are unchanged.
 - Shutdown no longer waits for a generic run's accepted tool call; it stops it. Draining for inline calls is untested.
 
+## Driver packages (Feature 05)
+
+These entries name functions rather than lines.
+
+- **Benchmark interpret workers are not taught the contract.** A generic run's interpret workspace now holds `CONTRACT.md` and `contract.py`, its `TASKS.json` and repair instructions tell the worker to write `contract.json`, and emit merges that file with the model (`driver_contract.py`). Benchmark interpret workspaces get none of this, so benchmark packages keep the contract the kit imports from the model: generic descriptions, a `semantics_unknown` caveat on every operation, and the model's units. A benchmark worker that writes `contract.json` without `protocol.json` is still refused by `emit_package`.
+- **`emit_check` now replays a package whose bundled copy differs.** It used to stop at integrity, with `replay_status` `not_run`. It now replays on the installed runtime and reports `passed` or `failed`, with a `replay_reason` that says so; `runtime_current` stays false. The benchmark's emit gate (`emulated.py`, stage `emit`) still requires `runtime_current`, so its verdicts are unchanged. Its rejection reason comes from the shared `configurator._emit_check_failure`, though, and for that case it now reads "the package carries a runtime other than this kit's" instead of "runtime is not current, so replay did not run".
+- **Renderer `3` changes new catalogs and the toolchain revision.** New packages' `mcp-tools.json` names renderer version `3`. For benchmark packages the rendered text is unchanged, because their contracts carry no `unit_not_stated` caveat. The catalog's bytes and hashes change all the same, and with them the manifest's. The runtime and toolchain changes also change the toolchain revision, which is a comparison dimension. Earlier packages keep renderer `2` and still verify.
+
+## Firmware analysis and interpret tasks (Feature 06)
+
+These entries name functions rather than lines.
+
+- **Benchmark runs get neither the kit analysis nor the task mode.** A generic run that names `ghidra_home` and `java_home` now has the configurator analyze the acquired image once (`kit_analysis.prepare`), and its interpret workers get the export and its index, `ANALYSIS_INDEX.json`, as sealed inputs. A generic run started with `interpretation: tasks` interprets as an inventory, a handler task per command and a cross-check (`interpret_tasks.run`). A run with a case returns from `Controller._prepare` before either, so its interpret workers still get the analysis kit and run Ghidra themselves, and every repair runs it again. `interpretation` is accepted at start and ignored there.
+- **Adopting them** means giving the adapters' interpret preparation (`prepare_stage`) the analysis inputs and their `TASKS.json` entry, and their `observe_stage` a collection that reads a task-mode attempt's output. A benchmark comparison of task mode with the single worker would also need each task's `reports` row counted under its stage attempt: `reporting.summarize` counts every row of a stage as an attempt.
+- **What benchmark readers now see.** Nothing in a case run changes. A generic run's `status.worker` may add `task`, and its events add `kit_analysis.started`, `kit_analysis.finished`, `task.started` and `task.finished`.
+
+## Input paths (Feature 07)
+
+These entries name functions rather than lines.
+
+- **Benchmark runs get neither documents nor device-first interpretation.** A generic run's interpret workers now get the text of every supplementary document the acquire handoff carries, under `documents/` with `DOCUMENTS.json` (`supplementary_documents.sealed_inputs`). A generic run with no single image and a device binding interprets device first (`device_first`). A run with a case returns from `Controller._prepare` before either, so the physical case's interpreter still reads only its datasheet and `pages`, and a case run that acquires no image skips interpretation as before. Its acquire workers' tools are unchanged: `acquire_document` is listed only for generic runs.
+- **A benchmark acquire worker given `acquire_protocol_spec` would now hand its files on.** The tool now returns the fetched source files and their sections directory under `artifacts`, so the gateway records them and the acquire handoff carries them. No case gives its acquire worker this tool today.
+- **What benchmark readers now see.** Nothing in a case run changes. A generic run's interpret handoff notes may add the mode `device` and its `device_calls`.
+
 ## Direction
 
 Decide these in the new repository, with the run-side call sites and `SYSTEM_MODULES` as the boundary. The deadline matters most before long unattended suites: one hung tool call there holds a slot until the suite's budget.

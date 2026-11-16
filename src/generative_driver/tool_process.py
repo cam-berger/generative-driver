@@ -10,6 +10,7 @@ controller (`Controller(home, for_service=True)`)."""
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -110,7 +111,7 @@ def run(name, arguments, *, directory, stop, context):
                         raise Unfinished(name, reason) from None
         except BaseException:
             # However the wait ends, the process and what it started never outlive the call.
-            _terminate(process)
+            _stop(process)
             raise
         try:
             outcome = json.loads((exchange / 'result.json').read_text(encoding='utf-8'))
@@ -123,6 +124,50 @@ def run(name, arguments, *, directory, stop, context):
         return outcome['result']
     finally:
         shutil.rmtree(exchange, ignore_errors=True)
+
+
+def _stop(process):
+    """Stop `process` and every process it started. On Windows the wrapper's job holds them all. On POSIX the group
+    `_terminate` ends does not hold a process started in a session of its own, as the Ghidra helper starts its analyzer
+    (docs/features/kit-fixes/06-interpret-tasks.md, 06-B1), so the group is frozen first, so that it starts nothing
+    more, and every other group its descendants lead is killed with it."""
+    if os.name != 'nt':
+        try:
+            os.killpg(process.pid, signal.SIGSTOP)
+        except OSError:
+            pass
+        for group in _descendant_groups(process.pid):
+            try:
+                os.killpg(group, signal.SIGKILL)
+            except OSError:
+                pass
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    _terminate(process)
+
+
+def _descendant_groups(root):
+    """The process groups of `root`'s descendants, other than `root`'s own and this process's, as `ps` lists them."""
+    try:
+        listing = subprocess.run(['ps', '-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'pgid='], capture_output=True,
+                                 text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    children, groups = {}, {}
+    for line in listing.splitlines():
+        fields = line.split()
+        if len(fields) == 3 and all(field.isdigit() for field in fields):
+            pid, parent, group = map(int, fields)
+            children.setdefault(parent, []).append(pid)
+            groups[pid] = group
+    found, pending = set(), [root]
+    while pending:
+        for child in children.get(pending.pop(), ()):
+            pending.append(child)
+            found.add(groups[child])
+    return found - {root, os.getpgrp(), 0, 1}
 
 
 def main():

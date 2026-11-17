@@ -613,9 +613,12 @@ class LockHelperTests(TemporaryHomeCase):
         try:
             self.assertEqual((module.wait_for_exit(process.pid, 0), client._wait_for_exit(process.pid, 0)),
                              (False, False))
-            started = time.monotonic()
+            # Windows counts the wait in timer ticks of 1/64 s, and a wait may end up to one tick early. perf_counter
+            # reads a fine clock everywhere; before Python 3.13, time.monotonic on Windows moves by whole ticks.
+            early = 1 / 64 if os.name == 'nt' else 0
+            started = time.perf_counter()
             self.assertIs(module.wait_for_exit(process.pid, .2), False)
-            self.assertGreaterEqual(time.monotonic() - started, .2)
+            self.assertGreaterEqual(time.perf_counter() - started, .2 - early)
         finally:
             process.stdin.close()
             process.wait(30)

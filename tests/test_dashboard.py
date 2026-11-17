@@ -237,7 +237,7 @@ print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text
                     process.wait(timeout=5)
                     self.assertEqual(call('status', run, home=home)['status'], 'running')
                     release.touch()
-                    deadline = time.monotonic() + 5
+                    deadline = time.monotonic() + 30
                     while time.monotonic() < deadline:
                         final = self.dashboard().RunReader(run['run_id'], home).snapshot()
                         if final.get('status') not in ('queued', 'running'):

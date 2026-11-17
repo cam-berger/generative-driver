@@ -164,7 +164,7 @@ A folder still reachable after an hour ends the harness with `The vault holding 
 To resume a stopped suite:
 
 1. Stop the suite or let it finish: `benchmark suite resume` refuses while its active child is queued or running, or anything of it is still stopping.
-2. Open the vault and run the resume with the same options. The harness asks the configurator whether the suite can resume, then holds the set and refuses a set no longer admitted, or a record other than the one each device pin names, with the vault still open.
+2. Open the vault and run the resume with the same options. The harness asks its own store whether the suite can resume, then holds the set and refuses a set no longer admitted, or a record other than the one each device pin names, with the vault still open.
 3. The call returns `status: awaiting-unmount` with the `suite_id`. Close the vault as above. A resume takes no claim, so follow it with `benchmark suite status`, not by repeating it.
 
 A resume with no `set_root` does not wait: slots with a recorded verdict or an uncertain effect settle without one, and a slot that needs its device, or a stopped child's audit, fails.

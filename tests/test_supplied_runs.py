@@ -282,12 +282,14 @@ class VerdictRuleTests(unittest.TestCase):
 
 
 class InterfaceModuleTests(unittest.TestCase):
-    """The interface module, version 2 (06-B14)."""
+    """The interface module as version 2 made it (06-B14), with what version 3 added (07-B6 of
+    docs/features/untangle/07-suites.md): its number and the calls `cancel` and `seal`."""
 
-    def test_06_B14_the_module_is_version_2_with_the_same_calls_and_two_more_names(self):
-        self.assertEqual(client_interface.VERSION, 2)
-        self.assertEqual(client_interface.CALLS, ('ping', 'start', 'resume', 'status', 'events', 'result',
-                                                  'attach_device', 'record_evaluation'))
+    def test_06_B14_the_module_has_the_calls_of_version_2_and_its_two_more_names(self):
+        self.assertEqual(client_interface.VERSION, 3)
+        self.assertEqual(client_interface.CALLS[:8], ('ping', 'start', 'resume', 'status', 'events', 'result',
+                                                      'attach_device', 'record_evaluation'))
+        self.assertEqual(client_interface.CALLS[8:], ('cancel', 'seal'))
         self.assertEqual(sorted(client_interface.__all__),
                          ['CALLS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors', 'firmware_errors',
                           'frozen_driver', 'mission_errors', 'verdict_errors'])
@@ -719,13 +721,9 @@ def service_source():
     return Path(configurator.__file__)
 
 
-def suite_code(names):
-    """Whether a node inside the functions `names` is suite code, which keeps its case bookkeeping for now."""
-    return any('suite' in name or 'child' in name or name == '_assistive' for name in names)
-
-
 class NoCaseTests(unittest.TestCase):
-    """The service knows no case outside its suite code (06-B8)."""
+    """The service knows no case (06-B8). Its suite code, which these scans left out, is gone since Feature 07 of the
+    untangle Run (docs/features/untangle/07-suites.md), so they leave nothing out for it."""
 
     def test_06_B8_the_helpers_that_read_a_case_are_gone(self):
         from generative_driver import configurator
@@ -735,12 +733,12 @@ class NoCaseTests(unittest.TestCase):
                 self.assertFalse(hasattr(configurator, name), name)
                 self.assertFalse(hasattr(configurator.Controller, name), name)
 
-    def test_06_B8_no_function_outside_the_suite_code_reads_a_case_a_pin_or_a_snapshot_hash(self):
+    def test_06_B8_no_function_reads_a_case_a_pin_or_a_snapshot_hash(self):
         keys = ('case', 'case_options', 'case_pin', '_case_pin', '_snapshot_sha256', '_execution_run_dir')
         text = lambda node: isinstance(node, ast.Constant) and node.value in keys
         found = []
         for node, names in enclosing(ast.parse(service_source().read_bytes())):
-            if not names or suite_code(names) or names[-1] == '_earlier_case_run':
+            if not names or names[-1] == '_earlier_case_run':
                 continue
             used = (isinstance(node, ast.Subscript) and text(node.slice)
                     or isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'get'
@@ -765,14 +763,14 @@ class NoCaseTests(unittest.TestCase):
 
     def test_06_B8_the_benchmark_imports_that_remain_are_the_named_ones(self):
         support = 'generative_driver.benchmark_support.'
-        allowed = {('__init__', support + 'suite_store', 'SuiteStore'),
-                   ('_replay_config', support + 'trial_store', 'bench_home'),
+        # Those Feature 07 leaves: the bench home of the replay rule, the harness launch and the run summary.
+        allowed = {('_replay_config', support + 'trial_store', 'bench_home'),
                    ('call', support + 'harness', '_spawn'), ('call', support + 'trial_store', 'bench_home'),
                    ('call', support + 'trial_store', 'solo_trial_dir'), ('call', support + 'trial_store', 'suite_dir'),
                    ('call', support + 'evidence', 'public_v2_report')}
         other = []
         for node, names in enclosing(ast.parse(service_source().read_bytes())):
-            if not isinstance(node, (ast.Import, ast.ImportFrom)) or suite_code(names):
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
                 continue
             module = ('generative_driver.' + (node.module or '') if isinstance(node, ast.ImportFrom) and node.level == 1
                       else getattr(node, 'module', None) or '')
@@ -1112,7 +1110,7 @@ class ClientRecordTests(ServiceCase):
         script = Path(project_run.__code__.co_filename).parent / 'resources' / 'dashboard' / 'app.js'
         self.assertNotIn('data.case', script.read_text(encoding='utf-8'))
 
-    def test_06_B13_no_tool_module_outside_the_suite_code_and_the_reports_reads_a_key_of_a_client_record(self):
+    def test_06_B13_no_tool_module_outside_the_reports_reads_a_key_of_a_client_record(self):
         reading = []
         for path, package in tool_modules():
             if path.name == 'reporting.py':
@@ -1125,23 +1123,21 @@ class ClientRecordTests(ServiceCase):
                 continue
             reading += [f'{path.name} line {line} reads a key of the record' for line in record_key_reads(source)]
         self.assertEqual(reading, [])
-        # The scan sees a key read where there is one, and leaves the suite code and a plain hand-back alone.
+        # The scan sees a key read where there is one, in a function of any name, and leaves a plain hand-back alone.
         sample = ("def result(spec):\n    out = {'client_record': spec['client_record']}\n"
                   "    pin = spec['client_record']['case_pin']\n    name = spec.get('client_record').get('case')\n"
                   "    return out, pin, name\n"
                   "def _suite_experiment(spec):\n    return (spec.get('client_record') or {}).get('snapshot_sha256')\n")
-        self.assertEqual(record_key_reads(sample), [3, 4])
+        self.assertEqual(record_key_reads(sample), [3, 4, 7])
 
 
 def record_key_reads(source):
-    """The lines of the Python `source` that read a key of a client record outside the suite code: a subscript of, or
-    a mapping method on, an expression that names `client_record`."""
+    """The lines of the Python `source` that read a key of a client record: a subscript of, or a mapping method on,
+    an expression that names `client_record`."""
     mentions = lambda node: any(isinstance(inner, ast.Constant) and inner.value == 'client_record'
                                 for inner in ast.walk(node))
     lines = set()
     for node, names in enclosing(ast.parse(source)):
-        if suite_code(names):
-            continue
         if (isinstance(node, ast.Subscript) and mentions(node.value)
                 or isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr in ('get', 'items', 'keys', 'values') and mentions(node.func.value)):
@@ -1388,7 +1384,7 @@ DOCUMENT = Path(__file__).resolve().parents[1] / 'docs' / 'client-interface.md'
 
 
 class InterfaceDocumentTests(unittest.TestCase):
-    """The interface document, version 2, by its text (06-B14)."""
+    """The interface document by its text: what version 2 made it say (06-B14), under the title of version 3."""
 
     @classmethod
     def setUpClass(cls):
@@ -1405,8 +1401,9 @@ class InterfaceDocumentTests(unittest.TestCase):
             cells.append(line.strip('|').split('|')[0].strip())
         return cells
 
-    def test_06_B14_the_title_carries_version_2(self):
-        self.assertEqual(self.lines[0], '# Client interface, version 2')
+    def test_06_B14_the_title_carries_the_modules_version(self):
+        # Version 3 since Feature 07 (07-B6).
+        self.assertEqual(self.lines[0], '# Client interface, version 3')
         self.assertEqual(self.lines[0], f'# Client interface, version {client_interface.VERSION}')
 
     def test_06_B14_the_start_table_has_the_firmware_the_mission_and_the_client_record(self):

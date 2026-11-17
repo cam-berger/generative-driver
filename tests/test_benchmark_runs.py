@@ -388,7 +388,9 @@ class SnapshotCheckTests(SnapshotCase):
 
 
 class SuiteTests(TrialCase):
-    """Suites run as before until the suite code moves (06-B19)."""
+    """Suites run as before (06-B19). Since Feature 07 the bench harness keeps a suite in its suite book and the
+    service serves no suite call (docs/features/untangle/07-suites.md): these tests ask the book, and where they
+    pinned the service's private start they assert the same of the public calls."""
 
     def setUp(self):
         super().setUp()
@@ -414,7 +416,8 @@ class SuiteTests(TrialCase):
 
     def children(self, suite_id):
         """The run of each slot of the suite, in order: (its `result`, its stored spec)."""
-        slots = self.controller._suites.get(suite_id)['trials']
+        from suite_fixtures import book
+        slots = book(self.controller).store.get(suite_id)['trials']
         return [(self.controller.call('result', {'run_id': slot['run_id']}),
                  json.loads(self.controller._row(slot['run_id'])['spec'])) for slot in slots]
 
@@ -424,9 +427,10 @@ class SuiteTests(TrialCase):
                                                'client_record'))
 
     def test_06_B19_a_scripted_suite_of_two_trials_completes_and_each_child_holds_its_client_record(self):
+        from suite_fixtures import suite_call
         record = self.suite(PASS, PASS)
         self.assertEqual(record['status'], 'finished', record)
-        status = self.controller.call('suite_status', {'suite_id': record['suite_id']})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': record['suite_id']})
         self.assertEqual((status['status'], status['planned'], status['completed'], status['equivalent']),
                          ('completed', 2, 2, 2), status)
         pin = pin_case(CASE, 'original', 0)
@@ -436,7 +440,8 @@ class SuiteTests(TrialCase):
             self.assertRegex(result['client_record']['snapshot_sha256'], '^[0-9a-f]{64}$')
             self.assertIs(result['equivalence']['equivalent'], True)
 
-    def test_06_B19_the_service_starts_a_child_as_a_supplied_run_and_keeps_the_whole_request_as_its_intent(self):
+    def test_06_B19_a_child_starts_as_a_supplied_run_and_its_recorded_request_is_the_plain_starts_params(self):
+        from suite_fixtures import book
         tools = {'ghidra_home': str(self.root / 'ghidra'), 'java_home': str(self.root / 'java')}
         record = self.suite(PASS, repetitions=1, **tools)
         [(result, spec)] = self.children(record['suite_id'])
@@ -449,23 +454,27 @@ class SuiteTests(TrialCase):
         # The run is the request without the case, with the analysis tools as keys of its own.
         self.assertEqual([key for key in ('case', 'case_pin', 'case_options') if key in spec], [])
         self.assertEqual({key: spec[key] for key in tools}, tools)
-        self.assertEqual(spec['_submitted_intent'], request)
+        # The request the run recorded is the plain start's params: what the suite book sent with `start`.
+        plain = {**{key: value for key, value in request.items() if key not in ('case', 'case_pin', 'case_options')},
+                 **tools}
+        self.assertEqual(result['request'], plain)
         for key in ('device', 'firmware', 'mission', 'client_record', 'evaluation_token_sha256', 'goal', 'effects'):
             self.assertEqual(spec[key], request[key], key)
         # The child's configuration is the frozen one, taken as it is.
-        frozen = self.controller._suites.get(record['suite_id'])['frozen']
+        frozen = book(self.controller).store.get(record['suite_id'])['frozen']
         self.assertEqual(spec['executor_config'], frozen['executor_config'])
         self.assertEqual(request['executor_config'], frozen['executor_config'])
 
     def test_06_B19_a_childs_executor_config_is_taken_as_complete_whatever_the_home_holds_by_then(self):
         # After the suite is frozen, and before the service starts its child, the operator's settings change: one
         # the frozen configuration has gets another value, and one it lacks is added.
+        from suite_fixtures import book
         later = {**CONFIGURED, 'model': 'changed-model', 'reasoning_effort': 'high'}
         frozen_at_start = []
 
         def change_home_first(method, params, forward):
             if method == 'suite_start_child' and not frozen_at_start:
-                frozen_at_start.append(self.controller._suites.get(params['suite_id'])['frozen']['executor_config'])
+                frozen_at_start.append(book(self.controller).store.get(params['suite_id'])['frozen']['executor_config'])
                 (self.home / 'config.json').write_text(json.dumps({'executors': {'codex': later}}), encoding='utf-8')
             return forward(method, params)
         record = self.suite(PASS, repetitions=1, intercept=change_home_first)
@@ -481,18 +490,28 @@ class SuiteTests(TrialCase):
         self.assertEqual(spec['executor_config']['model'], 'configured-model')
         self.assertIs(result['equivalence']['equivalent'], True)
 
-    def test_06_B19_the_same_child_start_again_finds_the_child_by_its_intent(self):
+    def test_06_B19_the_same_child_start_again_finds_the_child_by_its_recorded_request(self):
+        from suite_fixtures import suite_call
         record = self.suite(PASS, repetitions=1)
         [(result, spec)] = self.children(record['suite_id'])
         [again] = [params for params in self.sent('suite_start_child')]
-        slot = self.controller._suites.get(record['suite_id'])['trials'][0]
-        self.assertEqual(self.controller._started_from(slot, again['request']), result['run_id'])
+        # The same start again, through the public calls: the suite book finds the child by the slot's request id
+        # and the request the run recorded, whatever the suite did since, and starts nothing.
+        self.assertEqual(suite_call(self.controller, 'suite_start_child', again),
+                         {'ok': True, 'run_id': result['run_id'], 'duplicate': True, 'suite_id': record['suite_id']})
+        # A start with another client record is not that start again: the completed suite starts no child for it.
         changed = {**again['request'], 'client_record': {**again['request']['client_record'], 'snapshot_sha256': SHA}}
-        self.assertIsNone(self.controller._started_from(slot, changed))
+        with self.assertRaisesRegex(ValueError, 'The suite is completed; no child starts for it'):
+            suite_call(self.controller, 'suite_start_child', {**again, 'request': changed})
+        self.assertEqual(self.controller.call('status', {'request_id': again['request']['request_id']})['run_id'],
+                         result['run_id'])
+        with self.controller._db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 1)
 
     def test_06_B19_the_experiment_takes_each_trials_snapshot_hash_from_the_childs_client_record(self):
+        from suite_fixtures import suite_call
         record = self.suite(PASS, PASS)
-        experiment = self.controller.call('suite_result', {'suite_id': record['suite_id']})['experiment']
+        experiment = suite_call(self.controller, 'suite_result', {'suite_id': record['suite_id']})['experiment']
         hashes = [result['client_record']['snapshot_sha256'] for result, _ in self.children(record['suite_id'])]
         self.assertEqual([row['snapshot_sha256'] for row in experiment['execution_snapshots']], hashes)
         self.assertEqual(len(set(hashes)), 1, 'two trials of one case under one configuration freeze the same inputs')
@@ -500,15 +519,16 @@ class SuiteTests(TrialCase):
     def test_06_B19_the_suites_check_on_resume_reads_no_snapshot_of_a_child_run(self):
         import os
         import shutil
+        from suite_fixtures import suite_call
         record = self.suite(runtime=stopping_probe(), repetitions=1)
         suite_id = record['suite_id']
-        self.assertEqual(self.controller.call('suite_status', {'suite_id': suite_id})['status'], 'blocked')
+        self.assertEqual(suite_call(self.controller, 'suite_status', {'suite_id': suite_id})['status'], 'blocked')
         [(result, spec)] = self.children(suite_id)
         self.assertNotIn('_case_pin', spec)
         self.assertNotIn('_snapshot_sha256', spec)
         shutil.rmtree(self.home / 'runs' / result['run_id'] / 'benchmark')
-        resumed = self.controller.call('suite_resume', {'suite_id': suite_id, 'harness_token_sha256': SHA,
-                                                        'harness_pid': os.getpid()})
+        resumed = suite_call(self.controller, 'suite_resume', {'suite_id': suite_id, 'harness_token_sha256': SHA,
+                                                               'harness_pid': os.getpid()})
         self.assertEqual((resumed['ok'], resumed['status'], resumed['attached']), (True, 'running', True))
 
 

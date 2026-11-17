@@ -344,7 +344,8 @@ class StartAdmissionTests(unittest.TestCase):
     def test_a_suite_holding_a_password_file_or_the_emulator_executable_is_refused_before_anything_is_stored(self):
         # Catches the configurator freezing and keeping evaluator password file and emulator paths for a suite, whose
         # emulated children the bench harness provides and grades with them; and a suite no harness drives.
-        from suite_fixtures import scripted_manifest
+        from suite_fixtures import book, scripted_manifest, suite_call
+        from generative_driver.benchmark_support.trial_store import bench_home
         secret = self.root / 'private-password-handle'
         (self.root / 'home/config.json').write_text(json.dumps({'executors': {'codex': {'command': ['scripted-runtime']}}}))
         manifest = scripted_manifest()
@@ -352,21 +353,28 @@ class StartAdmissionTests(unittest.TestCase):
         for options in ({'evaluator_password_files': {'tq9-v2': str(secret)}, 'renode': '/opt/renode-handle'},
                         {'renode': '/opt/renode-handle'}, {'Evaluator_Password_File': str(secret)}, {'password': 'plaintext'}):
             with self.subTest(options=options), self.assertRaisesRegex(ValueError, 'bench harness'):
-                self.controller.call('suite_start', {'manifest': manifest, 'executor': 'codex', 'options': options,
-                                                     'request_id': 'emulated-suite', 'harness_token_sha256': token})
-        # The configurator schedules nothing itself: a suite no bench harness drives is refused.
+                suite_call(self.controller, 'suite_start', {
+                    'manifest': manifest, 'executor': 'codex', 'options': options, 'request_id': 'emulated-suite',
+                    'harness_token_sha256': token})
+        # The suite book schedules nothing itself: a suite no bench harness drives is refused.
         with self.assertRaisesRegex(ValueError, 'benchmark suite start'):
-            self.controller.call('suite_start', {'manifest': manifest, 'executor': 'codex', 'options': {},
-                                                 'request_id': 'emulated-suite'})
-        with self.controller._db() as db:
+            suite_call(self.controller, 'suite_start', {'manifest': manifest, 'executor': 'codex', 'options': {},
+                                                        'request_id': 'emulated-suite'})
+        # The suite tables, in the book's store under the bench home, hold nothing; the configurator has none.
+        with book(self.controller).store.open_db() as db:
             tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'suite%'")]
             self.assertTrue(tables)
             for table in tables:
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0], 0, table)
-        for path in (self.root / 'home').rglob('*'):
-            if path.is_file():
-                self.assertNotIn(str(secret).encode(), path.read_bytes(), path)
-                self.assertNotIn(b'renode-handle', path.read_bytes(), path)
+        with self.controller._db() as db:
+            self.assertEqual(db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'suite%'")
+                             .fetchall(), [])
+        stored = [path for home in (self.root / 'home', bench_home(self.root / 'home')) for path in home.rglob('*')
+                  if path.is_file()]
+        self.assertIn('suites.sqlite3', [path.name for path in stored])
+        for path in stored:
+            self.assertNotIn(str(secret).encode(), path.read_bytes(), path)
+            self.assertNotIn(b'renode-handle', path.read_bytes(), path)
 
     def test_an_emulated_case_starts_only_with_the_harness_admission_token_and_device(self):
         from generative_driver.configurator import IntegrityError

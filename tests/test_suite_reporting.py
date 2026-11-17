@@ -5,6 +5,8 @@ import json
 import unittest
 
 from generative_driver.benchmark_support.truth import read_password
+# The stand-in for the service answers the suite calls too, which a reader asks of the suite book.
+from suite_fixtures import standing_in
 
 STAGES=('acquire','interpret','probe','ground','emit','reuse')
 
@@ -264,14 +266,14 @@ class ExportTests(unittest.TestCase):
             if method=='result':return {'ok':True,'run_id':'r','status':'failed','created':0,'updated':1}
             events=[{'id':i,'kind':'noop','time':i,'data':{}} for i in range(1,501)] if params['after']==0 else []
             return {'ok':True,'run_id':'r','events':events,'cursor':500}
-        with tempfile.TemporaryDirectory() as temporary,patch('generative_driver.client.call',side_effect=owner):
+        with tempfile.TemporaryDirectory() as temporary,standing_in(side_effect=owner):
             report_run('r',home=temporary,output=Path(temporary)/'report.json',autostart=False)
         self.assertEqual(calls,[('result',False),('events',False),('events',False)])
 
     def test_explicit_output_is_required_before_contacting_owner(self):
         from unittest.mock import patch
         from generative_driver.benchmark_support.suite_reporting import report_suite
-        with patch('generative_driver.client.call',side_effect=AssertionError('owner contacted')):
+        with standing_in(side_effect=AssertionError('owner contacted')):
             for output in (None,'',' '):
                 with self.subTest(output=output),self.assertRaisesRegex(ValueError,'output'):report_suite('suite',output=output)
 
@@ -280,7 +282,7 @@ class ExportTests(unittest.TestCase):
         # of every run, once the owner has been asked; a path to audit is never accepted blank.
         from unittest.mock import patch
         from generative_driver.benchmark_support.suite_reporting import report_suite
-        with patch('generative_driver.client.call',side_effect=AssertionError('owner contacted')):
+        with standing_in(side_effect=AssertionError('owner contacted')):
             for paths in (('',),('/vault',' ')):
                 with self.subTest(paths=paths),self.assertRaisesRegex(ValueError,'audit path'):report_suite('suite',output='out',audit_paths=paths)
 
@@ -372,7 +374,7 @@ class ExportIntegrationTests(unittest.TestCase):
         from generative_driver.benchmark_support.suite_reporting import report_suite
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);call,calls,owners,_,_=export_fixture(root)
-            with patch('generative_driver.client.call',side_effect=call):result=report_suite('suite-toy',home=root,output=root/'export')
+            with standing_in(side_effect=call):result=report_suite('suite-toy',home=root,output=root/'export')
             self.assertEqual(result['success']['passed'],2)
             self.assertTrue(all(flag is False for _,flag in calls))
             self.assertEqual(sum(method=='suite_result' for method,_ in calls),2)
@@ -391,10 +393,11 @@ class ExportIntegrationTests(unittest.TestCase):
                 if method=='suite_result':
                     response=copy.deepcopy(response);response['experiment']['comparison_identity']['evaluator_revision']='0'*64
                 return response
-            with patch('generative_driver.client.call',side_effect=changed_experiment),self.assertRaises(ValueError):
+            with standing_in(side_effect=changed_experiment),self.assertRaises(ValueError):
                 report_suite('suite-toy',home=root,output=root/'wrong-evaluator')
             owners['r1']['client_record']['snapshot_sha256']='0'*64
-            with patch('generative_driver.client.call',side_effect=call),self.assertRaises(ValueError):report_suite('suite-toy',home=root,output=root/'refused')
+            with standing_in(side_effect=call),self.assertRaises(ValueError):
+                report_suite('suite-toy',home=root,output=root/'refused')
 
     def test_each_trial_is_compared_with_the_frozen_revision_of_its_own_case(self):
         # Catches a trial checked against the suite's combined revision, which no child of a suite of several families is
@@ -406,7 +409,7 @@ class ExportIntegrationTests(unittest.TestCase):
         from generative_driver.benchmark_support.suite_reporting import report_suite
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);call,_,_,_,_=export_fixture(root)
-            with patch('generative_driver.client.call',side_effect=call):
+            with standing_in(side_effect=call):
                 self.assertEqual(report_suite('suite-toy',home=root,output=root/'export')['success']['passed'],2)
             def swapped(method,params,**kwargs):
                 # The two cases' frozen revisions trade places, still combined into the revision the suite names.
@@ -417,7 +420,7 @@ class ExportIntegrationTests(unittest.TestCase):
                     revisions[first],revisions[second]=revisions[second],revisions[first]
                     experiment['comparison_identity']['evaluator_revision']=canonical_digest(revisions)
                 return response
-            with patch('generative_driver.client.call',side_effect=swapped),self.assertRaisesRegex(ValueError,'Executed evaluator differs'):
+            with standing_in(side_effect=swapped),self.assertRaisesRegex(ValueError,'Executed evaluator differs'):
                 report_suite('suite-toy',home=root,output=root/'swapped')
 
     def test_a_suite_frozen_before_per_case_revisions_compares_each_trial_with_its_one_revision(self):
@@ -427,7 +430,7 @@ class ExportIntegrationTests(unittest.TestCase):
         from generative_driver.benchmark_support.suite_reporting import report_suite
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);call,_,_,_,_=export_fixture(root,per_case=False)
-            with patch('generative_driver.client.call',side_effect=call):
+            with standing_in(side_effect=call):
                 result=report_suite('suite-toy',home=root,output=root/'export')
             self.assertEqual(result['success']['passed'],2)
             self.assertNotIn('evaluator_revisions',result['experiment'])
@@ -441,7 +444,7 @@ class ExportIntegrationTests(unittest.TestCase):
         from generative_driver.benchmark_support.suite_reporting import report_suite
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);call,_,_,_,_=export_fixture(root)
-            with patch('generative_driver.client.call',side_effect=call):
+            with standing_in(side_effect=call):
                 with self.assertRaisesRegex(ValueError,'assistive'):report_suite('suite-toy',home=root,output=root/'refused',audit_paths=('/vault',))
                 self.assertFalse((root/'refused').exists())
                 self.assertEqual(report_suite('suite-toy',home=root,output=root/'export')['success']['passed'],2)
@@ -456,7 +459,7 @@ class ExportIntegrationTests(unittest.TestCase):
         from generative_driver.benchmark_support.integrity import tree_hash
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);call,_,_,_,_=export_fixture(root)
-            with patch('generative_driver.client.call',side_effect=call):
+            with standing_in(side_effect=call):
                 result=suite_reporting.report_suite('suite-toy',home=root,output=root/'export')
             self.assertEqual(set(result['exporter']),{'benchmark_support_tree_sha256','toolchain_revision'})
             self.assertEqual(result['exporter']['benchmark_support_tree_sha256'],tree_hash(Path(suite_reporting.__file__).parent))
@@ -470,7 +473,7 @@ class ExportIntegrationTests(unittest.TestCase):
         from generative_driver.benchmark_support.suite_reporting import report_suite
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);call,_,_,evidence,passwords=export_fixture(root)
-            with patch('generative_driver.client.call',side_effect=call):
+            with standing_in(side_effect=call):
                 result=report_suite('suite-toy',home=root,output=root/'regraded',evidence_files=evidence,password_files=passwords)
                 self.assertEqual(result['qualification'],'regraded-encrypted-evidence');self.assertEqual(result['success']['passed'],2)
                 missing=dict(evidence);missing.pop('entry-001-repeat-000')

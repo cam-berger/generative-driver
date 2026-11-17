@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 from generative_driver.benchmark_support import evaluator, families, harness, registry, truth
 from generative_driver.benchmark_support.snapshots import canonical_digest
-from suite_fixtures import file_changes, public_case_fixture, symlinks_refused
+from suite_fixtures import file_changes, public_case_fixture, standing_in, suite_call, symlinks_refused
 from test_configurator import gateway_identity, scripted_stages, task_of
 from test_evaluation import CASE_TRUTH, FAIL, HarnessTrialFixture, PASS, PendingRunFixture, reference
 from test_suite_harness import HarnessSuiteFixture, manifest as suite_manifest
@@ -764,7 +764,7 @@ class SuitePasswordTests(HarnessSuiteFixture):
             record = self.drive(intercept=intercept, manifest=suite_manifest(2), executor='codex', options={})
         self.assertEqual(record['status'], 'finished', record)
         self.assertFalse(self.password.exists())
-        status = self.controller.call('suite_status', {'suite_id': record['suite_id']})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': record['suite_id']})
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 2, 1))
         self.assertEqual(len(self.peers), 2)
         literal = truth.EvaluatorPassword(self.SECRET_TEXT)
@@ -830,7 +830,8 @@ class SuitePasswordTests(HarnessSuiteFixture):
         with self.harness():
             resumed = self.drive(suite_id=record['suite_id'], password_files={}, renode=None)
         self.assertEqual(resumed['status'], 'finished', resumed)
-        self.assertEqual(self.controller.call('suite_status', {'suite_id': record['suite_id']})['status'], 'completed')
+        self.assertEqual(suite_call(self.controller, 'suite_status', {'suite_id': record['suite_id']})['status'],
+                         'completed')
 
     def test_02_B7_a_child_whose_effect_is_uncertain_settles_without_one(self):
         spy, paths = read_spy()
@@ -999,7 +1000,7 @@ class CommandReadTests(unittest.TestCase):
         call, _, _, evidence, passwords = export_fixture(self.root, one_case=True)
         self.assertEqual((len(evidence), len(passwords)), (2, 1))
         spy, paths = read_spy()
-        with spy, patch('generative_driver.client.call', side_effect=call):
+        with spy, standing_in(side_effect=call):
             result = report_suite('suite-toy', home=self.root, output=self.root / 'regraded', evidence_files=evidence, password_files=passwords)
         self.assertEqual(result['success']['passed'], 2)
         self.assertEqual(paths, [str(path) for path in passwords.values()])

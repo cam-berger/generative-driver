@@ -23,11 +23,13 @@ from unittest.mock import patch
 
 from generative_driver.benchmark_support import evaluator, generated_sets, generated_trials, harness
 from generative_driver.benchmark_support.evidence import public_pin
+from generative_driver.benchmark_support.suite_book import SuiteBook
 from generative_driver.benchmark_support.suites import resume_suite
 from generative_driver.benchmark_support.truth import EvaluatorPassword, UnlockedTruth
 from generative_driver.configurator import Controller
 from generated_fixtures import FIXTURE_ANSWER_KEY, PASSWORD, REFERENCE_A
-from suite_fixtures import drive_suite, settled_suite, symlinks_refused, wait_harnesses
+from suite_fixtures import (book, drive_suite, owner_call, settled_suite, standing_in, suite_call, symlinks_refused,
+                            wait_harnesses)
 from test_generated_trials import (HARNESS_FIXTURE, SET, START, GeneratedTrialFixture, SetSuiteFixture,
                                    SuiteStartFixture, as_scoring_set, handmade_manifest, no_native_process,
                                    qualified_set, recorded_digest, replay_candidate, resealed_set, set_manifest)
@@ -703,7 +705,7 @@ class LiveSuiteResumeTests(unittest.TestCase):
                 'suite_status': self.suite, 'status': self.child}.get(method, {'ok': False, 'reason': 'unknown'})
 
     def resume(self, options=None):
-        with patch('generative_driver.client.call', self.call):
+        with standing_in(self.call):
             return resume_suite('suite-1', options if options is not None else {'set_root': str(self.base / 'set')},
                                 home=self.base / 'home', autostart=False)
 
@@ -952,7 +954,7 @@ class ReachableAgainTests(ReachableAgainFixture):
         self.assertEqual(record['status'], 'finished', record)
         self.assertEqual(self.count('suite_start_child'), 2)
         self.assertGradedAndSealed(record['suite_id'], 2)
-        status = self.controller.call('suite_status', {'suite_id': record['suite_id']})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': record['suite_id']})
         self.assertNotIn('awaiting', json.dumps(status))
 
     def test_05_B9_a_continued_slot_waits_before_its_device_is_provided(self):
@@ -992,7 +994,7 @@ class ReachableAgainTests(ReachableAgainFixture):
     def test_05_B9_a_cancelled_suite_ends_the_wait_with_no_worker_and_no_settlement(self):
         def then():
             record = self.await_status(accepted=True)
-            self.controller.call('suite_cancel', {'suite_id': record['suite_id']})
+            suite_call(self.controller, 'suite_cancel', {'suite_id': record['suite_id']})
         thread = self.operator(then)
         with self.staged(REFERENCE_A):
             record = self.drive(calls=self.calls, intercept=self.reopened_after('suite_settle'),
@@ -1000,7 +1002,8 @@ class ReachableAgainTests(ReachableAgainFixture):
         self.finish(thread)
         self.assertEqual((record['status'], record.get('reason')), ('finished', None), record)
         self.assertEqual((self.count('suite_start_child'), self.count('suite_settle')), (1, 1))
-        status = settled_suite(lambda method, params, _home: self.controller.call(method, params), record['suite_id'])
+        status = settled_suite(lambda method, params, _home: suite_call(self.controller, method, params),
+                               record['suite_id'])
         self.assertEqual(status['status'], 'cancelled', status)
 
     def test_05_B9_a_set_stop_ends_the_wait_and_the_suite_can_resume(self):
@@ -1016,7 +1019,8 @@ class ReachableAgainTests(ReachableAgainFixture):
         self.finish(thread)
         self.assertEqual((record['status'], record.get('reason')), ('finished', None), record)
         self.assertEqual((self.count('suite_start_child'), self.count('suite_settle')), (1, 1))
-        status = settled_suite(lambda method, params, _home: self.controller.call(method, params), record['suite_id'])
+        status = settled_suite(lambda method, params, _home: suite_call(self.controller, method, params),
+                               record['suite_id'])
         self.assertEqual(status['status'], 'blocked', status)
 
     def test_05_B9_a_reply_that_is_not_ok_keeps_waiting(self):
@@ -1059,7 +1063,8 @@ class ReachableAgainTests(ReachableAgainFixture):
         self.assertEqual((record['status'], record['accepted'], record['reason']),
                          ('failed', True, 'The vault holding set ' + SET + ' was not closed in time'))
         self.assertEqual((self.count('suite_start_child'), self.count('suite_settle')), (1, 1))
-        status = settled_suite(lambda method, params, _home: self.controller.call(method, params), record['suite_id'])
+        status = settled_suite(lambda method, params, _home: suite_call(self.controller, method, params),
+                               record['suite_id'])
         self.assertEqual(status['status'], 'blocked', status)
         self.assertIn('the harness failed', status['reason'])
         self.assertNotIn('trial entry', status['reason'])
@@ -1248,7 +1253,7 @@ class ConfiguratorWordsTests(SetSuiteFixture):
 
     def own_words(self, suite_id):
         with self.assertRaises(ValueError) as refused:
-            self.controller.call('suite_resume', {'suite_id': suite_id, 'harness_token_sha256': 'b' * 64,
+            suite_call(self.controller, 'suite_resume', {'suite_id': suite_id, 'harness_token_sha256': 'b' * 64,
                                                   'harness_pid': 1})
         return str(refused.exception)
 
@@ -1259,22 +1264,23 @@ class ConfiguratorWordsTests(SetSuiteFixture):
             self.assertEqual(self.resume_refused(started['suite_id']), self.own_words(started['suite_id']))
             self.assertEqual(self.own_words(started['suite_id']), 'Only a stopped incomplete suite can resume')
             # Its harness, this process, is still alive.
-            self.controller._suites.set_state(started['suite_id'], 'blocked', 'for this test')
+            book(self.controller).store.set_state(started['suite_id'], 'blocked', 'for this test')
             self.assertEqual(self.resume_refused(started['suite_id']), self.own_words(started['suite_id']))
             self.assertEqual(self.own_words(started['suite_id']), 'Previous suite work is still stopping')
-        self.assertIn(UNCERTAIN, inspect.getsource(Controller._suite_resume))
+        # The suite book's resume holds the words now, as the configurator's did.
+        self.assertIn(UNCERTAIN, inspect.getsource(SuiteBook._suite_resume))
 
     def test_05_B13_a_real_stopped_suite_reads_as_stopped_and_its_entry_pins_compare(self):
         digest = recorded_digest(self.set_root)
         pins = {device: generated_trials.device_pin(self.manifest, device, digest) for device in self.pins}
         started = self.suite_start(pins)
-        self.controller._suites.set_state(started['suite_id'], 'blocked', 'for this test')
-        self.controller._suites.detach_harness(started['suite_id'])
+        book(self.controller).store.set_state(started['suite_id'], 'blocked', 'for this test')
+        book(self.controller).store.detach_harness(started['suite_id'])
         calls = []
 
         def call(method, params=None):
             calls.append(method)
-            return {'ok': True} if method == 'ping' else self.controller.call(method, params or {})
+            return {'ok': True} if method == 'ping' else owner_call(self.controller)(method, params or {})
         root = copied_set(self)
         directory = self.root / 'resumed'
         with patch.object(harness, 'UNMOUNT_WAIT', 0):

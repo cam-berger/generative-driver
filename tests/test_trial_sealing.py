@@ -23,9 +23,11 @@ from unittest.mock import patch
 from generative_driver import benchmark
 from generative_driver.benchmark_support import (generated_sets, generated_trials, harness, scorecard, suite_reporting,
                                                  suites, trial_store)
+from generative_driver.benchmark_support.suite_book import SuiteBook
 from generative_driver.benchmark_support.suite_store import _json
 from generative_driver.benchmark_support.truth import EvaluatorPassword
 from generative_driver.configurator import Controller
+from suite_fixtures import book, standing_in, suite_call
 
 SOURCE = Path(__file__).resolve().parents[1] / 'src' / 'generative_driver'
 LAYOUT_WORDS = ('suites', 'trials', '-bench')
@@ -1706,7 +1708,7 @@ class ResumeNeedsItsPasswordTests(HarnessFixture):
                 return {'ok': False, 'reason': 'No configurator'}
             return {'suite_result': {**status, 'experiment': {'comparison_identity': identity}},
                     'suite_status': status}.get(method, {'ok': False})
-        with patch.object(harness, '_spawn', spawn), patch('generative_driver.client.call', call):
+        with patch.object(harness, '_spawn', spawn), standing_in(call):
             suites.resume_suite(SUITE, options, home=self.home, autostart=False)
         return spawned
 
@@ -1814,8 +1816,8 @@ class SealedRunMarkTests(unittest.TestCase):
                   'trials': [{'ordinal': 0, 'trial_key': 'entry-000-repeat-000', 'case': 'generated',
                               'scenario': 'original', 'case_seed': 0, 'repeat_index': 0, 'entry_index': 0}],
                   **({'scoring_set': {'registration': 'set-v1', 'manifest_sha256': 'a' * 64}} if scoring else {})}
-        suite_id = self.controller._suites.create(frozen, harness_pid=os.getpid())['suite_id']
-        self.controller._suites.set_state(suite_id, 'running')
+        suite_id = book(self.controller).store.create(frozen, harness_pid=os.getpid())['suite_id']
+        book(self.controller).store.set_state(suite_id, 'running')
         return suite_id
 
     def add_run(self, run_id, suite_id, status='failed'):
@@ -1826,12 +1828,12 @@ class SealedRunMarkTests(unittest.TestCase):
         with self.controller._db() as db:
             db.execute('INSERT INTO runs(id,request_id,spec,status,created,updated) VALUES(?,?,?,?,1,2)',
                        (run_id, 'request-' + run_id, _json(spec), status))
-        slot = self.controller._suites.reserve(suite_id)
-        self.controller._suites.attach(suite_id, slot['ordinal'], slot['child_request_id'], run_id)
+        slot = book(self.controller).store.reserve(suite_id)
+        book(self.controller).store.attach(suite_id, slot['ordinal'], slot['child_request_id'], run_id)
         return run_id
 
     def mark(self, **params):
-        return self.controller.call('suite_sealed', {'suite_id': self.suite, 'ordinal': 0, 'run_id': self.run,
+        return suite_call(self.controller, 'suite_sealed', {'suite_id': self.suite, 'ordinal': 0, 'run_id': self.run,
                                                      **params})
 
     def test_07_B12_a_marked_run_says_so_in_status_and_result_and_any_other_does_not(self):
@@ -1864,24 +1866,25 @@ class SealedRunMarkTests(unittest.TestCase):
         self.assertNotIn('sealed', self.controller.call('status', {'run_id': self.run}))
 
     def test_07_B12_with_no_harness_attached_it_takes_no_token(self):
-        self.controller._suites.detach_harness(self.suite)
+        book(self.controller).store.detach_harness(self.suite)
         self.assertEqual(self.mark()['ok'], True)
         self.assertIs(self.controller.call('status', {'run_id': self.run})['sealed'], True)
 
     def test_07_B12_a_harness_that_died_attached_counts_as_none(self):
-        with patch.object(Controller, '_harness_alive', staticmethod(lambda suite: False)):
+        with patch.object(SuiteBook, '_harness_alive', staticmethod(lambda suite: False)):
             self.assertEqual(self.mark()['ok'], True)
 
     def test_07_B12_a_suite_that_is_not_scoring_is_refused(self):
         suite = self.frozen_suite(scoring=False)
         run = self.add_run('run-2', suite)
         with self.assertRaisesRegex(ValueError, 'Only a scoring suite'):
-            self.controller.call('suite_sealed', {'suite_id': suite, 'ordinal': 0, 'run_id': run, 'token': self.TOKEN})
+            suite_call(self.controller, 'suite_sealed', {'suite_id': suite, 'ordinal': 0, 'run_id': run,
+                                                         'token': self.TOKEN})
         self.assertNotIn('sealed', self.controller.call('status', {'run_id': run}))
 
     def test_07_B12_it_accepts_the_slots_run_or_its_first_attempts_and_no_other(self):
         first = self.run
-        with self.controller._suites.open_db() as db:
+        with book(self.controller).store.open_db() as db:
             db.execute('UPDATE suite_trials SET first_attempt=?,run_id=NULL WHERE suite_id=?',
                        (_json({'run_id': first, 'request_id': 'r'}), self.suite))
         self.assertEqual(self.mark(token=self.TOKEN)['ok'], True)
@@ -1936,7 +1939,7 @@ class ScoringReadRefusalTests(unittest.TestCase):
     def report(self, **changes):
         arguments = {'output': self.vault / 'report', 'password': PASSWORD, 'set_root': self.set_root,
                      'vault': self.vault, **changes}
-        with patch('generative_driver.client.call', self.call):
+        with standing_in(self.call):
             return suite_reporting.report_suite(SUITE, home=self.root / 'home', **arguments)
 
     def assertRefused(self, pattern, **changes):
@@ -1977,7 +1980,7 @@ class ScoringReadRefusalTests(unittest.TestCase):
             written.append(output)
         with patch.dict(os.environ, {'HOME': str(self.root), 'USERPROFILE': str(self.root)}), \
                 patch.object(suite_reporting, '_export_suite', export), \
-                patch('generative_driver.client.call', self.call):
+                standing_in(self.call):
             suite_reporting.report_suite(SUITE, home=self.root / 'home', output='~/vault/report', password=PASSWORD,
                                          set_root=self.set_root, vault='~/vault')
         self.assertEqual(written, [self.vault / 'report'])
@@ -1989,14 +1992,14 @@ class ScoringReadRefusalTests(unittest.TestCase):
 
     def test_07_B17_a_scoring_scorecard_refuses_a_live_suite(self):
         self.status = {'ok': True, 'status': 'running', 'stopping': False}
-        with patch('generative_driver.client.call', self.call), \
+        with standing_in(self.call), \
                 self.assertRaisesRegex(ValueError, 'measured only once nothing of it runs'):
             scorecard.suite_scorecard(scoring_report(), home=self.root / 'home', password=PASSWORD, set_root='x')
 
     def test_07_B17_it_joins_level_and_framing_in_memory_and_saves_neither(self):
         manifest = {'manifest_sha256': 'a' * 64, 'devices': [{'id': '0000d001', 'level': 3, 'framing': 'text-lines'}]}
         report = scoring_report()
-        with patch('generative_driver.client.call', self.call), \
+        with standing_in(self.call), \
                 patch.object(generated_sets, 'load_set', return_value=manifest):
             card = scorecard.suite_scorecard(report, home=self.root / 'home', password=PASSWORD, set_root='x')
         self.assertEqual(sorted(card['groups']), ['family', 'framing', 'level'])
@@ -2008,7 +2011,7 @@ class ScoringReadRefusalTests(unittest.TestCase):
 
     def test_07_B17_a_set_root_holding_another_manifest_is_refused(self):
         manifest = {'manifest_sha256': 'c' * 64, 'devices': []}
-        with patch('generative_driver.client.call', self.call), \
+        with standing_in(self.call), \
                 patch.object(generated_sets, 'load_set', return_value=manifest), \
                 self.assertRaisesRegex(ValueError, 'another manifest than the suite froze'):
             scorecard.suite_scorecard(scoring_report(), home=self.root / 'home', password=PASSWORD, set_root='x')

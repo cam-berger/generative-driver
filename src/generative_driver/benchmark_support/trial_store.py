@@ -58,6 +58,18 @@ def suite_dir(home, key):
     return bench_home(home) / 'suites' / key
 
 
+def suite_store_path(home):
+    """The database of the suite book's store, directly under the bench home of `home` (Feature 07 of the untangle
+    Run, docs/features/untangle/07-suites.md): every suite of that home, with its slots and its events."""
+    return bench_home(home) / 'suites.sqlite3'
+
+
+def suite_lock_path(home, suite_id=None):
+    """The lock file of the suite `suite_id` under the bench home of `home`, or of the whole suite store when no
+    suite is named. `suite_id` is one the store holds: the caller reads the suite before it locks it."""
+    return bench_home(home) / 'suite-locks' / ('store.lock' if suite_id is None else suite_id + '.lock')
+
+
 def new_trial_dir(suite_folder, trial_key):
     """A fresh trial folder's path in the folder of the suite harness running it."""
     return Path(suite_folder) / 'trials' / (trial_key + '-' + uuid.uuid4().hex[:8])
@@ -519,7 +531,8 @@ def _slot_of(request_id):
 
 
 def _mark_sealed(call, record, run_id, token):
-    """Tell the configurator the run is sealed: repeatable, since a crash may send it again."""
+    """Have the run marked sealed in the configurator, through the suite's `suite_sealed`: repeatable, since a crash
+    may send it again."""
     suite_id, ordinal = _slot_of(record['request_id'])
     reply = _reply(call, 'suite_sealed', {'suite_id': suite_id, 'ordinal': ordinal, 'run_id': run_id,
                                           **({'token': token} if token else {})})
@@ -660,7 +673,8 @@ def _workspace_folder(named, run_dir):
 
 
 def _suite_rows(call, suite_id):
-    """(every slot row of the suite, its comparison identity), as the configurator reports them, or `Unreachable`."""
+    """(every slot row of the suite, its comparison identity), as the suite book reports them through `call`, or
+    `Unreachable`."""
     rows, offset, identity = [], 0, {}
     while True:
         page = _reply(call, 'suite_result', {'suite_id': suite_id, 'offset': offset, 'limit': 100})

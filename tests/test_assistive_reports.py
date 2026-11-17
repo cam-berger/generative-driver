@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from suite_fixtures import service, suite_call
 from test_configurator import scripted_stages
 from test_evaluation import EXPECTED, FAIL, PASS, TOKEN, Undecided, evaluation, files, reference
 from test_harness import EVIDENCE, unstarted_provider
@@ -55,7 +56,10 @@ class AssistiveFixture(HarnessSuiteFixture):
         return trial, record
 
     def owner(self):
-        return patch('generative_driver.client.call', side_effect=lambda method, params, **kw: self.controller.call(method, params))
+        # The client as a report reaches it: the in-process configurator through the shared helper, which answers
+        # the `ping` a suite book asks first and gives a refusal back as the service does.
+        asked = service(self.controller)
+        return patch('generative_driver.client.call', side_effect=lambda method, params, **kw: asked(method, params))
 
     def report(self, run_id, name='report'):
         from generative_driver.reporting import report_run
@@ -1101,7 +1105,8 @@ class SuiteExportTests(AssistiveFixture):
         with self.harness(PASS, FAIL, RuntimeError('evaluator host stopped')):
             record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
                                 request_id='three-children')
-        return record['suite_id'], self.controller.call('suite_result', {'suite_id': record['suite_id']})['trials']
+        rows = suite_call(self.controller, 'suite_result', {'suite_id': record['suite_id']})['trials']
+        return record['suite_id'], rows
 
     def worker_commands(self, row, place, *commands):
         """The transcript a child's worker left in the configurator's home, with a line that is not JSON after its commands."""
@@ -1188,9 +1193,9 @@ class SuiteExportTests(AssistiveFixture):
             record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
                                 request_id='unknown-child')
         sid = record['suite_id']
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['planned'], status['completed'], status['equivalent']), ('completed', 3, 3, 1))
-        rows = self.controller.call('suite_result', {'suite_id': sid})['trials']
+        rows = suite_call(self.controller, 'suite_result', {'suite_id': sid})['trials']
         self.assertEqual([(row['status'], row['equivalence_status'], row['equivalent']) for row in rows],
                          [('finished', 'graded', True), ('finished', 'unknown', None), ('finished', 'graded', False)])
         with self.owner():
@@ -1232,9 +1237,9 @@ class SuiteExportTests(AssistiveFixture):
             record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
                                 request_id='failed-and-undecided-child')
         sid = record['suite_id']
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['planned'], status['completed'], status['equivalent']), ('completed', 3, 3, 2))
-        rows = self.controller.call('suite_result', {'suite_id': sid})['trials']
+        rows = suite_call(self.controller, 'suite_result', {'suite_id': sid})['trials']
         self.assertEqual([(row['status'], row['equivalence_status'], row['equivalent']) for row in rows],
                          [('finished', 'graded', True), ('finished', 'graded', False), ('finished', 'graded', True)])
         with self.owner():
@@ -1260,7 +1265,7 @@ class SuiteExportTests(AssistiveFixture):
             record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
                                 request_id='three-children')
         sid = record['suite_id']
-        rows = self.controller.call('suite_result', {'suite_id': sid})['trials']
+        rows = suite_call(self.controller, 'suite_result', {'suite_id': sid})['trials']
         with self.owner():
             result = report_suite(sid, home=self.home, output=self.root / 'export')
         self.assertEqual((result['schema'], result['protocol'], result['qualification'], result['status']),

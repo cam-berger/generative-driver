@@ -731,6 +731,7 @@ def _export_suite(suite_id,*,home,output,evidence_files=None,password_files=None
     from ..client import call
     from ..reporting import report_run,_public,_tree_hash
     from .evidence import regrade_v2,regrade_v3
+    from .suite_book import suite_call
     from .truth import read_password
     root=home;destination=Path(output).resolve()
     regrading=evidence_files is not None or password_files is not None
@@ -738,7 +739,8 @@ def _export_suite(suite_id,*,home,output,evidence_files=None,password_files=None
         raise ValueError('Regrade requires trial-keyed evidence and case-keyed password files')
     offset=0;rows=[];first=None
     while True:
-        page=call('suite_result',{'suite_id':suite_id,'offset':offset,'limit':100},home=root,autostart=False)
+        # The suite is read from the suite book, and each of its runs from the configurator.
+        page=suite_call('suite_result',{'suite_id':suite_id,'offset':offset,'limit':100},home=root,autostart=False)
         if not page.get('ok') or page.get('suite_id')!=suite_id:raise ValueError('Cannot read suite from configured owner')
         if first is None:first=page
         elif page.get('experiment')!=first.get('experiment'):raise ValueError('Suite changed during export; retry after it settles')

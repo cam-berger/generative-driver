@@ -1,8 +1,8 @@
-# Client interface, version 2
+# Client interface, version 3
 
-A client that brings its own device, firmware and mission asks four things of the tool: start a run on a device it supplies, replace that device, post one final verdict, and read the run's records and its frozen driver. This page says what the client sends, what it gets back and when the tool refuses. The module `generative_driver.client_interface` holds the same in code, and its `VERSION` is the number in the title.
+A client that brings its own device, firmware and mission asks five things of the tool: start a run on a device it supplies, replace that device, post one final verdict, read the run's records and its frozen driver, and stop or seal a run. This page says what the client sends, what it gets back and when the tool refuses. The module `generative_driver.client_interface` holds the same in code, and its `VERSION` is the number in the title.
 
-The service is the configurator, the background owner of runs. A client reaches it on the same machine with `call(method, params, home)` of `generative_driver.client`. Every reply is a JSON object. A refusal is `{"ok": false, "error": ..., "reason": ...}`, and `reason` is a sentence. `call` itself answers `{"ok": false, "reason": ...}`, with no `error`, when the service runs other code than the client, when a reply is lost, and for a `ping` whose `ok` is false. The calls of this interface are `ping`, `start`, `resume`, `status`, `events`, `result`, `attach_device` and `record_evaluation`. Runs follow the protocol `assistive/1`.
+The service is the configurator, the background owner of runs. A client reaches it on the same machine with `call(method, params, home)` of `generative_driver.client`. Every reply is a JSON object. A refusal is `{"ok": false, "error": ..., "reason": ...}`, and `reason` is a sentence. `call` itself answers `{"ok": false, "reason": ...}`, with no `error`, when the service runs other code than the client, when a reply is lost, and for a `ping` whose `ok` is false. The calls of this interface are `ping`, `start`, `resume`, `status`, `events`, `result`, `attach_device`, `record_evaluation`, `cancel` and `seal`. Runs follow the protocol `assistive/1`.
 
 ## Start a run on a supplied device
 
@@ -20,8 +20,8 @@ A supplied device is one the client owns: the client starts it before the run an
 | `effects` | The effects the client grants the run: any of `read`, `write`, `actuate` and `reset`. Without it, `read` alone. |
 | `budget_seconds` | The run's time budget: positive, at most seven days. Without it, three hours. |
 | `executor` | The worker runtime, `codex` or `replay`. Without it, `codex`. |
-| `executor_config` | Settings of that runtime for this run, laid over the ones the operator configured. |
-| `request_id` | Text of the client's choice. A `start` repeated with the same `request_id` and the same inputs starts nothing and finds the same run. |
+| `executor_config` | Settings of that runtime for this run. On a supplied run it is the whole configuration, and without it the run has what the operator configured. |
+| `request_id` | Text of the client's choice. A `start` repeated with the same `request_id` and the same inputs starts nothing and finds the same run, and `status` finds the run by it. |
 | `client_record` | A JSON object of the client's own, of at most 262144 bytes as JSON. The service stores it, never reads it, and gives it back with `result`. |
 | `ghidra_home`, `java_home` | Absolute paths of the analysis tools the interpret worker may use. |
 | `scoped_tool_approval` | `emulator` approves the run's assigned tools on the supplied device without asking again. |
@@ -61,7 +61,7 @@ The reply is `{"ok": true, "run_id": ..., "duplicate": false}`, or `duplicate` t
 
 `resume` with `run_id` continues a run that stopped before it was complete (`blocked`, `failed` or `cancelled`) and answers with its status. It is refused while a worker of the run is still stopping, while an effect is uncertain, and once the budget is spent, unless `budget_seconds` with a `budget_reason` raises it. A stage resumes only on a device whose `status` answers healthy, with the session and binding the run recorded. Otherwise the resume is refused, and the run stays stopped until that device answers so again or `attach_device` records a new one.
 
-`ping` takes nothing. Its `ok` is true when the service runs the same code as the client.
+`ping` takes nothing. Its `ok` is true when the service runs the same code as the client. `ping` answers with `pid`, the process id of the service, by which a client sees that another service process answers.
 
 ## The control endpoint
 
@@ -114,11 +114,11 @@ The verdict is accepted once, for a `completed` run with nothing uncertain that 
 
 ## Read the records and the frozen driver
 
-`status`, `events` and `result` each take `run_id`. A `run_id` the service does not know is refused.
+`events` and `result` each take `run_id`. `status` takes a `run_id` or a `request_id`: the `request_id` of a `start` finds the run that `start` made, and asking starts nothing. With both, the `run_id` is used. A `run_id` the service does not know is refused, and a `request_id` that started no run is refused with `Unknown request_id`.
 
 - `status` gives the run's `status`, `stage`, `reason` and `outcome_category`, whether an effect is uncertain (`uncertain_effect`), whether a worker is still stopping (`stopping`), the final verdict as `equivalence`, null until one is recorded, and the latest notes of each stage (`stage_notes`).
 - `events` gives up to 500 events after the cursor `after`, each with `id`, `kind`, `data` and `time`, and the next `cursor`.
-- `result` gives what `status` gives, the run's records, which are `worker_reports`, `accepted_handoffs`, `evaluator_verdicts` and `progress`, and the `client_record` of the `start`, as it was sent.
+- `result` gives what `status` gives, the run's records, which are `worker_reports`, `accepted_handoffs`, `evaluator_verdicts` and `progress`, the `client_record` of the `start`, as it was sent, and `request`, the params of the `start` as the service received them. A run that an earlier version stored without its request has no `request`.
 
 A run waits for a posted verdict when its `status` is `completed` and `progress` of `result` holds `"equivalence": "pending"`. The verdict must then name the run's frozen driver, the first artifact of the latest `emit` handoff that has one:
 
@@ -134,10 +134,16 @@ driver = frozen_driver(result['accepted_handoffs'])  # {'path': ..., 'sha256': .
 
 A run that an earlier version of the tool started on a case is neither resumed nor graded: `resume`, `attach_device` and `record_evaluation` refuse it, and the client starts a new run.
 
+## Stop or seal a run
+
+`cancel` takes `run_id` and answers with the run's status. The run becomes `cancelled`, and a worker of it that still runs is told to stop: `stopping` is true until it has. A `completed` run that has its final verdict, or that waits for one, keeps its status.
+
+`seal` takes `run_id` and answers `{"ok": true, "run_id": ..., "sealed": true}`. The same call again gives the same answer. It marks the run sealed and changes nothing else of it: not its status, its events, its verdict or its files. From then on `status` and `result` hold `"sealed": true`, and `resume` and `attach_device` are refused with `A sealed run does not resume or take a device: <run_id>`. A client seals a run whose records it has put away, so that nothing continues the run afterwards.
+
 ## What a client imports
 
 - `generative_driver.client_interface`: `VERSION`, `PROTOCOL`, `CALLS`, `VERDICT_FIELDS`, `verdict_errors`, `device_errors`, `firmware_errors`, `mission_errors` and `frozen_driver`.
 - `call` and `default_home` of `generative_driver.client`. `default_home()` is the home `call` uses when it is given none.
 - `digest` of `generative_driver.integrity`.
 
-Nothing else in the tool is part of this interface. The operator clears an uncertain effect and cancels a run through the command line or the MCP server, outside this interface.
+Nothing else in the tool is part of this interface. The operator clears an uncertain effect through the command line or the MCP server, outside this interface.

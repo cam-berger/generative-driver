@@ -4,7 +4,7 @@
   "branch": "mdk/untangle",
   "stage": "spec",
   "awaiting": null,
-  "current": "07",
+  "current": "08",
   "features": [
     {
       "id": "01",
@@ -45,8 +45,8 @@
     {
       "id": "07",
       "slug": "suites",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "ac97d2cecb6c03cd2106a633fb868d834eca733e"
     },
     {
       "id": "08",

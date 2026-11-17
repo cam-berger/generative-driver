@@ -2,6 +2,74 @@
 import json
 
 
+def service(owner):
+    """The in-process configurator `owner` as the callable a suite book or a bench harness sends its requests to.
+    `ping` answers with a process id of the owner's own, which differs for each `Controller` object
+    (`owner_ipc_fixture.service_pid`), so that a second one on the same home is a restart of the service. A refusal
+    comes back in the form the service gives it."""
+    from owner_ipc_fixture import service_pid
+    def send(method, params=None):
+        if method == 'ping':
+            return {'ok': True, 'pid': service_pid(owner)}
+        try:
+            return owner.call(method, params or {})
+        except Exception as error:
+            return {'ok': False, 'error': type(error).__name__, 'reason': str(error)}
+    return send
+
+
+def book(owner):
+    """The suite book of the in-process configurator `owner`: the book of its home, whose requests go to `owner`. Its
+    `store` is the book's `SuiteStore`, and `store.open_db()` its database (Feature 07 of the untangle Run,
+    docs/features/untangle/07-suites.md)."""
+    from generative_driver.benchmark_support.suite_book import SuiteBook
+    return SuiteBook(owner.home, service(owner))
+
+
+def suite_call(owner, method, params=None):
+    """What the suite book of the in-process configurator `owner` answers the suite call `method`: the one way a test
+    sends a suite call, since the configurator serves none. A refusal raises, as it did when the configurator served
+    the call: the book's own, and one of the configurator's that ended the call. A reply that never came is returned
+    as the client gives it."""
+    from generative_driver.integrity import IntegrityError
+    reply = book(owner).call(method, params)
+    if isinstance(reply, dict) and reply.get('ok') is False and 'error' in reply:
+        raise {'IntegrityError': IntegrityError, 'ValueError': ValueError}.get(reply['error'], RuntimeError)(
+            reply.get('reason'))
+    return reply
+
+
+def owner_call(owner):
+    """`(method, params)` for an in-process configurator `owner`, as a client's one callable: a suite call goes to
+    the owner's book (`suite_call`) and every other method to the owner."""
+    return lambda method, params=None: (suite_call(owner, method, params) if method.startswith('suite_')
+                                        else owner.call(method, params))
+
+
+def client_call(method, params=None, home=None, **options):
+    """`generative_driver.client.call` for a test of a configurator process, with a suite call sent to the suite book
+    of the same home in this process, as a command of the benchmark sends it."""
+    from generative_driver import client
+    from generative_driver.benchmark_support.suite_book import suite_call as asked
+    return (asked if method.startswith('suite_') else client.call)(method, params, home, **options)
+
+
+def standing_in(call=None, **mock):
+    """Replace `generative_driver.client.call`, and with it the suite book's `suite_call`, by one stand-in: `call`,
+    or a mock made with `mock` (`side_effect=...` or `return_value=...`). For a test that stands in for the
+    service's answers, among them the suite answers the service gave before the book kept suites: a reader of the
+    benchmark asks the book for those now. Entered, it gives the stand-in."""
+    from contextlib import contextmanager
+    from unittest.mock import MagicMock, patch
+    stand_in = call if call is not None else MagicMock(**mock)
+    @contextmanager
+    def replaced():
+        with patch('generative_driver.client.call', stand_in), \
+                patch('generative_driver.benchmark_support.suite_book.suite_call', stand_in):
+            yield stand_in
+    return replaced()
+
+
 def pilot_manifest():
     return {'schema':'benchmark-suite/1','id':'development-pilot','version':'2',
         'entries':[{'case':case,'scenario':'original','case_seed':0}
@@ -277,8 +345,8 @@ def harness_keys(test, root, pin, config, *, descriptor=None, case_options=None,
 
 def outside_start(request):
     """A suite child's request as a plain `start` takes it: without the case, its pin and its options, which `start`
-    refuses. A run started so, outside its suite, records this as its submitted intent, never the slot's frozen
-    request, which only the suite's own start records."""
+    refuses. The suite book starts a child with the same plain start, so a run started so, outside its suite, is the
+    slot's child when its request is the frozen slot's and its client record names the slot's case and pin."""
     return {key: value for key, value in request.items() if key not in ('case', 'case_pin', 'case_options')}
 
 
@@ -313,7 +381,8 @@ def wait_suite(call, suite_id, home, predicate):
 
 
 def wait_owner_suite(owner, suite_id, predicate):
-    return wait_suite(lambda method,params,home:owner.call(method,params),suite_id,None,predicate)
+    asked = owner_call(owner)
+    return wait_suite(lambda method,params,home:asked(method,params),suite_id,None,predicate)
 
 
 def settled_suite(call, suite_id, home=None, seconds=60):
@@ -331,24 +400,26 @@ def settled_suite(call, suite_id, home=None, seconds=60):
 
 def drive_suite(owner, bench, request, *, wait=True, calls=None, stop=None, intercept=None):
     """Play the bench harness for an in-process owner: the harness's suite loop runs in a thread and makes its
-    configurator requests to `owner`. With `wait`, returns the harness's record once it has finished; otherwise the
-    record once the configurator took the suite on or refused it. A refusal raises ValueError with its reason.
-    `intercept(method, params, forward)` may stand between the harness and the owner: it returns the reply, and
-    `forward(method, params)` makes the request."""
+    requests as a harness does, a suite call to the suite book of the owner's home and every other method to `owner`
+    (`service`). With `wait`, returns the harness's record once it has finished; otherwise the record once the suite
+    was taken on or refused. A refusal raises ValueError with its reason. `intercept(method, params, forward)` may
+    stand between the harness and its requests, by method name: it returns the reply, and `forward(method, params)`
+    makes the request."""
     import threading
     import uuid
     from pathlib import Path
     from generative_driver.benchmark_support import harness
+    from generative_driver.benchmark_support.suite_book import answered
+    asked, kept = service(owner), book(owner)
     def forward(method, params=None):
-        try:
-            return owner.call(method, params or {})
-        except Exception as error:
-            return {'ok': False, 'error': type(error).__name__, 'reason': str(error)}
+        if method.startswith('suite_'):
+            return answered(kept, method, params or {})
+        return asked(method, params or {})
     def configurator(method, params=None):
         if calls is not None:
             calls.append((method, params))
         if method == 'ping':
-            return {'ok': True}
+            return asked('ping')
         return intercept(method, params, forward) if intercept else forward(method, params)
     directory = Path(bench) / ('suite-' + uuid.uuid4().hex[:8])
     done = {}
@@ -400,7 +471,7 @@ def shutdown_owner(home):
     for path in (bench / 'suites').glob('*/suite.json'):
         record = read_suite(path.parent) or {}
         if record.get('suite_id'):
-            reply = call('suite_cancel', {'suite_id':record['suite_id']}, home, autostart=False)
+            reply = client_call('suite_cancel', {'suite_id':record['suite_id']}, home, autostart=False)
             if not reply.get('ok'):
                 raise AssertionError(reply)
     wait_harnesses(home)

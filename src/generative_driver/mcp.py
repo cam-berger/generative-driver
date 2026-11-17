@@ -164,28 +164,35 @@ def driver_benchmark_suite_start(manifest: dict, executor: Literal['codex', 'rep
         return json.dumps({'ok': False, 'reason': str(error)})
 
 
+def _suite_call(method, **params):
+    """What the benchmark's suite book answers a suite call, in this process: the bench harness keeps a suite, and the
+    configurator serves no suite call (Feature 07 of the untangle Run, docs/features/untangle/07-suites.md)."""
+    from .benchmark_support.suite_book import suite_call
+    return json.dumps(suite_call(method, params, autostart=platform.system() != 'Windows'), default=str)
+
+
 @server.tool()
 def driver_benchmark_suite_status(suite_id: str) -> str:
     """Reconnect to a durable suite and its active child without starting another owner."""
-    return _call('suite_status', suite_id=suite_id)
+    return _suite_call('suite_status', suite_id=suite_id)
 
 
 @server.tool()
 def driver_benchmark_suite_events(suite_id: str, after: StrictInt = 0) -> str:
     """Read retained suite events after the previous cursor."""
-    return _call('suite_events', suite_id=suite_id, after=after)
+    return _suite_call('suite_events', suite_id=suite_id, after=after)
 
 
 @server.tool()
 def driver_benchmark_suite_result(suite_id: str, offset: StrictInt = 0, limit: StrictInt = 50) -> str:
     """Read public trial summaries in pages of at most 100, with frozen experiment metadata."""
-    return _call('suite_result', suite_id=suite_id, offset=offset, limit=limit)
+    return _suite_call('suite_result', suite_id=suite_id, offset=offset, limit=limit)
 
 
 @server.tool()
 def driver_benchmark_suite_cancel(suite_id: str) -> str:
     """Stop further suite work while preserving its current child and evidence."""
-    return _call('suite_cancel', suite_id=suite_id)
+    return _suite_call('suite_cancel', suite_id=suite_id)
 
 
 @server.tool()

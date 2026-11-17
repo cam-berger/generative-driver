@@ -127,10 +127,10 @@ def _launch_options(options, home):
 
 def start_suite(manifest: dict, executor: str | None = None, options: dict | None = None,
                 request_id: str | None = None, *, home=None, autostart=True, via_owner=False) -> dict:
-    """Start a suite through a detached bench harness, which drives it; the configurator only freezes and stores it.
-    Password files (keyed by the set's name for a set suite), the emulator executable and a set suite's `set_root` in
-    `options` go to the harness on its stdin, never into the suite tables or a child's run. A selection is checked
-    before any configurator starts; a repeated request_id with the
+    """Start a suite through a detached bench harness, which freezes it, stores it in its suite book and drives it; the
+    configurator runs each child and keeps no suite. Password files (keyed by the set's name for a set suite), the
+    emulator executable and a set suite's `set_root` in `options` go to the harness on its stdin, never into the suite
+    tables or a child's run. A selection is checked before any configurator starts; a repeated request_id with the
     same inputs follows the suite it started."""
     from ..client import call
     from .harness import launch_suite
@@ -142,9 +142,9 @@ def start_suite(manifest: dict, executor: str | None = None, options: dict | Non
         raise ValueError('Only a replay suite takes replay_candidates')
     if executor == 'replay':
         # Relative paths name directories from the caller's directory; checked before any harness starts, and again by
-        # the configurator as it freezes the suite.
+        # the suite book as it freezes the suite.
         from pathlib import Path
-        from ..replay import suite_candidates
+        from .suite_book import suite_candidates
         from .trial_store import bench_home
         candidates = selected.get('replay_candidates')
         if isinstance(candidates, dict) and all(isinstance(path, str) and path.strip() for path in candidates.values()):
@@ -152,7 +152,7 @@ def start_suite(manifest: dict, executor: str | None = None, options: dict | Non
                                                           for case, path in candidates.items()}
         suite_candidates({entry['case'] for entry in normalized['entries']}, candidates, bench=bench_home(directory))
     if not call('ping', {}, directory, autostart=False).get('ok'):
-        # Refuse an invalid selection before a configurator exists; a running one checks it again as it freezes.
+        # Refuse an invalid selection before a configurator exists; the suite book checks it again as it freezes.
         preflight_selection(normalized)
     return launch_suite({'manifest': normalized, 'executor': executor, 'options': selected,
                          'request_id': request_id},
@@ -177,9 +177,11 @@ def _refuse_live_set_suite(suite_id, home, child_budget_seconds=None, passwords=
     it would have its operator open the vault while workers run, for a refusal. So too for a scoring suite given a child
     budget extension, or no password file of its set. A configurator that cannot be reached, a
     suite it does not know and a suite of no set go on to the harness, which reports them. A slot launching with no
-    attached child, which arises only after a configurator crash, is not visible here."""
+    attached child, which arises only after a configurator crash, is not visible here. The suite is read from the suite
+    book and its child from the configurator, and neither read starts a configurator."""
     from ..client import call
-    result = call('suite_result', {'suite_id': suite_id, 'limit': 1}, home, autostart=False)
+    from .suite_book import suite_call
+    result = suite_call('suite_result', {'suite_id': suite_id, 'limit': 1}, home, autostart=False)
     identity = (result.get('experiment') or {}).get('comparison_identity') or {}
     if 'set' not in (identity.get('manifest') or {}):
         return
@@ -187,7 +189,7 @@ def _refuse_live_set_suite(suite_id, home, child_budget_seconds=None, passwords=
         raise ValueError(NO_CHILD_EXTENSION)
     if 'scoring_set' in identity and identity['manifest']['set'] not in (passwords or {}):
         raise ValueError(NO_RESUME_PASSWORD + ': ' + identity['manifest']['set'])
-    status = call('suite_status', {'suite_id': suite_id}, home, autostart=False)
+    status = suite_call('suite_status', {'suite_id': suite_id}, home, autostart=False)
     child = status.get('active_child_id')
     child_status = call('status', {'run_id': child}, home, autostart=False).get('status') if child else None
     if child_status in ('queued', 'running') or status.get('stopping'):
@@ -196,9 +198,10 @@ def _refuse_live_set_suite(suite_id, home, child_budget_seconds=None, passwords=
 
 def refuse_unsettled_scoring(suite_id, home) -> None:
     """ValueError unless the scoring suite `suite_id` is settled enough to measure: not queued or running, with nothing
-    still stopping, so its trials' records and seals stand still."""
-    from ..client import call
-    status = call('suite_status', {'suite_id': suite_id}, home, autostart=False)
+    still stopping, so its trials' records and seals stand still. The suite book says, and starts no configurator to
+    ask."""
+    from .suite_book import suite_call
+    status = suite_call('suite_status', {'suite_id': suite_id}, home, autostart=False)
     if status.get('ok') is not True:
         raise ValueError('The configurator did not report the suite: ' + suite_id)
     if status.get('status') in ('queued', 'running') or status.get('stopping'):
@@ -262,7 +265,7 @@ def harness_driven(frozen: dict) -> bool:
 def _frozen_device_pins(manifest, device_pins):
     """The pins of a set manifest's entries, in order, from `device_pins` ({device id: pin}), as its bench harness built
     them: exactly one per entry, each naming that entry's set and device, and each what its case's family holds current.
-    The configurator takes the harness's word for the image and answer hashes (Feature 03, generated trials)."""
+    The suite book takes the harness's word for the image and answer hashes (Feature 03, generated trials)."""
     from .families import family_for
     entries = manifest['entries']
     if not isinstance(device_pins, dict) or set(device_pins) != {entry['device_id'] for entry in entries}:
@@ -432,7 +435,7 @@ NO_RUN = ('admit-refused', 'provider-failed', 'start-refused')
 def scoring_disposition(result: dict, slot: dict) -> str:
     """What a scoring suite does with its slot's child (Feature 06, slot policy; spec decision 20): `advance` (it
     stands), `fault` (the slot gets its rerun), `flag` (the audit found a command naming the set's folder), `regrade`
-    (the same driver is graded again), `wait` or `block`. `result` is what the configurator read of the child, its
+    (the same driver is graded again), `wait` or `block`. `result` is what the suite book read of the child, its
     `equivalence`, `unscored` reason and `effective_budget_seconds` included, and `slot` the suite's row. Settlement and
     the report call the same `classify`, here on a projection of the same records. A rerun's fault stands. A grade
     unscored for a host fault is graded once more, on either attempt, before it counts as one."""

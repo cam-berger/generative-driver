@@ -7,7 +7,7 @@ import time
 import unittest
 
 from suite_fixtures import (shutdown_owner, close_owner, drive_suite, harness_devices, options, scripted_manifest,
-                            settled_suite, wait_owner_suite)
+                            settled_suite, suite_call, wait_owner_suite)
 
 
 def owner_home(temporary):
@@ -99,7 +99,7 @@ class CategoryTests(unittest.TestCase):
 
 class ServiceTests(unittest.TestCase):
     def test_a_child_graded_after_its_run_finishes_a_measurement_and_starts_the_next_slot(self):
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         from generative_driver.setup import configure
         from generative_driver.benchmark_support.suites import start_suite
         from suite_fixtures import write_scripted_case_worker, wait_suite
@@ -127,7 +127,7 @@ class ServiceTests(unittest.TestCase):
     def test_a_request_id_whose_suite_was_refused_starts_afresh_once_the_cause_is_fixed(self):
         # Catches a request_id claimed by a suite start the configurator refused: every later start under it would
         # repeat that refusal after its cause was fixed, although no suite was ever frozen under it.
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         from generative_driver.setup import configure
         from generative_driver.benchmark_support.suites import start_suite
         from suite_fixtures import write_scripted_case_worker, wait_suite
@@ -149,7 +149,7 @@ class ServiceTests(unittest.TestCase):
             finally:shutdown_owner(home)
 
     def test_missing_runtime_blockage_preserves_the_child_and_frozen_configuration(self):
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         from generative_driver.setup import configure
         from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import wait_suite
@@ -177,7 +177,7 @@ class ServiceTests(unittest.TestCase):
             finally:shutdown_owner(home)
 
     def test_cancellation_drains_active_child_without_dispatching_another(self):
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         from generative_driver.setup import configure
         from generative_driver.benchmark_support.suites import start_suite
         from suite_fixtures import wait_suite
@@ -238,7 +238,7 @@ class SummaryTests(unittest.TestCase):
 
 class BudgetTests(unittest.TestCase):
     def test_expired_suite_cancels_child_and_extension_is_absolute_and_idempotent(self):
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         from generative_driver.setup import configure
         from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import wait_suite
@@ -253,9 +253,12 @@ class BudgetTests(unittest.TestCase):
                 # Spend both frozen budgets only after a child exists. A subsecond
                 # startup allowance raced Windows imports and expired before dispatch.
                 from suite_fixtures import sqlite_context
-                with sqlite_context(home/'runs.sqlite3')() as db:
-                    elapsed=time.time()-121
+                from generative_driver.benchmark_support.trial_store import suite_store_path
+                elapsed=time.time()-121
+                # The suite is in the suite book's store under the bench home, its child in the configurator's.
+                with sqlite_context(suite_store_path(home))() as db:
                     db.execute('UPDATE suites SET created=? WHERE id=?',(elapsed,suite['suite_id']))
+                with sqlite_context(home/'runs.sqlite3')() as db:
                     db.execute('UPDATE runs SET created=? WHERE id=?',(elapsed,running['active_child_id']))
                 blocked=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked')
                 self.assertEqual(blocked['completed'],0)
@@ -311,7 +314,7 @@ class BudgetTests(unittest.TestCase):
                                {'suite_budget_seconds':180,'budget_reason':' '}):
                     with self.subTest(fields=fields),self.assertRaises(ValueError):
                         drive_suite(owner,bench,{**suite,**fields,**secrets})
-                after=owner.call('suite_status',suite)
+                after=suite_call(owner,'suite_status',suite)
                 self.assertEqual(after['created'],before['created'])
                 self.assertEqual(after['status'],'blocked')
             finally:close_owner(owner)
@@ -319,7 +322,7 @@ class BudgetTests(unittest.TestCase):
 
 class RecoveryTests(unittest.TestCase):
     def test_resume_verifies_the_snapshot_of_the_stopped_child_before_any_new_assignment(self):
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         from generative_driver.setup import configure
         from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import write_scripted_case_worker, wait_suite
@@ -356,47 +359,11 @@ class RecoveryTests(unittest.TestCase):
                 self.assertEqual(call('events',{'run_id':blocked['active_child_id']},home)['cursor'],before)
             finally:shutdown_owner(home)
 
-    def test_recovered_terminal_final_reconciles_same_child_and_settles_without_resume(self):
-        from generative_driver.configurator import Controller
-        from generative_driver.setup import configure
-        with tempfile.TemporaryDirectory() as temporary:
-            home=owner_home(temporary);bench=Path(temporary)/'bench';secrets=harness_devices(self,Path(temporary)/'fixture')
-            configure('codex',['missing-runtime'],home=home)
-            owner=Controller(home)
-            started=drive_suite(owner,bench,{'manifest':scripted_manifest(2),**secrets},wait=False)
-            suite={'suite_id':started['suite_id']}
-            blocked=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
-            child=blocked['active_child_id'];close_owner(owner)
-            # Durable public toy final-verdict fixture and a lost attachment, not evaluation.
-            with owner._db() as db:
-                verdict={'stage':'reuse','assignment_id':'fixture-final','final_evaluation':True,'fault':'model','verdict':'failed','passed':0,'total':1}
-                db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)',('fixture-final',child,'reuse',json.dumps(verdict),time.time()))
-                db.execute("UPDATE runs SET status='failed',outcome_category='unknown' WHERE id=?",(child,))
-                db.execute("UPDATE suite_trials SET run_id=NULL,status='launching' WHERE suite_id=? AND ordinal=0",(suite['suite_id'],))
-                db.execute("UPDATE suites SET status='running' WHERE id=?",(suite['suite_id'],))
-            owner=Controller(home)
-            try:
-                recovered=owner.call('suite_status',suite)
-                self.assertEqual(recovered['status'],'blocked')
-                self.assertIsNone(recovered['active_child_id'])
-                self.assertEqual(owner.find_request('suite:'+suite['suite_id']+':trial:0')['run_id'],child)
-                resumed=drive_suite(owner,bench,{**suite,**secrets},wait=False)
-                self.assertTrue(resumed['accepted'])
-                end=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
-                self.assertEqual(end['completed'],1)
-                rows=owner.call('suite_result',suite)['trials']
-                self.assertEqual(rows[0]['run_id'],child)
-                self.assertEqual(rows[0]['outcome_category'],'model')
-                self.assertNotEqual(rows[1]['run_id'],child)
-                self.assertFalse(any(e['kind']=='run.resumed' for e in owner.call('events',{'run_id':child})['events']))
-                kinds=[e['kind'] for e in owner.call('suite_events',suite)['events']]
-                self.assertIn('terminal_child_settled',kinds)
-            finally:close_owner(owner)
-
     def test_real_owner_process_loss_recovers_without_dispatch_and_requires_reconciliation(self):
         import os
         import signal
-        from generative_driver.client import call, _wait_for_exit
+        from generative_driver.client import _wait_for_exit
+        from suite_fixtures import client_call as call
         from generative_driver.setup import configure
         from generative_driver.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import wait_suite
@@ -451,7 +418,7 @@ class InterventionTests(unittest.TestCase):
                 run={'run_id':state['active_child_id']}
                 owner.call('respond',{**run,'message':'PRIVATE-MESSAGE','observation':{'alien':'/PRIVATE/PATH'}})
                 event=owner.call('events',run)['events'][-1]
-                page=owner.call('suite_result',suite)
+                page=suite_call(owner,'suite_result',suite)
                 row=page['trials'][0]
                 self.assertEqual(row.get('interventions'),[{'event_id':event['id'],'kind':'operator.response','time':event['time'],'effect_resolution':None,'has_observation':True}])
                 self.assertNotIn('PRIVATE',json.dumps(page))
@@ -501,15 +468,16 @@ class DelayedOperationTests(unittest.TestCase):
                 worker=threading.Thread(target=invoke);worker.start()
                 self.assertTrue(entered.wait(5))
                 self.assertTrue(owner.call('status',run)['uncertain_effect'])
-                cancelled=owner.call('suite_cancel',suite)
+                cancelled=suite_call(owner,'suite_cancel',suite)
                 self.assertEqual(cancelled['status'],'cancelled');self.assertTrue(cancelled['stopping'])
-                with self.assertRaisesRegex(ValueError,'stopping'):owner.call('suite_resume',suite)
+                with self.assertRaisesRegex(ValueError,'stopping'):suite_call(owner,'suite_resume',suite)
                 release.set();worker.join(5);self.assertFalse(worker.is_alive())
                 child=wait_child(owner,run['run_id'])
                 self.assertTrue(child['uncertain_effect']);self.assertEqual(child['outcome_category'],'cancelled')
-                self.assertFalse(settled_suite(lambda m,p,h:owner.call(m,p),suite['suite_id'])['stopping'])
-                with self.assertRaisesRegex(ValueError,'uncertain'):owner.call('suite_resume',suite)
-                self.assertEqual(sum(t['run_id'] is not None for t in owner.call('suite_result',suite)['trials']),1)
+                self.assertFalse(settled_suite(lambda m,p,h:suite_call(owner,m,p),suite['suite_id'])['stopping'])
+                with self.assertRaisesRegex(ValueError,'uncertain'):suite_call(owner,'suite_resume',suite)
+                rows=suite_call(owner,'suite_result',suite)['trials']
+                self.assertEqual(sum(t['run_id'] is not None for t in rows),1)
                 self.assertEqual(peer.device_commands.count('T'),1)
                 self.assertEqual(len(responses),1)
             finally:
@@ -593,7 +561,7 @@ class CleanupFailureTests(unittest.TestCase):
                 self.assertEqual((result['status'],result['outcome_category']),('blocked','host'))
                 self.assertTrue(result['uncertain_effect'])
                 self._assert_retained_lease(owner,child)
-                rows=owner.call('suite_result',suite)['trials']
+                rows=suite_call(owner,'suite_result',suite)['trials']
                 self.assertEqual([t['run_id'] for t in rows],[child,None])
                 events=owner.call('events',{'run_id':child})['events']
                 self.assertIn('cleanup.failed',[e['kind'] for e in events])
@@ -603,12 +571,13 @@ class CleanupFailureTests(unittest.TestCase):
                              'fault':'model','verdict':'failed','passed':0,'total':1}
                     db.execute('INSERT INTO verdicts VALUES(?,?,?,?,?)',('cleanup-final',child,'reuse',json.dumps(verdict),time.time()))
                 close_owner(owner);owner=Controller(owner.home)
-                with self.assertRaises(ValueError):owner.call('suite_resume',suite)
+                with self.assertRaises(ValueError):suite_call(owner,'suite_resume',suite)
                 with self.assertRaisesRegex(ValueError,'uncertain'):drive_suite(owner,self.bench,{**suite,**self.secrets})
-                still=owner.call('suite_result',suite)
+                still=suite_call(owner,'suite_result',suite)
                 self.assertEqual(still['completed'],0)
                 self.assertEqual([t['run_id'] for t in still['trials']],[child,None])
-                self.assertNotIn('terminal_child_settled',[e['kind'] for e in owner.call('suite_events',suite)['events']])
+                self.assertNotIn('terminal_child_settled',
+                                 [e['kind'] for e in suite_call(owner,'suite_events',suite)['events']])
                 self.assertTrue(owner.call('status',{'run_id':child})['uncertain_effect'])
                 self._assert_retained_lease(owner,child)
             finally:close_owner(owner)
@@ -638,7 +607,7 @@ class CleanupFailureTests(unittest.TestCase):
                     drive_suite(owner,self.bench,{**suite,**self.secrets},wait=False)
                     self.assertTrue(entered.wait(5))
                     replies=[]
-                    cancellation=threading.Thread(target=lambda:replies.append(owner.call('suite_cancel',suite)))
+                    cancellation=threading.Thread(target=lambda:replies.append(suite_call(owner,'suite_cancel',suite)))
                     cancellation.start()
                     deadline=time.monotonic()+5
                     while time.monotonic()<deadline:
@@ -653,9 +622,9 @@ class CleanupFailureTests(unittest.TestCase):
                 self.assertEqual((result['status'],result['outcome_category']),('cancelled','cancelled'))
                 self.assertTrue(result['uncertain_effect'])
                 self._assert_retained_lease(owner,child)
-                self.assertEqual(owner.call('suite_status',suite)['completed'],0)
-                self.assertFalse(settled_suite(lambda m,p,h:owner.call(m,p),suite['suite_id'])['stopping'])
-                with self.assertRaisesRegex(ValueError,'uncertain'):owner.call('suite_resume',suite)
+                self.assertEqual(suite_call(owner,'suite_status',suite)['completed'],0)
+                self.assertFalse(settled_suite(lambda m,p,h:suite_call(owner,m,p),suite['suite_id'])['stopping'])
+                with self.assertRaisesRegex(ValueError,'uncertain'):suite_call(owner,'suite_resume',suite)
             finally:
                 release.set()
                 if cancellation:cancellation.join(5)
@@ -705,16 +674,17 @@ class FreshReuseCategorySchedulingTests(unittest.TestCase):
                     result=owner.call('result',{'run_id':child})
                     self.assertEqual(result['outcome_category'],'completed');self.assertTrue(result['stopping'])
                     self.assertNotIn('terminal_final_failure',result['progress'])
-                    self.assertEqual([t['run_id'] for t in owner.call('suite_result',suite)['trials']],[child,None])
+                    rows=suite_call(owner,'suite_result',suite)['trials']
+                    self.assertEqual([t['run_id'] for t in rows],[child,None])
                     release.set()
                     state=wait_owner_suite(owner,suite['suite_id'],lambda s:s['status']=='blocked' and not s['stopping'])
                     self.assertEqual(state['completed'],1)
-                    rows=owner.call('suite_result',suite)['trials']
+                    rows=suite_call(owner,'suite_result',suite)['trials']
                     self.assertEqual((rows[0]['outcome_category'],rows[0]['status'],rows[0]['equivalence_status']),
                                      ('completed','finished','no-driver'))
                     self.assertIsNotNone(rows[1]['run_id']);self.assertNotEqual(rows[1]['run_id'],child)
                     self.assertEqual(rows[1]['outcome_category'],'operator')
-                    kinds=[e['kind'] for e in owner.call('suite_events',suite)['events']]
+                    kinds=[e['kind'] for e in suite_call(owner,'suite_events',suite)['events']]
                     self.assertLess(kinds.index('trial.finished'),max(i for i,k in enumerate(kinds) if k=='trial.started'))
             finally:
                 release.set();close_owner(owner)

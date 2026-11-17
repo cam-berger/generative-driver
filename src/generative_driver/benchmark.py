@@ -292,10 +292,13 @@ def main(argv=None):
                 write_scorecard(result, args.output)
             elif args.action == 'store':
                 from .client import call, default_home
+                from .benchmark_support.suite_book import suite_call
                 from .benchmark_support.trial_store import store
                 home = Path(default_home()).expanduser().resolve()
+                # The suite is read from the suite book and its runs from the configurator; neither starts one.
                 store(home, args.suite_id, args.vault_folder, _read_password(args.password_file),
-                      lambda method, params: call(method, params, home=home, autostart=False))
+                      lambda method, params: (suite_call if method.startswith('suite_') else call)(
+                          method, params, home=home, autostart=False))
                 result = {'ok': True, 'suite_id': args.suite_id, 'stored': True}
             elif args.action == 'unseal':
                 result = _unseal(args.suite_id, args.trial, args.password_file, args.vault_folder, args.output)
@@ -314,12 +317,13 @@ def main(argv=None):
                                       child_budget_seconds=args.child_budget_seconds,
                                       child_budget_reason=args.child_budget_reason)
             else:
-                from .client import call
+                # Status, events, result and cancel: the suite book of this process answers.
+                from .benchmark_support.suite_book import suite_call
                 params = {'suite_id': args.suite_id}
                 for key in ('after', 'offset', 'limit'):
                     if hasattr(args, key) and getattr(args, key) is not None:
                         params[key] = getattr(args, key)
-                result = call('suite_' + args.action, params)
+                result = suite_call('suite_' + args.action, params)
             print(json.dumps(result, indent=2, allow_nan=False))
             return 0 if result.get('ok', result.get('compatible', True)) else 1
         if args.command == 'set':

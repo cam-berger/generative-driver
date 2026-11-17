@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from generative_driver.benchmark_support.truth import EvaluatorPassword
-from suite_fixtures import drive_suite, harness_keys, outside_start
+from suite_fixtures import book, drive_suite, harness_keys, outside_start, owner_call, suite_call
 from test_configurator import scripted_stages
 from test_evaluation import CASE_TRUTH, FAIL, PASS, PendingRunFixture, files, reference
 from test_harness import EVIDENCE, unstarted_provider
@@ -106,15 +106,17 @@ class HarnessSuiteFixture(PendingRunFixture):
         return entered, release
 
     def settled(self, suite_id, seconds=30):
-        from suite_fixtures import settled_suite
-        return settled_suite(lambda method, params, home: self.controller.call(method, params), suite_id, seconds=seconds)
+        from suite_fixtures import owner_call, settled_suite
+        asked = owner_call(self.controller)
+        return settled_suite(lambda method, params, home: asked(method, params), suite_id, seconds=seconds)
 
     def child(self, suite_id, ordinal=0):
         """The run carrying a slot's child request, attached to the slot or not."""
-        return self.controller.find_request(self.controller._suites.get(suite_id)['trials'][ordinal]['child_request_id'])
+        return book(self.controller).find_request(
+            book(self.controller).store.get(suite_id)['trials'][ordinal]['child_request_id'])
 
     def suite_rows(self):
-        with self.controller._db() as db:
+        with book(self.controller).store.open_db() as db:
             return {table: [dict(row) for row in db.execute('SELECT * FROM ' + table)]
                     for table in ('suites', 'suite_trials', 'suite_events')}
 
@@ -130,10 +132,10 @@ class HarnessSuiteTests(HarnessSuiteFixture):
                                 request_id='three-children')
         self.assertEqual(record['status'], 'finished', record)
         sid = record['suite_id']
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['planned'], status['completed'], status['equivalent'], status['stopping']),
                          ('blocked', 3, 2, 1, False))
-        page = self.controller.call('suite_result', {'suite_id': sid})
+        page = suite_call(self.controller, 'suite_result', {'suite_id': sid})
         rows = page['trials']
         self.assertEqual([(row['status'], row['equivalence_status'], row['equivalent']) for row in rows],
                          [('finished', 'graded', True), ('finished', 'graded', False), ('completed', 'unscored', None)])
@@ -153,22 +155,25 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         self.assertEqual(self.graded, [admitted['trial'].name for admitted in self.admitted])
         self.assertEqual(len(set(self.graded)), 3)
         self.assertEqual(len(self.events({'run_id': runs[2]}, 'evaluation.unscored')), 1)
-        finished = [e['data'] for e in self.controller.call('suite_events', {'suite_id': sid})['events'] if e['kind'] == 'trial.finished']
+        finished = [e['data'] for e in suite_call(self.controller, 'suite_events', {'suite_id': sid})['events']
+                    if e['kind'] == 'trial.finished']
         self.assertEqual([(e['ordinal'], e['equivalent'], e['equivalence_status']) for e in finished],
                          [(0, True, 'graded'), (1, False, 'graded')])
         # The configurator settles from what it reads itself: an outcome the harness names is ignored, and only its
         # harness may schedule the suite.
         token = next(params['token'] for method, params in calls if method == 'suite_reserve')
-        forged = self.controller.call('suite_settle', {'suite_id': sid, 'token': token, 'ordinal': 2, 'status': 'completed',
-                                                       'equivalence': {'status': 'graded', 'equivalent': True}})
+        forged = suite_call(self.controller, 'suite_settle',
+                            {'suite_id': sid, 'token': token, 'ordinal': 2, 'status': 'completed',
+                             'equivalence': {'status': 'graded', 'equivalent': True}})
         self.assertEqual(forged['decision'], 'block')
         # Nor may the harness attach a run the configurator does not find as the slot's child.
         with self.assertRaisesRegex(ValueError, 'not the child'):
-            self.controller.call('suite_attach', {'suite_id': sid, 'token': token, 'ordinal': 2, 'run_id': runs[0]})
+            suite_call(self.controller, 'suite_attach', {'suite_id': sid, 'token': token, 'ordinal': 2,
+                                                         'run_id': runs[0]})
         for method in ('suite_reserve', 'suite_start_child', 'suite_resume_child', 'suite_settle', 'suite_detach'):
             with self.subTest(method=method), self.assertRaisesRegex(ValueError, 'harness token'):
-                self.controller.call(method, {'suite_id': sid, 'token': 'forged token', 'ordinal': 2})
-        self.assertEqual(self.controller.call('suite_status', {'suite_id': sid})['completed'], 2)
+                suite_call(self.controller, method, {'suite_id': sid, 'token': 'forged token', 'ordinal': 2})
+        self.assertEqual(suite_call(self.controller, 'suite_status', {'suite_id': sid})['completed'], 2)
         # Neither a password file, the password nor the emulator executable is in the suite tables or the database.
         tables = json.dumps(self.suite_rows())
         for secret in (str(self.password), self.password.read_text(), EMULATOR, 'evaluator_password'):
@@ -176,7 +181,7 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         for path in files(self.home):
             for secret in (str(self.password).encode(), self.password.read_bytes(), EMULATOR.encode()):
                 self.assertNotIn(secret, path.read_bytes(), path)
-        frozen = self.controller._suites.get(sid)['frozen']
+        frozen = book(self.controller).store.get(sid)['frozen']
         self.assertEqual(frozen['scheduler'], 'harness/1')
         # The configurator holds the sha256 of the harness's token, never the token.
         self.assertEqual(frozen['harness_token_sha256'], hashlib.sha256(token.encode()).hexdigest())
@@ -186,10 +191,10 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         with self.harness(PASS):
             resumed = self.drive(suite_id=sid)
         self.assertEqual(resumed['status'], 'finished', resumed)
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['completed'], status['equivalent'], status['active_child_id']),
                          ('completed', 3, 2, None))
-        rows = self.controller.call('suite_result', {'suite_id': sid})['trials']
+        rows = suite_call(self.controller, 'suite_result', {'suite_id': sid})['trials']
         self.assertEqual([row['run_id'] for row in rows], runs)
         self.assertEqual((rows[2]['equivalence_status'], rows[2]['equivalent']), ('graded', True))
         self.assertEqual(self.graded[3:], [self.graded[2]])
@@ -205,7 +210,7 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         with self.harness(runtime=runtime):
             record = self.drive(manifest=manifest(1), executor='codex', options={})
         sid = record['suite_id']
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['completed'], status['stopping']), ('blocked', 0, False))
         child = {'run_id': status['active_child_id']}
         result = self.controller.call('result', child)
@@ -220,7 +225,7 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         with self.harness(PASS, runtime=runtime), self.assertRaisesRegex(ValueError, 'uncertain'):
             self.drive(suite_id=sid)
         self.assertEqual((len(self.admitted), self.events(child, 'device.attached')), (1, []))
-        self.assertEqual(self.controller.call('suite_status', {'suite_id': sid})['status'], 'blocked')
+        self.assertEqual(suite_call(self.controller, 'suite_status', {'suite_id': sid})['status'], 'blocked')
         with self.controller._db() as db:
             db.execute('UPDATE runs SET uncertain=0 WHERE id=?', (child['run_id'],))
         during = []
@@ -236,9 +241,9 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         self.assertIs(during[0]['device_stop']['confirmed'], False)
         self.assertNotEqual(during[0]['device']['session_id'], first['session_id'])
         self.assertIs(read_trial(trial)['device_stop']['confirmed'], True)
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 1, 1))
-        rows = self.controller.call('suite_result', {'suite_id': sid})['trials']
+        rows = suite_call(self.controller, 'suite_result', {'suite_id': sid})['trials']
         self.assertEqual([row['run_id'] for row in rows], [child['run_id']])
         result = self.controller.call('result', child)
         self.assertEqual((result['status'], result['progress']['equivalence'], result['equivalence']['equivalent']),
@@ -267,9 +272,9 @@ class HarnessSuiteTests(HarnessSuiteFixture):
                                (stopped, 'Trial entry-000-repeat-000 stopped: Cannot start configured runtime: scripted')):
             sid = record['suite_id']
             with self.subTest(suite=sid):
-                status = self.controller.call('suite_status', {'suite_id': sid})
+                status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
                 self.assertEqual((status['status'], status['reason']), ('blocked', reason))
-                events = self.controller.call('suite_events', {'suite_id': sid})['events']
+                events = suite_call(self.controller, 'suite_events', {'suite_id': sid})['events']
                 self.assertEqual([e['data'] for e in events if e['kind'] == 'suite.blocked'], [{'reason': reason}])
 
     def test_a_harness_that_cannot_provide_a_device_leaves_the_suite_blocked_and_its_slot_reserved(self):
@@ -283,7 +288,7 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         self.assertEqual(record['status'], 'failed')
         self.assertIn('emulator executable not found', record['reason'])
         sid = record['suite_id']
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['stopping'], status['active_child_id'], status['completed']),
                          ('blocked', False, None, 0))
         # The harness's failure text, which names the emulator executable it was handed, stays in its own record: the
@@ -291,15 +296,15 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         # record is.
         self.assertIn('entry-000-repeat-000', status['reason'])
         self.assertNotIn(EMULATOR, status['reason'])
-        self.assertIn(str(self.root), self.controller._suites.get(sid)['reason'])
+        self.assertIn(str(self.root), book(self.controller).store.get(sid)['reason'])
         self.assertNotIn(str(self.root), status['reason'])
-        blocked = [e['data']['reason'] for e in self.controller.call('suite_events', {'suite_id': sid})['events']
+        blocked = [e['data']['reason'] for e in suite_call(self.controller, 'suite_events', {'suite_id': sid})['events']
                    if e['kind'] == 'suite.blocked']
         self.assertEqual(blocked, [status['reason']])
         self.assertNotIn(EMULATOR, json.dumps(self.suite_rows()))
-        self.assertIn('entry-000-repeat-000', self.controller._suites.get(sid)['reason'])
-        self.assertIn('suite.json', self.controller._suites.get(sid)['reason'])
-        self.assertEqual([t['status'] for t in self.controller._suites.get(sid)['trials']], ['launching'])
+        self.assertIn('entry-000-repeat-000', book(self.controller).store.get(sid)['reason'])
+        self.assertIn('suite.json', book(self.controller).store.get(sid)['reason'])
+        self.assertEqual([t['status'] for t in book(self.controller).store.get(sid)['trials']], ['launching'])
         self.assertFalse(self.peers)
         with self.controller._db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 0)
@@ -308,7 +313,7 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         with self.harness(PASS):
             resumed = self.drive(suite_id=sid)
         self.assertEqual(resumed['status'], 'finished', resumed)
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 1, 1))
         with self.controller._db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 1)
@@ -329,18 +334,18 @@ class HarnessSuiteTests(HarnessSuiteFixture):
                                   'manifest': manifest(2), 'executor': 'codex', 'options': {}}, wait=False)
             sid = record['suite_id']
             until = time.monotonic() + 10
-            while not self.controller.call('suite_status', {'suite_id': sid})['active_child_id']:
+            while not suite_call(self.controller, 'suite_status', {'suite_id': sid})['active_child_id']:
                 self.assertLess(time.monotonic(), until); time.sleep(.02)
-            self.controller._suites.set_state(sid, 'blocked', 'Configurator restarted; explicit resume required')
-            self.assertTrue(self.controller.call('suite_status', {'suite_id': sid})['stopping'])
+            book(self.controller).store.set_state(sid, 'blocked', 'Configurator restarted; explicit resume required')
+            self.assertTrue(suite_call(self.controller, 'suite_status', {'suite_id': sid})['stopping'])
             with self.assertRaisesRegex(ValueError, 'still stopping'):
                 self.drive(suite_id=sid)
             release.set()
-            status = settled_suite(lambda method, params, home: self.controller.call(method, params), sid)
+            status = settled_suite(lambda method, params, home: suite_call(self.controller, method, params), sid)
             self.assertEqual((status['status'], status['stopping'], status['completed']), ('blocked', False, 1))
             resumed = self.drive(suite_id=sid)
         self.assertEqual(resumed['status'], 'finished', resumed)
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 2, 2))
         self.assertEqual(len(self.admitted), 2)
 
@@ -349,7 +354,7 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         # settled its slot and let go: a client that waits for the suite to stop stopping would then read the count
         # from before that settlement.
         from generative_driver.client import process_lock_held
-        from generative_driver.configurator import Controller
+        from generative_driver.benchmark_support.suite_book import SuiteBook
         release, settling, polling = threading.Event(), threading.Event(), threading.Event()
         def runtime(request):
             if request.stage == 'acquire':
@@ -360,7 +365,7 @@ class HarnessSuiteTests(HarnessSuiteFixture):
                 settling.set()
                 polling.wait(10)
             return forward(method, params)
-        poller, alive = threading.get_ident(), Controller._harness_alive
+        poller, alive = threading.get_ident(), SuiteBook._harness_alive
         def widened(suite):
             if threading.get_ident() == poller and settling.is_set() and not polling.is_set():
                 polling.set()
@@ -369,12 +374,13 @@ class HarnessSuiteTests(HarnessSuiteFixture):
                 while lock and time.monotonic() < until and process_lock_held(lock) is True:
                     time.sleep(.02)
             return alive(suite)
-        with self.harness(PASS, PASS, runtime=runtime), patch.object(Controller, '_harness_alive', staticmethod(widened)):
+        with self.harness(PASS, PASS, runtime=runtime), \
+                patch.object(SuiteBook, '_harness_alive', staticmethod(widened)):
             sid = self.drive(intercept=intercept, wait=False, manifest=manifest(2), executor='codex', options={})['suite_id']
             until = time.monotonic() + 10
-            while not self.controller.call('suite_status', {'suite_id': sid})['active_child_id']:
+            while not suite_call(self.controller, 'suite_status', {'suite_id': sid})['active_child_id']:
                 self.assertLess(time.monotonic(), until); time.sleep(.02)
-            self.controller._suites.set_state(sid, 'blocked', 'Configurator restarted; explicit resume required')
+            book(self.controller).store.set_state(sid, 'blocked', 'Configurator restarted; explicit resume required')
             release.set()
             status = self.settled(sid)
         self.assertTrue(polling.is_set())
@@ -389,12 +395,12 @@ class HarnessSuiteTests(HarnessSuiteFixture):
             record = self.drive(manifest=manifest(1), executor='codex', options={})
         sid = record['suite_id']
         ended = subprocess.Popen([sys.executable, '-c', 'pass']); ended.wait()
-        with self.controller._db() as db:
+        with book(self.controller).store.open_db() as db:
             db.execute("UPDATE suites SET status='running',harness_attached=1,harness_pid=? WHERE id=?", (ended.pid, sid))
-        alive = self.controller.call('suite_status', {'suite_id': sid})
+        alive = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((alive['status'], alive['stopping']), ('blocked', False))
-        self.assertEqual(self.controller._suites.get(sid)['harness']['attached'], False)
-        kinds = [e['kind'] for e in self.controller.call('suite_events', {'suite_id': sid})['events']]
+        self.assertEqual(book(self.controller).store.get(sid)['harness']['attached'], False)
+        kinds = [e['kind'] for e in suite_call(self.controller, 'suite_events', {'suite_id': sid})['events']]
         self.assertEqual(kinds[-2:], ['suite.blocked', 'suite.harness_detached'])
 
 
@@ -405,12 +411,12 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         with self.harness(PASS):
             record = self.drive(manifest=manifest(1), executor='codex', options={})
         sid = record['suite_id']
-        with self.controller._db() as db:
+        with book(self.controller).store.open_db() as db:
             # This test's own process stands in for an unrelated process that took over the ended harness's id.
             db.execute("UPDATE suites SET status='running',harness_attached=1,harness_pid=? WHERE id=?", (os.getpid(), sid))
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['stopping']), ('blocked', False))
-        self.assertEqual(self.controller._suites.get(sid)['harness']['attached'], False)
+        self.assertEqual(book(self.controller).store.get(sid)['harness']['attached'], False)
 
     def test_a_harness_whose_start_or_resume_reply_was_lost_still_drives_the_suite(self):
         # Catches a harness that, when the client sends its suite_start or suite_resume again after a lost reply, reads
@@ -429,21 +435,21 @@ class HarnessSuiteTests(HarnessSuiteFixture):
                     record = self.drive(intercept=intercept, manifest=manifest(1), executor='codex', options={},
                                         request_id=request_id)
                 self.assertEqual((record['status'], len(lost)), ('finished', 1), record)
-                status = self.controller.call('suite_status', {'suite_id': record['suite_id']})
+                status = suite_call(self.controller, 'suite_status', {'suite_id': record['suite_id']})
                 self.assertEqual((status['status'], status['completed'], status['stopping']), ('completed', 1, False))
-                self.assertFalse(self.controller._suites.get(record['suite_id'])['harness']['attached'])
+                self.assertFalse(book(self.controller).store.get(record['suite_id'])['harness']['attached'])
         # The repeated start created no second suite.
-        with self.controller._db() as db:
+        with book(self.controller).store.open_db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM suites').fetchone()[0], 2)
         with self.harness(runtime=self.stopping_probe()):
             record = self.drive(manifest=manifest(1), executor='codex', options={})
         sid = record['suite_id']
-        self.assertEqual(self.controller.call('suite_status', {'suite_id': sid})['status'], 'blocked')
+        self.assertEqual(suite_call(self.controller, 'suite_status', {'suite_id': sid})['status'], 'blocked')
         intercept, lost = lose('suite_resume')
         with self.harness(PASS):
             resumed = self.drive(suite_id=sid, intercept=intercept)
         self.assertEqual((resumed['status'], len(lost)), ('finished', 1), resumed)
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 1, 1))
 
     def test_a_harness_whose_child_resume_reply_was_lost_follows_the_child_on_the_device_it_attached(self):
@@ -466,7 +472,7 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         self.assertEqual(resumed['status'], 'finished', resumed)
         self.assertEqual([reply.get('ok') for reply in repeated], [True, True], repeated)
         self.assertEqual(len(self.events(child, 'run.resumed')), 1)
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 1, 1))
         self.assertEqual((self.controller.call('result', child)['status'], len(self.graded)), ('completed', 1))
         self.assertTrue(all(peer.closed for peer in self.peers))
@@ -511,7 +517,7 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         self.assertEqual([reply.get('ok') for reply in repeated], [True, True], repeated)
         self.assertEqual(len(self.events(child, 'run.resumed')), 1)
         self.assertEqual(self.controller.call('result', child)['status'], 'cancelled')
-        self.assertEqual(self.controller.call('suite_status', {'suite_id': sid})['status'], 'blocked')
+        self.assertEqual(suite_call(self.controller, 'suite_status', {'suite_id': sid})['status'], 'blocked')
         self.assertTrue(all(peer.closed for peer in self.peers))
 
     def test_a_child_resumed_and_cancelled_while_its_resume_reply_was_lost_keeps_its_device_until_it_stopped(self):
@@ -538,8 +544,8 @@ class HarnessSuiteTests(HarnessSuiteFixture):
                 forward(method, params)
                 self.assertTrue(entered.wait(10))
                 # The operator cancels the suite before the resume is sent again; its child is still stopping.
-                cancelling.append(threading.Thread(target=self.controller.call, args=('suite_cancel', {'suite_id': sid}),
-                                                   daemon=True))
+                cancelling.append(threading.Thread(target=suite_call, daemon=True,
+                                                   args=(self.controller, 'suite_cancel', {'suite_id': sid})))
                 cancelling[0].start()
                 until = time.monotonic() + 10
                 while self.controller.call('status', child)['status'] != 'cancelled':
@@ -556,24 +562,35 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         self.assertGreater(len(self.peers), provided)
         self.assertEqual(len(self.events(child, 'run.resumed')), 1)
         self.assertEqual(self.controller.call('result', child)['status'], 'cancelled')
-        self.assertEqual(self.controller.call('suite_status', {'suite_id': sid})['status'], 'cancelled')
+        self.assertEqual(suite_call(self.controller, 'suite_status', {'suite_id': sid})['status'], 'cancelled')
         self.assertTrue(all(peer.closed for peer in self.peers))
 
     def test_a_suite_resume_requests_the_resume_of_a_child_again_after_a_dropped_connection(self):
         # Catches a resume of a suite's child that the client does not send again after a dropped connection, which
-        # leaves the harness stopping the device under a child the configurator may have resumed.
+        # leaves the harness stopping the device under a child the configurator may have resumed. The suite book of the
+        # harness serves the call now: what it asks of the configurator meanwhile is sent again, the first request
+        # here. No such suite is stored, so the book refuses the call once the configurator answered.
         from generative_driver import client
         from generative_driver.benchmark_support.harness import _configurator
+        # The home names a configurator of this code, and the stand-in answers `ping` as one does.
+        (self.home / 'service.json').write_text(json.dumps({'code': client.code_identity()}), encoding='utf-8')
         sent = []
         def request(directory, method, params, **options):
             sent.append(method)
             if len(sent) == 1:
                 raise ConnectionResetError('the reply was lost')
-            return {'ok': True}
+            return {'ok': True, 'pid': 4001, 'code': client.code_identity()}
         with patch.object(client, '_request', side_effect=request), patch.object(client, '_start') as started:
             reply = _configurator(self.home)('suite_resume_child', {'suite_id': 'suite-x', 'token': 't', 'ordinal': 0})
-        self.assertEqual((reply, sent), ({'ok': True}, ['suite_resume_child', 'suite_resume_child']))
+        self.assertEqual((reply, sent), ({'ok': False, 'error': 'ValueError', 'reason': 'Unknown suite_id'},
+                                         ['ping', 'ping']))
         self.assertEqual(started.call_count, 1)
+        # A suite call that may start no configurator sends nothing again: the dropped connection ends it.
+        del sent[:]
+        with patch.object(client, '_request', side_effect=request), patch.object(client, '_start') as started:
+            reply = _configurator(self.home)('suite_settle', {'suite_id': 'suite-x', 'token': 't', 'ordinal': 0})
+        self.assertEqual((reply['ok'], 'error' in reply, sent), (False, False, ['ping']))
+        self.assertEqual(started.call_count, 0)
 
     def test_a_resumed_suite_settles_a_child_graded_before_its_harness_ended_without_the_password_file(self):
         # Catches a resume that requires the evaluator password file to settle a child whose verdict is already
@@ -586,12 +603,12 @@ class HarnessSuiteTests(HarnessSuiteFixture):
             record = self.drive(intercept=intercept, manifest=manifest(1), executor='codex', options={})
         self.assertEqual(record['status'], 'failed', record)
         sid = record['suite_id']
-        self.assertEqual(self.controller.call('suite_status', {'suite_id': sid})['status'], 'blocked')
+        self.assertEqual(suite_call(self.controller, 'suite_status', {'suite_id': sid})['status'], 'blocked')
         self.assertEqual(self.controller.call('result', {'run_id': self.child(sid)['run_id']})['equivalence']['equivalent'], True)
         with self.harness():
             resumed = self.drive(suite_id=sid, password_files={}, renode=None)
         self.assertEqual(resumed['status'], 'finished', resumed)
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 1, 1))
         self.assertEqual((len(self.admitted), len(self.graded)), (1, 1))
 
@@ -637,7 +654,7 @@ class ChildStartReplyTests(HarnessSuiteFixture):
         sid = record['suite_id']
         child = self.child(sid)['run_id']
         self.assertEqual([(reply.get('ok'), reply.get('run_id')) for reply in sent], [(True, child), (True, child)])
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 1, 1))
         [trial] = self.trials()
         self.assertEqual((trial['run_id'], trial['status']), (child, 'evaluated'))
@@ -656,8 +673,8 @@ class ChildStartReplyTests(HarnessSuiteFixture):
                 sent.append(forward(method, params))
                 self.assertTrue(entered.wait(10))
                 # The operator cancels the suite before the start is sent again; its child is still stopping.
-                cancelling.append(threading.Thread(target=self.controller.call,
-                                                   args=('suite_cancel', {'suite_id': params['suite_id']}), daemon=True))
+                cancelling.append(threading.Thread(target=suite_call, daemon=True, args=(
+                    self.controller, 'suite_cancel', {'suite_id': params['suite_id']})))
                 cancelling[0].start()
                 until = time.monotonic() + 10
                 while self.controller.call('status', {'run_id': sent[0]['run_id']})['status'] != 'cancelled':
@@ -688,7 +705,7 @@ class ChildStartReplyTests(HarnessSuiteFixture):
             if method == 'suite_start_child' and not sent:
                 sent.append(forward(method, params))
                 self.assertTrue(entered.wait(10))
-                with self.controller._db() as db:
+                with book(self.controller).store.open_db() as db:
                     # As if the suite had started long enough ago for its whole budget to have passed.
                     db.execute('UPDATE suites SET created=? WHERE id=?', (time.time() - 86400, params['suite_id']))
                 threading.Timer(1, release.set).start()
@@ -700,14 +717,14 @@ class ChildStartReplyTests(HarnessSuiteFixture):
         sid, child = record['suite_id'], {'run_id': sent[0]['run_id']}
         self.assertEqual(observed, [[False] * len(self.peers)])
         self.assertEqual(self.controller.call('result', child)['status'], 'cancelled')
-        self.assertEqual(self.controller._suites.get(sid)['reason'], 'Suite wall-clock budget exhausted')
+        self.assertEqual(book(self.controller).store.get(sid)['reason'], 'Suite wall-clock budget exhausted')
         [trial] = self.trials()
         self.assertEqual((trial['run_id'], trial['status'], trial['device_stop']['confirmed']),
                          (child['run_id'], 'run-stopped', True))
         with self.harness(PASS, runtime=runtime):
             resumed = self.drive(suite_id=sid, suite_budget_seconds=172800, budget_reason='Operator approved a longer suite')
         self.assertEqual(resumed['status'], 'finished', resumed)
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 1, 1))
         self.assertEqual(self.child(sid)['run_id'], child['run_id'])
         self.assertEqual((len(self.events(child, 'run.resumed')), len(self.events(child, 'device.attached'))), (1, 1))
@@ -745,11 +762,11 @@ class ChildStartReplyTests(HarnessSuiteFixture):
         sid, child = record['suite_id'], {'run_id': sent[0]['run_id']}
         [trial] = self.trials()
         self.assertEqual((trial['run_id'], trial['status'], trial['device_stop']['confirmed']), (None, 'failed', True))
-        self.assertEqual(self.controller.call('suite_status', {'suite_id': sid})['status'], 'blocked')
+        self.assertEqual(suite_call(self.controller, 'suite_status', {'suite_id': sid})['status'], 'blocked')
         with self.harness(PASS):
             resumed = self.drive(suite_id=sid)
         self.assertEqual(resumed['status'], 'finished', resumed)
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 1, 1))
         [trial] = self.trials()
         self.assertEqual((trial['run_id'], trial['status']), (child['run_id'], 'evaluated'))
@@ -772,7 +789,7 @@ class FrozenChildTests(HarnessSuiteFixture):
                 with self.harness(PASS):
                     record = self.drive(intercept=intercept, manifest=manifest(1), executor='codex', options={})
                 sid = record['suite_id']
-                suite = self.controller._suites.get(sid)
+                suite = book(self.controller).store.get(sid)
                 self.assertEqual(suite['status'], 'blocked')
                 self.assertIn('Frozen suite child identity mismatch', suite['reason'])
                 self.assertEqual([(t['status'], t['run_id']) for t in suite['trials']], [('launching', None)])
@@ -785,7 +802,7 @@ class FrozenChildTests(HarnessSuiteFixture):
         with self.harness(PASS):
             resumed = self.drive(suite_id=sid)
         self.assertEqual(resumed['status'], 'finished', resumed)
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 1, 1))
 
     def test_a_child_started_outside_its_suite_with_other_inputs_is_never_attached_settled_or_resumed(self):
@@ -803,7 +820,7 @@ class FrozenChildTests(HarnessSuiteFixture):
         with self.harness(PASS, runtime=runtime):
             record = self.drive(calls, intercept=intercept, manifest=manifest(1), executor='codex', options={})
         sid = record['suite_id']
-        suite = self.controller._suites.get(sid)
+        suite = book(self.controller).store.get(sid)
         self.assertEqual(suite['status'], 'blocked')
         self.assertIn('Frozen suite child identity mismatch', suite['reason'])
         self.assertIsNone(suite['trials'][0]['run_id'])
@@ -812,21 +829,23 @@ class FrozenChildTests(HarnessSuiteFixture):
         self.assertEqual(self.graded, [])
         token = next(params['token'] for method, params in calls if method == 'suite_reserve')
         with self.assertRaisesRegex(ValueError, 'identity mismatch'):
-            self.controller.call('suite_attach', {'suite_id': sid, 'token': token, 'ordinal': 0, 'run_id': child['run_id']})
+            suite_call(self.controller, 'suite_attach',
+                       {'suite_id': sid, 'token': token, 'ordinal': 0, 'run_id': child['run_id']})
         # The suite's start of that very request is not a start sent again: the child it names is not the slot's.
         with self.assertRaises(ValueError):
-            self.controller.call('suite_start_child', {'suite_id': sid, 'token': token, 'ordinal': 0, 'request': altered[0]})
-        self.assertIsNone(self.controller._suites.get(sid)['trials'][0]['run_id'])
+            suite_call(self.controller, 'suite_start_child',
+                       {'suite_id': sid, 'token': token, 'ordinal': 0, 'request': altered[0]})
+        self.assertIsNone(book(self.controller).store.get(sid)['trials'][0]['run_id'])
         with self.harness(PASS), self.assertRaisesRegex(ValueError, 'identity mismatch'):
             self.drive(suite_id=sid)
-        self.assertIsNone(self.controller._suites.get(sid)['trials'][0]['run_id'])
+        self.assertIsNone(book(self.controller).store.get(sid)['trials'][0]['run_id'])
         self.assertEqual(self.controller.call('result', child)['status'], 'cancelled')
 
     def test_a_slot_is_settled_only_from_a_child_whose_recorded_request_is_the_frozen_one(self):
         # Catches a settlement that trusts the attached run without comparing its recorded request with the slot's.
         def intercept(method, params, forward):
             if method == 'suite_settle':
-                run_id = self.controller._suites.get(params['suite_id'])['trials'][params['ordinal']]['run_id']
+                run_id = book(self.controller).store.get(params['suite_id'])['trials'][params['ordinal']]['run_id']
                 with self.controller._db() as db:
                     spec = json.loads(db.execute('SELECT spec FROM runs WHERE id=?', (run_id,)).fetchone()['spec'])
                     spec['_submitted_intent']['executor_config']['model'] = 'SUBSTITUTED-MODEL'
@@ -834,11 +853,11 @@ class FrozenChildTests(HarnessSuiteFixture):
             return forward(method, params)
         with self.harness(PASS):
             record = self.drive(intercept=intercept, manifest=manifest(1), executor='codex', options={})
-        suite = self.controller._suites.get(record['suite_id'])
+        suite = book(self.controller).store.get(record['suite_id'])
         self.assertEqual(suite['status'], 'blocked')
         self.assertIn('Frozen suite child identity mismatch', suite['reason'])
         self.assertEqual([t['status'] for t in suite['trials']], ['running'])
-        self.assertEqual(self.controller.call('suite_status', {'suite_id': record['suite_id']})['completed'], 0)
+        self.assertEqual(suite_call(self.controller, 'suite_status', {'suite_id': record['suite_id']})['completed'], 0)
 
 
 class CancellationTests(HarnessSuiteFixture):
@@ -848,7 +867,7 @@ class CancellationTests(HarnessSuiteFixture):
         record = self.drive(wait=False, **request)
         self.assertTrue(entered.wait(10))
         threading.Timer(.3, release.set).start()
-        self.controller.call('suite_cancel', {'suite_id': record['suite_id']})
+        suite_call(self.controller, 'suite_cancel', {'suite_id': record['suite_id']})
         return record['suite_id'], self.settled(record['suite_id'])
 
     def test_a_suite_cancelled_while_its_harness_provides_the_device_starts_no_child(self):
@@ -858,11 +877,11 @@ class CancellationTests(HarnessSuiteFixture):
         with self.harness(PASS):
             sid, status = self.cancelled_during_admission(admission, manifest=manifest(1), executor='codex', options={})
         self.assertEqual((status['status'], status['stopping'], status['completed']), ('cancelled', False, 0))
-        self.assertNotEqual(self.controller._suites.get(sid)['trials'][0]['status'], 'finished')
+        self.assertNotEqual(book(self.controller).store.get(sid)['trials'][0]['status'], 'finished')
         self.assertIsNone(self.child(sid))
         self.assertEqual(self.graded, [])
         self.assertTrue(self.peers and all(peer.closed for peer in self.peers))
-        self.assertFalse(self.controller._suites.get(sid)['harness']['attached'])
+        self.assertFalse(book(self.controller).store.get(sid)['harness']['attached'])
 
     def test_a_suite_cancelled_while_its_harness_provides_a_device_anew_never_resumes_the_child(self):
         # Catches a resumed suite's stopped child resumed, run and graded after the suite was cancelled while its
@@ -877,7 +896,7 @@ class CancellationTests(HarnessSuiteFixture):
         self.assertEqual((status['status'], status['stopping'], status['completed']), ('cancelled', False, 0))
         self.assertEqual(self.controller.call('result', child)['status'], 'cancelled')
         self.assertEqual(self.events(child, 'run.resumed'), [])
-        self.assertNotEqual(self.controller._suites.get(sid)['trials'][0]['status'], 'finished')
+        self.assertNotEqual(book(self.controller).store.get(sid)['trials'][0]['status'], 'finished')
         self.assertEqual(self.graded, [])
         self.assertTrue(all(peer.closed for peer in self.peers))
 
@@ -888,7 +907,7 @@ class CancellationTests(HarnessSuiteFixture):
         calls = []
         def intercept(method, params, forward):
             if method == 'suite_start_child':
-                self.controller._suites.cancel(params['suite_id'])
+                book(self.controller).store.cancel(params['suite_id'])
                 return forward('start', outside_start(params['request']))
             return forward(method, params)
         def runtime(request):
@@ -903,10 +922,11 @@ class CancellationTests(HarnessSuiteFixture):
         self.assertEqual(child['status'], 'cancelled')
         self.assertEqual(self.graded, [])
         token = next(params['token'] for method, params in calls if method == 'suite_reserve')
-        # A plain `start` cannot record the slot's frozen request as its intent, so the attach refuses the child as
-        # another's; it stays cancelled.
-        with self.assertRaisesRegex(ValueError, 'Frozen suite child identity mismatch'):
-            self.controller.call('suite_attach', {'suite_id': sid, 'token': token, 'ordinal': 0, 'run_id': child['run_id']})
+        # A plain `start` of the slot's request, with its case and pin in the client record, is the slot's child
+        # (07-B11 of docs/features/untangle/07-suites.md): the attach takes it, and it stays cancelled.
+        attached = suite_call(self.controller, 'suite_attach',
+                              {'suite_id': sid, 'token': token, 'ordinal': 0, 'run_id': child['run_id']})
+        self.assertEqual((attached['run_id'], attached.get('cancelled')), (child['run_id'], True))
         self.assertEqual(self.controller.call('result', {'run_id': child['run_id']})['status'], 'cancelled')
 
 
@@ -916,13 +936,13 @@ class SuiteBudgetTests(HarnessSuiteFixture):
         entered, release = admission
         sid = self.drive(wait=False, **request)['suite_id']
         self.assertTrue(entered.wait(10))
-        with self.controller._db() as db:
+        with book(self.controller).store.open_db() as db:
             # As if the suite had started long enough ago for its whole budget to have passed.
             db.execute('UPDATE suites SET created=? WHERE id=?', (time.time() - 86400, sid))
         release.set()
         until = time.monotonic() + 30
         while True:
-            status = self.controller.call('suite_status', {'suite_id': sid})
+            status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
             if status['status'] != 'running' and not status['stopping']:
                 return sid, status
             self.assertLess(time.monotonic(), until, status); time.sleep(.02)
@@ -934,7 +954,7 @@ class SuiteBudgetTests(HarnessSuiteFixture):
         with self.harness(PASS):
             sid, status = self.spent_during_admission(admission, manifest=manifest(1), executor='codex', options={})
         self.assertEqual((status['status'], status['stopping'], status['completed']), ('blocked', False, 0))
-        self.assertEqual(self.controller._suites.get(sid)['reason'], 'Suite wall-clock budget exhausted')
+        self.assertEqual(book(self.controller).store.get(sid)['reason'], 'Suite wall-clock budget exhausted')
         self.assertIsNone(self.child(sid))
         self.assertEqual(self.graded, [])
         self.assertTrue(self.peers and all(peer.closed for peer in self.peers))
@@ -949,7 +969,7 @@ class SuiteBudgetTests(HarnessSuiteFixture):
         with self.harness(PASS):
             _, status = self.spent_during_admission(admission, suite_id=sid)
         self.assertEqual((status['status'], status['stopping'], status['completed']), ('blocked', False, 0))
-        self.assertEqual(self.controller._suites.get(sid)['reason'], 'Suite wall-clock budget exhausted')
+        self.assertEqual(book(self.controller).store.get(sid)['reason'], 'Suite wall-clock budget exhausted')
         self.assertEqual(self.events(child, 'run.resumed'), [])
         # The suite's budget ends its active child, as on every reservation.
         self.assertEqual(self.controller.call('result', child)['status'], 'cancelled')
@@ -966,7 +986,7 @@ class ReservationTests(HarnessSuiteFixture):
         calls = []
         with self.harness(runtime=self.stopping_probe()):
             sid = self.drive(calls, manifest=manifest(2), executor='codex', options={})['suite_id']
-            suite = self.controller._suites.get(sid)
+            suite = book(self.controller).store.get(sid)
             self.assertEqual([t['status'] for t in suite['trials']], ['running', 'pending'])
             (self.root / 'outside').mkdir()
             device = Device(self, self.image, self.root / 'outside')
@@ -977,10 +997,10 @@ class ReservationTests(HarnessSuiteFixture):
             outside = self.controller.call('start', {**outside_start(request), **added})
             token = next(params['token'] for method, params in calls if method == 'suite_reserve')
             with self.assertRaisesRegex(ValueError, 'not reserved'):
-                self.controller.call('suite_attach', {'suite_id': sid, 'token': token, 'ordinal': 1,
+                suite_call(self.controller, 'suite_attach', {'suite_id': sid, 'token': token, 'ordinal': 1,
                                                       'run_id': outside['run_id']})
             self.controller.call('cancel', {'run_id': outside['run_id']})
-        self.assertEqual([(t['status'], t['run_id']) for t in self.controller._suites.get(sid)['trials']][1],
+        self.assertEqual([(t['status'], t['run_id']) for t in book(self.controller).store.get(sid)['trials']][1],
                          ('pending', None))
 
 
@@ -1005,17 +1025,18 @@ class ChildBudgetTests(HarnessSuiteFixture):
             refused = self.drive(suite_id=sid)
         self.assertEqual(refused['status'], 'failed')
         self.assertIn('budget', refused['reason'])
-        self.assertEqual(self.controller.call('suite_status', {'suite_id': sid})['status'], 'blocked')
+        self.assertEqual(suite_call(self.controller, 'suite_status', {'suite_id': sid})['status'], 'blocked')
         self.assertTrue(all(peer.closed for peer in self.peers))
         with self.harness(PASS, runtime=runtime):
             resumed = self.drive(suite_id=sid, child_budget_seconds=600, child_budget_reason='Operator approved a longer child')
         self.assertEqual(resumed['status'], 'finished', resumed)
-        status = self.controller.call('suite_status', {'suite_id': sid})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 1, 1))
         extended = self.events(child, 'run.budget_extended')
         self.assertEqual([(e['old_budget_seconds'], e['new_budget_seconds'], e['reason']) for e in extended],
                          [(1.5, 600, 'Operator approved a longer child')])
-        overrides = self.controller.call('suite_result', {'suite_id': sid})['experiment']['comparison_identity']['budgets']['effective']
+        overrides = suite_call(self.controller, 'suite_result',
+                               {'suite_id': sid})['experiment']['comparison_identity']['budgets']['effective']
         self.assertEqual(overrides['child_budget_overrides'], [{'trial_key': 'entry-000-repeat-000', 'budget_seconds': 600}])
         self.assertTrue(all(peer.closed for peer in self.peers))
 
@@ -1027,16 +1048,17 @@ class SuiteStartTests(HarnessSuiteFixture):
         token = hashlib.sha256(b'harness token').hexdigest()
         for pid in (None, 0, -1, 'pid', True):
             with self.subTest(pid=pid), self.assertRaisesRegex(ValueError, 'harness_pid'):
-                self.controller.call('suite_start', {'manifest': manifest(1), 'executor': 'codex', 'options': {},
+                suite_call(self.controller, 'suite_start', {'manifest': manifest(1), 'executor': 'codex', 'options': {},
                                                      'harness_token_sha256': token,
                                                      **({} if pid is None else {'harness_pid': pid})})
-        with self.controller._db() as db:
+        with book(self.controller).store.open_db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM suites').fetchone()[0], 0)
         with self.harness(runtime=self.stopping_probe()):
             record = self.drive(manifest=manifest(1), executor='codex', options={})
         with self.assertRaisesRegex(ValueError, 'harness_pid'):
-            self.controller.call('suite_resume', {'suite_id': record['suite_id'], 'harness_token_sha256': token})
-        self.assertEqual(self.controller.call('suite_status', {'suite_id': record['suite_id']})['status'], 'blocked')
+            suite_call(self.controller, 'suite_resume', {'suite_id': record['suite_id'], 'harness_token_sha256': token})
+        self.assertEqual(suite_call(self.controller, 'suite_status', {'suite_id': record['suite_id']})['status'],
+                         'blocked')
 
     def test_a_request_whose_harness_ended_before_it_recorded_the_configurator_reply_reports_the_suite_it_froze(self):
         # Catches a request_id claim held for good by a harness that ended (killed, or its machine restarted) after the
@@ -1053,7 +1075,7 @@ class SuiteStartTests(HarnessSuiteFixture):
             if method == 'ping':
                 return {'ok': True}
             try:
-                return self.controller.call(method, params or {})
+                return owner_call(self.controller)(method, params or {})
             except Exception as error:
                 return {'ok': False, 'error': type(error).__name__, 'reason': str(error)}
         def spawn(directory, arguments, payload):
@@ -1085,14 +1107,14 @@ class SuiteStartTests(HarnessSuiteFixture):
         until = time.monotonic() + 10
         while harness.read_suite(spawned[1]).get('finished') is None:
             self.assertLess(time.monotonic(), until); time.sleep(.02)
-        with self.controller._db() as db:
+        with book(self.controller).store.open_db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM suites').fetchone()[0], 1)
-        status = self.controller.call('suite_status', {'suite_id': frozen[0]['suite_id']})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': frozen[0]['suite_id']})
         self.assertEqual((status['status'], status['stopping'], status['completed']), ('blocked', False, 0))
         with self.harness(PASS):
             resumed = self.drive(suite_id=frozen[0]['suite_id'])
         self.assertEqual(resumed['status'], 'finished', resumed)
-        status = self.controller.call('suite_status', {'suite_id': frozen[0]['suite_id']})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': frozen[0]['suite_id']})
         self.assertEqual((status['status'], status['completed'], status['equivalent']), ('completed', 1, 1))
 
     def test_a_request_whose_harness_ended_before_it_recorded_the_reply_starts_afresh_even_when_its_process_id_was_reused(self):
@@ -1107,7 +1129,7 @@ class SuiteStartTests(HarnessSuiteFixture):
             if method == 'ping':
                 return {'ok': True}
             try:
-                return self.controller.call(method, params or {})
+                return owner_call(self.controller)(method, params or {})
             except Exception as error:
                 return {'ok': False, 'error': type(error).__name__, 'reason': str(error)}
         def spawn(directory, arguments, payload):
@@ -1172,22 +1194,25 @@ class SuiteStartTests(HarnessSuiteFixture):
         token = 'relaunched harness token'
         for name, saved in (('no scheduler', old), ('password files', handles)):
             with self.subTest(frozen=name):
-                suite = self.controller._suites.create(saved, 'old-' + name.replace(' ', '-'))
+                suite = book(self.controller).store.create(saved, 'old-' + name.replace(' ', '-'))
                 sid = suite['suite_id']
-                self.controller._suites.set_state(sid, 'blocked', 'Configurator restarted; explicit resume required')
+                book(self.controller).store.set_state(sid, 'blocked',
+                                                      'Configurator restarted; explicit resume required')
                 with self.assertRaisesRegex(ValueError, 'read-only'):
                     self.drive(suite_id=sid)
                 with self.assertRaisesRegex(ValueError, 'read-only'):
-                    self.controller.call('suite_resume', {'suite_id': sid,
+                    suite_call(self.controller, 'suite_resume', {'suite_id': sid,
                                                           'harness_token_sha256': hashlib.sha256(token.encode()).hexdigest()})
                 for method in ('suite_reserve', 'suite_attach', 'suite_start_child', 'suite_resume_child', 'suite_settle',
                                'suite_detach'):
                     with self.assertRaisesRegex(ValueError, 'read-only'):
-                        self.controller.call(method, {'suite_id': sid, 'token': token, 'ordinal': 0, 'run_id': 'run-x'})
-                status = self.controller.call('suite_status', {'suite_id': sid})
+                        suite_call(self.controller, method, {'suite_id': sid, 'token': token, 'ordinal': 0,
+                                                             'run_id': 'run-x'})
+                status = suite_call(self.controller, 'suite_status', {'suite_id': sid})
                 # No equivalent count applies to a suite whose children no harness grades after their runs.
                 self.assertEqual((status['status'], status['completed'], status['equivalent']), ('blocked', 0, None))
-                self.assertNotIn('protocol',self.controller.call('suite_result', {'suite_id': sid})['experiment']['comparison_identity'])
+                self.assertNotIn('protocol', suite_call(self.controller, 'suite_result',
+                                                        {'suite_id': sid})['experiment']['comparison_identity'])
         self.assertEqual(self.admitted, [])
 
 

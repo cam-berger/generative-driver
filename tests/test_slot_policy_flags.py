@@ -23,6 +23,7 @@ from generative_driver.benchmark_support.scorecard import (bench_trial_dirs, sco
 from generative_driver.benchmark_support.suite_reporting import compare_suites, report_suite
 from generative_driver.benchmark_support.suites import resume_suite
 from generated_fixtures import REFERENCE_A
+from suite_fixtures import book, standing_in, suite_call
 from test_generated_trials import PASSWORD, SET, set_manifest
 from test_slot_policy import FIRST, HOST, OPERATOR, SECOND, ScoringFixture
 
@@ -231,7 +232,7 @@ class AuditFixture(ReportFixture):
         for path in [*suites.glob('*/suite.json'), *suites.glob('*/trials/*/trial.json')]:
             self.assertNotIn(root, path.read_text(), path)
             self.assertNotIn('command_sha256', path.read_text(), path)
-        with self.controller._suites.open_db() as db:
+        with book(self.controller).store.open_db() as db:
             for table in ('suites', 'suite_trials', 'suite_events'):
                 for row in db.execute('SELECT * FROM ' + table).fetchall():
                     self.assertNotIn(root, json.dumps(tuple(row), default=str), table)
@@ -321,7 +322,7 @@ class FlaggedTrialTests(AuditFixture):
         with self.staged(REFERENCE_A, runtime=runtime), self.grading_faults():
             first = self.run_harness(request_id='uncertain')
             self.assertEqual((self.status(first)['status'], self.slot_status(first, 0)), ('blocked', 'running'))
-            stored = self.controller._suites.get(first['suite_id'])['trials'][0]['audit']
+            stored = book(self.controller).store.get(first['suite_id'])['trials'][0]['audit']
             self.assertEqual(stored[0]['command_sha256'], self.findings())
             self.set_uncertain(self.children[0], 0)
             second = self.run_harness(suite_id=first['suite_id'])
@@ -436,7 +437,7 @@ class FlaggedTrialTests(AuditFixture):
         self.assertEqual((status['status'], self.slot_status(record, 0)), ('blocked', 'running'))
         self.assertIn('child identity mismatch', status['reason'])
         self.assertEqual(len(self.children), 1)
-        self.assertEqual(self.controller._suites.get(record['suite_id'])['trials'][0]['audit'][0]['command_sha256'],
+        self.assertEqual(book(self.controller).store.get(record['suite_id'])['trials'][0]['audit'][0]['command_sha256'],
                          self.findings())
 
     def test_06_B13_a_child_that_ended_after_its_harness_stopped_waiting_is_not_settled_unaudited(self):
@@ -564,7 +565,7 @@ class ChildBudgetExtensionTests(ScoringFixture):
         with self.scripted():
             second = self.run_harness(suite_id=first['suite_id'], suite_budget_seconds=1000, budget_reason='Approved')
         self.assertCompleted(second)
-        self.assertEqual(self.controller._suites.get(first['suite_id'])['budget_seconds'], 1000)
+        self.assertEqual(book(self.controller).store.get(first['suite_id'])['budget_seconds'], 1000)
         self.assertEqual(self.rows(first)[0]['first_attempt']['run_id'], self.children[0])
         with self.controller._db() as db:
             row = db.execute('SELECT spec FROM runs WHERE id=?', (self.rows(first)[0]['run_id'],)).fetchone()
@@ -597,7 +598,7 @@ class ResumeSuiteRefusalTests(unittest.TestCase):
                 'suite_status': suite}.get(method, {'ok': False, 'reason': 'unknown'})
 
     def resume(self):
-        with patch('generative_driver.client.call', self.call):
+        with standing_in(self.call):
             return resume_suite('suite-1', {'set_root': str(self.base / 'set')}, home=self.base / 'home',
                                 autostart=False, child_budget_seconds=600, child_budget_reason='Approved')
 
@@ -853,7 +854,7 @@ class SealedSuiteTests(AuditFixture):
                                       str(vault))
             self.assertEqual(code, 1, printed)
             self.assertIn('takes a completed suite', printed['error'])
-            self.controller.call('suite_cancel', {'suite_id': suite_id})
+            suite_call(self.controller, 'suite_cancel', {'suite_id': suite_id})
             code, printed = self.main('store', suite_id, '--password-file', str(self.handle), '--vault-folder',
                                       str(vault))
             self.assertEqual((code, printed), (0, {'ok': True, 'suite_id': suite_id, 'stored': True}))
@@ -870,7 +871,7 @@ class SealedSuiteTests(AuditFixture):
             self.assertEqual(again['status'], 'failed')
             self.assertIn('no longer beside its stub', again['reason'])
             self.assertEqual(self.slot_status(first, 0), 'running')
-            self.controller.call('suite_cancel', {'suite_id': suite_id})
+            suite_call(self.controller, 'suite_cancel', {'suite_id': suite_id})
             # With nothing left readable, a new suite of the set starts.
             self.children.clear()
             new = self.run_harness(request_id='after-the-store')

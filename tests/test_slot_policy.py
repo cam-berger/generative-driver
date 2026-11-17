@@ -18,7 +18,7 @@ from generative_driver.benchmark_support import evaluator, generated_sets, gener
 from generative_driver.benchmark_support.outcomes import classify
 from generative_driver.benchmark_support.suite_store import SuiteStore
 from generative_driver.benchmark_support.suites import child_disposition, scoring_disposition
-from suite_fixtures import drive_suite, sqlite_context
+from suite_fixtures import book, drive_suite, sqlite_context, suite_call
 from test_configurator import gateway_identity
 from test_generated_trials import (PASSWORD, SET, START, GeneratedTrialFixture, SetSuiteFixture, as_scoring_set,
                                    set_manifest)
@@ -475,10 +475,10 @@ class ScoringFixture(GeneratedTrialFixture):
                    key=lambda record: record['created'])
 
     def status(self, record):
-        return self.controller.call('suite_status', {'suite_id': record['suite_id']})
+        return suite_call(self.controller, 'suite_status', {'suite_id': record['suite_id']})
 
     def rows(self, record):
-        return self.controller.call('suite_result', {'suite_id': record['suite_id']})['trials']
+        return suite_call(self.controller, 'suite_result', {'suite_id': record['suite_id']})['trials']
 
     def result(self, run_id):
         return self.controller.call('result', {'run_id': run_id})
@@ -512,14 +512,14 @@ class ScoringFixture(GeneratedTrialFixture):
 
     def slot_status(self, record, ordinal):
         """The status the slot itself holds, where `suite_result` shows an unsettled slot's child's."""
-        return self.controller._suites.get(record['suite_id'])['trials'][ordinal]['status']
+        return book(self.controller).store.get(record['suite_id'])['trials'][ordinal]['status']
 
     def set_uncertain(self, run_id, value=1):
         with self.controller._db() as db:
             db.execute('UPDATE runs SET uncertain=? WHERE id=?', (value, run_id))
 
     def spend_suite_budget(self, suite_id):
-        with self.controller._suites.open_db() as db:
+        with book(self.controller).store.open_db() as db:
             db.execute('UPDATE suites SET created=created-10000 WHERE id=?', (suite_id,))
 
     def dying_at(self, stop, stage, nth, then=None):
@@ -667,7 +667,7 @@ class NoRunTests(ScoringFixture):
         self.assertEqual((rows[0]['attempt'], rows[0]['first_attempt']['run_id'], rows[0]['first_attempt']['outcome']),
                          (2, None, 'fault'))
         self.assertEqual([row['equivalent'] for row in rows], [True, True])
-        events = self.controller.call('suite_events', {'suite_id': record['suite_id']})['events']
+        events = suite_call(self.controller, 'suite_events', {'suite_id': record['suite_id']})['events']
         faulted = next(event for event in events if event['kind'] == 'trial.faulted')
         self.assertEqual(faulted['data']['no_run_reason'], word)
         self.assertNotIn(secret, json.dumps(self.calls, default=str) + json.dumps(events))
@@ -696,8 +696,8 @@ class NoRunTests(ScoringFixture):
 
     def test_06_B4_a_refused_start_faults_with_its_word_and_reruns(self):
         error = ValueError('Refused under /private/start-path')
-        # The suite starts its child through the service's `_start`, with the slot's request as the run's intent.
-        with self.scripted(), self.refusing_once(self.controller, '_start', error):
+        # The suite book starts its child with the service's `start`, which refuses it once.
+        with self.scripted(), self.refusing_once(self.controller, 'start', error):
             record = self.run_harness(request_id='start')
         self.assertRerunAfter(record, 'start-refused', '/private/start-path')
 
@@ -875,7 +875,7 @@ class StillStopsTests(ScoringFixture):
         def runtime(request):
             if self.nth(request) == 0 and request.stage == 'acquire':
                 self.until(lambda: started)
-                threading.Thread(target=self.controller.call, args=('suite_cancel', {'suite_id': started[0]}),
+                threading.Thread(target=suite_call, args=(self.controller, 'suite_cancel', {'suite_id': started[0]}),
                                  daemon=True).start()
                 run_id = self.children[0]
                 self.until(lambda: self.controller.call('status', {'run_id': run_id})['status'] == 'cancelled')
@@ -1060,7 +1060,7 @@ class RerunTests(ScoringFixture):
 
 class RegradeTests(ScoringFixture):
     def kinds(self, record):
-        page = self.controller.call('suite_events', {'suite_id': record['suite_id']})
+        page = suite_call(self.controller, 'suite_events', {'suite_id': record['suite_id']})
         return [event['kind'] for event in page['events']]
 
     def test_06_B11_a_grading_fault_regrades_the_same_driver_in_rerun_order_with_no_new_worker(self):
@@ -1246,7 +1246,7 @@ class ConfiguratorCallTests(SetSuiteFixture):
         return started['suite_id']
 
     def asked(self, method, suite_id, **params):
-        return self.controller.call(method, {'suite_id': suite_id, 'token': self.token, 'ordinal': 0, **params})
+        return suite_call(self.controller, method, {'suite_id': suite_id, 'token': self.token, 'ordinal': 0, **params})
 
     def reserved(self, suite_id):
         reply = self.asked('suite_reserve', suite_id)
@@ -1279,7 +1279,7 @@ class ConfiguratorCallTests(SetSuiteFixture):
     def test_06_B4_B14_each_call_refuses_a_suite_not_running(self):
         suite = self.suite()
         self.reserved(suite)
-        self.controller._suites.set_state(suite, 'blocked', 'Stopped')
+        book(self.controller).store.set_state(suite, 'blocked', 'Stopped')
         for method, params in (('suite_no_run', {'reason': 'admit-refused'}), ('suite_flag', {'findings': [FINDING]})):
             with self.subTest(method), self.assertRaisesRegex(ValueError, 'The suite is blocked; it records nothing'):
                 self.asked(method, suite, **params)
@@ -1295,7 +1295,7 @@ class ConfiguratorCallTests(SetSuiteFixture):
         self.reserved(suite)
         with self.assertRaisesRegex(ValueError, 'A flag names a slot with a child'):
             self.asked('suite_flag', suite, findings=[FINDING])
-        self.assertNotIn('audit', self.controller._suites.get(suite)['trials'][0])
+        self.assertNotIn('audit', book(self.controller).store.get(suite)['trials'][0])
 
 
 class AnyOtherSuiteCallTests(SetSuiteFixture):
@@ -1304,10 +1304,10 @@ class AnyOtherSuiteCallTests(SetSuiteFixture):
     def test_06_B4_B14_each_call_refuses_a_suite_with_no_scoring_set(self):
         started = self.suite_start(self.pins, harness_token_sha256=hashlib.sha256(self.token.encode()).hexdigest())
         ask = {'suite_id': started['suite_id'], 'token': self.token, 'ordinal': 0}
-        self.assertIs(self.controller.call('suite_reserve', ask)['scoring'], False)
+        self.assertIs(suite_call(self.controller, 'suite_reserve', ask)['scoring'], False)
         for method, params in (('suite_no_run', {'reason': 'admit-refused'}), ('suite_flag', {'findings': [FINDING]})):
             with self.subTest(method), self.assertRaisesRegex(ValueError, 'Only a scoring suite records this'):
-                self.controller.call(method, {**ask, **params})
+                suite_call(self.controller, method, {**ask, **params})
 
 
 class OtherSuiteTests(GeneratedTrialFixture):
@@ -1323,7 +1323,7 @@ class OtherSuiteTests(GeneratedTrialFixture):
         with self.staged(REFERENCE_A, runtime=runtime):
             record = self.drive(request_id='development')
         self.assertEqual(record['status'], 'finished', record)
-        status = self.controller.call('suite_status', {'suite_id': record['suite_id']})
+        status = suite_call(self.controller, 'suite_status', {'suite_id': record['suite_id']})
         self.assertEqual((status['status'], status['completed'], len(set(children))), ('blocked', 0, 1))
         self.assertIn('stopped: Scripted runtime exit', status['reason'])
 
@@ -1335,13 +1335,14 @@ class OtherSuiteTests(GeneratedTrialFixture):
             if method == 'suite_start_child' and not spent:
                 spent.append(params['suite_id'])
             elif method == 'record_evaluation':
-                with self.controller._suites.open_db() as db:
+                with book(self.controller).store.open_db() as db:
                     db.execute('UPDATE suites SET created=created-10000 WHERE id=?', (spent[0],))
             return reply
         with self.staged(REFERENCE_A):
             record = self.drive('0000d001', request_id='budget', intercept=intercept)
-        rows = self.controller.call('suite_result', {'suite_id': record['suite_id']})['trials']
-        self.assertEqual(self.controller.call('suite_status', {'suite_id': record['suite_id']})['completed'], 0, rows)
+        rows = suite_call(self.controller, 'suite_result', {'suite_id': record['suite_id']})['trials']
+        status = suite_call(self.controller, 'suite_status', {'suite_id': record['suite_id']})
+        self.assertEqual(status['completed'], 0, rows)
 
     def test_06_B4_a_development_suites_refused_admit_still_stops_it_with_no_fault_call(self):
         calls = []

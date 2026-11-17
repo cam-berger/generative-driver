@@ -25,7 +25,7 @@ from generative_driver.benchmark_support.snapshots import canonical_digest
 from generative_driver.benchmark_support.suites import (SCHEDULER, child_request, harness_driven, normalize_manifest,
                                                         preflight_selection, refuse_secrets, resume_suite, start_suite)
 from generative_driver.benchmark_support.truth import UnlockedTruth
-from suite_fixtures import drive_suite, public_case_fixture
+from suite_fixtures import book, drive_suite, public_case_fixture, suite_call
 from test_configurator import gateway_identity, scripted_stages, task_of
 from test_evaluation import PendingRunFixture
 from test_unlocked_keys import SealedTrialFixture
@@ -298,17 +298,17 @@ class StartAndResumeSitesTests(PendingRunFixture):
                          'ValueError: case_seed must be an integer')
 
     def test_03_B9_a_suite_resume_refuses_a_changed_case_with_todays_error(self):
-        started = self.controller.call('suite_start', {
+        started = suite_call(self.controller, 'suite_start', {
             'manifest': handmade_manifest(repetitions=1), 'executor': 'codex', 'options': {}, 'request_id': 'site',
             'harness_token_sha256': 'a' * 64, 'harness_pid': 1})
         self.assertTrue(started['ok'], started)
-        self.controller._suites.set_state(started['suite_id'], 'blocked', 'for this test')
-        self.controller._suites.detach_harness(started['suite_id'])
+        book(self.controller).store.set_state(started['suite_id'], 'blocked', 'for this test')
+        book(self.controller).store.detach_harness(started['suite_id'])
         case = self.image.parent / 'case.json'
         case.write_text(json.dumps({**json.loads(case.read_text()), 'limitations': ['changed']}))
         with self.assertRaisesRegex(ValueError, 'Frozen suite case pin changed'):
-            self.controller.call('suite_resume', {'suite_id': started['suite_id'], 'harness_token_sha256': 'b' * 64,
-                                                  'harness_pid': 1})
+            suite_call(self.controller, 'suite_resume', {'suite_id': started['suite_id'],
+                                                         'harness_token_sha256': 'b' * 64, 'harness_pid': 1})
 
 
 class DevicePinTests(unittest.TestCase):
@@ -821,7 +821,7 @@ class SetSuiteFixture(PendingRunFixture):
         self.pins = {device: device_pin(self.manifest, device, EVIDENCE) for device in ('0000d001', '0000d002')}
 
     def suite_start(self, device_pins, **changes):
-        return self.controller.call('suite_start', {
+        return suite_call(self.controller, 'suite_start', {
             'manifest': set_manifest(), 'executor': 'codex', 'options': {}, 'request_id': 'frozen',
             'harness_pid': os.getpid(), 'harness_token_sha256': 'a' * 64,
             **({} if device_pins is None else {'device_pins': device_pins}), **changes})
@@ -831,7 +831,7 @@ class SuiteFreezeTests(SetSuiteFixture):
     def test_03_B8_the_configurator_freezes_the_pins_it_is_sent_and_starts_each_child_from_its_own(self):
         started = self.suite_start(self.pins)
         self.assertTrue(started['ok'], started)
-        suite = self.controller._suites.get(started['suite_id'])
+        suite = book(self.controller).store.get(started['suite_id'])
         frozen = suite['frozen']
         self.assertEqual(frozen['device_pins'], self.pins)
         self.assertEqual(frozen['entry_pins'], [self.pins['0000d001'], self.pins['0000d002']])
@@ -895,9 +895,9 @@ class SetTableAfterFreezeTests(SetSuiteFixture):
         self.table.write_text(json.dumps({'schema': 'generated-set-registrations/2', 'sets': sets}))
 
     def resume(self, suite_id):
-        self.controller._suites.set_state(suite_id, 'blocked', 'for this test')
-        self.controller._suites.detach_harness(suite_id)
-        return self.controller.call('suite_resume', {'suite_id': suite_id, 'harness_token_sha256': 'b' * 64,
+        book(self.controller).store.set_state(suite_id, 'blocked', 'for this test')
+        book(self.controller).store.detach_harness(suite_id)
+        return suite_call(self.controller, 'suite_resume', {'suite_id': suite_id, 'harness_token_sha256': 'b' * 64,
                                                      'harness_pid': 1})
 
     def test_04_B2_a_change_to_another_set_or_any_mark_does_not_block_a_resume(self):
@@ -934,33 +934,33 @@ class ScoringFreezeTests(SetSuiteFixture):
         started = self.suite_start(self.pins)
         self.assertTrue(started['ok'], started)
         scoring = {'registration': SET, 'manifest_sha256': self.manifest['manifest_sha256']}
-        self.assertEqual(self.controller._suites.get(started['suite_id'])['frozen']['scoring_set'], scoring)
+        self.assertEqual(book(self.controller).store.get(started['suite_id'])['frozen']['scoring_set'], scoring)
 
         def identity():
-            result = self.controller.call('suite_result', {'suite_id': started['suite_id']})
+            result = suite_call(self.controller, 'suite_result', {'suite_id': started['suite_id']})
             return result['experiment']['comparison_identity']
         self.assertEqual(identity()['scoring_set'], scoring)
         # A later change to the table changes nothing frozen.
         pins = {SET: self.manifest['manifest_sha256'], 'other-v1': 'b' * 64}
         table.write_text(registrations_table(pins, scoring=False))
-        self.assertEqual(self.controller._suites.get(started['suite_id'])['frozen']['scoring_set'], scoring)
+        self.assertEqual(book(self.controller).store.get(started['suite_id'])['frozen']['scoring_set'], scoring)
         self.assertEqual(identity()['scoring_set'], scoring)
         table.write_text(registrations_table({SET: 'c' * 64}, scoring=True))
-        self.assertEqual(self.controller._suites.get(started['suite_id'])['frozen']['scoring_set'], scoring)
+        self.assertEqual(book(self.controller).store.get(started['suite_id'])['frozen']['scoring_set'], scoring)
 
     def test_04_B10_a_development_suite_has_no_such_key(self):
         # No RED of its own: this pins what must stay.
         started = self.suite_start(self.pins)
         self.assertTrue(started['ok'], started)
-        self.assertNotIn('scoring_set', self.controller._suites.get(started['suite_id'])['frozen'])
-        result = self.controller.call('suite_result', {'suite_id': started['suite_id']})
+        self.assertNotIn('scoring_set', book(self.controller).store.get(started['suite_id'])['frozen'])
+        result = suite_call(self.controller, 'suite_result', {'suite_id': started['suite_id']})
         self.assertNotIn('scoring_set', result['experiment']['comparison_identity'])
 
     def test_04_B10_a_handmade_suite_has_no_such_key(self):
         # No RED of its own: this pins what must stay.
         started = self.suite_start(None, manifest=handmade_manifest(repetitions=1), request_id='handmade')
         self.assertTrue(started['ok'], started)
-        self.assertNotIn('scoring_set', self.controller._suites.get(started['suite_id'])['frozen'])
+        self.assertNotIn('scoring_set', book(self.controller).store.get(started['suite_id'])['frozen'])
 
 
 class AdmissionTests(unittest.TestCase):
@@ -1215,7 +1215,7 @@ class GeneratedTrialFixture(PendingRunFixture):
             calls=calls, intercept=intercept, stop=stop)
 
     def row_results(self, suite_id):
-        rows = self.controller.call('suite_result', {'suite_id': suite_id})['trials']
+        rows = suite_call(self.controller, 'suite_result', {'suite_id': suite_id})['trials']
         return rows, [self.controller.call('result', {'run_id': row['run_id']}) for row in rows]
 
 
@@ -1242,7 +1242,7 @@ class GradedTrialTests(GeneratedTrialFixture):
                 rows, results = self.row_results(record['suite_id'])
                 result = results[0]
                 self.assertEqual(result['status'], 'completed', (result['reason'], result['status']))
-                status = self.controller.call('suite_status', {'suite_id': record['suite_id']})
+                status = suite_call(self.controller, 'suite_status', {'suite_id': record['suite_id']})
                 self.assertEqual(status['status'], 'completed')
                 self.assertEqual([handoff['stage'] for handoff in result['accepted_handoffs']],
                                  ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse'])
@@ -1501,13 +1501,13 @@ class SuiteRowTests(GeneratedTrialFixture):
             record = self.drive(calls=calls, request_id='rows')
         rows, _ = self.row_results(record['suite_id'])
         self.assertEqual([row['device_id'] for row in rows], ['0000d001', '0000d002'])
-        trials = self.controller._suites.get(record['suite_id'])['trials']
+        trials = book(self.controller).store.get(record['suite_id'])['trials']
         self.assertEqual([trial['device_id'] for trial in trials], ['0000d001', '0000d002'])
-        handmade = self.controller.call('suite_start', {
+        handmade = suite_call(self.controller, 'suite_start', {
             'manifest': handmade_manifest(repetitions=1), 'executor': 'codex', 'options': {}, 'request_id': 'handmade',
             'harness_token_sha256': 'a' * 64, 'harness_pid': os.getpid()})
         self.assertTrue(handmade['ok'], handmade)
-        for row in self.controller.call('suite_result', {'suite_id': handmade['suite_id']})['trials']:
+        for row in suite_call(self.controller, 'suite_result', {'suite_id': handmade['suite_id']})['trials']:
             self.assertNotIn('device_id', row)
 
 

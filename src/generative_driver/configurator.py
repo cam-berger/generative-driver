@@ -133,20 +133,6 @@ def _replay_config(params, config, home):
     return candidate_config(config, bench=bench_home(home))
 
 
-def _replay_suite_config(manifest, options, home):
-    """A replay suite's configuration: one saved candidate per case of its manifest (options.replay_candidates), all
-    checked first, then each stored by its hash in the configurator home, from which every child of that case takes its
-    copy."""
-    from .replay import stored_candidate, suite_candidates
-    from .benchmark_support.trial_store import bench_home
-    checked = suite_candidates({entry['case'] for entry in manifest['entries']},
-                               options.get('replay_candidates') if isinstance(options, dict) else None,
-                               bench=bench_home(home))
-    stored = {case: stored_candidate(config, Path(home) / 'replay-candidates') for case, config in checked.items()}
-    return {'runtime': 'replay', 'candidates': {case: {key: config[key] for key in ('candidate', 'candidate_sha256')}
-                                                for case, config in stored.items()}}
-
-
 def _copy_candidate(config, run_dir):
     """The run's own copy of the replay candidate, taken at start in its run directory: every stage replays these bytes,
     whatever happens to the saved candidate since."""
@@ -232,47 +218,6 @@ def _verify_firmware(spec):
     without a supplied device has none to check."""
     if spec.get('device') and _firmware_sha256(spec['firmware']) != spec['firmware']['sha256']:
         raise IntegrityError('The supplied firmware changed after the run started')
-
-
-OLD_SUITE = ('This suite was frozen before the bench harness drove suites (it holds evaluator password files or no '
-             'scheduler) and is read-only: start a new suite')
-
-
-def _harness_identity(params, refusal):
-    """The sha256 of a bench harness's token, the harness's process id and the lock file it holds for as long as it runs
-    (where its file system offers one), as the harness hands them over. Without a process to watch, a harness that died
-    without letting go of its suite would leave the suite running, or stopping, for good."""
-    token, pid, lock = params.get('harness_token_sha256'), params.get('harness_pid'), params.get('harness_lock')
-    if not isinstance(token, str) or not re.fullmatch('[0-9a-f]{64}', token):
-        raise ValueError(refusal)
-    if type(pid) is not int or pid <= 0:
-        raise ValueError('harness_pid must be the positive process id of the bench harness')
-    if lock is not None and (not isinstance(lock, str) or not Path(lock).is_absolute()):
-        raise ValueError('harness_lock must be an absolute path')
-    return token, pid, lock
-
-
-def _sealing(frozen):
-    """What tells a suite's harness that it seals concluded trials, and under whose password: a scoring suite's set."""
-    return {'scoring_set':frozen['scoring_set']['registration']} if 'scoring_set' in frozen else {}
-
-
-def _attached_to(suite, token_sha256):
-    """Whether the bench harness holding `token_sha256` is the one attached to the suite."""
-    held = suite['harness']['token_sha256']
-    return bool(suite['harness']['attached'] and isinstance(held, str) and isinstance(token_sha256, str)
-                and hmac.compare_digest(held, token_sha256))
-
-
-def _assistive(suite):
-    """Whether every child of the suite is graded after its run, as the assistive protocol grades it: a suite its bench
-    harness drives. A suite frozen before the harness names no protocol and counts no equivalent drivers."""
-    from .benchmark_support.suites import harness_driven
-    return harness_driven(suite['frozen'])
-
-
-# A child whose recorded request differs from its frozen slot holds that slot's request_id for good.
-TAKEN = "; the slot's request_id is taken by that child, so start a new suite"
 
 
 def binding_identity(binding):
@@ -1146,7 +1091,6 @@ class Controller:
         self._stage_workers = run_status.Workers()
         self._lock = threading.RLock()
         self._workers = {}
-        self._suite_locks = {}
         self._operations = {}
         self._inflight = set()
         self._closing = False
@@ -1228,9 +1172,6 @@ class Controller:
 
         from .device_access import DeviceAccess
         self.device_access = DeviceAccess(self)
-        from .benchmark_support.suite_store import SuiteStore
-        self._suites = SuiteStore(self._db)
-        self._suites.recover()
 
     @contextmanager
     def _db(self):
@@ -1285,6 +1226,17 @@ class Controller:
             raise ValueError('Unknown run_id')
         return row
 
+    def _run_of_request(self, request_id):
+        """The id of the run that was started with `request_id`: a client that never got its `start`'s reply finds
+        its run by the id it chose, and starts nothing by asking."""
+        found = None
+        if isinstance(request_id, str):
+            with self._db() as db:
+                found = db.execute('SELECT id FROM runs WHERE request_id=?', (request_id,)).fetchone()
+        if found is None:
+            raise ValueError('Unknown request_id')
+        return found['id']
+
     def call(self, method, params=None):
         params = params or {}
         if method == 'mcp_cancel':
@@ -1312,9 +1264,9 @@ class Controller:
             return {'ok':True, 'pid':process.pid}
         if method == 'start':
             return self.start(params)
-        if method.startswith('suite_'):
-            return run_status.without(self._suite_call(method,params))
         run_id = params.get('run_id')
+        if method == 'status' and run_id is None and 'request_id' in params:
+            run_id = self._run_of_request(params['request_id'])
         row = self._row(run_id)
         if method in ('tool', 'tools', 'mcp_tool', 'mcp_tools'):
             # A call's time counts from here, where its request arrives, through any wait behind another call of its
@@ -1332,7 +1284,8 @@ class Controller:
         if method == 'status':
             with self._lock:
                 # Cleanup updates the durable outcome and worker ownership under
-                # this lock. Read both together before a suite may settle a child.
+                # this lock. Read both together, so that no client takes a run for
+                # ended while a worker of it still stops.
                 row = self._row(run_id)
                 stopping = row['status'] in TERMINAL and (run_id in self._workers or run_id in self._inflight)
                 out = {'ok': True, **{k: row[k] for k in ('status', 'stage', 'reason', 'created', 'updated', 'outcome_category')},
@@ -1365,6 +1318,10 @@ class Controller:
             if 'client_record' in spec:
                 # Given back as the client sent it; the service reads none of it.
                 out['client_record'] = spec['client_record']
+            if '_submitted_intent' in spec:
+                # The params of the run's `start` as the service received them. A run an earlier version stored
+                # without them gives none.
+                out['request'] = spec['_submitted_intent']
             with self._db() as db:
                 for table, key in (('reports', 'worker_reports'), ('handoffs', 'accepted_handoffs'), ('verdicts', 'evaluator_verdicts')):
                     # The final verdict is `equivalence`, apart from evaluator stage verdicts.
@@ -1406,6 +1363,12 @@ class Controller:
             if wait_for_worker:
                 worker[1].join(timeout=10)
             return self.call('status', {'run_id': run_id})
+        if method == 'seal':
+            # The mark alone: `status` and `result` show it, and `resume` and `attach_device` refuse the run from
+            # here on. Nothing else of the run changes, so the same call again answers the same.
+            with self._db() as db:
+                db.execute('UPDATE runs SET sealed=1 WHERE id=?', (run_id,))
+            return {'ok': True, 'run_id': run_id, 'sealed': True}
         if method == 'respond':
             observation = params.get('observation')
             message = params.get('message') or (_json(observation) if isinstance(observation,dict) and observation else None)
@@ -1526,705 +1489,11 @@ class Controller:
         path = self.home / 'config.json'
         return json.loads(path.read_text(encoding='utf-8')).get('executors', {}) if path.is_file() else {}
 
-    def suite_start(self,params):
-        """Freeze and store a suite for the bench harness that drives it, attached by the sha256 of its token. Nothing is
-        scheduled here: the harness reserves, starts, attaches and settles each slot."""
-        from .benchmark_support.suites import normalize_manifest,freeze_suite,refuse_secrets
-        from .benchmark_support.snapshots import execution_provenance
-        manifest=normalize_manifest(params.get('manifest'))
-        executor=resolve_executor(params.get('executor'))
-        options=params.get('options',{})
-        refuse_secrets(options)
-        token,pid,lock=_harness_identity(params,'A suite is started and driven by its bench harness: `benchmark suite start`')
-        pins=params.get('device_pins')
-        request={'manifest':manifest,'executor':executor,'options':options,
-                 **({'device_pins':pins} if pins is not None else {})}
-        with self._lock:
-            saved=self._suites.find_request(params.get('request_id'),request)
-            if saved is None:
-                if self._closing:raise ValueError('Configurator is stopping')
-                config={**self._configured_executors().get(executor,{}),'runtime':executor}
-                if executor=='replay':
-                    config=_replay_suite_config(manifest,options,self.home)
-                provenance=execution_provenance(config,case_ids=[entry['case'] for entry in manifest['entries']])
-                frozen=freeze_suite(manifest,executor,config,options,provenance,harness_token_sha256=token,
-                                    device_pins=pins)
-                saved=self._suites.create(frozen,params.get('request_id'),harness_pid=pid,harness_lock=lock)
-                if not saved['duplicate']:
-                    self._suites.set_state(saved['suite_id'],'running')
-                    return {'ok':True,'suite_id':saved['suite_id'],'duplicate':False,'attached':True,**_sealing(frozen)}
-            # A repeated request. Its harness, sending it again after a lost reply, is told it still drives the suite.
-            return {'ok':True,'suite_id':saved['suite_id'],'duplicate':True,'attached':_attached_to(saved,token),
-                    **_sealing(saved['frozen'])}
-
-    def _suite_lock(self, suite_id):
-        with self._lock:
-            return self._suite_locks.setdefault(suite_id, threading.RLock())
-
-    @staticmethod
-    def _harness_alive(suite):
-        """Whether the bench harness attached to the suite is still running: by the lock it holds for as long as it runs,
-        which ends with it (a process id may name another process once its harness ended); where that cannot be told,
-        by its process id. An attached harness with neither is taken to have ended."""
-        harness = suite['harness']
-        if not harness['attached']:
-            return False
-        if harness.get('lock'):
-            from .client import process_lock_held
-            held = process_lock_held(harness['lock'])
-            if held is not None:
-                return held
-        if type(harness['pid']) is not int or harness['pid'] <= 0:
-            return False
-        from .client import _wait_for_exit
-        try:
-            return not _wait_for_exit(harness['pid'], 0)
-        except OSError:
-            return True
-
-    def _suite(self, suite_id):
-        """The suite, with a running suite whose harness ended without letting go of it blocked for an explicit resume."""
-        from .benchmark_support.suites import harness_driven
-        suite = self._suites.get(suite_id)
-        if (harness_driven(suite['frozen']) and suite['status'] in ('queued','running') and suite['harness']['attached']
-                and not self._harness_alive(suite)):
-            with self._suite_lock(suite_id):
-                suite = self._suites.get(suite_id)
-                if suite['status'] in ('queued','running') and suite['harness']['attached'] and not self._harness_alive(suite):
-                    self._suites.set_state(suite_id,'blocked','The bench harness driving the suite ended; resume it through its harness')
-                    self._suites.detach_harness(suite_id)
-                    suite = self._suites.get(suite_id)
-        return suite
-
-    def _suite_driver(self, suite_id, params):
-        """The suite, for the bench harness that drives it: only a suite frozen for a harness, and only with the token
-        whose sha256 the suite holds."""
-        from .benchmark_support.suites import harness_driven
-        suite = self._suite(suite_id)
-        if not harness_driven(suite['frozen']):
-            raise ValueError(OLD_SUITE)
-        token, held = params.get('token'), suite['harness']['token_sha256']
-        if not isinstance(token, str) or not isinstance(held, str) or \
-                not hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), held):
-            raise ValueError('Only the bench harness driving the suite may schedule it (harness token)')
-        return suite
-
-    @staticmethod
-    def _slot(suite, ordinal):
-        slot = next((t for t in suite['trials'] if type(ordinal) is int and t['ordinal'] == ordinal), None)
-        if slot is None:
-            raise ValueError('Unknown or stale suite slot')
-        return slot
-
-    def _child_evaluation(self, run_id):
-        """A suite child's evaluation as the configurator holds it: (its final equivalence or None, the reason of its
-        latest unscored evaluation while it still awaits its grade, or None), never the child's own say."""
-        with self._db() as db:
-            final = _final_verdict(db, run_id)
-            unscored = None if final else db.execute("SELECT payload FROM events WHERE run_id=? AND kind='evaluation.unscored' "
-                                                     'ORDER BY seq DESC LIMIT 1', (run_id,)).fetchone()
-        reasons = [d.get('reason') for d in json.loads(unscored['payload']).get('diff') or [] if isinstance(d, dict)] if unscored else []
-        return (final['equivalence'] if final else None,
-                (str(reasons[0]) if reasons else 'unscored') if unscored else None)
-
-    def _child_mismatch(self, suite, slot, run_id):
-        """Why the run is not the frozen slot's child, from the request the run recorded as submitted (see
-        `child_identity_differs`), or None when it is."""
-        from .benchmark_support.suites import child_identity_differs
-        return child_identity_differs(suite['frozen'], slot, json.loads(self._row(run_id)['spec']).get('_submitted_intent'))
-
-    def _cancel_live(self, run_id):
-        """Cancel a suite child that still runs; one already stopped keeps its own stop and reason."""
-        if run_id and self.call('status',{'run_id':run_id})['status'] in ('queued','running'):
-            self.call('cancel',{'run_id':run_id})
-
-    def _suite_reserve(self, suite_id, params):
-        """The slot the harness works on next: the active one, or the next pending slot, reserved. None once the suite
-        is cancelled (a child of its that still runs, however it came to run, is cancelled too), stopped, out of budget
-        (it blocks and its active child is cancelled) or complete. A slot whose child exists but was never attached is
-        attached here, from the child the configurator finds by the slot's request, and only if that child's request is
-        the frozen slot's own: another blocks the suite and is cancelled."""
-        from .benchmark_support.suites import child_request
-        expired = live = None
-        with self._suite_lock(suite_id):
-            suite = self._suite_driver(suite_id, params)
-            trial = None
-            if suite['cancelled']:
-                active = next((t for t in suite['trials'] if t['status'] in ('launching','running')),None)
-                live = active and (active['run_id'] or (self.find_request(active['child_request_id']) or {}).get('run_id'))
-            elif suite['status'] == 'running':
-                expired = self._suite_expired(suite)
-                if expired is None:
-                    trial = self._suites.reserve(suite_id)
-                    if trial is None:
-                        self._suites.set_state(suite_id,'completed')
-                    elif trial['run_id'] is None:
-                        found = self.find_request(trial['child_request_id'])
-                        mismatch = found and self._child_mismatch(suite, trial, found['run_id'])
-                        if mismatch:
-                            self._suites.set_state(suite_id,'blocked',mismatch + TAKEN)
-                            trial, live = None, found['run_id']
-                        elif found:
-                            self._suites.attach(suite_id,trial['ordinal'],trial['child_request_id'],found['run_id'])
-                            trial['run_id'] = found['run_id']
-            status = self._suites.get(suite_id)['status']
-        if expired:
-            # Cancellation can join a worker; never hold the suite lock meanwhile.
-            self.call('cancel',{'run_id':expired})
-        if live:
-            self._cancel_live(live)
-        if trial is None:
-            return {'ok':True,'suite_id':suite_id,'status':status,'slot':None}
-        return {'ok':True,'suite_id':suite_id,'status':status,
-                # Fixed at freeze: the harness never reads the live table of sets for this.
-                'scoring':'scoring_set' in suite['frozen'],
-                'slot':{key:trial[key] for key in ('ordinal','trial_key','case','device_id','child_request_id','run_id',
-                                                   'attempt','regrade','audit') if key in trial},
-                'request':child_request(suite['frozen'],trial)}
-
-    def _suite_expired(self, suite):
-        """Block a running suite whose wall-clock budget is spent. Returns None while it is not spent; otherwise the active
-        child to cancel ('' if there is none), as the suite's budget ends its active child whatever state that child is in."""
-        if time.time() < suite['created'] + suite['budget_seconds']:
-            return None
-        active = next((t for t in suite['trials'] if t['status'] in ('launching','running')),None)
-        found = active and (active['run_id'] or (self.find_request(active['child_request_id']) or {}).get('run_id'))
-        self._suites.set_state(suite['suite_id'],'blocked','Suite wall-clock budget exhausted')
-        return found or ''
-
-    def _suite_attach(self, suite_id, params):
-        """Attach the child the harness started for a slot: only the run the configurator itself finds by that slot's
-        request, and only if that run's request is the frozen slot's own (another blocks the suite and is cancelled). A
-        child attached to a suite that was cancelled or stopped meanwhile is cancelled. Only a reserved slot takes a
-        child: a run found under a pending slot's request would run beside the active one, out of order."""
-        with self._suite_lock(suite_id):
-            suite = self._suite_driver(suite_id, params)
-            slot = self._slot(suite, params.get('ordinal'))
-            if slot['status'] not in ('launching','running'):
-                raise ValueError('The suite slot is not reserved')
-            found = self.find_request(slot['child_request_id'])
-            if not found or found['run_id'] != params.get('run_id'):
-                raise ValueError('The run is not the child of this suite slot')
-            stopped = suite['cancelled'] or suite['status'] != 'running'
-            mismatch = self._child_mismatch(suite, slot, found['run_id'])
-            if mismatch:
-                mismatch += TAKEN
-                if not stopped:
-                    self._suites.set_state(suite_id,'blocked',mismatch)
-            else:
-                self._suites.attach(suite_id,slot['ordinal'],slot['child_request_id'],found['run_id'])
-        if mismatch or stopped:
-            # Cancellation can join a worker; never hold the suite lock meanwhile.
-            self._cancel_live(found['run_id'])
-        if mismatch:
-            raise ValueError(mismatch)
-        return {'ok':True,'suite_id':suite_id,'run_id':found['run_id'],**({'cancelled':True} if stopped else {})}
-
-    def _suite_start_child(self, suite_id, params):
-        """Start a slot's child for its harness and attach it, in one step under the suite lock: only while the suite
-        runs, so a suite cancelled or stopped as its harness provided the device starts no child; only within the suite's
-        wall-clock budget, so a budget spent meanwhile blocks the suite, as on every reservation, before anything starts;
-        and only from the frozen slot's own request plus what the harness adds (see `child_identity_differs`). A request
-        that differs blocks the suite before anything starts. The same start sent again after a lost reply is answered
-        with the child it started, whatever the suite did since (cancelled, blocked, out of budget), and starts nothing:
-        that child runs on the device of the harness that sent it, which must not stop that device under it."""
-        from .benchmark_support.suites import child_identity_differs
-        with self._suite_lock(suite_id):
-            suite = self._suite_driver(suite_id, params)
-            slot = self._slot(suite, params.get('ordinal'))
-            mismatch = child_identity_differs(suite['frozen'], slot, params.get('request'))
-            started = None if mismatch else self._started_from(slot, params.get('request'))
-            if started:
-                if slot['run_id'] is None and slot['status'] in ('launching','running'):
-                    self._suites.attach(suite_id,slot['ordinal'],slot['child_request_id'],started)
-                return {'ok':True,'run_id':started,'duplicate':True,'suite_id':suite_id}
-            if suite['cancelled'] or suite['status'] != 'running':
-                raise ValueError('The suite is ' + suite['status'] + '; no child starts for it')
-            if slot['status'] not in ('launching','running'):
-                raise ValueError('The suite slot is not reserved')
-            expired = self._suite_expired(suite)
-            if expired is None:
-                if mismatch:
-                    self._suites.set_state(suite_id,'blocked',mismatch)
-                    raise ValueError(mismatch)
-                started = self._start(self._suite_child_start(params['request']), params['request'],
-                                      complete_config=True)
-                self._suites.attach(suite_id,slot['ordinal'],slot['child_request_id'],started['run_id'])
-                return {**started,'suite_id':suite_id}
-        self._suite_spent(expired)
-
-    @staticmethod
-    def _suite_child_start(request):
-        """The `start` of a suite's child, a supplied run, from the request its bench harness sent: the request
-        without the case, its pin and its options, with the analysis tools those options name as keys of the start
-        itself. The run keeps the whole request as its submitted intent."""
-        start = {key: value for key, value in request.items() if key not in ('case', 'case_pin', 'case_options')}
-        options = request.get('case_options')
-        for key in ('ghidra_home', 'java_home'):
-            if isinstance(options, dict) and key in options:
-                start[key] = options[key]
-        return start
-
-    def _started_from(self, slot, request):
-        """The run id of the slot's child when that child was started from exactly `request`, as its submitted intent
-        records it (a harness's start sent again: the same device, admission and evaluation token hash), else None. The
-        caller has checked `request` against the frozen slot."""
-        if not isinstance(request, dict):
-            return None
-        with self._db() as db:
-            found = db.execute('SELECT id,spec FROM runs WHERE request_id=?', (slot['child_request_id'],)).fetchone()
-        if found is None or (slot['run_id'] is not None and slot['run_id'] != found['id']):
-            return None
-        intent = json.loads(found['spec']).get('_submitted_intent')
-        return found['id'] if intent is not None and _json(intent) == _json(request) else None
-
-    def _suite_spent(self, expired):
-        """Refuse a child's start or resume once the suite's budget is spent; the active child `_suite_expired` names,
-        however it came to exist, is cancelled outside the suite lock, since cancellation can join a worker."""
-        if expired:
-            self.call('cancel',{'run_id':expired})
-        raise ValueError('Suite wall-clock budget exhausted')
-
-    def _suite_resume_child(self, suite_id, params):
-        """Resume a slot's stopped child for its harness, once the harness attached a device anew, in one step under the
-        suite lock: only while the suite runs, so a suite cancelled or stopped as its harness provided the device resumes
-        nothing; only within the suite's wall-clock budget (a budget spent meanwhile blocks the suite and ends the child,
-        as on every reservation); and only the slot's attached child, whose request is the frozen slot's own. An approved
-        child budget extension (`budget_seconds`, `budget_reason`) reaches that child's resume. The same resume sent
-        again after a lost reply, for the device session the harness attached (`session_id`), finds the child already
-        resumed on that device and resumes nothing."""
-        with self._suite_lock(suite_id):
-            suite = self._suite_driver(suite_id, params)
-            slot = self._slot(suite, params.get('ordinal'))
-            if suite['cancelled'] or suite['status'] != 'running':
-                raise ValueError('The suite is ' + suite['status'] + '; its child does not resume')
-            if slot['status'] != 'running' or not slot['run_id'] or slot['run_id'] != params.get('run_id'):
-                raise ValueError('The run is not the attached child of this suite slot')
-            expired = self._suite_expired(suite)
-            if expired is None:
-                mismatch = self._child_mismatch(suite, slot, slot['run_id'])
-                if mismatch:
-                    raise ValueError(mismatch + TAKEN)
-                if self._resumed_on(slot['run_id'], params.get('session_id')):
-                    # Its harness's resume again, the first reply lost: the child was resumed on the device that harness
-                    # attached, whatever it has done since (an operator may have cancelled it), and is not resumed again.
-                    return {**self.call('status',{'run_id':slot['run_id']}),'duplicate':True}
-                return self.call('resume',{'run_id':slot['run_id'],**{key:params[key] for key in ('budget_seconds','budget_reason')
-                                                                      if params.get(key) is not None}})
-        self._suite_spent(expired)
-
-    def _resumed_on(self, run_id, session_id):
-        """Whether the run was resumed since the device of `session_id` was attached to it, the device attached last."""
-        if not isinstance(session_id, str):
-            return False
-        with self._db() as db:
-            attached = db.execute("SELECT seq,payload FROM events WHERE run_id=? AND kind='device.attached' "
-                                  'ORDER BY seq DESC LIMIT 1', (run_id,)).fetchone()
-            return (attached is not None and json.loads(attached['payload']).get('session_id') == session_id
-                    and db.execute("SELECT 1 FROM events WHERE run_id=? AND kind='run.resumed' AND seq>? LIMIT 1",
-                                   (run_id, attached['seq'])).fetchone() is not None)
-
-    def _suite_settle(self, suite_id, params):
-        """Settle a slot from what the configurator reads itself, the child's status and its recorded evaluation; the
-        harness names only the slot. On a scoring suite `scoring_disposition` decides, and a child that has already
-        ended settles before the suite's budget is checked, so a paid-for grade is not left unsettled. On any other
-        suite a child that may not advance blocks a running suite."""
-        from .benchmark_support.suites import child_disposition, scoring_disposition
-        expired = None
-        with self._suite_lock(suite_id):
-            suite = self._suite_driver(suite_id, params)
-            slot = self._slot(suite, params.get('ordinal'))
-            if not slot['run_id']:
-                raise ValueError('Settlement does not match attached child')
-            scoring = 'scoring_set' in suite['frozen']
-            settled = {'finished':'advance','faulted':'fault','flagged':'flag'}.get(slot['status'])
-            ended = scoring and not settled and self._child_ended(slot['run_id'])
-            if not settled and not ended and suite['status'] == 'running' and not suite['cancelled']:
-                # The suite's budget is checked before its child's outcome, as on every reservation.
-                expired = self._suite_expired(suite)
-            if expired is not None:
-                decision = 'block'
-            elif settled:
-                decision = settled
-            else:
-                # Every child is graded after its run: the configurator reads its recorded evaluation itself.
-                equivalence, unscored = self._child_evaluation(slot['run_id'])
-                observed = {**self.call('status',{'run_id':slot['run_id']}),'equivalence':equivalence,
-                            'unscored':unscored}
-                decision = (scoring_disposition(self._budgeted(observed), slot) if scoring
-                            else child_disposition(observed))
-                mismatch = self._child_mismatch(suite, slot, slot['run_id']) if decision != 'wait' else None
-                if mismatch:
-                    decision = 'block'
-                if decision in ('advance','fault','regrade','flag'):
-                    history = decision in ('fault','regrade') and 'attempt' not in slot
-                    self._suites.settle(suite_id,slot['ordinal'],observed,disposition=decision,
-                                        first_attempt=self._first_attempt(slot) if history else None)
-                elif decision == 'block' and suite['status'] == 'running' and not suite['cancelled']:
-                    stop = observed.get('reason')
-                    reason = (mismatch + TAKEN if mismatch else
-                              'Trial ' + slot['trial_key'] + ' is unscored: ' + unscored if unscored else
-                              'Trial ' + slot['trial_key'] + ' awaits its evaluation'
-                              if observed.get('status') == 'completed' else
-                              'Trial ' + slot['trial_key'] + ' stopped' + (': ' + str(stop) if stop else ''))
-                    self._suites.set_state(suite_id,'blocked',reason)
-            status = self._suites.get(suite_id)['status']
-        if expired:
-            self.call('cancel',{'run_id':expired})
-        return {'ok':True,'suite_id':suite_id,'decision':decision,'status':status}
-
-    def _child_ended(self, run_id):
-        """Whether a suite's child has ended, with nothing of it left stopping."""
-        observed = self.call('status',{'run_id':run_id})
-        return observed['status'] in TERMINAL and observed['stopping'] is False
-
-    def _budgeted(self, observed):
-        """`observed` with the budget its report calls effective: an approved extension is already in the run's spec."""
-        spec = json.loads(self._row(observed['run_id'])['spec'])
-        return {**observed,'effective_budget_seconds':spec['budget_seconds']}
-
-    def _first_attempt(self, slot):
-        """A slot's first attempt, as the row keeps it once a rerun replaces it. Its tokens are None unless every worker
-        reported them, and the outcome a fault, which is the only first attempt a slot keeps."""
-        from .reporting import _usage
-        run_id, tokens, seconds = slot['run_id'], None, None
-        if run_id:
-            result = self.call('result',{'run_id':run_id})
-            tokens = _usage(result['worker_reports'])['total_tokens']
-            seconds = max(0,result['updated']-result['created'])
-        return {'run_id':run_id,'request_id':slot['child_request_id'],'outcome':'fault','tokens':tokens,
-                'seconds':seconds}
-
-    @staticmethod
-    def _reserved_for_scoring(suite, slot):
-        """Refuse a scoring suite's record of a slot unless the suite is one, still runs and has the slot reserved."""
-        if 'scoring_set' not in suite['frozen']:
-            raise ValueError('Only a scoring suite records this: ' + suite['suite_id'])
-        if suite['cancelled'] or suite['status'] != 'running':
-            raise ValueError('The suite is ' + suite['status'] + '; it records nothing of a slot')
-        if slot['status'] not in ('launching','running'):
-            raise ValueError('The suite slot is not reserved')
-
-    def _suite_no_run(self, suite_id, params):
-        """Record that a scoring suite's reserved slot never got a run, with one of the closed `NO_RUN` words: the
-        harness's text stays in its trial, since it may name a private path. A child that exists after all, its start's
-        reply lost, is attached rather than faulted: a child whose request is not the frozen slot's blocks the suite and
-        is cancelled instead."""
-        from .benchmark_support.suites import NO_RUN
-        live = mismatch = None
-        with self._suite_lock(suite_id):
-            suite = self._suite_driver(suite_id, params)
-            slot = self._slot(suite, params.get('ordinal'))
-            self._reserved_for_scoring(suite, slot)
-            if params.get('reason') not in NO_RUN:
-                raise ValueError('Not a reason a slot got no run: ' + str(params.get('reason')))
-            found = self.find_request(slot['child_request_id'])
-            if found:
-                mismatch = self._child_mismatch(suite, slot, found['run_id'])
-                if mismatch:
-                    mismatch += TAKEN
-                    self._suites.set_state(suite_id,'blocked',mismatch)
-                    live = found['run_id']
-                else:
-                    self._suites.attach(suite_id,slot['ordinal'],slot['child_request_id'],found['run_id'])
-            else:
-                settled = self._suites.settle_no_run(suite_id,slot['ordinal'],params['reason'],
-                                                     self._first_attempt(slot) if 'attempt' not in slot else None)
-        if mismatch:
-            # Cancellation can join a worker; never hold the suite lock meanwhile.
-            self._cancel_live(live)
-            raise ValueError(mismatch)
-        if found:
-            return {'ok':True,'suite_id':suite_id,'decision':'attached','run_id':found['run_id']}
-        return {'ok':True,'suite_id':suite_id,'decision':'fault' if settled == 'faulted' else 'advance'}
-
-    def _suite_flag(self, suite_id, params):
-        """Record what the transcript audit found of a scoring suite's reserved slot, each finding by its transcript's
-        name and its command's hash, so no record or call holds the set's root. They are stored first, and the slot
-        moves to `flagged` only if its child has ended with nothing uncertain; otherwise `scoring_disposition` flags it
-        after reconciliation. A child whose request is not the frozen slot's blocks the suite instead, as on
-        settling."""
-        from .benchmark_support.suites import scoring_disposition
-        with self._suite_lock(suite_id):
-            suite = self._suite_driver(suite_id, params)
-            slot = self._slot(suite, params.get('ordinal'))
-            self._reserved_for_scoring(suite, slot)
-            findings = params.get('findings')
-            if not slot['run_id'] or not isinstance(findings, list) or not findings or not all(
-                    isinstance(row, dict) and set(row) == {'transcript','command_sha256'}
-                    and isinstance(row['transcript'], str) and isinstance(row['command_sha256'], str)
-                    and re.fullmatch('[0-9a-f]{64}', row['command_sha256']) for row in findings):
-                raise ValueError('A flag names a slot with a child and findings of a transcript and a command hash')
-            self._suites.store_audit(suite_id,slot['ordinal'],findings)
-            observed = self._budgeted({**self.call('status',{'run_id':slot['run_id']}),'unscored':None})
-            decision = scoring_disposition(observed, {**slot,'audit':findings})
-            mismatch = self._child_mismatch(suite, slot, slot['run_id']) if decision == 'flag' else None
-            if mismatch:
-                decision = 'block'
-                self._suites.set_state(suite_id,'blocked',mismatch + TAKEN)
-            elif decision == 'flag':
-                self._suites.settle(suite_id,slot['ordinal'],observed,disposition='flag')
-        return {'ok':True,'suite_id':suite_id,'decision':decision}
-
-    def _suite_sealed(self, suite_id, params):
-        """Mark a run of a scoring suite sealed: `status` and `result` show it, and it no longer resumes or takes a
-        device. It takes the slot's run or its first attempt's, and it is repeatable, since a crash may send it again.
-        It needs the suite's token while a harness is attached; with none it takes none: it only restricts a run."""
-        with self._suite_lock(suite_id):
-            suite = self._suite(suite_id)
-            if 'scoring_set' not in suite['frozen']:
-                raise ValueError('Only a scoring suite seals its trials: ' + suite_id)
-            if self._harness_alive(suite):
-                self._suite_driver(suite_id, params)
-            slot = self._slot(suite, params.get('ordinal'))
-            run_id = params.get('run_id')
-            if not run_id or run_id not in (slot['run_id'], (slot.get('first_attempt') or {}).get('run_id')):
-                raise ValueError('The run is not a trial of this suite slot: ' + str(run_id))
-            with self._db() as db:
-                db.execute('UPDATE runs SET sealed=1 WHERE id=?',(run_id,))
-        return {'ok':True,'suite_id':suite_id,'run_id':run_id}
-
-    def _suite_detach(self, suite_id, params):
-        """The harness lets go of the suite; one that stops while the suite still runs leaves it blocked for a resume."""
-        reason = params.get('reason')
-        with self._suite_lock(suite_id):
-            suite = self._suite_driver(suite_id, params)
-            if suite['status'] in ('queued','running') and not suite['cancelled']:
-                self._suites.set_state(suite_id,'blocked','The bench harness stopped driving the suite'
-                                       + (': ' + reason if isinstance(reason, str) and reason.strip() else ''))
-            self._suites.detach_harness(suite_id)
-        return self._suite_call('suite_status',{'suite_id':suite_id})
-
-    def find_request(self, request_id):
-        """Reconcile an already created child without creating or resuming work."""
-        with self._db() as db:
-            row = db.execute('SELECT id FROM runs WHERE request_id=?',(request_id,)).fetchone()
-        return self.call('status',{'run_id':row['id']}) if row else None
-
-    def _suite_cancel(self, suite_id):
-        """Cancel the suite and its active child, then wait a while for its harness to let go, unless the child is still
-        stopping (an operation in flight)."""
-        deadline = time.monotonic()+10
-        with self._suite_lock(suite_id):
-            self._suites.cancel(suite_id)
-            suite = self._suites.get(suite_id)
-            active = next((t for t in suite['trials'] if t['status'] in ('launching','running')),None)
-            child = active['run_id'] if active else None
-            if active and not child:
-                found = self.find_request(active['child_request_id'])
-                if found:
-                    # Whatever runs under the slot's request is cancelled; only the slot's frozen child is attached.
-                    child = found['run_id']
-                    if not self._child_mismatch(suite, active, child):
-                        self._suites.attach(suite_id,active['ordinal'],active['child_request_id'],child)
-        if child:
-            self.call('cancel',{'run_id':child})
-        while True:
-            status = self._suite_call('suite_status',{'suite_id':suite_id})
-            if (not status['stopping'] or time.monotonic() >= deadline
-                    or (child and self.call('status',{'run_id':child})['stopping'])):
-                return status
-            time.sleep(.05)
-
-    def _verify_suite(self, suite):
-        from .benchmark_support.families import family_for
-        from .benchmark_support.snapshots import execution_provenance
-        frozen = suite['frozen']
-        for pin in frozen['entry_pins']:
-            if family_for(pin['case_id']).current_pin(pin) != pin:
-                raise ValueError('Frozen suite case pin changed')
-        cases = [entry['case'] for entry in frozen['manifest']['entries']]
-        if execution_provenance(frozen['executor_config'], case_ids=cases) != frozen['provenance']:
-            raise ValueError('Frozen suite implementation or execution environment changed')
-        for trial in suite['trials']:
-            found = self.find_request(trial['child_request_id'])
-            if trial['run_id'] and (not found or trial['run_id'] != found['run_id']):
-                raise ValueError('Frozen suite child identity mismatch')
-            if found:
-                # The child's request holds the slot's pin. Its bench harness checks the child's snapshot itself.
-                mismatch = self._child_mismatch(suite, trial, found['run_id'])
-                if mismatch:
-                    raise ValueError(mismatch + TAKEN)
-
-    def _suite_resume(self, suite_id, params):
-        """Resume a stopped suite for a newly launched bench harness, which takes over its scheduling with a token of its
-        own. A suite frozen before the harness drove suites is read-only. A stopped child is left to the harness, which
-        first attaches a device it provides anew and passes an approved child budget extension itself; a child recorded
-        with the earlier protocol's terminal final failure is settled as it stands. A scoring suite refuses a child
-        budget extension here, the authority, since pairing calls any such override incompatible."""
-        from .benchmark_support.suites import NO_CHILD_EXTENSION, harness_driven
-        with self._suite_lock(suite_id):
-            suite = self._suite(suite_id)
-            if not harness_driven(suite['frozen']):
-                raise ValueError(OLD_SUITE)
-            if suite['frozen']['executor'] not in SUPPORTED_EXECUTORS:
-                raise ValueError('The saved suite uses an unsupported executor. Start a new suite with Codex.')
-            if suite['status'] in ('queued','running') and _attached_to(suite, params.get('harness_token_sha256')):
-                # Its harness's resume again, the first reply lost: that harness still drives the suite.
-                return {**self._suite_call('suite_status',{'suite_id':suite_id}),'attached':True,
-                        **_sealing(suite['frozen'])}
-            if suite['status'] not in ('blocked','failed','cancelled'):
-                raise ValueError('Only a stopped incomplete suite can resume')
-            if self._suite_call('suite_status',{'suite_id':suite_id})['stopping']:
-                raise ValueError('Previous suite work is still stopping')
-            if 'scoring_set' in suite['frozen'] and params.get('child_budget_seconds') is not None:
-                raise ValueError(NO_CHILD_EXTENSION)
-            self._verify_suite(suite)
-            active = next((t for t in suite['trials'] if t['status'] in ('launching','running')),None)
-            found = self.find_request(active['child_request_id']) if active else None
-            if found and found['uncertain_effect']:
-                # Nothing resumes, and nothing about the suite changes, while its child's effect is unreconciled.
-                raise ValueError('Outstanding effect is uncertain; operator must respond with confirmed_safe after reconciliation')
-            token, pid, lock = _harness_identity(params,'A suite resumes through its bench harness: `benchmark suite resume`')
-            if params.get('suite_budget_seconds') is not None:
-                self._suites.extend_budget(suite_id,params['suite_budget_seconds'],params.get('budget_reason'))
-                suite = self._suites.get(suite_id)
-            if time.time() >= suite['created'] + suite['budget_seconds']:
-                raise ValueError('Suite budget exhausted; supply an explicitly approved larger total budget')
-            if found:
-                self._suites.attach(suite_id,active['ordinal'],active['child_request_id'],found['run_id'])
-                with self._db() as db:
-                    terminal_final = _has_terminal_final_failure(db,found['run_id'])
-                if (terminal_final and found['status'] in ('failed','blocked')
-                        and not found['stopping'] and not found['uncertain_effect']):
-                    self._state(found['run_id'],'failed','Frozen final evaluation failed',outcome_category='model')
-                    self._suites.settle(suite_id,active['ordinal'],
-                        self.call('status',{'run_id':found['run_id']}),terminal_final=True)
-            self._suites.attach_harness(suite_id,token,pid,lock)
-            self._suites.set_state(suite_id,'running')
-        return {**self._suite_call('suite_status',{'suite_id':suite_id}),'attached':True,**_sealing(suite['frozen'])}
-
-    def _suite_call(self,method,params):
-        if method=='suite_start':return self.suite_start(params)
-        suite_id=params.get('suite_id')
-        suite=self._suite(suite_id)
-        if method=='suite_cancel':return self._suite_cancel(suite_id)
-        if method=='suite_resume':return self._suite_resume(suite_id,params)
-        if method=='suite_reserve':return self._suite_reserve(suite_id,params)
-        if method=='suite_attach':return self._suite_attach(suite_id,params)
-        if method=='suite_start_child':return self._suite_start_child(suite_id,params)
-        if method=='suite_resume_child':return self._suite_resume_child(suite_id,params)
-        if method=='suite_settle':return self._suite_settle(suite_id,params)
-        if method=='suite_no_run':return self._suite_no_run(suite_id,params)
-        if method=='suite_flag':return self._suite_flag(suite_id,params)
-        if method=='suite_sealed':return self._suite_sealed(suite_id,params)
-        if method=='suite_detach':return self._suite_detach(suite_id,params)
-        if method=='suite_events':
-            # Each event says why the suite stopped where it did, with paths scrubbed as reports scrub them.
-            from .reporting import _public
-            page=self._suites.events(suite_id,params.get('after',0))
-            for event in page['events']:
-                if isinstance(event['data'].get('reason'),str):
-                    event['data']['reason']=_public(event['data']['reason'],self.home)
-            return {'ok':True,**page}
-        if method not in ('suite_status','suite_result'):
-            raise ValueError('Unknown suite method: '+str(method))
-        # The slots and the harness's liveness are read together under the suite's lock, which settlement and detach
-        # hold, and the harness lets go of its lock file only after it detached: a suite no longer read as stopping
-        # carries the slots its harness left, never a count from before its last settlement.
-        with self._suite_lock(suite_id):
-            suite=self._suites.get(suite_id)
-            active=next((trial for trial in suite['trials'] if trial['status'] in ('launching','running')),None)
-            child = self.call('status',{'run_id':active['run_id']}) if active and active['run_id'] else None
-            from .reporting import _public
-            status={'ok':True,'suite_id':suite_id,**{key:suite[key] for key in ('status','created','updated')},
-                # Why the suite stopped (which child, and why it stopped or is unscored), with paths scrubbed.
-                'reason':None if suite['reason'] is None else _public(suite['reason'],self.home),
-                'active_child_id':active['run_id'] if active else None,
-                'planned':len(suite['trials']),
-                'completed':sum(trial['status'] in ('finished','flagged') for trial in suite['trials']),
-                # Equivalent drivers among the settled children, out of `planned`; none applies to a suite frozen before
-                # the harness drove suites, whose children were graded inside their runs.
-                'equivalent':sum(trial['status']=='finished' and (trial['result'] or {}).get('equivalent') is True
-                                 for trial in suite['trials']) if _assistive(suite) else None,
-                'stopping':(suite['status'] in TERMINAL and self._harness_alive(suite)) or bool(child and child['stopping'])}
-            if method=='suite_status':return status
-            page = self._suites.trials(suite_id,params.get('offset',0),params.get('limit',50))
-        return self._suite_result(suite,status,page)
-
-    def _suite_result(self,suite,status,page):
-        """A page of the suite's slots as read with its status, each with its child's interventions and, while it is
-        not settled, its child's current state."""
-        from .reporting import _interventions
-        from .benchmark_support.evidence import public_v2_report
-        for trial in page['trials']:
-            events, cursor = [], 0
-            if trial['run_id']:
-                while True:
-                    batch = self.call('events',{'run_id':trial['run_id'],'after':cursor})
-                    events.extend(batch['events'])
-                    if batch['cursor'] == cursor or len(batch['events']) < 500:
-                        break
-                    cursor = batch['cursor']
-            trial['interventions'] = public_v2_report({'interventions':_interventions(events)[0]})['interventions']
-            if trial['run_id'] and trial['status'] != 'finished':
-                current = self.call('status',{'run_id':trial['run_id']})
-                trial['outcome_category'] = current['outcome_category']
-                # A slot settled `faulted` or `flagged` keeps saying so: its child's own status is in its report.
-                if (current['status'] in ('blocked','failed','cancelled','completed')
-                        and trial['status'] not in ('faulted','flagged')):
-                    trial['status'] = current['status']
-                equivalence, unscored = self._child_evaluation(trial['run_id'])
-                if equivalence:
-                    trial.update(equivalent=equivalence.get('equivalent'),equivalence_status=equivalence.get('status'))
-                elif current['status'] == 'completed':
-                    # Not settled: its grade is unscored, or still pending.
-                    trial['equivalence_status'] = 'unscored' if unscored else 'pending'
-        return {**status,**page,'experiment':self._suite_experiment(suite)}
-
-    def _suite_experiment(self,suite):
-        # Public provenance is an allowlist, never the private execution snapshot.
-        from .benchmark_support.evidence import public_pin
-        frozen=suite['frozen'];manifest=frozen['manifest'];provenance=frozen['provenance']
-        config=frozen['executor_config']
-        def scalars(value,keys):
-            return {key:value[key] for key in keys if key in value and
-                    (value[key] is None or type(value[key]) in (str,int,float,bool))}
-        dimensions=scalars(config,('model','provider','version','reasoning_effort','max_turns'))
-        dimensions.update(runtime=frozen['executor'],**scalars(provenance,('skills_revision','toolchain_revision')))
-        if frozen['executor']=='replay':
-            # The candidates a replay suite replays, by case, as a model suite names its model.
-            dimensions['replay_candidates']={case:entry['candidate_sha256'] for case,entry in config['candidates'].items()}
-        policy={key:manifest[key] for key in ('child_budget_seconds','suite_budget_seconds')}
-        snapshots=[];overrides=[]
-        for trial in suite['trials']:
-            spec=json.loads(self._row(trial['run_id'])['spec']) if trial['run_id'] else {}
-            # The bench harness of the child keeps its snapshot's hash in the child run's client record.
-            snapshots.append({'trial_key':trial['trial_key'],
-                              'snapshot_sha256':(spec.get('client_record') or {}).get('snapshot_sha256')})
-            if spec and spec['budget_seconds']!=policy['child_budget_seconds']:
-                overrides.append({'trial_key':trial['trial_key'],'budget_seconds':spec['budget_seconds']})
-        return {'schema':'benchmark-suite-experiment/1',
-            # Only a suite its bench harness drives, whose children are graded after their runs, names the assistive protocol.
-            'comparison_identity':{**({'protocol':PROTOCOL} if _assistive(suite) else {}),
-                **({'scoring_set':frozen['scoring_set']} if 'scoring_set' in frozen else {}),
-                'manifest':manifest,'manifest_sha256':frozen['manifest_sha256'],
-                'entry_pins':[public_pin(pin) for pin in frozen['entry_pins']],
-                'trials':frozen['trials'],'repetitions':manifest['repetitions'],
-                'execution':frozen['entry_pins'][0]['execution'],
-                'evidence_track':frozen['entry_pins'][0]['evidence_track'],'scope':frozen['scope'],
-                'time_policy':[scalars(pin['time_policy'],('probe','package_calls','clock','limitation')) for pin in frozen['entry_pins']],
-                'evaluator_revision':provenance['evaluator_revision'],
-                'budgets':{'original':policy,'effective':{**policy,'suite_budget_seconds':suite['budget_seconds'],'child_budget_overrides':overrides}},
-                'intervention_policy':{'scoped_tool_approval':frozen['options'].get('scoped_tool_approval'),
-                    'max_model_repairs':2}},
-            # Each case's own revision, which its trials are checked against. A suite frozen before cases had their own
-            # grader identities names one revision, its `evaluator_revision`, for all of them.
-            **({'evaluator_revisions':provenance['evaluator_revisions']} if 'evaluator_revisions' in provenance else {}),
-            'dimensions':dimensions,'execution_snapshots':snapshots}
-
     def start(self, params):
         """Start a run of `params`, or find the run an earlier `start` with the same `request_id` and inputs
-        started."""
-        return self._start(params)
-
-    def _start(self, params, intent=None, *, complete_config=False):
-        """Start a run of `params`, recorded as submitted with `intent`. The suite code starts a child from its
-        frozen request, which is the intent the run keeps, with `complete_config` when the request's executor
-        configuration is taken as it is. A client's `start` can set neither: its params are its intent."""
-        # Submitted intent is compared before reading mutable defaults or resources.
+        started. The run keeps the params as the request it was started with, which `result` gives back."""
+        # The request is compared before reading mutable defaults or resources.
         params = json.loads(_json(params))
-        intent = params if intent is None else json.loads(_json(intent))
         with self._lock:
             if params.get('request_id'):
                 with self._db() as db:
@@ -2232,12 +1501,12 @@ class Controller:
                 if found:
                     saved = json.loads(found['spec'])
                     if '_submitted_intent' in saved:
-                        if _json(saved['_submitted_intent']) != _json(intent):
+                        if _json(saved['_submitted_intent']) != _json(params):
                             raise ValueError('request_id was already used with different inputs')
                         return {'ok': True, 'run_id': found['id'], 'duplicate': True}
-            return self._start_new(params, intent, complete_config)
+            return self._start_new(params)
 
-    def _start_new(self, params, intent, complete_config):
+    def _start_new(self, params):
         goal = params.get('goal')
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError('start requires a nonempty goal')
@@ -2266,12 +1535,16 @@ class Controller:
                              + ', '.join(lacking))
         supplied = not lacking
         _client_record(params)
-        config = {} if complete_config else self._configured_executors().get(executor, {})
+        # On a supplied run a given `executor_config` is the whole configuration: its client settled it, and what
+        # the operator configured since is not laid under it.
+        whole = supplied and 'executor_config' in params
+        config = {} if whole else self._configured_executors().get(executor, {})
         config = {**config, **params.get('executor_config', {}), 'runtime': executor}
         if executor == 'replay':
             config = _replay_config(params, config, self.home)
+        # The spec keeps the request as it came beside what the service settled from it.
         spec = {**params, 'executor': executor, 'executor_config': config, 'budget_seconds': budget, 'effects': effects,
-                '_submitted_intent': intent}
+                '_submitted_intent': params}
         validate_scoped_approval(spec)
         device = _supplied_device(spec) if supplied else None
         encoded = _json(spec)

@@ -7,7 +7,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+
+from suite_fixtures import standing_in
 
 
 class CorpusWorkflowTests(unittest.TestCase):
@@ -64,7 +65,7 @@ class CorpusWorkflowTests(unittest.TestCase):
             plan_path.write_text(json.dumps(plan))
             report_path = Path(directory) / 'coverage.json'
             output = io.StringIO()
-            with patch('generative_driver.client.call', return_value=page), \
+            with standing_in(return_value=page), \
                     redirect_stdout(output):
                 result = main(['corpus', 'report', '--plan', str(plan_path), '--suite-id', 'example-suite',
                                '--output', str(report_path)])

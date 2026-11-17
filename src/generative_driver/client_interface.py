@@ -1,11 +1,12 @@
-"""The client interface, version 2: what a client that brings its own device, firmware and mission needs in code.
+"""The client interface, version 3: what a client that brings its own device, firmware and mission needs in code.
 
-Such a client asks four things of the service: start a run on a device it supplies, replace that device, post one
-final verdict, and read the run's records and its frozen driver. This module names the calls it may make, holds the
-rules of the records it sends, and finds the frozen driver among a run's handoffs. The service applies these rules
-itself, so a record without a fault here is not refused there for its form. `docs/client-interface.md` says the
-same in plain words (Features 03 and 06 of the untangle Run, docs/features/untangle/03-client-interface.md and
-docs/features/untangle/06-benchmark-runs.md).
+Such a client asks five things of the service: start a run on a device it supplies, replace that device, post one
+final verdict, read the run's records and its frozen driver, and stop or seal a run. This module names the calls it
+may make, holds the rules of the records it sends, and finds the frozen driver among a run's handoffs. The service
+applies these rules itself, so a record without a fault here is not refused there for its form.
+`docs/client-interface.md` says the same in plain words (Features 03, 06 and 07 of the untangle Run,
+docs/features/untangle/03-client-interface.md, docs/features/untangle/06-benchmark-runs.md and
+docs/features/untangle/07-suites.md).
 """
 import math
 import re
@@ -18,11 +19,12 @@ __all__ = ['CALLS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors', 'f
            'mission_errors', 'verdict_errors']
 
 # The title of `docs/client-interface.md` carries this number.
-VERSION = 2
+VERSION = 3
 # Runs record their protocol; a run saved without this label used the earlier gated stage progression.
 PROTOCOL = 'assistive/1'
 # The service knows other calls too; these are the ones a client of this interface sends.
-CALLS = ('ping', 'start', 'resume', 'status', 'events', 'result', 'attach_device', 'record_evaluation')
+CALLS = ('ping', 'start', 'resume', 'status', 'events', 'result', 'attach_device', 'record_evaluation', 'cancel',
+         'seal')
 # The verdict record a client posts after a run: check ids with passed flags (null for a check the evaluator could
 # not decide) and failing and undecided ids with a reason. Expected values, tolerances, witnesses and raw records stay
 # sealed, so no other field is accepted.

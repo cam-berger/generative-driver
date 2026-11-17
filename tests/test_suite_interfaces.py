@@ -32,7 +32,7 @@ def invoke_cli(root, *args):
 
 class SuiteCliTests(unittest.TestCase):
     def test_pending_registered_fixture_is_refused_before_owner_creation(self):
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         from suite_fixtures import public_case_fixture
         with tempfile.TemporaryDirectory(prefix='suite CLI pending calibration ') as temporary:
             root = Path(temporary)
@@ -82,7 +82,7 @@ raise SystemExit(main())
             self.assertFalse(home.exists())
 
     def test_report_requires_output_and_exports_from_the_existing_owner(self):
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite CLI export ') as temporary:
             # The bench home lies beside the configurator home, inside the test directory.
@@ -122,7 +122,7 @@ raise SystemExit(main())
             self.assertFalse(call('ping', {}, root, autostart=False)['ok'])
 
     def test_invalid_selection_is_refused_before_owner_creation(self):
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         selections = [
             ('not-registered', 'original', 0), ('setup-smoke', 'original', 0),
             ('tq9-v2', 'not-a-scenario', 0)]
@@ -146,7 +146,7 @@ raise SystemExit(main())
                             shutdown_owner(home)
 
     def test_duplicate_reconnect_does_not_repin_current_registry_assets(self):
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite CLI duplicate ') as temporary:
             root = Path(temporary)/'owner'
@@ -175,7 +175,7 @@ raise SystemExit(main())
                 shutdown_owner(root)
 
     def test_separate_cli_processes_reconnect_to_the_same_suite(self):
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite CLI ') as temporary:
             root = Path(temporary)/'owner'
@@ -219,7 +219,7 @@ class SuiteMcpTests(unittest.TestCase):
         asyncio.run(self.owner_disappears())
 
     async def owner_disappears(self):
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite MCP disappearing owner ') as temporary:
             root = Path(temporary)/'owner'
@@ -260,7 +260,7 @@ main()
         asyncio.run(self.cancel_and_resume())
 
     async def cancel_and_resume(self):
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite MCP control ') as temporary:
             root = Path(temporary)/'owner'
@@ -302,7 +302,7 @@ main()
         asyncio.run(self.home_and_pagination())
 
     async def home_and_pagination(self):
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite MCP public parameters ') as temporary:
             root, other = Path(temporary)/'owner', Path(temporary)/'other owner'
@@ -351,7 +351,7 @@ main()
         asyncio.run(self.reconnect_running_child())
 
     async def reconnect_running_child(self):
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         from generative_driver.setup import configure
         with tempfile.TemporaryDirectory(prefix='suite MCP reconnect ') as temporary:
             root = Path(temporary)/'owner'
@@ -426,7 +426,7 @@ main()
         asyncio.run(self.absent_owner())
 
     async def absent_owner(self):
-        from generative_driver.client import call
+        from suite_fixtures import client_call as call
         with tempfile.TemporaryDirectory(prefix='suite MCP Windows policy ') as temporary:
             root = Path(temporary)/'owner'
             root.mkdir()

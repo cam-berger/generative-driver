@@ -21,8 +21,11 @@ STAGES = ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse']
 
 
 def serve(test, home):
-    """A configurator daemon in this process at `home`; worker gateway processes reach it as they reach any configurator."""
+    """A configurator daemon in this process at `home`; worker gateway processes reach it as they reach any
+    configurator. The callable it gives sends a request to that daemon, and a suite call to the suite book of `home`,
+    as a command of the benchmark does."""
     from generative_driver import client, daemon
+    from suite_fixtures import client_call
     home.mkdir(mode=0o700)
     if os.name == 'nt':
         family, address = 'AF_PIPE', r'\\.\pipe\gd-test-' + secrets.token_hex(8)
@@ -43,7 +46,7 @@ def serve(test, home):
     while not client.call('ping', home=home, autostart=False).get('ok'):
         test.assertLess(time.monotonic(), until)
         time.sleep(.05)
-    return lambda method, params=None: client.call(method, params or {}, home=home, autostart=False)
+    return lambda method, params=None: client_call(method, params or {}, home, autostart=False)
 
 
 class ReplayExecutionTests(unittest.TestCase):
@@ -317,7 +320,7 @@ class ReplayStartTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 0)
 
     def test_a_replay_suite_takes_one_checked_candidate_per_case(self):
-        from suite_fixtures import pilot_manifest
+        from suite_fixtures import book, pilot_manifest, suite_call
         token = hashlib.sha256(b'harness token').hexdigest()
         cases = {case: str(self.candidate) for case in ('tq9-v2', 'sampled-sensor-v1', 'parameter-store-v1')}
         inside = self.variant('home-bench/candidate', {})
@@ -329,10 +332,11 @@ class ReplayStartTests(unittest.TestCase):
                    ('codex', {'replay_candidates': cases}, 'Only a replay suite'))
         for executor, options, message in refused:
             with self.subTest(executor=executor, options=options), self.assertRaisesRegex(ValueError, message):
-                self.controller.call('suite_start', {'manifest': pilot_manifest(), 'executor': executor, 'options': options,
-                                                     'harness_token_sha256': token, 'harness_pid': os.getpid()})
+                suite_call(self.controller, 'suite_start', {
+                    'manifest': pilot_manifest(), 'executor': executor, 'options': options,
+                    'harness_token_sha256': token, 'harness_pid': os.getpid()})
         # Nothing was frozen, and no candidate was stored for a suite refused.
-        with self.controller._db() as db:
+        with book(self.controller).store.open_db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM suites').fetchone()[0], 0)
         self.assertFalse((self.root / 'home/replay-candidates').exists())
 
@@ -485,9 +489,12 @@ class ReplaySuiteTests(unittest.TestCase):
             database = sqlite3.connect('file:' + str(bench.home / 'runs.sqlite3') + '?mode=ro', uri=True)
             self.addCleanup(database.close)
             spec = json.loads(database.execute('SELECT spec FROM runs WHERE id=?', (row['run_id'],)).fetchone()[0])
-            # The child's start has no case options; the request it was submitted with holds them.
+            # The child's start has no case options, and the request the run recorded, which is that start, holds
+            # nothing of the suite's candidates but its own case's.
             self.assertNotIn('case_options', spec)
-            self.assertNotIn('replay_candidates', spec['_submitted_intent']['case_options'])
+            recorded = bench.call('result', {'run_id': row['run_id']})['request']
+            self.assertNotIn('case_options', recorded)
+            self.assertNotIn('replay_candidates', json.dumps(recorded))
         # The suite report says replay and names the candidate set as a dimension of the experiment.
         report = report_suite(started['suite_id'], home=bench.home, output=bench.root / 'suite-report')
         self.assertEqual((report['execution'], report['model_benchmark'], report['equivalence']['equivalent']),

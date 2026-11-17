@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import test_configurator
+from suite_fixtures import suite_call
 from test_assistive_reports import AssistiveFixture
 from test_configurator import gateway_identity, scripted_stages, thermometer_model, wait_stopped
 from test_evaluation import FAIL, PASS
@@ -1755,7 +1756,7 @@ class RealSuiteTests(AssistiveFixture):
         with self.harness(PASS, FAIL, RuntimeError('evaluator host stopped')):
             record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
                                 request_id='three-children')
-        rows = self.controller.call('suite_result', {'suite_id': record['suite_id']})['trials']
+        rows = suite_call(self.controller, 'suite_result', {'suite_id': record['suite_id']})['trials']
         write_transcript(self.home / 'runs' / rows[0]['run_id'] / 'work' / 'probe' / 'a1', lines=[json.dumps(
             {'type': 'item.completed', 'item': {'type': 'command_execution', 'command': self.COMMAND}})])
         return record['suite_id'], rows

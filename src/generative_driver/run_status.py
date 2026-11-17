@@ -10,9 +10,6 @@ import math
 import threading
 import time
 
-# The keys `added` gives. Suite replies stay as they were, so a child's status passes into one without them.
-_ADDED = ('deadline', 'repairs', 'worker', 'log')
-
 
 def _saved(text):
     """A saved JSON object, or an empty one when the text holds none."""
@@ -90,13 +87,6 @@ class Workers:
             return None if worker is None else {key: worker[key] for key in
                                                 ('stage', 'started', 'last_activity', 'last_activity_kind', 'task')
                                                 if key in worker}
-
-
-def without(reply):
-    """A suite's reply as it was before `added`: one that passes its child's status on drops the added fields."""
-    if isinstance(reply, dict) and any(key in reply for key in _ADDED):
-        return {key: value for key, value in reply.items() if key not in _ADDED}
-    return reply
 
 
 def added(row, progress, worker, log):

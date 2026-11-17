@@ -17,9 +17,11 @@ supplies, so a case that gives no device provider is refused at admission, befor
 whose harness stopped waiting before its run completed is graded by `resume` once the run has completed. Its state
 lives under a bench home beside the configurator home, never inside it.
 
-A suite's harness (`run_suite`) drives the suite the configurator stores: it reserves each slot, runs that slot's trial as
-above, and has the configurator settle the slot from what the configurator reads itself. A resumed suite gets a new
-harness, which continues a stopped trial on a device it provides anew (`reattach`) or grades an unscored one once. A
+A suite's harness (`run_suite`) drives a suite it keeps itself, in the suite book's store under the bench home
+(`suite_book`; Feature 07 of the untangle Run, docs/features/untangle/07-suites.md): it reserves each slot, runs that
+slot's trial as above, and settles the slot from the child's status and recorded verdict, which the book reads from the
+configurator. Its suite calls go to the book in its own process; the configurator serves none. A resumed suite gets a
+new harness, which continues a stopped trial on a device it provides anew (`reattach`) or grades an unscored one once. A
 suite of a generated set holds the set in memory and starts no trial until the set's folder is out of reach (Feature 05,
 vault gate; spec decision 17). A scoring suite moves past a trial that ended badly and audits each ended child's
 transcripts for commands naming the set's folder (Feature 06, slot policy; spec decisions 17 and 20), and seals each
@@ -523,7 +525,7 @@ class _SlotAudit:
 
     def flagged(self, run_dir):
         """Whether the workers of the ended run in `run_dir` ran a command naming the set's folder, once the
-        configurator has stored what was found. A reply that is not ok raises: the trial is left for a resume, which
+        suite book has stored what was found. A reply that is not ok raises: the trial is left for a resume, which
         audits it again."""
         from .audit import audit_commands
         findings = audit_commands(run_dir, (self._set_root,))
@@ -553,20 +555,28 @@ UNHELD = {'confirmed': True, 'held': False}
 
 
 def _configurator(home, autostart=True):
-    """The harness's requests to the configurator at `home`. Only ping and the start or resume of a run, suite or suite
-    child may start a configurator, and only these are sent again once the connection drops (each finds what an earlier
-    one did); status and result reconnect with a deadline. Once a home that existed is removed, requests fail without
-    recreating it."""
+    """The harness's requests for the configurator at `home`, one callable for all of them. A suite call goes to the
+    suite book in this process (`suite_book`; Feature 07 of the untangle Run, docs/features/untangle/07-suites.md),
+    which keeps the suite and asks the configurator through its public calls; every other method goes to the
+    configurator. Only ping and the start or resume of a run, suite or suite child may start a configurator, and only
+    these are sent again once the connection drops (each finds what an earlier one did): the book's requests may start
+    one while it serves such a suite call, and no other. Status and result reconnect with a deadline. Once a home that
+    existed is removed, requests fail without recreating it."""
     from ..client import call
+    from .suite_book import SuiteBook, answered
     home = Path(home)
     starting = ('ping', 'start', 'suite_start', 'suite_resume', 'suite_start_child', 'suite_resume_child')
     existed = home.is_dir()
     def configurator(method, params=None):
         if existed and not home.is_dir():
             return {'ok': False, 'gone': True, 'reason': 'The configurator home was removed: ' + str(home)}
+        may_start = autostart if method in starting else False
+        if method.startswith('suite_'):
+            asked = lambda name, request=None: call(name, request or {}, home=home, autostart=may_start)
+            return answered(SuiteBook(home, asked), method, params)
         if method in ('status', 'result'):
             return call(method, params or {}, home=home, autostart=False, read_timeout=30 if method == 'status' else 60)
-        return call(method, params or {}, home=home, autostart=autostart if method in starting else False)
+        return call(method, params or {}, home=home, autostart=may_start)
     return configurator
 
 
@@ -801,7 +811,7 @@ def _set_device_pins(manifest, set_root, passwords, *, home, renode, options):
 
 def _held_for_resume(configurator, suite_id, set_root, passwords, *, home, renode, extension=None):
     """The `HeldSet` a resume given `set_root` drives its set suite with, or None for a suite of no set. It asks the
-    configurator first, and refuses in its words a suite that cannot resume, so no vault stays open for one. Then it
+    suite book first, and refuses in its words a suite that cannot resume, so no vault stays open for one. Then it
     refuses (`_not_admitted`), with the vault still open, a set not admitted, what lies under its root, and a record or
     set other than the ones each entry's frozen pin names, which `public_pin` shows only by its digest. Budget and
     frozen implementation refusals stay in `suite_resume`, but for a scoring suite's child budget `extension`, which is
@@ -854,7 +864,7 @@ def _refuse_resume_with_no_password(configurator, suite_id, passwords):
 
 
 def _sealing_password(reply, passwords):
-    """The password a suite's concluded trials are sealed under, from the configurator's reply that it took the suite
+    """The password a suite's concluded trials are sealed under, from the suite book's reply that the suite was taken
     on, or None for a suite that seals nothing. The reply says, so the harness reads no live table of sets. A resume
     that could not ask beforehand is stopped here, before it starts any worker."""
     from .suites import NO_RESUME_PASSWORD
@@ -897,12 +907,13 @@ def _seal_settled(home, suite_id, slot, password, configurator, token):
 
 
 def _start_child(launch, params, shutdown, stop=None):
-    """Start a suite's child through its suite (`launch(params)`), sending the start again for as long as the configurator
-    gives no answer: a dropped connection or a reply that never came (a client that sends nothing again itself, or one
-    whose own resend failed). The configurator answers a start it already did with the child that start started,
-    whatever the suite did since, so sending it again starts nothing twice and tells the harness of a child that runs on
-    its device. Its answer is a run or its refusal, a ValueError, which ends it; so do a removed configurator home, the
-    owner's shutdown of the device, a `stop`, and a configurator unreachable for longer than UNREACHABLE."""
+    """Start a suite's child through its suite (`launch(params)`), sending the start again for as long as it gets no
+    answer: a dropped connection or a reply that never came (a client that sends nothing again itself, or one whose own
+    resend failed). The suite book looks for the slot's child before it sends a `start`, and answers a start that was
+    already made with the child it made, whatever the suite did since, so sending it again starts nothing twice and
+    tells the harness of a child that runs on its device. The answer is a run or a refusal, a ValueError, which ends
+    it; so do a removed configurator home, the owner's shutdown of the device, a `stop`, and a configurator unreachable
+    for longer than UNREACHABLE."""
     lost = None
     while True:
         started = _post(lambda _method, request: launch(request), 'suite_start_child', params)
@@ -1529,7 +1540,7 @@ def _trial_of(folders, run_id, request_id=None):
     """The trial directory, among `folders` (`trial_store.trial_dirs`), whose trial ran `run_id`, or None. A trial whose
     start the configurator never answered names no run: failing a trial that names it, the latest trial that sent a
     start under the slot's child request (`request_id`, unique to the slot) and learnt of no run is the one that started
-    it, since the configurator starts a slot's child once and no trial is made for a slot whose child exists."""
+    it, since a slot's child is started once and no trial is made for a slot whose child exists."""
     latest = None
     for folder in folders:
         record = read_trial(folder)
@@ -1586,9 +1597,9 @@ def _release_claim(bench, request_id, held):
 
 
 def _refused(suite_dir):
-    """Whether the suite harness in `suite_dir` ended without recording that the configurator took its suite on: it was
-    refused, or it ended (killed, say) before it wrote the reply down, though the configurator may have frozen the suite.
-    Either way a launch with the same inputs may start afresh: the configurator finds a suite frozen under the
+    """Whether the suite harness in `suite_dir` ended without recording that the suite book took its suite on: it was
+    refused, or it ended (killed, say) before it wrote the reply down, though the book may have frozen the suite.
+    Either way a launch with the same inputs may start afresh: the book finds a suite frozen under the
     request_id and reports it, attached to no new harness, so the operator learns its suite_id and can resume it."""
     record = read_suite(suite_dir)
     return isinstance(record, dict) and record.get('accepted') is False and _harness_exited(None, record, suite_dir)
@@ -1626,25 +1637,25 @@ def _await_unmount(suite_dir, record, set_root, registration, *, stop=None, poll
 
 
 def run_suite(suite_dir, request, *, call=None, stop=None):
-    """One bench harness run of a suite. It starts the suite on the configurator (or resumes a stopped one, given its
-    `suite_id`) under a fresh random token, of which the configurator keeps only the sha256, and then works through the
+    """One bench harness run of a suite. It starts the suite in its suite book (or resumes a stopped one, given its
+    `suite_id`) under a fresh random token, of which the book keeps only the sha256, and then works through the
     suite one slot at a time: reserve the slot, run its trial (a child on a device this harness provides, graded once
-    after its run), and have the configurator settle the slot from the child's status and recorded evaluation, which it
-    reads itself. It stops once the configurator reports the suite complete, stopped or blocked, and lets go of it; a
+    after its run), and settle the slot from the child's status and recorded evaluation, which the book reads from the
+    configurator. It stops once the book reports the suite complete, stopped or blocked, and lets go of it; a
     harness that stops while the suite runs leaves it blocked for a resume. Every supplied password file is read once,
     before the configurator is first contacted, so that deleting the files later changes nothing; an unreadable or empty
     one ends the harness there, with a reason that names the case and the error's class, and no path, and the suite
     never accepted. Password file and emulator paths are never fields of suite.json or the suite tables, and no child's
     run receives them. The reason a later failure records in suite.json (written for this user only, in the bench home)
-    quotes the error met, which may name the emulator's path. The configurator learns of a failure only which trial
-    failed and where this record is. An approved child budget extension in `request` goes to the stopped child this run
-    continues, and to no other. The harness holds a lock file in `suite_dir` for as long as it runs, by which the
-    configurator and other launches tell that it still runs (its process id alone may come to name another process). A
+    quotes the error met, which may name the emulator's path. The suite's stored reason says of a failure only which
+    trial failed and where this record is. An approved child budget extension in `request` goes to the stopped child
+    this run continues, and to no other. The harness holds a lock file in `suite_dir` for as long as it runs, by which
+    the suite book and other launches tell that it still runs (its process id alone may come to name another process). A
     new suite of one generated set also needs its `set_root` and the set's password file: before that first contact the
     harness holds the set in memory, refuses it unless every entry's device is admitted and nothing it needs lies under
-    its root (as it refuses an unreadable file), and builds each entry's pin, which the configurator freezes. After a
+    its root (as it refuses an unreadable file), and builds each entry's pin, which the suite book freezes. After a
     `ping` it waits until the folder is out of reach (`_await_unmount`), and then reads no file of the set. A resumed
-    one given `set_root` does the same once the configurator says it can resume (`_held_for_resume`); one given none
+    one given `set_root` does the same once the suite book says it can resume (`_held_for_resume`); one given none
     does not wait, and a slot that needs its device fails there. It checks the folder again before each worker: a wait
     that ends with no worker started goes back to the top of the loop unsettled, and one that passes its limit ends the
     harness, blaming no trial. A scoring suite's harness seals each trial once it has settled, and sweeps
@@ -1669,7 +1680,7 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
     try:
         passwords = _supplied_passwords(files)
         # Only a new set suite is held here: a resumed one has its pins frozen, and holds its set below, once the
-        # configurator says it can resume.
+        # suite book says it can resume.
         manifest = None if record['suite_id'] else request.get('manifest')
         held, device_pins = (_set_device_pins(manifest, set_root, passwords, home=home, renode=renode,
                                               options=request.get('options'))
@@ -1703,7 +1714,7 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
                                                  **identity, **({'device_pins': device_pins} if device_pins else {})})
         if reply.get('ok') is not True:
             raise ValueError(reply.get('reason') or 'The configurator refused the suite')
-        # A duplicate start drives nothing, unless the configurator says this harness is the one attached to it.
+        # A duplicate start drives nothing, unless the suite book says this harness is the one attached to it.
         attached = bool(reply.get('attached')) or not reply.get('duplicate')
         record.update(status='running', accepted=True, suite_id=reply['suite_id'], duplicate=bool(reply.get('duplicate')),
                       reply={key: value for key, value in reply.items() if key not in ('reason', 'scoring_set')})
@@ -1711,7 +1722,7 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
         sealing = _sealing_password(reply, passwords) if attached else None
         beat = {'at': 0.0}
         def heartbeat():
-            # While a child runs, the configurator holds the suite to its budget and its cancellation on reservation.
+            # While a child runs, the suite book holds the suite to its budget and its cancellation on reservation.
             if time.monotonic() - beat['at'] >= .2:
                 beat['at'] = time.monotonic()
                 _post(configurator, 'suite_reserve', {'suite_id': record['suite_id'], 'token': token})
@@ -1735,7 +1746,7 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
             current = slot['trial_key']
             scheduling = {'suite_id': record['suite_id'], 'token': token, 'ordinal': slot['ordinal']}
             scoring = reserved.get('scoring') is True
-            # The configurator starts, or resumes, the slot's child only while the suite runs, under the suite's lock.
+            # The suite book has the slot's child started or resumed only while the suite runs, under the suite's lock.
             try:
                 recorded = _suite_trial(suite_dir, slot, reserved.get('request'), configurator, home=home,
                                         passwords=passwords, renode=renode, held=held, heartbeat=heartbeat, stop=stop,
@@ -1757,7 +1768,7 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
             if slot['run_id']:
                 extension = {}
             if recorded:
-                # The configurator has the slot's fault or found its child, or the child is unaudited: no settlement.
+                # The suite book has the slot's fault or found its child, or the child is unaudited: no settlement.
                 current = None
                 record['settled'].append({'ordinal': slot['ordinal'], 'decision': recorded})
                 _private(suite_dir / 'suite.json', record)
@@ -1792,9 +1803,9 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
                     failure, closed = str(error), True
                     record.update(status='failed', reason=failure)
         if attached:
-            # The failure text may name a path handed to this harness alone (the emulator executable): the configurator
-            # is told which trial failed and where this record is, never the text itself. A sealing failure names no
-            # path and no trial.
+            # The failure text may name a path handed to this harness alone (the emulator executable): the suite book,
+            # whose replies any client reads, is told which trial failed and where this record is, never the text
+            # itself. A sealing failure names no path and no trial.
             public = (failure if closed else ('trial ' + current + ' failed' if current else 'the harness failed')
                       + '; see ' + str(suite_dir / 'suite.json')) if failure else None
             record['detached'] = _post(configurator, 'suite_detach', {'suite_id': record['suite_id'], 'token': token,
@@ -1820,7 +1831,7 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
     grade starts no worker, and is not gated.
 
     On a scoring suite (`scoring`, the slot's scheduling fields) a trial that never got a run is recorded in place of a
-    raise, by its closed word: the configurator's decision is returned, and there is nothing to settle. A stopped child
+    raise, by its closed word: the suite book's decision is returned, and there is nothing to settle. A stopped child
     never gets a device anew: it settles as it stands, once `audit` (`_SlotAudit`, which needs the set's root) has read
     its transcripts. A completed one is graded whatever became of its device. A slot whose findings are stored is not
     audited or graded again. A trial whose harness stopped waiting returns `unsettled`, as nothing audited its child,
@@ -1832,7 +1843,7 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
     keyed = pinned.get('set') or case
     def password():
         # Only providing, grading or continuing a device needs the case's password: a child whose verdict is recorded,
-        # or whose effect is uncertain, is left to the configurator's settlement without one.
+        # or whose effect is uncertain, is left to the suite book's settlement without one.
         if keyed not in passwords:
             raise ValueError('The evaluator password file of ' + keyed + ' is required to provide and grade its device')
         return passwords[keyed]
@@ -1870,7 +1881,7 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
         if 'harness_stopped' in status:
             raise ValueError('The bench harness stopped waiting for child ' + run_id + ': ' + status['harness_stopped'])
         if scoring and status.get('uncertain_effect'):
-            return None  # Whatever the child's status: the configurator blocks the suite until it is reconciled.
+            return None  # Whatever the child's status: the suite book blocks the suite until it is reconciled.
         if status.get('status') == 'completed':
             if status.get('equivalence') is not None or (scoring and slot.get('audit')):
                 return None

@@ -1,7 +1,9 @@
-"""Durable suite slots in the existing controller database; no execution owner. The bench harness that drives a suite is
-recorded by the sha256 of its token, its process id, the lock file it holds while it runs and whether it is attached. A
-scoring suite's slot may also settle `faulted` or `flagged`, and a faulted one comes back for its one regrade or rerun
-(Feature 06, slot policy; spec decision 20)."""
+"""Durable suite slots in the database the suite book opens for it, under the bench home; no execution owner (Feature 07
+of the untangle Run, docs/features/untangle/07-suites.md). The bench harness that drives a suite is recorded by the
+sha256 of its token, its process id, the lock file it holds while it runs and whether it is attached, beside the
+process id of the configurator that answered when the suite was started or resumed. A scoring suite's slot may also
+settle `faulted` or `flagged`, and a faulted one comes back for its one regrade or rerun (Feature 06, slot policy; spec
+decision 20)."""
 import json
 import time
 import uuid
@@ -46,7 +48,7 @@ class SuiteStore:
             ''')
             columns={row['name'] for row in db.execute('PRAGMA table_info(suites)')}
             for column,kind in (('harness_token_sha256','TEXT'),('harness_pid','INTEGER'),('harness_attached','INTEGER NOT NULL DEFAULT 0'),
-                                ('harness_lock','TEXT')):
+                                ('harness_lock','TEXT'),('service_pid','INTEGER')):
                 if column not in columns:
                     db.execute('ALTER TABLE suites ADD COLUMN '+column+' '+kind)
             columns={row['name'] for row in db.execute('PRAGMA table_info(suite_trials)')}
@@ -65,7 +67,7 @@ class SuiteStore:
         return {'suite_id':row['id'],**{key:row[key] for key in ('status','reason','created','updated','budget_seconds')},
             'cancelled':bool(row['cancelled']),'frozen':json.loads(row['frozen_json']),
             'harness':{'token_sha256':row['harness_token_sha256'],'pid':row['harness_pid'],'lock':row['harness_lock'],
-                       'attached':bool(row['harness_attached'])},
+                       'attached':bool(row['harness_attached'])},'service_pid':row['service_pid'],
             'trials':[_slot(trial) for trial in db.execute('SELECT * FROM suite_trials WHERE suite_id=? ORDER BY ordinal',(suite_id,))]}
 
     def get(self,suite_id):
@@ -82,8 +84,9 @@ class SuiteStore:
     def find_request(self,request_id,canonical_request):
         with self.open_db() as db:return self._find_request(db,request_id,canonical_request)
 
-    def create(self,frozen,request_id=None,*,harness_pid=None,harness_lock=None):
-        """A new suite, attached to the harness whose token hash it was frozen with; a saved request is returned as it is."""
+    def create(self,frozen,request_id=None,*,harness_pid=None,harness_lock=None,service_pid=None):
+        """A new suite, attached to the harness whose token hash it was frozen with, under the configurator whose
+        process id is `service_pid`; a saved request is returned as it is."""
         suite_id='suite-'+uuid.uuid4().hex[:16]
         with self.open_db() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -92,22 +95,25 @@ class SuiteStore:
             now=time.time()
             token=frozen.get('harness_token_sha256')
             db.execute('INSERT INTO suites(id,request_id,request_json,frozen_json,status,created,updated,budget_seconds,'
-                       'harness_token_sha256,harness_pid,harness_attached,harness_lock) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                       'harness_token_sha256,harness_pid,harness_attached,harness_lock,service_pid) '
+                       'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
                 (suite_id,request_id,_json(frozen['request']),_json(frozen),'queued',now,now,frozen['manifest']['suite_budget_seconds'],
-                 token,harness_pid,int(token is not None),harness_lock))
+                 token,harness_pid,int(token is not None),harness_lock,service_pid))
             for trial in frozen['trials']:
                 db.execute('INSERT INTO suite_trials(suite_id,ordinal,trial_json,child_request_id,status) VALUES(?,?,?,?,?)',
                     (suite_id,trial['ordinal'],_json(trial),f"suite:{suite_id}:trial:{trial['ordinal']}",'pending'))
             self._event(db,suite_id,'suite.started',{'planned_trials':len(frozen['trials'])})
             return {**self._get(db,suite_id),'duplicate':False}
 
-    def attach_harness(self,suite_id,token_sha256,pid,lock=None):
-        """A bench harness takes over the suite's scheduling: the token hash it holds replaces the previous one."""
+    def attach_harness(self,suite_id,token_sha256,pid,lock=None,*,service_pid=None):
+        """A bench harness takes over the suite's scheduling: the token hash it holds replaces the previous one, and
+        `service_pid` the process id of the configurator the suite went on under."""
         with self.open_db() as db:
             db.execute('BEGIN IMMEDIATE')
             self._get(db,suite_id)
-            db.execute('UPDATE suites SET harness_token_sha256=?,harness_pid=?,harness_lock=?,harness_attached=1,updated=? WHERE id=?',
-                       (token_sha256,pid,lock,time.time(),suite_id))
+            db.execute('UPDATE suites SET harness_token_sha256=?,harness_pid=?,harness_lock=?,harness_attached=1,'
+                       'service_pid=?,updated=? WHERE id=?',
+                       (token_sha256,pid,lock,service_pid,time.time(),suite_id))
             self._event(db,suite_id,'suite.harness_attached',{})
 
     def detach_harness(self,suite_id):
@@ -247,7 +253,7 @@ class SuiteStore:
             self._event(db,suite_id,'trial.'+status,{'ordinal':ordinal,'no_run_reason':reason})
             return status
 
-    def settle(self,suite_id,ordinal,result,*,terminal_final=False,disposition='advance',first_attempt=None):
+    def settle(self,suite_id,ordinal,result,*,disposition='advance',first_attempt=None):
         """Settle a slot from its ended child. `disposition` is `scoring_disposition`'s word, or `advance` for any
         suite: `advance` is `finished`, `fault` and `regrade` are `faulted` and `flag` is `flagged`. A faulted first
         attempt keeps `first_attempt` as its history, which a grade after its regrade clears; `regrade` makes one
@@ -258,7 +264,8 @@ class SuiteStore:
         category=result.get('outcome_category','unknown')
         if category not in ('completed','model','host','operator','cancelled','unknown','safety','integrity'):
             raise ValueError('Invalid child outcome category')
-        # The child's recorded evaluation, as the configurator read it: none for a child of a suite frozen before the harness.
+        # The child's recorded evaluation, as the suite book read it: none for a child of a suite frozen before the
+        # harness.
         equivalence=result.get('equivalence') if isinstance(result.get('equivalence'),dict) else {}
         public={'run_id':result.get('run_id'),'status':result['status'],'outcome_category':category,
                 'equivalent':equivalence.get('equivalent'),'equivalence_status':equivalence.get('status')}
@@ -279,14 +286,14 @@ class SuiteStore:
                 (status,category,_json(public),history,'due' if disposition=='regrade' else row['regrade'],
                  suite_id,ordinal))
             self._event(db,suite_id,'trial.'+status,{'ordinal':ordinal,**public})
-            if terminal_final:
-                self._event(db,suite_id,'terminal_child_settled',{'ordinal':ordinal,**public})
 
-    def recover(self):
+    def recover(self,suite_id):
+        """Block the suite for an explicit resume once the configurator it ran under was restarted: only while it is
+        queued or running, so once. Whether it blocked it."""
         with self.open_db() as db:
             db.execute('BEGIN IMMEDIATE')
-            rows=db.execute("SELECT id FROM suites WHERE status IN ('queued','running')").fetchall()
-            for row in rows:
-                db.execute("UPDATE suites SET status='blocked',reason=?,updated=? WHERE id=?",
-                    (RESTARTED,time.time(),row['id']))
-                self._event(db,row['id'],'suite.recovered',{'reason':RESTARTED})
+            blocked=db.execute("UPDATE suites SET status='blocked',reason=?,updated=? WHERE id=? "
+                               "AND status IN ('queued','running')",(RESTARTED,time.time(),suite_id)).rowcount==1
+            if blocked:
+                self._event(db,suite_id,'suite.recovered',{'reason':RESTARTED})
+            return blocked

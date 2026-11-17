@@ -599,7 +599,7 @@ def _recorded_equivalence(owner,events,report):
     """Trust the configured owner's own record of an assistive run, not the report's claim: a completed, settled run of
     the protocol whose one final verdict the configurator recorded (one run.finalized event) is the report's, and grades
     the run's accepted emitted driver: the first artifact of its latest emit handoff that handed one on."""
-    from ..configurator import PROTOCOL
+    from ..client_interface import PROTOCOL
     progress=owner.get('progress') or {};equivalence=owner.get('equivalence')
     if (owner.get('status')!='completed' or owner.get('outcome_category')!='completed'
             or owner.get('stopping') is not False or owner.get('uncertain_effect') is not False
@@ -729,7 +729,7 @@ def _export_suite(suite_id,*,home,output,evidence_files=None,password_files=None
     from pathlib import Path
     from tempfile import TemporaryDirectory
     from ..client import call
-    from ..reporting import report_run,_public,_tree_hash
+    from .run_reporting import report_run,_public,_tree_hash
     from .evidence import regrade_v2,regrade_v3
     from .suite_book import suite_call
     from .truth import read_password

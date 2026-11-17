@@ -1312,7 +1312,7 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertTrue(all(Path(a['path']).resolve().is_relative_to((run_dir/'accepted').resolve())
                                             for a in sealed['accepted_artifacts']))
                         self.assertNotIn('maintenance',sealed)
-                        from generative_driver.reporting import report_run
+                        from generative_driver.benchmark_support.run_reporting import report_run
                         from generative_driver.benchmark_support.suite_reporting import _recorded_success
                         with patch('generative_driver.client.call',side_effect=lambda method,params,**kw:controller.call(method,params)):
                             report=report_run(run['run_id'],home=root/'home')

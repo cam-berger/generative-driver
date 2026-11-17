@@ -1166,7 +1166,9 @@ class RegradeTests(ScoringFixture):
         self.assertEqual((row['attempt'], row['equivalent']), (2, True))
 
     def test_06_B11_a_grade_unscored_for_integrity_stands_with_no_regrade_or_rerun(self):
-        from generative_driver.configurator import IntegrityError
+        # The harness counts the benchmark's own class as an integrity stop (08-B12 of
+        # docs/features/untangle/08-reports.md).
+        from generative_driver.benchmark_support.integrity import IntegrityError
         self.grading_error = IntegrityError('A hash differs')
         with self.scripted(), self.grading_faults(d0000d001=1):
             record = self.run_harness(request_id='integrity')

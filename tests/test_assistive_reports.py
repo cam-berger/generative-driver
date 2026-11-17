@@ -62,7 +62,7 @@ class AssistiveFixture(HarnessSuiteFixture):
         return patch('generative_driver.client.call', side_effect=lambda method, params, **kw: asked(method, params))
 
     def report(self, run_id, name='report'):
-        from generative_driver.reporting import report_run
+        from generative_driver.benchmark_support.run_reporting import report_run
         with self.owner():
             return report_run(run_id, home=self.home, output=self.root / 'reports' / name / 'report.json')
 
@@ -480,7 +480,7 @@ class ProtocolSeparationTests(unittest.TestCase):
         self.assertEqual((graded['schema'], graded['verdict'], graded['final_evaluation']['verdict']),
                          ('benchmark-report/2', 'passed', 'passed'))
         self.assertNotIn('equivalence', graded)
-        from generative_driver.reporting import markdown, summarize
+        from generative_driver.benchmark_support.run_reporting import markdown, summarize
         earlier = summarize({'run_id': 'earlier', 'status': 'completed', 'created': 0, 'updated': 1, 'worker_reports': [],
                              'accepted_handoffs': []}, [])
         self.assertIn('| Stage | Workflow | Evaluator |', markdown(earlier))

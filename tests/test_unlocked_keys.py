@@ -1127,7 +1127,7 @@ class CommandReadTests(unittest.TestCase):
     def test_02_B9_the_option_filters_drop_the_password_object(self):
         from generative_driver.benchmark_support.device_provider import DeviceProvider
         from generative_driver.benchmark_support.snapshots import public_configuration
-        from generative_driver.reporting import _public
+        from generative_driver.benchmark_support.run_reporting import _public
         self.assertEqual(public_configuration({'evaluator_password': self.password, 'kept': 1}), {'kept': 1})
         self.assertEqual(_public({'evaluator_password': self.password, 'kept': 1}, self.root), {'kept': 1})
         with self.assertRaisesRegex(ValueError, 'recipe only'):

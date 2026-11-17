@@ -394,7 +394,7 @@ class ReportV2Tests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.reporting import report_run
+        from generative_driver.benchmark_support.run_reporting import report_run
         payload = SealedEvidenceTests().payload()
         snapshot = payload['execution_snapshot']
         with tempfile.TemporaryDirectory() as temp:

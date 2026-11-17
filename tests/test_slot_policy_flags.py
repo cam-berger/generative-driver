@@ -132,7 +132,9 @@ class RerunReportTests(ReportFixture):
         self.assertSavedReportReads(report)
 
     def test_06_B11_a_grade_unscored_for_integrity_is_a_failure_in_the_report_and_its_saved_form(self):
-        from generative_driver.configurator import IntegrityError
+        # The harness counts the benchmark's own class as an integrity stop (08-B12 of
+        # docs/features/untangle/08-reports.md).
+        from generative_driver.benchmark_support.integrity import IntegrityError
         self.grading_error = IntegrityError('A hash differs')
         with self.scripted(), self.grading_faults(d0000d001=1):
             record = self.run_harness(request_id='integrity')
@@ -176,7 +178,7 @@ class OtherSuiteReportTests(ReportFixture):
         self.table.write_text(self.table.read_text().replace('"scoring": true', '"scoring": false'))
 
     def test_06_B1_a_development_suite_is_not_held_to_the_scoring_rule_for_integrity(self):
-        from generative_driver.configurator import IntegrityError
+        from generative_driver.benchmark_support.integrity import IntegrityError
         self.grading_error = IntegrityError('A hash differs')
         with self.scripted(), self.grading_faults(d0000d001=1):
             record = self.run_harness(request_id='development', manifest=set_manifest(FIRST))
@@ -639,7 +641,7 @@ class SealedSuiteTests(AuditFixture):
         return patch.object(trial_store, 'seal_trial', seal), figures
 
     def figures_of(self, run_id, trial_dir, run_dir):
-        from generative_driver.reporting import report_run
+        from generative_driver.benchmark_support.run_reporting import report_run
         from generative_driver.benchmark_support.suite_reporting import _public_report
         with tempfile.TemporaryDirectory() as temporary:
             report = report_run(run_id, home=self.home, output=Path(temporary) / 'report.json', autostart=False)

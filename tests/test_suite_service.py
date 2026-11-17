@@ -200,42 +200,6 @@ class ServiceTests(unittest.TestCase):
             finally:shutdown_owner(home)
 
 
-class SummaryTests(unittest.TestCase):
-    def test_owner_v2_summary_projects_only_gate_identity_and_final_counts(self):
-        from generative_driver.configurator import Controller
-        from suite_fixtures import supplied_start
-        with tempfile.TemporaryDirectory() as home:
-            owner=Controller(home)
-            try:
-                run=owner.start(supplied_start(self,Path(home)/'fixture',case='tq9-v2',home=home,goal='Toy summary records',
-                    case_options={'scenario_id':'original'},effects=['write','actuate'],
-                    executor_config={'command':['missing-runtime']}))
-                result=wait_child(owner,run['run_id'])
-                # A v2 run projects its summary from the first result on: empty before any stage wrote state.
-                self.assertEqual(result['benchmark_summary'],
-                                 {'accepted_gates':[],'evaluations':[],'final_evaluation':{}})
-                # Public toy producer fixture: no private source, emulator, or scoring.
-                safe={'accepted_gates':[{'stage':'reuse','revision':0,'assignment_id':'a','artifact_sha256':'a'*64,'verdict':'passed','passed':2,'total':2}],
-                      'evaluations':[{'phase':'final','revision':0,'frozen_artifact_sha256':'a'*64,'verdict':'passed','passed':3,'total':3}],
-                      'final_evaluation':{'verdict':'passed','passed':3,'total':3,'evidence_sha256':'e'*64}}
-                state=json.loads(json.dumps(safe));state['alien']='/PRIVATE/raw'
-                state['accepted_gates'][0]['raw']='/PRIVATE/checks'
-                state['evaluations'][0]['records']=['PRIVATE']
-                state['maintenance']={'diagnostic':{'hidden':'PRIVATE'}}
-                state['final_evaluation']['vectors']=['PRIVATE']
-                path=Path(home)/'runs'/run['run_id']/'supplied/state.json'
-                path.parent.mkdir(exist_ok=True)
-                path.write_text(json.dumps(state))
-                result=owner.call('result',run)
-                self.assertEqual(result.get('benchmark_summary'),safe)
-                self.assertNotIn('PRIVATE',json.dumps(result['benchmark_summary']))
-                path.unlink()
-                self.assertEqual(owner.call('result',run)['benchmark_summary'],{'accepted_gates':[],'evaluations':[],'final_evaluation':{}})
-            finally:close_owner(owner)
-
-
-
-
 class BudgetTests(unittest.TestCase):
     def test_expired_suite_cancels_child_and_extension_is_absolute_and_idempotent(self):
         from suite_fixtures import client_call as call
@@ -347,7 +311,7 @@ class RecoveryTests(unittest.TestCase):
                 # The configurator is told which trial failed; the harness's own record says why.
                 import re
                 from generative_driver.benchmark_support.trial_store import bench_home
-                folder=re.search(r'suites/([^/\\]+)[/\\]suite\.json',again['reason']).group(1)
+                folder=re.search(r'suites[/\\]([^/\\]+)[/\\]suite\.json',again['reason']).group(1)
                 # The harness tells the configurator first and writes its own record after: wait for that record.
                 until=time.monotonic()+30
                 while True:

@@ -463,7 +463,7 @@ class HarnessGradingTests(HarnessTrialFixture):
             resumed = self.resume(trial)
         self.assertEqual(resumed['status'], 'evaluated')
         self.assertIs(resumed['equivalence']['equivalent'], False)
-        from generative_driver.reporting import report_run
+        from generative_driver.benchmark_support.run_reporting import report_run
         output = self.root/'native-report.json'
         with patch('generative_driver.client.call', side_effect=self.configurator):
             report = report_run(record['run_id'], home=self.home, output=output)

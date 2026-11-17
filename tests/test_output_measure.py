@@ -314,7 +314,7 @@ class SameGradeTests(MeasuredTrialFixture):
         self.assertEqual((meter.largest_bytes, meter.calls), (0, 0))
 
     def test_08_B3_the_evidence_holds_no_figure_and_passes_the_offline_regrade(self):
-        from generative_driver.reporting import report_run
+        from generative_driver.benchmark_support.run_reporting import report_run
         trial, record = self.graded()
         self.assertEqual(record['package_output'], {'largest_bytes': 500, 'calls': 3})
         password = self.password_object()

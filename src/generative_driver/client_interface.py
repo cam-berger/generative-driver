@@ -1,30 +1,46 @@
-"""The client interface, version 3: what a client that brings its own device, firmware and mission needs in code.
+"""The client interface, version 4: what a client that brings its own device, firmware and mission needs in code.
 
 Such a client asks five things of the service: start a run on a device it supplies, replace that device, post one
 final verdict, read the run's records and its frozen driver, and stop or seal a run. This module names the calls it
-may make, holds the rules of the records it sends, and finds the frozen driver among a run's handoffs. The service
-applies these rules itself, so a record without a fault here is not refused there for its form.
-`docs/client-interface.md` says the same in plain words (Features 03, 06 and 07 of the untangle Run,
-docs/features/untangle/03-client-interface.md, docs/features/untangle/06-benchmark-runs.md and
-docs/features/untangle/07-suites.md).
+may make and the names it may import from the tool, holds the rules of the records it sends, and finds the frozen
+driver among a run's handoffs. The service applies these rules itself, so a record without a fault here is not
+refused there for its form. `docs/client-interface.md` says the same in plain words, and names the records on disk a
+client may read (Features 03, 06, 07 and 08 of the untangle Run, docs/features/untangle/03-client-interface.md,
+docs/features/untangle/06-benchmark-runs.md, docs/features/untangle/07-suites.md and
+docs/features/untangle/08-reports.md).
 """
 import math
 import re
 from pathlib import Path
+from types import MappingProxyType
 
 # The faults of a device descriptor, by the function the service itself applies to a supplied device.
 from .device_client import descriptor_errors as device_errors
 
-__all__ = ['CALLS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors', 'firmware_errors', 'frozen_driver',
-           'mission_errors', 'verdict_errors']
+__all__ = ['CALLS', 'IMPORTS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors', 'firmware_errors',
+           'frozen_driver', 'mission_errors', 'verdict_errors']
 
 # The title of `docs/client-interface.md` carries this number.
-VERSION = 3
+VERSION = 4
 # Runs record their protocol; a run saved without this label used the earlier gated stage progression.
 PROTOCOL = 'assistive/1'
 # The service knows other calls too; these are the ones a client of this interface sends.
 CALLS = ('ping', 'start', 'resume', 'status', 'events', 'result', 'attach_device', 'record_evaluation', 'cancel',
          'seal')
+# Every name of the tool a client may import, by module, as the document's `What a client imports` lists them. A
+# listed module may also be imported for where it is installed, which is all `interface_runtime` is listed for.
+IMPORTS = MappingProxyType({
+    'generative_driver.client_interface': ('CALLS', 'IMPORTS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION',
+                                           'device_errors', 'firmware_errors', 'frozen_driver', 'mission_errors',
+                                           'verdict_errors'),
+    'generative_driver.client': ('call', 'default_home'),
+    'generative_driver.integrity': ('digest',),
+    'generative_driver.setup': ('SUPPORTED_EXECUTORS', 'resolve_executor'),
+    'generative_driver.replay': ('candidate_config',),
+    'generative_driver.toolkit': ('call_tool', 'resources_root'),
+    'interface_runtime.engine': ('validate_model',),
+    'interface_runtime': (),
+})
 # The verdict record a client posts after a run: check ids with passed flags (null for a check the evaluator could
 # not decide) and failing and undecided ids with a reason. Expected values, tolerances, witnesses and raw records stay
 # sealed, so no other field is accepted.

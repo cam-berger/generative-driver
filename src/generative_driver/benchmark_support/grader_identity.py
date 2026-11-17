@@ -27,7 +27,8 @@ ENTRY_MODULES = ('benchmark_support.evaluator', 'benchmark_support.evidence', 'b
                  'benchmark_support.calibration', 'benchmark_support.device_provider')
 # Not grading code: the system under test and the run, suite, authoring and calibration code around it, and the reporting
 # code that reads what runs and suites recorded (the last row).
-SYSTEM_MODULES = ('configurator', 'toolkit', '_toolchain', 'agents', 'client', 'setup', 'benchmark', 'reporting',
+SYSTEM_MODULES = ('configurator', 'toolkit', '_toolchain', 'agents', 'client', 'setup', 'benchmark',
+                  'benchmark_support.run_reporting', 'benchmark_support.process_lock',
                   'replay', 'device_access', 'analysis',
                   'benchmark_support.emulated', 'benchmark_support.cases', 'benchmark_support.ground',
                   'benchmark_support.physical', 'benchmark_support.legacy', 'benchmark_support.harness',

@@ -428,11 +428,11 @@ class NoSuiteTests(ServiceCase):
         self.assertEqual(self.call('result', run_id=started['run_id'])['request'], json.loads(json.dumps(params)))
 
     def test_07_B5_the_benchmark_imports_that_remain_in_the_service_are_exactly_the_named_ones(self):
+        # The two others left in Feature 08 (08-B7 of docs/features/untangle/08-reports.md): what remains launches a
+        # harness.
         support = 'generative_driver.benchmark_support.'
-        named = {('_replay_config', support + 'trial_store', 'bench_home'),
-                 ('call', support + 'harness', '_spawn'), ('call', support + 'trial_store', 'bench_home'),
-                 ('call', support + 'trial_store', 'solo_trial_dir'), ('call', support + 'trial_store', 'suite_dir'),
-                 ('call', support + 'evidence', 'public_v2_report')}
+        named = {('call', support + 'harness', '_spawn'), ('call', support + 'trial_store', 'bench_home'),
+                 ('call', support + 'trial_store', 'solo_trial_dir'), ('call', support + 'trial_store', 'suite_dir')}
         found = set()
         for node, names in enclosing(ast.parse(service_source().read_bytes())):
             if not isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -470,7 +470,8 @@ class NoSuiteTests(ServiceCase):
 
 
 class VersionThreeTests(unittest.TestCase):
-    """The interface document and module say version 3 (07-B6)."""
+    """What version 3 made the interface document and module say (07-B6), under the number and with the names of
+    version 4 (08-B9 of docs/features/untangle/08-reports.md)."""
 
     @classmethod
     def setUpClass(cls):
@@ -489,16 +490,16 @@ class VersionThreeTests(unittest.TestCase):
         [line] = [line for line in self.lines if line.startswith('| `' + key + '`')]
         return line.strip('|').split('|', 1)[1].strip()
 
-    def test_07_B6_the_module_and_the_documents_first_line_say_version_3(self):
-        self.assertEqual(client_interface.VERSION, 3)
-        self.assertEqual(self.lines[0], '# Client interface, version 3')
+    def test_07_B6_the_module_and_the_documents_first_line_say_version_4(self):
+        self.assertEqual(client_interface.VERSION, 4)
+        self.assertEqual(self.lines[0], '# Client interface, version 4')
 
-    def test_07_B6_the_calls_gain_cancel_and_seal_and_lose_nothing_and_the_names_are_unchanged(self):
+    def test_07_B6_the_calls_gain_cancel_and_seal_and_lose_nothing_and_the_names_are_those_of_version_4(self):
         self.assertEqual(client_interface.CALLS, ('ping', 'start', 'resume', 'status', 'events', 'result',
                                                   'attach_device', 'record_evaluation', 'cancel', 'seal'))
         self.assertEqual(sorted(client_interface.__all__),
-                         ['CALLS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors', 'firmware_errors',
-                          'frozen_driver', 'mission_errors', 'verdict_errors'])
+                         ['CALLS', 'IMPORTS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors',
+                          'firmware_errors', 'frozen_driver', 'mission_errors', 'verdict_errors'])
         for name in client_interface.CALLS:
             with self.subTest(call=name):
                 self.assertIn('`' + name + '`', self.text)

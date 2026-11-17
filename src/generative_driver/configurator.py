@@ -122,15 +122,13 @@ def stage_options(spec):
             'configured_effects': spec['effects']}
 
 
-def _replay_config(params, config, home):
+def _replay_config(params, config):
     """A replay replays a saved candidate on a supplied device only: never a run without one, which would replay it on
-    an operator's device. Its configuration names the candidate and the hash of its files; the candidate lies outside
-    the bench home beside `home`, which holds evaluator records."""
+    an operator's device. Its configuration names the candidate and the hash of its files."""
     from .replay import candidate_config
-    from .benchmark_support.trial_store import bench_home
     if not params.get('device'):
         raise ValueError('The replay executor runs on a supplied device only; this start names none')
-    return candidate_config(config, bench=bench_home(home))
+    return candidate_config(config)
 
 
 def _copy_candidate(config, run_dir):
@@ -1333,13 +1331,6 @@ class Controller:
                 saved = db.execute('SELECT payload FROM progress WHERE run_id=?',(run_id,)).fetchone()
                 out['progress'] = {key: value for key, value in json.loads(saved['payload']).items()
                     if key != 'maintenance_cycles'} if saved else None
-            if spec.get('device'):
-                from .benchmark_support.evidence import public_v2_report
-                state_path = self.home/'runs'/run_id/'supplied/state.json'
-                state = json.loads(state_path.read_text(encoding='utf-8')) if state_path.is_file() else {}
-                summary = public_v2_report(state)
-                out['benchmark_summary'] = {key:summary[key] for key in
-                    ('accepted_gates','evaluations','final_evaluation')}
             return out
         if method == 'cancel':
             with self._lock:
@@ -1541,7 +1532,7 @@ class Controller:
         config = {} if whole else self._configured_executors().get(executor, {})
         config = {**config, **params.get('executor_config', {}), 'runtime': executor}
         if executor == 'replay':
-            config = _replay_config(params, config, self.home)
+            config = _replay_config(params, config)
         # The spec keeps the request as it came beside what the service settled from it.
         spec = {**params, 'executor': executor, 'executor_config': config, 'budget_seconds': budget, 'effects': effects,
                 '_submitted_intent': params}
@@ -1959,7 +1950,7 @@ class Controller:
                         db.execute('UPDATE runs SET uncertain=1 WHERE id=?',(run_id,))
                     self._event(run_id, kind, {'reason': reason}, db)
                 if final is None:
-                    self._state(run_id,'blocked','Benchmark cleanup failed; operator reconciliation required',
+                    self._state(run_id,'blocked','Cleanup failed; operator reconciliation required',
                                 outcome_category='host')
         if (final is not None or awaiting) and self._row(run_id)['uncertain']:
             # The operator's reconciliation and resume complete a run awaiting its grade again.

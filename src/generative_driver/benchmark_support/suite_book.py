@@ -60,12 +60,11 @@ class _Passed(Exception):
 
 def suite_candidates(cases, candidates, *, bench=None):
     """The checked configuration of each case's candidate of a replay suite (options.replay_candidates): exactly one
-    saved candidate per case of its manifest."""
-    from ..replay import candidate_config
+    saved candidate per case of its manifest, none of them in the bench home `bench`."""
     if not isinstance(candidates, dict) or set(candidates) != set(cases):
         raise ValueError('A replay suite takes one saved candidate per case: options.replay_candidates '
                          '{case: directory} for ' + ', '.join(sorted(cases)))
-    return {case: candidate_config({'candidate': candidates[case]}, bench=bench) for case in sorted(cases)}
+    return {case: trial_store.replay_candidate(candidates[case], bench) for case in sorted(cases)}
 
 
 def stored_candidate(config, store):
@@ -73,7 +72,6 @@ def stored_candidate(config, store):
     stored copy's configuration. Every child of the suite replays those bytes, whatever happens to the saved
     candidate."""
     from ..integrity import digest
-    from ..replay import RUNTIME
     store = Path(store)
     target = store / config['candidate_sha256']
     if not target.is_dir():
@@ -92,7 +90,8 @@ def stored_candidate(config, store):
             shutil.rmtree(temporary, ignore_errors=True)
     if digest(target) != config['candidate_sha256']:
         raise ValueError('The stored replay candidate changed: ' + str(target))
-    return {'runtime': RUNTIME, 'candidate': str(target), 'candidate_sha256': config['candidate_sha256']}
+    # The runtime's name is the one the tool gave when it checked the candidate.
+    return {'runtime': config['runtime'], 'candidate': str(target), 'candidate_sha256': config['candidate_sha256']}
 
 
 def _replay_suite_config(manifest, options, home):
@@ -370,15 +369,15 @@ class SuiteBook:
         if not harness['attached']:
             return False
         if harness.get('lock'):
-            from ..client import process_lock_held
+            from .process_lock import process_lock_held
             held = process_lock_held(harness['lock'])
             if held is not None:
                 return held
         if type(harness['pid']) is not int or harness['pid'] <= 0:
             return False
-        from ..client import _wait_for_exit
+        from .process_lock import wait_for_exit
         try:
-            return not _wait_for_exit(harness['pid'], 0)
+            return not wait_for_exit(harness['pid'], 0)
         except OSError:
             return True
 
@@ -704,7 +703,7 @@ class SuiteBook:
     def _first_attempt(self, slot):
         """A slot's first attempt, as the row keeps it once a rerun replaces it. Its tokens are None unless every worker
         reported them, and the outcome a fault, which is the only first attempt a slot keeps."""
-        from ..reporting import _usage
+        from .run_reporting import _usage
         run_id, tokens, seconds = slot['run_id'], None, None
         if run_id:
             result = self._ask('result', {'run_id': run_id})
@@ -931,7 +930,7 @@ class SuiteBook:
             return self._suite_sealed(suite_id, params)
         if method == 'suite_detach':
             return self._suite_detach(suite_id, params)
-        from ..reporting import _public
+        from .run_reporting import _public
         if method == 'suite_events':
             # Each event says why the suite stopped where it did, with paths scrubbed as reports scrub them.
             page = self.store.events(suite_id, params.get('after', 0))
@@ -969,7 +968,7 @@ class SuiteBook:
     def _suite_result(self, suite, status, page):
         """A page of the suite's slots as read with its status, each with its child's interventions and, while it is
         not settled, its child's current state."""
-        from ..reporting import _interventions
+        from .run_reporting import _interventions
         from .evidence import public_v2_report
         for trial in page['trials']:
             events = self._events(trial['run_id']) if trial['run_id'] else []

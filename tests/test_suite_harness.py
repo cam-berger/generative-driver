@@ -1168,13 +1168,16 @@ class SuiteStartTests(HarnessSuiteFixture):
     def test_a_harness_holds_its_lock_before_its_record_names_its_process(self):
         # Catches a record that names a running harness whose lock is not held yet: whoever read it meanwhile (a launch
         # following the suite, or one sent again under its request_id) would take the harness for ended.
-        from generative_driver import client
-        real, named = client.hold_process_lock, []
+        # The bench harness holds its lock with the benchmark's own helper (08-B13 of
+        # docs/features/untangle/08-reports.md).
+        from generative_driver.benchmark_support import process_lock
+        real, named = process_lock.hold_process_lock, []
         def hold(path):
             directory = Path(path).parent
             named.append((directory.name, (directory / 'suite.json').exists() or (directory / 'trial.json').exists()))
             return real(path)
-        with self.harness(PASS), patch('generative_driver.client.hold_process_lock', side_effect=hold):
+        with self.harness(PASS), patch('generative_driver.benchmark_support.process_lock.hold_process_lock',
+                                       side_effect=hold):
             record = self.drive(manifest=manifest(1), executor='codex', options={})
         self.assertEqual(record['status'], 'finished', record)
         # The suite's harness and the harness of its one trial each took a lock, before any record named them.

@@ -283,16 +283,17 @@ class VerdictRuleTests(unittest.TestCase):
 
 class InterfaceModuleTests(unittest.TestCase):
     """The interface module as version 2 made it (06-B14), with what version 3 added (07-B6 of
-    docs/features/untangle/07-suites.md): its number and the calls `cancel` and `seal`."""
+    docs/features/untangle/07-suites.md), the calls `cancel` and `seal`, and what version 4 added (08-B9 of
+    docs/features/untangle/08-reports.md): its number and the name `IMPORTS`."""
 
     def test_06_B14_the_module_has_the_calls_of_version_2_and_its_two_more_names(self):
-        self.assertEqual(client_interface.VERSION, 3)
+        self.assertEqual(client_interface.VERSION, 4)
         self.assertEqual(client_interface.CALLS[:8], ('ping', 'start', 'resume', 'status', 'events', 'result',
                                                       'attach_device', 'record_evaluation'))
         self.assertEqual(client_interface.CALLS[8:], ('cancel', 'seal'))
         self.assertEqual(sorted(client_interface.__all__),
-                         ['CALLS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors', 'firmware_errors',
-                          'frozen_driver', 'mission_errors', 'verdict_errors'])
+                         ['CALLS', 'IMPORTS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors',
+                          'firmware_errors', 'frozen_driver', 'mission_errors', 'verdict_errors'])
 
 
 TOKEN = 'a token only this test holds'
@@ -763,11 +764,9 @@ class NoCaseTests(unittest.TestCase):
 
     def test_06_B8_the_benchmark_imports_that_remain_are_the_named_ones(self):
         support = 'generative_driver.benchmark_support.'
-        # Those Feature 07 leaves: the bench home of the replay rule, the harness launch and the run summary.
-        allowed = {('_replay_config', support + 'trial_store', 'bench_home'),
-                   ('call', support + 'harness', '_spawn'), ('call', support + 'trial_store', 'bench_home'),
-                   ('call', support + 'trial_store', 'solo_trial_dir'), ('call', support + 'trial_store', 'suite_dir'),
-                   ('call', support + 'evidence', 'public_v2_report')}
+        # Those Feature 08 leaves (08-B7 of docs/features/untangle/08-reports.md): the harness launch.
+        allowed = {('call', support + 'harness', '_spawn'), ('call', support + 'trial_store', 'bench_home'),
+                   ('call', support + 'trial_store', 'solo_trial_dir'), ('call', support + 'trial_store', 'suite_dir')}
         other = []
         for node, names in enclosing(ast.parse(service_source().read_bytes())):
             if not isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -1359,32 +1358,11 @@ class NoDeviceTextTests(unittest.TestCase):
                                                'the run with a device, a firmware and a mission'})
 
 
-class RecordSummaryTests(ServiceCase):
-    def test_06_B22_result_builds_the_summary_of_a_supplied_run_from_supplied_state(self):
-        started = self.held(self.supplied())
-        run = {'run_id': started['run_id']}
-        empty = {'accepted_gates': [], 'evaluations': [], 'final_evaluation': {}}
-        self.assertEqual(self.controller.call('result', run)['benchmark_summary'], empty)
-        gate = {'stage': 'reuse', 'revision': 0, 'assignment_id': 'a', 'artifact_sha256': SHA, 'verdict': 'passed',
-                'passed': 2, 'total': 2}
-        for folder in ('supplied', 'benchmark'):
-            (self.run_dir(started) / folder).mkdir(parents=True)
-        # A state file under the old folder is not read.
-        (self.run_dir(started) / 'benchmark' / 'state.json').write_text(
-            json.dumps({'accepted_gates': [{**gate, 'stage': 'emit'}]}), encoding='utf-8')
-        self.assertEqual(self.controller.call('result', run)['benchmark_summary'], empty)
-        (self.run_dir(started) / 'supplied' / 'state.json').write_text(json.dumps({'accepted_gates': [gate]}),
-                                                                       encoding='utf-8')
-        self.assertEqual(self.controller.call('result', run)['benchmark_summary'], {**empty, 'accepted_gates': [gate]})
-        generic = self.held({'goal': 'Read the gauge', 'executor_config': {'command': ['never-launched']}})
-        self.assertNotIn('benchmark_summary', self.controller.call('result', {'run_id': generic['run_id']}))
-
-
 DOCUMENT = Path(__file__).resolve().parents[1] / 'docs' / 'client-interface.md'
 
 
 class InterfaceDocumentTests(unittest.TestCase):
-    """The interface document by its text: what version 2 made it say (06-B14), under the title of version 3."""
+    """The interface document by its text: what version 2 made it say (06-B14), under the title of version 4."""
 
     @classmethod
     def setUpClass(cls):
@@ -1402,8 +1380,8 @@ class InterfaceDocumentTests(unittest.TestCase):
         return cells
 
     def test_06_B14_the_title_carries_the_modules_version(self):
-        # Version 3 since Feature 07 (07-B6).
-        self.assertEqual(self.lines[0], '# Client interface, version 3')
+        # Version 4 since Feature 08 (08-B9).
+        self.assertEqual(self.lines[0], '# Client interface, version 4')
         self.assertEqual(self.lines[0], f'# Client interface, version {client_interface.VERSION}')
 
     def test_06_B14_the_start_table_has_the_firmware_the_mission_and_the_client_record(self):

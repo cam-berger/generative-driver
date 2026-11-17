@@ -1,4 +1,4 @@
-# Client interface, version 3
+# Client interface, version 4
 
 A client that brings its own device, firmware and mission asks five things of the tool: start a run on a device it supplies, replace that device, post one final verdict, read the run's records and its frozen driver, and stop or seal a run. This page says what the client sends, what it gets back and when the tool refuses. The module `generative_driver.client_interface` holds the same in code, and its `VERSION` is the number in the title.
 
@@ -140,10 +140,56 @@ A run that an earlier version of the tool started on a case is neither resumed n
 
 `seal` takes `run_id` and answers `{"ok": true, "run_id": ..., "sealed": true}`. The same call again gives the same answer. It marks the run sealed and changes nothing else of it: not its status, its events, its verdict or its files. From then on `status` and `result` hold `"sealed": true`, and `resume` and `attach_device` are refused with `A sealed run does not resume or take a device: <run_id>`. A client seals a run whose records it has put away, so that nothing continues the run afterwards.
 
+## Records on disk
+
+The service keeps its records in its home. The home is the folder `default_home()` names when a client gives none. A client on the same machine may read what this section names, without asking the service.
+
+`config.json` in the home holds the operator's settings. Its `executors` object holds, by the name of an executor, the settings a run has when its `start` gives no `executor_config`. The file may be absent.
+
+`runs.sqlite3` in the home is the SQLite database of the service's records, and a client opens it read-only. A client reads these tables and columns:
+
+| Table | Columns |
+|---|---|
+| `runs` | `id`, `request_id` |
+| `events` | `seq`, `run_id`, `kind`, `payload`, `created` |
+| `reports` | `run_id`, `stage`, `payload`, `created` |
+| `handoffs` | `run_id`, `payload`, `created` |
+| `verdicts` | `id`, `payload` |
+| `progress` | `run_id`, `payload` |
+
+A `payload` is JSON text. The rows are what `events` and `result` are made from. The rows of `handoffs` are read in the order they were written, which is SQLite's own `rowid`. The final verdict of a run is the row of `verdicts` whose `id` is the id of the run followed by `:final`.
+
+`runs/<run id>/` in the home is the run's folder, and a client may read every file in it. `supplied/package-events.jsonl` there holds one JSON object on a line for each call a worker made on the driver package, with `actor`, `stage`, `operation`, `revision`, `attempt_id`, `assignment_id`, `package_sha256`, `parameters` and `result`. A line has `mcp` when the call came through a server of the package, and `observation` and `before_observation` when the device offers readings. Every file named `_agent_events.jsonl` under the run's folder is the transcript of one worker. An interpret worker works in a temporary workspace outside the run's folder, which its `stage.assigned` event names as `workspace`.
+
+The service makes these folders directly in a run's folder: `supplied`, `work`, `accepted`, `checks`, `preparation`, `tool-calls`, `snapshots`, `replay-candidate`, `kit-analysis`, `interpret-tasks` and `device-first`. A client may add files and folders of its own directly in a run's folder under other names, and the service never changes or removes them.
+
+A client may keep saved candidates for the replay executor in the folder `replay-candidates` in the home. The service never changes or removes that folder, and reads in it only a candidate a `start` names.
+
+Once a run has stopped, with no worker of it still stopping, and is sealed, the client may remove the files of the run's folder and those temporary workspaces. `status`, `events` and `result` of the run answer as before without them.
+
 ## What a client imports
 
-- `generative_driver.client_interface`: `VERSION`, `PROTOCOL`, `CALLS`, `VERDICT_FIELDS`, `verdict_errors`, `device_errors`, `firmware_errors`, `mission_errors` and `frozen_driver`.
-- `call` and `default_home` of `generative_driver.client`. `default_home()` is the home `call` uses when it is given none.
-- `digest` of `generative_driver.integrity`.
+A client imports these modules of the tool and takes these names from them. `IMPORTS` of the interface module holds the same list.
+
+- `generative_driver.client_interface`: `CALLS`, `IMPORTS`, `PROTOCOL`, `VERDICT_FIELDS`, `VERSION`, `device_errors`, `firmware_errors`, `frozen_driver`, `mission_errors` and `verdict_errors`.
+- `generative_driver.client`: `call` and `default_home`.
+- `generative_driver.integrity`: `digest`.
+- `generative_driver.setup`: `SUPPORTED_EXECUTORS` and `resolve_executor`.
+- `generative_driver.replay`: `candidate_config`.
+- `generative_driver.toolkit`: `call_tool` and `resources_root`.
+- `interface_runtime.engine`: `validate_model`.
+- `interface_runtime`: no name.
+
+Any listed module may be imported for where it is installed.
+
+`default_home()` is the home `call` uses when it is given none.
+
+`SUPPORTED_EXECUTORS` are the executors a `start` takes. `resolve_executor(executor)` gives the executor a `start` runs with, the default for none, and refuses one the tool does not have, as `start` does.
+
+`candidate_config(config)` checks the saved candidate of a replay, given as `{"candidate": <directory>}`, and gives the `executor_config` of a `start` with the executor `replay`: the candidate's absolute path and the hash of its files, as `start` checks them.
+
+`call_tool(name, arguments)` calls one of the tool's developer tools in this process, the ones `generative-driver tool` calls. `resources_root()` is the folder of the tool's installed assets.
+
+`interface_runtime` is the runtime a driver package runs on. `validate_model` of `interface_runtime.engine` checks a device model without opening a transport.
 
 Nothing else in the tool is part of this interface. The operator clears an uncertain effect through the command line or the MCP server, outside this interface.

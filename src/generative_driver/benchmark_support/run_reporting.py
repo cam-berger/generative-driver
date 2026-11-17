@@ -1,12 +1,18 @@
-"""Measured benchmark summaries; unavailable telemetry never becomes zero usage."""
+"""Measured benchmark summaries; unavailable telemetry never becomes zero usage.
+
+The run report is the benchmark's: its three formats are built from the case, the snapshot and the evaluator's
+records. It moved here from the tool as it was (Feature 08 of the untangle Run,
+docs/features/untangle/08-reports.md). It reads a run as a client of the tool does: by the calls `result` and
+`events`, and from the run's folder.
+"""
 import hashlib
 import json
 import platform
 import sys
 from pathlib import Path
-from .benchmark import STAGES
+from .case_assets import STAGES
 # The evaluator uses this hash too, so it is defined in a module of its own and imported here under its old name.
-from .benchmark_support.integrity import tree_hash as _tree_hash
+from .integrity import tree_hash as _tree_hash
 
 
 def _usage(workers):
@@ -111,7 +117,7 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
     if not compatible:
         verdict = "incompatible"
         reason = "Unsupported historical stage inventory; this report cannot be scored as a fresh reuse workflow"
-    from .benchmark_support.labels import execution_label
+    from .labels import execution_label
     execution = execution_label(case_manifest.get("execution", "unclassified"),
                                 ((provenance or {}).get("agent") or {}).get("runtime"))
     evidence = {"stage_verdicts": verdicts,
@@ -176,7 +182,7 @@ def _public(value, home):
 def markdown(report):
     def show(value):
         return "unknown" if value is None else f"{value:.2f}" if isinstance(value, float) else str(value)
-    from .configurator import PROTOCOL
+    from ..client_interface import PROTOCOL
     # Nothing grades an assistive run's stages, and only a benchmark run's evaluator grades its driver
     # (benchmark-report/3): a generic assistive run has neither a stage evaluator column nor an independent verdict.
     assistive = report.get("protocol") == PROTOCOL
@@ -193,7 +199,7 @@ def markdown(report):
             lines += [label + ': ' + '; '.join(setup.get(key, [])) + '.', '']
     final = report.get("equivalence")
     if isinstance(final, dict):
-        from .configurator import equivalence_label
+        from .labels import equivalence_label
         diff = "; ".join(str(d.get("reason")) for d in final.get("diff") or [] if isinstance(d, dict))
         lines += [f"Equivalence ({final.get('basis', 'unknown basis')}): **{equivalence_label(final)}**. "
                   f"Protocol: `{report.get('protocol')}`." + (f" Differences: {diff}." if diff else ""), ""]
@@ -255,8 +261,8 @@ def _why(result, events):
 
 def report_run(run_id, home=None, output=None, *, autostart=True):
     """Export a saved run to portable JSON and a human-readable Markdown sibling."""
-    from .client import call, default_home
-    from .benchmark import case_root
+    from ..client import call, default_home
+    from .case_assets import case_root
     root = Path(home or default_home()).resolve()
     result = call("result", {"run_id": run_id}, home=root, autostart=autostart)
     if not result.get("ok"):
@@ -274,7 +280,7 @@ def report_run(run_id, home=None, output=None, *, autostart=True):
     case = config.get("case") or named.get('case')
     snapshot = None
     if named.get('snapshot_sha256'):
-        from .benchmark_support.snapshots import require_snapshot
+        from .snapshots import require_snapshot
         snapshot = require_snapshot(root / 'runs' / run_id, named['case_pin'])
         if snapshot['snapshot_sha256'] != named['snapshot_sha256']:
             raise ValueError('Execution snapshot hash differs from saved run')
@@ -296,7 +302,8 @@ def report_run(run_id, home=None, output=None, *, autostart=True):
                 'artifacts': [{'name': Path(a['path']).name, 'sha256': a['sha256'], 'kind': a.get('kind')}
                     for a in h['artifacts']]} for h in result.get('accepted_handoffs', [])]}
     else:
-        package_root = Path(__file__).parent
+        # The tool's package folder, which this module lay in before it moved to the benchmark's.
+        package_root = Path(__file__).parents[1]
         agent = config.get("agent")
         if not agent and result.get("worker_reports"):
             record = result["worker_reports"][0]
@@ -327,17 +334,17 @@ def report_run(run_id, home=None, output=None, *, autostart=True):
             'agent': 'Effective runtime configuration captured before execution; individual worker records retain reported identity.',
             'case_metadata': 'Case manifest and input hashes captured before execution.'}
     report["evaluator_verdicts"] = result.get("evaluator_verdicts", [])
-    from .configurator import PROTOCOL
+    from ..client_interface import PROTOCOL
     if snapshot and (result.get('progress') or {}).get('protocol') == PROTOCOL:
         # An assistive benchmark run, of any case, is graded once, after it: its report is its recorded verdict, and no
         # stage evaluation exists.
-        from .benchmark_support.evidence import public_v3_report
+        from .evidence import public_v3_report
         report.update(progress=result['progress'], outcome_category=result.get('outcome_category'),
                       equivalence_status=_awaiting(result, events), reason=_public(_why(result, events), root),
                       stopped_stage=result.get('stage') if result.get('status') in ('blocked', 'failed', 'cancelled') else None)
         report = public_v3_report(report)
     elif snapshot and manifest.get('schema') == 'benchmark-case/2':
-        from .benchmark_support.evidence import public_v2_report
+        from .evidence import public_v2_report
         report.update({key: state[key] for key in ('evaluations', 'accepted_gates', 'final_evaluation') if key in state})
         report['progress'] = result.get('progress', {})
         report = public_v2_report(report)

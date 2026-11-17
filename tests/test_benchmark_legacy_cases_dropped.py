@@ -253,7 +253,11 @@ class StandInModuleTests(unittest.TestCase):
         for file in STAND_IN_MODULES:
             with self.subTest(file=file):
                 found = strings(ast.parse((REPO / file).read_bytes()))
-                self.assertIn('tq9-v2', found, 'The stand-in module names the current case it runs on')
+                # `tests/test_suite_service.py` named the case in one test, which went with the summary it tested
+                # (Feature 08 of this Run, docs/features/untangle/08-reports.md). It runs on the case through
+                # `tests/suite_fixtures.py`, which names it.
+                if file != 'tests/test_suite_service.py':
+                    self.assertIn('tq9-v2', found, 'The stand-in module names the current case it runs on')
                 self.assertEqual([text for text in found if text in ('tq9', 'bme280')], [])
 
     def test_04_B6_the_five_legacy_fixtures_are_gone_and_no_test_file_uses_one(self):
@@ -317,11 +321,13 @@ class DeletionListTests(unittest.TestCase):
             self.assertNotIn('tests/test_legacy_cases.py', listed)
             self.assertNotIn('tests/test_benchmark_physical.py', listed)
 
-    def test_04_B7_every_freed_by_names_feature_08_09_or_10_or_stays(self):
+    def test_04_B7_every_freed_by_names_feature_09_or_10_or_stays(self):
+        # Feature 08 freed what named it (08-B16 of docs/features/untangle/08-reports.md): the report module's row
+        # is gone, and the service's names Feature 09.
         modules = freed_by('Tool modules that import the benchmark')
         source = 'src/generative_driver/'
-        self.assertEqual(modules, {source + 'cli.py': ['09'], source + 'configurator.py': ['08'],
-                                   source + 'mcp.py': ['09'], source + 'reporting.py': ['08']})
+        self.assertEqual(modules, {source + 'cli.py': ['09'], source + 'configurator.py': ['09'],
+                                   source + 'mcp.py': ['09']})
         commands = freed_by('Commands')
         self.assertEqual(len(commands), 8)
         self.assertEqual({value for values in commands.values() for value in values}, {'09'})
@@ -336,7 +342,7 @@ class DeletionListTests(unittest.TestCase):
         self.assertGreater(len(passages), 15)
         every = [value for heading in ('Still used by the tool', 'Tool modules that import the benchmark', 'Commands',
                                        'Passages') for values in freed_by(heading).values() for value in values]
-        self.assertEqual(set(every), {'08', '09', '10', 'stays'})
+        self.assertEqual(set(every), {'09', '10', 'stays'})
         self.assertEqual(every.count('stays'), 3)
 
     def test_04_B7_the_list_names_feature_09_for_the_entry_point_and_feature_10_for_what_moves(self):

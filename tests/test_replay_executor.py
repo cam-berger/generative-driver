@@ -310,12 +310,19 @@ class ReplayStartTests(unittest.TestCase):
             ({'executor_config': {'candidate': self.variant('emit-write', {'emit': [{'write': 'model.json'}]})}},
              'interpret and probe'),
             ({'executor_config': {'candidate': self.variant('reuse-write', {'reuse': [{'write': 'capabilities.json'}]})}},
-             'interpret and probe'),
-            # The bench home beside the configurator home holds evaluator records, never a candidate.
-            ({'executor_config': {'candidate': self.variant('home-bench/candidate', {})}}, 'evaluator records')]
+             'interpret and probe')]
         for changes, message in refused:
             with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, message):
                 self.controller.start({key: value for key, value in {**good, **changes}.items() if value is not None})
+        # The bench home beside the configurator home holds evaluator records, never a candidate. The configurator does
+        # not know that folder (08-B5 of docs/features/untangle/08-reports.md): the bench harness refuses the candidate
+        # as it launches the trial, before a harness starts.
+        from generative_driver.benchmark_support import harness
+        inside = self.variant('home-bench/candidate', {})
+        with patch.object(harness, '_spawn', side_effect=AssertionError('a bench harness started')), \
+                self.assertRaisesRegex(ValueError, 'evaluator records'):
+            harness.launch('tq9-v2', executor='replay', options={'home': str(self.root / 'home'),
+                                                                 'replay_candidate': inside})
         with self.controller._db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 0)
 
@@ -399,7 +406,7 @@ class ReplayTrialTests(unittest.TestCase):
     def test_a_replay_trial_is_graded_labelled_replay_and_never_compared_with_a_model_run(self):
         from generative_driver.benchmark import compare, run, score
         from generative_driver.configurator import digest
-        from generative_driver.reporting import report_run
+        from generative_driver.benchmark_support.run_reporting import report_run
         bench = harnessed(self)
         root, candidate, home, password, fixture, call = (bench.root, bench.candidate, bench.home, bench.password,
                                                           bench.fixture, bench.call)

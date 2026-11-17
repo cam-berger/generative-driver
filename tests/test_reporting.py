@@ -8,7 +8,7 @@ from pathlib import Path
 
 class ReportTests(unittest.TestCase):
     def test_worker_and_evaluator_tool_time_are_reported_separately(self):
-        from generative_driver.reporting import summarize
+        from generative_driver.benchmark_support.run_reporting import summarize
         result = {"run_id": "example", "status": "blocked", "created": 0, "updated": 8,
                   "worker_reports": [{"assignment_id": "p", "stage": "probe", "status": "completed",
                                       "elapsed_seconds": 2}], "accepted_handoffs": []}
@@ -23,7 +23,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(report["elapsed_seconds"], 8)
 
     def test_report_preserves_independent_observations_for_offline_scoring(self):
-        from generative_driver.reporting import summarize
+        from generative_driver.benchmark_support.run_reporting import summarize
         result = {"run_id": "example", "status": "blocked", "created": 0, "updated": 1,
                   "worker_reports": [], "accepted_handoffs": []}
         state = {"probe_evaluation": {"observations": {"temperature": 22.3}, "private_contract": "excluded"},
@@ -37,7 +37,7 @@ class ReportTests(unittest.TestCase):
 
     def test_saved_report_distinguishes_a_blocked_run_from_a_model_score(self):
         from generative_driver.client import call
-        from generative_driver.reporting import report_run
+        from generative_driver.benchmark_support.run_reporting import report_run
         with tempfile.TemporaryDirectory(prefix="reported run ") as temp:
             try:
                 run = call("start", {"goal": "Report an unavailable runtime", "budget_seconds": 120, "executor_config": {
@@ -60,7 +60,7 @@ class ReportTests(unittest.TestCase):
                 call("shutdown", {}, home=temp)
 
     def test_completion_without_every_independent_gate_cannot_be_a_pass(self):
-        from generative_driver.reporting import summarize
+        from generative_driver.benchmark_support.run_reporting import summarize
         result = {"run_id": "example", "status": "completed", "created": 0, "updated": 1,
                   "worker_reports": [], "accepted_handoffs": [], "evaluator_verdicts": []}
         stages = ["acquire", "interpret", "probe", "ground", "emit", "reuse"]
@@ -69,7 +69,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(summarize(result, [], case_manifest=manifest, case_state=state)["verdict"], "unscored")
 
     def test_generic_report_counts_self_evidence_equivalence_apart_from_the_independent_verdict(self):
-        from generative_driver.reporting import summarize, markdown
+        from generative_driver.benchmark_support.run_reporting import summarize, markdown
         equivalence = {"equivalent": True, "basis": "self-evidence", "diff": [],
                        "checks": [{"id": "emitted_package_replay", "passed": True},
                                   {"id": "fresh_reuse_live_operations", "passed": True}]}
@@ -92,7 +92,7 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn("Equivalence", markdown(earlier))
 
     def test_report_keeps_missing_usage_and_unrun_stages_visible(self):
-        from generative_driver.reporting import summarize
+        from generative_driver.benchmark_support.run_reporting import summarize
         result = {"run_id": "example", "status": "blocked", "stage": "interpret",
                   "reason": "analysis unavailable", "created": 10, "updated": 25,
                   "worker_reports": [
@@ -119,7 +119,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "blocked")
 
     def test_interventions_preserve_budget_history_without_exposing_operator_messages(self):
-        from generative_driver.reporting import summarize
+        from generative_driver.benchmark_support.run_reporting import summarize
         result={"run_id":"example","status":"cancelled","created":10,"updated":600,
                 "worker_reports":[],"accepted_handoffs":[]}
         events=[
@@ -150,7 +150,7 @@ class ReportTests(unittest.TestCase):
         from unittest.mock import patch
         from generative_driver.benchmark import case_root
         from generative_driver.configurator import Controller
-        from generative_driver.reporting import report_run
+        from generative_driver.benchmark_support.run_reporting import report_run
         from suite_fixtures import supplied_start
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -184,7 +184,7 @@ class ReportTests(unittest.TestCase):
                     # them from the snapshot.
                     with patch('generative_driver.client.call', side_effect=lambda method, params, **kwargs: controller.call(method, params)), \
                             patch('generative_driver.benchmark_support.integrity.tree_hash', return_value='exporter-new'), \
-                            patch('generative_driver.reporting._tree_hash', return_value='exporter-new'), \
+                            patch('generative_driver.benchmark_support.run_reporting._tree_hash', return_value='exporter-new'), \
                             patch('generative_driver.benchmark_support.grader_identity.grader_identity',
                                   return_value={'sha256': 'exporter-new'}):
                         report = report_run(run['run_id'], home=root / 'home')
@@ -214,7 +214,7 @@ class FreshReuseReportTests(unittest.TestCase):
 
     def test_complete_six_gate_report_is_passed_and_has_no_cycle_limits(self):
         # Catches requiring an obsolete seventh gate after accepted fresh reuse.
-        from generative_driver.reporting import summarize
+        from generative_driver.benchmark_support.run_reporting import summarize
         stages = ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse']
         report = summarize(self.completed(stages), [],
             case_manifest={'required_stages': stages},
@@ -228,7 +228,7 @@ class FreshReuseReportTests(unittest.TestCase):
 
     def test_historical_completed_report_cannot_pass_as_six_gate_workflow(self):
         # Catches silently recasting historical measured successes or a partial gate list.
-        from generative_driver.reporting import summarize
+        from generative_driver.benchmark_support.run_reporting import summarize
         six = ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse']
         for stages in (six + ['maintain'], six[:-1]):
             with self.subTest(stages=stages):

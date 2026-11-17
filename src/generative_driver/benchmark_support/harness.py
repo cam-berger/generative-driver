@@ -324,7 +324,7 @@ def check_snapshot(trial_dir, run_dir, result, *, config=None):
     one the trial froze in its own folder. With the run's configuration `config`, the snapshot must also name the
     provenance of the installed code for it. A difference raises IntegrityError, in the words the configurator used
     while it checked the snapshot itself."""
-    from ..integrity import IntegrityError
+    from .integrity import IntegrityError
     from .snapshots import execution_provenance, read_snapshot, require_snapshot
     named = result.get('client_record') or {}
     try:
@@ -393,13 +393,11 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
     (`check_snapshot`): a difference is an integrity stop, posted unscored. The plaintext evaluation never outlives
     this call. A grading that counted package calls returns `package_output`, its largest output and its calls, for
     the trial record alone: however the grade or seal or post ended, and never in what is sealed or posted."""
-    from ..configurator import IntegrityError
     from ..client_interface import verdict_errors
     from . import evaluator
     from .emulated_actions import OutputMeter
-    from .integrity import IntegrityError as GraderIntegrityError
-    # Grading code raises the grader's own class and code outside it the configurator's: either is an integrity stop.
-    integrity_stop = (GraderIntegrityError, IntegrityError)
+    # Grading code and the harness's check of the snapshot raise the benchmark's own class: that is an integrity stop.
+    from .integrity import IntegrityError
     if result.get('equivalence') is not None:
         # The configurator already holds this run's verdict: nothing is graded, sealed or posted again. Its seal is the
         # evidence the verdict names, when the trial directory holds exactly that (a harness may have died after the
@@ -428,7 +426,7 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
                                                                 password=password, truth_source=truth_source,
                                                                 renode=renode, meter=meter)
                 content['mission'] = equivalence.get('mission')
-            except integrity_stop as error:
+            except IntegrityError as error:
                 equivalence, content['error'] = evaluator.unscored('integrity: ' + str(error), frozen,
                                                                     protocol=protocol), str(error)
             except Exception as error:
@@ -446,7 +444,7 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
             content['equivalence'] = equivalence
         try:
             done.update(sealed=True, evidence=evaluator.seal(trial_dir, run_dir, result, password=password, **content))
-        except integrity_stop as error:
+        except IntegrityError as error:
             done.update(sealed=False, sealing_failed='integrity: ' + str(error))
             if equivalence is not None and not (equivalence['status'] == 'unscored'
                                                 and equivalence['diff'][0]['reason'].startswith('integrity: ')):
@@ -632,7 +630,7 @@ def run_trial(trial_dir, request, *, password=None, call=None, launch=None, hear
     to name another process). A scoring suite's harness also passes its slot's `audit` (`_SlotAudit`), which `finish`
     runs, and a failure before there is a run names why in closed words (`no_run`) if it was no matter of reaching the
     configurator."""
-    from ..client import hold_process_lock
+    from .process_lock import hold_process_lock
     trial_dir = Path(trial_dir)
     trial_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     request = dict(request)
@@ -1344,9 +1342,9 @@ def launch(case, output_dir=None, executor=None, options=None, approval=None, *,
                'request_id': request_id, 'output_dir': str(Path(output_dir).resolve()) if output_dir else None,
                'scoped_tool_approval': approval, 'binding': binding}
     if candidate is not None:
-        # The candidate's path and the hash of its files, which the configurator checks again before every stage.
-        from ..replay import candidate_config
-        request['executor_config'] = candidate_config({'candidate': str(Path(candidate).expanduser().resolve())}, bench=bench)
+        # The candidate's path and the hash of its files, which the configurator checks again before every stage. It
+        # lies outside the bench home, which only the harness's side knows.
+        request['executor_config'] = trial_store.replay_candidate(str(Path(candidate).expanduser().resolve()), bench)
     if request_id is not None:
         identity = {key: request[key] for key in IDENTITY}
         if 'executor_config' in request:
@@ -1479,13 +1477,13 @@ def _harness_exited(process, record, directory):
         return True
     if type(record.get('pid')) is not int or record['pid'] <= 0:
         return False
-    from ..client import _wait_for_exit, process_lock_held
+    from .process_lock import process_lock_held, wait_for_exit
     lock = Path(directory) / HARNESS_LOCK
     held = process_lock_held(lock) if lock.exists() else None
     if held is not None:
         return not held
     try:
-        return _wait_for_exit(record['pid'], 0)
+        return wait_for_exit(record['pid'], 0)
     except OSError:
         return False
 
@@ -1661,7 +1659,7 @@ def run_suite(suite_dir, request, *, call=None, stop=None):
     harness, blaming no trial. A scoring suite's harness seals each trial once it has settled, and sweeps
     (`trial_store`) before each reservation, so no worker starts beside a readable concluded trial, and on its way out
     while it is attached. A failure there stops the suite, with a reason that names no path."""
-    from ..client import hold_process_lock
+    from .process_lock import hold_process_lock
     suite_dir = Path(suite_dir)
     suite_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     request = dict(request)

@@ -598,7 +598,7 @@ class PostedRecordTests(TrialCase):
     def test_06_B18_the_sealed_final_keeps_the_mapping_hash_and_the_regrade_of_the_sealed_evidence_passes(self):
         from generative_driver.benchmark_support.evidence import regrade_v3
         from generative_driver.benchmark_support.truth import read_password
-        from generative_driver.reporting import report_run
+        from generative_driver.benchmark_support.run_reporting import report_run
         folder, record = self.trial()
         password = read_password(self.secrets['password_files'][CASE])
         sealed = password.unlock(folder / evaluator.EVIDENCE, record['evidence']['sha256'])
@@ -644,7 +644,7 @@ class ClientRecordReaderTests(TrialCase):
 
     def test_06_B17_a_report_of_a_scripted_run_holds_what_it_held(self):
         from generative_driver.benchmark_support.evidence import public_pin
-        from generative_driver.reporting import report_run
+        from generative_driver.benchmark_support.run_reporting import report_run
         folder, record = self.trial(executor_config={'reasoning_effort': 'high'})
         with patch('generative_driver.client.call', side_effect=self.configurator):
             report = report_run(record['run_id'], home=self.home, output=self.root / 'report.json')
@@ -665,7 +665,7 @@ class ClientRecordReaderTests(TrialCase):
 
     def test_06_B17_the_comparison_of_two_reports_reads_what_it_read(self):
         from generative_driver import benchmark
-        from generative_driver.reporting import report_run
+        from generative_driver.benchmark_support.run_reporting import report_run
         reports = []
         for name in ('before', 'after'):
             folder, record = self.trial(name)
@@ -968,11 +968,13 @@ class DeletionListTests(unittest.TestCase):
                 found = importers(Path(item).stem)
                 self.assertIn(named, found)
                 self.assertEqual(others, len(found) - 1, found)
+        # Three since Feature 08 moved the report module to the benchmark (08-B16 of
+        # docs/features/untangle/08-reports.md).
         modules = self.rows('Tool modules that import the benchmark')
-        self.assertEqual(len(modules), 4)
+        self.assertEqual(len(modules), 3)
         for item, used_by, _ in self.rows('Still used by the tool'):
             if 'modules under' in used_by:
-                self.assertIn('The four modules under', used_by, item)
+                self.assertIn('The three modules under', used_by, item)
 
     def test_06_B24_the_check_reports_no_problem_on_the_repository(self):
         from deletion_marking import problems

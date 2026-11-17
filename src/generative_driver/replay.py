@@ -96,18 +96,15 @@ def load_candidate(directory):
     return value
 
 
-def candidate_config(config, *, bench=None):
+def candidate_config(config):
     """The replay runtime's configuration: the candidate's absolute path and the sha256 of its files, checked against
-    one recorded before. It names no command: the installed replay worker runs every replay. A candidate never lies in
-    the bench home `bench`, which holds evaluator records."""
+    one recorded before. It names no command: the installed replay worker runs every replay."""
     from .configurator import digest
     if not isinstance(config, dict) or set(config) - {'runtime', 'candidate', 'candidate_sha256'}:
         raise ValueError('The replay executor takes only its saved candidate: executor_config {"candidate": <directory>}')
     if not isinstance(config.get('candidate'), str) or not config['candidate']:
         raise ValueError('The replay executor needs a saved candidate: executor_config {"candidate": <directory>}')
     root = Path(config['candidate'])
-    if bench is not None and root.is_absolute() and _inside(root.resolve(), bench):
-        raise ValueError('A replay candidate never lies in the bench home, which holds evaluator records: ' + str(root))
     load_candidate(root)
     sha256 = digest(root)
     if config.get('candidate_sha256') not in (None, sha256):

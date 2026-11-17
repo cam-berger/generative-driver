@@ -5,6 +5,7 @@ Feature 01 of the untangle Run (docs/features/untangle/01-deletion-marking.md). 
 itself is tested for 01-B9 and 01-B10.
 """
 import ast
+import atexit
 from concurrent.futures import ThreadPoolExecutor
 import functools
 import os
@@ -20,8 +21,10 @@ import unittest.mock
 from deletion_marking import problems, strip, tool_test_modules
 
 REPO = Path(__file__).resolve().parents[1]
-# The slowest tool module takes about a minute here; a module that hangs is reported instead of waited for.
-MODULE_SECONDS = 300
+# The slowest tool module takes about a minute here. On the hosted Windows machines three modules did not finish in
+# 300 seconds with eight at a time (08-B17 of docs/features/untangle/08-reports.md). A module that hangs is reported
+# instead of waited for.
+MODULE_SECONDS = 900
 LIST = 'docs/benchmark-deletion-list.md'
 TABLES = (('Ready to delete', 'Item | Note'),
           ('Still used by the tool', 'Item | Used by | Freed by'),
@@ -52,8 +55,10 @@ def git(root, *arguments):
 
 def failed_modules(copy, modules):
     """A sentence for each of the test `modules` that fails in the tree at `copy`, with the end of its output. Each
-    module runs in its own process, eight at a time, as the test command runs them. A child's `PYTHONPATH` holds only
-    the `src` of `copy`, so it cannot import from the tree the copy was made from (01-B7)."""
+    module runs in its own process. No more run at a time than the machine has processors, never more than eight,
+    and one at a time where the number of processors is not known (08-B17 of
+    docs/features/untangle/08-reports.md). A child's `PYTHONPATH` holds only the `src` of `copy`, so it cannot import
+    from the tree the copy was made from (01-B7)."""
     environment = {**os.environ, 'PYTHONPATH': str(Path(copy) / 'src')}
 
     def end(output):
@@ -68,7 +73,7 @@ def failed_modules(copy, modules):
             return f'{module} did not finish in {MODULE_SECONDS} seconds in the copy:\n{end(error.output)}'
         return None if done.returncode == 0 else f'{module} failed in the copy:\n{end(done.stdout)}'
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=min(os.cpu_count() or 1, 8)) as pool:
         return [sentence for sentence in pool.map(failure, modules) if sentence]
 
 
@@ -481,7 +486,7 @@ class RemovalTests(SmallTreeCase):
         self.assertFalse((root / 'copy').exists())
         used = root.parent / 'used'
         used.mkdir()
-        (used / 'earlier.txt').write_text('From an earlier copy.\n', encoding='utf-8')
+        (used / 'earlier.txt').write_bytes(b'From an earlier copy.\n')
         with self.assertRaisesRegex(ValueError, 'not an empty directory'):
             strip(root, used)
         self.assertEqual(snapshot(used), {'earlier.txt': b'From an earlier copy.\n'})
@@ -639,11 +644,13 @@ def table(heading):
 
 @functools.cache
 def stripped_repository():
-    """The stripped copy of the repository and the failures of its removal, made once for the tests that read
-    it."""
-    temporary = tempfile.TemporaryDirectory(prefix='stripped copy ', ignore_cleanup_errors=True)
-    unittest.addModuleCleanup(temporary.cleanup)
-    copy = Path(temporary.name).resolve() / 'copy'
+    """The stripped copy of the repository and the failures of its removal, made once for the tests that read it,
+    whichever test module asks for it first. The copy stays until the process ends and is removed then, with errors
+    ignored: the hosted tests run every test module in one process, so no one module may take the copy away
+    (08-B17 of docs/features/untangle/08-reports.md)."""
+    folder = tempfile.mkdtemp(prefix='stripped copy ')
+    atexit.register(shutil.rmtree, folder, ignore_errors=True)
+    copy = Path(folder).resolve() / 'copy'
     return copy, strip(REPO, copy)
 
 

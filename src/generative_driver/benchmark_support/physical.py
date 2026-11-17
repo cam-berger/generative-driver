@@ -206,7 +206,8 @@ def prepare_stage(case_id, stage, run_dir, workspace, accepted=None, options=Non
                 'inputs':[str(model)],'allowed_tools':['emit_package','emit_check'],
                 'context':{'model_dir':str(model),'input_notes':[missing]},'input_notes':[missing]}
     if stage=='reuse':
-        from ..configurator import IntegrityError, digest
+        from ..integrity import digest
+        from .integrity import IntegrityError
         source = next(((Path(a['path']), a['sha256']) for h in reversed(accepted or []) if h.get('stage') == 'emit'
                        for a in h.get('artifacts', []) if (Path(a['path'])/'manifest.json').is_file()), None)
         if source is None:

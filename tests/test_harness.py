@@ -294,7 +294,7 @@ class StartAdmissionTests(unittest.TestCase):
     def test_native_artifact_is_the_device_identity_and_appears_in_the_report(self):
         # Scripted descriptor/worker test; no authentic firmware or admission claim.
         from test_configurator import wait_stopped
-        from generative_driver.reporting import summarize
+        from generative_driver.benchmark_support.run_reporting import summarize
         case = self.root/'resources/cases/tq9-v2'
         (case/'firmware.bin').rename(case/'firmware.elf')
         self.manifest['images'] = {'firmware.elf': self.manifest['images']['firmware.bin']}

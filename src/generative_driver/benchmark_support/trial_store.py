@@ -52,6 +52,37 @@ def bench_home(home=None):
     return home.parent / (home.name + '-bench')
 
 
+def _inside(path, root):
+    """Whether `path` lies in the directory `root`, by file identity: no spelling of a path (letter case on a
+    case-insensitive file system, a link) hides that it does. The tool holds a replay candidate out of its installed
+    resources by the same rule."""
+    try:
+        target = os.stat(root)
+    except OSError:
+        return False
+    for parent in (path, *path.parents):
+        try:
+            if os.path.samestat(os.stat(parent), target):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def replay_candidate(candidate, bench):
+    """The replay configuration of the saved `candidate`, as the tool's `candidate_config` checks and gives it. Before
+    that, a candidate in the bench home `bench` is refused: the bench home holds evaluator records, and the tool does
+    not know where it is (Feature 08 of the untangle Run, docs/features/untangle/08-reports.md). With no `bench`, the
+    tool's check is the only one."""
+    from ..replay import candidate_config
+    if bench is not None and isinstance(candidate, str) and candidate:
+        root = Path(candidate)
+        if root.is_absolute() and _inside(root.resolve(), bench):
+            raise ValueError('A replay candidate never lies in the bench home, which holds evaluator records: '
+                             + str(root))
+    return candidate_config({'candidate': candidate})
+
+
 def suite_dir(home, key):
     """The folder of one suite harness, by its key: each launch and resume makes its own, so a suite's trials can span
     several."""

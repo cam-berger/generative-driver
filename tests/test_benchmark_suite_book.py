@@ -820,7 +820,9 @@ class PublicCallTests(BookCase):
                     for alias in node.names]
         imported += [(alias.name, None) for node in ast.walk(tree) if isinstance(node, ast.Import)
                      for alias in node.names]
-        self.assertTrue(any(module == 'client' and name == 'process_lock_held' for module, name in imported))
+        # The scan sees the book's imports: it takes the lock helper from the benchmark's own module (08-B12 and
+        # 08-B13 of docs/features/untangle/08-reports.md).
+        self.assertTrue(any(module == 'process_lock' and name == 'process_lock_held' for module, name in imported))
         self.assertEqual([entry for entry in imported if 'configurator' in entry[0] or entry[1] == 'configurator'], [])
 
     def test_07_B9_a_child_starts_with_a_plain_start_of_the_slots_request_without_the_case(self):
@@ -1935,8 +1937,9 @@ class ListTests(unittest.TestCase):
                 self.assertEqual(lines_counted, unmarked)
 
     def test_07_B17_the_service_is_listed_as_a_tool_module_that_still_imports_the_benchmark(self):
+        # It launches the bench harness until Feature 09 (08-B16 of docs/features/untangle/08-reports.md).
         modules = {row[0]: row[1] for row in self.rows('Tool modules that import the benchmark')}
-        self.assertEqual(modules['`src/generative_driver/configurator.py`'], '08')
+        self.assertEqual(modules['`src/generative_driver/configurator.py`'], '09')
         self.assertEqual(modules['`src/generative_driver/mcp.py`'], '09')
 
 

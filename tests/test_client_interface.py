@@ -3,7 +3,8 @@
 Feature 03 of the untangle Run (docs/features/untangle/03-client-interface.md), 03-B1 to 03-B5. The interface module
 is tested by what it offers and returns, the service through `generative_driver.client.call`, and the document by
 its text. This module imports nothing from the benchmark package and no test file the deletion takes away, so it
-also runs where the benchmark is gone and the document has lost its marked passage.
+also runs where the benchmark is gone and the document has lost its marked passage. The values it pins are those of
+version 4 (docs/features/untangle/08-reports.md).
 
 Temporary homes only; no model and no hardware.
 """
@@ -37,17 +38,19 @@ def offered(module):
 
 
 class InterfaceModuleTests(unittest.TestCase):
-    def test_03_B1_the_interface_module_offers_nine_names_and_nothing_else(self):
-        # Version 2 added `firmware_errors` and `mission_errors` to the seven names of version 1 (06-B14).
-        names = ['CALLS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors', 'firmware_errors', 'frozen_driver',
-                 'mission_errors', 'verdict_errors']
+    def test_03_B1_the_interface_module_offers_ten_names_and_nothing_else(self):
+        # Version 2 added `firmware_errors` and `mission_errors` to the seven names of version 1 (06-B14), and
+        # version 4 added `IMPORTS` (08-B9 of docs/features/untangle/08-reports.md).
+        names = ['CALLS', 'IMPORTS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors', 'firmware_errors',
+                 'frozen_driver', 'mission_errors', 'verdict_errors']
         self.assertEqual(sorted(client_interface.__all__), names)
         self.assertEqual(offered(client_interface), names)
 
     def test_03_B1_the_version_the_protocol_the_calls_and_the_verdict_fields_have_their_values(self):
         self.assertIs(type(client_interface.VERSION), int)
-        # Version 3 added `cancel` and `seal` to the calls (07-B6 of docs/features/untangle/07-suites.md).
-        self.assertEqual(client_interface.VERSION, 3)
+        # Version 3 added `cancel` and `seal` to the calls (07-B6 of docs/features/untangle/07-suites.md). Version 4
+        # added no call (08-B9).
+        self.assertEqual(client_interface.VERSION, 4)
         self.assertEqual(client_interface.PROTOCOL, 'assistive/1')
         self.assertEqual(client_interface.CALLS, ('ping', 'start', 'resume', 'status', 'events', 'result',
                                                   'attach_device', 'record_evaluation', 'cancel', 'seal'))
@@ -216,9 +219,10 @@ class ServiceCallTests(ServiceCase):
 DOCUMENT = Path(__file__).resolve().parents[1] / 'docs' / 'client-interface.md'
 # The two lines that set a passage about the legacy benchmark off; the deletion takes the passage away with them.
 BEGIN, END = '<!-- legacy-benchmark:begin -->', '<!-- legacy-benchmark:end -->'
-# Version 3 added `Stop or seal a run` to the six sections of version 2 (07-B6).
+# Version 3 added `Stop or seal a run` to the six sections of version 2 (07-B6), and version 4 `Records on disk`
+# (08-B11).
 HEADINGS = ['Start a run on a supplied device', 'The control endpoint', 'Replace a device', 'Post one final verdict',
-            'Read the records and the frozen driver', 'Stop or seal a run', 'What a client imports']
+            'Read the records and the frozen driver', 'Stop or seal a run', 'Records on disk', 'What a client imports']
 DESCRIPTOR_PARTS = ('schema', 'control', 'endpoint_file', 'session_id', 'binding', 'firmware_sha256', 'instrument',
                     'development_conditions')
 RECORD_NAMES = ('device-descriptor/2', 'equivalence/2', 'assistive/1')
@@ -240,10 +244,10 @@ class DocumentTests(unittest.TestCase):
 
     def test_03_B5_the_first_line_names_the_interface_and_its_version(self):
         first = self.lines()[0]
-        self.assertEqual(first, '# Client interface, version 3')
+        self.assertEqual(first, '# Client interface, version 4')
         self.assertEqual(first, f'# Client interface, version {client_interface.VERSION}')
 
-    def test_03_B5_the_second_level_headings_are_the_seven_in_their_order(self):
+    def test_03_B5_the_second_level_headings_are_the_eight_in_their_order(self):
         self.assertEqual([line[3:] for line in self.lines() if line.startswith('## ')], HEADINGS)
 
     def test_03_B5_names_every_call_verdict_field_descriptor_part_and_record_name_in_backticks(self):

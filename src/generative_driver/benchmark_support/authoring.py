@@ -8,12 +8,11 @@ from pathlib import Path
 
 def evaluator_directory(value):
     """Exclude known worker roots; this is placement validation, not OS isolation."""
-    from ..setup import home_path
     from ..client import default_home
     path = Path(value).expanduser().resolve()
     package = Path(__file__).resolve().parents[1]
     checkout = next((p for p in package.parents if (p / '.git').exists()), None)
-    forbidden = [package, Path(home_path()).resolve() / 'runs', Path(default_home()).resolve() / 'runs']
+    forbidden = [package, Path(default_home()).expanduser().resolve() / 'runs', Path(default_home()).resolve() / 'runs']
     if checkout:
         forbidden.append(checkout)
     parents = (path, *path.parents)

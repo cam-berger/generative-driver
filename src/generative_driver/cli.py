@@ -85,7 +85,8 @@ def main(argv=None):
         print(json.dumps(report, indent=2))
         return 0 if report["ok"] else 1
     if args.command == "report":
-        from .reporting import report_run
+        # The run report is the benchmark's; this command reaches it there until the benchmark has its own command.
+        from .benchmark_support.run_reporting import report_run
         print(json.dumps(report_run(args.run_id, home=args.home, output=args.output), indent=2))
         return 0
     if args.command == "dashboard":

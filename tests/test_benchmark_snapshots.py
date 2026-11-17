@@ -286,7 +286,7 @@ class ControllerSnapshotTests(unittest.TestCase):
         import json
         from unittest.mock import patch
         from generative_driver.configurator import Controller
-        from generative_driver.reporting import report_run
+        from generative_driver.benchmark_support.run_reporting import report_run
         with tempfile.TemporaryDirectory() as temp, patch('generative_driver.configurator.execute', self.blocked_executor):
             root = Path(temp)
             controller = Controller(root)

@@ -10,6 +10,8 @@ The second is the service. It imports the benchmark at three places. Two of them
 
 The third is the benchmark's side. The benchmark imports tool names the interface does not list, private ones among them, and it works in the tool's home: it reads the database and the run folders, and it keeps files there. The owner decided on 2026-11-17 that this is settled in this Feature, and that what the benchmark reads and keeps in the tool's home is written down in the interface and not moved. So the interface, at version 4, lists every tool name a client may import and names the records on disk a client on the same machine may read. The benchmark's imports are cut down to that list. Its code that reads and keeps files stays as it is.
 
+A fourth thing came up while this Feature was being built. On 2026-11-17 the Run's branch was pushed for the first time, and the hosted tests failed on all four jobs. Every failure is in a test or a test helper this Run wrote, and no product code failed. The hosted tests run every test module in one process, which the local Test command does not, and two of their four jobs run on Windows. The owner decided the same day that this Feature fixes the five faults (08-B17).
+
 Terms used below:
 
 - The **interface** is the document `docs/client-interface.md` and the module `src/generative_driver/client_interface.py`.
@@ -116,12 +118,19 @@ Where something behaves differently after this Feature:
   - The two rows under `Still used by the tool` that count those modules, for `benchmark.py` and for `benchmark_support/`, say three.
   - The benchmark's test module of this Feature is under `Ready to delete`, and the tool's test module of this Feature is not on the list.
   - Every count in the list is true, its check reports no problem, and the removal test passes.
+- **08-B17** — The repository's tests pass the way the hosted tests run them: every test module in one process, on macOS and on Windows.
+  - The copy of the tree that `stripped_repository()` makes stays in place until the process ends, whichever test module asks for it first, and is removed then, with errors ignored. Run in one process in that order, `tests/test_benchmark_legacy_cases_dropped.py` and `tests/test_deletion_marking.py` both pass.
+  - `failed_modules` runs the tool's test modules in the copy no more at a time than the machine has processors, never more than eight, and one at a time where the number of processors is not known. It gives each module 900 seconds, where it gave 300.
+  - `test_01_B6_refuses_a_destination_inside_the_tree_or_one_that_holds_files` writes the file it later compares as bytes, so the file's line ending is the same on every system.
+  - `test_resume_verifies_the_snapshot_of_the_stopped_child_before_any_new_assignment` finds the suite's folder in the reason whether the path is written with `/` or with `\`.
+  - `test_cli_opens_a_live_page_and_its_exit_leaves_the_run_running` of `tests/test_dashboard.py` passes in the stripped copy on Windows, as it does outside it.
+  - The workflow `Installed package` passes on all four of its jobs for the commit whose tree is the Build the Reviewer passes. A later change to source or tests needs a new hosted run.
 
 ## Interface and seams
 
 Tests. The tool's tests of this Feature are in the new file `tests/test_client_surface.py`. It imports nothing of the benchmark and names no registered case, and `tool_test_modules` names it. The benchmark's tests of this Feature are in the new file `tests/test_benchmark_surface.py`. Tests are named `test_08_B<n>_`. Other Runs left tests named `test_08_B…` in `tests/test_output_measure.py`, `tests/test_generated_family.py`, `tests/test_scorecard.py`, `tests/test_slot_policy_flags.py` and `tests/test_trial_sealing.py`; they are not this Feature's.
 
-Which side tests what. In the tool's file: 08-B4 but for its last point, 08-B5, 08-B7, 08-B8, 08-B9, 08-B10 and 08-B11. The last point of 08-B4 is about a benchmark function, and the benchmark's tests show it. A statement of `## Records on disk` is shown true on a scripted run of the tool's own, on `tests/supplied_device.py`: the tables and columns exist in the database, a line of `package-events.jsonl` has the keys named, the folders directly in the run's folder are among the eight named, a file and a folder a client added there under other names are unchanged when the run has ended, and after the run has stopped and is sealed the three calls answer the same with the run's folder emptied. If the source shows that the service makes another folder directly in a run's folder, the document names it too, and the report says so as a Deviation. In the benchmark's file: 08-B1, 08-B2, 08-B3, 08-B6, 08-B12, 08-B13, 08-B14, 08-B15 and 08-B16. 08-B12, 08-B14 and 08-B15 are shown by reading the benchmark's source as a syntax tree, and 08-B14 also by a scripted trial and a scripted suite against a service that records the methods it receives.
+Which side tests what. In the tool's file: 08-B4 but for its last point, 08-B5, 08-B7, 08-B8, 08-B9, 08-B10 and 08-B11. The last point of 08-B4 is about a benchmark function, and the benchmark's tests show it. A statement of `## Records on disk` is shown true on a scripted run of the tool's own, on `tests/supplied_device.py`: the tables and columns exist in the database, a line of `package-events.jsonl` has the keys named, the folders directly in the run's folder are among the eight named, a file and a folder a client added there under other names are unchanged when the run has ended, and after the run has stopped and is sealed the three calls answer the same with the run's folder emptied. If the source shows that the service makes another folder directly in a run's folder, the document names it too, and the report says so as a Deviation. In the benchmark's file: 08-B1, 08-B2, 08-B3, 08-B6, 08-B12, 08-B13, 08-B14, 08-B15, 08-B16 and 08-B17. 08-B12, 08-B14 and 08-B15 are shown by reading the benchmark's source as a syntax tree, and 08-B14 also by a scripted trial and a scripted suite against a service that records the methods it receives.
 
 The move. The report module moves as it is: its names, its texts and its three formats are unchanged, and nothing in it is fixed or tidied. Its imports of the benchmark become imports within the benchmark: `STAGES` and `case_root` from `case_assets`, `tree_hash` from the benchmark's `integrity`, still under the name `_tree_hash`, and the rest by their own modules. It takes `PROTOCOL` from `client_interface`, `call` and `default_home` from `client`, and `equivalence_label` from the benchmark's `labels`. Where it found the tool's folders from its own place in the tree, it finds the same folders from its new place. `suite_reporting.py` and `suite_book.py` import its names from it.
 
@@ -145,6 +154,20 @@ Existing tests. Each keeps its name and its assertions unless a rule here says o
 - A test that says which tool names the suite book takes (`tests/test_benchmark_suite_book.py:823`) follows 08-B12.
 - A test that patches a lock helper of `generative_driver.client` for the bench harness (`tests/test_suite_harness.py:1172-1177`) patches the benchmark's copy. A test that only holds or reads a harness's lock with the tool's function may keep doing so: the copies and the tool's functions agree.
 
+The hosted tests. The hosted run of the first push is `44094988612` of the workflow `Installed package`. It runs `python -m unittest discover -s tests` once, so every test module shares one process, with `GD_TEST_REMOVAL=1`, on macOS and Windows with Python 3.11 and 3.13. Its five faults:
+
+- On every job, `test_01_B9_the_marking_is_ready_and_the_published_record_and_this_run_are_kept` and `test_01_B9_every_test_file_the_removal_leaves_imports_only_test_files_it_leaves` of `tests/test_deletion_marking.py` found the stripped copy gone. `stripped_repository()` keeps its copy for the process but hands its removal to the test module that asked first (`unittest.addModuleCleanup`), and `tests/test_benchmark_legacy_cases_dropped.py:303` asks first. Running those two modules in one process shows it on any machine.
+- On Windows, `test_01_B6_refuses_a_destination_inside_the_tree_or_one_that_holds_files` wrote a file as text and compared its bytes: `\r\n` against `\n` (`tests/test_deletion_marking.py:484-487`).
+- On Windows, `test_resume_verifies_the_snapshot_of_the_stopped_child_before_any_new_assignment` looked for `suites/` in a reason that holds a Windows path (`tests/test_suite_service.py:350`).
+- On Windows, in the removal step, `tests/test_configurator.py`, `tests/test_interpret_tasks.py` and `tests/test_service_smoke.py` did not finish in 300 seconds in the copy, with eight modules at a time (`failed_modules`, `tests/test_deletion_marking.py:53-72`).
+- On Windows, in the same step, `test_cli_opens_a_live_page_and_its_exit_leaves_the_run_running` found the run still `running` (`tests/test_dashboard.py:246`). It passed outside the copy on the same machine, so fewer modules at a time is expected to settle it. The test gives the run five seconds to end. If a hosted run shows that fewer at a time does not settle it, a longer wait with the same assertions is allowed and is reported as a Deviation. Changing or dropping an assertion is not allowed.
+
+What that run could not show. The workflow stops at the first failing command, so its two commands after the tests, `generative_driver benchmark run --case setup-smoke` and `generative_driver smoke`, have never run for this branch. Three modules timed out in the copy on Windows, so whether they pass there, and whether 900 seconds is enough, is not known yet.
+
+A hosted failure that is not one of the five faults. One rule covers every such failure. A fault in a test or a test helper is fixed in this Feature and reported as a Deviation; the time limit and the number at a time may change again in the same way. A fault in product code this Feature changed is a bug of the Build against its Behaviour, and is fixed. Any other fault in product code is not fixed here: the session that runs this Run puts it to the owner.
+
+How 08-B17 is shown. Its first two points have tests of their own, named `test_08_B17_`, in the benchmark's file, which may import the helpers of `tests/test_deletion_marking.py`. The test of the first point runs the two modules in a child process, the legacy module first, without `GD_TEST_REMOVAL` in the child's environment, so that the removal step does not run a second time. The child otherwise has the environment of the test that starts it, because the hosted tests run against the installed package with no `PYTHONPATH`. The test of the second point need not show that the copy is removed at the end. Windows does not run on this machine, so the points that show only there, and the last point, are shown by a hosted run. For that, the session that runs this Run commits the state of the Build to the Run's branch before the Feature is Done and pushes it, again if a run still fails, and gives the implementer and the Reviewer each run's result. The Feature is not Done before a hosted run has passed on all four jobs for the tree the Reviewer passed.
+
 The Test command took about 430 s at the base, and the kit stops it at 540 s. The new tests are small. If the whole command comes near the limit, say so in the report and trim nothing.
 
 ## Out of scope
@@ -157,6 +180,8 @@ The Test command took about 430 s at the base, and the kit stops it at 540 s. Th
 - The copies of `STAGES` in the tool and in the benchmark.
 - Fixes to the reports, to `_recorded_success` and to anything else that moves or stays.
 - Tests. They are not held to `IMPORTS`; Feature 10 splits them.
+- What `main` gained since this Run last merged it, pull requests 38 and 39. It is merged after this Feature.
+- Any other change to how the hosted tests run. The workflow file is unchanged.
 - `CONTEXT.md` and the decision records under `docs/adr/`.
 
 ## Deviations

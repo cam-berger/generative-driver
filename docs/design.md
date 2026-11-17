@@ -43,7 +43,7 @@ Generic tools and skills ship to workers. Sources, answers, scorers and historic
 
 ## Driver contracts and generated MCP — 2026-10-28
 
-The [extension guide](extending-drivers-and-mcp.md) and [accepted contract design](superpowers/specs/2026-10-28-driver-contract-mcp-design.md) define the public driver contract, declarative protocol and supported application SDK. The contract supplies operation/field meanings, caveats and executable preconditions. Device-specific executable plugins remain outside the driver format; new behavior uses a shared runtime capability or a higher-level application tool.
+The [extension guide](extending-drivers-and-mcp.md) and [ADR 0002](adr/0002-driver-contract-and-generated-mcp.md) define the public driver contract, declarative protocol and supported application SDK. The contract supplies operation/field meanings, caveats and executable preconditions. Device-specific executable plugins remain outside the driver format; new behavior uses a shared runtime capability or a higher-level application tool.
 
 Format-2 emission freezes the contract, protocol, executable projection and derived MCP catalog. Generic and benchmark fresh reuse use that catalog through configurator-owned dispatch. Current `assistive/1` handoffs retain notes; observed generated-tool use of the unchanged package is reported beside the final equivalence, not inside it. Benchmark passwords and final grading stay in the bench harness, after the run. Historical format-1 packages and reports retain their original meaning.
 

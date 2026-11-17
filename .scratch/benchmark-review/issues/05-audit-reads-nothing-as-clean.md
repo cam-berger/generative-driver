@@ -8,7 +8,7 @@ Checked: read (`benchmark_support/audit.py:35-71`).
 
 Only completed `command_execution` items are read. A file read through another tool, an MCP call, and a workspace outside the run's recorded paths are not seen. The harness passes only the set's root as forbidden, and only on scoring suites (reported).
 
-The audit against a real Codex transcript layout is still unverified ([bench harness notes](../../../docs/features/bench-harness/noticed.md), Feature 06).
+The audit against a real Codex transcript layout is still unverified ([bench harness notes](../bench-harness-noticed.md), Feature 06).
 
 ## Direction
 

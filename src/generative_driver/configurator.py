@@ -15,7 +15,7 @@ import ipaddress
 import tempfile
 import math
 import re
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 
 from .setup import SUPPORTED_EXECUTORS, resolve_executor
@@ -1334,18 +1334,19 @@ class Controller:
                    (run_id, kind, _json(payload), time.time()))
         return cursor.lastrowid
 
-    def _state(self, run_id, status, reason=None, stage=None, *, outcome_category=None, from_verdict=False):
+    def _state(self, run_id, status, reason=None, stage=None, *, outcome_category=None, from_verdict=False, db=None):
         """Change a run's status unless it was cancelled. Cancellation never replaces the completed status of a run
         with a final verdict.
 
         `from_verdict` completes the run from its recorded final verdict, even when a cancellation arrived after the
-        verdict was committed: the verdict ends the run whatever happens next."""
+        verdict was committed: the verdict ends the run whatever happens next. Given `db`, the change commits with the
+        caller's transaction."""
         category = status if status in ('completed', 'cancelled') else outcome_category or 'unknown'
         if category not in ('completed','safety','integrity','operator','host','model','cancelled','unknown'):
             raise ValueError('Invalid owner outcome category')
         if from_verdict and status != 'completed':
             raise ValueError('Only completion follows from a final verdict')
-        with self._db() as db:
+        with self._db() if db is None else nullcontext(db) as db:
             if from_verdict:
                 changed = db.execute('UPDATE runs SET status=?,reason=?,stage=COALESCE(?,stage),updated=?,outcome_category=?,cancelled=0 '
                                      'WHERE id=? AND EXISTS(SELECT 1 FROM verdicts WHERE id=?)',
@@ -2513,7 +2514,8 @@ class Controller:
                     db.execute('INSERT INTO assignments VALUES(?,?,?,?,?,?)',
                                (attempt, run_id, stage, 'active', _json(assignment), began))
                     self._event(run_id, 'stage.assigned', assignment, db)
-                self._state(run_id, 'running', stage=stage)
+                    # One transaction, so whoever sees the stage assigned also reads it as the run's stage.
+                    self._state(run_id, 'running', stage=stage, db=db)
                 prompt = prepared.get('prompt')
                 if prompt is None:
                     prompt = ('Execute exactly the assigned stage. Do not start another stage. Return a JSON stage report. '
@@ -3718,7 +3720,7 @@ class Controller:
         with self._db() as db:
             db.execute('INSERT INTO assignments VALUES(?,?,?,?,?,?)', (attempt, run_id, stage, 'active', _json(assignment), time.time()))
             self._event(run_id, 'stage.skipped', {'stage': stage, 'assignment_id': attempt, 'revision': revision, 'reason': reason}, db)
-        self._state(run_id, 'running', stage=stage)
+            self._state(run_id, 'running', stage=stage, db=db)
         checked = {'artifacts': [], 'checks': list(checks), 'validation_scope': 'No worker ran: ' + reason,
                    'notes': {'checks': list(checks)}, **({'device_diff': device_diff} if device_diff else {})}
         notes = _notes({'status': 'skipped', 'reason': reason}, checked, outcome, missing=[reason])

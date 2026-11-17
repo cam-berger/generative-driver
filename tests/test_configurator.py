@@ -2570,6 +2570,53 @@ class StageBoundaryTests(unittest.TestCase):
         self.assertTrue([e for e in calls if e['kind'] == 'tool.finished'])
         self.assertTrue(all(e['id'] < accepted for e in calls if e['kind'] != 'tool.refused'), calls)
 
+    def test_a_client_that_sees_a_stage_assigned_or_skipped_reads_that_stage_in_the_status(self):
+        # Catches a stage's assignment (or skip) and the run's stage committed one after the other: a client that read
+        # `events` and then `status` between the two saw the stage begin while the status named the previous stage.
+        import threading
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory) / 'home')
+            real_db, reading, run = controller._db, threading.local(), {}
+            stale, open_stages = [], set()
+            def read_as_a_client():
+                events = controller.call('events', run)['events']
+                status = controller.call('status', run)
+                begun = [e for e in events if e['kind'] in ('stage.assigned', 'stage.skipped')]
+                if not begun or any(e['kind'] == 'stage.accepted' and e['id'] > begun[-1]['id'] for e in events):
+                    return
+                stage = begun[-1]['data']['stage']
+                open_stages.add(stage)
+                if status['stage'] != stage:
+                    stale.append((stage, status['stage']))
+            @contextlib.contextmanager
+            def committing():
+                with real_db() as db:
+                    yield db
+                # The transaction has committed: read the run the way any client may read it now.
+                if run and not getattr(reading, 'active', False):
+                    reading.active = True
+                    try:
+                        read_as_a_client()
+                    finally:
+                        reading.active = False
+            def prepare(original, spec, stage, *_):
+                return {'skip': 'scripted: nothing to ground'} if stage == 'ground' else {'inputs': [], 'allowed_tools': []}
+            try:
+                with scripted_stages(controller, check=lambda *_: {'ok': True, 'artifacts': [], 'checks': []},
+                                     prepare=prepare), \
+                        unittest.mock.patch.object(controller, '_db', committing):
+                    run.update(controller.call('start', {'goal': 'Scripted stages; no model or device',
+                                                         'executor_config': {'command': ['never-launched']}}))
+                    result = wait_stopped(controller, run)
+                events = controller.call('events', run)['events']
+            finally:
+                controller.close()
+        self.assertEqual(result['status'], 'completed', result)
+        self.assertEqual([e['data']['stage'] for e in events if e['kind'] == 'stage.skipped'], ['ground'])
+        self.assertEqual(open_stages, {'acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse'})
+        self.assertEqual(stale, [])
+
 
 class GenericEmitInputTests(unittest.TestCase):
     """Generic emit receives an interpreted model and a successful probe record that model wrote, from probe or ground,

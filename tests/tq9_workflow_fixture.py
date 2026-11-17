@@ -28,7 +28,7 @@ def model():
 
 
 def capabilities():
-    return {'schema':'benchmark-capabilities/2','tasks':{
+    return {'schema':'capabilities/2','tasks':{
         task:{'operation':operation,'constants':{},'inputs':{'duty':{'parameter':'duty','kind':'copy'}} if task=='set_duty' else {},
               'outputs':{'temperature':{'output':'temperature','unit':'degC'}} if task=='temperature' else {}}
         for task,operation in [('temperature','measure'),('arm','arm'),('set_duty','set_duty'),('disarm','disarm')]}}
@@ -174,8 +174,8 @@ elif stage=='emit':
 elif stage=='reuse':
     package=task['inputs'][0]
     sequence=[('measure',{}),('arm',{}),('set_duty',{'duty':370}),('disarm',{})]
-    if 'benchmark_package_execute' in task['allowed_tools']:
-        results=[call('benchmark_package_execute',{'package_dir':package,'operation':op,'parameters':params}) for op,params in sequence]
+    if 'package_execute' in task['allowed_tools']:
+        results=[call('package_execute',{'package_dir':package,'operation':op,'parameters':params}) for op,params in sequence]
     else:
         import asyncio
         from mcp import ClientSession,StdioServerParameters

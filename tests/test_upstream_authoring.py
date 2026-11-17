@@ -71,7 +71,7 @@ class UpstreamAuthoringTests(unittest.TestCase):
             truth, manifest, image, output, (renode, ghidra, java), command = qualification_inputs(Path(temp))
             # The fixture's checked value is the toy sensor's temperature, which its mutants rescale.
             for reference in truth['references'].values():
-                reference['capabilities'] = {'schema': 'benchmark-capabilities/2', 'tasks': {'sample': {
+                reference['capabilities'] = {'schema': 'capabilities/2', 'tasks': {'sample': {
                     'operation': 'sample', 'constants': {}, 'inputs': {},
                     'outputs': {'value': {'output': 'temperature', 'unit': 'degC'}}}}}
             for phase in truth['phases'].values():

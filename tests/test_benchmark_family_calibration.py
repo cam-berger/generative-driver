@@ -281,7 +281,7 @@ class ReferenceExecutionTests(unittest.TestCase):
                 {'kind':'call','task':'sample','inputs':{},'grants':['write']},
                 {'kind':'observe','checks':[c['id'] for c in phase['contract']['checks']]}]
             truth['phases']['final']=phase;truth['recipe']={};truth['contracts']={'time_policy':{'sample_settle_seconds':0}}
-            caps={'schema':'benchmark-capabilities/2','tasks':{'sample':{'operation':'sample','constants':{},'inputs':{},
+            caps={'schema':'capabilities/2','tasks':{'sample':{'operation':'sample','constants':{},'inputs':{},
                 'outputs':{k:{'output':k,'unit':u} for k,u in (('temperature','degC'),('sequence','count'))}}}}
             try:yield temp,Session,pin,truth,caps
             finally:server.shutdown();thread.join()
@@ -615,7 +615,7 @@ class ReuseBoundaryTests(unittest.TestCase):
             root=Path(temp)
             mapping={'tasks':{'measure':{'operation':'sample','outputs':{
                 'temperature':{'output':'t'},'sequence':{'output':'n'}}}}}
-            _write(root/'benchmark/state.json',{'package_attempts':{'reuse':'new'},
+            _write(root/'supplied/state.json',{'package_attempts':{'reuse':'new'},
                 'package_copies':{'reuse':str(root/'package')}})
             def events(sequence):
                 return [{'actor':'worker','stage':'reuse','attempt_id':'new','revision':0,'operation':'sample',
@@ -623,7 +623,7 @@ class ReuseBoundaryTests(unittest.TestCase):
                         'reference_temperature':-5,'monitor_sequence':n}} for n in sequence]
             with patch('generative_driver.benchmark_support.evaluator.grade',side_effect=AssertionError('final in the stage loop')):
                 for sequence,passed in (([3],False),([3,3],False),([3,4],True)):
-                    (root/'benchmark/package-events.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events(sequence)))
+                    (root/'supplied/package-events.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events(sequence)))
                     checked=observe_stage('sampled-sensor-v1','reuse',root,root,{'status':'completed'})
                     self.assertNotIn('stop',checked);self.assertNotIn('ok',checked)
                     # The reuse stage records the calls and judges nothing. The grader's judge gives the answer from the
@@ -773,7 +773,7 @@ class PublicObservationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp).resolve();package=root/'package';package.mkdir();(package/'toy').write_text('toy')
             run_dir=root/'home/runs/run-fixture'
-            _write(run_dir/'benchmark/state.json',{'package_copies':{'reuse':str(package)},'package_sha256':digest(package),
+            _write(run_dir/'supplied/state.json',{'package_copies':{'reuse':str(package)},'package_sha256':digest(package),
                 'package_attempts':{'reuse':'toy'}})
             values={'latched_q4':65456,'acquisition_counter':3}
             class Session:
@@ -792,10 +792,10 @@ class PublicObservationTests(unittest.TestCase):
             with patch('generative_driver.supplied.package_runner.package_invoker',return_value=lambda *args:{'ok':True,'outputs':{}}):
                 invoke=package_call(run_dir,'reuse',arguments)
                 result=controller._device_call({'id':'run-fixture','spec':json.dumps({'_case_pin':{'case_id':'sampled-sensor-v1'}})},
-                                               {'id':'reuse-attempt','stage':'reuse'},'benchmark_package_execute',arguments,device,invoke)
+                                               {'id':'reuse-attempt','stage':'reuse'},'package_execute',arguments,device,invoke)
             self.assertEqual(result['observation']['reference_temperature'],-5)
             self.assertEqual(result['observation']['monitor_sequence'],3)
-            row=json.loads((run_dir/'benchmark/package-events.jsonl').read_text())
+            row=json.loads((run_dir/'supplied/package-events.jsonl').read_text())
             self.assertEqual(row['before_observation']['monitor_sequence'],3)
 
 class WrapperTests(unittest.TestCase):

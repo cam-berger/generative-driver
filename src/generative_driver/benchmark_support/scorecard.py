@@ -45,7 +45,7 @@ CODEX = ('thread.', 'turn.', 'item.')
 # The transcript entries that are exchanges with the device.
 EXCHANGES = ('exchange', 'usb_control')
 # The tools that connect to the device, whose finished results (or, for `emit_test_live`, live records) hold the exchanges.
-DEVICE_TOOLS = ('probe_run', 'interface_execute', 'emit_test_live', 'benchmark_package_execute')
+DEVICE_TOOLS = ('probe_run', 'interface_execute', 'emit_test_live', 'package_execute')
 # The code the toolchain gives a live-test call whose process could not be started: it reached nothing.
 NOT_STARTED = 'open'
 # Each token counter and its key in a worker's usage.
@@ -174,7 +174,7 @@ def _kept(run_dir: Path, stage: str, assignment: dict):
     directory, `work/<stage>/<assignment>`. An interpretation works in a sealed workspace outside the run, named
     `attempt<N>`, and the outputs it collects, the transcript among them, are frozen into a record of the attempt:
     `preparation/<assignment>/interpret/attempt*` when each interpretation is prepared on its own, and
-    `benchmark/tools/interpret/attempt<N>` in a benchmark run, where the attempts share one tool run and the index in the
+    `supplied/tools/interpret/attempt<N>` in a benchmark run, where the attempts share one tool run and the index in the
     workspace's name says which attempt it is."""
     identity = assignment.get('id')
     if not isinstance(identity, str) or not NAME.fullmatch(identity):
@@ -186,7 +186,7 @@ def _kept(run_dir: Path, stage: str, assignment: dict):
             yield from (folder / TRANSCRIPT for folder in sorted(record.iterdir()) if folder.name.startswith('attempt'))
         sealed = str(assignment.get('workspace')).replace('\\', '/').rstrip('/').rsplit('/', 1)[-1]
         if re.fullmatch('attempt[0-9]+', sealed):
-            yield run_dir / 'benchmark' / 'tools' / 'interpret' / sealed / TRANSCRIPT
+            yield run_dir / 'supplied' / 'tools' / 'interpret' / sealed / TRANSCRIPT
 
 
 def _read_actions(transcript: Path):
@@ -390,7 +390,7 @@ def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None, run
       `tool.started` event and no `tool.finished` event, as when its tool raised after the dispatch, since it may have
       exchanged what no result recorded.
 
-    Two limits remain, and the exchanges of such a stage are exact only apart from them. A `benchmark_package_execute`
+    Two limits remain, and the exchanges of such a stage are exact only apart from them. A `package_execute`
     result is counted where it holds a transcript, as the package's own result does on the device the bench harness
     provides; on the physical case (bme280) it is a measurement row with none, so those exchanges are not counted, and the
     stage reads a number that is lower than what the device exchanged. And the replies a package's live test saw the device

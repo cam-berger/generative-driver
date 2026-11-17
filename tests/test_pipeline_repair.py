@@ -36,7 +36,7 @@ class InterpretationBindingTests(unittest.TestCase):
             root = Path(temporary).resolve(); ws = root/'worker'; ws.mkdir()
             model_dir = ws/'model'; model_dir.mkdir()
             (model_dir/'model.json').write_text(json.dumps(model()))
-            _write(root/'run/benchmark/state.json', {'adapted_model_dir': str(model_dir),
+            _write(root/'run/supplied/state.json', {'adapted_model_dir': str(model_dir),
                 'adaptation': {'adapted_model_sha256': digest(model_dir/'model.json')}})
             private = root/'outside.txt'; private.write_text('PRIVATE OUTSIDE SENTINEL')
             try:
@@ -81,7 +81,7 @@ class InterpretationBindingTests(unittest.TestCase):
                 {'path': str(p), 'sha256': digest(p)} for p in source.iterdir()]}]
             prepare_stage('tq9-v2', 'probe', root/'run', root/'probe', accepted,
                           {'device': {'session_id': 'provided', 'binding': {'host': '127.0.0.1', 'port': 1}}})
-            (root/'probe/capabilities.json').write_text('{"schema":"benchmark-capabilities/2","tasks":{}}')
+            (root/'probe/capabilities.json').write_text('{"schema":"capabilities/2","tasks":{}}')
             observe_stage('tq9-v2', 'probe', root/'run', root/'probe',
                 {'status': 'needs_revision', 'summary': 'Canonical tasks are missing', 'unresolved': ['temperature']}, accepted)
             diff = [{'source': 'probe_run', 'dispatch_id': '7', 'code': 'output', 'what': 'key not present in reply'}]
@@ -111,7 +111,7 @@ class InterpretationBindingTests(unittest.TestCase):
             (ws/'model.json').write_text('{}')
             self.assertEqual(json.loads((ws/prior['model.json']).read_text()), expected_model)
             self.assertNotIn('evaluator_password', json.dumps(context))
-            next((root/'run/benchmark/candidate-history').rglob('model.json')).write_text('{}')
+            next((root/'run/supplied/candidate-history').rglob('model.json')).write_text('{}')
             with self.assertRaisesRegex(ValueError, 'repair evidence hash changed'):
                 prepare_stage('tq9-v2', 'interpret', root/'run', root/'changed', accepted,
                     options={'revision': 1, 'feedback': diff})
@@ -240,7 +240,7 @@ class IndependentProbeObservationTests(unittest.TestCase):
             self.assertFalse(peer.paused_requests)
             self.assertNotIn('command', json.dumps(result['observation']))
             self.assertNotIn('expected', json.dumps(result['observation']))
-            journal = root/'home/runs/run-fixture/benchmark/live-observations-0.jsonl'
+            journal = root/'home/runs/run-fixture/supplied/live-observations-0.jsonl'
             self.assertTrue(journal.is_file(), 'Live comparison is lost before the next repair')
             saved = json.loads(journal.read_text().splitlines()[0])
             self.assertEqual(saved['result']['outputs']['temperature'], 200)
@@ -315,7 +315,7 @@ class DiagnosticRepairTests(unittest.TestCase):
         from generative_driver.benchmark_support.case_assets import write_json as _write
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            _write(root/'run/benchmark/state.json', {'diagnostic': {'passed': True}})
+            _write(root/'run/supplied/state.json', {'diagnostic': {'passed': True}})
             checked = observe_stage('tq9-v2', 'ground', root/'run', root/'worker',
                 {'status': 'needs_revision', 'summary': 'Decoded temperature contradicts the paired instrument reading',
                  'unresolved': ['The decoder needs a measured scale correction']})
@@ -377,7 +377,7 @@ class DiagnosticRepairTests(unittest.TestCase):
         from hashlib import sha256
         candidate = model()
         candidate['operations']['measure']['outputs']['temperature']['unit'] = 'degC'
-        capabilities = {'schema': 'benchmark-capabilities/2', 'tasks': {
+        capabilities = {'schema': 'capabilities/2', 'tasks': {
             'temperature': {'operation': 'measure', 'constants': {}, 'inputs': {},
                 'outputs': {'temperature': {'output': 'temperature'}}},
             'set_duty': {'operation': 'set_duty', 'constants': {},
@@ -392,7 +392,7 @@ class DiagnosticRepairTests(unittest.TestCase):
             raw = json.dumps(candidate).encode()
             (model_dir/'model.json').write_bytes(raw)
             (ws/'capabilities.json').write_text(json.dumps(capabilities))
-            _write(root/'run/benchmark/state.json', {'adapted_model_dir': str(model_dir),
+            _write(root/'run/supplied/state.json', {'adapted_model_dir': str(model_dir),
                 'adaptation': {'adapted_model_sha256': sha256(raw).hexdigest()}})
             with patch('generative_driver.benchmark_support.evaluator.reference_execute') as dispatch, \
                  patch('generative_driver.toolkit.call_tool') as tools:
@@ -420,7 +420,7 @@ class DiagnosticRepairTests(unittest.TestCase):
             root = Path(temporary); ws = root/'worker'; ws.mkdir()
             model_dir = ws/'model'; model_dir.mkdir()
             (model_dir/'model.json').write_text('{}')
-            _write(root/'run/benchmark/state.json', {'adapted_model_dir': str(model_dir),
+            _write(root/'run/supplied/state.json', {'adapted_model_dir': str(model_dir),
                 'adaptation': {'adapted_model_sha256': sha256(b'{}').hexdigest()}})
             (ws/'capabilities.json').write_text('{unfinished')
             checked = observe_stage('tq9-v2', 'probe', root/'run', ws, {'status': 'needs_revision', 'unresolved': []})
@@ -470,7 +470,7 @@ class DiagnosticRepairTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root/'model.json').write_text(json.dumps(model()))
-            invoke = model_invoker(root, {'schema': 'benchmark-capabilities/2', 'tasks': {}},
+            invoke = model_invoker(root, {'schema': 'capabilities/2', 'tasks': {}},
                                    {'host': '127.0.0.1', 'port': 1}, root/'tools', [])
             try:
                 result = invoke('temperature', {}, [])

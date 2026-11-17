@@ -8,7 +8,7 @@ class BehaviorTests(unittest.TestCase):
     def test_each_target_reaches_the_candidate_parameter(self):
         model = {'operations': {'set_percent': {'parameters': {
             'percent': {'type': 'integer', 'minimum': 0, 'maximum': 100},}, 'outputs': {}}}}
-        mapping = {'schema': 'benchmark-capabilities/2', 'tasks': {
+        mapping = {'schema': 'capabilities/2', 'tasks': {
             'set_output': {'operation': 'set_percent', 'constants': {},
                 'inputs': {'fraction': {'parameter': 'percent', 'scale': 100, 'offset': 0}},
                 'outputs': {}}}}
@@ -95,7 +95,7 @@ class BehaviorTests(unittest.TestCase):
         task = {'operation': 'set', 'constants': {'bank': 'A'},
                 'inputs': {'fraction': {'parameter': 'level', 'scale': 100, 'offset': 0}},
                 'outputs': {}}
-        mapping = {'schema': 'benchmark-capabilities/2', 'tasks': {'set_output': task}}
+        mapping = {'schema': 'capabilities/2', 'tasks': {'set_output': task}}
         self.assertEqual(bind_task(mapping, 'set_output', {'fraction': .25}, model)['parameters'],
                          {'level': 25, 'bank': 'A'})
         bad = [({'fraction': .25, 'extra': 1}, task),
@@ -110,7 +110,7 @@ class BehaviorTests(unittest.TestCase):
         for supplied, spec in bad:
             with self.subTest(supplied=supplied, spec=spec):
                 with self.assertRaises(ValueError):
-                    bind_task({'schema': 'benchmark-capabilities/2', 'tasks': {'set_output': spec}},
+                    bind_task({'schema': 'capabilities/2', 'tasks': {'set_output': spec}},
                               'set_output', supplied, model)
 
     def test_copy_preserves_bounded_bank_enums_and_operation_independence(self):
@@ -121,7 +121,7 @@ class BehaviorTests(unittest.TestCase):
                         'inputs': {'requested_bank': {'parameter': 'bank', 'kind': 'copy'}},
                         'outputs': {}}
                  for name in model['operations']}
-        mapping = {'schema': 'benchmark-capabilities/2', 'tasks': tasks}
+        mapping = {'schema': 'capabilities/2', 'tasks': tasks}
         for op in tasks:
             for bank in ('A', 'B'):
                 self.assertEqual(bind_task(mapping, op, {'requested_bank': bank}, model),
@@ -134,14 +134,14 @@ class BehaviorTests(unittest.TestCase):
             'sensor_temp': {'from': 'reply', 'kind': 'ascii_number', 'unit': 'degC'}}}}}
         task = {'operation': 'read', 'constants': {}, 'inputs': {},
                 'outputs': {'temperature': {'output': 'sensor_temp', 'unit': 'degC'}}}
-        mapping = {'schema': 'benchmark-capabilities/2', 'tasks': {'read_temp': task}}
+        mapping = {'schema': 'capabilities/2', 'tasks': {'read_temp': task}}
         self.assertEqual(bind_task(mapping, 'read_temp', {}, model),
                          {'operation': 'read', 'parameters': {}})
         for output in ({'output': 'wrong', 'unit': 'degC'},
                        {'output': 'sensor_temp', 'unit': 'kelvin'}):
             with self.subTest(output=output):
                 with self.assertRaises(ValueError):
-                    bind_task({'schema': 'benchmark-capabilities/2', 'tasks': {
+                    bind_task({'schema': 'capabilities/2', 'tasks': {
                         'read_temp': dict(task, outputs={'temperature': output})}},
                         'read_temp', {}, model)
 
@@ -190,7 +190,7 @@ class BehaviorTests(unittest.TestCase):
     def test_copy_numeric_scalar_obeys_model_bounds(self):
         model = {'operations': {'set': {'parameters': {'gain': {
             'type': 'number', 'minimum': -1.0, 'maximum': 1.0}}, 'outputs': {}}}}
-        mapping = {'schema': 'benchmark-capabilities/2', 'tasks': {'set_gain': {
+        mapping = {'schema': 'capabilities/2', 'tasks': {'set_gain': {
             'operation': 'set', 'constants': {},
             'inputs': {'gain': {'parameter': 'gain', 'kind': 'copy'}}, 'outputs': {}}}}
         self.assertEqual(bind_task(mapping, 'set_gain', {'gain': -.5}, model)['parameters'], {'gain': -.5})
@@ -210,7 +210,7 @@ class BehaviorTests(unittest.TestCase):
     def test_extreme_integer_input_fails_as_validation_error(self):
         model = {'operations': {'set': {'parameters': {'x': {
             'type': 'number', 'minimum': -1.0, 'maximum': 1.0}}, 'outputs': {}}}}
-        mapping = {'schema': 'benchmark-capabilities/2', 'tasks': {'set_x': {
+        mapping = {'schema': 'capabilities/2', 'tasks': {'set_x': {
             'operation': 'set', 'constants': {},
             'inputs': {'x': {'parameter': 'x', 'kind': 'copy'}}, 'outputs': {}}}}
         with self.assertRaises(ValueError):

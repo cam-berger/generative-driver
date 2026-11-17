@@ -284,7 +284,6 @@ class DeviceAccess:
 
     def worker_tool(self, method, params, run, assignment, marker=None):
         """Generated tool Adapter joins the run's existing lease and independent observer."""
-        from .configurator import _emulated
         from interface_runtime.package import verify_package, digest
         from interface_runtime.evidence import read_json
         configured = assignment['device_mcp']
@@ -327,11 +326,9 @@ class DeviceAccess:
             if state['resets_on_open'] and not channel.get('resets_on_open'):
                 raise ValueError('The model omits resets_on_open observed on this device')
         spec = json.loads(run['spec'])
-        if _emulated(spec) and not spec.get('device'):
-            raise ValueError('An emulated case runs only on the device the bench harness provides')
         progress = self.owner._workflow_progress(run['id']) if spec.get('device') else {}
         if spec.get('device') and binding != (progress.get('device') or {}).get('binding'):
-            raise ValueError('Assigned binding differs from the provided device')
+            raise ValueError('Assigned binding differs from the supplied device')
         facts = {'connected': True, 'argument_sha256': {'package_dir': assignment['inputs'][str(package)]},
                  'operation': operation, 'parameters': arguments,
                  **({'device_session_id': (progress.get('device') or {}).get('session_id')} if spec.get('device') else {})}
@@ -350,7 +347,7 @@ class DeviceAccess:
         invoke = lambda: self.invoke_package(package, configured['manifest_sha256'], operation, arguments, binding, assignment['effects'])
         if spec.get('device'):
             from .device_client import open_device
-            result = self.owner._device_call(run, assignment, 'benchmark_package_execute',
+            result = self.owner._device_call(run, assignment, 'package_execute',
                 {'package_dir': str(package), 'operation': operation, 'parameters': arguments, 'mcp': proof},
                 open_device(spec['device']), invoke, expected_session_id=(progress.get('device') or {}).get('session_id'))
         else:

@@ -139,8 +139,11 @@ def benchmark_run(db, workspace):
     what its worker's gateway calls carry."""
     from generative_driver.configurator import PROTOCOL
     workspace.mkdir(parents=True)
-    spec = {'goal': 'x', 'case': 'toy', 'executor': 'codex', 'executor_config': {}, 'budget_seconds': 600,
-            'effects': ['read']}
+    # A benchmark run is a run on a supplied device: the service tells it by its device, firmware and mission.
+    spec = {'goal': 'x', 'device': {'schema': 'device-descriptor/2'},
+            'firmware': {'path': str(workspace / 'firmware.bin'), 'sha256': '0' * 64},
+            'mission': {'tasks': {}, 'reuse_objective': 'x'}, 'executor': 'codex', 'executor_config': {},
+            'budget_seconds': 600, 'effects': ['read']}
     assignment = {'id': 'toy-acquire', 'stage': 'acquire', 'workspace': str(workspace), 'inputs': {},
                   'allowed_tools': ['model_validate'], 'report_required': True, 'binding': None, 'effects': ['read'],
                   'revision': 0}

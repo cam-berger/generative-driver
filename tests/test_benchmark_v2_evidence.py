@@ -402,10 +402,12 @@ class ReportV2Tests(unittest.TestCase):
             saved = root / 'runs' / 'fixture' / 'benchmark'
             saved.mkdir(parents=True)
             (saved / 'execution.json').write_text(json.dumps(snapshot))
-            (saved / 'state.json').write_text(json.dumps({**payload,
+            # The run's own records lie under `supplied/`; the snapshot stays under `benchmark/`.
+            (saved.parent / 'supplied').mkdir()
+            (saved.parent / 'supplied' / 'state.json').write_text(json.dumps({**payload,
                 'final_evaluation': {'verdict': 'failed', 'passed': 0, 'total': 1, 'evidence_sha256': 'f'*64}}))
             result = {'ok': True, 'run_id': 'fixture', 'status': 'failed', 'created': 0, 'updated': 5,
-                'case_pin': payload['case_pin'], 'snapshot_sha256': snapshot['snapshot_sha256'],
+                'client_record': {'case_pin': payload['case_pin'], 'snapshot_sha256': snapshot['snapshot_sha256']},
                 'configuration': {'case': 'toy'}, 'accepted_handoffs': [],
                 'worker_reports': [{'assignment_id': 'a', 'stage': 'probe', 'status': 'completed', 'elapsed_seconds': 1,
                     'usage': None, 'report': {'status': 'completed', 'summary': 'PRIVATE SENTINEL'}}],

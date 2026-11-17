@@ -41,7 +41,7 @@ MISSION = {
 MODEL = {'channel': {'type': 'uart'},
          'operations': {'level': {'parameters': {}, 'outputs': {'level': {'unit': 'percent'}}},
                         'status': {'parameters': {}, 'outputs': {'status': {'unit': 'code'}}}}}
-MAPPING = {'schema': 'benchmark-capabilities/2', 'tasks': {
+MAPPING = {'schema': 'capabilities/2', 'tasks': {
     'read_level': {'operation': 'level', 'constants': {}, 'inputs': {},
                    'outputs': {'level': {'output': 'level', 'unit': 'percent'}}},
     'read_status': {'operation': 'status', 'constants': {}, 'inputs': {},
@@ -95,14 +95,14 @@ def hand_written_firmware(root):
 
 def write_state(run_dir, state):
     """Write `state` as the stage state file of the run at `run_dir`."""
-    path = Path(run_dir) / 'benchmark' / 'state.json'
+    path = Path(run_dir) / 'supplied' / 'state.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state), encoding='utf-8')
 
 
 def read_state(run_dir):
     """What the stage state file of the run at `run_dir` holds."""
-    return json.loads((Path(run_dir) / 'benchmark' / 'state.json').read_text(encoding='utf-8'))
+    return json.loads((Path(run_dir) / 'supplied' / 'state.json').read_text(encoding='utf-8'))
 
 
 def hand_written_package(root, body):
@@ -292,7 +292,7 @@ class StageInputTests(StageCase):
 
     def test_05_B2_the_probe_objective_and_its_validator_name_the_missions_tasks(self):
         prepared = self.prepare('probe', self.interpreted(), {'device': {'session_id': 'supplied', 'binding': BINDING}})
-        self.assertIn('Write capabilities.json with schema benchmark-capabilities/2 and tasks read_level, read_status. '
+        self.assertIn('Write capabilities.json with schema capabilities/2 and tasks read_level, read_status. '
                       'Each task declares operation, constants, inputs and outputs.', prepared['objective'])
         self.assertEqual(prepared['binding'], BINDING)
         workspace = self.root / 'probe'
@@ -319,11 +319,11 @@ class StageInputTests(StageCase):
         self.assertEqual(prepared['objective'],
                          'Use only the emitted package and this objective: Read the level twice and report both '
                          'readings.\nProvided operating conditions (public facts):\n- The device answers one request '
-                         'at a time.\n Use benchmark_package_execute for each operation. Find names and arguments in '
+                         'at a time.\n Use package_execute for each operation. Find names and arguments in '
                          'the package reference. Each result also carries an instrument reading of the emulated device '
                          'after the call. Report actual observations and limitations.')
         self.assertEqual(prepared['inputs'], [str(self.root / 'reuse' / 'package')])
-        self.assertEqual(prepared['allowed_tools'], ['benchmark_package_execute'])
+        self.assertEqual(prepared['allowed_tools'], ['package_execute'])
 
 
 class PackageCallTests(StageCase):
@@ -365,13 +365,13 @@ class FreshReuseTests(StageCase):
 
     def record(self, result, device):
         """Record one package call of fresh reuse that gave `result`, as the service does after the call."""
-        self.stages.record_call(self.run, 'reuse', 'benchmark_package_execute',
+        self.stages.record_call(self.run, 'reuse', 'package_execute',
                                 {'operation': 'level', 'parameters': {'samples': 1}}, result, {'level': 39},
                                 {'level': 40}, {'assignment_id': 'reuse-1', 'device': device})
 
     def rows(self):
         """The rows of the run's record of package calls."""
-        path = self.run / 'benchmark' / 'package-events.jsonl'
+        path = self.run / 'supplied' / 'package-events.jsonl'
         return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
 
     def test_05_B4_observing_reuse_hands_on_the_package_copy_with_no_check(self):
@@ -506,7 +506,7 @@ class DiscrepancyTests(TemporaryDirectoryCase):
                  'outputs': {name: {'output': name, 'unit': unit}
                              for name, unit in (('temperature', 'degC'), ('humidity', 'percent'))}}
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({'schema': 'benchmark-capabilities/2', 'tasks': dict.fromkeys(tasks, entry)}),
+        path.write_text(json.dumps({'schema': 'capabilities/2', 'tasks': dict.fromkeys(tasks, entry)}),
                         encoding='utf-8')
 
     def live_call(self, temperature, *, sequence, reference=20.0, humidity=40.0):

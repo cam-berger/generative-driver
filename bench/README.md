@@ -49,7 +49,7 @@ generative-driver --home /operator/state/benchmark benchmark run --case tq9-v2 -
 
 Replace placeholder paths with your own absolute paths. Quote paths containing spaces. Keep the same absolute global `--home` through configure, start, status, resume and report. Emulator approval covers assigned emulator tools only. MCP uses `scoped_tool_approval: "emulator"`. Use `original` for V2 families. The `case_seed` controls evaluator episodes.
 
-A detached bench harness receives password-file/Renode paths on stdin, authenticates admission, starts the device and passes only its descriptor/hashes to the configurator. The configurator never receives the password or its path. Legacy TQ9 uses its legacy recipe through the same harness.
+A detached bench harness receives password-file/Renode paths on stdin, pins the case, authenticates admission and starts the device. It freezes the case's inputs in its trial folder and supplies the device descriptor, the frozen firmware and the mission to the configurator, which knows no case. The configurator never receives the password or its path. Legacy TQ9 uses its legacy recipe through the same harness.
 
 Save `trial_id` and `run_id`. `--wait` follows device shutdown and post-run grading/sealing. Records live at `<state>-bench/trials/<trial_id>`. Repeating `--request-id` follows the same trial without another device. To finish an unscored/unposted evaluation, or grade a formerly stopped trial whose run later completed:
 
@@ -205,7 +205,7 @@ Limits:
 - Worker actions are read only from Codex transcripts.
 - Device exchanges are counted once, where the device made them: a replay (`probe_diff`, `emit_check`) is skipped, and an `emit_test_live` is counted in the live record its result names, found inside the run's folder.
 - A stage's `exchanges` read `unknown` (None), not a lower bound, when it may have missed some: the live record is missing or unreadable; one of its calls left no result to count (the package printed no JSON object, its process timed out or the host failed around the call); or a call to a device tool started and never finished. A call whose process never started counts zero.
-- On the bme280 case a `benchmark_package_execute` call returns a measurement with no transcript, so its exchanges are not counted and the stage's figure is a lower bound; on the provided emulator it is counted where its result holds a transcript.
+- On the bme280 case a `package_execute` call returns a measurement with no transcript, so its exchanges are not counted and the stage's figure is a lower bound; on the provided emulator it is counted where its result holds a transcript.
 - Replies a live test saw the device reject are not counted as refusals.
 - Reading the configurator database leaves a `-shm` and an empty `-wal` file beside it in a quiescent home.
 

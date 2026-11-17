@@ -42,7 +42,7 @@ function render(data) {
   hasSnapshot = true;
   byId('status').textContent = data.stopping ? `${data.status} · stopping` : data.status;
   byId('status').className = `badge ${data.status}`;
-  byId('identity').textContent = [data.run_id, data.case, data.agent.model, data.reasoning_effort].filter(Boolean).join(' · ');
+  byId('identity').textContent = [data.run_id, data.agent.model, data.reasoning_effort].filter(Boolean).join(' · ');
   byId('elapsed').textContent = duration(data.elapsed_seconds);
   byId('accepted').textContent = `${data.accepted_count} / 6`;
   byId('repairs').textContent = String(data.repairs);

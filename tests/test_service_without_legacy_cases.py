@@ -53,9 +53,9 @@ class ServiceWithoutLegacyCasesTests(unittest.TestCase):
         found = [name for name, path in zip(names, modules) if imports(path.read_bytes(), GONE)]
         self.assertEqual(found, [])
 
-    def test_04_B4_emulator_approval_without_a_case_names_a_current_case(self):
-        with self.assertRaisesRegex(ValueError,
-                                    '^Emulator approval requires a registered benchmark case such as tq9-v2$'):
+    def test_04_B4_emulator_approval_without_a_device_names_no_case(self):
+        # The refusal named a current case until the service stopped knowing cases (06-B12 of the untangle Run).
+        with self.assertRaisesRegex(ValueError, '^Emulator approval requires a supplied device$'):
             configurator.validate_scoped_approval({'scoped_tool_approval': 'emulator'})
 
 

@@ -149,10 +149,9 @@ class ReportTests(unittest.TestCase):
         import shutil
         from unittest.mock import patch
         from generative_driver.benchmark import case_root
-        from generative_driver.benchmark_support.registry import pin_case
         from generative_driver.configurator import Controller
         from generative_driver.reporting import report_run
-        from suite_fixtures import provided_device
+        from suite_fixtures import supplied_start
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             installed = root / 'installation'
@@ -165,10 +164,11 @@ class ReportTests(unittest.TestCase):
                     patch('generative_driver.configurator.execute', scripted):
                 controller = Controller(root / 'home')
                 try:
-                    run = controller.start({'goal': 'report pinned execution', 'case': 'tq9-v2',
-                        'effects': ['write', 'actuate'],
-                        'executor_config': {'model': 'original', 'command': ['scripted-codex']},
-                        **provided_device(self, root / 'fixture', pin_case('tq9-v2', 'original', 0))})
+                    # As the bench harness starts it: the case frozen, and the snapshot copied into the run's folder.
+                    start = supplied_start(self, root / 'fixture', home=root / 'home', goal='report pinned execution',
+                                           case_options={'scenario_id': 'original'}, effects=['write', 'actuate'],
+                                           executor_config={'model': 'original', 'command': ['scripted-codex']})
+                    run = start.keep(root / 'home', controller.start(start))
                     until = time.monotonic() + 5
                     while time.monotonic() < until:
                         status = controller.call('status', run)

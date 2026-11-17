@@ -45,7 +45,6 @@ def project_run(result, *, now=None, assignment_id=None):
             'equivalence': {'equivalent': final.get('equivalent'), 'basis': final.get('basis'), 'label': equivalence_label(final),
                             'diff': final.get('diff', [])} if isinstance(final, dict) else None,
             'elapsed_seconds': max(0, end - result['created']), 'observed_at': now,
-            'case': result.get('case'),
             'agent': {key: result.get('agent', {}).get(key) for key in ('runtime', 'model')},
             'reasoning_effort': result.get('agent', {}).get('settings', {}).get('reasoning_effort')}
 

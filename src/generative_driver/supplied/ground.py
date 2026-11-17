@@ -59,7 +59,7 @@ def device_evidence(accepted, workspace, *, readings=True):
                            'sha256': sha})
         inputs.append(str(target))
     index = bundle/'device-observations.json'
-    index.write_text(json.dumps({'schema': 'benchmark-ground-evidence/3', 'model': {'directory': 'model', 'sha256': model_sha},
+    index.write_text(json.dumps({'schema': 'ground-evidence/3', 'model': {'directory': 'model', 'sha256': model_sha},
         'capabilities': mapping, 'probes': probes, 'live_observations': live,
         **({'instrument': 'before_observation and observation are instrument readings of the emulated device with '
                           'units: device evidence, as a real device\'s readings would be, never a grade.'}

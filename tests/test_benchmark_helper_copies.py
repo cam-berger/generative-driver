@@ -151,11 +151,10 @@ class HarnessIntegrityTests(HarnessTrialFixture):
     """What `harness.conclude` records when grading code stops for integrity with the grader's own class."""
 
     def conclude(self, result, *, truth_source):
-        """The trial record `harness.conclude` returns for the completed run of `result`, in a new trial directory."""
+        """The trial record `harness.conclude` returns for the completed run of `result`, in the trial folder its
+        case was frozen in."""
         from generative_driver.benchmark_support import harness
-        trial = self.root / 'trial'
-        trial.mkdir()
-        return harness.conclude(trial, 'tq9-v2', self.home / 'runs' / result['run_id'], result,
+        return harness.conclude(self.frozen, 'tq9-v2', self.home / 'runs' / result['run_id'], result,
                                 password=self.password_object(), truth_source=truth_source, token=TOKEN,
                                 call=self.configurator)
 

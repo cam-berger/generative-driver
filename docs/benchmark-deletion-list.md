@@ -43,6 +43,8 @@ Nothing that stays needs these. The deletion removes them.
 | `tests/test_benchmark_helper_copies.py` | Holds the grader's helpers to the tool's answers. No file that stays imports it. |
 | `tests/test_benchmark_legacy_cases_dropped.py` | Holds the benchmark and this list to the drop of the two legacy cases. No file that stays imports it. |
 | `tests/test_benchmark_run.py` | Tests only the benchmark. No file that stays imports it. |
+| `tests/test_benchmark_runs.py` | Holds the benchmark, the documents and this list to a benchmark run that starts as a supplied run. No file that stays imports it. |
+| `tests/test_benchmark_runs_unchanged.py` | Holds a benchmark run to what the kit-fixes Run left unchanged for it. No file that stays imports it. |
 | `tests/test_benchmark_supplied_stages.py` | Holds the benchmark and this list to the move of the stage code to the tool. No file that stays imports it. |
 | `tests/test_benchmark_truth.py` | Tests only the benchmark. No file that stays imports it. |
 | `tests/test_generated_device.py` | Tests only the benchmark. No file that stays imports it. |
@@ -76,11 +78,11 @@ The tool, its tests or its documents need these today. Deleting one now would br
 | `docs/benchmark-corpus.md` | `README.md` links to it | 10 |
 | `.scratch/benchmark-lifecycle/` | `MANIFEST.in` puts it in the source archive, because `docs/verification.md` links to it | 10 |
 | `tests/benchmark_case_stages.py` | `tests/test_benchmark_stages.py` and 9 other test files import it | 10 |
-| `tests/benchmark_family_fixtures.py` | `tests/test_benchmark_family_calibration.py` and 6 other test files import it | 10 |
-| `tests/generated_fixtures.py` | `tests/test_generated_family.py` and 5 other test files import it | 10 |
+| `tests/benchmark_family_fixtures.py` | `tests/test_benchmark_family_calibration.py` and 7 other test files import it | 10 |
+| `tests/generated_fixtures.py` | `tests/test_generated_family.py` and 9 other test files import it | 10 |
 | `tests/native_benchmark_families.py` | `tests/test_distribution.py` requires it in the source archive | 10 |
 | `tests/native_codex_pipeline.py` | `docs/codex-acceptance.md` gives it as the acceptance command | 10 |
-| `tests/suite_fixtures.py` | `tests/test_benchmark_scenarios.py` and 23 other test files import it | 10 |
+| `tests/suite_fixtures.py` | `tests/test_benchmark_scenarios.py` and 25 other test files import it | 10 |
 | `tests/test_assistive_reports.py` | Tests the tool and the benchmark together | 10 |
 | `tests/test_assistive_wording.py` | Tests the tool and the benchmark together | 10 |
 | `tests/test_benchmark_family_calibration.py` | Tests the tool and the benchmark together | 10 |
@@ -139,7 +141,7 @@ The tool, its tests or its documents need these today. Deleting one now would br
 | `tests/test_unlocked_keys.py` | Tests the tool and the benchmark together | 10 |
 | `tests/test_upstream_authoring.py` | Tests the tool and the benchmark together | 10 |
 | `tests/test_vault_gate.py` | Tests the tool and the benchmark together | 10 |
-| `tests/tq9_workflow_fixture.py` | `tests/suite_fixtures.py` and 12 other test files import it | 10 |
+| `tests/tq9_workflow_fixture.py` | `tests/suite_fixtures.py` and 13 other test files import it | 10 |
 | `tests/upstream_fixture.py` | `tests/test_native_rehosting.py` and `tests/test_upstream_authoring.py` import it | 10 |
 
 ## Tool modules that import the benchmark
@@ -189,11 +191,11 @@ Lines that say `bench` outside the marked passages, in files that stay. `stays` 
 | `STANDARDS.md` | 2 | Rules about the bench harness. Only the owner edits this file | 10 |
 | `docs/agents/domain.md` | 1 | One sentence names the benchmark beside the tool's parts | 10 |
 | `docs/codex-acceptance.md` | 3 | Describes acceptance through the benchmark's suite. Feature 10 settles what moves | 10 |
-| `docs/codex.md` | 4 | Mixed paragraphs. `tests/test_assistive_wording.py` requires the wording of one | 10 |
+| `docs/codex.md` | 6 | Mixed paragraphs. `tests/test_assistive_wording.py` requires the wording of one | 10 |
 | `docs/dashboard.md` | 1 | One sentence of a tool paragraph | 10 |
 | `docs/design.md` | 16 | The accepted design describes the tool and the benchmark together | 10 |
 | `docs/design.md` | 1 | Links to the published record under `bench/evidence/`, which is kept | stays |
-| `docs/extending-drivers-and-mcp.md` | 1 | One sentence of a tool paragraph | 10 |
+| `docs/extending-drivers-and-mcp.md` | 2 | One sentence in each of two tool paragraphs | 10 |
 | `docs/setup.md` | 1 | A paragraph about line endings whose reason is benchmark hashes | 10 |
 | `docs/support.md` | 2 | A table row and a paragraph that cover the tool and the benchmark together | 10 |
 | `plugins/generative-driver/skills/generative-driver/SKILL.md` | 5 | The client skill covers benchmark runs in steps it shares with tool runs. Not marked: an agent reads the file as text, so a marker would change what it sees | 10 |
@@ -210,6 +212,8 @@ These stay. The deletion does not touch them, and no passage in them is marked.
 | `docs/features/untangle/` | This Run's own folder. |
 | `docs/features/kit-fixes/` | Record of the kit-fixes Run. |
 | `docs/adr/0002-driver-contract-and-generated-mcp.md` | Decision record of the tool. |
+| `docs/adr/0008-run-the-installed-runtime-over-package-data.md` | Decision record of the tool. |
+| `docs/adr/0009-device-first-interpretation.md` | Decision record of the tool. |
 | `docs/superpowers/plans/2026-10-28-driver-contract-mcp.md` | Plan of the tool, a record. |
 | `docs/superpowers/specs/2026-10-28-driver-contract-mcp-design.md` | Design of the tool, a record. `docs/design.md` links to it. |
 | `docs/research/` | Research notes, a record. |

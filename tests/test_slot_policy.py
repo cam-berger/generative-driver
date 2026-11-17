@@ -696,7 +696,8 @@ class NoRunTests(ScoringFixture):
 
     def test_06_B4_a_refused_start_faults_with_its_word_and_reruns(self):
         error = ValueError('Refused under /private/start-path')
-        with self.scripted(), self.refusing_once(self.controller, 'start', error):
+        # The suite starts its child through the service's `_start`, with the slot's request as the run's intent.
+        with self.scripted(), self.refusing_once(self.controller, '_start', error):
             record = self.run_harness(request_id='start')
         self.assertRerunAfter(record, 'start-refused', '/private/start-path')
 
@@ -1017,7 +1018,7 @@ class RerunTests(ScoringFixture):
             for run_id in (first, rerun):
                 specs[run_id] = json.loads(db.execute('SELECT spec FROM runs WHERE id=?', (run_id,)).fetchone()['spec'])
         self.assertNotEqual(specs[first]['request_id'], specs[rerun]['request_id'])
-        self.assertEqual(specs[first]['_case_pin'], specs[rerun]['_case_pin'])
+        self.assertEqual(specs[first]['client_record']['case_pin'], specs[rerun]['client_record']['case_pin'])
         self.assertEqual(specs[rerun]['budget_seconds'], set_manifest()['child_budget_seconds'])
         trials = [trial for trial in self.trial_records() if trial['run_id'] in (first, rerun)]
         self.assertEqual(len({trial['trial_id'] for trial in trials}), 2)

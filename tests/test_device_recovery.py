@@ -94,11 +94,11 @@ class ProvidedRunTests(unittest.TestCase):
         self.controller = Controller(self.root / 'home')
         self.addCleanup(lambda: self.controller.close())
         self.first = Device(self, self.image, self.root / 'first')
-        self.run = self.controller.start({
-            'goal': 'g', 'case': 'tq9-v2', 'effects': ['write', 'actuate'], 'case_options': {'scenario_id': 'original'},
-            'executor_config': {'command': ['missing-runtime-b4']}, 'device': self.first.server.descriptor,
-            'admission': {'calibration_evidence_sha256': EVIDENCE},
-            'evaluation_token_sha256': hashlib.sha256(TOKEN.encode()).hexdigest()})
+        from suite_fixtures import supplied_start
+        self.run = self.controller.start(supplied_start(
+            self, self.root / 'frozen', descriptor=self.first.server.descriptor, home=self.controller.home,
+            case_options={'scenario_id': 'original'}, token=TOKEN, goal='g', effects=['write', 'actuate'],
+            executor_config={'command': ['missing-runtime-b4']}))
         self.run_id = self.run['run_id']
         self.stopped = wait_stopped(self.controller, self.run)
 
@@ -180,7 +180,7 @@ class ProvidedRunTests(unittest.TestCase):
         for params, error, message in (
                 ({'token': 'forged token'}, ValueError, 'evaluation token'),
                 ({'token': None}, ValueError, 'evaluation token'),
-                ({'device': {**descriptor, 'image_sha256': '0' * 64}}, IntegrityError, 'image'),
+                ({'device': {**descriptor, 'firmware_sha256': '0' * 64}}, IntegrityError, 'another firmware'),
                 ({'device': {**descriptor, 'control': {}}}, ValueError, 'control endpoint'),
                 ({'device': {**descriptor, 'session_id': 'another-session'}}, ValueError, 'descriptor names'),
                 # The device the run released no longer answers healthy: the harness must provide a verified one.
@@ -206,7 +206,7 @@ class ProvidedRunTests(unittest.TestCase):
                                               'receipts': []})
         self.assertEqual(self.spec()['device'], descriptor)
         self.assertEqual(self.events('device.attached'), [{'session_id': descriptor['session_id'],
-            'binding': descriptor['binding'], 'provider_id': descriptor['provider_id'],
+            'binding': descriptor['binding'],
             'previous': {'session_id': held['session_id'], 'binding': held['binding']}}])
         # Resume claims the attached device's binding: another active run that owns it refuses the resume.
         with self.controller._db() as db:
@@ -283,7 +283,7 @@ class ProvidedRunTests(unittest.TestCase):
         model = Path(assignment['workspace']) / 'model'; model.mkdir()
         (model / 'model.json').write_text(json.dumps(self.model))
         before = len(self.events('tool.started'))
-        with self.assertRaisesRegex(ValueError, 'Assigned binding differs from the provided device'):
+        with self.assertRaisesRegex(ValueError, 'Assigned binding differs from the supplied device'):
             self.controller.call('tool', {**self.run, 'assignment_id': 'wrong', 'name': 'interface_execute',
                                           'arguments': {'model_dir': str(model), 'operation': 'disarm', 'parameters': {}}})
         self.assertEqual(len(self.events('tool.started')), before)
@@ -292,26 +292,17 @@ class ProvidedRunTests(unittest.TestCase):
         self.assertEqual(self.pending(), [])
         self.assertEqual([peer.device_commands for peer in second.peers], [[]])
 
-    def test_an_emulated_run_without_a_provided_device_neither_resumes_nor_dispatches(self):
-        # A run recorded before the harness provided devices (no descriptor): the configurator holds no emulator to
-        # start for it, so it neither resumes a stage nor dispatches a live call.
+    def test_a_run_an_earlier_version_started_on_a_case_does_not_resume(self):
+        # A run recorded before a client supplied the firmware and the mission: its spec names a case and no device.
+        # The configurator knows no case, so it does not resume the run (06-B11 of the untangle Run).
         from generative_driver.configurator import _json
         second = Device(self, self.image, self.root / 'second')
         self.attach(second)
-        assignment, _, _, _ = self.uncertain_write(second)
+        earlier = {'case': 'tq9-v2', **{k: v for k, v in self.spec().items()
+                                         if k not in ('device', 'firmware', 'mission', 'client_record')}}
         with self.controller._db() as db:
-            db.execute('DELETE FROM pending_effects WHERE run_id=?', (self.run_id,))
-            db.execute('UPDATE runs SET uncertain=0,spec=? WHERE id=?',
-                       (_json({k: v for k, v in self.spec().items() if k != 'device'}), self.run_id))
-        model = Path(assignment['workspace']) / 'model'; model.mkdir()
-        (model / 'model.json').write_text(json.dumps(self.model))
-        with self.assertRaisesRegex(ValueError, 'runs only on the device the bench harness provides'):
-            self.controller.call('tool', {**self.run, 'assignment_id': 'write', 'name': 'interface_execute',
-                                          'arguments': {'model_dir': str(model), 'operation': 'disarm', 'parameters': {}}})
-        self.assertEqual(len(self.events('tool.started')), 1)  # The recorded write only; nothing was dispatched.
-        with self.controller._db() as db:
-            db.execute("UPDATE runs SET status='blocked' WHERE id=?", (self.run_id,))
-        with self.assertRaisesRegex(ValueError, 'start a new trial'):
+            db.execute('UPDATE runs SET spec=? WHERE id=?', (_json(earlier), self.run_id))
+        with self.assertRaisesRegex(ValueError, 'started on a benchmark case by an earlier version; start a new run'):
             self.controller.call('resume', self.run)
         self.assertEqual(len(self.events('stage.assigned')), 1)
         self.assertEqual([peer.device_commands for peer in second.peers], [[]])
@@ -353,16 +344,15 @@ class ProvidedRunTests(unittest.TestCase):
         self.assertEqual(second.provider.status()['session_id'], receipt['new_session_id'])
 
     def test_a_failed_write_of_any_stage_on_a_provided_emulator_is_replaced(self):
-        # Catches recovery gated on the stage or the pin's approval scope: a write the frozen driver fails during fresh
-        # reuse (or emit), or on legacy tq9's emulator, whose pin names no approval scope, stopped the trial for safety
-        # with no verdict, though the harness provides that emulator as it does any other.
+        # Catches recovery gated on the stage: a write the frozen driver fails during fresh reuse (or emit) stopped the
+        # trial for safety with no verdict, though the device is supplied as at any other stage. The run's spec
+        # holds no pin whose approval scope could gate it.
         second = Device(self, self.image, self.root / 'second')
         self.attach(second)
         assignment, progress, started, finished = self.uncertain_write(second)
         from generative_driver.device_recovery import reconcile
-        pin = self.spec()['_case_pin']
-        legacy = {**pin, 'manifest': {k: v for k, v in pin['manifest'].items() if k != 'approval_scope'}}
-        spec = {**self.spec(), '_case_pin': legacy, '_device': progress.get('device')}
+        self.assertNotIn('_case_pin', self.spec())
+        spec = {**self.spec(), '_device': progress.get('device')}
         checked = reconcile(self.controller, self.run_id, spec, {**assignment, 'stage': 'reuse'},
                             self.root / 'home/runs' / self.run_id, progress)
         self.assertEqual((checked['recovery']['unresolved_dispatch_ids'], checked['recovery']['unresolved_evidence_ids']),
@@ -461,9 +451,7 @@ class ProvidedRunTests(unittest.TestCase):
         def dying(*args, **kwargs):
             second.provider.session.stop()
             raise RuntimeError('provider process died during the replacement')
-        cases = (('no provided device', {'device': None}, None, 'Outstanding effect requires operator reconciliation'),
-                 ('no provided emulator', {'device': {**self.spec()['device'], 'kind': 'physical'}}, None,
-                  'Outstanding effect requires operator reconciliation'),
+        cases = (('no supplied device', {'device': None}, None, 'Outstanding effect requires operator reconciliation'),
                  ('forged receipt', {}, patch.object(DeviceClient, 'replace', forged), 'Emulator recovery unverified'),
                  ('provider died', {}, patch.object(second.provider, 'replace', side_effect=dying), 'Emulator recovery unverified'),
                  ('provider gone', {}, None, 'Emulator recovery unverified: Device provider unavailable'))

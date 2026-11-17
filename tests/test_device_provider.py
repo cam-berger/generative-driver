@@ -492,7 +492,7 @@ class HarnessDelegationTests(ProviderFixture):
         from generative_driver.configurator import digest
         from generative_driver.device_client import open_device
         package = self.root/'package'; package.mkdir(); (package/'toy').write_text('toy')
-        _write(self.run_dir/'benchmark/state.json', {'package_copies': {'reuse': str(package.resolve())},
+        _write(self.run_dir/'supplied/state.json', {'package_copies': {'reuse': str(package.resolve())},
             'package_sha256': digest(package), 'package_attempts': {'reuse': 'attempt'}})
         self.device.start()
         client = open_device(self.serve().descriptor)
@@ -504,13 +504,13 @@ class HarnessDelegationTests(ProviderFixture):
         with patch('generative_driver.supplied.package_runner.package_invoker', side_effect=invoker):
             invoke = package_call(self.run_dir, 'reuse', arguments)
             result = self.controller._device_call(self.run, {'id': 'reuse-attempt', 'stage': 'reuse'},
-                                                  'benchmark_package_execute', arguments, client, invoke)
+                                                  'package_execute', arguments, client, invoke)
             # Only the unchanged stage-assigned copy may run; anything else is refused before dispatch.
             with self.assertRaisesRegex(ValueError, 'stage-assigned package'):
                 package_call(self.run_dir, 'reuse', {**arguments, 'package_dir': str(self.root)})
         self.assertEqual(running, [True]); self.assertFalse(self.peers[0].running)
         self.assertEqual(result['observation']['source'], 'instrument')
-        row = json.loads((self.run_dir/'benchmark/package-events.jsonl').read_text())
+        row = json.loads((self.run_dir/'supplied/package-events.jsonl').read_text())
         self.assertEqual(row['observation'], result['observation'])
         self.assertFalse(keys(row) & MONITOR)
 

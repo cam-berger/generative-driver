@@ -106,11 +106,11 @@ def tried_again(report, device, outcome):
 
 
 def grade(protocol, mission=True):
-    """A well-formed equivalence/1 record of an equivalent driver, as the harness posts it for a run under `protocol`."""
-    return {'schema': 'equivalence/1', 'status': 'graded', 'equivalent': True, 'basis': 'evaluator', 'method': 'fresh-final',
+    """A well-formed equivalence/2 record of an equivalent driver, as the harness posts it for a run under `protocol`."""
+    return {'schema': 'equivalence/2', 'status': 'graded', 'equivalent': True, 'basis': 'evaluator',
             'checks': [{'id': 'final/effect-0/duty', 'passed': True}], 'diff': [], 'passed': 1, 'total': 1,
             'mission': {'name': 'fresh_worker_mission', 'passed': mission}, 'frozen_artifact_sha256': 'e' * 64,
-            'capabilities_sha256': 'c' * 64, 'evidence_sha256': 'e' * 64, 'protocol': protocol}
+            'evidence_sha256': 'e' * 64, 'protocol': protocol}
 
 
 # What each system must share, and a change to a report that breaks it. The order is the one a refusal names them in.

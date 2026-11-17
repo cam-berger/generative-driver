@@ -77,7 +77,7 @@ A generated mission has no `operating_conditions` and no task `sampling`. Inputs
 | `machine` | The device's state machine, below |
 | `sequences` | The hidden sequences, `[{"id", "steps"}, …]`, the *i*-th named `s<i>` |
 | `mission` | `{"state"}`: the values that the mission's `reuse_objective` leaves in the cells it determines, whatever state the device started in. Fresh reuse is judged against them |
-| `references` | `{"a", "b"}`, each `{"model", "capabilities"}`: an `interface-model/6` driver model and its `benchmark-capabilities/2` mapping of the mission's tasks |
+| `references` | `{"a", "b"}`, each `{"model", "capabilities"}`: an `interface-model/6` driver model and its `capabilities/2` mapping of the mission's tasks |
 | `mutants` | `[{"id", "model", "capabilities", "expected_failed_checks"}, …]` |
 
 A cell's value is an unsigned integer of the cell's width.
@@ -183,4 +183,4 @@ They show no expected value, input or state name.
 
 ## Versions and the worked example
 
-From this version on, a change to any rule here changes the version of the schema it touches. Version 1 of the answer key is refused. The manifest keeps version 1 with the eight-digit id, since no set was written before it. The public test fixture, [tests/generated_fixtures.py](../tests/generated_fixtures.py), is the worked example, and the validator accepts it.
+From this version on, a change to any rule here changes the version of the schema it touches. Version 1 of the answer key is refused. A reference's capability mapping declares the schema `capabilities/2`. A mapping under the earlier name of that schema is refused, so a set sealed with it is refused; no set is registered. The manifest keeps version 1 with the eight-digit id, since no set was written before it. The public test fixture, [tests/generated_fixtures.py](../tests/generated_fixtures.py), is the worked example, and the validator accepts it.

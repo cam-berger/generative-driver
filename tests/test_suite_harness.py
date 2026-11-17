@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from generative_driver.benchmark_support.truth import EvaluatorPassword
-from suite_fixtures import drive_suite
+from suite_fixtures import drive_suite, harness_keys, outside_start
 from test_configurator import scripted_stages
 from test_evaluation import CASE_TRUTH, FAIL, PASS, PendingRunFixture, files, reference
 from test_harness import EVIDENCE, unstarted_provider
@@ -55,7 +55,7 @@ class HarnessSuiteFixture(PendingRunFixture):
         self.admitted.append({'case': case_id, 'trial': Path(trial_dir), 'password': password, 'renode': renode,
                               'options': dict(options)})
         return (unstarted_provider(self, self.image, trial_dir, self.peers), {'calibration_evidence_sha256': EVIDENCE},
-                self.unlocked_truth(getattr(self, 'fixture_payload', None)))
+                self.unlocked_truth(getattr(self, 'fixture_payload', None)), self.pin())
 
     def grading(self, *outcomes):
         """A scripted final phase per grading call, in order: values to grade, or an exception the evaluator meets."""
@@ -795,7 +795,7 @@ class FrozenChildTests(HarnessSuiteFixture):
         def intercept(method, params, forward):
             if method == 'suite_start_child':
                 altered.append(ALTERATIONS[0][1](params['request']))
-                return forward('start', altered[-1])
+                return forward('start', outside_start(altered[-1]))
             return forward(method, params)
         def runtime(request):
             if request.stage == 'acquire':
@@ -889,7 +889,7 @@ class CancellationTests(HarnessSuiteFixture):
         def intercept(method, params, forward):
             if method == 'suite_start_child':
                 self.controller._suites.cancel(params['suite_id'])
-                return forward('start', params['request'])
+                return forward('start', outside_start(params['request']))
             return forward(method, params)
         def runtime(request):
             if request.stage == 'acquire':
@@ -903,8 +903,10 @@ class CancellationTests(HarnessSuiteFixture):
         self.assertEqual(child['status'], 'cancelled')
         self.assertEqual(self.graded, [])
         token = next(params['token'] for method, params in calls if method == 'suite_reserve')
-        attached = self.controller.call('suite_attach', {'suite_id': sid, 'token': token, 'ordinal': 0, 'run_id': child['run_id']})
-        self.assertEqual((attached['run_id'], attached.get('cancelled')), (child['run_id'], True))
+        # A plain `start` cannot record the slot's frozen request as its intent, so the attach refuses the child as
+        # another's; it stays cancelled.
+        with self.assertRaisesRegex(ValueError, 'Frozen suite child identity mismatch'):
+            self.controller.call('suite_attach', {'suite_id': sid, 'token': token, 'ordinal': 0, 'run_id': child['run_id']})
         self.assertEqual(self.controller.call('result', {'run_id': child['run_id']})['status'], 'cancelled')
 
 
@@ -960,7 +962,7 @@ class ReservationTests(HarnessSuiteFixture):
         # Catches an attach that takes the run found under a pending slot's request: that slot would run beside the
         # active one, out of order and past the suite's one active child.
         from generative_driver.benchmark_support.suites import child_request
-        from test_harness import EVIDENCE, Device
+        from test_harness import Device
         calls = []
         with self.harness(runtime=self.stopping_probe()):
             sid = self.drive(calls, manifest=manifest(2), executor='codex', options={})['suite_id']
@@ -968,11 +970,11 @@ class ReservationTests(HarnessSuiteFixture):
             self.assertEqual([t['status'] for t in suite['trials']], ['running', 'pending'])
             (self.root / 'outside').mkdir()
             device = Device(self, self.image, self.root / 'outside')
-            # The pending slot's own request, on a device of its own: nothing about it but its slot is out of place.
-            outside = self.controller.call('start', {**child_request(suite['frozen'], suite['trials'][1]),
-                                                     'device': device.server.descriptor,
-                                                     'admission': {'calibration_evidence_sha256': EVIDENCE},
-                                                     'evaluation_token_sha256': hashlib.sha256(b'outside').hexdigest()})
+            # The pending slot's own request, on a device of its own, as a plain `start` takes it.
+            request = child_request(suite['frozen'], suite['trials'][1])
+            added = harness_keys(self, self.root / 'outside', request['case_pin'], request['executor_config'],
+                                 descriptor=device.server.descriptor, token='outside')
+            outside = self.controller.call('start', {**outside_start(request), **added})
             token = next(params['token'] for method, params in calls if method == 'suite_reserve')
             with self.assertRaisesRegex(ValueError, 'not reserved'):
                 self.controller.call('suite_attach', {'suite_id': sid, 'token': token, 'ordinal': 1,

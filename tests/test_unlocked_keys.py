@@ -337,14 +337,17 @@ class PinWithoutTruthFileTests(PendingRunFixture):
     def test_02_B22_a_configurator_start_and_admit_refuse_a_missing_or_replaced_truth_file(self):
         truth_file = self.root / 'resources/groundtruth/tq9-v2.enc'
         kept = truth_file.read_bytes()
-        start = {'goal': 'g', 'case': 'tq9-v2', 'effects': ['write', 'actuate'], 'case_options': {'scenario_id': 'original'},
-                 'executor_config': {'command': ['scripted-runtime']}}
+        from suite_fixtures import supplied_start
+        descriptor = {'schema': 'device-descriptor/2'}
         for name, change, error, message in (
                 ('missing', lambda: truth_file.unlink(), registry.PendingCaseError, 'Case truth is unbuilt'),
                 ('replaced', lambda: truth_file.write_bytes(b'replaced'), ValueError, 'Case truth hash mismatch')):
             change()
-            with self.subTest(name, seam='configurator'), self.assertRaisesRegex(error, message):
-                self.controller.call('start', start)
+            # The harness pins the case before it sends a start: the configurator pins none.
+            with self.subTest(name, seam='harness start'), self.assertRaisesRegex(error, message):
+                supplied_start(self, self.root / 'frozen', descriptor=descriptor, goal='g', effects=['write', 'actuate'],
+                               case_options={'scenario_id': 'original'},
+                               executor_config={'command': ['scripted-runtime']})
             with self.subTest(name, seam='admit'), self.assertRaisesRegex(error, message):
                 harness.admit('tq9-v2', {'scenario_id': 'original'}, self.root / 'trial', password=truth.EvaluatorPassword(SECRET))
             truth_file.write_bytes(kept)
@@ -446,8 +449,8 @@ class AdmitTests(unittest.TestCase):
         _, path = sealed_case(self, self.root / 'resources', self.password)
         admits_calibration(self)
         with UnlockSpy(path) as spy:
-            provider, admission, unlocked = harness.admit('tq9-v2', {'scenario_id': 'original'}, self.root / 'trial',
-                                                          password=self.password, renode='scripted-emulator')
+            provider, admission, unlocked, _ = harness.admit('tq9-v2', {'scenario_id': 'original'}, self.root / 'trial',
+                                                             password=self.password, renode='scripted-emulator')
         self.assertEqual(spy.count, 1)
         self.assertEqual(provider.recipe, RECIPE)
         self.assertEqual(set(admission), {'calibration_evidence_sha256'})
@@ -885,9 +888,9 @@ class SuitePasswordTests(HarnessSuiteFixture):
         real = self.admit
 
         def admit(case_id, options, trial_dir, *, password, renode=None):
-            provider, admission, _ = real(case_id, options, trial_dir, password=password, renode=renode)
+            provider, admission, _, pin = real(case_id, options, trial_dir, password=password, renode=renode)
             generations.append(len(generations) + 1)
-            return provider, admission, self.unlocked_truth({'recipe': {}, 'generation': generations[-1]})
+            return provider, admission, self.unlocked_truth({'recipe': {}, 'generation': generations[-1]}), pin
 
         def execute(pin, unlocked, *args, **kwargs):
             graded.append(unlocked)

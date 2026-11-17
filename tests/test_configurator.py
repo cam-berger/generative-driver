@@ -3526,7 +3526,7 @@ class ConfiguratorTests(unittest.TestCase):
                     controller.call('start',{**params,'binding':{'port':'COM9'},'effects':[]})
                 run=controller.call('start',{**params,'binding':{'port':'COM9'}})
                 self.assertEqual(controller.call('result',run)['scoped_tool_approval'],'bound-device')
-                with self.assertRaisesRegex(ValueError,'conflicting'):
+                with self.assertRaisesRegex(ValueError,'start takes no case_options'):
                     controller.call('start',{**params,'binding':{'port':'COM9'},'case_options':{'binding':{'port':'COM10'}}})
             finally:
                 controller.close()
@@ -4084,11 +4084,11 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
             controller = Controller(Path(directory))
             params = {'goal':'Describe a supplied device', 'executor':'codex', 'request_id':'test-start',
                       'executor_config':{'command':['a-runtime-that-does-not-exist'],'model':'configured-model','version':'contract-version'},
-                      'case_options':{'operator_note':'not-an-agent-input'}}
-            # The configurator holds no password file: the bench harness does, for the cases that need one.
+                      'operator_note':'not-an-agent-input'}
+            # The configurator holds no password file: a client does, where it needs one.
             with self.assertRaisesRegex(ValueError, 'password'):
                 controller.call('start', {**params, 'request_id':'test-password',
-                                          'case_options':{'evaluator_password_file':'not-an-agent-input'}})
+                                          'evaluator_password_file':'not-an-agent-input'})
             run = controller.call('start', params)
             second = controller.call('start', params)
             self.assertEqual(run['run_id'], second['run_id'])

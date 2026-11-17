@@ -26,10 +26,14 @@ class ScenarioTests(unittest.TestCase):
                     patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root/'resources'):
                 controller = Controller(root/'home')
                 try:
+                    # The bench harness pins the case before it sends a start: the refusal is its own now, and the
+                    # start it would send is never built.
+                    from suite_fixtures import supplied_start
                     for scenario in ('semantic','control','identity','unknown'):
                         with self.subTest(scenario=scenario), self.assertRaisesRegex(ValueError, 'scenario'):
-                            controller.start({'goal':'scripted rejection','case':'tq9-v2',
-                                'effects':['write','actuate'], 'case_options':{'scenario_id':scenario}})
+                            controller.start(supplied_start(self, root/'frozen', home=root/'home',
+                                descriptor={'schema':'device-descriptor/2'}, goal='scripted rejection',
+                                effects=['write','actuate'], case_options={'scenario_id':scenario}))
                     with controller._db() as db:
                         self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 0)
                 finally:

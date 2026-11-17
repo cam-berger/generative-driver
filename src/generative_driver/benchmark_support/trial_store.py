@@ -262,8 +262,8 @@ def _run_entries(run_dir):
 def _member_entries(trial, run_dir, workspaces, *, stub):
     """(member name, `_Entry`) of everything a seal of this trial holds: the run folder but for
     `benchmark/execution.json` and `benchmark/inputs/`, which are public to that device's worker and which
-    `_verify_suite` and `report_run` need; the trial folder but for what `_leave_in_trial` names; and each temporary
-    interpret workspace, its folder itself included."""
+    `report_run`, the grader and the harness's check of the snapshot (`harness.check_snapshot`) need; the trial folder
+    but for what `_leave_in_trial` names; and each temporary interpret workspace, its folder itself included."""
     for entry in _entries(trial, _leave_in_trial(stub)):
         yield 'trial/' + entry.relative, entry
     if run_dir is not None:

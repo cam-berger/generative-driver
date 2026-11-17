@@ -52,7 +52,7 @@ class PublicMissionTests(unittest.TestCase):
                 {'stage': 'probe', 'artifacts': [{'path': str(model), 'sha256': digest(model)}]},
                 {'stage': 'emit', 'artifacts': [{'path': str(package), 'sha256': digest(package)}]}]
             run = root/'run'
-            stages._write(run/'benchmark/state.json', {'package_sha256': digest(package)})
+            stages._write(run/'supplied/state.json', {'package_sha256': digest(package)})
             binding = {'type': 'tcp', 'host': '127.0.0.1', 'port': 1}
             options = {'device': {'binding': binding}, 'configured_effects': ['write']}
 
@@ -91,7 +91,7 @@ class PublicMissionTests(unittest.TestCase):
                 plain = stages.prepare_stage('reuse', run, root/'plain-reuse', accepted, options,
                                                firmware=firmware, mission=mission)
                 self.assertEqual(plain['objective'], 'Use only the emitted package and this objective: '
-                    + mission['reuse_objective'] + ' Use benchmark_package_execute for each operation. '
+                    + mission['reuse_objective'] + ' Use package_execute for each operation. '
                     'Find names and arguments in the package reference. Each result also carries an instrument '
                     'reading of the emulated device after the call. Report actual observations and limitations.')
 
@@ -109,7 +109,7 @@ class PublicMissionTests(unittest.TestCase):
             model = workspace/'candidate'; model.mkdir()
             (model/'model.json').write_text(json.dumps(toy_sample_model()))
             mapping = workspace/'capabilities.json'
-            mapping.write_text(json.dumps({'schema': 'benchmark-capabilities/2', 'tasks': {}}))
+            mapping.write_text(json.dumps({'schema': 'capabilities/2', 'tasks': {}}))
             checked = subprocess.run([sys.executable, str(workspace/'validate_capabilities.py'),
                                       str(model), str(mapping)], capture_output=True, text=True, timeout=10)
             self.assertNotEqual(checked.returncode, 0)

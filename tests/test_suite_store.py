@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from generative_driver.configurator import Controller
-from suite_fixtures import drive_suite,harness_devices,provided_device,scripted_manifest,sqlite_context,wait_owner_suite
+from suite_fixtures import (drive_suite,harness_devices,harness_keys,outside_start,scripted_manifest,sqlite_context,
+                            supplied_start,wait_owner_suite)
 
 # The sha256 of the token of the bench harness a suite is frozen for.
 TOKEN='a1'*32
@@ -23,13 +24,15 @@ class StoreTests(unittest.TestCase):
                 suite=store.create(frozen,'one-request')
                 store.set_state(suite['suite_id'],'running')
                 reserved=store.reserve(suite['suite_id'])
-                # What the slot's bench harness adds to the child request: its device, its admission and its token hash.
-                added=provided_device(self,home/'fixture',frozen['entry_pins'][0])
-                started=controller.call('start',{**child_request(frozen,reserved),**added})
+                # What the slot's bench harness adds to the child request: its device, the frozen firmware and mission,
+                # its token hash and its client record. A plain start takes the request without the case.
+                request=child_request(frozen,reserved)
+                added=harness_keys(self,home/'fixture',frozen['entry_pins'][0],request['executor_config'])
+                started=controller.call('start',outside_start({**request,**added}))
                 reopened=SuiteStore(sqlite_context(home/'runs.sqlite3'))
                 same=reopened.reserve(suite['suite_id'])
                 self.assertEqual(same['child_request_id'],reserved['child_request_id'])
-                repeated=controller.call('start',{**child_request(frozen,same),**added})
+                repeated=controller.call('start',outside_start({**child_request(frozen,same),**added}))
                 self.assertEqual(repeated['run_id'],started['run_id'])
                 self.assertTrue(repeated['duplicate'])
                 reopened.attach(suite['suite_id'],same['ordinal'],same['child_request_id'],repeated['run_id'])
@@ -201,16 +204,23 @@ class StoreTests(unittest.TestCase):
 class ControllerStorageTests(unittest.TestCase):
     def test_expected_pin_refuses_changed_inputs_before_snapshot_or_child(self):
         from copy import deepcopy
+        from generative_driver.benchmark_support import harness
         from generative_driver.benchmark_support.suites import freeze_suite,child_request
         with tempfile.TemporaryDirectory() as temporary:
             home=Path(temporary);controller=Controller(home)
             try:
                 frozen=freeze_suite(scripted_manifest(),'codex',{'command':['missing-scripted-runtime']},{},{},harness_token_sha256=TOKEN)
-                request={**child_request(frozen,dict(frozen['trials'][0],child_request_id='pinned')),
-                         **provided_device(self,home/'fixture',frozen['entry_pins'][0])}
+                request=child_request(frozen,dict(frozen['trials'][0],child_request_id='pinned'))
+                # The bench harness checks a child's pin now, before it freezes the case or starts a device or a run.
                 changed=deepcopy(request);changed['case_pin']['manifest_sha256']='a'*64
-                with self.assertRaisesRegex(ValueError,'pin'):controller.start(changed)
-                self.assertFalse((home/'runs').exists())
+                secrets=harness_devices(self,home/'devices')
+                reached=lambda method,params=None,**kwargs:{'ok':True} if method=='ping' else controller.call(method,params)
+                record=harness.run_trial(home/'bench/pinned',{'trial_id':'pinned','home':str(home),'case':request['case'],
+                    'start':changed,'password_file':secrets['password_files']['tq9-v2'],'renode':secrets['renode']},call=reached)
+                self.assertEqual((record['status'],record['run_id'],record['no_run']),('failed',None,'admit-refused'))
+                self.assertRegex(record['reason'],'pin')
+                self.assertFalse((home/'runs').exists());self.assertFalse((home/'bench/pinned/benchmark').exists())
+                request=outside_start({**request,**harness_keys(self,home/'fixture',frozen['entry_pins'][0],request['executor_config'])})
                 started=controller.start(request)
                 (home/'config.json').write_text('INVALID CONFIG',encoding='utf-8')
                 duplicate=controller.start(request)
@@ -220,6 +230,7 @@ class ControllerStorageTests(unittest.TestCase):
 
     def test_frozen_child_config_does_not_merge_new_home_defaults(self):
         import json
+        from generative_driver.benchmark_support import harness
         from generative_driver.benchmark_support.suites import freeze_suite,child_request
         from generative_driver.benchmark_support.snapshots import read_snapshot
         with tempfile.TemporaryDirectory() as temporary:
@@ -227,23 +238,25 @@ class ControllerStorageTests(unittest.TestCase):
             try:
                 frozen=freeze_suite(scripted_manifest(),'codex',{'command':['missing-scripted-runtime'],'model':'frozen-model'},{},{},harness_token_sha256=TOKEN)
                 (home/'config.json').write_text(json.dumps({'executors':{'codex':{'model':'new-model','reasoning_effort':'high'}}}),encoding='utf-8')
-                request={**child_request(frozen,dict(frozen['trials'][0],child_request_id='frozen')),
-                         **provided_device(self,home/'fixture',frozen['entry_pins'][0])}
-                missing=dict(request,request_id='missing-config');missing.pop('executor_config')
-                started=controller.start(request)
-                config=read_snapshot(home/'runs'/started['run_id'])['executed']['runtime_configuration']
+                request=child_request(frozen,dict(frozen['trials'][0],child_request_id='frozen'))
+                # The bench harness settles the configuration and freezes the snapshot now. A suite child's
+                # configuration is complete: the harness lays no setting of the home under it.
+                executor,settled=harness.settled_executor(home,{},request)
+                added=harness_keys(self,home/'fixture',frozen['entry_pins'][0],settled)
+                config=read_snapshot(added.trial_dir)['executed']['runtime_configuration']
                 self.assertEqual(config['model'],'frozen-model')
                 self.assertNotIn('reasoning_effort',config)
-                with self.assertRaisesRegex(ValueError,'executor_config'):controller.start(missing)
-                ordinary={**request,'request_id':'ordinary',
-                          **provided_device(self,home/'fixture',frozen['entry_pins'][0])}
-                ordinary.pop('case_pin');ordinary.pop('executor_config')
-                # Keep a missing executable while retaining ordinary model/reasoning defaults.
-                ordinary['executor_config']={'command':['missing-scripted-runtime']}
-                normal=controller.start(ordinary)
+                # A trial outside a suite retains the ordinary model and reasoning defaults, with a missing executable:
+                # the harness's snapshot names them, and the run has them.
+                ordinary=supplied_start(self,home/'fixture',home=home,goal=request['goal'],request_id='ordinary',
+                    effects=request['effects'],executor_config={'command':['missing-scripted-runtime']})
+                normal=ordinary.keep(home,controller.start(ordinary))
                 normal_config=read_snapshot(home/'runs'/normal['run_id'])['executed']['runtime_configuration']
                 self.assertEqual(normal_config['model'],'new-model')
                 self.assertEqual(normal_config['reasoning_effort'],'high')
+                with controller._db() as db:
+                    spec=json.loads(db.execute('SELECT spec FROM runs WHERE id=?',(normal['run_id'],)).fetchone()['spec'])
+                self.assertEqual((spec['executor_config']['model'],spec['executor_config']['reasoning_effort']),('new-model','high'))
             finally:controller.close()
 
     def test_suite_facade_deduplicates_before_config_and_recovers_without_launch(self):
@@ -328,7 +341,8 @@ class ControllerStorageTests(unittest.TestCase):
                 self.assertEqual(identity['intervention_policy'],{'scoped_tool_approval':None,'max_model_repairs':2})
                 self.assertEqual(set(experiment['dimensions']),{'runtime','model','provider','version','reasoning_effort','max_turns','skills_revision','toolchain_revision'})
                 self.assertEqual(experiment['dimensions']['model'],'frozen-model')
-                child=controller.call('result',{'run_id':state['active_child_id']})
+                # The child's bench harness keeps the snapshot's hash in the child run's client record.
+                child=controller.call('result',{'run_id':state['active_child_id']})['client_record']
                 self.assertEqual(experiment['execution_snapshots'],[{'trial_key':slot['trial_key'],'snapshot_sha256':child['snapshot_sha256'] if slot['ordinal']==0 else None} for slot in frozen['trials']])
                 self.assertNotIn('PRIVATE',json.dumps(first))
                 (home/'config.json').write_text('INVALID CONFIG',encoding='utf-8')

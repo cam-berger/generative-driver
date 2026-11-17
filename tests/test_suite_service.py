@@ -203,14 +203,13 @@ class ServiceTests(unittest.TestCase):
 class SummaryTests(unittest.TestCase):
     def test_owner_v2_summary_projects_only_gate_identity_and_final_counts(self):
         from generative_driver.configurator import Controller
-        from generative_driver.benchmark_support.registry import pin_case
-        from suite_fixtures import provided_device
+        from suite_fixtures import supplied_start
         with tempfile.TemporaryDirectory() as home:
             owner=Controller(home)
             try:
-                run=owner.start({'goal':'Toy summary records','case':'tq9-v2','effects':['write','actuate'],
-                    'executor_config':{'command':['missing-runtime']},
-                    **provided_device(self,Path(home)/'fixture',pin_case('tq9-v2','original',0))})
+                run=owner.start(supplied_start(self,Path(home)/'fixture',case='tq9-v2',home=home,goal='Toy summary records',
+                    case_options={'scenario_id':'original'},effects=['write','actuate'],
+                    executor_config={'command':['missing-runtime']}))
                 result=wait_child(owner,run['run_id'])
                 # A v2 run projects its summary from the first result on: empty before any stage wrote state.
                 self.assertEqual(result['benchmark_summary'],
@@ -224,7 +223,8 @@ class SummaryTests(unittest.TestCase):
                 state['evaluations'][0]['records']=['PRIVATE']
                 state['maintenance']={'diagnostic':{'hidden':'PRIVATE'}}
                 state['final_evaluation']['vectors']=['PRIVATE']
-                path=Path(home)/'runs'/run['run_id']/'benchmark/state.json'
+                path=Path(home)/'runs'/run['run_id']/'supplied/state.json'
+                path.parent.mkdir(exist_ok=True)
                 path.write_text(json.dumps(state))
                 result=owner.call('result',run)
                 self.assertEqual(result.get('benchmark_summary'),safe)
@@ -318,7 +318,7 @@ class BudgetTests(unittest.TestCase):
 
 
 class RecoveryTests(unittest.TestCase):
-    def test_resume_verifies_snapshots_of_finished_children_before_any_new_assignment(self):
+    def test_resume_verifies_the_snapshot_of_the_stopped_child_before_any_new_assignment(self):
         from generative_driver.client import call
         from generative_driver.setup import configure
         from generative_driver.benchmark_support.suites import resume_suite, start_suite
@@ -333,13 +333,26 @@ class RecoveryTests(unittest.TestCase):
                 suite={'suite_id':start_suite(scripted_manifest(3),options=options(secrets),home=home)['suite_id']}
                 blocked=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked' and not s['stopping'])
                 self.assertEqual(blocked['completed'],1)
-                trials=call('suite_result',suite,home)['trials']
-                image=Path(home)/'runs'/trials[0]['run_id']/'benchmark/inputs/firmware.bin'
+                # The suite's bench harness checks the snapshot of the stopped child it would resume, in the child's
+                # run folder, before it starts a device for it: the child is not resumed, and the suite stays blocked.
+                image=Path(home)/'runs'/blocked['active_child_id']/'benchmark/inputs/firmware.bin'
                 image.write_bytes(b'changed temporary snapshot')
                 before=call('events',{'run_id':blocked['active_child_id']},home)['cursor']
-                refused=resume_suite(suite['suite_id'],options(secrets),home=home)
-                self.assertFalse(refused['ok'],refused)
-                self.assertIn('Snapshot',refused['reason'])
+                resume_suite(suite['suite_id'],options(secrets),home=home)
+                again=wait_suite(call,suite['suite_id'],home,lambda s:s['status']=='blocked' and not s['stopping']
+                                 and 'stopped driving' in (s.get('reason') or ''))
+                # The configurator is told which trial failed; the harness's own record says why.
+                import re
+                from generative_driver.benchmark_support.trial_store import bench_home
+                folder=re.search(r'suites/([^/\\]+)[/\\]suite\.json',again['reason']).group(1)
+                # The harness tells the configurator first and writes its own record after: wait for that record.
+                until=time.monotonic()+30
+                while True:
+                    record=json.loads((bench_home(home)/'suites'/folder/'suite.json').read_text())
+                    if (record.get('finished') and record.get('reason')) or time.monotonic()>until:break
+                    time.sleep(.05)
+                self.assertIn('Execution snapshot hash differs from saved run',record.get('reason') or '')
+                self.assertEqual(again['completed'],1)
                 self.assertEqual(call('events',{'run_id':blocked['active_child_id']},home)['cursor'],before)
             finally:shutdown_owner(home)
 

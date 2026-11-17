@@ -1,20 +1,24 @@
-"""The client interface, version 1: what a client that brings its own device and mission needs in code.
+"""The client interface, version 2: what a client that brings its own device, firmware and mission needs in code.
 
 Such a client asks four things of the service: start a run on a device it supplies, replace that device, post one
 final verdict, and read the run's records and its frozen driver. This module names the calls it may make, holds the
-rules of the two records it sends, and finds the frozen driver among a run's handoffs. The service applies these
-rules itself, so a record without a fault here is not refused there for its form. `docs/client-interface.md` says
-the same in plain words (Feature 03 of the untangle Run, docs/features/untangle/03-client-interface.md).
+rules of the records it sends, and finds the frozen driver among a run's handoffs. The service applies these rules
+itself, so a record without a fault here is not refused there for its form. `docs/client-interface.md` says the
+same in plain words (Features 03 and 06 of the untangle Run, docs/features/untangle/03-client-interface.md and
+docs/features/untangle/06-benchmark-runs.md).
 """
+import math
 import re
+from pathlib import Path
 
 # The faults of a device descriptor, by the function the service itself applies to a supplied device.
 from .device_client import descriptor_errors as device_errors
 
-__all__ = ['CALLS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors', 'frozen_driver', 'verdict_errors']
+__all__ = ['CALLS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors', 'firmware_errors', 'frozen_driver',
+           'mission_errors', 'verdict_errors']
 
 # The title of `docs/client-interface.md` carries this number.
-VERSION = 1
+VERSION = 2
 # Runs record their protocol; a run saved without this label used the earlier gated stage progression.
 PROTOCOL = 'assistive/1'
 # The service knows other calls too; these are the ones a client of this interface sends.
@@ -22,24 +26,24 @@ CALLS = ('ping', 'start', 'resume', 'status', 'events', 'result', 'attach_device
 # The verdict record a client posts after a run: check ids with passed flags (null for a check the evaluator could
 # not decide) and failing and undecided ids with a reason. Expected values, tolerances, witnesses and raw records stay
 # sealed, so no other field is accepted.
-VERDICT_FIELDS = frozenset({'schema', 'status', 'equivalent', 'basis', 'method', 'checks', 'diff', 'passed', 'total',
-                            'mission', 'frozen_artifact_sha256', 'capabilities_sha256', 'evidence_sha256', 'protocol'})
-# How the evaluator grades a frozen driver: on a fresh device of its own, or from the fresh reuse the run recorded.
-_METHODS = ('fresh-final', 'recorded-reuse')
+VERDICT_FIELDS = frozenset({'schema', 'status', 'equivalent', 'basis', 'checks', 'diff', 'passed', 'total', 'mission',
+                            'frozen_artifact_sha256', 'evidence_sha256', 'protocol'})
+_SHA256 = '[0-9a-f]{64}'
+_TASK_NAME = '[A-Za-z][A-Za-z0-9_]{0,63}'
+_INPUT_TYPES = ('integer', 'number', 'string', 'bytes')
+_SAMPLING = ('acquire', 'retained')
 
 
 def verdict_errors(record):
-    """The faults of the verdict record `record` as a list of sentences, empty for a well-formed `equivalence/1`
+    """The faults of the verdict record `record` as a list of sentences, empty for a well-formed `equivalence/2`
     record. The service refuses a posted verdict that has one."""
-    sha = lambda value: value is None or isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None
+    sha = lambda value: value is None or isinstance(value, str) and re.fullmatch(_SHA256, value) is not None
     text = lambda value: isinstance(value, str) and 0 < len(value) <= 300
     if not isinstance(record, dict) or set(record) != VERDICT_FIELDS:
-        return ['an equivalence/1 record has exactly the fields ' + ', '.join(sorted(VERDICT_FIELDS))]
+        return ['an equivalence/2 record has exactly the fields ' + ', '.join(sorted(VERDICT_FIELDS))]
     errors = []
-    if (record['schema'], record['basis'], record['protocol']) != ('equivalence/1', 'evaluator', PROTOCOL) or \
-            record['method'] not in _METHODS:
-        errors.append('schema equivalence/1, basis evaluator, method ' + ' or '.join(_METHODS) + ' and protocol ' + PROTOCOL
-                      + ' are required')
+    if (record['schema'], record['basis'], record['protocol']) != ('equivalence/2', 'evaluator', PROTOCOL):
+        errors.append('schema equivalence/2, basis evaluator and protocol ' + PROTOCOL + ' are required')
     checks, diff = record['checks'], record['diff']
     status, equivalent = record['status'], record['equivalent']
     # A check's passed flag is true or false, or null for a check the evaluator could not decide. An unknown grade holds
@@ -76,10 +80,80 @@ def verdict_errors(record):
                                 or type(mission.get('passed')) not in (bool, type(None))
                                 or any(not isinstance(mission[k], str) or len(mission[k]) > 300 for k in set(mission) - {'passed'})):
         errors.append('mission is {name, passed, reason, fault}')
-    if not all(sha(record[key]) for key in ('frozen_artifact_sha256', 'capabilities_sha256', 'evidence_sha256')):
+    if not all(sha(record[key]) for key in ('frozen_artifact_sha256', 'evidence_sha256')):
         errors.append('hashes are sha256 hex or null')
     elif status != 'unscored' and record['evidence_sha256'] is None:
         errors.append('a grade names the evidence it was sealed in')
+    return errors
+
+
+def firmware_errors(firmware):
+    """The faults of the supplied `firmware` as a list of sentences, empty for an object with exactly `path`, an
+    absolute path as text, and `sha256`, 64 lowercase hex characters. Whether a file lies at `path`, and whether its
+    bytes hash to `sha256`, is for the service to say when the run starts."""
+    if not isinstance(firmware, dict) or set(firmware) != {'path', 'sha256'}:
+        return ['a firmware has exactly path and sha256']
+    errors = []
+    if not isinstance(firmware['path'], str) or not Path(firmware['path']).is_absolute():
+        errors.append('path is an absolute path')
+    if not isinstance(firmware['sha256'], str) or not re.fullmatch(_SHA256, firmware['sha256']):
+        errors.append('sha256 is 64 lowercase hex characters')
+    return errors
+
+
+def _text(value):
+    """Whether `value` is text that is not blank."""
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _output_ok(output):
+    """Whether one output of a task is well formed: a unit that is null or text, and with an `instrument` the
+    tolerance the tool holds the device's reading of that name to."""
+    if not isinstance(output, dict) or 'unit' not in output:
+        return False
+    if output['unit'] is not None and (not isinstance(output['unit'], str) or not output['unit']):
+        return False
+    if 'instrument' not in output:
+        return True
+    tolerance = output.get('absolute_tolerance')
+    return (isinstance(output['instrument'], str) and bool(output['instrument'])
+            and type(tolerance) in (int, float) and math.isfinite(tolerance) and tolerance >= 0)
+
+
+def _task_ok(name, task):
+    """Whether the task `name` of a mission is well formed."""
+    if not isinstance(name, str) or not re.fullmatch(_TASK_NAME, name) or not isinstance(task, dict):
+        return False
+    if not {'meaning', 'inputs', 'outputs'} <= set(task) <= {'meaning', 'inputs', 'outputs', 'sampling'}:
+        return False
+    if not _text(task['meaning']) or not isinstance(task['inputs'], dict) or not isinstance(task['outputs'], dict):
+        return False
+    if 'sampling' in task and task['sampling'] not in _SAMPLING:
+        return False
+    return (all(isinstance(value, dict) and value.get('type') in _INPUT_TYPES for value in task['inputs'].values())
+            and all(_output_ok(output) for output in task['outputs'].values()))
+
+
+def mission_errors(mission):
+    """The faults of the supplied `mission` as a list of sentences, empty for a well-formed one. A mission has
+    `tasks` and `reuse_objective`, and may have `operating_conditions`. A task that breaks a rule gives one fault,
+    with its name. The service refuses a `start` by this function."""
+    if (not isinstance(mission, dict) or not {'tasks', 'reuse_objective'} <= set(mission)
+            or not set(mission) <= {'tasks', 'reuse_objective', 'operating_conditions'}):
+        return ['a mission has tasks and reuse_objective, and may have operating_conditions']
+    errors = []
+    if not _text(mission['reuse_objective']):
+        errors.append('reuse_objective is text that is not blank')
+    if 'operating_conditions' in mission:
+        conditions = mission['operating_conditions']
+        if (not isinstance(conditions, list) or not 1 <= len(conditions) <= 16
+                or any(not _text(condition) or len(condition) > 1000 for condition in conditions)):
+            errors.append('operating_conditions are 1 to 16 texts that are not blank, of at most 1000 characters each')
+    tasks = mission['tasks']
+    if not isinstance(tasks, dict) or not tasks:
+        errors.append('tasks is an object with at least one task')
+    else:
+        errors += ['invalid task: ' + str(name) for name, task in tasks.items() if not _task_ok(name, task)]
     return errors
 
 

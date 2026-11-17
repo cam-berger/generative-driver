@@ -654,7 +654,7 @@ class TrialMetricsTests(unittest.TestCase):
             with self.subTest(fields):
                 reuse = with_unfinished(**fields)['stages']['reuse']
                 self.assertEqual((reuse['device'], reuse['managed_calls']), (NO_DEVICE, {fields['name']: 1}))
-        for name in ('probe_run', 'interface_execute', 'emit_test_live', 'benchmark_package_execute'):
+        for name in ('probe_run', 'interface_execute', 'emit_test_live', 'package_execute'):
             for connected in ({}, {'connected': True}):
                 with self.subTest(name, **connected):
                     after = with_unfinished(name=name, **connected)
@@ -692,7 +692,7 @@ class TrialMetricsTests(unittest.TestCase):
                 self.assertEqual(metrics['stages']['reuse']['device']['exchanges'], 2)
 
     def test_a_package_calls_exchanges_are_counted_where_its_result_holds_them(self):
-        # benchmark_package_execute on the device the bench harness provides returns the package's own interface-result, with
+        # package_execute on the device the bench harness provides returns the package's own interface-result, with
         # the instrument readings around the call, so its transcript is counted like interface_execute's. On the physical
         # bme280 case it returns a measurement row, which holds no transcript: its exchanges are not counted.
         provided = {**package_output(EXCHANGE, EXCHANGE), 'before_observation': {'values': {}}, 'observation': {'values': {}}}
@@ -703,13 +703,13 @@ class TrialMetricsTests(unittest.TestCase):
                 home, run, before = self.probed_once()
                 with contextlib.closing(database(home, 'rw')) as db, db:
                     started = db.execute('INSERT INTO events(run_id,kind,payload,created) VALUES(?,?,?,?)', (
-                        run, 'tool.started', json.dumps({'stage': 'reuse', 'name': 'benchmark_package_execute', 'effectful': False}),
+                        run, 'tool.started', json.dumps({'stage': 'reuse', 'name': 'package_execute', 'effectful': False}),
                         time.time())).lastrowid
                     db.execute('INSERT INTO events(run_id,kind,payload,created) VALUES(?,?,?,?)', (
-                        run, 'tool.finished', json.dumps({'stage': 'reuse', 'name': 'benchmark_package_execute',
+                        run, 'tool.finished', json.dumps({'stage': 'reuse', 'name': 'package_execute',
                                                           'dispatch_id': str(started), 'result': result}), time.time()))
                 reuse = trial_metrics(home, run)['stages']['reuse']
-                self.assertEqual(reuse['managed_calls'], {'benchmark_package_execute': 1})
+                self.assertEqual(reuse['managed_calls'], {'package_execute': 1})
                 self.assertEqual(reuse['device'], {**NO_DEVICE, 'exchanges': exchanges})
 
     def test_calls_are_paired_by_dispatch_so_a_finish_counts_once_and_one_with_no_start_still_counts(self):
@@ -826,10 +826,10 @@ class TrialMetricsTests(unittest.TestCase):
 
     def test_interpretation_actions_are_matched_to_the_attempts_that_made_them(self):
         # Interpretation runs twice, each time in a sealed workspace of its own outside the run, attempt1 and attempt2. Its
-        # outputs, and the transcript among them, are frozen into the run when collected: under benchmark/tools for a
+        # outputs, and the transcript among them, are frozen into the run when collected: under supplied/tools for a
         # benchmark run, by the index of the attempt; under preparation, by the assignment, for another run. A worker that
         # was never collected leaves nothing in the run, and a transcript that no attempt owns is nobody's.
-        places = {'in a benchmark run': (True, lambda number, assignment: 'benchmark/tools/interpret/attempt%d' % number),
+        places = {'in a benchmark run': (True, lambda number, assignment: 'supplied/tools/interpret/attempt%d' % number),
                   'in another run': (True, lambda number, assignment: 'preparation/%s/interpret/attempt1' % assignment['id']),
                   'in its work directory': (False, lambda number, assignment: 'work/interpret/%s' % assignment['id'])}
         for name, (sealed, place) in places.items():
@@ -839,7 +839,7 @@ class TrialMetricsTests(unittest.TestCase):
                 first, second = assigned(home, run, 'interpret')
                 interpreted = lambda: trial_metrics(home, run)['stages']['interpret']['worker_actions']
                 write_transcript(run_dir / place(1, first), 'command_execution')
-                write_transcript(run_dir / 'benchmark/tools/interpret/attempt3', 'file_change')
+                write_transcript(run_dir / 'supplied/tools/interpret/attempt3', 'file_change')
                 write_transcript(run_dir / 'preparation/nobody/interpret/attempt1', 'file_change')
                 self.assertEqual(interpreted(), UNKNOWN_ACTIONS)
                 write_transcript(run_dir / place(2, second), 'file_change')
@@ -871,8 +871,8 @@ class TrialMetricsTests(unittest.TestCase):
                 db.execute("UPDATE events SET payload=? WHERE run_id=? AND kind='stage.assigned' AND json_extract(payload, '$.id')=?",
                            (json.dumps(recorded), run, assignment['id']))
         run_dir = Path(home) / 'runs' / run
-        write_transcript(run_dir / 'benchmark/tools/interpret/attempt1', 'command_execution')
-        write_transcript(run_dir / 'benchmark/tools/interpret/attempt2', 'file_change')
+        write_transcript(run_dir / 'supplied/tools/interpret/attempt1', 'command_execution')
+        write_transcript(run_dir / 'supplied/tools/interpret/attempt2', 'file_change')
         self.assertEqual(trial_metrics(home, run)['stages']['interpret']['worker_actions'],
                          {'command_execution': 1, 'mcp_tool_call': 0, 'file_change': 1})
 

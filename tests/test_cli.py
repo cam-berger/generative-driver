@@ -107,7 +107,7 @@ class CliTests(unittest.TestCase):
                 result = subprocess.run([sys.executable, "-m", "generative_driver", "--home", temp,
                     "resume", run["run_id"], "--approve-emulator-tools"], cwd=temp, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertIn("tq9-v2", json.loads(result.stdout)["reason"].lower())
+                self.assertEqual(json.loads(result.stdout)["reason"], "Emulator approval requires a supplied device")
             finally:
                 call("shutdown", {}, temp)
 

@@ -46,7 +46,7 @@ class AssistiveFixture(HarnessSuiteFixture):
         provider = unstarted_provider(self, self.image, trial, self.peers)
         with scripted_stages(self.controller, check=self.check(**options), runtime=runtime), \
                 patch.object(harness, 'admit', return_value=(provider, {'calibration_evidence_sha256': EVIDENCE},
-                                                             self.unlocked_truth())), \
+                                                             self.unlocked_truth(), self.pin())), \
                 patch('generative_driver.client.call', side_effect=self.configurator), \
                 patch.object(evaluator, 'reference_execute', side_effect=grade):
             record = harness.run_trial(trial, {'trial_id': name, 'home': str(self.home), 'goal': harness.GOAL, 'case': 'tq9-v2',
@@ -85,7 +85,7 @@ class RunReportTests(AssistiveFixture):
                 self.assertEqual(report['equivalence']['diff'], diff)
                 self.assertEqual(report['progress']['protocol'], 'assistive/1')
                 self.assertEqual(report['case_pin']['case_id'], 'tq9-v2')
-                self.assertEqual(report['snapshot_sha256'], result['snapshot_sha256'])
+                self.assertEqual(report['snapshot_sha256'], result['client_record']['snapshot_sha256'])
                 for key in GATED:
                     self.assertNotIn(key, report)
                 self.assertEqual(list(report['stages']), list(STAGES))
@@ -178,7 +178,6 @@ class ScoreTests(AssistiveFixture):
                 ('execution', changed(lambda r: r.update(execution='actual-agent-physical'))),
                 ('toolchain', changed(lambda r: r['executed'].update(toolchain_revision='f' * 64))),
                 ('package', changed(lambda r: r['equivalence'].update(frozen_artifact_sha256='f' * 64))),
-                ('mapping', changed(lambda r: r['equivalence'].update(capabilities_sha256='f' * 64))),
                 ('checks', changed(lambda r: r['equivalence']['checks'][0].update(id='final/other'))),
                 ('basis', changed(lambda r: r['equivalence'].update(basis='self-evidence'))),
                 ('evidence', changed(lambda r: r['equivalence'].update(evidence_sha256='f' * 64)))):
@@ -238,10 +237,9 @@ class ScoreTests(AssistiveFixture):
         scored = self.score(*resealed('failing', final=failing))
         self.assertEqual((scored['verdict'], scored['equivalence']['diff']),
                          ('not equivalent', [{'id': 'final/effect-1/duty', 'reason': 'value mismatch'}]))
-        for name, content in (('no final', {'final': None}),
-                              ('other mapping', {'final': {**sealed['final'], 'capabilities_sha256': '0' * 64}})):
-            with self.subTest(sealed=name), self.assertRaisesRegex(ValueError, 'final'):
-                self.score(*resealed(name.replace(' ', '-'), **content))
+        # The verdict record names no mapping hash any more, so a regrade compares none with the sealed final's.
+        with self.assertRaisesRegex(ValueError, 'final'):
+            self.score(*resealed('no-final', final=None))
 
     def test_no_driver_regrades_not_equivalent_and_a_run_without_a_verdict_stays_unscored(self):
         # Catches a run that emitted no driver scored as anything but not equivalent, and a run awaiting its grade

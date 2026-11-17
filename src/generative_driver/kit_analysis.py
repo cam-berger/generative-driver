@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from . import analysis_index, tool_process
-from .benchmark_support.integrity import IntegrityError, digest
+from .integrity import IntegrityError, digest
 
 # The helper's own limit (`ghidra_run.run`'s default), passed to it so that a test may shorten it. The child process is
 # stopped GRACE_SECONDS after it, should the helper not stop itself.

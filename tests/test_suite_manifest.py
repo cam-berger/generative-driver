@@ -205,7 +205,6 @@ class FreezeTests(unittest.TestCase):
         from unittest.mock import patch
         from suite_fixtures import public_case_fixture
         from generative_driver.benchmark_support.suites import freeze_suite, child_request
-        from generative_driver.configurator import case_options
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             public_case_fixture(root)
@@ -226,15 +225,14 @@ class FreezeTests(unittest.TestCase):
             self.assertEqual(child['executor_config'], config)
             self.assertEqual(child['budget_seconds'], 10800)
             self.assertEqual(child['scoped_tool_approval'], 'emulator')
-            # The bench harness adds the device, its admission and the evaluation token hash; no password file.
+            # The bench harness adds the device, the firmware, the mission, the evaluation token hash and its client
+            # record; no password file. It reads the scenario and the seed from these options.
             self.assertEqual(child['case_options'], {'ghidra_home': 'C:/Tools/Ghidra', 'java_home': 'C:/Tools/Java',
                 'scenario_id': 'original', 'case_seed': 73})
             self.assertNotIn('password', str(child).lower())
             self.assertNotIn('harness_token', str(child))
             self.assertNotIn('scenario', child['goal'])
             self.assertNotIn('development-pilot', child['goal'])
-            self.assertEqual(case_options(child)['scenario_id'], 'original')
-            self.assertEqual(case_options(child)['case_seed'], 73)
             child['executor_config']['command'].clear(); child['case_pin']['manifest'].clear()
             child['case_options'].clear()
             self.assertEqual(frozen['executor_config']['command'], ['scripted-contract-fixture'])

@@ -4,7 +4,7 @@
   "branch": "mdk/untangle",
   "stage": "spec",
   "awaiting": null,
-  "current": "06",
+  "current": "07",
   "features": [
     {
       "id": "01",
@@ -39,8 +39,8 @@
     {
       "id": "06",
       "slug": "benchmark-runs",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "4cac1651f4bcf8ba3f93a564f18949a770af07e2"
     },
     {
       "id": "07",

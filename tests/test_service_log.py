@@ -211,10 +211,11 @@ class RunEntryTests(ControllerCase):
         from generative_driver.configurator import Controller, PROTOCOL
         from generative_driver.device_client import DeviceUnavailable
         controller = self.controller()
-        # A stopped run on a device its bench harness provided, as its saved rows hold it; nothing of it runs.
-        spec = {'goal': 'x', 'case': 'toy', 'executor': 'codex', 'executor_config': {}, 'budget_seconds': 600,
-                'effects': ['read'], 'device': {'kind': 'provided-emulator'},
-                '_case_pin': {'execution': 'actual-agent-emulation', 'manifest': {'schema': 'benchmark-case/2'}}}
+        # A stopped run on a device its client supplied, as its saved rows hold it; nothing of it runs.
+        spec = {'goal': 'x', 'executor': 'codex', 'executor_config': {}, 'budget_seconds': 600, 'effects': ['read'],
+                'device': {'schema': 'device-descriptor/2'},
+                'firmware': {'path': str(self.root / 'firmware.bin'), 'sha256': '0' * 64},
+                'mission': {'tasks': {}, 'reuse_objective': 'x'}}
         with controller._db() as db:
             db.execute('INSERT INTO runs(id,request_id,spec,status,stage,created,updated) VALUES(?,?,?,?,?,?,?)',
                        ('run-lost-device', None, json.dumps(spec), 'blocked', 'probe', time.time(), time.time()))
@@ -282,7 +283,7 @@ class FailureEventEntryTests(ControllerCase):
             def release(self, session_id):
                 raise DeviceUnavailable('scripted provider refusal')
         with patch('generative_driver.device_client.open_device', return_value=Provider()):
-            failures = controller._release('run-released', {'case': 'toy', 'device': {'kind': 'provided-emulator'}},
+            failures = controller._release('run-released', {'device': {'schema': 'device-descriptor/2'}},
                                            self.root / 'run')
         self.assertEqual(failures, [('device.release_failed', 'DeviceUnavailable: scripted provider refusal', None)])
         written = entry(controller.home, 'run=run-released', 'step=release')

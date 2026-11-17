@@ -116,14 +116,14 @@ def windows_newlines():
 
 
 def evaluation(frozen, equivalent=True, **changes):
-    """A well-formed equivalence/1 record as the harness posts it."""
+    """A well-formed equivalence/2 record as the harness posts it."""
     checks = [{'id': 'final/temperature-0/temperature', 'passed': True}, {'id': 'final/effect-1/duty', 'passed': equivalent}]
-    return {'schema': 'equivalence/1', 'status': 'graded', 'equivalent': equivalent, 'basis': 'evaluator',
-            'method': 'fresh-final', 'checks': checks,
+    return {'schema': 'equivalence/2', 'status': 'graded', 'equivalent': equivalent, 'basis': 'evaluator',
+            'checks': checks,
             'diff': [] if equivalent else [{'id': 'final/effect-1/duty', 'reason': 'value mismatch'}],
             'passed': 2 if equivalent else 1, 'total': 2,
             'mission': {'name': 'fresh_worker_mission', 'passed': None, 'reason': 'No readable capability mapping was handed on'},
-            'frozen_artifact_sha256': frozen, 'capabilities_sha256': 'c' * 64, 'evidence_sha256': 'e' * 64,
+            'frozen_artifact_sha256': frozen, 'evidence_sha256': 'e' * 64,
             'protocol': 'assistive/1', **changes}
 
 
@@ -195,18 +195,24 @@ class PendingRunFixture(unittest.TestCase):
         return check
 
     def pending(self, **options):
-        """A completed run awaiting its evaluation, started as the harness starts one."""
+        """A completed run awaiting its evaluation, started as the harness starts one: a supplied run, with the case
+        frozen in the trial folder `self.frozen` and the snapshot copied into the run's folder."""
+        from suite_fixtures import supplied_start
         device = Device(self, self.image, self.root / ('device-' + str(len(list(self.root.glob('device-*'))))))
+        start = supplied_start(self, self.root / 'frozen', descriptor=device.server.descriptor, home=self.home,
+                               case_options={'scenario_id': 'original'}, token=TOKEN, goal='g',
+                               effects=['write', 'actuate'], executor_config={'command': ['scripted-runtime']})
+        self.frozen = start.trial_dir
         with scripted_stages(self.controller, check=self.check(**options)):
-            run = self.controller.start({'goal': 'g', 'case': 'tq9-v2', 'effects': ['write', 'actuate'],
-                                         'case_options': {'scenario_id': 'original'},
-                                         'executor_config': {'command': ['scripted-runtime']},
-                                         'device': device.server.descriptor,
-                                         'admission': {'calibration_evidence_sha256': EVIDENCE},
-                                         'evaluation_token_sha256': hashlib.sha256(TOKEN.encode()).hexdigest()})
+            run = start.keep(self.home, self.controller.start(start))
             result = wait_stopped(self.controller, run)
         self.assertEqual((result['status'], result['progress']['equivalence']), ('completed', 'pending'), result)
         return run, result
+
+    def pin(self):
+        """The pin of the fixture's case, as the harness's admission gives it."""
+        from generative_driver.benchmark_support.registry import pin_case
+        return pin_case('tq9-v2', 'original', 0)
 
     def unlocked_truth(self, payload=None):
         """A toy answer key, unlocked under the fixture case's own truth hash."""
@@ -256,8 +262,8 @@ class RecordEvaluationTests(PendingRunFixture):
                 ('mission verdict as a number', TOKEN, {**good, 'mission': {'name': 'fresh_worker_mission', 'passed': 0}},
                  ValueError, 'Invalid evaluation'),
                 ('another protocol', TOKEN, {**good, 'protocol': 'gated/0'}, ValueError, 'Invalid evaluation'),
-                # No registered case is graded from its recorded reuse; a v2 case is graded on a fresh emulator.
-                ('another method', TOKEN, {**good, 'method': 'recorded-reuse'}, ValueError, 'graded by method fresh-final'),
+                # The record names no grading method any more: one that does has a field too many.
+                ('a method', TOKEN, {**good, 'method': 'recorded-reuse'}, ValueError, 'Invalid evaluation'),
                 ('no record', TOKEN, 'equivalent', ValueError, 'Invalid evaluation')):
             with self.subTest(case=case), self.assertRaisesRegex(error, message):
                 self.record(run, record, token)
@@ -322,7 +328,7 @@ class RecordEvaluationTests(PendingRunFixture):
             self.record(run, good)
         generic = self.controller.start({'goal': 'g', 'executor_config': {'command': ['missing-runtime-b5']}})
         wait_stopped(self.controller, generic)
-        with self.assertRaisesRegex(ValueError, 'bench harness'):
+        with self.assertRaisesRegex(ValueError, 'Only a run started with an evaluation token'):
             self.record(generic, good)
         self.assertFalse(self.verdicts(run) + self.verdicts(generic))
 
@@ -409,7 +415,7 @@ class HarnessTrialFixture(PendingRunFixture):
         provider = unstarted_provider(self, self.image, trial, self.peers)
         def admit(case_id, options, trial_dir, *, password, renode=None):
             return (provider, {'calibration_evidence_sha256': EVIDENCE},
-                    truth or registry.case_truth(case_id, trial_dir, password))
+                    truth or registry.case_truth(case_id, trial_dir, password), self.pin())
         with scripted_stages(self.controller, check=self.check(**options)), \
                 patch.object(harness, 'admit', side_effect=admit), \
                 patch('generative_driver.client.call', side_effect=self.configurator):
@@ -507,11 +513,11 @@ class HarnessGradingTests(HarnessTrialFixture):
                 self.assertEqual(result['reason'], 'Final verdict: equivalent' if equivalent else
                                  'Final verdict: not equivalent: value mismatch')
                 self.assertEqual(result['progress']['equivalence'], 'graded')
-                self.assertEqual({key: equivalence[key] for key in ('schema', 'status', 'equivalent', 'basis', 'method', 'protocol',
-                                                                    'frozen_artifact_sha256', 'capabilities_sha256', 'passed', 'total')},
-                                 {'schema': 'equivalence/1', 'status': 'graded', 'equivalent': equivalent, 'basis': 'evaluator',
-                                  'method': 'fresh-final', 'protocol': 'assistive/1', 'frozen_artifact_sha256': frozen,
-                                  'capabilities_sha256': mapping['sha256'], 'passed': 2 if equivalent else 1, 'total': 2})
+                self.assertEqual({key: equivalence[key] for key in ('schema', 'status', 'equivalent', 'basis', 'protocol',
+                                                                    'frozen_artifact_sha256', 'passed', 'total')},
+                                 {'schema': 'equivalence/2', 'status': 'graded', 'equivalent': equivalent, 'basis': 'evaluator',
+                                  'protocol': 'assistive/1', 'frozen_artifact_sha256': frozen,
+                                  'passed': 2 if equivalent else 1, 'total': 2})
                 self.assertEqual(equivalence['checks'], [{'id': 'final/temperature-0/temperature', 'passed': True},
                                                          {'id': 'final/effect-1/duty', 'passed': equivalent}])
                 self.assertEqual(equivalence['diff'], [] if equivalent else [{'id': 'final/effect-1/duty', 'reason': 'value mismatch'}])
@@ -523,6 +529,8 @@ class HarnessGradingTests(HarnessTrialFixture):
                                  ('benchmark-run-evidence/2', 'assistive/1', record['run_id']))
                 self.assertEqual((payload['final']['frozen_artifact_sha256'], payload['final']['contract']),
                                  (frozen, contract(frozen)))
+                # The hash of the mapping the grader used stays in the sealed final; the public verdict has none.
+                self.assertEqual(payload['final']['capabilities_sha256'], mapping['sha256'])
                 self.assertEqual(payload['equivalence'], {k: v for k, v in equivalence.items() if k != 'evidence_sha256'})
                 rows = {(row['stage'], row['kind'], row['sha256']) for row in payload['accepted_artifacts']}
                 for handoff in result['accepted_handoffs']:
@@ -788,7 +796,7 @@ class HarnessGradingTests(HarnessTrialFixture):
         run_dir = self.home / 'runs' / run['run_id']
         executed = json.loads((run_dir / 'benchmark/execution.json').read_text())['executed']
         self.assertEqual(executed['evaluator_revision'], 'e' * 64)
-        trial = self.root / 'trial'; trial.mkdir()
+        trial = self.frozen  # The trial folder the case was frozen in, as the harness's own holds it.
         with patch(CASE_TRUTH, side_effect=AssertionError('truth unlocked')), \
                 patch.object(evaluator, 'reference_execute', side_effect=AssertionError('device started')):
             done = harness.conclude(trial, 'tq9-v2', run_dir, result, password=read_password(self.password),

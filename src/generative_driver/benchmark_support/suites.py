@@ -283,8 +283,8 @@ def freeze_suite(manifest: dict, executor: str, executor_config: dict,
     """Pin inputs without creating an owner, run, snapshot or native process.
 
     This private frozen object is not a public result. The bench harness that drives the suite holds evaluator password
-    files and the emulator executable; the frozen suite holds only the sha256 of that harness's token. The child owner
-    separately compares the harness's admission of each v2 child with its public pin before starting any operation. A
+    files and the emulator executable; the frozen suite holds only the sha256 of that harness's token. The harness
+    itself compares its admission of each v2 child with the child's public pin before it starts a device. A
     set suite is frozen with the `device_pins` its harness built; no other suite takes any. A suite of a scoring set
     also holds `scoring_set`, its registration and its manifest hash from the pins, so that no later change to the
     registrations changes what the suite ran.
@@ -292,7 +292,6 @@ def freeze_suite(manifest: dict, executor: str, executor_config: dict,
     import hashlib
     import json
     import re
-    from ..configurator import validate_scoped_approval
     normalized = normalize_manifest(manifest)
     refuse_secrets(options)
     # A replay suite's candidates belong to its executor configuration: its children's options never carry them.
@@ -336,9 +335,19 @@ def freeze_suite(manifest: dict, executor: str, executor_config: dict,
         'entry_effects': [list(case.default_effects) for case in definitions],
         'provenance': provenance, 'trials': expand_trials(normalized),
         'scheduler': SCHEDULER, 'harness_token_sha256': harness_token_sha256})
-    for trial in frozen['trials']:
-        validate_scoped_approval(child_request(frozen, dict(trial, child_request_id='freeze-' + trial['trial_key'])))
+    if child_options.get('scoped_tool_approval') == 'emulator':
+        for trial in frozen['trials']:
+            emulator_approval(trial['case'])
     return frozen
+
+
+def emulator_approval(case_id):
+    """Refuse the emulator approval of a case that is no registered emulator profile. The benchmark knows which case
+    is one; the configurator, which knows no case, asks only for a supplied device."""
+    from .registry import case_selection
+    definition = case_selection(case_id)
+    if definition.execution != 'actual-agent-emulation' or definition.approval_scope != 'emulator':
+        raise ValueError('scoped_tool_approval supports only a registered emulator profile')
 
 
 def _replay_candidates(executor_config, manifest):
@@ -352,7 +361,7 @@ def _replay_candidates(executor_config, manifest):
 
 def child_request(frozen: dict, trial: dict) -> dict:
     """Project this reserved slot into a child request. It names no password file or emulator executable: the bench
-    harness adds the device, its admission (a v2 case's) and the evaluation token hash."""
+    harness adds the device, the firmware, the mission, the evaluation token hash and its client record."""
     if not isinstance(trial, dict) or type(trial.get('ordinal')) is not int:
         raise ValueError('Child requires a frozen trial slot')
     ordinal = trial['ordinal']
@@ -380,9 +389,9 @@ def child_request(frozen: dict, trial: dict) -> dict:
             'scoped_tool_approval': approval, 'budget_seconds': frozen['manifest']['child_budget_seconds']}
 
 
-# What the bench harness adds to a frozen child request: the child's device, its admission, the evaluation token hash
-# and the folder of its public inputs, for a device of a set.
-HARNESS_KEYS = ('device', 'admission', 'evaluation_token_sha256', 'public_inputs')
+# What the bench harness adds to a frozen child request: the child's device, the firmware and the mission it froze,
+# the evaluation token hash and the client record with the case's id, its pin and the snapshot's hash.
+HARNESS_KEYS = ('device', 'firmware', 'mission', 'evaluation_token_sha256', 'client_record')
 
 
 def child_identity_differs(frozen: dict, trial: dict, submitted) -> str | None:

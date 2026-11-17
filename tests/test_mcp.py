@@ -329,7 +329,7 @@ class McpTests(unittest.TestCase):
                         self.assertFalse(reply.is_error, reply)
                         refused = json.loads(reply.content[0].text)
                         self.assertFalse(refused["ok"])
-                        self.assertIn("tq9-v2", refused["reason"].lower())
+                        self.assertEqual(refused["reason"], "Emulator approval requires a supplied device")
                         reply = await session.call_tool("driver_resume", {
                             "run_id": run["run_id"], "scoped_tool_approval": "bound-device"})
                         self.assertFalse(reply.is_error, reply)

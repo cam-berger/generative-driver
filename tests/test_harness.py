@@ -62,8 +62,9 @@ class DeviceEndpointTests(unittest.TestCase):
         from generative_driver.device_client import DeviceClient, DeviceUnavailable, open_device, reading
         device = Device(self, self.root / 'firmware.bin', self.root)
         descriptor = device.server.descriptor
-        self.assertEqual(set(descriptor), {'schema', 'kind', 'provider_id', 'session_id', 'binding', 'image_sha256',
-                                           'instrument', 'time_policy', 'control'})
+        # The tool's `device-descriptor/2`: none of the provider's kind, id, time policy or instrument label.
+        self.assertEqual(set(descriptor), {'schema', 'session_id', 'binding', 'firmware_sha256', 'instrument', 'control'})
+        self.assertEqual((descriptor['schema'], set(descriptor['instrument'])), ('device-descriptor/2', {'units'}))
         self.assertEqual(descriptor['control'], {'endpoint_file': str(self.root / 'endpoint/control.json')})
         for name in ('control', 'owner'):
             endpoint = json.loads((self.root / 'endpoint' / (name + '.json')).read_text())
@@ -180,7 +181,7 @@ class DeviceEndpointTests(unittest.TestCase):
         imported = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
         imported |= {('.' * node.level) + (node.module or '') for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
         self.assertLessEqual(imported, {'contextlib', 'json', 'multiprocessing', 'multiprocessing.connection', 'pathlib',
-                                        'threading'})
+                                        're', 'threading'})
 
 
 class TrialFinishTests(unittest.TestCase):
@@ -196,6 +197,7 @@ class TrialFinishTests(unittest.TestCase):
         # Catches sealing an empty or partial set of handoffs, and reporting that seal as good, or grading the run, when
         # the run's result could not be read (a transport failure, a reply over the read limit) or the run had not finished.
         from generative_driver.benchmark_support import evaluator, harness
+        from generative_driver.benchmark_support.registry import pin_case
         from generative_driver.device_client import DeviceClient
         (self.root / 'password-handle').write_text('synthetic fixture credential')
         handoffs = [{'stage': 'acquire', 'artifacts': []}]
@@ -224,12 +226,16 @@ class TrialFinishTests(unittest.TestCase):
                     if method == 'result':
                         return read
                     raise AssertionError(method)
-                with patch.object(harness, 'admit', return_value=(provider, {'calibration_evidence_sha256': EVIDENCE}, None)), \
+                # The admission of the installed case, with its pin: the harness freezes it before it starts the device.
+                pin = pin_case('tq9-v2', 'original', 0)
+                admitted = (provider, {'calibration_evidence_sha256': pin['calibration']['evidence_sha256']}, None, pin)
+                with patch.object(harness, 'admit', return_value=admitted), \
                         patch.object(evaluator, 'seal', side_effect=AssertionError('sealed what the harness did not read')) as sealing, \
                         patch.object(evaluator, 'grade', side_effect=AssertionError('graded what the harness did not read')) as grading, \
                         patch('generative_driver.client.call', side_effect=configurator):
                     record = harness.run_trial(trial, {'trial_id': trial.name, 'home': str(self.root / 'home'),
                                                        'case': 'tq9-v2', 'case_options': {'scenario_id': 'original'},
+                                                       'effects': ['write', 'actuate'],
                                                        'password_file': str(self.root / 'password-handle')})
                 sealing.assert_not_called(); grading.assert_not_called()
                 self.assertIs(record['sealed'], False)
@@ -297,28 +303,41 @@ class StartAdmissionTests(unittest.TestCase):
         self.manifest['execution_setup'] = setup
         (case/'case.json').write_text(json.dumps(self.manifest))
         device = Device(self, case/'firmware.elf', self.root)
-        run = self.controller.start({'goal': 'native image identity', 'case': 'tq9-v2',
-            'effects': ['write', 'actuate'], 'executor_config': {'command': ['missing-runtime-native']},
-            'device': device.server.descriptor, 'admission': {'calibration_evidence_sha256': EVIDENCE},
-            'evaluation_token_sha256': hashlib.sha256(b'harness token').hexdigest()})
+        start = self.supplied(device, goal='native image identity',
+                              executor_config={'command': ['missing-runtime-native']})
+        run = self.controller.start(start)
         result = wait_stopped(self.controller, run)
         self.assertEqual(result['status'], 'blocked')
-        self.assertEqual(result['case_pin']['image_hashes'], self.manifest['images'])
+        self.assertEqual(result['client_record']['case_pin']['image_hashes'], self.manifest['images'])
+        self.assertEqual(start['firmware']['path'], str(start.trial_dir / 'benchmark/inputs/firmware.elf'))
         self.assertEqual(summarize(result, [], case_manifest=self.manifest)['execution_setup'], setup)
+
+    def supplied(self, device, **request):
+        """The `start` the harness sends for the fixture's case on `device`."""
+        from suite_fixtures import supplied_start
+        return supplied_start(self, self.root / 'frozen', descriptor=device.server.descriptor,
+                              home=self.controller.home, case_options={'scenario_id': 'original'},
+                              token='harness token', effects=['write', 'actuate'], **request)
 
     def test_the_configurator_refuses_a_password_or_the_emulator_executable(self):
         secret = self.root / 'private-password-handle'
+        device = Device(self, self.root / 'resources/cases/tq9-v2/firmware.bin', self.root)
+        start = self.supplied(device, goal='g')
+        # A key of the request itself: the whole request is kept as the run's spec.
+        for spec in ({**start, 'evaluator_password_file': str(secret)},
+                     {**start, 'Evaluator_Password_Files': {}},
+                     {**start, 'renode': '/opt/renode'},
+                     {'goal': 'g', 'evaluator_password_file': str(secret)},
+                     {'goal': 'g', 'Renode': '/opt/renode'},
+                     {'goal': 'g', 'password': 'plaintext'}):
+            with self.subTest(spec=sorted(spec)), self.assertRaisesRegex(ValueError, 'password|emulator executable'):
+                self.controller.start(spec)
+        # The places a case's options once had for one are no keys of a start any more.
         for spec in ({'goal': 'g', 'case': 'tq9-v2', 'effects': ['write'],
                       'case_options': {'scenario_id': 'original', 'evaluator_password_file': str(secret)}},
                      {'goal': 'g', 'case': {'id': 'tq9-v2', 'options': {'password': 'plaintext'}}, 'effects': ['write']},
-                     {'goal': 'g', 'case': 'tq9-v2', 'effects': ['write'], 'case_options': {'Evaluator_Password_Files': {}}},
-                     {'goal': 'g', 'case': 'tq9-v2', 'effects': ['write'], 'case_options': {'renode': '/opt/renode'}},
-                     {'goal': 'g', 'case_options': {'evaluator_password_file': str(secret)}},
-                     # Top-level request keys too: the whole request is kept as the run's spec.
-                     {'goal': 'g', 'case': 'tq9-v2', 'effects': ['write'], 'evaluator_password_file': str(secret)},
-                     {'goal': 'g', 'Renode': '/opt/renode'},
-                     {'goal': 'g', 'password': 'plaintext'}):
-            with self.subTest(spec=spec), self.assertRaisesRegex(ValueError, 'password|emulator executable'):
+                     {'goal': 'g', 'case_options': {'renode': '/opt/renode'}}):
+            with self.subTest(spec=sorted(spec)), self.assertRaisesRegex(ValueError, 'start takes no case'):
                 self.controller.start(spec)
         self.assertEqual(self.runs(), 0)
 
@@ -352,24 +371,42 @@ class StartAdmissionTests(unittest.TestCase):
     def test_an_emulated_case_starts_only_with_the_harness_admission_token_and_device(self):
         from generative_driver.configurator import IntegrityError
         from test_configurator import wait_stopped
+        from generative_driver.benchmark_support import harness
+        from generative_driver.benchmark_support.registry import pin_case
         device = Device(self, self.root / 'resources/cases/tq9-v2/firmware.bin', self.root)
         descriptor = device.server.descriptor
-        good = {'goal': 'g', 'case': 'tq9-v2', 'effects': ['write', 'actuate'], 'case_options': {'scenario_id': 'original'},
-                'executor_config': {'command': ['missing-runtime-b3']}, 'device': descriptor,
-                'admission': {'calibration_evidence_sha256': EVIDENCE},
-                'evaluation_token_sha256': hashlib.sha256(b'harness token').hexdigest()}
+        good = self.supplied(device, goal='g', executor_config={'command': ['missing-runtime-b3']})
         without = lambda key: {k: v for k, v in good.items() if k != key}
         for spec, error, message in (
-                (without('device'), ValueError, 'device descriptor'),
+                (without('device'), ValueError, 'this start lacks device'),
                 ({**good, 'device': {**descriptor, 'control': {}}}, ValueError, 'control endpoint'),
-                ({**good, 'admission': {'calibration_evidence_sha256': 'f' * 64}}, ValueError, 'admission'),
-                (without('admission'), ValueError, 'admission'),
-                (without('evaluation_token_sha256'), ValueError, 'evaluation token'),
-                ({**good, 'evaluation_token_sha256': 'harness token'}, ValueError, 'evaluation token'),
-                ({**good, 'device': {**descriptor, 'image_sha256': '0' * 64}}, IntegrityError, 'image'),
-                ({'goal': 'g', 'device': descriptor}, ValueError, 'emulated benchmark case')):
+                (without('evaluation_token_sha256'), ValueError, 'evaluation_token_sha256'),
+                ({**good, 'evaluation_token_sha256': 'harness token'}, ValueError, 'evaluation_token_sha256'),
+                ({**good, 'device': {**descriptor, 'firmware_sha256': '0' * 64}}, IntegrityError, 'another firmware'),
+                ({'goal': 'g', 'device': descriptor}, ValueError, 'this start lacks firmware, mission')):
             with self.subTest(message=message), self.assertRaisesRegex(error, message):
                 self.controller.start(spec)
+        self.assertEqual(self.runs(), 0)
+        # The admission is the harness's own to check now: with evidence that is not the pin's, or none, its trial
+        # ends before any device or run starts.
+        for name, admission in (('other', {'calibration_evidence_sha256': 'f' * 64}), ('none', {})):
+            with self.subTest(admission=name):
+                peers = []
+                provider = unstarted_provider(self, self.root / 'resources/cases/tq9-v2/firmware.bin',
+                                              self.root / name, peers)
+                (self.root / 'password-handle').write_text('synthetic fixture credential')
+                configurator = lambda method, params=None, **kw: (
+                    {'ok': True} if method == 'ping' else self.controller.call(method, params))
+                with patch.object(harness, 'admit',
+                                  return_value=(provider, admission, None, pin_case('tq9-v2', 'original', 0))), \
+                        patch('generative_driver.client.call', side_effect=configurator):
+                    record = harness.run_trial(self.root / 'bench' / name, {
+                        'trial_id': name, 'home': str(self.controller.home), 'case': 'tq9-v2',
+                        'case_options': {'scenario_id': 'original'}, 'effects': ['write', 'actuate'],
+                        'password_file': str(self.root / 'password-handle')})
+                self.assertEqual((record['status'], record['run_id'], record['no_run']), ('failed', None, 'admit-refused'))
+                self.assertRegex(record['reason'], 'admission')
+                self.assertEqual(peers, [])
         self.assertEqual(self.runs(), 0)
         with self.controller._db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM bindings').fetchone()[0], 0)
@@ -393,13 +430,10 @@ class StartAdmissionTests(unittest.TestCase):
     def test_emulator_approval_is_explicit_persisted_and_cannot_authorize_physical_runs(self):
         from test_configurator import wait_stopped
         image = self.root / 'resources/cases/tq9-v2/firmware.bin'
-        token = hashlib.sha256(b'harness token').hexdigest()
-        params = {'goal': 'Approval contract only', 'case': 'tq9-v2', 'effects': ['write', 'actuate'],
-                  'executor_config': {'command': ['missing-contract-runtime']}}
-        # What the run's bench harness adds: its device, its admission and its token hash.
-        run = self.controller.call('start', {**params, 'admission': {'calibration_evidence_sha256': EVIDENCE},
-                                             'device': Device(self, image, self.root / 'first').server.descriptor,
-                                             'evaluation_token_sha256': token})
+        # The start of the run's bench harness: its device, the firmware and mission it froze, and its token hash.
+        params = self.supplied(Device(self, image, self.root / 'first'), goal='Approval contract only',
+                               executor_config={'command': ['missing-contract-runtime']})
+        run = self.controller.call('start', params)
         self.assertIsNone(wait_stopped(self.controller, run).get('scoped_tool_approval'))
         # The stopped run released its device, so its harness attaches another before the resume.
         self.controller.call('attach_device', {**run, 'token': 'harness token',
@@ -409,8 +443,10 @@ class StartAdmissionTests(unittest.TestCase):
         events = self.controller.call('events', run)['events']
         self.assertEqual(len([e for e in events if e['kind'] == 'run.authorization']), 1)
         self.assertEqual(len([e for e in events if e['kind'] == 'operator.response']), 0)
-        with self.assertRaisesRegex(ValueError, 'emulator'):
-            self.controller.call('start', {**params, 'case': 'setup-smoke', 'scoped_tool_approval': 'emulator'})
+        # The approval is for a supplied device only: never a run without one, nor an operator's binding.
+        with self.assertRaisesRegex(ValueError, 'Emulator approval requires a supplied device'):
+            self.controller.call('start', {'goal': 'Approval contract only', 'scoped_tool_approval': 'emulator',
+                                           'executor_config': {'command': ['missing-contract-runtime']}})
         with self.assertRaisesRegex(ValueError, 'binding'):
             self.controller.call('start', {**params, 'scoped_tool_approval': 'emulator',
                                            'binding': {'url': 'ftdi://ftdi:232h/1'}})
@@ -540,7 +576,7 @@ class LaunchTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'configurator refused the fixture run'):
                     harness.launch('tq9-v2', executor='codex', autostart=False, via_owner=True,
                         options={'home':str(home), 'evaluator_password_file':str(self.root/'password-handle'),
-                                 'renode':str(self.root/'renode-handle')})
+                                 'renode':str(self.root/'renode-handle'), 'effects':['write', 'actuate']})
                 self.assertEqual(spawn.call_count, 0)
             request = next(params for method, params in owner_requests if method == 'benchmark_spawn')
             for secret in ('password-handle', 'renode-handle'):

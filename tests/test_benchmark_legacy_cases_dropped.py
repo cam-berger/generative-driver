@@ -30,8 +30,6 @@ RESOURCES = 'src/generative_driver/resources/bench/'
 EIGHT_ITEMS = (*(SUPPORT + name for name in DROPPED_FILES[:4]), RESOURCES + 'cases/tq9/', RESOURCES + 'cases/bme280/',
                *(RESOURCES + 'groundtruth/' + name for name in DROPPED_FILES[4:]))
 NOTE = "Dropped legacy case. Not carried to the benchmark's repository."
-CLIENT_INTERFACE = 'docs/client-interface.md'
-BEGIN, END = '<!-- legacy-benchmark:begin -->', '<!-- legacy-benchmark:end -->'
 STAND_IN_MODULES = ('tests/test_suite_store.py', 'tests/test_suite_service.py', 'tests/test_suite_interfaces.py',
                     'tests/test_benchmark_snapshots.py', 'tests/test_suite_manifest.py', 'tests/suite_fixtures.py')
 LEGACY_FIXTURES = ('legacy_manifest', 'legacy_case', 'LEGACY_DEVICE_FIXTURE', 'legacy_device_patches',
@@ -127,15 +125,26 @@ class RegistrationTests(unittest.TestCase):
                 registry.pin_case(case, None, 0)
 
     def test_04_B1_a_start_through_the_service_that_names_a_dropped_case_is_refused_with_that_reason(self):
+        # The bench harness pins the case before it sends a start, so the refusal is the reason its trial fails with;
+        # the service, which knows no case, is sent no start.
+        from generative_driver.benchmark_support import harness
         from generative_driver.configurator import Controller
-        with tempfile.TemporaryDirectory() as home:
-            controller = Controller(home)
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            controller = Controller(root / 'home')
+            (root / 'password-handle').write_text('synthetic fixture credential', encoding='utf-8')
+            configurator = lambda method, params=None, **kwargs: (
+                {'ok': True} if method == 'ping' else controller.call(method, params))
             try:
                 for case in (*DROPPED_CASES, 'never-registered'):
-                    refusal = f'^Unknown benchmark case: {case}$'
-                    with self.subTest(case=case), self.assertRaisesRegex(ValueError, refusal):
-                        controller.call('start', {'goal': 'A run of a dropped case', 'case': case,
-                                                  'executor_config': {'command': ['missing-runtime']}})
+                    with self.subTest(case=case), patch('generative_driver.client.call', side_effect=configurator):
+                        record = harness.run_trial(root / 'bench' / case, {
+                            'trial_id': case, 'home': str(root / 'home'), 'goal': 'A run of a dropped case',
+                            'case': case, 'executor_config': {'command': ['missing-runtime']},
+                            'password_file': str(root / 'password-handle')})
+                        self.assertEqual((record['status'], record['run_id']), ('failed', None))
+                        self.assertEqual(record['reason'], f'ValueError: Unknown benchmark case: {case}')
                 with controller._db() as db:
                     self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 0)
             finally:
@@ -338,13 +347,6 @@ class DeletionListTests(unittest.TestCase):
         self.assertIn('Feature 10 settles what moves', acceptance[0][2])
         text = (REPO / LIST).read_text(encoding='utf-8')
         self.assertEqual(re.findall(r'Feature \d\d', text), ['Feature 09', 'Feature 10'])
-
-    def test_04_B7_the_marked_passage_of_the_client_interface_names_features_05_and_06(self):
-        lines = (REPO / CLIENT_INTERFACE).read_text(encoding='utf-8').splitlines()
-        passage = ' '.join(lines[lines.index(BEGIN) + 1:lines.index(END)])
-        self.assertIn('Features 05 and 06 of the [untangle Run](features/untangle/breakdown.md) replace the case with '
-                      'inputs and a mission the client supplies.', passage)
-        self.assertEqual(re.findall(r'Features? \d\d(?: and \d\d)?', passage), ['Features 05 and 06'])
 
 
 if __name__ == '__main__':

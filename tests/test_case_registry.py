@@ -3,6 +3,9 @@ import unittest
 from generative_driver.benchmark_support.registry import resolve_case, case_ids
 from generative_driver.configurator import validate_scoped_approval
 
+# A stand-in for the descriptor of a supplied device: the approval asks only whether a start has one.
+SUPPLIED_DEVICE = {'schema': 'device-descriptor/2'}
+
 
 class RegistryTests(unittest.TestCase):
     def test_operator_can_select_an_external_qualified_case_bundle(self):
@@ -43,8 +46,9 @@ class RegistryTests(unittest.TestCase):
         self.assertTrue({'setup-smoke', 'tq9-v2'} <= set(case_ids()))
         with self.assertRaises(ValueError):
             resolve_case('../tq9-v2')
-        with self.assertRaises(ValueError):
-            validate_scoped_approval({'case': 'tq9-v2',
+        # The approval is for the device a client supplies, never for an operator's binding beside it.
+        with self.assertRaisesRegex(ValueError, 'binding'):
+            validate_scoped_approval({'device': SUPPLIED_DEVICE,
                 'scoped_tool_approval': 'emulator',
                 'binding': {'host': '127.0.0.1', 'port': 1234}})
 
@@ -163,9 +167,14 @@ class RegistryTests(unittest.TestCase):
             self._v2_case(root)
             with patch('generative_driver.benchmark.case_root', return_value=root), \
                     patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root):
-                validate_scoped_approval({'case': 'tq9-v2', 'scoped_tool_approval': 'emulator'})
+                # The benchmark reads the registry's approval scope itself; the service asks for a supplied device.
+                from generative_driver.benchmark_support.suites import emulator_approval
+                emulator_approval('tq9-v2')
+                with self.assertRaisesRegex(ValueError, 'registered emulator profile'):
+                    emulator_approval('setup-smoke')
+                validate_scoped_approval({'device': SUPPLIED_DEVICE, 'scoped_tool_approval': 'emulator'})
                 with self.assertRaisesRegex(ValueError, 'binding'):
-                    validate_scoped_approval({'case': 'tq9-v2', 'scoped_tool_approval': 'emulator',
+                    validate_scoped_approval({'device': SUPPLIED_DEVICE, 'scoped_tool_approval': 'emulator',
                                               'binding': {'host': '127.0.0.1', 'port': 1234}})
 
     def test_truth_management_rejects_unknown_case_before_output(self):
@@ -204,15 +213,20 @@ class RegistryTests(unittest.TestCase):
             run('tq9-v2', options={'scoped_tool_approval': 'emulator', 'binding': {}}, autostart=False)
 
     def test_owner_rejects_present_empty_bindings_in_every_location(self):
-        for case, top, case_options in (
-            ('tq9-v2', {'binding': {}}, {}),
-            ('tq9-v2', {}, {'binding': {}}),
-            ({'id': 'tq9-v2', 'options': {'binding': {}}}, {}, {}),
-        ):
-            with self.subTest(case=case, top=top, case_options=case_options):
-                with self.assertRaisesRegex(ValueError, 'binding'):
-                    validate_scoped_approval({'case': case, 'scoped_tool_approval': 'emulator',
-                                              'case_options': case_options, **top})
+        import tempfile
+        from generative_driver.configurator import Controller
+        # The one location a start has left for a binding: a key of the start itself.
+        with self.assertRaisesRegex(ValueError, 'binding'):
+            validate_scoped_approval({'device': SUPPLIED_DEVICE, 'scoped_tool_approval': 'emulator', 'binding': {}})
+        # The two others were a case's options, which a start no longer takes.
+        with tempfile.TemporaryDirectory() as home:
+            controller = Controller(home)
+            try:
+                for location in ({'case_options': {'binding': {}}}, {'case': {'id': 'tq9-v2', 'options': {'binding': {}}}}):
+                    with self.subTest(location=location), self.assertRaisesRegex(ValueError, 'start takes no case'):
+                        controller.call('start', {'goal': 'g', 'scoped_tool_approval': 'emulator', **location})
+            finally:
+                controller.close()
 
     def test_v2_case_cannot_downgrade_manifest_schema(self):
         import json

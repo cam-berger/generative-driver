@@ -101,8 +101,8 @@ RUN = 'run-0123456789'
 HOST_FIELDS = ('level', 'framing', 'verdict', 'outcome', 'check_id', 'reason', 'mission', 'tokens', 'tool_counts',
                'device_id', 'image', 'truth', 'home', 'pid', 'device', 'equivalence', 'evidence', 'sealed',
                'run_status', 'device_stop')
-RUN_FILES = {'work/probe/a1/_agent_events.jsonl': b'{"type": "item.completed"}\n', 'benchmark/state.json': b'{"s": 1}',
-             'benchmark/tools/interpret/attempt1/model.json': b'{"m": 1}', 'handoffs/emit/package.bin': b'driver bytes'}
+RUN_FILES = {'work/probe/a1/_agent_events.jsonl': b'{"type": "item.completed"}\n', 'supplied/state.json': b'{"s": 1}',
+             'supplied/tools/interpret/attempt1/model.json': b'{"m": 1}', 'handoffs/emit/package.bin': b'driver bytes'}
 KEPT_FILES = {'benchmark/execution.json': b'{"snapshot": 1}', 'benchmark/inputs/firmware.bin': b'public image'}
 TRIAL_FILES = {'device/journal.jsonl': b'{"kind": "started"}\n', 'endpoint/control.json': b'{"authkey": "aa"}',
                'public-inputs/mission.json': b'{"tasks": []}'}
@@ -274,8 +274,8 @@ class WhatASealHoldsTests(FolderFixture):
         members = self.members()
         for name, content in members.items():
             self.assertEqual(index['members'][name]['sha256'], hashlib.sha256(content).hexdigest(), name)
-        self.assertEqual(index['members']['run/benchmark/state.json']['path'],
-                         str(self.run_dir / 'benchmark/state.json'))
+        self.assertEqual(index['members']['run/supplied/state.json']['path'],
+                         str(self.run_dir / 'supplied/state.json'))
         self.assertEqual(index['members']['trial/device/journal.jsonl']['path'],
                          str(self.trial / 'device/journal.jsonl'))
         self.assertEqual(index['members']['workspaces/gd-candidate-abc/attempt1/model.json']['path'],
@@ -541,7 +541,7 @@ class CrashStepTests(SweepFixture):
             self.seal()
         self.assertFalse((self.trial / 'private').exists())
         self.assertTrue(self.parent.exists())
-        self.assertTrue((self.run_dir / 'benchmark/state.json').exists())
+        self.assertTrue((self.run_dir / 'supplied/state.json').exists())
         with crashing('_remove_file', after=2), self.assertRaises(Crash):
             self.sweep()
         self.assertFalse(self.parent.exists())
@@ -560,13 +560,13 @@ class WhatTheSweepDecidesTests(SweepFixture):
         with crashing('_mark_sealed'), self.assertRaises(Crash):
             self.seal()
         before = self.seal_files()
-        (self.run_dir / 'benchmark/state.json').write_bytes(b'{"s": "changed"}')
+        (self.run_dir / 'supplied/state.json').write_bytes(b'{"s": "changed"}')
         write_files(self.run_dir, {'report.json': b'{"written": "after"}'})
         write_files(self.trial, {'device/late.log': b'late'})
         self.sweep()
         self.assertEqual(self.generations(), [1, 2])
         self.assertEqual({name: self.seal_files()[name] for name in before}, before)
-        self.assertEqual(self.members(2), {'run/benchmark/state.json': b'{"s": "changed"}',
+        self.assertEqual(self.members(2), {'run/supplied/state.json': b'{"s": "changed"}',
                                            'run/report.json': b'{"written": "after"}',
                                            'trial/device/late.log': b'late'})
         self.assertFalse((self.run_dir / 'report.json').exists())
@@ -577,7 +577,7 @@ class WhatTheSweepDecidesTests(SweepFixture):
     def test_07_B3_a_member_missing_from_disk_is_no_disagreement(self):
         with crashing('_mark_sealed'), self.assertRaises(Crash):
             self.seal()
-        (self.run_dir / 'benchmark/state.json').unlink()
+        (self.run_dir / 'supplied/state.json').unlink()
         self.sweep()
         self.assertEqual(self.generations(), [1])
         self.assertPlaintextGone()
@@ -617,7 +617,8 @@ class WhatTheSweepDecidesTests(SweepFixture):
             (self.run_dir / name).unlink()
         shutil.rmtree(self.run_dir / 'work')
         shutil.rmtree(self.run_dir / 'handoffs')
-        shutil.rmtree(self.run_dir / 'benchmark/tools')
+        # The run's own records folder goes whole: only the kept snapshot is left, which is no plaintext.
+        shutil.rmtree(self.run_dir / 'supplied')
         with self.assertRaisesRegex(trial_store.SealError, 'neither a stub nor plaintext') as raised:
             self.sweep()
         self.assertNotIn(str(self.root), str(raised.exception))
@@ -646,7 +647,7 @@ class WhatTheSweepDecidesTests(SweepFixture):
             trial_store.seal_trial(trial, self.run_dir, [], WRONG, self.call, 'harness-token')
         with self.assertRaises(trial_store.SealError):
             trial_store.seal_trial(trial, self.run_dir, [], PASSWORD, self.call, 'harness-token')
-        self.assertEqual((self.run_dir / 'benchmark/state.json').read_bytes(), RUN_FILES['benchmark/state.json'])
+        self.assertEqual((self.run_dir / 'supplied/state.json').read_bytes(), RUN_FILES['supplied/state.json'])
 
     def test_07_B3_an_unreadable_trial_json_beside_a_seal_stops_the_suite(self):
         self.seal()
@@ -704,7 +705,7 @@ class WhichTrialsTheSweepTakesTests(SweepFixture):
         self.assertEqual(harness.read_trial(first)['status'], 'sealed')
         self.assertEqual(harness.read_trial(first)['run_id'], 'first-run')
         self.assertEqual(harness.read_trial(rerun)['status'], 'evaluated')
-        self.assertEqual((self.run_dir / 'benchmark/state.json').read_bytes(), RUN_FILES['benchmark/state.json'])
+        self.assertEqual((self.run_dir / 'supplied/state.json').read_bytes(), RUN_FILES['supplied/state.json'])
 
     def test_07_B2_a_regrades_active_slot_is_safe_as_its_first_attempt_shares_its_request(self):
         record = json.loads((self.trial / 'trial.json').read_text())
@@ -756,7 +757,7 @@ class WhichTrialsTheSweepTakesTests(SweepFixture):
         (self.trial / 'trial.json').write_text(json.dumps({**record, 'run_id': None}))
         self.sweep()
         self.assertEqual(harness.read_trial(self.trial)['run_id'], RUN)
-        self.assertIn('run/benchmark/state.json', self.members())
+        self.assertIn('run/supplied/state.json', self.members())
 
     def test_07_B7_a_run_with_no_trial_folder_gets_one_made_from_the_slots_row(self):
         shutil.rmtree(self.trial)
@@ -766,9 +767,9 @@ class WhichTrialsTheSweepTakesTests(SweepFixture):
         self.assertEqual((stub['status'], stub['run_id'], stub['case'], stub['start_sent']),
                          ('sealed', RUN, 'generated', None))
         self.assertEqual(stub['request_id'], 'suite:' + SUITE + ':trial:0')
-        self.assertEqual(self.members(trial=trial)['run/benchmark/state.json'], RUN_FILES['benchmark/state.json'])
+        self.assertEqual(self.members(trial=trial)['run/supplied/state.json'], RUN_FILES['supplied/state.json'])
         self.assertIn('trial/trial.json', self.members(trial=trial))
-        self.assertFalse((self.run_dir / 'benchmark/state.json').exists())
+        self.assertFalse((self.run_dir / 'supplied/state.json').exists())
 
     def test_07_B6_a_folder_made_from_a_row_proves_the_password_on_another_trial_of_the_suite(self):
         neighbour = self.make_trial(ordinal=1, key='entry-001-repeat-000-bbbbbbbb', run_id='run-2')
@@ -776,7 +777,7 @@ class WhichTrialsTheSweepTakesTests(SweepFixture):
         self.call.rows = [self.row()]
         with self.assertRaisesRegex(trial_store.SealError, 'password'):
             self.sweep(password=WRONG)
-        self.assertEqual((self.run_dir / 'benchmark/state.json').read_bytes(), RUN_FILES['benchmark/state.json'])
+        self.assertEqual((self.run_dir / 'supplied/state.json').read_bytes(), RUN_FILES['supplied/state.json'])
         self.assertTrue((neighbour / 'device').exists())
 
     def test_07_B2_a_configurator_it_cannot_reach_is_a_distinct_failure_naming_no_path(self):
@@ -826,7 +827,7 @@ class FailureTests(SweepFixture):
 
         def lying(trial, generation, chosen, password):
             index = real(trial, generation, chosen, password)
-            index['members']['run/benchmark/state.json']['sha256'] = '0' * 64
+            index['members']['run/supplied/state.json']['sha256'] = '0' * 64
             return index
         with patch.object(trial_store, '_write_generation', lying), \
                 self.assertRaisesRegex(trial_store.SealError, 'differs from its index'):
@@ -845,7 +846,7 @@ class FailureTests(SweepFixture):
             self.sweep()
         self.assertNotIn(str(self.root), str(raised.exception))
         self.assertEqual(harness.read_trial(self.trial)['status'], 'sealed')
-        self.assertTrue((self.run_dir / 'benchmark/state.json').exists())
+        self.assertTrue((self.run_dir / 'supplied/state.json').exists())
         self.sweep()
         self.assertAllSealed()
 
@@ -1119,10 +1120,10 @@ class ReadingBackTests(SweepFixture):
     def test_07_B13_each_member_comes_from_its_latest_generation(self):
         with crashing('_mark_sealed'), self.assertRaises(Crash):
             self.seal()
-        (self.run_dir / 'benchmark/state.json').write_bytes(b'{"s": "later"}')
+        (self.run_dir / 'supplied/state.json').write_bytes(b'{"s": "later"}')
         self.sweep()
         with trial_store.opened(self.home, SUITE, RUN, PASSWORD) as root:
-            self.assertEqual((root / 'run/benchmark/state.json').read_bytes(), b'{"s": "later"}')
+            self.assertEqual((root / 'run/supplied/state.json').read_bytes(), b'{"s": "later"}')
             self.assertEqual((root / 'run/handoffs/emit/package.bin').read_bytes(),
                              RUN_FILES['handoffs/emit/package.bin'])
 
@@ -1174,19 +1175,19 @@ class RestoreTests(SweepFixture):
             self.assertEqual(stat.S_IMODE(script.stat().st_mode), 0o755)
 
     def test_07_B14_a_file_a_worker_closed_comes_back_readable(self):
-        secret = self.run_dir / 'benchmark/state.json'
+        secret = self.run_dir / 'supplied/state.json'
         secret.chmod(0)
         self.sweep()
         trial_store.restore(self.trial, PASSWORD)
-        self.assertEqual(secret.read_bytes(), RUN_FILES['benchmark/state.json'])
+        self.assertEqual(secret.read_bytes(), RUN_FILES['supplied/state.json'])
 
     def test_07_B14_a_repeat_changes_nothing_and_derives_no_key(self):
         self.sweep()
         trial_store.restore(self.trial, PASSWORD)
-        (self.run_dir / 'benchmark/state.json').write_bytes(b'{"s": "since the restore"}')
+        (self.run_dir / 'supplied/state.json').write_bytes(b'{"s": "since the restore"}')
         with patch.object(trial_store, '_open_file', side_effect=AssertionError('It unlocked something')):
             trial_store.restore(self.trial, PASSWORD)
-        self.assertEqual((self.run_dir / 'benchmark/state.json').read_bytes(), b'{"s": "since the restore"}')
+        self.assertEqual((self.run_dir / 'supplied/state.json').read_bytes(), b'{"s": "since the restore"}')
 
     def test_07_B14_killed_part_way_the_stub_stands_and_a_repeat_finishes(self):
         self.sweep()
@@ -1195,7 +1196,7 @@ class RestoreTests(SweepFixture):
         self.assertEqual(harness.read_trial(self.trial)['status'], 'sealed')
         trial_store.restore(self.trial, PASSWORD)
         self.assertEqual(harness.read_trial(self.trial)['status'], 'evaluated')
-        self.assertEqual((self.run_dir / 'benchmark/state.json').read_bytes(), RUN_FILES['benchmark/state.json'])
+        self.assertEqual((self.run_dir / 'supplied/state.json').read_bytes(), RUN_FILES['supplied/state.json'])
 
     def test_07_B14_a_restore_that_fails_raises_naming_no_path(self):
         self.sweep()
@@ -1251,10 +1252,10 @@ class StoreTests(SweepFixture):
         (self.vault / 'sealed-trials' / SUITE / self.trial.name).mkdir(parents=True)
         shutil.move(str(self.trial / 'sealed-1-1.enc'), str(self.stored / 'sealed-1-1.enc'))
         with trial_store.opened(self.home, SUITE, RUN, PASSWORD, vault=self.vault) as root:
-            self.assertEqual((root / 'run/benchmark/state.json').read_bytes(), RUN_FILES['benchmark/state.json'])
+            self.assertEqual((root / 'run/supplied/state.json').read_bytes(), RUN_FILES['supplied/state.json'])
         self.store()
         with trial_store.opened(self.home, SUITE, RUN, PASSWORD, vault=self.vault) as root:
-            self.assertEqual((root / 'run/benchmark/state.json').read_bytes(), RUN_FILES['benchmark/state.json'])
+            self.assertEqual((root / 'run/supplied/state.json').read_bytes(), RUN_FILES['supplied/state.json'])
         with self.assertRaisesRegex(trial_store.SealError, 'vault folder'):
             with trial_store.opened(self.home, SUITE, RUN, PASSWORD):
                 self.fail('It opened')
@@ -1818,7 +1819,10 @@ class SealedRunMarkTests(unittest.TestCase):
         return suite_id
 
     def add_run(self, run_id, suite_id, status='failed'):
-        spec = {'executor': 'codex', 'executor_config': {}, 'budget_seconds': 10, 'case': 'generated'}
+        # A stored run on a supplied device, as a suite's child is: by its device, its firmware and its mission.
+        spec = {'executor': 'codex', 'executor_config': {}, 'budget_seconds': 10,
+                'device': {'schema': 'device-descriptor/2'}, 'firmware': {'path': '/nowhere/firmware.bin', 'sha256': '0' * 64},
+                'mission': {'tasks': {}, 'reuse_objective': 'x'}}
         with self.controller._db() as db:
             db.execute('INSERT INTO runs(id,request_id,spec,status,created,updated) VALUES(?,?,?,?,1,2)',
                        (run_id, 'request-' + run_id, _json(spec), status))
@@ -2042,7 +2046,7 @@ class UnsealCommandTests(SweepFixture):
         code, printed = self.main('unseal', SUITE, '--trial', self.trial.name, '--vault-folder', str(vault), '--output',
                                   str(vault / 'by-id'))
         self.assertEqual(code, 0, printed)
-        self.assertTrue((vault / 'by-id/run/benchmark/state.json').exists())
+        self.assertTrue((vault / 'by-id/run/supplied/state.json').exists())
 
     def test_07_B15_it_refuses_any_other_location(self):
         vault = self.root / 'vault'
@@ -2343,7 +2347,7 @@ class HarnessProofTests(HarnessFixture):
         self.assertIn('prove the password', record['reason'])
         self.assertNotIn(str(self.root), record['reason'])
         self.assertNotIn('suite_reserve', self.driven.methods())
-        self.assertEqual((self.run_dir / 'benchmark/state.json').read_bytes(), RUN_FILES['benchmark/state.json'])
+        self.assertEqual((self.run_dir / 'supplied/state.json').read_bytes(), RUN_FILES['supplied/state.json'])
 
 
 class SettledFolderWithNoStartTests(HarnessFixture):
@@ -2452,7 +2456,7 @@ class OnlyThisSuitesRunsTests(SweepFixture):
     def test_07_B13_a_run_of_this_suite_with_no_folder_still_opens(self):
         shutil.rmtree(self.trial)
         with trial_store.opened(self.home, SUITE, RUN, PASSWORD) as root:
-            self.assertEqual((root / 'run/benchmark/state.json').read_bytes(), RUN_FILES['benchmark/state.json'])
+            self.assertEqual((root / 'run/supplied/state.json').read_bytes(), RUN_FILES['supplied/state.json'])
 
     def test_07_B13_with_no_database_nothing_says_it_is_this_suites(self):
         shutil.rmtree(self.trial)

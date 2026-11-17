@@ -48,9 +48,9 @@ def validate_capabilities(capabilities: dict, model: dict, required_tasks=()) ->
     def error(path, message):
         errors.append({'fault': 'model', 'code': 'capability_mapping',
                        'path': path[:256], 'message': message})
-    if (type(capabilities) is not dict or capabilities.get('schema') != 'benchmark-capabilities/2'
+    if (type(capabilities) is not dict or capabilities.get('schema') != 'capabilities/2'
             or type(capabilities.get('tasks')) is not dict):
-        error('tasks', 'Declare schema benchmark-capabilities/2 and a tasks object')
+        error('tasks', 'Declare schema capabilities/2 and a tasks object')
         return {'ok': False, 'errors': errors}
     tasks = capabilities['tasks']
     for task in required_tasks:
@@ -116,7 +116,7 @@ def validate_capabilities(capabilities: dict, model: dict, required_tasks=()) ->
 
 def bind_task(capabilities: dict, task: str, inputs: dict, model: dict) -> dict:
     try:
-        if capabilities['schema'] != 'benchmark-capabilities/2' or type(inputs) is not dict:
+        if capabilities['schema'] != 'capabilities/2' or type(inputs) is not dict:
             raise ValueError('Invalid capability schema or input')
         spec = capabilities['tasks'][task]
         validated = validate_capabilities({'schema': capabilities['schema'], 'tasks': {task: spec}}, model)

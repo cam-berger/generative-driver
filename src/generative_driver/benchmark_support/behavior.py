@@ -59,7 +59,7 @@ def _check_contract(contract):
 def _undecided(record):
     """The reason the evaluator left a check undecided (its device state could not be read, or its sequence did not start
     from a verified reset), from the record it wrote for it; None for a record that carries no `undecided`. The reason is
-    a non-empty string of at most 300 characters, the limit of an equivalence/1 text field, and is published in the grade's
+    a non-empty string of at most 300 characters, the limit of an equivalence/2 text field, and is published in the grade's
     difference, so it names no expected value. Anything else under the key, null included, only the evaluator can have
     written: ValueError, as an invalid contract is, so that its defect is a host fault and never the driver's failure."""
     if 'undecided' not in record:

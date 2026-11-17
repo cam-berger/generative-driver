@@ -1354,7 +1354,8 @@ class HeldAdmissionTests(unittest.TestCase):
         with patch.object(generated_sets, 'grader_identity', side_effect=OSError('a path')):
             self.assertEqual(generated_sets.admitted_held(held, '0000d001'), ['grader identity unavailable: OSError'])
         self.assertEqual(list(self.trial.iterdir()), [])
-        provider, admission, truth = self.admit(held)
+        provider, admission, truth, pin = self.admit(held)
+        self.assertEqual(pin, generated_trials.device_pin(self.manifest, '0000d001', held.evidence_sha256))
         self.assertEqual(admission, {'calibration_evidence_sha256': held.evidence_sha256})
         self.assertEqual(truth.payload, FIXTURE_ANSWER_KEY)
         self.assertEqual(provider.recipe, FIXTURE_ANSWER_KEY['recipe'])

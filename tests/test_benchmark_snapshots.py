@@ -65,12 +65,12 @@ class SnapshotTests(unittest.TestCase):
             self.assertNotEqual(after[field], before[field])
         self.assertEqual(after['evaluator_revision'], before['evaluator_revision'])
 
-def case_start(test, root, **fields):
-    """A start request for the current case `tq9-v2` with what its bench harness adds: a device of synthetic peers under
-    `root`, the admission of the public pin and the token hash."""
-    from suite_fixtures import provided_device
-    return {'case': 'tq9-v2', 'effects': ['write', 'actuate'],
-            **provided_device(test, Path(root) / 'fixture', pin_case('tq9-v2', None, 0)), **fields}
+def case_start(test, root, home=None, **fields):
+    """The start its bench harness sends for the current case `tq9-v2`: a device of synthetic peers under `root`, the
+    firmware and the mission the harness froze in a trial folder there, the token hash and the client record. `home`
+    is the configurator home whose configured runtime the run has, `root` unless given."""
+    from suite_fixtures import supplied_start
+    return supplied_start(test, Path(root) / 'fixture', home=home or root, effects=['write', 'actuate'], **fields)
 
 
 def attach_device(test, controller, run, root, image=None):
@@ -137,18 +137,18 @@ class ControllerSnapshotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             def execute(request, config, cancel):
-                records = list((root / 'runs').glob('*/benchmark/execution.json'))
+                # The harness saved the snapshot in its trial folder before it sent the start.
+                records = list((root / 'fixture').glob('trial-*/benchmark/execution.json'))
                 seen.append((json.loads(records[0].read_text()) if records else None, dict(config)))
                 return self.blocked_executor(request, config, cancel)
             with patch('generative_driver.configurator.execute', execute):
                 controller = Controller(root)
                 scripted_runtime(root)
                 try:
-                    # The configurator takes no evaluator handle for any case: the bench harness does.
+                    # The configurator takes no evaluator handle for any run: the bench harness holds it.
                     request = case_start(self, root, goal='snapshot contract', executor_config={'model': 'scripted'})
                     with self.assertRaisesRegex(ValueError, 'password'):
-                        controller.start({**request,
-                                          'case_options': {'evaluator_password_file': '/private/secret-handle'}})
+                        controller.start({**request, 'evaluator_password_file': '/private/secret-handle'})
                     self.assertFalse(list((root / 'runs').glob('*')) if (root / 'runs').exists() else [])
                     run = controller.start(request)
                     result = self.wait_stopped(controller, run)
@@ -164,18 +164,19 @@ class ControllerSnapshotTests(unittest.TestCase):
                     controller.close()
 
     def test_resume_rejects_tampered_snapshot_before_new_assignment(self):
+        # The configurator holds the run to the firmware it was started with, the image its harness froze (06-B5).
         from unittest.mock import patch
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as temp, patch('generative_driver.configurator.execute', self.blocked_executor):
             controller = Controller(Path(temp))
             scripted_runtime(Path(temp))
             try:
-                run = controller.start(case_start(self, temp, goal='resume integrity'))
+                start = case_start(self, temp, goal='resume integrity')
+                run = controller.start(start)
                 before = self.wait_stopped(controller, run)
                 attach_device(self, controller, run, temp)
-                image = Path(temp) / 'runs' / run['run_id'] / 'benchmark/inputs/firmware.bin'
-                image.write_bytes(b'tampered')
-                with self.assertRaisesRegex(ValueError, 'hash'):
+                Path(start['firmware']['path']).write_bytes(b'tampered')
+                with self.assertRaisesRegex(ValueError, 'The supplied firmware changed after the run started'):
                     controller.call('resume', run)
                 after = controller.call('result', run)
                 self.assertEqual(after['worker_reports'], before['worker_reports'])
@@ -193,7 +194,8 @@ class ControllerSnapshotTests(unittest.TestCase):
                 if request.stage != 'acquire':
                     return self.blocked_executor(request, config, cancel)
                 (request.workspace / 'provenance.json').write_text('{}')
-                image = next((root / 'runs').glob('*/benchmark/inputs/firmware.bin'))
+                # The firmware the harness froze and supplied changes between two stages.
+                image = next((root / 'fixture').glob('trial-*/benchmark/inputs/firmware.bin'))
                 image.write_bytes(b'changed between stages')
                 return {'runtime': 'codex', 'status': 'completed', 'elapsed_seconds': 0,
                     'usage': None, 'report': {'status': 'completed', 'summary': 'scripted acquisition',
@@ -205,7 +207,7 @@ class ControllerSnapshotTests(unittest.TestCase):
                     run = controller.start(case_start(self, root, goal='stage integrity'))
                     result = self.wait_stopped(controller, run)
                     self.assertEqual((result['status'], result['outcome_category']), ('blocked', 'integrity'), result)
-                    self.assertIn('hash', result['reason'])
+                    self.assertIn('The supplied firmware changed after the run started', result['reason'])
                     self.assertEqual(len(result['worker_reports']), 1)
                 finally:
                     controller.close()
@@ -231,11 +233,11 @@ class ControllerSnapshotTests(unittest.TestCase):
                 controller = Controller(root / 'home')
                 scripted_runtime(root / 'home')
                 try:
-                    run = controller.start(case_start(self, root, goal='use captured firmware'))
+                    start = case_start(self, root, home=root / 'home', goal='use captured firmware')
+                    run = controller.start(start)
                     self.wait_stopped(controller, run)
-                    # The device its harness attaches for the resume runs the image the run captured.
-                    attach_device(self, controller, run, root,
-                                  root / 'home/runs' / run['run_id'] / 'benchmark/inputs/firmware.bin')
+                    # The device its harness attaches for the resume runs the image the harness captured.
+                    attach_device(self, controller, run, root, start['firmware']['path'])
                     image = installed / 'cases/tq9-v2/firmware.bin'
                     image.write_bytes(b'new installed firmware')
                     manifest_path = installed / 'cases/tq9-v2/case.json'
@@ -250,18 +252,23 @@ class ControllerSnapshotTests(unittest.TestCase):
                     controller.close()
 
     def test_resume_rejects_changed_executing_implementation(self):
+        # The bench harness compares the implementation itself before it resumes a stopped run (06-B16): its check
+        # of the snapshot is asked here, with the configuration the trial recorded.
         from unittest.mock import patch
+        from generative_driver.benchmark_support import harness
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as temp, patch('generative_driver.configurator.execute', self.blocked_executor):
             controller = Controller(Path(temp))
             scripted_runtime(Path(temp))
             try:
-                run = controller.start(case_start(self, temp, goal='implementation identity'))
+                start = case_start(self, temp, goal='implementation identity')
+                run = start.keep(temp, controller.start(start))
                 before = self.wait_stopped(controller, run)
-                attach_device(self, controller, run, temp)
+                run_dir = Path(temp) / 'runs' / run['run_id']
+                harness.check_snapshot(start.trial_dir, run_dir, before, config=start['executor_config'])
                 with patch('generative_driver.benchmark_support.integrity.tree_hash', return_value='changed-installation'):
                     with self.assertRaisesRegex(ValueError, 'implementation'):
-                        controller.call('resume', run)
+                        harness.check_snapshot(start.trial_dir, run_dir, before, config=start['executor_config'])
                 self.assertEqual(controller.call('result', run)['worker_reports'], before['worker_reports'])
             finally:
                 controller.close()
@@ -275,9 +282,8 @@ class ControllerSnapshotTests(unittest.TestCase):
                 snapshot_case(Path(temp), pin, {})
             self.assertFalse((Path(temp) / 'benchmark/execution.json').exists())
 
-    def test_historical_run_without_snapshot_resumes_without_invented_provenance(self):
+    def test_historical_run_without_snapshot_is_not_resumed_and_reports_without_invented_provenance(self):
         import json
-        import shutil
         from unittest.mock import patch
         from generative_driver.configurator import Controller
         from generative_driver.reporting import report_run
@@ -288,20 +294,20 @@ class ControllerSnapshotTests(unittest.TestCase):
             try:
                 run = controller.start(case_start(self, root, goal='legacy fixture'))
                 self.wait_stopped(controller, run)
-                # Model the persisted pre-snapshot schema, retaining actual controller storage. A run of that time
-                # had no device from a bench harness either.
+                # Model the persisted pre-snapshot schema, retaining actual controller storage: a run of that time
+                # named its case, and had no device, firmware, mission or record from a bench harness.
                 with controller._db() as db:
                     spec = json.loads(db.execute('SELECT spec FROM runs WHERE id=?', (run['run_id'],)).fetchone()['spec'])
-                    for key in ('_snapshot_sha256', '_case_pin', '_execution_run_dir', '_submitted_intent',
-                                'device', 'admission', 'evaluation_token_sha256'):
+                    for key in ('_submitted_intent', 'device', 'firmware', 'mission', 'client_record',
+                                'evaluation_token_sha256'):
                         spec.pop(key, None)
-                    db.execute('UPDATE runs SET spec=? WHERE id=?', (json.dumps(spec), run['run_id']))
+                    db.execute('UPDATE runs SET spec=? WHERE id=?', (json.dumps({**spec, 'case': 'tq9-v2'}), run['run_id']))
                 benchmark = root / 'runs' / run['run_id'] / 'benchmark'
-                (benchmark / 'execution.json').unlink()
-                shutil.rmtree(benchmark / 'inputs')
-                controller.call('resume', run)
-                result = self.wait_stopped(controller, run)
-                self.assertEqual(len(result['worker_reports']), 2)
+                # A run an earlier version started on a case is not resumed (06-B11 of the untangle Run).
+                with self.assertRaisesRegex(ValueError, 'started on a benchmark case by an earlier version'):
+                    controller.call('resume', run)
+                result = controller.call('result', run)
+                self.assertEqual(len(result['worker_reports']), 1)
                 self.assertNotIn('snapshot_sha256', result)
                 self.assertFalse((benchmark / 'execution.json').exists())
                 with patch('generative_driver.client.call', side_effect=lambda method, params, **kwargs: controller.call(method, params)):
@@ -312,21 +318,30 @@ class ControllerSnapshotTests(unittest.TestCase):
                 controller.close()
 
     def test_generic_controller_keeps_uncalibrated_v2_admission_closed(self):
+        # The bench harness admits a case now: a trial of an uncalibrated v2 case ends before any run starts.
         from unittest.mock import patch
         from test_case_registry import RegistryTests
+        from generative_driver.benchmark_support import harness
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             RegistryTests._v2_case(root / 'installed')
+            (root / 'password-handle').write_text('synthetic fixture credential')
             with patch('generative_driver.benchmark.case_root', return_value=root / 'installed'), \
                     patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root / 'installed'):
                 controller = Controller(root / 'home')
                 scripted_runtime(root / 'home')
+                configurator = lambda method, params=None, **kwargs: (
+                    {'ok': True} if method == 'ping' else controller.call(method, params))
                 try:
-                    with self.assertRaisesRegex(ValueError, 'calibration'):
-                        controller.start({'goal': 'pending v2', 'case': 'tq9-v2',
-                            'effects': ['write', 'actuate'],
-                            'case_options': {'scenario_id': 'original'}})
+                    with patch('generative_driver.client.call', side_effect=configurator):
+                        record = harness.run_trial(root / 'bench' / 'pending', {
+                            'trial_id': 'pending', 'home': str(root / 'home'), 'goal': 'pending v2', 'case': 'tq9-v2',
+                            'effects': ['write', 'actuate'], 'case_options': {'scenario_id': 'original'},
+                            'password_file': str(root / 'password-handle')})
+                    self.assertEqual((record['status'], record['run_id'], record['no_run']),
+                                     ('failed', None, 'admit-refused'))
+                    self.assertRegex(record['reason'], 'calibration')
                     with controller._db() as db:
                         self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 0)
                 finally:
@@ -339,10 +354,12 @@ class ControllerSnapshotTests(unittest.TestCase):
             controller = Controller(Path(temp))
             scripted_runtime(Path(temp))
             try:
-                request = case_start(self, temp, goal='typed intent', request_id='typed', case_options={'case_seed': 0})
+                # A typed value of the submitted intent: the record a client sends with its start.
+                request = case_start(self, temp, goal='typed intent', request_id='typed')
+                request['client_record'] = {**request['client_record'], 'case_seed': 0}
                 run = controller.start(request)
                 self.wait_stopped(controller, run)
                 with self.assertRaisesRegex(ValueError, 'different inputs'):
-                    controller.start({**request, 'case_options': {'case_seed': False}})
+                    controller.start({**request, 'client_record': {**request['client_record'], 'case_seed': False}})
             finally:
                 controller.close()

@@ -15,6 +15,23 @@ from package_env import package_env
 from test_package import example_model, example_replay
 
 FIRMWARE = b'\xe9 scripted image, not firmware'
+# The `TASKS.json` the stage package wrote for the hand-written mission of `tests/test_supplied_stages.py` at commit
+# 6bbdcae, before the kit-fixes Features 05 to 07 arrived: it says no word of a contract, an analysis or a document.
+STAGE_PACKAGE_TASKS = {
+    'schema': 'candidate-task-contract/1',
+    'tasks': {
+        'read_level': {'meaning': 'Read the fill level.', 'inputs': {}, 'outputs': {'level': {'unit': 'percent'}}},
+        'read_status': {'meaning': 'Read the status code.', 'inputs': {}, 'outputs': {'status': {'unit': 'code'}}}},
+    'effect_grants': [],
+    'instructions': (
+        'These are requested observable behaviors, not protocol facts or hidden test values. Recover command bytes, '
+        'operation composition, bounds and decoders from the supplied evidence. One canonical task can require several '
+        'exchange steps in a model operation. Effect labels describe actual behavior: acquisition and configuration '
+        'changes are writes; actuation controls a physical output. Read is implicit; other effects require the listed '
+        'grants. Do not relabel unsafe operations merely to bypass a grant. Report unsupported behavior. The '
+        'operating_conditions are provided operating facts. The tasks remain requested observable behaviors, not '
+        'protocol facts or hidden test values.'),
+    'operating_conditions': ['The device answers one request at a time.']}
 
 
 def thermometer():
@@ -110,9 +127,13 @@ class InterpretWorkspaceTests(unittest.TestCase):
             self.assertIn(name, context['sealed_inputs'])
 
     def test_05_B6_benchmark_interpret_workspaces_get_neither_file(self):
-        from generative_driver.benchmark import prepare_stage
+        # A benchmark run interprets on the stage package, so the test asks that package, with a hand-written
+        # firmware and mission (06-B2 of the untangle Run, docs/features/untangle/06-benchmark-runs.md).
+        from generative_driver.supplied.stages import prepare_stage
         from generative_driver.toolkit import resources_root
-        prepared = prepare_stage('tq9', 'interpret', self.root / 'run', self.root / 'worker')
+        from test_supplied_stages import MISSION, hand_written_firmware
+        prepared = prepare_stage('interpret', self.root / 'run', self.root / 'worker',
+                                 firmware=hand_written_firmware(self.root), mission=MISSION)
         cleanup_workspaces(self, [prepared['work_dir']])
         workspace = Path(prepared['work_dir'])
         for name in ('CONTRACT.md', 'contract.py', 'contract.json'):
@@ -123,7 +144,7 @@ class InterpretWorkspaceTests(unittest.TestCase):
                          (toolchain / 'skills/interpret-interface/SKILL.md').read_bytes())
         self.assertEqual((workspace / 'validate.py').read_bytes(),
                          (toolchain / 'template/interface_validate.py').read_bytes())
-        self.assertFalse((workspace / 'TASKS.json').exists())
+        self.assertEqual(json.loads((workspace / 'TASKS.json').read_text(encoding='utf-8')), STAGE_PACKAGE_TASKS)
 
 
 def contract_tool(workspace, *arguments):

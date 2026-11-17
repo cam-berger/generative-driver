@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 
 from . import analysis_index, supplementary_documents
-from .benchmark_support.integrity import IntegrityError
+from .integrity import IntegrityError
 
 # The values of the `interpretation` start parameter; the first is the default.
 MODES = ('single', 'tasks')

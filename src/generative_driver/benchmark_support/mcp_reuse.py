@@ -84,7 +84,7 @@ def owner_evidence(run_dir, accepted):
     package = next((Path(a['path']) for h in reversed(accepted) if h.get('stage') == 'emit'
                     for a in h.get('artifacts', []) if (Path(a['path'])/'manifest.json').is_file()), None)
     manifest = json.loads((package/'manifest.json').read_text()) if package else {}
-    path = run_dir/'benchmark/package-events.jsonl'
+    path = run_dir/'supplied/package-events.jsonl'
     records = [json.loads(line) for line in path.read_text().splitlines()] if path.is_file() else []
     result = {'schema': 'benchmark-owner-mcp/1', 'run_id': run_dir.name, 'package_schema': manifest.get('schema'),
               'reuse_profile': PROFILE if manifest.get('schema') == 'interface-package/2' else None,

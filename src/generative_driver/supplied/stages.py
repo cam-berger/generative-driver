@@ -71,7 +71,7 @@ sys.exit(0 if result['ok'] else 1)
     guide = workspace/'CAPABILITY_FORMAT.md'
     guide.write_text('''# Capability mapping format
 
-Declare schema `benchmark-capabilities/2` and a `tasks` object. Every task has `operation`, `constants`, `inputs` and `outputs`; use empty objects when there are none. Operation, parameter and output names must refer to your candidate model. Constants and mapped inputs cover every operation parameter exactly once.
+Declare schema `capabilities/2` and a `tasks` object. Every task has `operation`, `constants`, `inputs` and `outputs`; use empty objects when there are none. Operation, parameter and output names must refer to your candidate model. Constants and mapped inputs cover every operation parameter exactly once.
 
 Copy an input with `{"parameter": "candidate_parameter", "kind": "copy"}`. Numeric conversion uses `{"parameter": "candidate_parameter", "kind": "affine", "scale": 1, "offset": 0}`. `mapping` is not the selector key. Affine conversion is canonical input * scale + offset, checked against the candidate type and bounds.
 
@@ -80,7 +80,7 @@ Map an output with `{"output": "candidate_output", "unit": "candidate_unit"}`. A
 Example shape, using placeholder names rather than inferred device facts:
 
 ```json
-{"schema":"benchmark-capabilities/2","tasks":{"task_name":{"operation":"candidate_operation","constants":{},"inputs":{"canonical_input":{"parameter":"candidate_parameter","kind":"copy"}},"outputs":{"canonical_output":{"output":"candidate_output","unit":null}}}}}
+{"schema":"capabilities/2","tasks":{"task_name":{"operation":"candidate_operation","constants":{},"inputs":{"canonical_input":{"parameter":"candidate_parameter","kind":"copy"}},"outputs":{"canonical_output":{"output":"candidate_output","unit":null}}}}}
 ```
 
 Run `python validate_capabilities.py <absolute-model-directory> <absolute-capabilities-json>` before submitting. This pure check uses the same binding rules as the controller, without a device or evaluator answer key. Correct capability-file errors here; report `needs_revision` if the immutable model itself needs repair. Do not edit the supplied validator or rules. A passed mapping check establishes structure, not functional behavior.
@@ -221,7 +221,7 @@ def prepare_stage(stage, run_dir, workspace, accepted=None, options=None, *, fir
         _write(ws/'TASKS.json', task_contract(mission, options.get('configured_effects', [])))
         guidance.append(str(ws/'TASKS.json'))
         objective = ('Test the supplied immutable model over the emulator binding. Write capabilities.json with '
-            'schema benchmark-capabilities/2 and tasks ' + ', '.join(_required_tasks(mission)) + '. '
+            'schema capabilities/2 and tasks ' + ', '.join(_required_tasks(mission)) + '. '
             'Each task declares operation, constants, inputs and outputs. Map every requested input and output '
             'in TASKS.json, including its physical unit, to the candidate model. Report unsupported capabilities honestly.')
         objective += (' Read TASKS.json for required task semantics, outputs and effect grants. '
@@ -312,12 +312,12 @@ def prepare_stage(stage, run_dir, workspace, accepted=None, options=None, *, fir
             objective += ('\nProvided operating conditions (public facts):\n'
                 + '\n'.join('- ' + condition for condition in mission['operating_conditions']) + '\n')
         return {'objective': 'Use only the emitted package and this objective: ' + objective
-                    + ' Use benchmark_package_execute for each operation. Find names and arguments in the package '
+                    + ' Use package_execute for each operation. Find names and arguments in the package '
                     'reference. '
                     + ('Each result also carries an instrument reading of the emulated device after the call. '
                        if readings else '')
                     + 'Report actual observations and limitations.',
-                'inputs': [str(package)], 'allowed_tools': ['benchmark_package_execute'],
+                'inputs': [str(package)], 'allowed_tools': ['package_execute'],
                 'context': {'package_dir': str(package)}, 'binding': binding,
                 'boundary': 'fresh package-only mission'}
     if stage == 'interpret':
@@ -341,7 +341,7 @@ def prepare_stage(stage, run_dir, workspace, accepted=None, options=None, *, fir
         if options.get('feedback'):
             sources.update(repair_sources(run_dir, ws, options['feedback'], readings=readings))
         attempt = int(state.get('interpret_attempt', 0)) + 1
-        prepared = call_tool('interpret_run', {'run_dir': str(Path(run_dir).resolve()/'benchmark/tools'),
+        prepared = call_tool('interpret_run', {'run_dir': str(Path(run_dir).resolve()/'supplied/tools'),
             'front_end': 'interpret-interface', 'inputs': sources, 'mode': 'prepare', 'attempt': attempt,
             'workspace_root': tempfile.mkdtemp(prefix='gd-candidate-')})
         if not prepared.get('ok'):
@@ -420,7 +420,7 @@ def observe_stage(stage, run_dir, workspace, report, accepted=None, options=None
         from ..toolkit import call_tool
         state_path, state = _state(run_dir)
         prepared = state['interpret']
-        tools = str(Path(run_dir).resolve()/'benchmark/tools')
+        tools = str(Path(run_dir).resolve()/'supplied/tools')
         result = call_tool('interpret_collect', {'run_dir': tools, 'attempt': state['interpret_attempt'],
             'expected_seal_sha256': prepared['seal_sha256'], 'seal_kind': 'instruction'})
         reason = result.get('reason') or result.get('error')
@@ -496,7 +496,7 @@ def observe_stage(stage, run_dir, workspace, report, accepted=None, options=None
                 reason = 'No adapted model to check the mapping against'
             checks.append({'name': 'capability_mapping', 'passed': reason is None,
                            **({'reason': reason} if reason else {}), **({'errors': errors} if errors else {})})
-        live = Path(run_dir)/'benchmark'/f'live-observations-{state.get("revision", 0)}.jsonl'
+        live = Path(run_dir)/'supplied'/f'live-observations-{state.get("revision", 0)}.jsonl'
         if live.is_file():
             artifacts.append(live)
             files['live-observations.jsonl'] = live
@@ -516,7 +516,7 @@ def observe_stage(stage, run_dir, workspace, report, accepted=None, options=None
         rejected, noted = [], {'not_handed_off': not_handed_off} if not_handed_off else {}
         for package in packages:
             manifest_path = package/'manifest.json'
-            result = call_tool('emit_check', {'run_dir': str(Path(run_dir)/'benchmark/package-checks'),
+            result = call_tool('emit_check', {'run_dir': str(Path(run_dir)/'supplied/package-checks'),
                 'package_dir': str(package), 'model_dir': str(ws/'model')})
             if _host(result):
                 raise RuntimeError('emit_check could not run on this host for ' + package.name + ': ' + str(result.get('error')))
@@ -542,10 +542,9 @@ def observe_stage(stage, run_dir, workspace, report, accepted=None, options=None
     raise ValueError('Native stage is not implemented: ' + stage)
 
 
-# A device stage of a run without a supplied device waits for the operator. The text names the bench harness, which
-# supplies the device of every such run today.
-NO_DEVICE = ('An emulated case runs only on the device its bench harness provides, and this run has none: start it with '
-             '`benchmark run`, whose bench harness provides the device and grades the driver after the run')
+# A device stage of a run without a supplied device waits for the operator.
+NO_DEVICE = ('This stage needs the supplied device, and this run has none: start the run with a device, a firmware and '
+             'a mission')
 
 
 def _binding(options):
@@ -576,13 +575,13 @@ def record_call(run_dir, stage, name, arguments, result, before, after, options=
     path, state = _state(run_dir)
     offered = offers_readings((options or {}).get('device'))
     readings = {'observation': after, 'before_observation': before} if offered else {}
-    if name == 'benchmark_package_execute':
+    if name == 'package_execute':
         row = {'actor': 'worker', 'stage': stage, 'operation': arguments.get('operation'), 'revision': state.get('revision', 0),
                'attempt_id': state['package_attempts'][stage], 'assignment_id': (options or {}).get('assignment_id'),
                'package_sha256': state['package_sha256'], 'parameters': arguments.get('parameters', {}),
                **({'mcp': arguments['mcp']} if arguments.get('mcp') else {}),
                'result': result, **readings}
-        with (Path(run_dir)/'benchmark/package-events.jsonl').open('a') as stream:
+        with (Path(run_dir)/'supplied/package-events.jsonl').open('a') as stream:
             stream.write(json.dumps(row, allow_nan=False)+'\n')
         return
     def measured(value):
@@ -591,7 +590,7 @@ def record_call(run_dir, stage, name, arguments, result, before, after, options=
         if isinstance(value.get('results'), list):
             kept['results'] = [measured(item) for item in value['results'] if isinstance(item, dict)]
         return kept
-    journal = Path(run_dir)/'benchmark'/f'live-observations-{state.get("revision", 0)}.jsonl'
+    journal = Path(run_dir)/'supplied'/f'live-observations-{state.get("revision", 0)}.jsonl'
     journal.parent.mkdir(parents=True, exist_ok=True)
     with journal.open('a', encoding='utf-8') as stream:
         stream.write(json.dumps({'operation': arguments.get('operation'), 'parameters': arguments.get('parameters', {}),

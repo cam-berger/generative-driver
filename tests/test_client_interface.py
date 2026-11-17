@@ -17,16 +17,14 @@ from pathlib import Path
 
 from generative_driver import client, client_interface
 
-FIELDS = ('basis', 'capabilities_sha256', 'checks', 'diff', 'equivalent', 'evidence_sha256', 'frozen_artifact_sha256',
-          'method', 'mission', 'passed', 'protocol', 'schema', 'status', 'total')
-FIELDS_MESSAGE = ('an equivalence/1 record has exactly the fields basis, capabilities_sha256, checks, diff, '
-                  'equivalent, evidence_sha256, frozen_artifact_sha256, method, mission, passed, protocol, schema, '
-                  'status, total')
+FIELDS = ('basis', 'checks', 'diff', 'equivalent', 'evidence_sha256', 'frozen_artifact_sha256', 'mission', 'passed',
+          'protocol', 'schema', 'status', 'total')
+FIELDS_MESSAGE = ('an equivalence/2 record has exactly the fields basis, checks, diff, equivalent, evidence_sha256, '
+                  'frozen_artifact_sha256, mission, passed, protocol, schema, status, total')
 # A well-formed verdict record: the one check passed, so the driver is graded equivalent.
-GOOD = {'schema': 'equivalence/1', 'status': 'graded', 'equivalent': True, 'basis': 'evaluator',
-        'method': 'fresh-final', 'checks': [{'id': 'c1', 'passed': True}], 'diff': [], 'passed': 1, 'total': 1,
-        'mission': None, 'frozen_artifact_sha256': 'a' * 64, 'capabilities_sha256': None,
-        'evidence_sha256': 'b' * 64, 'protocol': 'assistive/1'}
+GOOD = {'schema': 'equivalence/2', 'status': 'graded', 'equivalent': True, 'basis': 'evaluator',
+        'checks': [{'id': 'c1', 'passed': True}], 'diff': [], 'passed': 1, 'total': 1, 'mission': None,
+        'frozen_artifact_sha256': 'a' * 64, 'evidence_sha256': 'b' * 64, 'protocol': 'assistive/1'}
 
 
 def offered(module):
@@ -39,20 +37,22 @@ def offered(module):
 
 
 class InterfaceModuleTests(unittest.TestCase):
-    def test_03_B1_the_interface_module_offers_seven_names_and_nothing_else(self):
-        names = ['CALLS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors', 'frozen_driver', 'verdict_errors']
+    def test_03_B1_the_interface_module_offers_nine_names_and_nothing_else(self):
+        # Version 2 added `firmware_errors` and `mission_errors` to the seven names of version 1 (06-B14).
+        names = ['CALLS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors', 'firmware_errors', 'frozen_driver',
+                 'mission_errors', 'verdict_errors']
         self.assertEqual(sorted(client_interface.__all__), names)
         self.assertEqual(offered(client_interface), names)
 
     def test_03_B1_the_version_the_protocol_the_calls_and_the_verdict_fields_have_their_values(self):
         self.assertIs(type(client_interface.VERSION), int)
-        self.assertEqual(client_interface.VERSION, 1)
+        self.assertEqual(client_interface.VERSION, 2)
         self.assertEqual(client_interface.PROTOCOL, 'assistive/1')
         self.assertEqual(client_interface.CALLS, ('ping', 'start', 'resume', 'status', 'events', 'result',
                                                   'attach_device', 'record_evaluation'))
         self.assertIs(type(client_interface.VERDICT_FIELDS), frozenset)
         self.assertEqual(client_interface.VERDICT_FIELDS, frozenset(FIELDS))
-        self.assertEqual(len(client_interface.VERDICT_FIELDS), 14)
+        self.assertEqual(len(client_interface.VERDICT_FIELDS), 12)
         self.assertTrue(FIELDS_MESSAGE.endswith(' the fields ' + ', '.join(FIELDS)), 'FIELDS are those of the message')
 
 
@@ -67,8 +67,7 @@ class VerdictRecordTests(unittest.TestCase):
 
     def test_03_B2_names_a_basis_that_is_not_the_evaluators(self):
         self.assertEqual(client_interface.verdict_errors({**GOOD, 'basis': 'self-evidence'}),
-                         ['schema equivalence/1, basis evaluator, method fresh-final or recorded-reuse and protocol '
-                          'assistive/1 are required'])
+                         ['schema equivalence/2, basis evaluator and protocol assistive/1 are required'])
 
     def test_03_B2_names_an_equivalent_driver_whose_check_failed(self):
         failed = {**GOOD, 'checks': [{'id': 'c1', 'passed': False}], 'passed': 0}
@@ -91,8 +90,8 @@ class VerdictRecordTests(unittest.TestCase):
 
 
 # A well-formed descriptor of a device a client supplies.
-DEVICE = {'schema': 'device-descriptor/1', 'kind': 'provided-emulator', 'control': {'endpoint_file': 'control.json'},
-          'session_id': 'session-1', 'binding': {'host': '127.0.0.1', 'port': 4000}, 'image_sha256': 'c' * 64}
+DEVICE = {'schema': 'device-descriptor/2', 'control': {'endpoint_file': 'control.json'},
+          'session_id': 'session-1', 'binding': {'host': '127.0.0.1', 'port': 4000}, 'firmware_sha256': 'c' * 64}
 
 
 class DeviceDescriptorTests(unittest.TestCase):
@@ -100,15 +99,17 @@ class DeviceDescriptorTests(unittest.TestCase):
         self.assertEqual(client_interface.device_errors(DEVICE), [])
 
     def test_03_B3_names_a_value_that_is_no_descriptor_of_a_supplied_device(self):
-        for device in ('device', None, {**DEVICE, 'schema': 'device-descriptor/2'}, {**DEVICE, 'kind': 'bound-device'}):
+        for device in ('device', None, {**DEVICE, 'schema': 'device-descriptor/1'}):
             with self.subTest(device=device):
-                self.assertEqual(client_interface.device_errors(device),
-                                 ['not a device-descriptor/1 of a provided emulator'])
+                self.assertEqual(client_interface.device_errors(device), ['not a device-descriptor/2'])
+        # The descriptor names no kind of device any more: a part the tool does not know is a fault.
+        self.assertEqual(client_interface.device_errors({**DEVICE, 'kind': 'bound-device'}),
+                         ['a device-descriptor/2 has no part named kind'])
 
     def test_03_B3_names_each_part_a_descriptor_lacks(self):
-        bare = {'schema': 'device-descriptor/1', 'kind': 'provided-emulator'}
+        bare = {'schema': 'device-descriptor/2'}
         self.assertEqual(client_interface.device_errors(bare),
-                         ['no control endpoint file', 'no session_id', 'no binding', 'no image_sha256'])
+                         ['no control endpoint file', 'no session_id', 'no binding', 'no firmware_sha256'])
 
     def test_03_B3_the_service_applies_the_same_function(self):
         from generative_driver import device_client
@@ -177,7 +178,7 @@ class ServiceCase(unittest.TestCase):
             time.sleep(.02)
 
     def stopped_run(self, call, token):
-        """The id of a new run with no case, whose runtime cannot start, once it has stopped. `token` is the token
+        """The id of a new run without a supplied device, whose runtime cannot start, once it has stopped. `token` is the token
         that later proves who may post its verdict."""
         started = call('start', {'goal': 'Ask the service what a client may ask', 'budget_seconds': 120,
                                  'executor_config': {'command': ['no-such-agent-runtime']},
@@ -214,10 +215,11 @@ class ServiceCallTests(ServiceCase):
 DOCUMENT = Path(__file__).resolve().parents[1] / 'docs' / 'client-interface.md'
 # The two lines that set a passage about the legacy benchmark off; the deletion takes the passage away with them.
 BEGIN, END = '<!-- legacy-benchmark:begin -->', '<!-- legacy-benchmark:end -->'
-HEADINGS = ['Start a run on a supplied device', 'Replace a device', 'Post one final verdict',
-            'Read the records and the frozen driver', 'What a client imports', 'Limits today']
-DESCRIPTOR_PARTS = ('schema', 'kind', 'control', 'endpoint_file', 'session_id', 'binding', 'image_sha256')
-RECORD_NAMES = ('device-descriptor/1', 'equivalence/1', 'assistive/1')
+HEADINGS = ['Start a run on a supplied device', 'The control endpoint', 'Replace a device', 'Post one final verdict',
+            'Read the records and the frozen driver', 'What a client imports']
+DESCRIPTOR_PARTS = ('schema', 'control', 'endpoint_file', 'session_id', 'binding', 'firmware_sha256', 'instrument',
+                    'development_conditions')
+RECORD_NAMES = ('device-descriptor/2', 'equivalence/2', 'assistive/1')
 
 
 class DocumentTests(unittest.TestCase):
@@ -234,17 +236,9 @@ class DocumentTests(unittest.TestCase):
                 kept.append(line)
         return kept
 
-    def section(self, heading):
-        """The text under the second-level `heading` up to the next one, outside any marked passage, on one line."""
-        lines = self.lines()
-        self.assertIn('## ' + heading, lines)
-        start = lines.index('## ' + heading) + 1
-        end = next((index for index in range(start, len(lines)) if lines[index].startswith('## ')), len(lines))
-        return ' '.join(' '.join(lines[start:end]).split())
-
     def test_03_B5_the_first_line_names_the_interface_and_its_version(self):
         first = self.lines()[0]
-        self.assertEqual(first, '# Client interface, version 1')
+        self.assertEqual(first, '# Client interface, version 2')
         self.assertEqual(first, f'# Client interface, version {client_interface.VERSION}')
 
     def test_03_B5_the_second_level_headings_are_the_six_in_their_order(self):
@@ -258,10 +252,6 @@ class DocumentTests(unittest.TestCase):
     def test_03_B5_no_line_outside_a_marked_passage_says_bench(self):
         saying = [f'{number}: {line}' for number, line in enumerate(self.lines(), 1) if 'bench' in line.lower()]
         self.assertEqual(saying, [])
-
-    def test_03_B5_limits_today_says_a_supplied_device_needs_a_run_that_names_a_registered_case(self):
-        self.assertIn('The service accepts a supplied device only for a run that names a registered case.',
-                      self.section('Limits today'))
 
 
 if __name__ == '__main__':

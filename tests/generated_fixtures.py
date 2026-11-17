@@ -171,7 +171,7 @@ def _model(name, identity, operations):
 
 def _capabilities(get_mode, set_mode, ping, output):
     """A mapping of the mission's three tasks onto a driver's operations, its mode in the mission's unit."""
-    return {'schema': 'benchmark-capabilities/2', 'tasks': {
+    return {'schema': 'capabilities/2', 'tasks': {
         'get_mode': {'operation': get_mode, 'constants': {}, 'inputs': {},
                      'outputs': {'mode': {'output': output, 'unit': MODE_UNIT}}},
         'set_mode': {'operation': set_mode, 'constants': {}, 'inputs': {'mode': {'parameter': 'mode', 'kind': 'copy'}},

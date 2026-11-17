@@ -1,5 +1,5 @@
-"""Trusted attribution of uncertain device writes, and their recovery through the device handle: the bench harness's
-provider replaces a provided emulator, and the configurator commits the replacement with the stage's handoff.
+"""Trusted attribution of uncertain device writes, and their recovery through the device handle: the client's
+provider replaces a supplied device, and the configurator commits the replacement with the stage's handoff.
 
 It holds no password, recipe or truth and imports nothing that decrypts one or grades: the provider keeps the
 replacement proof in its private journal, and the configurator receives and records only the receipt."""
@@ -8,7 +8,7 @@ import threading
 import time
 
 RECEIPT = 'emulator-recovery/2'
-LIVE_TOOLS = ('interface_execute', 'probe_run', 'benchmark_package_execute', 'emit_test_live')
+LIVE_TOOLS = ('interface_execute', 'probe_run', 'package_execute', 'emit_test_live')
 
 
 def _generated(event, assignment):
@@ -133,11 +133,11 @@ def _verified(receipt, held):
 
 def reconcile(controller, run_id, spec, assignment, run_dir, progress):
     """Consume trusted runtime evidence once the worker has exited, under its lease, and have the provider replace the
-    run's provided emulator.
+    run's supplied device.
 
-    Only a write the runtime attributed to the model, after it verified the device's identity and opened it, on an
-    emulator the bench harness provides (a `provided-emulator` descriptor; a physical device has none), is replaced, at
-    any stage. A verified replacement is returned as `recovery` for the stage's handoff to commit, in one transaction
+    Only a write the runtime attributed to the model, after it verified the device's identity and opened it, on a
+    device a client supplies (a run on an operator's bound device has none to replace), is replaced, at any
+    stage. A verified replacement is returned as `recovery` for the stage's handoff to commit, in one transaction
     with the new binding and session, the cleared uncertainty and any route its device diff takes. During emit or fresh
     reuse the failed write is evidence about the frozen driver: the handoff advances and the driver is graded after the
     run, never repaired. This never routes the run or clears uncertainty itself: until that commit the failed write
@@ -149,7 +149,7 @@ def reconcile(controller, run_id, spec, assignment, run_dir, progress):
     with lock, controller._active_operation(run_id):
         with controller._db() as db:
             category, failed, dispatches = unresolved_outcomes(db,run_id,assignment)
-            allowed = failed and category == 'model' and (spec.get('device') or {}).get('kind') == 'provided-emulator'
+            allowed = failed and category == 'model' and bool(spec.get('device'))
             if not allowed:
                 return {'stop':{'category':'safety','reason':'Outstanding effect requires operator reconciliation'}}
             evidence = sorted({str(i) for i,_ in failed})

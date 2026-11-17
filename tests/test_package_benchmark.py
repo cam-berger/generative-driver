@@ -48,8 +48,8 @@ class BenchmarkPackageGateTests(unittest.TestCase):
             emitted = call_tool('emit_package', {'run_dir': str(root/'build'), 'model_dir': str(model_dir), 'probe': probe['probe']})
             package = Path(emitted['package_dir'])
             binding = {'host': '127.0.0.1', 'port': server.server_address[1]}
-            run_dir = root/'run'; (run_dir/'benchmark').mkdir(parents=True)
-            (run_dir/'benchmark/state.json').write_text(json.dumps({
+            run_dir = root/'run'; (run_dir/'supplied').mkdir(parents=True)
+            (run_dir/'supplied/state.json').write_text(json.dumps({
                 'package_copies': {'reuse': str(package)}, 'package_attempts': {'reuse': 'fixture-attempt'},
                 'package_sha256': digest(package)}))
             def call(operation, grants):

@@ -220,7 +220,7 @@ class CurrentPinHookTests(unittest.TestCase):
     def test_03_B9_grading_refuses_a_changed_case_but_not_a_changed_truth_file(self):
         run = self.root / 'graded-run'
         saved = snapshots.snapshot_case(run, self.pin, {'evaluator_revision': 'not this grader'})
-        result = {'case_pin': self.pin, 'snapshot_sha256': saved['snapshot_sha256']}
+        result = {'client_record': {'case_pin': self.pin, 'snapshot_sha256': saved['snapshot_sha256']}}
         expected = {'manifest': (evaluator.IntegrityError if hasattr(evaluator, 'IntegrityError') else ValueError,
                                  'differs from the run'),
                     'image': (ValueError, 'Case image hash mismatch'),
@@ -236,43 +236,66 @@ class CurrentPinHookTests(unittest.TestCase):
 
 
 class StartAndResumeSitesTests(PendingRunFixture):
-    """The configurator's two sites, on the toy tq9-v2 case of the fixture."""
+    """The two sites, on the toy tq9-v2 case of the fixture: the bench harness's start, where it pins and admits the
+    case before it sends anything to the configurator, and the configurator's resume of a suite."""
+
+    def refusal(self, name, case='tq9-v2', admitted=None, **request):
+        """Why the harness's trial of `request` never got a run. `admitted` is the pin its admission gives, where
+        the admission is stood in for; without one the harness pins the case itself."""
+        from test_harness import EVIDENCE, unstarted_provider
+        peers = []
+        configurator = lambda method, params=None, **kwargs: (
+            {'ok': True} if method == 'ping' else self.controller.call(method, params))
+        stand_in = (unstarted_provider(self, self.image, self.root / name, peers),
+                    {'calibration_evidence_sha256': EVIDENCE}, None, admitted)
+        with patch.object(harness, 'admit', **({'return_value': stand_in} if admitted else {'wraps': harness.admit})):
+            record = harness.run_trial(self.root / 'bench' / name, {
+                'trial_id': name, 'home': str(self.home), 'case': case, 'password_file': str(self.password),
+                **request}, call=configurator)
+        self.assertEqual((record['status'], record['run_id'], record['no_run']), ('failed', None, 'admit-refused'),
+                         record)
+        self.assertEqual(peers, [], 'a device was started')
+        with self.controller._db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 0)
+        return record['reason']
 
     def test_03_B9_a_start_refuses_a_pin_that_is_not_the_current_cases_or_not_the_starts(self):
         pin = pin_case('tq9-v2', 'original', 0)
-        request = {'goal': 'A start', 'case': 'tq9-v2', 'case_pin': pin, 'executor': 'codex', 'executor_config': {},
-                   'case_options': {'scenario_id': 'original', 'case_seed': 0}}
-        message = 'Expected case pin differs from current case inputs'
-        for name, changed in (('a changed pin', {**request, 'case_pin': {**pin, 'scope': 'changed'}}),
-                              ('another case', {**request, 'case': 'tq9-v3'}),
-                              ('another scenario',
-                               {**request, 'case_options': {'scenario_id': 'other', 'case_seed': 0}}),
-                              ('another seed',
-                               {**request, 'case_options': {'scenario_id': 'original', 'case_seed': 1}})):
-            with self.subTest(name), self.assertRaisesRegex(ValueError, message):
-                self.controller.call('start', changed)
+        child = {'goal': 'A start', 'case': 'tq9-v2', 'case_pin': pin, 'executor': 'codex', 'executor_config': {},
+                 'effects': ['write'], 'case_options': {'scenario_id': 'original', 'case_seed': 0}}
+        message = 'ValueError: Expected case pin differs from current case inputs'
+        for name, case, changed in (
+                ('changed-pin', 'tq9-v2', {**child, 'case_pin': {**pin, 'scope': 'changed'}}),
+                ('another-case', 'tq9-v3', {**child, 'case': 'tq9-v3'}),
+                ('another-scenario', 'tq9-v2', {**child, 'case_options': {'scenario_id': 'other', 'case_seed': 0}}),
+                ('another-seed', 'tq9-v2', {**child, 'case_options': {'scenario_id': 'original', 'case_seed': 1}})):
+            with self.subTest(name):
+                self.assertEqual(self.refusal(name, case=case, admitted=pin, start=changed), message)
 
     def test_03_B9_a_start_with_a_pin_refuses_a_seed_that_is_no_integer(self):
-        request = {'goal': 'A start', 'case': 'tq9-v2', 'executor': 'codex', 'executor_config': {}}
-        for name, pinned, seed in (('False over 0', 0, False), ('0.0 over 0', 0, 0.0), ('1.0 over 1', 1, 1.0)):
+        child = {'goal': 'A start', 'case': 'tq9-v2', 'executor': 'codex', 'executor_config': {}, 'effects': ['write']}
+        for name, pinned, seed in (('False-over-0', 0, False), ('float-over-0', 0, 0.0), ('float-over-1', 1, 1.0)):
             options = {'scenario_id': 'original', 'case_seed': seed}
-            with self.subTest(name), self.assertRaisesRegex(ValueError, '^case_seed must be an integer$'):
-                self.controller.call('start', {**request, 'case_pin': pin_case('tq9-v2', 'original', pinned),
-                                               'case_options': options})
+            pin = pin_case('tq9-v2', 'original', pinned)
+            with self.subTest(name):
+                self.assertEqual(self.refusal(name, admitted=pin, start={**child, 'case_pin': pin,
+                                                                         'case_options': options}),
+                                 'ValueError: case_seed must be an integer')
 
     def test_03_B9_a_start_without_a_pin_refuses_a_changed_case_with_todays_errors(self):
-        request = {'goal': 'A start', 'case': 'tq9-v2', 'executor': 'codex',
+        request = {'goal': 'A start', 'executor': 'codex', 'effects': ['write'],
                    'case_options': {'scenario_id': 'original', 'case_seed': 0}}
         truth = self.root / 'resources/groundtruth/tq9-v2.enc'
         for name, path, message in (('image', self.image, 'Case image hash mismatch'),
                                     ('truth', truth, 'Case truth hash mismatch')):
             kept = path.read_bytes()
             path.write_bytes(b'changed since it was hashed')
-            with self.subTest(name), self.assertRaisesRegex(ValueError, message):
-                self.controller.call('start', request)
+            with self.subTest(name):
+                self.assertRegex(self.refusal(name, **request), message)
             path.write_bytes(kept)
-        with self.assertRaisesRegex(ValueError, '^case_seed must be an integer$'):
-            self.controller.call('start', {**request, 'case_options': {'scenario_id': 'original', 'case_seed': False}})
+        self.assertEqual(self.refusal('seed', **{**request, 'case_options': {'scenario_id': 'original',
+                                                                             'case_seed': False}}),
+                         'ValueError: case_seed must be an integer')
 
     def test_03_B9_a_suite_resume_refuses_a_changed_case_with_todays_error(self):
         started = self.controller.call('suite_start', {
@@ -402,20 +425,20 @@ class RowTests(unittest.TestCase):
         self.assertEqual((selected.id, selected.execution, selected.evidence_track, selected.approval_scope,
                           selected.default_effects),
                          ('generated', 'actual-agent-emulation', 'firmware', 'emulator', ['write', 'actuate']))
-        from generative_driver.configurator import validate_scoped_approval
-        validate_scoped_approval({'case': 'generated', 'scoped_tool_approval': 'emulator'})
+        # The benchmark's own check of the emulator approval reads the same row.
+        from generative_driver.benchmark_support.suites import emulator_approval
+        emulator_approval('generated')
 
     def test_03_B19_a_handmade_row_still_reads_its_changed_case(self):
         for case in ('tq9-v2', 'sampled-sensor-v1'):
             with self.subTest(case), patch.object(registry, 'resolve_case', side_effect=ValueError('resolved')):
                 with self.assertRaisesRegex(ValueError, 'resolved'):
                     registry.case_selection(case)
-        from generative_driver.configurator import _replay_config, validate_scoped_approval
+        # The benchmark's check of the emulator approval reads the case; the service's start reads no registry.
+        from generative_driver.benchmark_support.suites import emulator_approval
         with patch.object(registry, 'resolve_case', side_effect=ValueError('resolved')):
             with self.assertRaisesRegex(ValueError, 'resolved'):
-                validate_scoped_approval({'case': 'tq9-v2', 'scoped_tool_approval': 'emulator'})
-            with self.assertRaisesRegex(ValueError, 'resolved'):
-                _replay_config({'case': 'tq9-v2'}, {}, Path('home'))
+                emulator_approval('tq9-v2')
 
 
 class SetRootOptionTests(unittest.TestCase):
@@ -439,13 +462,19 @@ class SetRootOptionTests(unittest.TestCase):
                 **changes}
 
     def test_03_B3_refused_anywhere_but_the_harness_stdin(self):
-        from generative_driver.configurator import _refuse_secrets
+        from generative_driver.configurator import Controller, _refuse_secrets
         with self.assertRaisesRegex(ValueError, 'belong to the bench harness'):
             refuse_secrets({'set_root': 'a path'})
+        # A start has one place left for it, a key of its own, and the configurator takes none there.
+        with self.assertRaisesRegex(ValueError, 'takes no password, password file, emulator executable or set root'):
+            _refuse_secrets({'set_root': 'a path'})
+        controller = Controller(self.root / 'home')
+        self.addCleanup(controller.close)
+        # The places a case's options had for it are no keys of a start any more.
         for spec in ({'set_root': 'a path'}, {'case_options': {'set_root': 'a path'}},
                      {'case': {'id': 'generated', 'options': {'set_root': 'a path'}}}):
-            with self.subTest(spec), self.assertRaisesRegex(ValueError, 'harness'):
-                _refuse_secrets(spec)
+            with self.subTest(spec), self.assertRaisesRegex(ValueError, 'set root|start takes no case'):
+                controller.call('start', {'goal': 'A start', **spec})
         self.assertFalse(harness_driven({'scheduler': SCHEDULER, 'options': {'set_root': 'a path'}}))
 
     def test_03_B3_a_start_hands_the_root_to_the_harness_on_its_stdin(self):
@@ -972,7 +1001,8 @@ class AdmissionTests(unittest.TestCase):
         from generative_driver.benchmark_support import execution
         with patch.object(generated_sets, 'open_held', wraps=generated_sets.open_held) as opened, \
                 patch.object(execution, 'validate_setup', wraps=execution.validate_setup) as validated:
-            provider, admission, unlocked = self.admit(device, pin)
+            provider, admission, unlocked, admitted = self.admit(device, pin)
+        self.assertEqual(admitted, pin)
         self.assertEqual(opened.call_count, 1)
         self.assertEqual(opened.call_args.kwargs, {'answer': True})
         self.assertEqual(validated.call_count, 1)
@@ -1217,8 +1247,8 @@ class GradedTrialTests(GeneratedTrialFixture):
                 self.assertEqual([handoff['stage'] for handoff in result['accepted_handoffs']],
                                  ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse'])
                 equivalence = result['equivalence']
-                self.assertEqual((equivalence['status'], equivalence['equivalent'], equivalence['method']),
-                                 ('graded', True, 'fresh-final'), equivalence)
+                self.assertEqual((equivalence['status'], equivalence['equivalent'], equivalence['schema']),
+                                 ('graded', True, 'equivalence/2'), equivalence)
                 self.assertEqual(rows[0]['equivalent'], True)
 
     def test_03_B20_a_mutant_driver_fails_with_its_checks_failed(self):
@@ -1273,7 +1303,7 @@ class WorkerWordingTests(GeneratedTrialFixture):
             self.assertTrue(result['ok'], result)
             self.assertNotIn('before_observation', result)
             self.assertNotIn('observation', result)
-        run = self.home / 'runs' / self.row_results(record['suite_id'])[0][0]['run_id'] / 'benchmark'
+        run = self.home / 'runs' / self.row_results(record['suite_id'])[0][0]['run_id'] / 'supplied'
         journals = [*run.glob('live-observations-*.jsonl'), run / 'package-events.jsonl']
         self.assertTrue(all(path.is_file() for path in journals), journals)
         for path in journals:
@@ -1301,10 +1331,10 @@ class FreshReuseTests(GeneratedTrialFixture):
                  'generated_reuse_verified': False}
         with patch('generative_driver.benchmark_support.behavior.validate_records',
                    return_value={'verdict': 'passed', 'checks': []}):
-            self.assertEqual(evaluator.final_record(final, 'c' * 64, NOT_JUDGED, protocol='assistive/1')['mission'],
+            self.assertEqual(evaluator.final_record(final, NOT_JUDGED, protocol='assistive/1')['mission'],
                              NOT_JUDGED)
             other = {'name': 'fresh_worker_mission', 'passed': True}
-            self.assertEqual(evaluator.final_record(final, 'c' * 64, other, protocol='assistive/1')['mission'],
+            self.assertEqual(evaluator.final_record(final, other, protocol='assistive/1')['mission'],
                              {'name': 'fresh_worker_mission', 'passed': False, 'reason': evaluator.OWNER_PROOF})
         with patch('generative_driver.benchmark_support.mcp_reuse.required', return_value=True), \
                 patch('generative_driver.benchmark_support.mcp_reuse.verified', return_value=False):
@@ -1413,17 +1443,19 @@ class WhatTheConfiguratorHoldsTests(GeneratedTrialFixture):
         with self.staged(REFERENCE_A):
             record = self.drive(calls=calls, request_id='held')
         self.assertEqual(record['status'], 'finished', record)
-        mission = fixture_mission('0000d001')
+        # The harness supplies the public mission as data now, so a child's start and its spec hold the tasks and
+        # the reuse objective. The design and the root still reach no call and no spec.
         sent = json.dumps(calls, default=str)
-        for held in (str(self.set_root), '"level"', '"framing"', 'text-lines', mission['reuse_objective'], 'meaning',
-                     '"tasks"'):
+        for held in (str(self.set_root), '"level"', '"framing"', 'text-lines'):
             self.assertNotIn(held, sent)
         rows, _ = self.row_results(record['suite_id'])
         self.assertEqual(len(rows), 2)
         for row in rows:
             spec = self.controller._row(row['run_id'])['spec']
-            for held in (str(self.set_root), '"level"', '"framing"', 'text-lines', 'reuse_objective'):
+            for held in (str(self.set_root), '"level"', '"framing"', 'text-lines'):
                 self.assertNotIn(held, spec)
+            self.assertEqual(json.loads(spec)['mission']['reuse_objective'],
+                             fixture_mission(json.loads(spec)['client_record']['case_pin']['device_id'])['reuse_objective'])
         for path in self.home.rglob('*'):
             # An emitted package's bundled runtime and the shared skills speak of framing in general.
             if path.is_file() and path.suffix not in ('.py', '.md'):
@@ -1767,7 +1799,7 @@ class ReadingsStayTests(SealedTrialFixture):
         live = next(result for name, result in self.results if name == 'interface_execute')
         self.assertEqual(live['before_observation']['source'], 'instrument')
         self.assertEqual(live['observation']['source'], 'instrument')
-        run = self.home / 'runs' / record['run_id'] / 'benchmark'
+        run = self.home / 'runs' / record['run_id'] / 'supplied'
         for path in (*run.glob('live-observations-*.jsonl'), run / 'package-events.jsonl'):
             self.assertLessEqual({'before_observation', 'observation'},
                                  set(json.loads(path.read_text().splitlines()[0])))

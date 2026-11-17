@@ -175,7 +175,7 @@ class AuditTests(unittest.TestCase):
         # benchmark's tools ran have transcripts too), findings that come in a filesystem's order, a path that is not
         # relative to the run, and a file that is not a transcript read as one.
         run = self.run_dir
-        places = ['work/probe/a1', 'work/acquire/a0', 'preparation/a2/interpret/attempt1', 'benchmark/tools/interpret/attempt1']
+        places = ['work/probe/a1', 'work/acquire/a0', 'preparation/a2/interpret/attempt1', 'supplied/tools/interpret/attempt1']
         for place in places:
             self.write(run / place / '_agent_events.jsonl', [command('cat /vault/one'), command('ls'), command('cat /vault/two')])
         self.write(run / 'work/probe/a1/events.jsonl', [command('cat /vault/other')])

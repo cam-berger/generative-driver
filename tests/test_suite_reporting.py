@@ -199,8 +199,8 @@ def owner_fixture():
         'artifacts':[{'path':'/private/candidate','sha256':'e'*64,'kind':'evidence'}],
         'checks':[{'name':name,'passed':True} for name in ('fresh_worker_mission','frozen_final_behavior')]
             if stage=='reuse' else [{'name':'toy-check','passed':True}]} for stage in STAGES]
-    owner={'ok':True,'run_id':'r1','case':'tq9-v2','case_pin':dict(report['case_pin'],manifest={'schema':'benchmark-case/2'}),
-        'snapshot_sha256':'d'*64,'status':'completed','outcome_category':'completed','stopping':False,'uncertain_effect':False,
+    owner={'ok':True,'run_id':'r1','client_record':{'case':'tq9-v2','snapshot_sha256':'d'*64,
+            'case_pin':dict(report['case_pin'],manifest={'schema':'benchmark-case/2'})},'status':'completed','outcome_category':'completed','stopping':False,'uncertain_effect':False,
         'progress':{'revision':0,'next_stage':None},'accepted_handoffs':handoffs,
         'evaluator_verdicts':[{'stage':stage,'assignment_id':stage,'verdict':'passed',**({'passed':2,'total':2} if stage!='emit' else {}),**({'final_evaluation':True} if stage=='reuse' else {})} for stage in ('probe','emit','reuse')],
         'benchmark_summary':{key:copy.deepcopy(report[key]) for key in ('accepted_gates','evaluations','final_evaluation')}}
@@ -244,7 +244,7 @@ class QualificationTests(unittest.TestCase):
     def test_legacy_uses_coherent_owner_handoffs_without_invented_v2_fields(self):
         from generative_driver.benchmark_support.suite_reporting import _recorded_success
         owner,events,report=owner_fixture()
-        owner.update(case='tq9',case_pin={'case_id':'tq9','evaluator_version':'2'});owner.pop('benchmark_summary')
+        owner['client_record'].update(case='tq9',case_pin={'case_id':'tq9','evaluator_version':'2'});owner.pop('benchmark_summary')
         report.update(schema='benchmark-report/1',case='tq9')
         for key in ('accepted_gates','evaluations','final_evaluation'):report.pop(key)
         for handoff in owner['accepted_handoffs']:report['stages'][handoff['stage']]['checks']=copy.deepcopy(handoff['checks'])
@@ -326,8 +326,11 @@ def export_fixture(root,per_case=True,one_case=False):
         summary={'accepted_gates':gates,'evaluations':[{'phase':'final','revision':0,'frozen_artifact_sha256':'a'*64,'verdict':'passed','passed':1,'total':1}],
             'final_evaluation':{'verdict':'passed','passed':1,'total':1,'evidence_sha256':sealed['sha256']}}
         state={**summary,'stage_verdicts':{s:{'status':'passed','checks':[{'name':'toy','passed':True}]} for s in STAGES},'unknown':{'answer':'PRIVATE'}}
-        (private/'state.json').write_text(json.dumps(state),encoding='utf-8')
-        owner={'ok':True,'run_id':rid,'case':entry['case'],'case_pin':pin,'snapshot_sha256':snapshot['snapshot_sha256'],'created':0,'updated':10,
+        # The run's own records lie under `supplied/`; the snapshot stays under `benchmark/`.
+        (private.parent/'supplied').mkdir()
+        (private.parent/'supplied/state.json').write_text(json.dumps(state),encoding='utf-8')
+        owner={'ok':True,'run_id':rid,'created':0,'updated':10,
+            'client_record':{'case':entry['case'],'case_pin':pin,'snapshot_sha256':snapshot['snapshot_sha256']},
             'status':'completed','outcome_category':'completed','stopping':False,'uncertain_effect':False,'reason':'PRIVATE /private/reason','progress':{'revision':0,'next_stage':None},
             'accepted_handoffs':handoffs,'evaluator_verdicts':[{'stage':s,'assignment_id':s+'-0','verdict':'passed',**({'passed':1,'total':1,'final_evaluation':True} if s=='reuse' else {})} for s in ('emit','reuse')],
             'worker_reports':[{'stage':s,'assignment_id':s+'-0','status':'completed','report':{'status':'completed'},'elapsed_seconds':1} for s in STAGES],
@@ -390,7 +393,7 @@ class ExportIntegrationTests(unittest.TestCase):
                 return response
             with patch('generative_driver.client.call',side_effect=changed_experiment),self.assertRaises(ValueError):
                 report_suite('suite-toy',home=root,output=root/'wrong-evaluator')
-            owners['r1']['snapshot_sha256']='0'*64
+            owners['r1']['client_record']['snapshot_sha256']='0'*64
             with patch('generative_driver.client.call',side_effect=call),self.assertRaises(ValueError):report_suite('suite-toy',home=root,output=root/'refused')
 
     def test_each_trial_is_compared_with_the_frozen_revision_of_its_own_case(self):

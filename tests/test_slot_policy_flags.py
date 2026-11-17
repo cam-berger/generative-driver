@@ -33,7 +33,7 @@ EXTENSION = ('A scoring suite runs every child on the child budget it froze, whi
 def kept_image_bytes(home, run_id, result):
     """The size of the run's images, each read from where the run keeps it."""
     inputs = Path(home) / 'runs' / run_id / 'benchmark/inputs'
-    return sum((inputs / name).stat().st_size for name in result['case_pin']['manifest']['images'])
+    return sum((inputs / name).stat().st_size for name in result['client_record']['case_pin']['manifest']['images'])
 
 
 class ReportFixture(ScoringFixture):

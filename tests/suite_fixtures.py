@@ -198,7 +198,7 @@ def harness_devices(test, root):
     return {'password_files': {'tq9-v2': str(password)}, 'renode': str(root / 'renode')}
 
 
-# The evaluation token of the bench harness that `provided_device` plays: a run holds only its sha256.
+# The evaluation token of the bench harness that `supplied_start` plays: a run holds only its sha256.
 HARNESS_TOKEN = 'scripted harness token'
 
 
@@ -215,14 +215,71 @@ def device_descriptor(test, root, image=None):
     return device.server.descriptor
 
 
-def provided_device(test, root, pin):
-    """What the bench harness adds to a `tq9-v2` start request, for a test that starts the run itself: the descriptor of
-    a device of synthetic peers started from the installed image, the admission that the public `pin` names and the
-    sha256 of `HARNESS_TOKEN`. Each call provides another device under `root`."""
+class SuppliedStart(dict):
+    """The `start` the bench harness sends for a run of a case, for a test that starts the run itself. `trial_dir` is
+    the folder the case was frozen in, as a harness's trial folder holds it."""
+    trial_dir = None
+
+    def keep(self, home, run):
+        """Copy the snapshot into the folder of `run` under the configurator `home`, as the harness does once `start`
+        has answered; returns `run`. The grader and the reports look for it there."""
+        from pathlib import Path
+        from generative_driver.benchmark_support.harness import keep_snapshot
+        keep_snapshot(self.trial_dir, Path(home) / 'runs' / (run['run_id'] if isinstance(run, dict) else run))
+        return run
+
+
+def supplied_start(test, root, *, case='tq9-v2', descriptor=None, home=None, case_options=None, pin=None,
+                   token=HARNESS_TOKEN, trial_dir=None, **request):
+    """What the bench harness sends to start a run of `case`, for a test that starts the run itself: a
+    `SuppliedStart`. As the harness does, it pins the case (unless `pin` gives the pin), settles the executor
+    configuration from the `config.json` of the configurator `home`, freezes the case in a new trial folder under
+    `root` (or in `trial_dir`), and builds the device descriptor, the firmware, the mission, the sha256 of `token`
+    and the client record. The device is one of synthetic peers started from the installed `tq9-v2` image, unless
+    `descriptor` gives one. `request` holds what a harness's request holds: `goal`, `effects`, `executor`,
+    `executor_config`, `budget_seconds`, `request_id` and `scoped_tool_approval`. `case_options` holds the scenario,
+    the seed and the analysis tools."""
+    from pathlib import Path
+    from generative_driver.benchmark_support import harness
+    from generative_driver.benchmark_support.registry import pin_case
+    options = dict(case_options or {})
+    pin = pin or pin_case(case, options.get('scenario_id'), options.get('case_seed', 0))
+    executor, config = harness.settled_executor(home or Path(root) / 'no-home', request)
+    added = harness_keys(test, root, pin, config, descriptor=descriptor, case_options=options, token=token,
+                         trial_dir=trial_dir)
+    start = SuppliedStart({**request, 'executor': executor, 'executor_config': config,
+                           **{key: options[key] for key in ('ghidra_home', 'java_home') if key in options}, **added})
+    start.trial_dir = added.trial_dir
+    return start
+
+
+def harness_keys(test, root, pin, config, *, descriptor=None, case_options=None, token=HARNESS_TOKEN,
+                 trial_dir=None):
+    """The five keys the bench harness adds to a start, or to a suite child's frozen request, for the case pinned as
+    `pin` under the executor configuration `config`: a `SuppliedStart` with only those keys
+    (`suites.HARNESS_KEYS`). The case is frozen in a new trial folder under `root`, or in `trial_dir` when the test
+    has its own trial folder. The device is one of synthetic peers started from the installed `tq9-v2` image, unless
+    `descriptor` gives one."""
     import hashlib
-    return {'device': device_descriptor(test, root),
-            'admission': {'calibration_evidence_sha256': pin['calibration']['evidence_sha256']},
-            'evaluation_token_sha256': hashlib.sha256(HARNESS_TOKEN.encode()).hexdigest()}
+    from pathlib import Path
+    from generative_driver.benchmark_support import harness
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    if trial_dir is None:
+        trial_dir = root / ('trial-' + str(len(list(root.glob('trial-*')))))
+    Path(trial_dir).mkdir(parents=True, exist_ok=True)
+    added = SuppliedStart(harness.supplied_start(
+        trial_dir, pin, descriptor or device_descriptor(test, root), config,
+        token_sha256=hashlib.sha256(token.encode()).hexdigest(), options=case_options))
+    added.trial_dir = trial_dir
+    return added
+
+
+def outside_start(request):
+    """A suite child's request as a plain `start` takes it: without the case, its pin and its options, which `start`
+    refuses. A run started so, outside its suite, records this as its submitted intent, never the slot's frozen
+    request, which only the suite's own start records."""
+    return {key: value for key, value in request.items() if key not in ('case', 'case_pin', 'case_options')}
 
 
 def options(secrets, **extra):

@@ -134,8 +134,10 @@ class GatewayConditionFixture(DevelopmentConditionFixture):
         self.assignment = {'id': 'assignment', 'stage': 'probe', 'revision': 0, 'workspace': str(self.workspace),
             'inputs': {}, 'allowed_tools': ['interface_execute', 'probe_run'], 'effects': ['write'],
             'binding': sensor.binding}
+        # A run on a supplied device, as its saved row holds it: the service tells it by its device, not by a case.
         self.spec = {'device': self.server.descriptor, 'effects': ['write'],
-                      '_case_pin': {'case_id': 'sampled-sensor-v1', 'execution': 'actual-agent-emulation'}}
+                     'firmware': {'path': str(self.root / 'firmware.bin'), 'sha256': '0' * 64},
+                     'mission': {'tasks': {}, 'reuse_objective': 'x'}}
         now = time.time()
         with self.controller._db() as db:
             db.execute('INSERT INTO runs(id,request_id,spec,status,stage,created,updated) VALUES(?,?,?,?,?,?,?)',
@@ -163,7 +165,7 @@ class GatewayConditionTests(GatewayConditionFixture):
             self.assertEqual(result['observation']['condition']['id'], name)
             self.assertIs(result['before_observation']['condition']['sample_after_change'], False)
             self.assertIs(result['observation']['condition']['sample_after_change'], True)
-        rows = [json.loads(line) for line in (self.root/'home/runs/run-fixture/benchmark/live-observations-0.jsonl')
+        rows = [json.loads(line) for line in (self.root/'home/runs/run-fixture/supplied/live-observations-0.jsonl')
                 .read_text().splitlines()]
         self.assertEqual([r['observation']['condition']['id'] for r in rows], list(PANEL))
         self.assertFalse(keys([r['observation'] for r in rows]) & MONITOR)
@@ -192,13 +194,12 @@ class GatewayConditionTests(GatewayConditionFixture):
         self.assertEqual(self.sensor.stimuli, [])
 
     def test_reuse_and_other_cases_have_no_condition_argument_or_control(self):
-        # The device descriptor's catalog decides, not the case's name: reuse gets no conditions from a sensor's
-        # catalog, and a probe of another case runs on a descriptor that carries none.
+        # The device descriptor's catalog decides, and the service knows no case's name: reuse gets no conditions
+        # from a sensor's catalog, and a probe of another case runs on a descriptor that carries none.
         sensor = self.spec['device']
         without_catalog = {key: value for key, value in sensor.items() if key != 'development_conditions'}
-        for stage, case_id, device in [('reuse', 'sampled-sensor-v1', sensor), ('probe', 'tq9-v2', without_catalog)]:
+        for stage, device in [('reuse', sensor), ('probe', without_catalog)]:
             self.assignment['stage'] = stage
-            self.spec['_case_pin']['case_id'] = case_id
             self.spec['device'] = device
             with self.controller._db() as db:
                 db.execute('UPDATE runs SET stage=?,spec=? WHERE id=?', (stage, json.dumps(self.spec), 'run-fixture'))
@@ -212,12 +213,12 @@ class GatewayConditionTests(GatewayConditionFixture):
 
     def test_stage_guidance_carries_catalog_without_equipment_coordinates(self):
         from generative_driver import benchmark
-        from generative_driver.configurator import case_options
+        from generative_driver.configurator import stage_options
         from generative_driver.supplied.stages import prepare_stage
         model = self.model_dir/'model.json'
         accepted = [{'stage': 'probe', 'artifacts': [{'path': str(model),
             'sha256': hashlib.sha256(model.read_bytes()).hexdigest()}]}]
-        options = case_options({**self.spec, '_device': {'session_id': self.session, 'binding': self.sensor.binding}})
+        options = stage_options({**self.spec, '_device': {'session_id': self.session, 'binding': self.sensor.binding}})
         firmware = {'path': str(self.root/'firmware.bin'), 'sha256': hashlib.sha256(b'synthetic sensor').hexdigest()}
         mission = benchmark.supplied_inputs('sampled-sensor-v1', self.root/'run')['mission']
         prepared = prepare_stage('ground', self.root/'run', self.root/'ground', accepted=accepted, options=options,

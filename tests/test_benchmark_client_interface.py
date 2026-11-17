@@ -5,15 +5,12 @@ benchmark item: it reads the benchmark package and the deletion list, and the de
 interface's own tests are in `tests/test_client_interface.py`, which stays.
 """
 import ast
-import re
 import unittest
 
 from deletion_marking import tool_test_modules
 from test_deletion_marking import REPO, TABLES, require_working_tree, table
 
 SOURCE = REPO / 'src' / 'generative_driver'
-DOCUMENT = REPO / 'docs' / 'client-interface.md'
-BEGIN, END = '<!-- legacy-benchmark:begin -->', '<!-- legacy-benchmark:end -->'
 # What Feature 03 adds that stays when the benchmark is deleted.
 STAYS = ('src/generative_driver/client_interface.py', 'docs/client-interface.md', 'tests/test_client_interface.py')
 OLD_NAME = '_evaluation_errors'
@@ -77,16 +74,6 @@ class VerdictRuleTests(unittest.TestCase):
 
 
 class DeletionMarkingTests(unittest.TestCase):
-    def test_03_B7_the_document_has_exactly_one_marked_passage_under_limits_today(self):
-        lines = [line.strip() for line in DOCUMENT.read_text(encoding='utf-8').splitlines()]
-        self.assertEqual((lines.count(BEGIN), lines.count(END)), (1, 1),
-                         'The document has one begin and one end marker')
-        begin, end = lines.index(BEGIN), lines.index(END)
-        self.assertLess(begin, end)
-        heading = re.compile(r'#+ ')
-        self.assertEqual([line for line in lines[:begin] if heading.match(line)][-1], '## Limits today')
-        self.assertEqual([line for line in lines[begin:end] if heading.match(line)], [])
-
     def test_03_B7_this_file_is_ready_to_delete_and_what_stays_is_not_on_the_list(self):
         self.assertIn('tests/test_benchmark_client_interface.py', listed('Ready to delete'))
         for heading, _ in TABLES:

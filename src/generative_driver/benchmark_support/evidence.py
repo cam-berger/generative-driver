@@ -89,16 +89,17 @@ def public_v2_report(payload: dict) -> dict:
     return result
 
 
-# The public fields of an equivalence/1 record beside its checks, differences and mission.
-EQUIVALENCE = ('schema', 'status', 'equivalent', 'basis', 'method', 'passed', 'total', 'frozen_artifact_sha256',
-               'capabilities_sha256', 'evidence_sha256', 'protocol')
+# The public fields of an equivalence/2 record beside its checks, differences and mission.
+EQUIVALENCE = ('schema', 'status', 'equivalent', 'basis', 'passed', 'total', 'frozen_artifact_sha256',
+               'evidence_sha256', 'protocol')
 # What a recorded verdict's sealed evidence must agree with in the report before anything is regraded.
-VERDICT_IDENTITY = ('schema', 'status', 'basis', 'method', 'protocol', 'frozen_artifact_sha256', 'capabilities_sha256')
+VERDICT_IDENTITY = ('schema', 'status', 'basis', 'protocol', 'frozen_artifact_sha256')
 
 
 def public_equivalence(value):
-    """The public equivalence/1 record: check ids with passed flags, the failing ids with a reason and the mission check.
-    Expected values, tolerances, witnesses and raw records never cross this boundary. None when there is no record."""
+    """The public equivalence/2 record: check ids with passed flags, the failing ids with a reason and the mission
+    check. Expected values, tolerances, witnesses and raw records never cross this boundary. None when there is no
+    record."""
     if not isinstance(value, dict):
         return None
     rows = lambda key, fields: [_scalars(row, fields) for row in value.get(key) or [] if isinstance(row, dict)]
@@ -175,8 +176,7 @@ def _snapshot_identity(payload, v2=True):
 def _validate_payload_v2(payload):
     """An assistive run's evidence: its snapshot identity, every accepted artifact and notes hash, and at most one final,
     which grades the run's accepted emitted driver: the first artifact of its latest emit handoff that handed one on.
-    A final graded from the run's recorded fresh reuse (`recorded-reuse`) has the same contract and records. It names the
-    protocol its run was under, whichever that is."""
+    It names the protocol its run was under, whichever that is."""
     from .case_assets import STAGES
     from .behavior import validate_records, _sha
     protocol = payload.get('protocol')
@@ -361,7 +361,7 @@ def regrade_v3(report: dict, evidence_path: Path, password) -> dict:
     """Regrade an assistive run's report (benchmark-report/3) from the benchmark-run-evidence/2 its recorded verdict
     names, sealed by the evaluator in the trial directory. The evidence must hold the report's run, protocol, case pin,
     snapshot and executed identity, an installed evaluator of the snapshot's revision, and the run's single final
-    evaluation of its accepted emitted driver, the package and mapping the verdict names. The protocol is the one the
+    evaluation of its accepted emitted driver, the package the verdict names. The protocol is the one the
     evidence names, whichever that is; the report must name the same. The final's records are graded again:
     equivalent only when every check passes, unknown when none failed and one is undecided, with fresh reuse regraded
     beside that verdict, in the mission, which needs the owner's proof where the package requires generated MCP reuse.
@@ -402,9 +402,8 @@ def regrade_v3(report: dict, evidence_path: Path, password) -> dict:
         if required(proof, payload['execution_snapshot']) or final.get('generated_reuse_required'):
             final = {**final, 'generated_reuse_required': True,
                      'generated_reuse_verified': verified(proof, final['frozen_artifact_sha256'])}
-        regraded = final_record(final, sealed['capabilities_sha256'], sealed['mission'], protocol=payload['protocol'])
-        if (sealed['status'] != regraded['status'] or final.get('capabilities_sha256') != sealed['capabilities_sha256']
-                or ids(regraded) != ids(sealed)):
+        regraded = final_record(final, sealed['mission'], protocol=payload['protocol'])
+        if sealed['status'] != regraded['status'] or ids(regraded) != ids(sealed):
             raise ValueError('Sealed verdict differs from its final evaluation')
     from .labels import verdict_reason
     return public_v3_report({**report, 'protocol': payload['protocol'], 'verdict': None, 'equivalence_status': None,

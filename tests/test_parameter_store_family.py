@@ -240,7 +240,7 @@ class ParameterStoreOracleTests(unittest.TestCase):
         contract['checks'] = [c for c in contract['checks'] if c['scenario'] == 'rejection']
         contract.pop('required_scenarios', None)
         plan = [a for a in truth['phases']['diagnostic']['actions'] if a['episode'] == 'rejection']
-        capabilities = {'schema': 'benchmark-capabilities/2', 'tasks': {
+        capabilities = {'schema': 'capabilities/2', 'tasks': {
             'commit': {'operation': 'commit', 'constants': {}, 'inputs': {}, 'outputs': {}}}}
         device = FourCellStoreDevice([4, 5, 6, 7, 8, 9, 10, 11])
         class Session:

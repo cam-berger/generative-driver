@@ -20,9 +20,11 @@ from .setup import SUPPORTED_EXECUTORS, resolve_executor
 
 def supplied_inputs(case_id, run_dir, options=None):
     """The firmware and the mission of the registered case `case_id` for the run at `run_dir`, as the tool's stage
-    package takes them: a dict with `firmware` and `mission` and no other key. The configurator asks for them before
-    each stage. This is the one place where a case's name becomes the data its stages run on (Feature 05 of the
-    untangle Run, docs/features/untangle/05-supplied-device-stages.md)."""
+    package takes them: a dict with `firmware` and `mission` and no other key. The bench harness asks for them once,
+    when it starts a trial, from the snapshot it froze in its trial folder (`run_dir`), and supplies them to the
+    configurator with the `start`. This is the one place where a case's name becomes the data its stages run on
+    (Features 05 and 06 of the untangle Run, docs/features/untangle/05-supplied-device-stages.md and
+    docs/features/untangle/06-benchmark-runs.md)."""
     from .benchmark_support.adapters import adapter_for
     return adapter_for(case_id).supplied_inputs(case_id, run_dir, options)
 

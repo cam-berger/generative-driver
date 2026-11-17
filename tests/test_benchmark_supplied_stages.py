@@ -171,10 +171,13 @@ class SuppliedInputsTests(TemporaryDirectoryCase):
         with self.assertRaisesRegex(ValueError, '^Setup smoke has no agent stages$'):
             benchmark.supplied_inputs('setup-smoke', self.directory() / 'run')
 
-    def test_05_B3_the_service_takes_supplied_inputs_from_the_benchmark_and_the_stage_code_from_the_stage_package(self):
-        source = Path(generative_driver.__file__).resolve().parent / 'configurator.py'
-        taken = names_taken(source, 'generative_driver')
-        self.assertEqual(taken.get('generative_driver.benchmark'), ['supplied_inputs'])
+    def test_05_B3_the_harness_takes_supplied_inputs_from_the_benchmark_and_the_service_the_stage_code_from_the_stage_package(self):
+        # Since Feature 06 the bench harness asks for a case's firmware and mission and supplies them to the service.
+        package = Path(generative_driver.__file__).resolve().parent
+        harness = names_taken(package / 'benchmark_support' / 'harness.py', 'generative_driver.benchmark_support')
+        self.assertEqual(harness.get('generative_driver.benchmark'), ['supplied_inputs'])
+        taken = names_taken(package / 'configurator.py', 'generative_driver')
+        self.assertIsNone(taken.get('generative_driver.benchmark'))
         self.assertEqual(sorted(taken.get('generative_driver.supplied.stages', [])), sorted(STAGE_FUNCTIONS))
         self.assertEqual(taken.get('generative_driver.supplied.instrument_evidence'), ['discrepancies'])
 
@@ -196,7 +199,7 @@ class ScriptedRunTests(SealedTrialFixture):
                  if notes['stage'] == 'reuse']
         self.assertEqual([notes['failed_checks'] for notes in noted], [[]])
         # The run recorded the fresh worker's four package calls, and the grader judged the mission from them.
-        events = self.home / 'runs' / record['run_id'] / 'benchmark' / 'package-events.jsonl'
+        events = self.home / 'runs' / record['run_id'] / 'supplied' / 'package-events.jsonl'
         rows = [json.loads(line) for line in events.read_text(encoding='utf-8').splitlines()]
         self.assertEqual([(row['assignment_id'], row['operation']) for row in rows],
                          [(reuse['assignment_id'], name) for name in ('measure', 'arm', 'set_duty', 'disarm')])

@@ -21,7 +21,7 @@ class GroundEvidenceTests(unittest.TestCase):
             model_hash = hashlib.sha256(model.read_bytes()).hexdigest()
             adaptation = source/'2-adaptation.json'; adaptation.write_text('{"kind":"emulator UART-to-TCP wiring"}')
             mapping = source/'0-capabilities.json'
-            mapping.write_text(json.dumps({'schema': 'benchmark-capabilities/2', 'tasks': {
+            mapping.write_text(json.dumps({'schema': 'capabilities/2', 'tasks': {
                 'temperature': {'operation': 'sample', 'constants': {}, 'inputs': {},
                                 'outputs': {'temperature': {'output': 'raw', 'unit': 'degC'}}}}}))
             probe = source/'4-interface-1.json'

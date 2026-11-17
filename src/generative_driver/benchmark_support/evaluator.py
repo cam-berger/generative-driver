@@ -1,9 +1,10 @@
 """The evaluator: the only code that grades a frozen driver against the case truth. The bench harness runs it once a
 configurator run is terminal and the run's device stop is confirmed: it grades the driver the run accepted on a fresh
-emulator of its own (`fresh-final`), running the frozen package's own bundled runtime; it keeps its evaluations in an
-encrypted draft and seals the run evidence in the trial directory. Legacy tq9 and bme280 are graded from the fresh
-reuse their run recorded (`recorded-reuse`) by `recorded_grading`, outside the grader. Neither the configurator nor its
-device modules import it, and nothing in a stage calls it."""
+emulator of its own, running the frozen package's own bundled runtime; it keeps its evaluations in an encrypted draft
+and seals the run evidence in the trial directory. Its public record is the tool's `equivalence/2`, and it takes a
+run's case pin and snapshot hash from the run's client record (Feature 06 of the untangle Run,
+docs/features/untangle/06-benchmark-runs.md). Neither the configurator nor its device modules import it, and nothing
+in a stage calls it."""
 import hashlib
 import json
 import shutil
@@ -14,8 +15,8 @@ from .families import family_for
 from .registrations import registered_case_ids, registration_for
 
 DRAFT, EVIDENCE = 'evaluator-draft.enc', 'run-evidence.enc'
-SCHEMA = 'equivalence/1'
-TEXT = 300  # The configurator's limit on an equivalence/1 text field.
+SCHEMA = 'equivalence/2'
+TEXT = 300  # The configurator's limit on an equivalence/2 text field.
 OWNER_PROOF = 'Missing or inconsistent owner proof of generated MCP reuse'
 
 
@@ -140,7 +141,7 @@ def _copy(found, target, what):
 
 
 def _text(value, empty='unnamed'):
-    """A public text field within the configurator's equivalence/1 limit of 300 characters."""
+    """A public text field within the configurator's equivalence/2 limit of 300 characters."""
     return str(value)[:TEXT] or empty
 
 
@@ -161,21 +162,20 @@ def _protocol(result):
     return protocol
 
 
-def record(status, equivalent, checks, diff, frozen, capabilities_sha256=None, mission=None, method='fresh-final', *,
-           protocol: str):
-    """A public equivalence/1 record: check ids with passed flags (None for a check the evaluator could not decide) and
-    the failing and undecided ids with their reasons. Expected values, tolerances, witnesses and raw records stay sealed.
-    Text is held to the configurator's length limit. It names the `protocol` of the run it grades."""
+def record(status, equivalent, checks, diff, frozen, mission=None, *, protocol: str):
+    """A public equivalence/2 record without its evidence hash: check ids with passed flags (None for a check the
+    evaluator could not decide) and the failing and undecided ids with their reasons. Expected values, tolerances,
+    witnesses and raw records stay sealed. Text is held to the configurator's length limit. It names the `protocol`
+    of the run it grades."""
     checks = [{'id': _text(c['id']), 'passed': c['passed']} for c in checks]
     diff = [{'id': _text(d['id']), 'reason': _text(d['reason'], 'failed')} for d in diff]
-    return {'schema': SCHEMA, 'status': status, 'equivalent': equivalent, 'basis': 'evaluator', 'method': method,
+    return {'schema': SCHEMA, 'status': status, 'equivalent': equivalent, 'basis': 'evaluator',
             'checks': checks, 'diff': diff, 'passed': sum(c['passed'] is True for c in checks), 'total': len(checks),
-            'mission': _mission_fields(mission), 'frozen_artifact_sha256': frozen,
-            'capabilities_sha256': capabilities_sha256, 'protocol': protocol}
+            'mission': _mission_fields(mission), 'frozen_artifact_sha256': frozen, 'protocol': protocol}
 
 
-def unscored(reason, frozen, method='fresh-final', *, protocol: str):
-    return record('unscored', None, [], [{'id': 'evaluation', 'reason': reason}], frozen, method=method, protocol=protocol)
+def unscored(reason, frozen, *, protocol: str):
+    return record('unscored', None, [], [{'id': 'evaluation', 'reason': reason}], frozen, protocol=protocol)
 
 
 def reuse_mission(case_id, run_dir, accepted, frozen, capabilities):
@@ -201,7 +201,7 @@ def reuse_mission(case_id, run_dir, accepted, frozen, capabilities):
         return {'name': 'fresh_worker_mission', 'passed': None, 'reason': 'Fresh reuse did not run the frozen package'}
     if not isinstance(capabilities, dict):
         return {'name': 'fresh_worker_mission', 'passed': None, 'reason': 'No readable capability mapping was handed on'}
-    path = Path(run_dir)/'benchmark/package-events.jsonl'
+    path = Path(run_dir)/'supplied/package-events.jsonl'
     rows = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()] if path.is_file() else []
     events = [row for row in rows if row.get('actor') == 'worker' and row.get('stage') == 'reuse'
               and row.get('assignment_id') == reuse.get('assignment_id') and row.get('package_sha256') == frozen]
@@ -217,9 +217,10 @@ def _held(draft, run_id, sha):
 def needs_grading(trial_dir, result, *, password):
     """Whether concluding this run would grade its frozen driver on a fresh emulator: a completed run whose verdict is
     pending, which emitted a package and handed on the mapping of its model, and whose final the draft does not hold."""
+    pin = (result.get('client_record') or {}).get('case_pin') or {}
     if (result.get('equivalence') is not None or result.get('status') != 'completed'
             or (result.get('progress') or {}).get('equivalence') != 'pending'
-            or method_for((result.get('case_pin') or {}).get('case_id')) != 'fresh-final'):
+            or method_for(pin.get('case_id')) != 'fresh-final'):
         return False
     accepted = result.get('accepted_handoffs') or []
     frozen = emitted(accepted)
@@ -230,21 +231,23 @@ def needs_grading(trial_dir, result, *, password):
 
 def accepted_driver(case_id, trial_dir, run_dir, result):
     """The frozen driver a completed run accepted, checked and copied for grading: (snapshot, driver). It checks the
-    run's snapshot and pin, and that the case's installed grader identity is the evaluator revision the run was stamped
-    with. Then, when an emit handoff handed a package on, it first deletes `trial_dir/private` and copies into a fresh
-    one the package of the latest such handoff and the mapping of the model it packages, re-hashing both. `driver` is
-    None when no emit handed a package on, else (package copy, recorded sha256, revision, capability mapping or None,
-    mapping sha256 or None). A changed record or grader raises IntegrityError."""
+    run's snapshot against the pin and the snapshot hash of the run's client record, and that the case's installed
+    grader identity is the evaluator revision the run was stamped with. Then, when an emit handoff handed a package
+    on, it first deletes `trial_dir/private` and copies into a fresh one the package of the latest such handoff and
+    the mapping of the model it packages, re-hashing both. `driver` is None when no emit handed a package on, else
+    (package copy, recorded sha256, revision, capability mapping or None, mapping sha256 or None). A changed record
+    or grader raises IntegrityError."""
     from .grader_identity import grader_identity
     from .integrity import IntegrityError
     from .snapshots import require_snapshot
     trial_dir, run_dir = Path(trial_dir), Path(run_dir)
-    pin = result['case_pin']
+    named = result.get('client_record') or {}
+    pin = named.get('case_pin') or {}
     try:
         snapshot = require_snapshot(run_dir, pin)
     except (OSError, ValueError) as error:
         raise IntegrityError('Execution snapshot unverifiable: ' + str(error)) from None
-    if snapshot['snapshot_sha256'] != result.get('snapshot_sha256'):
+    if snapshot['snapshot_sha256'] != named.get('snapshot_sha256'):
         raise IntegrityError('Execution snapshot differs from the run record')
     # The answer key is already in memory: a worker changing its file must not turn a failing run into a fault.
     if pin.get('case_id') != case_id or family_for(case_id).current_pin(pin, check_truth=False) != pin:
@@ -272,7 +275,7 @@ def accepted_driver(case_id, trial_dir, run_dir, result):
 
 
 def grade(case_id, trial_dir, run_dir, result, *, password, truth_source, renode=None, meter=None):
-    """Grade a completed run's frozen driver once, on a fresh emulator: (public equivalence/1 without its evidence hash,
+    """Grade a completed run's frozen driver once, on a fresh emulator: (public equivalence/2 without its evidence hash,
     the final evaluation for the seal or None). It takes the accepted driver (`accepted_driver`), asks `truth_source`
     for the answer key (`answer_key`) and runs the final phase on a fresh emulator; a driver without a capability
     mapping, or whose model is missing or not a JSON object, fails before either. A final the draft already holds for
@@ -280,24 +283,23 @@ def grade(case_id, trial_dir, run_dir, result, *, password, truth_source, renode
     grader other than the evaluator revision the run was stamped with, raises IntegrityError; a model file the grader
     cannot read raises its OSError, a host fault. Every record names the protocol the run's progress names, and a result
     that names none raises ValueError. A `meter` is added to by each package call of a grading on a fresh emulator
-    (`emulated_actions.OutputMeter`), and nothing of it reaches the return value. Legacy tq9 and bme280 are graded from
-    their recorded reuse by `recorded_grading.grade` instead."""
+    (`emulated_actions.OutputMeter`), and nothing of it reaches the return value. The pin is the one the run's client
+    record names. The hash of the capability mapping stays in the final evaluation, for the seal."""
     from .case_assets import case_inputs
     protocol = _protocol(result)
     trial_dir, run_dir = Path(trial_dir), Path(run_dir)
-    pin = result['case_pin']
+    pin = (result.get('client_record') or {}).get('case_pin') or {}
     snapshot, driver = accepted_driver(case_id, trial_dir, run_dir, result)
     accepted = result.get('accepted_handoffs') or []
     if driver is None:
         return record('no-driver', False, [], [{'id': 'frozen_package', 'reason': 'no driver emitted'}], None,
-                      mission=reuse_mission(case_id, run_dir, accepted, None, None), method=method_for(case_id),
-                      protocol=protocol), None
+                      reuse_mission(case_id, run_dir, accepted, None, None), protocol=protocol), None
     package, sha, revision, capabilities, capabilities_sha = driver
     private = trial_dir/'private'
     checked = reuse_mission(case_id, run_dir, accepted, sha, capabilities)
     if not isinstance(capabilities, dict):
         return record('graded', False, [], [{'id': 'capability_mapping', 'reason': 'no capability mapping'}], sha,
-                      capabilities_sha, checked, protocol=protocol), None
+                      checked, protocol=protocol), None
     model_path, model = package/'driver/model.json', None
     if model_path.is_file():
         try:
@@ -311,7 +313,7 @@ def grade(case_id, trial_dir, run_dir, result, *, password, truth_source, renode
         # before any answer key is asked for or device touched. Any other read error is the host's, since this is the
         # grader's own private copy, and propagates.
         reason = "the frozen driver's model is missing or not JSON"
-        return record('graded', False, [], [{'id': 'frozen_package', 'reason': reason}], sha, capabilities_sha, checked,
+        return record('graded', False, [], [{'id': 'frozen_package', 'reason': reason}], sha, checked,
                       protocol=protocol), None
     draft = _draft(trial_dir, password)
     final = _held(draft, result['run_id'], sha)
@@ -336,7 +338,7 @@ def grade(case_id, trial_dir, run_dir, result, *, password, truth_source, renode
     proof = owner_evidence(run_dir, accepted)
     if required(proof, snapshot):
         final = {**final, 'generated_reuse_required': True, 'generated_reuse_verified': verified(proof, sha)}
-    return final_record(final, capabilities_sha, checked, protocol=protocol), final
+    return final_record(final, checked, protocol=protocol), final
 
 
 def _generated_mission(mission, proved):
@@ -352,9 +354,9 @@ def _generated_mission(mission, proved):
     return {'name': name, 'passed': found.get('passed'), **{key: found[key] for key in ('reason', 'fault') if key in found}}
 
 
-def final_record(final, capabilities_sha256=None, mission=None, *, protocol: str):
-    """The public equivalence/1 record of a final evaluation, graded from its contract and records: equivalent when every
-    behavior check passed and not equivalent when one failed. A check the evaluator could not decide is undecided
+def final_record(final, mission=None, *, protocol: str):
+    """The public equivalence/2 record of a final evaluation, graded from its contract and records: equivalent when
+    every behavior check passed and not equivalent when one failed. A check the evaluator could not decide is undecided
     (`passed` None) and is named in `diff`. A failed check outweighs an undecided one, so the record is `graded` when
     every check is decided or one failed, with the undecided checks kept; it is `unknown`, with no verdict, when none
     failed and one is undecided. Fresh reuse is reported beside that verdict, never inside it: the record's `mission` is
@@ -369,8 +371,7 @@ def final_record(final, capabilities_sha256=None, mission=None, *, protocol: str
         mission = _generated_mission(mission, final.get('generated_reuse_verified') is True)
     unknown = graded['verdict'] == 'unknown'
     return record('unknown' if unknown else 'graded', None if unknown else graded['verdict'] == 'passed', checks, diff,
-                  final['frozen_artifact_sha256'], capabilities_sha256, mission, final.get('method', 'fresh-final'),
-                  protocol=protocol)
+                  final['frozen_artifact_sha256'], mission, protocol=protocol)
 
 
 def evidence(trial_dir, run_dir, result, *, final=None, equivalence=None, mission=None, error=None):

@@ -12,7 +12,7 @@ from ._files import write_json as _write
 
 def _state(run_dir):
     """The path of a run's stage state file and what it holds, {} before the first stage writes it."""
-    path = Path(run_dir).resolve() / 'benchmark' / 'state.json'
+    path = Path(run_dir).resolve() / 'supplied' / 'state.json'
     return path, json.loads(path.read_text()) if path.exists() else {}
 
 
@@ -52,7 +52,7 @@ def remember(run_dir, stage, files, report=None, workspace=None):
     """Capture bounded candidate files and the device evidence of their runs; callers select files, never report
     paths. Nothing graded is kept: repair feedback is the device diff, supplied separately as DEFECTS.json."""
     path, state = _state(run_dir)
-    parent = Path(run_dir)/'benchmark/candidate-history'
+    parent = Path(run_dir)/'supplied/candidate-history'
     parent.mkdir(parents=True, exist_ok=True)
     content = {}
     roots = [Path(run_dir)] + ([Path(workspace)] if workspace else [])
@@ -83,7 +83,7 @@ def repair_sources(run_dir, workspace, feedback, *, readings=True):
         files = {}
         for name, expected in entry['hashes'].items():
             source = Path(entry['root'])/name
-            require_evidence_path(source, [Path(run_dir)/'benchmark/candidate-history'])
+            require_evidence_path(source, [Path(run_dir)/'supplied/candidate-history'])
             raw = source.read_bytes()
             if hashlib.sha256(raw).hexdigest() != expected:
                 raise ValueError('Candidate repair evidence hash changed')

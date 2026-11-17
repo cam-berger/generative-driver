@@ -12,9 +12,12 @@ from generative_driver.configurator import digest, _outcome
 class QuantityRepairTests(GatewayConditionFixture):
     def setUp(self):
         super().setUp()
-        self.spec['case'] = 'sampled-sensor-v1'
+        from generative_driver.benchmark import supplied_inputs
         self.run_dir = self.root/'home/runs/run-fixture'
-        self.mapping = {'schema': 'benchmark-capabilities/2', 'tasks': {
+        # The stored run stands in for a supplied run of the case: its firmware and its mission, as the harness
+        # supplies them.
+        self.spec.update(supplied_inputs('sampled-sensor-v1', self.run_dir))
+        self.mapping = {'schema': 'capabilities/2', 'tasks': {
             task: {'operation': operation, 'constants': {}, 'inputs': {},
                    'outputs': {name: {'output': name, 'unit': unit}
                                for name, unit in [('temperature', 'degC'), ('sequence', 'count')]}}
@@ -35,7 +38,7 @@ class QuantityRepairTests(GatewayConditionFixture):
         self.assignment['inputs'] = {str(self.model_dir): digest(self.model_dir)}
         self.save_assignment()
         from generative_driver.benchmark_support.case_assets import write_json as _write
-        _write(self.run_dir/'benchmark/state.json', {'adapted_model_dir': str(self.model_dir),
+        _write(self.run_dir/'supplied/state.json', {'adapted_model_dir': str(self.model_dir),
             'adaptation': {'adapted_model_sha256': digest(self.model_dir/'model.json')}, 'revision': 0})
 
     def save_assignment(self):

@@ -268,17 +268,19 @@ def report_run(run_id, home=None, output=None, *, autostart=True):
         if page["cursor"] == cursor or len(page["events"]) < 500:
             break
         cursor = page["cursor"]
-    config = result.get("configuration") or {k: result.get(k) for k in ("case", "budget_seconds", "limits", "agent")}
-    case = config.get("case")
+    config = result.get("configuration") or {k: result.get(k) for k in ("budget_seconds", "limits", "agent")}
+    # The bench harness keeps the case's name, its pin and the hash of its frozen inputs in the run's client record.
+    named = result.get('client_record') or {}
+    case = config.get("case") or named.get('case')
     snapshot = None
-    if result.get('snapshot_sha256'):
+    if named.get('snapshot_sha256'):
         from .benchmark_support.snapshots import require_snapshot
-        snapshot = require_snapshot(root / 'runs' / run_id, result['case_pin'])
-        if snapshot['snapshot_sha256'] != result['snapshot_sha256']:
+        snapshot = require_snapshot(root / 'runs' / run_id, named['case_pin'])
+        if snapshot['snapshot_sha256'] != named['snapshot_sha256']:
             raise ValueError('Execution snapshot hash differs from saved run')
     manifest_path = case_root() / "cases" / case / "case.json" if case else None
     manifest = snapshot["case_pin"]["manifest"] if snapshot else (json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path and manifest_path.is_file() else {})
-    state_path = root / "runs" / run_id / "benchmark/state.json"
+    state_path = root / "runs" / run_id / "supplied/state.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
     if snapshot:
         executed = snapshot['executed']

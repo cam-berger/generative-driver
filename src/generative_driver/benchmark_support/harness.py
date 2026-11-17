@@ -2,17 +2,20 @@
 
 It holds what the configurator never does. The evaluator password file path arrives on its stdin and is never a field of
 a record it writes; it reads that file once into an `EvaluatorPassword`, before it first contacts the configurator, and
-unlocks a trial's answer key once, at admission, to project the device recipe (for a bound device, to authenticate the
-password) and to hand to the grader after the run; and it owns an emulated case's device. In order, it: admits the case
-(`admit`); for an emulated case starts the emulator through a
+unlocks a trial's answer key once, at admission, to project the device recipe and to hand to the grader after the run;
+and it owns the device of every run it starts. In order, it: pins and
+admits the case (`admit`); starts the case's emulator through a
 recipe-only provider and serves the configurator a narrow control endpoint (status, observe, set_running, replace,
-release; stop and shutdown are owner-only); starts the configurator run with the device descriptor, the admission
-evidence hash and the sha256 of a random evaluation token it keeps sealed under the password; waits as a reconnecting
-client; stops the device once the run is terminal; grades a completed run's frozen driver once, on a fresh emulator;
-seals the run evidence and posts the verdict with `record_evaluation`. A bme280
-trial runs on the operator's bound device, which the harness never touches: it waits while the operator answers the run
-and resumes it, until the run completes, and a trial whose harness stopped waiting first is graded by `resume` once the
-run has completed. Its state lives under a bench home beside the configurator home, never inside it.
+release; stop and shutdown are owner-only); freezes the case's inputs in its trial folder; starts the configurator run
+as a run on a supplied device, with the device descriptor, the frozen firmware, the mission, its client record and the
+sha256 of a random evaluation token it keeps sealed under the password (`supplied_start`; Feature 06 of the untangle
+Run, docs/features/untangle/06-benchmark-runs.md: the configurator knows no case); copies the snapshot into the run's
+folder; waits as a reconnecting client; stops the device once the run is terminal; checks the snapshot and grades a
+completed run's frozen driver once, on a fresh emulator;
+seals the run evidence and posts the verdict with `record_evaluation`. Every run it starts is a run on a device it
+supplies, so a case that gives no device provider is refused at admission, before any run or device starts. A trial
+whose harness stopped waiting before its run completed is graded by `resume` once the run has completed. Its state
+lives under a bench home beside the configurator home, never inside it.
 
 A suite's harness (`run_suite`) drives the suite the configurator stores: it reserves each slot, runs that slot's trial as
 above, and has the configurator settle the slot from what the configurator reads itself. A resumed suite gets a new
@@ -111,8 +114,14 @@ class DeviceServer:
 
     @property
     def descriptor(self):
-        """The provider's public descriptor and the control endpoint file: no secret inline."""
-        return {**self.provider.descriptor(), 'control': {'endpoint_file': str(self.endpoint_file())}}
+        """The `device-descriptor/2` the configurator gets, from the provider's own public descriptor and the control
+        endpoint file: no secret inline. It names the image's hash `firmware_sha256` and leaves out what the tool does
+        not know: the provider's kind, id and time policy, and the instrument's label."""
+        own = self.provider.descriptor()
+        conditions = {key: own[key] for key in ('development_conditions',) if key in own}
+        return {'schema': 'device-descriptor/2', 'control': {'endpoint_file': str(self.endpoint_file())},
+                'session_id': own['session_id'], 'binding': own['binding'], 'firmware_sha256': own['image_sha256'],
+                'instrument': {'units': own['instrument']['units']}, **conditions}
 
     def handle(self, method, params, methods=CONTROL):
         if method not in methods:
@@ -195,31 +204,138 @@ def device_recipe(case_id, truth):
 
 
 def admit(case_id, options, trial_dir, *, password, renode=None, device=None, pin=None):
-    """Admit the case and, for an emulated one, build its device provider from the recipe alone: (provider or None,
-    admission, `UnlockedTruth`). This step decrypts the case truth, once for every kind of case, and the trial grades
-    from what it returns; a provider sees only the recipe. A v2 case's admission names its calibration evidence; legacy
-    cases have none. A bound device (bme280) is the operator's: no provider, and a password that could not grade the run
-    refuses it before it starts. The caller starts the provider, so that it holds the device even when the start
-    fails. A device of a generated set (`device`, with its frozen `pin`) is admitted through its set instead."""
+    """Pin and admit the case and, for an emulated one, build its device provider from the recipe alone: (provider or
+    None, admission, `UnlockedTruth`, pin). This step decrypts the case truth, once for every kind of case, and the
+    trial grades from what it returns; a provider sees only the recipe. A v2 case's admission names its calibration
+    evidence. The caller starts the provider, so that it holds the device even when the start fails. A device of a
+    generated set (`device`, with its frozen `pin`) is admitted through its set instead."""
     from .device_provider import DeviceProvider
     from .registry import admitted_truth, case_truth, pin_case, resolve_case
     if device is not None:
         from .generated_trials import admit_device
-        return admit_device(device, pin, password, trial_dir, renode=renode)
+        return (*admit_device(device, pin, password, trial_dir, renode=renode), pin)
     pin = pin_case(case_id, options.get('scenario_id'), options.get('case_seed', 0))
     if not pin['execution'].startswith('actual-agent-'):
         raise ValueError('The bench harness runs actual-agent benchmark cases only')
     truth, admitted = admitted_truth(pin, password)
     truth = truth or case_truth(case_id, trial_dir, password)
     if pin['execution'] != 'actual-agent-emulation':
-        return None, {}, truth
+        return None, {}, truth, pin
     recipe = device_recipe(case_id, truth)
     from .execution import artifact_name
     artifact = artifact_name(pin['manifest'])
     provider = DeviceProvider(case_id, resolve_case(case_id).root / artifact, recipe, renode, Path(trial_dir) / 'device',
                               image_sha256=pin['image_hashes'][artifact])
     return provider, ({'calibration_evidence_sha256': admitted.get('evidence_sha256')}
-                      if pin['manifest'].get('schema') == 'benchmark-case/2' else {}), truth
+                      if pin['manifest'].get('schema') == 'benchmark-case/2' else {}), truth, pin
+
+
+def _refuse_unadmitted(case_id, pin, admission, request, options):
+    """Refuse a trial the harness may not run, before any device starts, with the texts the configurator used while
+    it admitted a case itself: a suite child's pin that is not the start's own or not the case's current pin, an
+    emulator approval of a case that is no emulator profile, missing effect grants, and a v2 case whose calibration
+    has not passed or whose admission evidence is not the pin's."""
+    from .families import family_for
+    from .snapshots import canonical_bytes
+    from .suites import emulator_approval
+    if 'case_pin' in request:
+        expected, differs = request['case_pin'], ValueError('Expected case pin differs from current case inputs')
+        if type(options.get('case_seed', 0)) is not int:
+            raise ValueError('case_seed must be an integer')
+        if (not isinstance(expected, dict) or expected.get('case_id') != case_id or 'scenario_id' not in expected
+                or options.get('scenario_id') not in (None, expected['scenario_id'])
+                or options.get('case_seed', 0) != expected.get('case_seed')
+                or canonical_bytes(expected) != canonical_bytes(pin)
+                or canonical_bytes(family_for(case_id).current_pin(expected)) != canonical_bytes(expected)):
+            raise differs
+    if request.get('scoped_tool_approval') == 'emulator':
+        emulator_approval(case_id)
+    if pin['manifest'].get('schema') != 'benchmark-case/2':
+        return
+    if set(pin['manifest']['default_effects']) - {'read'} - set(request.get('effects') or ['read']):
+        raise ValueError('Case evaluator requires the declared write/actuate effect grants before admission')
+    calibration = pin.get('calibration') or {}
+    if calibration.get('status') != 'passed':
+        raise ValueError('V2 case requires independently validated passed calibration before a run')
+    if not isinstance(admission.get('calibration_evidence_sha256'), str) or \
+            admission['calibration_evidence_sha256'] != calibration.get('evidence_sha256'):
+        raise ValueError('Calibration admission evidence differs from the public case pin; the bench harness admits an '
+                         'emulated case')
+
+
+def settled_executor(home, request, start=None):
+    """(the executor, its whole configuration) of the run a trial starts: the settings the operator configured for
+    that executor in the `executors` entry of the home's `config.json`, with the request's `executor_config` laid over
+    them and `runtime` set to the executor, as the configurator settles it. A suite child's configuration (`start`)
+    is complete already and is taken as it is."""
+    from ..setup import resolve_executor
+    if start is not None:
+        return resolve_executor(start.get('executor')), dict(start.get('executor_config') or {})
+    executor = resolve_executor(request.get('executor'))
+    path = Path(home) / 'config.json'
+    configured = json.loads(path.read_text(encoding='utf-8')).get('executors', {}) if path.is_file() else {}
+    return executor, {**configured.get(executor, {}), **(request.get('executor_config') or {}), 'runtime': executor}
+
+
+def frozen_inputs(trial_dir, pin, config, *, options=None, public_inputs=None):
+    """Freeze the case's inputs in the trial's folder and give what the harness supplies from them: the frozen
+    `firmware` with the pin's hash of it, the `mission` of the case, and the `client_record` with the case's id, its
+    pin and the snapshot's hash. The snapshot lies under `trial_dir/benchmark`, and its provenance is that of the
+    run's configuration `config`. A device of a generated set is frozen from the folder `public_inputs`."""
+    from ..benchmark import supplied_inputs
+    from .snapshots import execution_provenance, snapshot_case
+    saved = snapshot_case(trial_dir, pin, execution_provenance(config, case_ids=(pin['case_id'],)),
+                          public_inputs=public_inputs)
+    supplied = supplied_inputs(pin['case_id'], trial_dir, options)
+    return {'firmware': supplied['firmware'], 'mission': supplied['mission'],
+            'client_record': {'case': pin['case_id'], 'case_pin': pin, 'snapshot_sha256': saved['snapshot_sha256']}}
+
+
+def supplied_start(trial_dir, pin, descriptor, config, *, token_sha256, options=None, public_inputs=None):
+    """What the bench harness adds to a `start` (`suites.HARNESS_KEYS`): the `device` descriptor, the hash of the
+    evaluation token, and the `firmware`, the `mission` and the `client_record` of `frozen_inputs`."""
+    return {'device': descriptor, 'evaluation_token_sha256': token_sha256,
+            **frozen_inputs(trial_dir, pin, config, options=options, public_inputs=public_inputs)}
+
+
+def keep_snapshot(trial_dir, run_dir):
+    """Copy the trial's snapshot, `execution.json` and `inputs/`, into the run's folder under `benchmark/`, where the
+    grader and the reports look, unless it is there. The inputs are in place before the record that names them. A
+    trial that froze nothing copies nothing: `check_snapshot` then finds the run without its snapshot."""
+    source, target = Path(trial_dir) / 'benchmark', Path(run_dir) / 'benchmark'
+    if (target / 'execution.json').exists() or not (source / 'execution.json').is_file():
+        return
+    target.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix='.snapshot-', dir=target))
+    try:
+        shutil.copytree(source / 'inputs', temporary / 'inputs')
+        shutil.copyfile(source / 'execution.json', temporary / 'execution.json')
+        shutil.rmtree(target / 'inputs', ignore_errors=True)
+        os.rename(temporary / 'inputs', target / 'inputs')
+        os.replace(temporary / 'execution.json', target / 'execution.json')
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
+def check_snapshot(trial_dir, run_dir, result, *, config=None):
+    """The run folder's snapshot, once it is the one the run's client record names, by its pin and its hash, and the
+    one the trial froze in its own folder. With the run's configuration `config`, the snapshot must also name the
+    provenance of the installed code for it. A difference raises IntegrityError, in the words the configurator used
+    while it checked the snapshot itself."""
+    from ..integrity import IntegrityError
+    from .snapshots import execution_provenance, read_snapshot, require_snapshot
+    named = result.get('client_record') or {}
+    try:
+        saved = require_snapshot(run_dir, named.get('case_pin'))
+        frozen = read_snapshot(trial_dir)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise IntegrityError('Execution snapshot hash differs from saved run') from error
+    if saved['snapshot_sha256'] != named.get('snapshot_sha256') or frozen != saved:
+        raise IntegrityError('Execution snapshot hash differs from saved run')
+    if config is not None and \
+            execution_provenance(config, case_ids=(saved['case_pin']['case_id'],)) != saved['executed']:
+        raise IntegrityError('Execution snapshot implementation or runtime environment changed; start a new run')
+    return saved
 
 
 TOKEN = trial_store.TOKEN
@@ -269,11 +385,12 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
     graded once (`graded` False when its device stop was not confirmed: then nothing is graded) from the answer key
     `truth_source()` returns, the run evidence is sealed in the trial directory, and the verdict, or an unscored grade,
     is posted with record_evaluation; any other run's handoffs are sealed alone. No grade is posted that was not sealed
-    first; an unscored one carries none. A record the configurator's equivalence/1 schema would refuse, or accepted
-    records that no longer match their hashes at the seal, are posted unscored: no retry would change them. The
-    plaintext evaluation never outlives this call. A grading that counted package calls returns `package_output`, its
-    largest output and its calls, for the trial record alone: however the grade or seal or post ended, and never in what
-    is sealed or posted."""
+    first; an unscored one carries none. A record the configurator's equivalence/2 schema would refuse, or accepted
+    records that no longer match their hashes at the seal, are posted unscored: no retry would change them. Before it
+    grades, the harness checks the run folder's snapshot against the run's client record and its own trial folder
+    (`check_snapshot`): a difference is an integrity stop, posted unscored. The plaintext evaluation never outlives
+    this call. A grading that counted package calls returns `package_output`, its largest output and its calls, for
+    the trial record alone: however the grade or seal or post ended, and never in what is sealed or posted."""
     from ..configurator import IntegrityError
     from ..client_interface import verdict_errors
     from . import evaluator
@@ -299,29 +416,29 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
     protocol = (result.get('progress') or {}).get('protocol')
     accepted = result.get('accepted_handoffs') or []
     frozen = (evaluator.emitted(accepted) or (None, None))[1]
-    method = evaluator.method_for(case_id)
     done, content, equivalence = {}, {}, None
     meter = OutputMeter()
     try:
         if pending and graded:
             try:
+                check_snapshot(trial_dir, run_dir, result)
                 equivalence, content['final'] = evaluator.grade(case_id, trial_dir, run_dir, result,
                                                                 password=password, truth_source=truth_source,
                                                                 renode=renode, meter=meter)
                 content['mission'] = equivalence.get('mission')
             except integrity_stop as error:
-                equivalence, content['error'] = evaluator.unscored('integrity: ' + str(error), frozen, method,
+                equivalence, content['error'] = evaluator.unscored('integrity: ' + str(error), frozen,
                                                                     protocol=protocol), str(error)
             except Exception as error:
                 # The message stays sealed: it may name what only the evaluator holds.
-                equivalence = evaluator.unscored('evaluator host fault: ' + type(error).__name__, frozen, method,
+                equivalence = evaluator.unscored('evaluator host fault: ' + type(error).__name__, frozen,
                                                  protocol=protocol)
                 content['error'] = type(error).__name__ + ': ' + str(error)
             errors = verdict_errors({**equivalence, 'evidence_sha256': None if equivalence['status'] == 'unscored'
                                      else '0' * 64})
             if errors:
                 # Every resume would rebuild the same record and have it refused: it is unscored, and why stays sealed.
-                equivalence = evaluator.unscored('evaluator host fault: invalid evaluation record', frozen, method,
+                equivalence = evaluator.unscored('evaluator host fault: invalid evaluation record', frozen,
                                                  protocol=protocol)
                 content = {'error': 'Invalid evaluation record: ' + '; '.join(errors)}
             content['equivalence'] = equivalence
@@ -333,7 +450,7 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
                                                 and equivalence['diff'][0]['reason'].startswith('integrity: ')):
                 # An accepted record changed after acceptance, or the snapshot no longer verifies: no retry seals it, so
                 # the grade is unscored for integrity. An unscored record needs no seal.
-                equivalence = evaluator.unscored('integrity: ' + str(error), frozen, method, protocol=protocol)
+                equivalence = evaluator.unscored('integrity: ' + str(error), frozen, protocol=protocol)
         except Exception as error:
             done.update(sealed=False, sealing_failed=type(error).__name__ + ': ' + str(error))
     finally:
@@ -532,40 +649,54 @@ def run_trial(trial_dir, request, *, password=None, call=None, launch=None, hear
         if not reachable.get('ok'):
             raise ValueError(reachable.get('reason') or 'The configurator is not reachable')
         set_device = {'device': device, 'pin': (start or {}).get('case_pin')} if device is not None else {}
+        options = (start or request).get('case_options') or {}
         no_run = 'admit-refused'
-        held['provider'], admission, truth = admit(request['case'], (start or request).get('case_options') or {},
-                                                   trial_dir, password=password, renode=renode, **set_device)
+        held['provider'], admission, truth, pin = admit(request['case'], options, trial_dir, password=password,
+                                                        renode=renode, **set_device)
+        _refuse_unadmitted(request['case'], pin, admission, start or request, options)
+        if held['provider'] is None:
+            raise ValueError('The bench harness starts a run on a device it provides, and this case has none')
+        # The configuration the run will have: the snapshot names its provenance, and a resume compares it again.
+        executor, config = settled_executor(home, request, start)
+        public_inputs = None
+        if device is not None:
+            from .generated_trials import PUBLIC_INPUTS
+            public_inputs = str(trial_dir / PUBLIC_INPUTS)
         no_run = 'provider-failed'
-        if held['provider'] is not None:
-            held['provider'].start()
-            server = DeviceServer(held['provider'], trial_dir / 'endpoint')
+        held['provider'].start()
+        server = DeviceServer(held['provider'], trial_dir / 'endpoint')
         # The configurator holds the token's hash, for the evaluation after the run; the token stays in this process and,
         # for a resume, sealed under the password in the trial directory.
         token = evaluation_token(trial_dir, password, request['trial_id'], create=True)
-        params = dict(start) if start else {key: request[key] for key in ('goal', 'case', 'executor', 'executor_config',
-                                                                          'budget_seconds', 'effects', 'case_options',
-                                                                          'output_dir', 'scoped_tool_approval', 'binding')
-                                           if request.get(key) is not None}
-        params.update(request_id=request_id, evaluation_token_sha256=hashlib.sha256(token.encode()).hexdigest(),
-                      **({'device': server.descriptor} if server else {}), **({'admission': admission} if admission else {}))
-        if device is not None:
-            from .generated_trials import PUBLIC_INPUTS
-            params['public_inputs'] = str(trial_dir / PUBLIC_INPUTS)
+        # The harness freezes the case in its own folder and supplies what it froze: the configurator knows no case.
+        # A case that cannot be frozen is refused as the configurator refused its start.
+        no_run = 'start-refused'
+        supplied = supplied_start(trial_dir, pin, server.descriptor, config, options=options,
+                                  token_sha256=hashlib.sha256(token.encode()).hexdigest(), public_inputs=public_inputs)
+        no_run = 'provider-failed'
+        if start:
+            # A suite's child: its configurator checks the whole frozen request, and starts it without the case.
+            params = dict(start)
+        else:
+            params = {key: request[key] for key in ('goal', 'budget_seconds', 'effects', 'output_dir',
+                                                    'scoped_tool_approval', 'binding') if request.get(key) is not None}
+            params.update(executor=executor, executor_config=config,
+                          **{key: options[key] for key in ('ghidra_home', 'java_home') if key in options})
+        params.update(request_id=request_id, **supplied)
         # From here a run may exist that this trial started, whether or not its reply arrives.
-        record['start_sent'] = time.time()
+        record.update(start_sent=time.time(), executor_config=config)
         _private(trial_dir / 'trial.json', record)
-        started = (_start_child(launch, params, server.shutdown if server else threading.Event(), stop) if launch
-                   else configurator('start', params))
+        started = (_start_child(launch, params, server.shutdown, stop) if launch else configurator('start', params))
         no_run = None
         if not started.get('ok'):
             no_run = 'start-refused' if started.get('error') == 'ValueError' else None
             raise ValueError(started.get('reason') or 'The configurator refused the run')
-        # A bound device is the operator's: the record names the stop of a device the harness never held from the start,
-        # so a harness lost while it follows the run leaves a trial `resume` grades once the run has completed.
         record.update(status='running', run_id=started['run_id'],
-                      **({'device': {key: params['device'][key] for key in ('provider_id', 'session_id', 'binding')}}
-                         if server else {'device_stop': dict(UNHELD)}))
+                      device={'provider_id': held['provider'].provider_id, **{key: supplied['device'][key]
+                                                                              for key in ('session_id', 'binding')}})
         _private(trial_dir / 'trial.json', record)
+        # The readers of the snapshot, the grader and the reports among them, look for it in the run's folder.
+        keep_snapshot(trial_dir, home / 'runs' / started['run_id'])
         _follow_run(trial_dir, record, held, server, configurator, budget=params.get('budget_seconds') or 10800,
                     password=password, truth_source=lambda: truth, renode=renode, token=token, heartbeat=heartbeat,
                     stop=stop, audit=audit)
@@ -873,16 +1004,21 @@ def reattach(trial_dir, *, password, renode=None, call=None, heartbeat=None, sto
         result = _post(configurator, 'result', {'run_id': record['run_id']})
         if result.get('ok') is not True or result.get('status') not in ('blocked', 'failed', 'cancelled') or result.get('stopping'):
             raise ValueError('The trial\'s run is not stopped: ' + str(result.get('status') or result.get('reason')))
-        pin = result.get('case_pin') or {}
+        pin = (result.get('client_record') or {}).get('case_pin') or {}
         record.pop('finished', None)
         record.update(status='attaching', pid=os.getpid(), reattached=time.time())
         _private(trial_dir / 'trial.json', record)
         held, server = {'provider': None}, None
         try:
+            # The run resumes only on the snapshot the trial froze, under the code and configuration it started with:
+            # the harness checks both itself, before any device starts.
+            run_dir = Path(record['home']) / 'runs' / record['run_id']
+            keep_snapshot(trial_dir, run_dir)
+            check_snapshot(trial_dir, run_dir, result, config=record.get('executor_config'))
             options = {'scenario_id': pin.get('scenario_id'), 'case_seed': pin.get('case_seed', 0)}
-            set_device = {'device': device, 'pin': result.get('case_pin')} if device is not None else {}
-            held['provider'], _, truth = admit(record['case'], options, trial_dir, password=password, renode=renode,
-                                               **set_device)
+            set_device = {'device': device, 'pin': pin} if device is not None else {}
+            held['provider'], _, truth, _ = admit(record['case'], options, trial_dir, password=password, renode=renode,
+                                                  **set_device)
             if held['provider'] is None:
                 raise ValueError('A bound-device trial has no device to provide anew: its operator resumes the run')
             for key in ('device', 'reason', 'run_status', 'sealed', 'sealing_failed', 'evidence', 'equivalence',
@@ -894,7 +1030,8 @@ def reattach(trial_dir, *, password, renode=None, call=None, heartbeat=None, sto
             _private(trial_dir / 'trial.json', record)
             held['provider'].start()
             server = DeviceServer(held['provider'], trial_dir / 'endpoint')
-            record['device'] = {key: server.descriptor[key] for key in ('provider_id', 'session_id', 'binding')}
+            record['device'] = {'provider_id': held['provider'].provider_id,
+                                **{key: server.descriptor[key] for key in ('session_id', 'binding')}}
             _private(trial_dir / 'trial.json', record)
             attached = configurator('attach_device', {'run_id': record['run_id'], 'token': token, 'device': server.descriptor})
             if not attached.get('ok'):
@@ -989,8 +1126,11 @@ def resume(trial_dir, *, password, renode=None, call=None, device=None, audit=No
             raise ValueError('The trial awaits no evaluation: run-stopped, and its run (' + str(result.get('status'))
                              + ') does not await its grade')
         run_dir = home / 'runs' / record['run_id']
+        # The grader and the seal read the snapshot in the run's folder: the trial's own copy goes there if it is not.
+        keep_snapshot(trial_dir, run_dir)
         flagged = audit is not None and audit.flagged(run_dir)
-        native = (result.get('case_pin') or {}).get('manifest', {}).get('execution_setup', {}).get('method') == 'native-sim'
+        pinned = (result.get('client_record') or {}).get('case_pin') or {}
+        native = pinned.get('manifest', {}).get('execution_setup', {}).get('method') == 'native-sim'
         if (renode is None and not native and not flagged
                 and evaluator.needs_grading(trial_dir, result, password=password)):
             raise ValueError('The trial\'s frozen driver is not graded yet: grading starts a fresh emulator, so pass its '

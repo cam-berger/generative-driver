@@ -46,9 +46,15 @@ class OwnerGeneratedTests(unittest.TestCase):
             self.assertTrue(check['passed'], (check, diff))
             self.assertFalse(_fresh_reuse(frozen, [{**events[0], 'name': 'emit_test_live',
                 'result': {k:v for k,v in events[0]['result'].items() if k!='mcp'}}], grants=['read'])[0]['passed'])
+            # The stored run stands in for a supplied run, by its device, firmware and mission: fresh reuse reaches
+            # only the device the run recorded, never the operator's binding.
+            supplied = {'device': {'schema': 'device-descriptor/2'}, 'firmware': {}, 'mission': {}}
+            progress = {'revision': 0, 'next_stage': 'reuse', 'repairs': 0, 'feedback': None, 'protocol': 'assistive/1',
+                        'device': {'session_id': 'supplied-session', 'binding': {'host': '127.0.0.1', 'port': 1}}}
             with owner._db() as db:
-                db.execute('UPDATE runs SET spec=? WHERE id=?',(json.dumps({**spec,'_case_pin':{'execution':'actual-agent-emulation'}}),'run'))
-            with self.assertRaisesRegex(ValueError,'bench harness'):
+                db.execute('UPDATE runs SET spec=? WHERE id=?',(json.dumps({**spec,**supplied}),'run'))
+                db.execute('INSERT INTO progress VALUES(?,?)',('run',json.dumps(progress)))
+            with self.assertRaisesRegex(ValueError,'Assigned binding differs from the supplied device'):
                 owner.call('mcp_tool',{**identity,'name':name,'arguments':{},'request_id':'no-provider'})
 
     def test_reset_grant_and_open_failure_keep_uncertainty(self):
@@ -135,12 +141,12 @@ class OwnerGeneratedTests(unittest.TestCase):
     def test_benchmark_journal_records_complete_generated_arguments_and_proof(self):
         from generative_driver.supplied.stages import record_call
         with tempfile.TemporaryDirectory() as temporary:
-            root=Path(temporary); (root/'benchmark').mkdir()
-            (root/'benchmark/state.json').write_text(json.dumps({'package_sha256':'a'*64,'package_attempts':{'reuse':'attempt'}}))
-            record_call(root,'reuse','benchmark_package_execute',
+            root=Path(temporary); (root/'supplied').mkdir()
+            (root/'supplied/state.json').write_text(json.dumps({'package_sha256':'a'*64,'package_attempts':{'reuse':'attempt'}}))
+            record_call(root,'reuse','package_execute',
                 {'operation':'set_level','parameters':{'level':37},'mcp':{'dispatch_id':'12'}},
                 {'ok':True}, {'level':0},{'level':37},{'assignment_id':'reuse-1'})
-            row=json.loads((root/'benchmark/package-events.jsonl').read_text())
+            row=json.loads((root/'supplied/package-events.jsonl').read_text())
             self.assertEqual(row['parameters'],{'level':37})
             self.assertEqual(row['mcp'],{'dispatch_id':'12'})
 

@@ -71,14 +71,20 @@ class ReplayExecutionTests(unittest.TestCase):
         self.call = serve(self, self.home)
 
     def start(self, candidate, *, device=None, **changes):
+        from generative_driver.replay import candidate_config
+        from suite_fixtures import supplied_start
         from test_harness import Device
         self.device = Device(self, self.root / 'resources/cases/tq9-v2/firmware.bin', device or self.root)
-        return self.call('start', {
-            'goal': 'Execute one registered benchmark trial with checked evidence.', 'case': 'tq9-v2',
-            'executor': 'replay', 'executor_config': {'candidate': str(candidate)}, 'effects': ['write', 'actuate'],
-            'budget_seconds': TIMEOUT, 'case_options': {'scenario_id': 'original'}, 'device': self.device.server.descriptor,
-            'admission': {'calibration_evidence_sha256': EVIDENCE},
-            'evaluation_token_sha256': hashlib.sha256(b'harness token').hexdigest(), **changes})
+        # As the harness's launch does, the request names the saved candidate with the hash of its files.
+        start = supplied_start(
+            self, self.root / 'trials', descriptor=self.device.server.descriptor, home=self.home, token='harness token',
+            case_options={'scenario_id': 'original'}, goal='Execute one registered benchmark trial with checked evidence.',
+            executor='replay', executor_config=candidate_config({'candidate': str(candidate)}),
+            effects=['write', 'actuate'], budget_seconds=TIMEOUT, **changes)
+        started = self.call('start', dict(start))
+        if started.get('ok'):
+            start.keep(self.home, started)
+        return started
 
     def finished(self, run_id):
         until = time.monotonic() + TIMEOUT
@@ -151,18 +157,19 @@ class ReplayExecutionTests(unittest.TestCase):
         self.assertEqual(reused['checks'], [])
         mapping = next(Path(a['path']) for a in result['accepted_handoffs'][2]['artifacts']
                        if a['path'].endswith('capabilities.json'))
-        recorded = self.home / 'runs' / started['run_id'] / 'benchmark' / 'package-events.jsonl'
+        recorded = self.home / 'runs' / started['run_id'] / 'supplied' / 'package-events.jsonl'
         calls = [row for row in map(json.loads, recorded.read_text().splitlines())
                  if row['assignment_id'] == reused['assignment_id']]
         self.assertEqual(len(calls), 4)
         mission = reuse_mission('tq9-v2', calls, json.loads(mapping.read_text()))
         self.assertIs(mission['passed'], True, mission)
-        # The run's execution snapshot names the copy it replays, taken into its run directory at start, by the saved
-        # candidate's hash.
+        # The harness froze the execution snapshot before the run started: it names the saved candidate's folder, by
+        # the candidate's hash. The run replays its own copy, taken into its run directory at start.
         run_dir = self.home / 'runs' / started['run_id']
         executed = read_snapshot(run_dir)['executed']['runtime_configuration']
-        self.assertEqual(executed, {'runtime': 'replay', 'candidate': str(run_dir / 'replay-candidate'),
+        self.assertEqual(executed, {'runtime': 'replay', 'candidate': str(candidate),
                                     'candidate_sha256': digest(candidate)})
+        self.assertEqual(digest(run_dir / 'replay-candidate'), digest(candidate))
 
     def test_a_run_replays_the_copy_of_the_candidate_it_took_at_start(self):
         from generative_driver.configurator import Controller
@@ -250,7 +257,8 @@ class ReplayExecutionTests(unittest.TestCase):
 
 
 class ReplayStartTests(unittest.TestCase):
-    """A replay starts only from a checked saved candidate, and only on an emulated benchmark case."""
+    """A replay starts only from a checked saved candidate, and only on a supplied device, which for a benchmark
+    trial is the emulator the bench harness provides."""
 
     def setUp(self):
         from generative_driver.configurator import Controller
@@ -271,11 +279,13 @@ class ReplayStartTests(unittest.TestCase):
 
     def test_a_replay_starts_only_from_a_checked_candidate_on_an_emulated_case(self):
         from generative_driver.toolkit import resources_root
-        good = {'goal': 'g', 'case': 'tq9-v2', 'executor': 'replay', 'executor_config': {'candidate': str(self.candidate)},
-                'effects': ['write', 'actuate'], 'case_options': {'scenario_id': 'original'}}
+        from suite_fixtures import supplied_start
+        good = dict(supplied_start(self, self.root / 'trials', home=self.root / 'home', goal='g', executor='replay',
+                                   executor_config={'candidate': str(self.candidate)}, effects=['write', 'actuate'],
+                                   case_options={'scenario_id': 'original'}))
         refused = [
-            ({'case': None}, 'emulated benchmark cases only'),
-            ({'case': 'setup-smoke'}, 'emulated benchmark cases only'),
+            # Without a device, a firmware and a mission the run would replay on an operator's device.
+            ({'device': None, 'firmware': None, 'mission': None}, 'runs on a supplied device only'),
             ({'executor_config': {}}, 'needs a saved candidate'),
             # A replay runs the installed replay worker only, never a command a request names.
             ({'executor_config': {'candidate': str(self.candidate), 'command': [sys.executable]}}, 'only its saved candidate'),
@@ -467,12 +477,17 @@ class ReplaySuiteTests(unittest.TestCase):
         for row in bench.call('suite_result', {'suite_id': started['suite_id']})['trials']:
             run_dir = bench.home / 'runs' / row['run_id']
             self.assertEqual(bench.call('result', {'run_id': row['run_id']})['agent']['runtime'], 'replay')
+            # The snapshot the harness froze names the candidate the suite stored; the run replays its own copy of it.
             self.assertEqual(read_snapshot(run_dir)['executed']['runtime_configuration'],
-                             {'runtime': 'replay', 'candidate': str(run_dir / 'replay-candidate'), 'candidate_sha256': sha})
+                             {'runtime': 'replay', 'candidate': str(bench.home / 'replay-candidates' / sha),
+                              'candidate_sha256': sha})
+            self.assertEqual(digest(run_dir / 'replay-candidate'), sha)
             database = sqlite3.connect('file:' + str(bench.home / 'runs.sqlite3') + '?mode=ro', uri=True)
             self.addCleanup(database.close)
             spec = json.loads(database.execute('SELECT spec FROM runs WHERE id=?', (row['run_id'],)).fetchone()[0])
-            self.assertNotIn('replay_candidates', spec['case_options'])
+            # The child's start has no case options; the request it was submitted with holds them.
+            self.assertNotIn('case_options', spec)
+            self.assertNotIn('replay_candidates', spec['_submitted_intent']['case_options'])
         # The suite report says replay and names the candidate set as a dimension of the experiment.
         report = report_suite(started['suite_id'], home=bench.home, output=bench.root / 'suite-report')
         self.assertEqual((report['execution'], report['model_benchmark'], report['equivalence']['equivalent']),

@@ -544,7 +544,8 @@ def _recorded_success(owner,events,report):
         latest=accepted[-1];attempts=report.get('stages',{}).get(stage,{}).get('attempts',[])
         if not attempts or attempts[-1].get('assignment_id')!=latest['assignment_id'] or attempts[-1].get('accepted') is not True:return False
     if report.get('schema')=='benchmark-report/1':
-        if owner.get('case')!='tq9' or owner.get('case_pin',{}).get('evaluator_version')!='2':return False
+        named=owner.get('client_record') if isinstance(owner.get('client_record'),dict) else {}
+        if named.get('case')!='tq9' or (named.get('case_pin') or {}).get('evaluator_version')!='2':return False
         revision=handoffs[-1]['revision']
         for stage in STAGES:
             selected=[h for h in handoffs if h['stage']==stage and h['revision']==(0 if stage=='acquire' else revision)]
@@ -771,8 +772,10 @@ def _export_suite(suite_id,*,home,output,evidence_files=None,password_files=None
             rid=trial['run_id'];pin=identity['entry_pins'][trial['entry_index']]
             owner=call('result',{'run_id':rid},home=root,autostart=False)
             snapshot=experiment['execution_snapshots'][trial['ordinal']]['snapshot_sha256']
-            if (not owner.get('ok') or owner.get('run_id')!=rid or owner.get('case')!=trial['case']
-                    or public_pin(owner.get('case_pin',{}))!=pin or owner.get('snapshot_sha256')!=snapshot):
+            # The child's bench harness keeps the case, its pin and the snapshot's hash in the run's client record.
+            named=owner.get('client_record') if isinstance(owner.get('client_record'),dict) else {}
+            if (not owner.get('ok') or owner.get('run_id')!=rid or named.get('case')!=trial['case']
+                    or public_pin(named.get('case_pin') or {})!=pin or named.get('snapshot_sha256')!=snapshot):
                 raise ValueError('Owner child identity differs from frozen slot')
             events=[];cursor=0
             while True:

@@ -204,7 +204,7 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertEqual({k: prepared['unwired_model'][k] for k in ('path', 'sha256')},
                                          {'path': artifact['path'], 'sha256': artifact['sha256']})
                         self.assertIn('cannot carry', prepared['unwired_model']['reason'])
-                        entry = json.loads((root/'run/benchmark/state.json').read_text())['candidate_history'][-1]
+                        entry = json.loads((root/'run/supplied/state.json').read_text())['candidate_history'][-1]
                         self.assertEqual(entry['hashes']['model.json'], artifact['sha256'])
                         self.assertEqual((Path(entry['root'])/'model.json').read_bytes(), Path(artifact['path']).read_bytes())
                 changed = handoff('changed', json.dumps(model()))
@@ -219,11 +219,11 @@ class TQ9V2Tests(unittest.TestCase):
         from test_emulator_recovery import Owner, provider
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            (root/'benchmark').mkdir()
-            (root/'benchmark/state.json').write_text(json.dumps({'session': {'pid': 12345}}))
+            (root/'supplied').mkdir()
+            (root/'supplied/state.json').write_text(json.dumps({'session': {'pid': 12345}}))
             with self.assertRaisesRegex(RuntimeError, 'ownership'):
                 cleanup('tq9-v2', root)
-            self.assertIn('session', json.loads((root/'benchmark/state.json').read_text()))
+            self.assertIn('session', json.loads((root/'supplied/state.json').read_text()))
             # The harness owns the device: an attached session it holds no process handle for is never reported
             # stopped as owned, and the trial names it for manual reconciliation.
             def attached(port):
@@ -374,10 +374,10 @@ class TQ9V2Tests(unittest.TestCase):
         from unittest.mock import patch
         import generative_driver
         from generative_driver.benchmark_support import harness
-        from generative_driver import device_client
+        from generative_driver import configurator, device_client
         from generative_driver.configurator import Controller
         from tq9_workflow_fixture import Silicon, WORKER
-        from suite_fixtures import public_case_fixture
+        from suite_fixtures import public_case_fixture, supplied_start
         for mode in modes:
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
                 root=Path(temp); resources=root/'resources';trial=root/'trial';evidence='e'*64
@@ -653,7 +653,8 @@ class TQ9V2Tests(unittest.TestCase):
                 def accept(*args,**kwargs):
                     handoff=original_accept(*args,**kwargs)
                     if mode=='snapshot-next' and handoff['stage']=='acquire':
-                        (root/'home/runs'/args[0]/'benchmark/inputs/firmware.bin').write_bytes(b'tampered after acceptance')
+                        # The supplied firmware is the frozen copy in the harness's trial folder.
+                        Path(supplied['firmware']['path']).write_bytes(b'tampered after acceptance')
                     if handoff['stage']=='interpret':interpreted.append(handoff)
                     return handoff
                 original_check=controller._check
@@ -661,13 +662,14 @@ class TQ9V2Tests(unittest.TestCase):
                     # In recover modes the probe is observed only after the recovery, which has not committed yet.
                     if mode=='recover-observe-raise' and args[1]=='probe':raise RuntimeError('Controlled observation failure after recovery')
                     return original_check(*args,**kwargs)
-                original_snapshot=controller._verify_snapshot
-                def verify_snapshot(*args,**kwargs):
-                    # Between the loop's handoff verification and probe preparation, the accepted model changes.
+                original_firmware_check=configurator._verify_firmware
+                def verify_firmware(*args,**kwargs):
+                    # Between the loop's handoff verification and probe preparation, the accepted model changes. The
+                    # service checks the supplied firmware first when it prepares a stage.
                     if mode=='probe-input-changed' and interpreted:
                         changed=next(Path(a['path']) for a in interpreted.pop()['artifacts'] if a['path'].endswith('model.json'))
                         changed.write_text(changed.read_text()+' ')
-                    return original_snapshot(*args,**kwargs)
+                    return original_firmware_check(*args,**kwargs)
                 # Only the harness unlocks the truth, at admission, before the run: for the device recipe and for the
                 # grade after it. The configurator never does, and no stage runs the evaluator.
                 import inspect
@@ -703,7 +705,7 @@ class TQ9V2Tests(unittest.TestCase):
                 try:
                     with patch.object(toolkit,'call_tool',side_effect=runtime_boundary),patch.object(device_client.DeviceClient,'replace',replace),patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
                          patch('generative_driver.benchmark_support.case_assets.case_root',return_value=resources),\
-                         patch.object(controller,'_check',side_effect=check),patch.object(controller,'_verify_snapshot',side_effect=verify_snapshot),\
+                         patch.object(controller,'_check',side_effect=check),patch.object(configurator,'_verify_firmware',side_effect=verify_firmware),\
                          patch('generative_driver.benchmark_support.registry.admitted_truth',
                                side_effect=lambda pin,secret:(registry.case_truth(pin['case_id'],root/'no-run',secret),{'ok':True,'evidence_sha256':evidence})),\
                          patch.object(emulator_module,'truth_for_case',side_effect=truth_for_case),\
@@ -716,7 +718,7 @@ class TQ9V2Tests(unittest.TestCase):
                             reached=lambda method,params=None,home=None,**kwargs:{'ok':True} if method=='ping' else controller.call(method,params or {})
                             with patch('generative_driver.client.call',side_effect=reached):
                                 record=harness.run_trial(trial,{'trial_id':trial.name,'home':str(root/'home'),'case':'tq9-v2',
-                                    'case_options':{'scenario_id':'original'},'password_file':str(password)})
+                                    'effects':['write','actuate'],'case_options':{'scenario_id':'original'},'password_file':str(password)})
                             self.assertEqual((record['status'],record['run_id']),('stop-unconfirmed',None))
                             self.assertIn('emulator cleanup unverified',record['reason'])
                             self.assertIs(record['device_stop']['confirmed'],False)
@@ -726,7 +728,7 @@ class TQ9V2Tests(unittest.TestCase):
                             with controller._db() as db:
                                 self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0],0)
                             continue
-                        provider,admission,unlocked=harness.admit('tq9-v2',{'scenario_id':'original'},trial,password=read_password(password))
+                        provider,admission,unlocked,pin=harness.admit('tq9-v2',{'scenario_id':'original'},trial,password=read_password(password))
                         provider.start()
                         if mode in ('concurrent-calls','cancel-in-call'):
                             # Every edge of the device's window and the run's release, as the provider receives them.
@@ -745,10 +747,13 @@ class TQ9V2Tests(unittest.TestCase):
                                 return original_run_release(*args,**kwargs)
                             controller._release=run_release
                         endpoint=harness.DeviceServer(provider,root/'endpoint');descriptor=endpoint.descriptor
-                        run=controller.start({'goal':'scripted-contract-fixture','case':'tq9-v2','budget_seconds':SCRIPTED_RUN_SECONDS,
-                            'effects':['write','actuate'],'max_revisions':0 if mode in ('recover-budget','recover-reuse','unwired-budget') else 2,'case_options':{'scenario_id':'original'},
-                            'device':descriptor,'admission':admission,'evaluation_token_sha256':hashlib.sha256(b'scripted harness token').hexdigest(),
-                            'executor_config':{'command':[sys.executable,str(script)]}})
+                        # The start the harness sends: the case is frozen in the trial folder, and the run gets the
+                        # device, the frozen firmware, the mission, the token's hash and the client record.
+                        supplied=supplied_start(self,root,descriptor=descriptor,pin=pin,trial_dir=trial,token='scripted harness token',
+                            case_options={'scenario_id':'original'},goal='scripted-contract-fixture',budget_seconds=SCRIPTED_RUN_SECONDS,
+                            effects=['write','actuate'],executor_config={'command':[sys.executable,str(script)]})
+                        run=supplied.keep(root/'home',controller.start({**supplied,
+                            'max_revisions':0 if mode in ('recover-budget','recover-reuse','unwired-budget') else 2}))
                         # The run's budget and this wait share one bound: generous enough for a loaded Windows runner,
                         # where every stage starts worker and gateway processes, and still short of a real stall.
                         deadline=time.monotonic()+SCRIPTED_RUN_SECONDS
@@ -883,7 +888,8 @@ class TQ9V2Tests(unittest.TestCase):
                                 self.assertEqual(peers[0].device_commands,[]);self.assertEqual(len(peers),1)
                                 self.assertTrue(any(e['kind']=='device.release_failed' for e in events))
                             if mode=='snapshot-next':
-                                self.assertIn('hash',status['reason']);self.assertEqual(len(assignments),1)
+                                self.assertIn('The supplied firmware changed after the run started',status['reason'])
+                                self.assertEqual(len(assignments),1)
                                 self.assertEqual(peers[0].device_commands,[])
                             if mode=='probe-input-changed':
                                 # The changed bytes stop the run for integrity before any device use: nothing was
@@ -911,8 +917,8 @@ class TQ9V2Tests(unittest.TestCase):
                                 package=next(Path(h['artifacts'][0]['path']) for h in reversed(result['accepted_handoffs'])
                                              if h['stage']=='emit' and h['artifacts'])
                                 self.assertIn(b'\r\n',(package/'driver/model.json').read_bytes())
-                            self.assertEqual((equivalence['basis'],equivalence['method'],equivalence['frozen_artifact_sha256']),
-                                             ('evaluator','fresh-final',driver))
+                            self.assertEqual((equivalence['schema'],equivalence['basis'],equivalence['frozen_artifact_sha256']),
+                                             ('equivalence/2','evaluator',driver))
                             self.assertEqual(graded_result['progress']['equivalence'],equivalence['status'])
                             self.assertNotIn('EVALUATOR SENTINEL',json.dumps(graded_result))
                             # The public verdict is a grade after the run, with no answer in it.
@@ -1249,7 +1255,7 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertTrue(all(not entry[2] for entry in worker_live));self.assertFalse(peers[0].paused_requests)
                         reuse=assignments[-1];self.assertEqual(len(reuse['inputs']),1)
                         self.assertEqual(Path(next(iter(reuse['inputs']))).name,'package')
-                        run_dir=root/'home/runs'/run['run_id'];state=json.loads((run_dir/'benchmark/state.json').read_text())
+                        run_dir=root/'home/runs'/run['run_id'];state=json.loads((run_dir/'supplied/state.json').read_text())
                         self.assertNotIn('stage_verdicts',state);self.assertNotIn('diagnostic',state)
                         # The harness holds the device: the run state records no session, and no startup reading.
                         self.assertNotIn('startup_observation',state)
@@ -1636,13 +1642,13 @@ class TQ9V2Tests(unittest.TestCase):
         from tq9_workflow_fixture import capabilities
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
-            _write(root/'benchmark/state.json',{'package_attempts':{'reuse':'new'},
+            _write(root/'supplied/state.json',{'package_attempts':{'reuse':'new'},
                 'package_copies':{'reuse':str(root/'absent')}})
             rows=[{'actor':'worker','stage':'reuse','attempt_id':'new','revision':0,
                    'operation':'set_duty' if duty else 'disarm','result':{'ok':True,'outputs':{'ack':1}},
                    'observation':{'duty':duty}} for duty in (370,0)]
             def mission():
-                (root/'benchmark/package-events.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+                (root/'supplied/package-events.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
                 result=observe_stage('tq9-v2','reuse',root,root,{'status':'completed'})
                 for key in ('ok','fault','route','stop','final_evaluation','evaluator'):self.assertNotIn(key,result)
                 self.assertEqual(result['checks'],[])
@@ -1669,7 +1675,7 @@ class TQ9V2Tests(unittest.TestCase):
             ([{'ok':True,'outputs':{'ack':1}}],'model')]
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)
-            stages._write(root/'benchmark/state.json',{'revision':0,'package_attempts':{'reuse':'current'}})
+            stages._write(root/'supplied/state.json',{'revision':0,'package_attempts':{'reuse':'current'}})
             def event(result,attempt='current',revision=0):
                 return {'actor':'worker','stage':'reuse','attempt_id':attempt,'revision':revision,
                     'operation':'disarm','result':result,'observation':{'duty':0}}
@@ -1679,7 +1685,7 @@ class TQ9V2Tests(unittest.TestCase):
                     # none of them; the judge is given the calls of the current attempt alone, the rows that counted.
                     current=[event(r) for r in results]
                     rows=[event(untyped,'old'),event(untyped,revision=1)]+current
-                    (root/'benchmark/package-events.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+                    (root/'supplied/package-events.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
                     checked=stages.observe_stage('reuse',root,root,{'status':'completed'},**tq9_inputs('a'*64))
                     self.assertNotIn('stop',checked);self.assertNotIn('fault',checked)
                     self.assertEqual(checked['checks'],[])
@@ -1751,23 +1757,36 @@ class TQ9V2Tests(unittest.TestCase):
             finally:session.stop()
 
     def test_read_only_controller_refuses_case_effects_before_evaluator_io(self):
-        # Public Controller admission; calibrated-label fixture avoids opening private truth.
+        # The bench harness admits a case now: a trial without the declared grants ends before a device or a run
+        # starts. A stub admission avoids opening private truth.
         import sys
-        from unittest.mock import patch
+        from unittest.mock import Mock, patch
+        from generative_driver.benchmark_support import harness
+        from generative_driver.benchmark_support.registry import pin_case
         from generative_driver.configurator import Controller
+        pin=pin_case('tq9-v2','original',0)
+        admission={'calibration_evidence_sha256':pin['calibration']['evidence_sha256']}
         for grants in (None, ['read'], ['write'], ['actuate']):
             with self.subTest(grants=grants), tempfile.TemporaryDirectory() as temp:
-                controller=Controller(Path(temp)/'home')
-                spec={'goal':'scripted no-effects fixture','case':'tq9-v2','case_options':{'scenario_id':'original'},
-                      'executor_config':{'command':[sys.executable,'-c','raise SystemExit(0)']}}
-                if grants is not None:spec['effects']=grants
+                root=Path(temp);controller=Controller(root/'home');provider=Mock()
+                provider.stop.return_value={'confirmed':True}
+                (root/'password').write_text('synthetic fixture credential')
+                request={'trial_id':'no-effects','home':str(root/'home'),'goal':'scripted no-effects fixture','case':'tq9-v2',
+                         'case_options':{'scenario_id':'original'},'password_file':str(root/'password'),
+                         'executor_config':{'command':[sys.executable,'-c','raise SystemExit(0)']}}
+                if grants is not None:request['effects']=grants
+                reached=lambda method,params=None,**kwargs:{'ok':True} if method=='ping' else controller.call(method,params)
                 try:
-                    with patch('generative_driver.benchmark_support.registry.require_calibration',return_value={'ok':True}), \
+                    with patch.object(harness,'admit',return_value=(provider,admission,None,pin)), \
+                         patch('generative_driver.client.call',side_effect=reached), \
                          patch('generative_driver.benchmark_support.native.NativeSession.start') as native:
-                        with self.assertRaisesRegex(ValueError,'effect grants'):
-                            controller.start(spec)
-                        native.assert_not_called()
+                        record=harness.run_trial(root/'trial',request)
+                        self.assertEqual((record['status'],record['run_id'],record['no_run']),('failed',None,'admit-refused'))
+                        self.assertRegex(record['reason'],'effect grants')
+                        native.assert_not_called();provider.start.assert_not_called()
                         self.assertFalse(controller._workers)
+                        with controller._db() as db:
+                            self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0],0)
                 finally:controller.close()
 
 class ObservationTests(unittest.TestCase):
@@ -1843,8 +1862,8 @@ class ObservationTests(unittest.TestCase):
             root=Path(temporary).resolve();ws=root/'worker';ws.mkdir();run=root/'run'
             (root/'original.json').write_text(json.dumps(model()))
             adaptation=adapt_model(root/'original.json',ws/'model')
-            _write(run/'benchmark/state.json',{'adapted_model_dir':str(ws/'model'),'adaptation':adaptation,'revision':0})
-            journal=run/'benchmark/live-observations-0.jsonl';journal.write_text('{"operation":"measure"}\n')
+            _write(run/'supplied/state.json',{'adapted_model_dir':str(ws/'model'),'adaptation':adaptation,'revision':0})
+            journal=run/'supplied/live-observations-0.jsonl';journal.write_text('{"operation":"measure"}\n')
             def observed():
                 with patch('generative_driver.benchmark_support.evaluator.reference_execute',side_effect=AssertionError('diagnostic')):
                     return observe_stage('tq9-v2','probe',run,ws,{'status':'completed'},[],{'observed_records':[]})
@@ -1880,7 +1899,7 @@ class ObservationTests(unittest.TestCase):
                 (root/'original.json').write_text(json.dumps(candidate))
                 adaptation=adapt_model(root/'original.json',ws/'model')
                 self.assertIs(call_tool('model_validate',{'run_dir':str(root/'checks'),'model_dir':str(ws/'model')}).get('ok'),False)
-                _write(run/'benchmark/state.json',{'adapted_model_dir':str(ws/'model'),'adaptation':adaptation,'revision':0})
+                _write(run/'supplied/state.json',{'adapted_model_dir':str(ws/'model'),'adaptation':adaptation,'revision':0})
                 (ws/'capabilities.json').write_text(json.dumps(capabilities()))
                 result=observe_stage('tq9-v2','probe',run,ws,{'status':'completed'},[],{'observed_records':[]})
                 self.assertNotIn('stop',result)
@@ -1901,7 +1920,7 @@ class ObservationTests(unittest.TestCase):
 
     def test_worker_facing_wording_names_device_evidence_and_promises_no_evaluator(self):
         from generative_driver.agents import STAGE_BOUNDARY
-        from generative_driver.configurator import BENCHMARK_PACKAGE_EXECUTE
+        from generative_driver.configurator import PACKAGE_EXECUTE
         from generative_driver._toolchain.interpret import _prompt
         from generative_driver.supplied.candidate_context import repair_sources
         from generative_driver.configurator import digest
@@ -1913,7 +1932,7 @@ class ObservationTests(unittest.TestCase):
             accepted=[{'stage':'interpret','artifacts':[{'path':str(source/'0-model.json'),'sha256':digest(source/'0-model.json')}]},
                       {'stage':'emit','artifacts':[{'path':str(package),'sha256':digest(package)}]}]
             from generative_driver.benchmark_support.case_assets import write_json as _write
-            _write(root/'run/benchmark/state.json',{'package_sha256':digest(package)})
+            _write(root/'run/supplied/state.json',{'package_sha256':digest(package)})
             device={'device':{'session_id':'provided','binding':{'host':'127.0.0.1','port':1}}}
             probe=prepare_stage('tq9-v2','probe',root/'run',root/'probe',accepted,device)
             reuse=prepare_stage('tq9-v2','reuse',root/'run',root/'reuse',accepted,device)
@@ -1921,7 +1940,7 @@ class ObservationTests(unittest.TestCase):
             repair_sources(root/'run',context,[{'source':'probe_run','code':'output'}])
             policy=json.loads((context/'REPAIR_CONTEXT.json').read_text())['evidence_policy']
             texts={'boundary':STAGE_BOUNDARY,'interpret':_prompt(str(root),'agent'),'policy':policy,
-                   'probe':probe['objective'],'reuse':reuse['objective'],'package':BENCHMARK_PACKAGE_EXECUTE['description']}
+                   'probe':probe['objective'],'reuse':reuse['objective'],'package':PACKAGE_EXECUTE['description']}
             for name,text in texts.items():
                 with self.subTest(text=name):
                     self.assertNotRegex(text,r'(?i)diagnostic|evaluator observation|independent monitor|checks diagnostics')

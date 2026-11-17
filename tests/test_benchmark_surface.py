@@ -403,9 +403,9 @@ class ReplayCandidateTests(TemporaryHomeCase):
         for candidate in (None, '', 7, ['a'], Path(self.bench / 'held')):
             with self.subTest(candidate=candidate):
                 self.assertEqual(self.refused(candidate), NEEDS)
-        # A path that is not absolute is the tool's to refuse, too.
+        # A path that is not absolute is the tool's to refuse, too. It names the path as this system spells it.
         self.assertEqual(self.refused('home-bench/candidate'),
-                         'A replay candidate is an absolute directory path: home-bench/candidate')
+                         'A replay candidate is an absolute directory path: ' + str(Path('home-bench/candidate')))
 
     def test_08_B6_launch_refuses_such_a_candidate_before_a_harness_starts(self):
         self.no_harness()
@@ -1229,7 +1229,8 @@ class HostedRunTests(unittest.TestCase):
     def at_a_time(self, processors, expected):
         """The most test modules `failed_modules` had running at once on a machine that reports `processors`
         processors, with the time limits it gave them. Each module is held until `expected` of them run together,
-        so fewer at a time than `expected` is a failure here, and no process is started."""
+        so fewer at a time than `expected` is a failure here. It then stays a moment longer, so that one module
+        too many is seen running beside it, also where `expected` is one. No process is started."""
         from test_deletion_marking import failed_modules
         running, most, limits = [], [], set()
         together, lock = threading.Barrier(expected), threading.Lock()
@@ -1241,6 +1242,7 @@ class HostedRunTests(unittest.TestCase):
                 limits.add(options.get('timeout'))
             try:
                 together.wait(timeout=30)
+                time.sleep(.02)
             finally:
                 with lock:
                     running.remove(command)

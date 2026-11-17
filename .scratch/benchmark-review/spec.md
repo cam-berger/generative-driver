@@ -47,6 +47,6 @@ What the move has to cut, measured at `46c2b2e`:
 
 ## Already recorded elsewhere
 
-- [Bench harness notes](../../docs/features/bench-harness/noticed.md): about fifty smaller findings from building the harness, most still open.
-- [Benchmark baseline](../benchmark-baseline/spec.md), [lifecycle follow-ups](../benchmark-lifecycle/spec.md) and [effect labels](../effect-labels/spec.md).
+- [Bench harness notes](bench-harness-noticed.md): about fifty smaller findings from building the harness, most still open.
+- [Benchmark baseline](../benchmark-baseline/spec.md), lifecycle follow-ups ([02](../benchmark-lifecycle/issues/02-structured-native-monitor.md), [03](../benchmark-lifecycle/issues/03-expected-refusal-repair.md)) and [effect labels](../effect-labels/spec.md).
 - [Limits of the protocol](../../docs/design.md#assistive-protocol-amendment--2026-10-07): what the design already says workers can read.

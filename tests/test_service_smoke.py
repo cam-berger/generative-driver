@@ -501,10 +501,10 @@ class SmokeChecksTests(unittest.TestCase):
     ROOT = Path(__file__).resolve().parents[1]
 
     def test_03_B8_the_software_checks_run_the_smoke(self):
-        document = (self.ROOT / 'docs' / 'verification.md').read_text(encoding='utf-8')
-        section = document.split('## Reproduce software checks', 1)[1].split('\n## ', 1)[0]
+        document = (self.ROOT / 'README.md').read_text(encoding='utf-8')
+        section = document.split('## Install and try it', 1)[1].split('\n## ', 1)[0]
         commands = [line.strip() for block in section.split('```')[1::2] for line in block.splitlines()]
-        self.assertIn('python -m generative_driver smoke', commands)
+        self.assertTrue([line for line in commands if line.endswith('-m generative_driver smoke')], commands)
 
     def test_03_B8_the_installed_wheel_job_runs_the_smoke(self):
         workflow = self.ROOT / '.github' / 'workflows' / 'test.yml'

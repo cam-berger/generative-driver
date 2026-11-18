@@ -8,6 +8,7 @@ import ast
 import atexit
 from concurrent.futures import ThreadPoolExecutor
 import functools
+import json
 import os
 from pathlib import Path
 import re
@@ -15,6 +16,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import unittest.mock
 
@@ -53,13 +56,19 @@ def git(root, *arguments):
     subprocess.run(['git', *arguments], cwd=root, env=environment, check=True, capture_output=True)
 
 
+def removal_environment(copy):
+    """The environment the removal gives a child that runs in the tree at `copy`: this process's own, but its
+    `PYTHONPATH` holds only the `src` of `copy`, so the child cannot import from the tree the copy was made from
+    (01-B7)."""
+    return {**os.environ, 'PYTHONPATH': str(Path(copy) / 'src')}
+
+
 def failed_modules(copy, modules):
     """A sentence for each of the test `modules` that fails in the tree at `copy`, with the end of its output. Each
     module runs in its own process. No more run at a time than the machine has processors, never more than eight,
     and one at a time where the number of processors is not known (08-B17 of
-    docs/features/untangle/08-reports.md). A child's `PYTHONPATH` holds only the `src` of `copy`, so it cannot import
-    from the tree the copy was made from (01-B7)."""
-    environment = {**os.environ, 'PYTHONPATH': str(Path(copy) / 'src')}
+    docs/features/untangle/08-reports.md). A child gets the `removal_environment` of `copy`."""
+    environment = removal_environment(copy)
 
     def end(output):
         return '\n'.join((output or b'').decode('utf-8', 'replace').splitlines()[-40:])
@@ -175,7 +184,7 @@ class DeletionListTests(SmallTreeCase):
             LIST: deletion_list(still_used=[('`docs/a.md`', '`README.md`', ''), ('`docs/b.md`', '`README.md`', '01'),
                                             ('`docs/c.md`', '`README.md`', 'stays'),
                                             ('`docs/d.md`', '`README.md`', '10')],
-                                modules=[('`src/tool.py`', '12'), ('`src/other.py`', '02')],
+                                modules=[('`src/tool.py`', '13'), ('`src/other.py`', '02')],
                                 passages=[('`src/tool.py`', 0, 'Not about the benchmark', 'stays'),
                                           ('`docs/d.md`', 0, 'Mixed lines', '9')])})
         found = sorted(problems(root))
@@ -188,16 +197,16 @@ class DeletionListTests(SmallTreeCase):
             self.assertIn(entry, sentence)
             self.assertIn('Freed by', sentence)
 
-    def test_04_B7_takes_02_to_11_as_a_freed_by_and_reports_12_as_no_later_feature(self):
-        numbers = [f'{number:02d}' for number in range(1, 13)]
+    def test_04_B7_takes_02_to_12_as_a_freed_by_and_reports_13_as_no_later_feature(self):
+        numbers = [f'{number:02d}' for number in range(1, 14)]
         root = self.tree({
             **{f'docs/{number}.md': 'Text.\n' for number in numbers},
             LIST: deletion_list(still_used=[(f'`docs/{number}.md`', '`README.md`', number) for number in numbers])})
         found = sorted(problems(root))
         self.assertEqual(len(found), 2, found)
-        for sentence, number in zip(found, ('01', '12')):
+        for sentence, number in zip(found, ('01', '13')):
             self.assertIn(f'`docs/{number}.md` under Still used by the tool', sentence)
-            self.assertIn('02, 03, 04, 05, 06, 07, 08, 09, 10, 11: ' + number, sentence)
+            self.assertIn('02, 03, 04, 05, 06, 07, 08, 09, 10, 11, 12: ' + number, sentence)
 
     def test_04_B8_a_ready_row_inside_a_still_used_folder_is_no_problem_and_the_removal_takes_it_out(self):
         root = self.tree({
@@ -621,6 +630,17 @@ class CommandTests(SmallTreeCase):
         self.assert_one_problem(problems(self.tree(moved)), '`generative-driver benchmark` under Commands',
                                 'does not offer')
 
+    def test_09_B11_the_check_still_reports_a_benchmark_command_the_tool_offers(self):
+        offering = tool_package(('doctor', 'benchmark'), ('driver_start', 'driver_benchmark_run'))
+        found = sorted(problems(self.tree({**offering, 'docs/benchmark-deletion-list.md': deletion_list()})))
+        self.assertEqual(len(found), 2, found)
+        for sentence, command in zip(found, ('`driver_benchmark_run`', '`generative-driver benchmark`')):
+            self.assertIn(command + ' is a benchmark command the tool offers', sentence)
+            self.assertIn('does not name', sentence)
+        # A tool that offers none, as this repository's, has no such problem.
+        without = tool_package(('doctor',), ('driver_start',))
+        self.assertEqual(problems(self.tree({**without, 'docs/benchmark-deletion-list.md': deletion_list()})), [])
+
     def test_01_B8_a_tree_without_the_tool_offers_no_command(self):
         rows = [*command_rows('generative-driver benchmark'), ('`driver_benchmark_run`', '`src/`', 'later')]
         found = sorted(problems(self.tree({LIST: deletion_list(commands=rows)})))
@@ -672,7 +692,10 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(len(steps), 1, 'One step of the hosted workflow runs the tests')
         setting = re.search(r"^\s*env\['GD_TEST_REMOVAL'\] = '1'$", steps[0], re.MULTILINE)
         self.assertIsNotNone(setting, 'The test step sets GD_TEST_REMOVAL=1 in the environment of its tests')
-        self.assertLess(setting.start(), steps[0].index("'-m', 'unittest', 'discover'"))
+        runs = [found.start() for found in re.finditer(re.escape("'-m', 'unittest', 'discover'"), steps[0])]
+        self.assertEqual(len(runs), 2, 'The step runs the tests of the two folders')
+        for run in runs:
+            self.assertLess(setting.start(), run)
 
     def test_01_B7_the_tool_tests_pass_in_the_stripped_copy(self):
         if os.environ.get('GD_TEST_REMOVAL') != '1':
@@ -744,7 +767,462 @@ class RepositoryTests(unittest.TestCase):
             self.assertEqual(os.path.normpath(REPO / readme / '..' / links[0]), str(REPO / LIST), readme)
             self.assertTrue((REPO / LIST).is_file(), LIST)
         self.assertIn('| `bench/README.md` |', table('Still used by the tool'))
-        self.assertIn('| `src/generative_driver/benchmark_support/` |', table('Still used by the tool'))
+        self.assertIn('| `src/generative_driver/benchmark_support/` |', table('Ready to delete'))
+
+
+class FailedModulesTests(unittest.TestCase):
+    """How `failed_modules` runs the tool's test modules in the copy (08-B17 of
+    docs/features/untangle/08-reports.md)."""
+
+    def at_a_time(self, processors, expected):
+        """The most test modules `failed_modules` had running at once on a machine that reports `processors`
+        processors, with the time limits it gave them. Each module is held until `expected` of them run together,
+        so fewer at a time than `expected` is a failure here. It then stays a moment longer, so that one module
+        too many is seen running beside it, also where `expected` is one. No process is started."""
+        running, most, limits = [], [], set()
+        together, lock = threading.Barrier(expected), threading.Lock()
+
+        def run(command, **options):
+            with lock:
+                running.append(command)
+                most.append(len(running))
+                limits.add(options.get('timeout'))
+            try:
+                together.wait(timeout=30)
+                time.sleep(.02)
+            finally:
+                with lock:
+                    running.remove(command)
+            return subprocess.CompletedProcess(command, 0, b'', None)
+        modules = [f'tests/test_{number}.py' for number in range(24)]
+        with unittest.mock.patch('os.cpu_count', return_value=processors), unittest.mock.patch('subprocess.run', run):
+            self.assertEqual(failed_modules(REPO / 'no copy is read', modules), [])
+        return max(most), limits
+
+    def test_08_B17_failed_modules_runs_no_more_at_a_time_than_the_machine_has_processors_and_never_over_eight(self):
+        for processors, expected in ((1, 1), (2, 2), (3, 3), (4, 4), (8, 8), (16, 8), (64, 8), (None, 1)):
+            with self.subTest(processors=processors):
+                self.assertEqual(self.at_a_time(processors, expected)[0], expected)
+
+    def test_08_B17_failed_modules_gives_each_module_900_seconds(self):
+        self.assertEqual(MODULE_SECONDS, 900)
+        self.assertEqual(self.at_a_time(4, 4)[1], {900})
+
+        def never_ends(command, **options):
+            raise subprocess.TimeoutExpired(command, options['timeout'], output=b'the last line it printed')
+        with unittest.mock.patch('subprocess.run', never_ends):
+            found = failed_modules(REPO / 'no copy is read', ['tests/test_slow.py'])
+        self.assertEqual(found, ['tests/test_slow.py did not finish in 900 seconds in the copy:\n'
+                                 'the last line it printed'])
+
+
+# The 41 tests of the tool's own behaviour that ran on the benchmark's fixtures, by the tool test module each is in
+# (10-B2 of docs/features/untangle/10-tests.md).
+JOINED_TOOL_TESTS = {
+    'tests/test_engine_protocols.py': (
+        'test_negative_framed_sample_and_sequence', 'test_corrupt_frame_fails_before_decoding',
+        'test_store_fixed_transaction_preserves_step_order', 'test_error_before_completion_refuses_commit',
+        'test_denied_write_never_opens_transport', 'test_request_crc_covers_varying_argument',
+        'test_toy_device_refuses_put_without_begin', 'test_toy_device_refuses_commit_without_staged_put',
+        'test_commit_and_abort_across_separate_execute_connections'),
+    'tests/test_rejection_framing.py': (
+        'test_qualification_refuses_a_bound_that_cannot_capture_a_complete_rejection',
+        'test_candidate_contract_refusal_preserves_structural_runtime_validity',
+        'test_a_rejection_that_is_its_own_completion_can_use_one_line',
+        'test_multiline_rejection_is_captured_completely_without_retry_or_later_steps',
+        'test_missing_completion_and_receive_overflow_remain_incomplete_and_are_not_retried',
+        'test_generic_deployment_repairs_the_contract_without_contacting_a_device',
+        'test_qualification_uses_a_minimal_error_reply_within_the_declared_byte_bound',
+        'test_qualification_completes_a_whitespace_prefixed_single_line_error',
+        'test_managed_write_with_an_impossible_reply_is_refused_before_contact_and_repairs',
+        'test_qualifier_reports_delay_only_operations_without_a_transfer_crash'),
+    'tests/test_reuse_controller.py': (
+        'test_accepting_fresh_reuse_completes_six_stage_run_with_only_emitted_package',
+        'test_a_stage_check_in_the_gated_final_shape_is_no_verdict_and_never_dispatches_another_stage',
+        'test_unsupported_saved_progress_refuses_resume_before_worker_dispatch',
+        'test_reuse_requires_emitted_package_and_excludes_other_emission_evidence',
+        'test_recovering_obsolete_active_progress_explains_incompatibility_without_dispatch'),
+    'tests/test_service_repair.py': (
+        'test_old_gateway_is_invalidated_when_a_model_defect_starts_a_new_revision',),
+    'tests/test_owner_generated_integration.py': (
+        'test_generic_reuse_serves_generated_catalog_and_records_frozen_execution',
+        'test_reset_grant_and_open_failure_keep_uncertainty',
+        'test_finish_distinguishes_a_preopen_refusal_from_live_guard_reads',
+        'test_invocation_cancellation_before_dispatch_is_durable_and_does_not_cancel_session',
+        'test_benchmark_journal_records_complete_generated_arguments_and_proof',
+        'test_authored_contract_pair_survives_benchmark_adaptation_and_rejects_projection_mismatch',
+        'test_device_rpc_waits_for_long_operation_and_never_resends_lost_reply',
+        'test_recovery_accepts_only_owner_proven_generated_completed_model_failure',
+        'test_resetting_session_read_keeps_failed_open_uncertain_and_retains_binding',
+        'test_resetting_assigned_read_marks_pending_before_open_and_blocks_another_open'),
+    'tests/test_emitted_package_calls.py': (
+        'test_package_execute_treats_read_as_implicit_and_preserves_write_and_actuate',
+        'test_emit_uses_accepted_bytes_and_requires_matching_current_executable_package'),
+    'tests/test_supplied_stage_files.py': (
+        'test_acquire_hands_on_only_actual_imported_bytes',
+        'test_interpret_receives_neutral_sealed_inputs_without_evaluator_answers',
+        'test_interpret_repair_preserves_firmware_and_seals_observed_defects',
+        'test_a_valid_model_without_predicted_reply_qualification_is_handed_on_with_a_note')}
+
+
+def test_names(path):
+    """The names of the test methods the Python file at `path` defines, or none where there is no such file."""
+    if not Path(path).is_file():
+        return set()
+    return {node.name for owner in ast.walk(ast.parse(Path(path).read_bytes())) if isinstance(owner, ast.ClassDef)
+            for node in owner.body if isinstance(node, ast.FunctionDef) and node.name.startswith('test')}
+
+
+def list_text():
+    """The text of the deletion list of the repository."""
+    return (REPO / LIST).read_text(encoding='utf-8')
+
+
+class JoinedToolTestTests(unittest.TestCase):
+    """The tests of the tool's own behaviour that ran on the benchmark's fixtures are tool tests (10-B2)."""
+
+    def test_10_B2_the_41_tests_are_in_seven_tool_test_modules_that_have_no_row(self):
+        require_working_tree(self)
+        self.assertEqual(sum(map(len, JOINED_TOOL_TESTS.values())), 41)
+        modules = tool_test_modules(REPO)
+        for module, names in JOINED_TOOL_TESTS.items():
+            with self.subTest(module=module):
+                self.assertEqual(test_names(REPO / module), set(names))
+                self.assertIn(module, modules)
+                self.assertFalse(f'`{module}`' in list_text(), f'The list names {module}')
+
+    def test_10_B2_the_three_modules_whose_tests_took_a_new_file_are_gone(self):
+        require_working_tree(self)
+        for name in ('test_benchmark_family_runtime.py', 'test_package_benchmark.py', 'test_benchmark_stages.py'):
+            for folder in ('tests', 'firmware-bench/tests'):
+                self.assertFalse((REPO / folder / name).exists(), f'{folder}/{name}')
+            self.assertFalse(name in list_text(), f'The list names {name}')
+
+
+# The test modules, without `test_`, and the helpers that moved to the benchmark's test folder (10-B5).
+MOVED_MODULES = (
+    'assistive_reports', 'assistive_wording', 'audit', 'benchmark_asset_build', 'benchmark_behavior',
+    'benchmark_client_interface', 'benchmark_commands', 'benchmark_family_calibration', 'benchmark_ground',
+    'benchmark_helper_copies', 'benchmark_legacy_cases_dropped', 'benchmark_mcp_reuse', 'benchmark_native',
+    'benchmark_run', 'benchmark_runs', 'benchmark_scenarios', 'benchmark_score', 'benchmark_snapshots',
+    'benchmark_suite_book', 'benchmark_supplied_stages', 'benchmark_surface', 'benchmark_tq9_v2', 'benchmark_truth',
+    'benchmark_v2_evidence', 'case_registration', 'case_registry', 'corpus', 'corpus_preflight', 'corpus_workflow',
+    'development_conditions', 'device_provider', 'device_recovery', 'emulator_recovery', 'evaluation', 'family_seam',
+    'generated_device', 'generated_family', 'generated_sets', 'generated_trials', 'grader_identity', 'harness',
+    'monitor_control', 'native_rehosting', 'outcomes', 'output_measure', 'pairing', 'parameter_store_family',
+    'pipeline_repair', 'public_missions', 'quantity_repair', 'replay_executor', 'reporting', 'sampled_sensor_family',
+    'scorecard', 'set_qualification', 'slot_policy', 'slot_policy_flags', 'suite_harness', 'suite_interfaces',
+    'suite_manifest', 'suite_reporting', 'suite_service', 'suite_store', 'tq9_replacement', 'trial_sealing',
+    'unlocked_keys', 'upstream_authoring', 'upstream_modbus', 'vault_gate')
+MOVED_HELPERS = (
+    'benchmark_case_stages', 'benchmark_family_fixtures', 'generated_fixtures', 'native_benchmark_families',
+    'native_codex_pipeline', 'suite_fixtures', 'tq9_workflow_fixture', 'upstream_fixture')
+BENCHMARK_FOLDER = 'firmware-bench/tests'
+WORKFLOW = REPO / '.github' / 'workflows' / 'test.yml'
+# The three lines of `STANDARDS.md` that the owner put in for this Feature (10-B6).
+GRADER_BOUNDARY = '`firmware-bench/tests/test_grader_identity.py` checks the boundary.'
+TEST_COMMAND_LINE = (
+    'Test command: `ls tests/test_*.py firmware-bench/tests/test_*.py 2>/dev/null | PYTHONPATH="$PWD/src" xargs -P 8 '
+    '-n 1 sh -c \'out=$(.venv/bin/python -m unittest discover -v -s "$(dirname "$0")" -p "$(basename "$0")" 2>&1); '
+    's=$?; printf "%s\\n" "$out"; exit $s\' && node tests/dashboard-client.test.js && GD_TEST_REMOVAL=1 '
+    'PYTHONPATH="$PWD/src" .venv/bin/python -m unittest discover -v -s tests -p test_deletion_marking.py`')
+TEST_FILES_LINE = 'Test files: `tests/test_*.py`, `firmware-bench/tests/test_*.py`'
+# The five lines of the benchmark's documents that name a moved file or the folder, each as it reads now (10-B5).
+DOCUMENT_LINES = (
+    ('bench/README.md', 35, 'python -m unittest discover -s firmware-bench/tests -v'),
+    ('bench/groundtruth/README.md', 73,
+     'Explicit native gate: `python -m unittest discover -s firmware-bench/tests -p native_benchmark_families.py -v`.'),
+    ('docs/benchmark-case-authoring.md', 30, '| `firmware-bench/tests/` | Cover public case resolution,'),
+    ('docs/codex-acceptance.md', 37, 'python firmware-bench/tests/native_codex_pipeline.py -v'),
+    ('docs/generated-device-interface.md', 186,
+     '[firmware-bench/tests/generated_fixtures.py](../firmware-bench/tests/generated_fixtures.py)'))
+READY_ITEMS = ('src/generative_driver/benchmark.py', 'src/generative_driver/benchmark_support/',
+               'src/generative_driver/resources/bench/', 'src/generative_driver/resources/registrations/',
+               'firmware-bench/tests/')
+STILL_USED_DOCUMENTS = ('bench/README.md', 'bench/groundtruth/README.md', 'docs/benchmark-case-authoring.md',
+                        'docs/benchmark-corpus.md', '.scratch/benchmark-lifecycle/')
+# The files of the two dropped legacy cases, by the ready row whose note names them (10-B8).
+DROPPED = {'src/generative_driver/benchmark_support/': ('cases.py', 'physical.py', 'recorded_grading.py',
+                                                        'tq9_legacy.py'),
+           'src/generative_driver/resources/bench/': ('cases/tq9/', 'cases/bme280/', 'groundtruth/tq9.enc',
+                                                      'groundtruth/bme280.enc')}
+
+
+def rows(heading):
+    """The rows of the table under `heading` of the deletion list of the repository, each as its cells, the first
+    without its backticks."""
+    lines = [line.strip() for line in table(heading).splitlines() if line.startswith('|')]
+    cells = [[cell.strip() for cell in re.split(r'(?<!\\)\|', line.strip('|'))] for line in lines]
+    # The first two lines of a table are its column names and the rule under them.
+    return [[row[0].strip('`'), *row[1:]] for row in cells[2:]]
+
+
+def marked(text):
+    """The lines of `text` inside its marked passages, without the markers."""
+    kept, inside = [], False
+    for line in text.splitlines():
+        if line.strip() in (HASH_BEGIN, HASH_END):
+            inside = line.strip() == HASH_BEGIN
+        elif inside:
+            kept.append(line)
+    return kept
+
+
+class TwoFoldersTests(unittest.TestCase):
+    """The benchmark's tests lie in a folder of their own, and the test command, the hosted tests and the source
+    archive know both folders (10-B5 to 10-B7)."""
+
+    def test_10_B5_the_69_modules_and_the_8_helpers_lie_in_the_benchmarks_folder_and_not_in_the_tools(self):
+        require_working_tree(self)
+        self.assertEqual((len(MOVED_MODULES), len(MOVED_HELPERS)), (69, 8))
+        for name in (*(f'test_{module}.py' for module in MOVED_MODULES), *(f'{helper}.py' for helper in MOVED_HELPERS)):
+            with self.subTest(file=name):
+                self.assertTrue((REPO / BENCHMARK_FOLDER / name).is_file(), f'{BENCHMARK_FOLDER}/{name} is missing')
+                self.assertFalse((REPO / 'tests' / name).exists(), f'tests/{name} is still there')
+
+    def test_10_B5_discovery_from_the_benchmarks_folder_alone_finds_the_tests_of_every_moved_module(self):
+        require_working_tree(self)
+        from package_env import package_env
+        script = ('import sys, unittest\n'
+                  'loader = unittest.TestLoader()\n'
+                  'found, pending = set(), [loader.discover(sys.argv[1])]\n'
+                  'while pending:\n'
+                  '    for test in pending.pop():\n'
+                  '        if isinstance(test, unittest.TestSuite):\n'
+                  '            pending.append(test)\n'
+                  '        else:\n'
+                  '            found.add(type(test).__module__)\n'
+                  'print("\\n".join(sorted(found)))\n'
+                  'print("\\n".join("ERROR " + error.splitlines()[-1] for error in loader.errors))\n')
+        with tempfile.TemporaryDirectory(prefix='discovery ') as elsewhere:
+            done = subprocess.run([sys.executable, '-c', script, str(REPO / BENCHMARK_FOLDER)], cwd=elsewhere,
+                                  env={**os.environ, **package_env()}, stdin=subprocess.DEVNULL, capture_output=True,
+                                  text=True, timeout=MODULE_SECONDS)
+        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+        found = done.stdout.split('\n')
+        self.assertEqual([line for line in found if line.startswith('ERROR')], [])
+        self.assertEqual(sorted(set(f'test_{module}' for module in MOVED_MODULES) - set(found)), [])
+
+    def test_10_B5_the_manifest_puts_the_benchmarks_test_files_in_the_source_archive_in_a_marked_passage(self):
+        require_working_tree(self)
+        text = (REPO / 'MANIFEST.in').read_text(encoding='utf-8')
+        self.assertIn('recursive-include firmware-bench/tests *.py', marked(text))
+        copy, _ = stripped_repository()
+        left = (copy / 'MANIFEST.in').read_text(encoding='utf-8')
+        self.assertEqual([line for line in left.splitlines() if 'firmware-bench' in line], [])
+        self.assertIn('recursive-include tests *.py *.js', left.splitlines())
+
+    def test_10_B5_the_five_document_lines_that_named_a_moved_file_or_the_folder_name_the_new_place(self):
+        require_working_tree(self)
+        for document, number, text in DOCUMENT_LINES:
+            with self.subTest(document=document):
+                line = (REPO / document).read_text(encoding='utf-8').splitlines()[number - 1]
+                self.assertIn(text, line)
+                self.assertIsNone(re.search(r'(?<![\w/-])tests/|-s tests\b', line), line)
+
+    def test_10_B6_standards_holds_the_three_lines_for_the_two_folders(self):
+        require_working_tree(self)
+        lines = (REPO / 'STANDARDS.md').read_text(encoding='utf-8').splitlines()
+        self.assertTrue(lines[11].endswith(' ' + GRADER_BOUNDARY), lines[11])
+        self.assertEqual(lines[28], TEST_COMMAND_LINE)
+        self.assertEqual(lines[30], TEST_FILES_LINE)
+        self.assertTrue((REPO / 'firmware-bench' / 'tests' / 'test_grader_identity.py').is_file())
+
+    @unittest.skipIf(os.name == 'nt', 'The test command is a line of sh, and the kit runs it where sh is')
+    def test_10_B6_the_test_command_runs_each_module_of_both_folders_in_its_own_process_and_fails_when_one_fails(self):
+        require_working_tree(self)
+        line = next(line for line in (REPO / 'STANDARDS.md').read_text(encoding='utf-8').splitlines()
+                    if line.startswith('Test command: `'))
+        # The part before the dashboard test and the removal: the modules of the two folders.
+        modules = line.removeprefix('Test command: `').split(' && node ')[0]
+
+        def ran(files):
+            """The exit status of that part in a new tree that holds `files`, and the process each module ran in."""
+            with tempfile.TemporaryDirectory(prefix='test command ') as temporary:
+                root = Path(temporary).resolve()
+                for path, body in files.items():
+                    (root / path).parent.mkdir(parents=True, exist_ok=True)
+                    (root / path).write_text(test_module(*body), encoding='utf-8')
+                python = root / '.venv' / 'bin' / 'python'
+                python.parent.mkdir(parents=True)
+                python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding='utf-8')
+                python.chmod(0o755)
+                done = subprocess.run(['sh', '-c', modules], cwd=root, stdin=subprocess.DEVNULL, capture_output=True,
+                                      text=True, timeout=MODULE_SECONDS)
+                return done.returncode, dict(re.findall(r'^ran (\S+) in (\d+)$', done.stdout, re.MULTILINE))
+
+        says = ("print('ran', Path(__file__).resolve().relative_to(Path.cwd().resolve()).as_posix(), 'in', "
+                "os.getpid())",)
+        passing = {'tests/test_tool.py': says, 'tests/test_more.py': says, 'tests/helper.py': ("raise SystemExit(3)",),
+                   'firmware-bench/tests/test_bench.py': says, 'firmware-bench/tests/fixture.py': says}
+        status, processes = ran(passing)
+        self.assertEqual(status, 0)
+        self.assertEqual(sorted(processes), ['firmware-bench/tests/test_bench.py', 'tests/test_more.py',
+                                             'tests/test_tool.py'])
+        self.assertEqual(len(set(processes.values())), 3, processes)
+        for failing in ('tests/test_tool.py', 'firmware-bench/tests/test_bench.py'):
+            with self.subTest(failing=failing):
+                status, processes = ran({**passing, failing: (*says, "self.fail('it fails')")})
+                self.assertNotEqual(status, 0)
+                self.assertEqual(len(processes), 3, processes)
+        # Where the benchmark's folder is gone, the command runs the modules of the tool's folder alone.
+        status, processes = ran({path: body for path, body in passing.items() if path.startswith('tests/')})
+        self.assertEqual((status, sorted(processes)), (0, ['tests/test_more.py', 'tests/test_tool.py']))
+
+    def test_10_B6_the_command_then_runs_the_dashboard_test_and_the_removal_as_before(self):
+        require_working_tree(self)
+        self.assertTrue(TEST_COMMAND_LINE.endswith(
+            ' && node tests/dashboard-client.test.js && GD_TEST_REMOVAL=1 PYTHONPATH="$PWD/src" .venv/bin/python '
+            '-m unittest discover -v -s tests -p test_deletion_marking.py`'))
+        self.assertIn(TEST_COMMAND_LINE, (REPO / 'STANDARDS.md').read_text(encoding='utf-8').splitlines())
+
+    def test_10_B7_the_marked_passage_of_the_step_runs_the_benchmarks_tests_between_the_tools_and_the_smoke(self):
+        require_working_tree(self)
+        step = WORKFLOW.read_text(encoding='utf-8').partition('      - name: Test outside the checkout\n')[2]
+        commands = [line.strip() for line in step.splitlines() if 'subprocess.run(' in line]
+        benchmark = ("subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', "
+                     "str(repo / 'firmware-bench' / 'tests'), '-v'], cwd=work, env=env, check=True)")
+        self.assertEqual([line.strip() for line in marked(step)], [benchmark])
+        self.assertEqual(len(commands), 3, commands)
+        self.assertIn("str(repo / 'tests')", commands[0])
+        self.assertEqual(commands[1], benchmark)
+        self.assertIn("'-m', 'generative_driver', 'smoke'", commands[2])
+        for command in commands:
+            self.assertTrue(command.endswith('cwd=work, env=env, check=True)'), command)
+
+    def test_10_B7_the_workflow_of_the_stripped_copy_runs_the_tools_tests_and_the_tools_smoke_only(self):
+        require_working_tree(self)
+        copy, _ = stripped_repository()
+        left = (copy / '.github' / 'workflows' / 'test.yml').read_text(encoding='utf-8')
+        commands = [line.strip() for line in left.splitlines() if 'subprocess.run(' in line and 'pip' not in line]
+        self.assertEqual(len(commands), 2, commands)
+        self.assertIn("'-m', 'unittest', 'discover', '-s', str(repo / 'tests'), '-v'", commands[0])
+        self.assertIn("'-m', 'generative_driver', 'smoke'", commands[1])
+        self.assertEqual([line for line in left.splitlines() if 'bench' in line.lower()], [])
+        # Nothing else of the workflow is marked: the copy is the workflow without that one command.
+        whole = WORKFLOW.read_text(encoding='utf-8')
+        gone = [line.strip() for line in whole.splitlines() if line not in left.splitlines()]
+        self.assertEqual(gone, [HASH_BEGIN, *(line.strip() for line in marked(whole)), HASH_END])
+        self.assertEqual(len(gone), 3, gone)
+
+
+class ReadyBenchmarkTests(unittest.TestCase):
+    """The benchmark's code, resources and tests are ready to delete, and the removal takes them out (10-B8)."""
+
+    def test_10_B8_the_benchmarks_code_its_resources_and_its_tests_stand_under_ready_to_delete(self):
+        require_working_tree(self)
+        ready = [row[0] for row in rows('Ready to delete')]
+        for item in READY_ITEMS:
+            with self.subTest(item=item):
+                self.assertEqual(ready.count(item), 1)
+        self.assertEqual([item for item in ready if item.startswith('firmware-bench/')], ['firmware-bench/tests/'])
+
+    def test_10_B8_the_eight_rows_of_the_dropped_legacy_cases_are_gone_and_two_notes_name_their_files(self):
+        require_working_tree(self)
+        notes = {row[0]: row[1] for row in rows('Ready to delete')}
+        for folder, files in DROPPED.items():
+            with self.subTest(folder=folder):
+                self.assertEqual([item for item in notes if item in (folder + name for name in files)], [])
+                sentence = next((part for part in re.split(r'(?<=\.)\s', notes.get(folder, ''))
+                                 if 'dropped legacy case' in part), '')
+                self.assertEqual(re.findall(r'`([^`]+)`', sentence), list(files), notes.get(folder))
+                self.assertIn('not carried to the benchmark\'s repository', sentence)
+                for name in files:
+                    self.assertTrue((REPO / folder / name).exists(), folder + name)
+
+    def test_10_B8_no_row_names_a_file_under_tests_but_the_check_and_the_lists_tests(self):
+        require_working_tree(self)
+        named = [row[0] for heading, _ in TABLES for row in rows(heading) if row[0].startswith('tests/')]
+        self.assertEqual(named, ['tests/deletion_marking.py', 'tests/test_deletion_marking.py'])
+
+    def test_10_B8_the_stripped_copy_holds_none_of_the_ready_items(self):
+        require_working_tree(self)
+        copy, failures = stripped_repository()
+        self.assertEqual(len(failures), 0, '\n'.join(failures))
+        for item in READY_ITEMS:
+            with self.subTest(item=item):
+                self.assertTrue((REPO / item).exists(), item)
+                self.assertFalse((copy / item).exists(), item)
+        self.assertFalse((copy / 'firmware-bench').exists())
+        self.assertTrue((copy / 'src' / 'generative_driver' / 'configurator.py').is_file())
+        self.assertTrue((copy / 'src' / 'generative_driver' / 'resources' / 'smoke' / 'model.json').is_file())
+
+    def test_10_B8_a_python_child_in_the_stripped_copy_cannot_import_the_benchmarks_code(self):
+        require_working_tree(self)
+        copy, _ = stripped_repository()
+        script = ('import importlib, json\n'
+                  'import generative_driver\n'
+                  'answers = {"generative_driver": generative_driver.__file__}\n'
+                  'for name in ("generative_driver.benchmark", "generative_driver.benchmark_support"):\n'
+                  '    try:\n'
+                  '        answers[name] = importlib.import_module(name).__file__\n'
+                  '    except ModuleNotFoundError as error:\n'
+                  '        answers[name] = "missing: " + str(error.name)\n'
+                  'print(json.dumps(answers))\n')
+        # The tree the copy was made from still has both, and this process may import from it.
+        self.assertTrue((REPO / 'src' / 'generative_driver' / 'benchmark.py').is_file())
+        with unittest.mock.patch.dict(os.environ, {'PYTHONPATH': str(REPO / 'src')}):
+            done = subprocess.run([sys.executable, '-c', script], cwd=copy, env=removal_environment(copy),
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=MODULE_SECONDS)
+        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+        answers = json.loads(done.stdout)
+        self.assertEqual(Path(answers.pop('generative_driver')).resolve(),
+                         (copy / 'src' / 'generative_driver' / '__init__.py').resolve())
+        self.assertEqual(answers, {'generative_driver.benchmark': 'missing: generative_driver.benchmark',
+                                   'generative_driver.benchmark_support':
+                                       'missing: generative_driver.benchmark_support'})
+
+
+class ListAfterTheTestsTests(unittest.TestCase):
+    """The list is true once the tests are pulled apart (10-B10)."""
+
+    def test_10_B10_only_the_five_documents_are_still_used_each_freed_by_11(self):
+        require_working_tree(self)
+        still_used = rows('Still used by the tool')
+        self.assertEqual([row[0] for row in still_used], list(STILL_USED_DOCUMENTS))
+        self.assertEqual({row[2] for row in still_used}, {'11'})
+
+    def test_10_B10_each_reason_under_still_used_names_files_that_are_there_and_that_name_the_item(self):
+        require_working_tree(self)
+        for item, reason, _ in rows('Still used by the tool'):
+            users = re.findall(r'`([^`]+)`', reason)
+            self.assertTrue(users, f'The reason of {item} names no file')
+            for user in users:
+                with self.subTest(item=item, user=user):
+                    self.assertTrue((REPO / user).is_file(), f'{user} is not a file')
+                    text = (REPO / user).read_text(encoding='utf-8')
+                    link = Path(os.path.relpath(REPO / item, (REPO / user).parent)).as_posix()
+                    self.assertTrue(item.rstrip('/') in text or link in text, f'{user} does not name {item}')
+
+    def test_10_B10_no_reason_and_no_note_names_a_test_file_at_a_place_it_no_longer_has(self):
+        require_working_tree(self)
+        every = [row for heading, _ in TABLES for row in rows(heading)]
+        # The item of a row stands without its backticks; a reason or a note names a file between backticks.
+        named = {row[0] for row in every} | {path for row in every for cell in row[1:]
+                                             for path in re.findall(r'`([^`]+)`', cell)}
+        tests = sorted(path for path in named if re.match(r'(firmware-bench/)?tests/', path))
+        self.assertLessEqual({'firmware-bench/tests/', 'tests/deletion_marking.py', 'tests/test_deletion_marking.py'},
+                             set(tests))
+        self.assertEqual([path for path in tests if not (REPO / path).exists()], [])
+
+    def test_10_B10_every_freed_by_under_passages_is_11_or_stays_and_nothing_names_feature_10(self):
+        require_working_tree(self)
+        passages = rows('Passages')
+        self.assertGreater(len(passages), 15)
+        self.assertEqual({row[3] for row in passages}, {'11', 'stays'})
+        acceptance, = [row for row in passages if row[0] == 'docs/codex-acceptance.md']
+        self.assertIn('Feature 11 settles what moves', acceptance[2])
+        self.assertIsNone(re.search(r'Feature\s+10\b', list_text()))
+        freed = [row[-1] for heading in ('Still used by the tool', 'Tool modules that import the benchmark',
+                                         'Commands', 'Passages') for row in rows(heading)]
+        self.assertNotIn('10', freed)
+
+    def test_10_B10_every_count_under_passages_is_true_and_the_row_of_standards_says_4(self):
+        require_working_tree(self)
+        standards, = [row for row in rows('Passages') if row[0] == 'STANDARDS.md']
+        self.assertEqual(standards[1], '4')
+        counted = [sentence for sentence in problems(REPO) if 'unmarked lines that say bench' in sentence]
+        self.assertEqual(len(counted), 0, '\n'.join(counted))
 
 
 if __name__ == '__main__':

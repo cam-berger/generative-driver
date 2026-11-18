@@ -5,7 +5,7 @@ Feature 07 of the untangle Run (docs/features/untangle/07-suites.md): 07-B1 to 0
 run sealed, and on a supplied run a given `executor_config` is the whole configuration. The service has no suite: no
 suite call, no suite table and no private start. This module imports nothing from the benchmark package and names no
 registered case, so it also runs where the benchmark is gone. The benchmark's side of the Feature is in
-`tests/test_benchmark_suite_book.py`.
+`firmware-bench/tests/test_benchmark_suite_book.py`.
 
 Temporary homes only; no model, no hardware and no password. The device is the hand-written one of
 `tests/supplied_device.py`.

@@ -2,7 +2,7 @@
 
 Feature 04 of the untangle Run (docs/features/untangle/04-legacy-cases.md), 04-B4. This file imports nothing from the
 benchmark package, so it stays when the benchmark is deleted and runs in the stripped copy. The benchmark's side of
-the Feature is tested in `tests/test_benchmark_legacy_cases_dropped.py`.
+the Feature is tested in `firmware-bench/tests/test_benchmark_legacy_cases_dropped.py`.
 """
 import ast
 from pathlib import Path

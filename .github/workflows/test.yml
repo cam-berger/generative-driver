@@ -45,4 +45,7 @@ jobs:
               env['GD_TEST_SDIST'] = str(Path(glob.glob('dist/*.tar.gz')[0]).resolve())
               env['GD_TEST_REMOVAL'] = '1'
               subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(repo / 'tests'), '-v'], cwd=work, env=env, check=True)
+              # legacy-benchmark:begin
+              subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(repo / 'firmware-bench' / 'tests'), '-v'], cwd=work, env=env, check=True)
+              # legacy-benchmark:end
               subprocess.run([sys.executable, '-m', 'generative_driver', 'smoke'], cwd=work, env=env, check=True)

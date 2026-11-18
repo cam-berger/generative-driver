@@ -1,0 +1,407 @@
+"""Durable suite storage contracts; no inference, native tools or truth access."""
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from generative_driver.configurator import Controller
+from suite_fixtures import (book,drive_suite,harness_devices,harness_keys,outside_start,scripted_manifest,
+                            sqlite_context,suite_call,supplied_start,wait_owner_suite)
+
+# The sha256 of the token of the bench harness a suite is frozen for.
+TOKEN='a1'*32
+
+
+class StoreTests(unittest.TestCase):
+    def test_created_child_is_reused_after_lost_attachment(self):
+        from generative_driver.benchmark_support.suites import freeze_suite,child_request
+        from generative_driver.benchmark_support.suite_store import SuiteStore
+        with tempfile.TemporaryDirectory() as temporary:
+            home=Path(temporary);controller=Controller(home)
+            try:
+                frozen=freeze_suite(scripted_manifest(),'codex',
+                    {'command':['missing-scripted-runtime'],'model':'frozen-model'},{},{},harness_token_sha256=TOKEN)
+                store=SuiteStore(sqlite_context(home/'runs.sqlite3'))
+                suite=store.create(frozen,'one-request')
+                store.set_state(suite['suite_id'],'running')
+                reserved=store.reserve(suite['suite_id'])
+                # What the slot's bench harness adds to the child request: its device, the frozen firmware and mission,
+                # its token hash and its client record. A plain start takes the request without the case.
+                request=child_request(frozen,reserved)
+                added=harness_keys(self,home/'fixture',frozen['entry_pins'][0],request['executor_config'])
+                started=controller.call('start',outside_start({**request,**added}))
+                reopened=SuiteStore(sqlite_context(home/'runs.sqlite3'))
+                same=reopened.reserve(suite['suite_id'])
+                self.assertEqual(same['child_request_id'],reserved['child_request_id'])
+                repeated=controller.call('start',outside_start({**child_request(frozen,same),**added}))
+                self.assertEqual(repeated['run_id'],started['run_id'])
+                self.assertTrue(repeated['duplicate'])
+                reopened.attach(suite['suite_id'],same['ordinal'],same['child_request_id'],repeated['run_id'])
+                self.assertEqual(reopened.trials(suite['suite_id'])['trials'][0]['run_id'],started['run_id'])
+            finally:controller.close()
+
+    def test_saved_suite_with_an_unsupported_executor_is_readable_but_cannot_resume(self):
+        from generative_driver.benchmark_support.snapshots import execution_provenance
+        from generative_driver.benchmark_support.suites import freeze_suite
+        with tempfile.TemporaryDirectory() as temporary:
+            controller = Controller(Path(temporary))
+            try:
+                config = {'command': ['scripted'], 'runtime': 'unknown-runtime'}
+                provenance = execution_provenance(config, case_ids=['tq9-v2'])
+                frozen = freeze_suite(scripted_manifest(), 'codex', config, {}, provenance, harness_token_sha256=TOKEN)
+                frozen['executor'] = frozen['request']['executor'] = 'unknown-runtime'
+                suite_id = book(controller).store.create(frozen)['suite_id']
+                book(controller).store.set_state(suite_id, 'blocked')
+                params = {'suite_id': suite_id}
+                saved = suite_call(controller,'suite_result', params)
+                self.assertEqual(saved['experiment']['dimensions']['runtime'], 'unknown-runtime')
+                with self.assertRaisesRegex(ValueError, 'unsupported executor'):
+                    suite_call(controller,'suite_resume', {**params, 'harness_token_sha256': 'b2' * 32,
+                                                      'harness_pid': os.getpid()})
+                self.assertEqual(suite_call(controller,'suite_result', params), saved)
+            finally:
+                controller.close()
+
+    def test_duplicate_request_returns_original_frozen_inputs_and_conflicts_refuse(self):
+        from copy import deepcopy
+        from generative_driver.benchmark_support.suites import freeze_suite
+        from generative_driver.benchmark_support.suite_store import SuiteStore
+        with tempfile.TemporaryDirectory() as temporary:
+            store=SuiteStore(sqlite_context(Path(temporary)/'runs.sqlite3'))
+            frozen=freeze_suite(scripted_manifest(2),'codex',{'command':['scripted'],'model':'original'},{},{},harness_token_sha256=TOKEN)
+            first=store.create(frozen,'request')
+            current=deepcopy(frozen);current['executor_config']['model']='changed'
+            repeated=store.create(current,'request')
+            self.assertEqual(repeated['suite_id'],first['suite_id'])
+            self.assertEqual(repeated['frozen']['executor_config']['model'],'original')
+            self.assertEqual(store.find_request('request',frozen['request'])['suite_id'],first['suite_id'])
+            changed=deepcopy(frozen);changed['request']['manifest']['repetitions']=3
+            with self.assertRaises(ValueError):store.create(changed,'request')
+            with self.assertRaises(ValueError):store.find_request('request',changed['request'])
+            self.assertIsNone(store.find_request('absent',frozen['request']))
+
+    def test_reservation_is_shared_and_blocking_preserves_active_slot(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        from generative_driver.benchmark_support.suites import freeze_suite
+        from generative_driver.benchmark_support.suite_store import SuiteStore
+        with tempfile.TemporaryDirectory() as temporary:
+            db=sqlite_context(Path(temporary)/'runs.sqlite3')
+            first,second=SuiteStore(db),SuiteStore(db)
+            suite=first.create(freeze_suite(scripted_manifest(2),'codex',{'command':['scripted']},{},{},harness_token_sha256=TOKEN))
+            sid=suite['suite_id']
+            self.assertIsNone(first.reserve(sid))
+            first.set_state(sid,'running');barrier=Barrier(2)
+            def reserve(store):barrier.wait();return store.reserve(sid)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                a=pool.submit(reserve,first);b=pool.submit(reserve,second)
+                one,two=a.result(),b.result()
+            self.assertEqual(one['child_request_id'],two['child_request_id'])
+            self.assertEqual(one['child_request_id'],f"suite:{sid}:trial:0")
+            first.attach(sid,0,one['child_request_id'],'run-one')
+            second.attach(sid,0,one['child_request_id'],'run-one')
+            with self.assertRaises(ValueError):second.attach(sid,0,one['child_request_id'],'run-other')
+            with self.assertRaises(ValueError):second.attach(sid,0,'wrong-request','run-one')
+            first.set_state(sid,'blocked','private host detail')
+            self.assertEqual(second.reserve(sid)['run_id'],'run-one')
+            first.set_state(sid,'cancelled')
+            self.assertEqual(second.reserve(sid)['run_id'],'run-one')
+            self.assertEqual(first.trials(sid)['trials'][1]['status'],'pending')
+
+    def test_public_pages_validate_cursors_and_exclude_private_storage(self):
+        from generative_driver.benchmark_support.suites import freeze_suite
+        from generative_driver.benchmark_support.suite_store import SuiteStore
+        with tempfile.TemporaryDirectory() as temporary:
+            store=SuiteStore(sqlite_context(Path(temporary)/'runs.sqlite3'))
+            frozen=freeze_suite(scripted_manifest(3),'codex',{'command':['PRIVATE-COMMAND']},{},{},harness_token_sha256=TOKEN)
+            sid=store.create(frozen)['suite_id']
+            for key,values in {'offset':[-1,True,1.5,'0'],'limit':[0,101,True,1.5,'2']}.items():
+                for value in values:
+                    with self.subTest(key=key,value=value),self.assertRaises(ValueError):
+                        store.trials(sid,**{key:value})
+            page=store.trials(sid,limit=2)
+            self.assertEqual([t['ordinal'] for t in page['trials']],[0,1])
+            self.assertEqual(page['next_offset'],2)
+            last=store.trials(sid,offset=page['next_offset'],limit=2)
+            self.assertEqual([t['ordinal'] for t in last['trials']],[2])
+            self.assertIsNone(last['next_offset'])
+            self.assertEqual(set(page['trials'][0]),{'ordinal','trial_key','case','scenario','case_seed','repeat_index','run_id','status',
+                                                     'outcome_category','equivalent','equivalence_status'})
+            for value in [-1,True,1.5,'0']:
+                with self.subTest(after=value),self.assertRaises(ValueError):store.events(sid,after=value)
+            reason='Trial entry-000-repeat-000 stopped: scripted'
+            for index in range(501):store.set_state(sid,'blocked',reason)
+            events=store.events(sid)
+            self.assertEqual(len(events['events']),500)
+            self.assertEqual(events['events'][0]['kind'],'suite.started')
+            rest=store.events(sid,after=events['cursor'])
+            self.assertEqual(len(rest['events']),2)
+            self.assertGreater(rest['events'][0]['id'],events['cursor'])
+            self.assertEqual(store.events(sid,after=rest['cursor'])['cursor'],rest['cursor'])
+            # Why the suite stopped is public, as its status says it; the frozen executor configuration never is.
+            self.assertEqual([e['data'] for e in events['events'][1:]+rest['events']],[{'reason':reason}]*501)
+            self.assertNotIn('PRIVATE',str(events)+str(rest)+str(page))
+
+    def test_settlement_requires_matching_settled_child_and_is_idempotent(self):
+        from generative_driver.benchmark_support.suites import freeze_suite
+        from generative_driver.benchmark_support.suite_store import SuiteStore
+        with tempfile.TemporaryDirectory() as temporary:
+            store=SuiteStore(sqlite_context(Path(temporary)/'runs.sqlite3'))
+            sid=store.create(freeze_suite(scripted_manifest(2),'codex',{'command':['scripted']},{},{},harness_token_sha256=TOKEN))['suite_id']
+            store.set_state(sid,'running');slot=store.reserve(sid)
+            store.attach(sid,0,slot['child_request_id'],'run-one')
+            result={'run_id':'run-one','status':'failed','outcome_category':'model','stopping':False,'uncertain_effect':False}
+            for change in [{'run_id':'other'},{'stopping':True},{'uncertain_effect':True},{'stopping':None},{'uncertain_effect':None},{'status':'running'}]:
+                with self.subTest(change=change),self.assertRaises(ValueError):store.settle(sid,0,dict(result,**change))
+            store.settle(sid,0,dict(result,reason='PRIVATE-REASON',executor_config={'command':['PRIVATE']}))
+            cursor=store.events(sid)['cursor']
+            store.settle(sid,0,result)
+            self.assertEqual(store.events(sid)['cursor'],cursor)
+            with self.assertRaises(ValueError):store.settle(sid,0,dict(result,status='completed',outcome_category='completed'))
+            saved=store.get(sid)['trials'][0]
+            self.assertEqual(saved['status'],'finished')
+            self.assertEqual(saved['outcome_category'],'model')
+            self.assertEqual(saved['result'],{'run_id':'run-one','status':'failed','outcome_category':'model',
+                                              'equivalent':None,'equivalence_status':None})
+            self.assertEqual(store.reserve(sid)['ordinal'],1)
+
+    def test_recovery_blocks_unfinished_suites_without_retry_or_repeated_events(self):
+        from generative_driver.benchmark_support.suites import freeze_suite
+        from generative_driver.benchmark_support.suite_store import SuiteStore
+        with tempfile.TemporaryDirectory() as temporary:
+            db=sqlite_context(Path(temporary)/'runs.sqlite3');store=SuiteStore(db)
+            frozen=freeze_suite(scripted_manifest(),'codex',{'command':['scripted']},{},{},harness_token_sha256=TOKEN)
+            queued=store.create(frozen)['suite_id'];running=store.create(frozen)['suite_id']
+            done=store.create(frozen)['suite_id'];store.set_state(done,'completed')
+            store.set_state(running,'running');reserved=store.reserve(running)
+            reopened=SuiteStore(db)
+            self.assertEqual(reopened.get(queued)['status'],'queued')
+            # The store blocks one suite at a time now, at the first suite call after a restart (07-B12 of
+            # docs/features/untangle/07-suites.md): each unfinished suite once, and a finished one never.
+            for sid in (queued,running):
+                self.assertIs(reopened.recover(sid),True)
+                self.assertEqual(reopened.get(sid)['status'],'blocked')
+                events=reopened.events(sid);self.assertEqual(events['events'][-1]['kind'],'suite.recovered')
+                self.assertIs(reopened.recover(sid),False)
+                self.assertEqual(reopened.events(sid)['cursor'],events['cursor'])
+            self.assertIsNone(reopened.reserve(queued))
+            self.assertEqual(reopened.reserve(running)['child_request_id'],reserved['child_request_id'])
+            self.assertIsNone(reopened.reserve(running)['run_id'])
+            self.assertIs(reopened.recover(done),False)
+            self.assertEqual(reopened.get(done)['status'],'completed')
+
+class ControllerStorageTests(unittest.TestCase):
+    def test_expected_pin_refuses_changed_inputs_before_snapshot_or_child(self):
+        from copy import deepcopy
+        from generative_driver.benchmark_support import harness
+        from generative_driver.benchmark_support.suites import freeze_suite,child_request
+        with tempfile.TemporaryDirectory() as temporary:
+            home=Path(temporary);controller=Controller(home)
+            try:
+                frozen=freeze_suite(scripted_manifest(),'codex',{'command':['missing-scripted-runtime']},{},{},harness_token_sha256=TOKEN)
+                request=child_request(frozen,dict(frozen['trials'][0],child_request_id='pinned'))
+                # The bench harness checks a child's pin now, before it freezes the case or starts a device or a run.
+                changed=deepcopy(request);changed['case_pin']['manifest_sha256']='a'*64
+                secrets=harness_devices(self,home/'devices')
+                reached=lambda method,params=None,**kwargs:{'ok':True} if method=='ping' else controller.call(method,params)
+                record=harness.run_trial(home/'bench/pinned',{'trial_id':'pinned','home':str(home),'case':request['case'],
+                    'start':changed,'password_file':secrets['password_files']['tq9-v2'],'renode':secrets['renode']},call=reached)
+                self.assertEqual((record['status'],record['run_id'],record['no_run']),('failed',None,'admit-refused'))
+                self.assertRegex(record['reason'],'pin')
+                self.assertFalse((home/'runs').exists());self.assertFalse((home/'bench/pinned/benchmark').exists())
+                request=outside_start({**request,**harness_keys(self,home/'fixture',frozen['entry_pins'][0],request['executor_config'])})
+                started=controller.start(request)
+                (home/'config.json').write_text('INVALID CONFIG',encoding='utf-8')
+                duplicate=controller.start(request)
+                self.assertEqual(duplicate['run_id'],started['run_id'])
+                self.assertTrue(duplicate['duplicate'])
+            finally:controller.close()
+
+    def test_frozen_child_config_does_not_merge_new_home_defaults(self):
+        import json
+        from generative_driver.benchmark_support import harness
+        from generative_driver.benchmark_support.suites import freeze_suite,child_request
+        from generative_driver.benchmark_support.snapshots import read_snapshot
+        with tempfile.TemporaryDirectory() as temporary:
+            home=Path(temporary);controller=Controller(home)
+            try:
+                frozen=freeze_suite(scripted_manifest(),'codex',{'command':['missing-scripted-runtime'],'model':'frozen-model'},{},{},harness_token_sha256=TOKEN)
+                (home/'config.json').write_text(json.dumps({'executors':{'codex':{'model':'new-model','reasoning_effort':'high'}}}),encoding='utf-8')
+                request=child_request(frozen,dict(frozen['trials'][0],child_request_id='frozen'))
+                # The bench harness settles the configuration and freezes the snapshot now. A suite child's
+                # configuration is complete: the harness lays no setting of the home under it.
+                executor,settled=harness.settled_executor(home,{},request)
+                added=harness_keys(self,home/'fixture',frozen['entry_pins'][0],settled)
+                config=read_snapshot(added.trial_dir)['executed']['runtime_configuration']
+                self.assertEqual(config['model'],'frozen-model')
+                self.assertNotIn('reasoning_effort',config)
+                # A trial outside a suite retains the ordinary model and reasoning defaults, with a missing executable:
+                # the harness's snapshot names them, and the run has them.
+                ordinary=supplied_start(self,home/'fixture',home=home,goal=request['goal'],request_id='ordinary',
+                    effects=request['effects'],executor_config={'command':['missing-scripted-runtime']})
+                normal=ordinary.keep(home,controller.start(ordinary))
+                normal_config=read_snapshot(home/'runs'/normal['run_id'])['executed']['runtime_configuration']
+                self.assertEqual(normal_config['model'],'new-model')
+                self.assertEqual(normal_config['reasoning_effort'],'high')
+                with controller._db() as db:
+                    spec=json.loads(db.execute('SELECT spec FROM runs WHERE id=?',(normal['run_id'],)).fetchone()['spec'])
+                self.assertEqual((spec['executor_config']['model'],spec['executor_config']['reasoning_effort']),('new-model','high'))
+            finally:controller.close()
+
+    def test_suite_facade_deduplicates_before_config_and_recovers_without_launch(self):
+        import json
+        from generative_driver.benchmark_support.suites import child_request
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);home=root/'home';home.mkdir()
+            config=home/'config.json'
+            config.write_text(json.dumps({'executors':{'codex':{'command':['missing-scripted-runtime'],'model':'frozen-model'}}}),encoding='utf-8')
+            controller=Controller(home);secrets=harness_devices(self,root/'fixture')
+            request={'manifest':scripted_manifest(2),'executor':'codex','request_id':'suite-request'}
+            try:
+                # The bench harness starts and drives the suite; the configurator freezes and stores it.
+                started=drive_suite(controller,root/'bench',{**request,**secrets},wait=False);sid=started['suite_id']
+                self.assertFalse(started['duplicate'])
+                status=wait_owner_suite(controller,sid,lambda s:s['status']=='blocked' and not s['stopping'])
+                self.assertEqual((status['status'],status['planned'],status['completed']),('blocked',2,0))
+                self.assertIsNotNone(status['active_child_id']);self.assertFalse(status['stopping'])
+                config.write_text('INVALID CONFIG',encoding='utf-8')
+                duplicate=suite_call(controller,'suite_start',
+                                     {**request,'harness_token_sha256':'b2'*32,'harness_pid':os.getpid()})
+                self.assertTrue(duplicate['duplicate']);self.assertEqual(duplicate['suite_id'],sid)
+                with self.assertRaises(ValueError):
+                    suite_call(controller,'suite_start',dict(request,manifest=scripted_manifest(3),
+                                                             harness_token_sha256='b2'*32,harness_pid=os.getpid()))
+                frozen=book(controller).store.get(sid)['frozen']
+                book(controller).store.set_state(sid,'running');slot=book(controller).store.reserve(sid)
+                self.assertEqual(child_request(frozen,slot)['executor_config']['model'],'frozen-model')
+                first=suite_call(controller,'suite_events',{'suite_id':sid})['events'][0]
+                self.assertEqual(first['kind'],'suite.started')
+            finally:controller.close()
+            recovered=Controller(home)
+            try:
+                # The status and the event say why the suite stopped: the restart.
+                stopped=suite_call(recovered,'suite_status',{'suite_id':sid})
+                self.assertEqual((stopped['status'],stopped['reason']),('blocked','Configurator restarted; explicit resume required'))
+                last=suite_call(recovered,'suite_events',{'suite_id':sid})['events'][-1]
+                self.assertEqual((last['kind'],last['data']),('suite.recovered',{'reason':stopped['reason']}))
+                page=suite_call(recovered,'suite_result',{'suite_id':sid,'limit':1})
+                self.assertEqual(page['trials'][0]['status'],'blocked')
+                self.assertEqual(page['next_offset'],1)
+                self.assertEqual(page['trials'][0]['run_id'],status['active_child_id'])
+                self.assertEqual(len(list((home/'runs').iterdir())),1)
+            finally:recovered.close()
+
+    def test_experiment_is_complete_allowlisted_frozen_and_snapshot_bound(self):
+        import json
+        from generative_driver.benchmark_support.suites import child_request
+        from generative_driver.benchmark_support.evidence import public_pin
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);home=root/'home';home.mkdir()
+            config={'command':['missing-scripted-runtime','PRIVATE-COMMAND'],'model':'frozen-model','provider':'provider',
+                'version':'version','reasoning_effort':'high','max_turns':4,'endpoint':'PRIVATE-ENDPOINT','api_key':'PRIVATE-KEY',
+                'settings':{'token':'PRIVATE-NESTED'}}
+            (home/'config.json').write_text(json.dumps({'executors':{'codex':config}}),encoding='utf-8')
+            controller=Controller(home)
+            try:
+                # Evaluator handles and the emulator executable reach the bench harness only.
+                request={'manifest':scripted_manifest(3),'options':{},**harness_devices(self,root/'PRIVATE-HANDLES')}
+                sid=drive_suite(controller,root/'bench',request,wait=False)['suite_id']
+                state=wait_owner_suite(controller,sid,lambda s:s['status']=='blocked' and not s['stopping'])
+                frozen=book(controller).store.get(sid)['frozen']
+                first=suite_call(controller,'suite_result',{'suite_id':sid,'limit':1})
+                experiment=first['experiment']
+                self.assertEqual(experiment['schema'],'benchmark-suite-experiment/1')
+                self.assertEqual(set(experiment),{'schema','comparison_identity','evaluator_revisions','dimensions','execution_snapshots'})
+                # Each case's frozen revision, against which each of its trials is checked.
+                self.assertEqual(experiment['evaluator_revisions'],frozen['provenance']['evaluator_revisions'])
+                identity=experiment['comparison_identity']
+                # Its harness drives it and grades every child after its run: the suite names the assistive protocol
+                # and counts equivalent drivers.
+                self.assertEqual(identity['protocol'],'assistive/1')
+                self.assertEqual(state['equivalent'],0)
+                self.assertEqual(identity['manifest'],scripted_manifest(3))
+                self.assertEqual(identity['manifest_sha256'],frozen['manifest_sha256'])
+                self.assertEqual(identity['entry_pins'],[public_pin(pin) for pin in frozen['entry_pins']])
+                self.assertEqual(identity['trials'],frozen['trials'])
+                self.assertEqual(identity['repetitions'],3)
+                self.assertEqual(identity['execution'],'actual-agent-emulation')
+                self.assertEqual(identity['evidence_track'],'firmware')
+                self.assertEqual(identity['scope'],'full-workflow')
+                self.assertEqual(identity['time_policy'],[frozen['entry_pins'][0]['time_policy']])
+                self.assertEqual(identity['evaluator_revision'],frozen['provenance']['evaluator_revision'])
+                self.assertEqual(identity['budgets'],{'original':{'child_budget_seconds':120,'suite_budget_seconds':120},'effective':{'child_budget_seconds':120,'suite_budget_seconds':120,'child_budget_overrides':[]}})
+                self.assertEqual(identity['intervention_policy'],{'scoped_tool_approval':None,'max_model_repairs':2})
+                self.assertEqual(set(experiment['dimensions']),{'runtime','model','provider','version','reasoning_effort','max_turns','skills_revision','toolchain_revision'})
+                self.assertEqual(experiment['dimensions']['model'],'frozen-model')
+                # The child's bench harness keeps the snapshot's hash in the child run's client record.
+                child=controller.call('result',{'run_id':state['active_child_id']})['client_record']
+                self.assertEqual(experiment['execution_snapshots'],[{'trial_key':slot['trial_key'],'snapshot_sha256':child['snapshot_sha256'] if slot['ordinal']==0 else None} for slot in frozen['trials']])
+                self.assertNotIn('PRIVATE',json.dumps(first))
+                (home/'config.json').write_text('INVALID CONFIG',encoding='utf-8')
+                self.assertEqual(suite_call(controller,'suite_result',{'suite_id':sid,'offset':2})['experiment'],
+                                 experiment)
+                after=suite_call(controller,'suite_result',{'suite_id':sid,'offset':2})['experiment']
+                self.assertEqual(after['comparison_identity'],identity)
+                self.assertEqual(after['execution_snapshots'][0]['snapshot_sha256'],child['snapshot_sha256'])
+                self.assertIsNone(after['execution_snapshots'][1]['snapshot_sha256'])
+                self.assertNotIn('PRIVATE',json.dumps(after))
+            finally:controller.close()
+
+    def test_a_suite_resume_extends_the_budget_of_its_stopped_child_with_an_approved_reason(self):
+        # Catches a suite resume that cannot continue a child stopped by its own budget: an approved child extension
+        # reaches that child's resume on the device its harness provides anew, recorded with its reason, and no other
+        # child's budget.
+        import json
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);home=root/'home';home.mkdir()
+            (home/'config.json').write_text(json.dumps({'executors':{'codex':{'command':['missing-scripted-runtime']}}}),encoding='utf-8')
+            controller=Controller(home);secrets=harness_devices(self,root/'fixture')
+            try:
+                sid=drive_suite(controller,root/'bench',{'manifest':scripted_manifest(2),**secrets})['suite_id']
+                self.assertEqual(suite_call(controller,'suite_status',{'suite_id':sid})['status'],'blocked')
+                slot=book(controller).store.get(sid)['trials'][0];rid=slot['run_id']
+                with controller._db() as db:
+                    # The child's own budget is spent; the suite's is not.
+                    db.execute('UPDATE runs SET created=created-1000 WHERE id=?',(rid,))
+                refused=drive_suite(controller,root/'bench',{'suite_id':sid,**secrets})
+                self.assertEqual(refused['status'],'failed');self.assertIn('budget exhausted',refused['reason'])
+                self.assertEqual(suite_call(controller,'suite_status',{'suite_id':sid})['status'],'blocked')
+                drive_suite(controller,root/'bench',{'suite_id':sid,'child_budget_seconds':1200,
+                                                     'child_budget_reason':'Operator approved a longer child',**secrets})
+                extended=[e['data'] for e in controller.call('events',{'run_id':rid})['events'] if e['kind']=='run.budget_extended']
+                self.assertEqual([(e['old_budget_seconds'],e['new_budget_seconds'],e['reason']) for e in extended],
+                                 [(120,1200,'Operator approved a longer child')])
+                status=suite_call(controller,'suite_status',{'suite_id':sid})
+                self.assertEqual((status['status'],status['active_child_id'],status['completed']),('blocked',rid,0))
+                overrides=suite_call(controller,'suite_result',
+                                     {'suite_id':sid})['experiment']['comparison_identity']['budgets']['effective']
+                self.assertEqual(overrides['child_budget_overrides'],[{'trial_key':slot['trial_key'],'budget_seconds':1200}])
+            finally:controller.close()
+
+    def test_owner_child_budget_extension_changes_comparison_policy_only(self):
+        import json
+        import time
+        from generative_driver.benchmark_support.suites import child_request
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);home=root/'home';home.mkdir()
+            (home/'config.json').write_text(json.dumps({'executors':{'codex':{'command':['missing-scripted-runtime']}}}),encoding='utf-8')
+            controller=Controller(home);secrets=harness_devices(self,root/'fixture')
+            try:
+                sid=drive_suite(controller,root/'bench',{'manifest':scripted_manifest(2),**secrets},wait=False)['suite_id']
+                state=wait_owner_suite(controller,sid,lambda s:s['status']=='blocked' and not s['stopping'])
+                slot=book(controller).store.get(sid)['trials'][0];rid=slot['run_id']
+                before=suite_call(controller,'suite_result',{'suite_id':sid})['experiment']
+                deadline=time.monotonic()+5
+                while time.monotonic()<deadline:
+                    status=controller.call('status',{'run_id':rid})
+                    if status['status'] in ('failed','blocked') and not status['stopping']:break
+                    time.sleep(.01)
+                self.assertIn(status['status'],('failed','blocked'));self.assertFalse(status['stopping'])
+                # The child's harness provides its device anew and passes the approved extension to its resume.
+                drive_suite(controller,root/'bench',{'suite_id':sid,'child_budget_seconds':180,'child_budget_reason':'PRIVATE-REASON',**secrets})
+                after=suite_call(controller,'suite_result',{'suite_id':sid,'offset':1})['experiment']
+                self.assertEqual(after['comparison_identity']['budgets']['effective']['child_budget_overrides'],
+                    [{'trial_key':slot['trial_key'],'budget_seconds':180}])
+                self.assertEqual(after['comparison_identity']['budgets']['original'],before['comparison_identity']['budgets']['original'])
+                self.assertEqual(after['execution_snapshots'],before['execution_snapshots'])
+                self.assertNotIn('PRIVATE',json.dumps(after))
+            finally:controller.close()

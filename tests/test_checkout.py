@@ -1,6 +1,4 @@
 """Checkout must preserve the bytes used by benchmark integrity checks."""
-import hashlib
-import json
 import os
 from pathlib import Path
 import shutil
@@ -41,13 +39,6 @@ class CheckoutTests(unittest.TestCase):
                 (checkout / relative).unlink()
             git("-c", "core.autocrlf=true", "checkout-index", "--all", "--force")
 
-            root = checkout / "src/generative_driver/resources/bench"
-            for path in (root / "cases").glob("*/case.json"):
-                manifest = json.loads(path.read_text(encoding="utf-8"))
-                if truth := manifest.get("truth"):
-                    with self.subTest(case=manifest["id"]):
-                        self.assertEqual(hashlib.sha256((root / truth["path"]).read_bytes()).hexdigest(),
-                                         truth["sha256"])
             changed = [str(relative) for relative, data in expected.items()
                        if (checkout / relative).read_bytes() != data]
             self.assertEqual(changed, [], "Checkout changed pinned resource/evaluator bytes")

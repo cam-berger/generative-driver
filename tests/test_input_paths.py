@@ -803,8 +803,7 @@ BASE_TOOLS_SHA256 = '16b20a898c1024e0c77601ab9c14eba3dd99f707eb7d111d0cce8531be0
 
 
 class BenchmarkUnchangedTests(RunCase):
-    """07-B9: the tools that existed keep their descriptions. What a benchmark run keeps is tested where the
-    benchmark's tests are, in `tests/test_benchmark_runs_unchanged.py`."""
+    """07-B9: the tools that existed keep their descriptions."""
 
     def test_07_B9_every_existing_tool_description_is_unchanged(self):
         import hashlib

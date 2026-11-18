@@ -125,19 +125,6 @@ class OwnerGeneratedTests(unittest.TestCase):
             self.assertEqual(owner.call('device_status', identity)['result'], result)
             self.assertTrue(owner.call('device_execute', {**identity,'request_id':'next','operation':'measure'})['ok'])
 
-    def test_generated_profile_cannot_pass_its_mission_without_sealed_owner_proof(self):
-        from generative_driver.benchmark_support.evaluator import final_record
-        from test_evaluation import contract, EXPECTED
-        sha = 'a'*64
-        definition = contract(sha)
-        final = {'contract':definition,'records':[{'id':c['id'],'revision':0,'artifact_sha256':sha,
-            'channel':c['channel'],'unit':c['unit'],'value':v} for c,v in zip(definition['checks'],(EXPECTED,370))],
-            'frozen_artifact_sha256':sha, 'generated_reuse_required':True}
-        verdict = final_record(final, mission={'name':'fresh_worker_mission','passed':True}, protocol='assistive/1')
-        self.assertTrue(verdict['equivalent'])
-        self.assertNotIn('generated_mcp_reuse', [c['id'] for c in verdict['checks']])
-        self.assertIs(verdict['mission']['passed'], False)
-
     def test_benchmark_journal_records_complete_generated_arguments_and_proof(self):
         from generative_driver.supplied.stages import record_call
         with tempfile.TemporaryDirectory() as temporary:

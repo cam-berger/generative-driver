@@ -66,9 +66,12 @@ def tool_modules():
 
 
 def in_benchmark_package(name):
-    """Whether the dotted `name` is `generative_driver.benchmark` or `generative_driver.benchmark_support`, or lies
-    under one of them."""
-    return name.split('.')[:2] in (['generative_driver', 'benchmark'], ['generative_driver', 'benchmark_support'])
+    """Whether the dotted `name` is the benchmark's code under one of its names, or lies under one:
+    `generative_driver.benchmark`, `generative_driver.benchmark_support`, or the package `firmware_bench` it becomes
+    (10-B9 of docs/features/untangle/10-tests.md)."""
+    parts = name.split('.')
+    return parts[0] == 'firmware_bench' or parts[:2] in (['generative_driver', 'benchmark'],
+                                                         ['generative_driver', 'benchmark_support'])
 
 
 def benchmark_imports(path, package):

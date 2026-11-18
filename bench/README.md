@@ -32,7 +32,7 @@ Use Python 3.11+ in one environment. Follow [setup](../docs/setup.md). To use Co
 python -m pip install -e ".[dev]"
 python -m generative_driver doctor
 firmware-bench run --case setup-smoke --output "smoke output"
-python -m unittest discover -s tests -v
+python -m unittest discover -s firmware-bench/tests -v
 ```
 
 Use a new output directory. Expect `scripted-replay`, `model_benchmark: false`, `verdict: passed`. No account, hardware, native tools or password is needed. In `relocated package`, run `python -m driver replay`.

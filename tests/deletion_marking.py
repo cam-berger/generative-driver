@@ -25,7 +25,7 @@ _COLUMNS = {_READY: ('Item', 'Note'), _STILL_USED: ('Item', 'Used by', 'Freed by
             _COMMANDS: ('Command', 'Where', 'Freed by'), _PASSAGES: ('File', 'Unmarked lines', 'Why', 'Freed by'),
             _KEPT: ('Item', 'Why')}
 _COVERING = (_READY, _STILL_USED, _KEPT)
-_FEATURES = tuple(f'{number:02d}' for number in range(2, 12))
+_FEATURES = tuple(f'{number:02d}' for number in range(2, 13))
 _CHILD_SECONDS = 120
 _series = ', '.join
 

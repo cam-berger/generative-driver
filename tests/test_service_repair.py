@@ -1,4 +1,5 @@
 """Scripted model defects exercise case routing without inference or an emulator."""
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -12,16 +13,21 @@ class RepairServiceTests(unittest.TestCase):
     def test_old_gateway_is_invalidated_when_a_model_defect_starts_a_new_revision(self):
         from generative_driver.client import call
         with tempfile.TemporaryDirectory() as home:
-            from suite_fixtures import supplied_start, write_scripted_case_worker
-            # The first interpretation is one the emulator binding cannot carry: probe skips, and the configurator's
-            # model diff starts a new revision with no device.
-            command=write_scripted_case_worker(home,hold_on_repair=True)
+            from supplied_device import SuppliedDevice
+            from test_supplied_stages import MISSION, hand_written_firmware
+            from worker_script import write_scripted_worker
+            # The first interpretation is one the device's TCP binding cannot carry: probe skips, and the
+            # configurator's model diff starts a new revision with no device.
+            command=write_scripted_worker(home,hold_on_repair=True)
             script=Path(command[1])
+            device=SuppliedDevice(Path(home)/'device')
+            self.addCleanup(device.close)
             try:
-                # The run starts on a device of synthetic peers, as its bench harness would provide one.
-                run=call('start',dict(supplied_start(self,Path(home)/'fixture',home=home,
-                    goal='Scripted revision contract, not a benchmark result',case_options={'scenario_id':'original'},
-                    effects=['write','actuate'],executor_config={'command':[sys.executable,str(script)]})),home)
+                # The run starts on the hand-written device, firmware and mission, as a client supplies them.
+                run=call('start',{'goal':'Scripted revision contract, not a benchmark result',
+                    'device':device.descriptor,'firmware':hand_written_firmware(Path(home)/'fixture'),
+                    'mission':MISSION,'evaluation_token_sha256':hashlib.sha256(b'token').hexdigest(),
+                    'effects':['write','actuate'],'executor_config':{'command':[sys.executable,str(script)]}},home)
                 assignments=[]
                 # Wait for each durable transition, not a total runtime guess
                 # spanning several external workers and their case checks.

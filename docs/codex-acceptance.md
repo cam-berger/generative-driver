@@ -34,7 +34,7 @@ After the suite finishes, create a private JSON file outside candidate workspace
 Populate `evidence_files` with every graded trial's key and sealed evidence path from the harness records; the abbreviated example above is not a complete nine-trial configuration. With the same installed environment and existing configurator, set `GD_NATIVE_CODEX_SUITE` to that JSON file's absolute path and run:
 
 ```sh
-python tests/native_codex_pipeline.py -v
+python firmware-bench/tests/native_codex_pipeline.py -v
 ```
 
 The gate regrades the sealed evidence through the benchmark API, requires Codex with a recorded model, at least three families and three repetitions, and requires equivalence plus successful fresh reuse in every planned trial. Missing configuration fails explicitly. The gate launches no new inference. A pass establishes those recorded trials only; broader reliability needs held-out firmware and repeated measurements. This acceptance lane has not been run for the integrated branch.

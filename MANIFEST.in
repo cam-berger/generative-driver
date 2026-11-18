@@ -12,3 +12,6 @@ prune bench/runs
 prune bench/groundtruth/plaintext
 recursive-include tests *.py *.js
 graft tests/fixtures
+# legacy-benchmark:begin
+recursive-include firmware-bench/tests *.py
+# legacy-benchmark:end

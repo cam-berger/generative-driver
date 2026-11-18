@@ -95,6 +95,12 @@
       "feature": "08",
       "sha256": "1f275a48e70571b7f979cc4d12427c2d318b5b9211091f0335b66d5a1c0492bc",
       "at": "2026-11-17T17:40:53+00:00"
+    },
+    {
+      "kind": "breakdown",
+      "feature": null,
+      "sha256": "e92f19b6e2e3cc9c04f9daf0f46e108153a5ee7d87dff830208251bf945b89ec",
+      "at": "2026-11-18T02:27:03+00:00"
     }
   ],
   "done": [

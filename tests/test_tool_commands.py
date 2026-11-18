@@ -433,6 +433,64 @@ class SmokeTests(unittest.TestCase):
                 self.assertNotIn(gone, text)
 
 
+def indent(line):
+    return len(line) - len(line.lstrip())
+
+
+def under(lines, key):
+    """The lines of the YAML `lines` under the line `key`, to the next line indented no deeper, without the blank
+    ones. The workflow is read as text, so the tests need no YAML reader."""
+    found = []
+    for line in lines[lines.index(key) + 1:]:
+        if line.strip() and indent(line) <= indent(key):
+            break
+        found += [line] if line.strip() else []
+    return found
+
+
+def listed(line):
+    """The values of the one-line YAML list that ends `line`, without their quotes."""
+    return [value.strip().strip('\'"') for value in line[line.index('[') + 1:line.rindex(']')].split(',')]
+
+
+class HostedJobTests(unittest.TestCase):
+    """Which jobs the hosted workflow `Installed package` has (09-B12): the four on which the repository's tests
+    must pass. That they pass there is shown by a hosted run alone. No test on one machine shows it, and these do
+    not: they hold the four jobs in place, so that what the Behaviour asks cannot shrink unseen."""
+
+    def setUp(self):
+        if not WORKFLOW.is_file():
+            self.skipTest(f'The hosted workflow is read from a checkout, and {WORKFLOW} is not there')
+        self.lines = WORKFLOW.read_text(encoding='utf-8').splitlines()
+
+    def test_09_B12_the_workflow_installed_package_runs_on_every_push_and_on_pull_requests(self):
+        self.assertEqual(self.lines[0], 'name: Installed package')
+        # Neither event is narrowed to some branches or paths.
+        self.assertEqual(under(self.lines, 'on:'), ['  push:', '  pull_request:'])
+
+    def test_09_B12_its_one_job_is_four_macos_and_windows_each_with_python_3_11_and_3_13(self):
+        jobs = under(self.lines, 'jobs:')
+        with self.subTest('the workflow has one job'):
+            self.assertEqual([line for line in jobs if indent(line) == 2], ['  native:'])
+        matrix = under(self.lines, '      matrix:')
+        with self.subTest('a job that fails does not stop the others'):
+            self.assertEqual([line.strip() for line in under(self.lines, '    strategy:') if line not in matrix],
+                             ['fail-fast: false', 'matrix:'])
+        with self.subTest('the matrix is two systems by two Python versions, with nothing added or left out'):
+            self.assertEqual([line.strip() for line in matrix],
+                             ['os: [macos-latest, windows-latest]', "python: ['3.11', '3.13']"])
+            self.assertEqual([(system, python) for system in listed(matrix[0]) for python in listed(matrix[1])],
+                             [('macos-latest', '3.11'), ('macos-latest', '3.13'),
+                              ('windows-latest', '3.11'), ('windows-latest', '3.13')])
+        with self.subTest('each job runs on the system and with the Python its place in the matrix names'):
+            self.assertEqual([line.strip() for line in jobs if 'runs-on:' in line], ['runs-on: ${{ matrix.os }}'])
+            versions = [number for number, line in enumerate(jobs) if 'python-version:' in line]
+            self.assertEqual([jobs[number].strip() for number in versions], ['python-version: ${{ matrix.python }}'])
+            # It is the version the step that sets up Python takes.
+            step = [line for line in jobs[:versions[0]] if line.lstrip().startswith('- ')][-1]
+            self.assertIn('actions/setup-python@', step)
+
+
 PACKAGE = 'generative_driver'
 # Each way a source could reach the benchmark's code, for a module of the package or of one of its folders, with
 # whether the scan below must name it.

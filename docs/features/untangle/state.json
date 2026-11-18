@@ -3,11 +3,7 @@
   "slug": "untangle",
   "branch": "mdk/untangle",
   "stage": "spec",
-  "awaiting": {
-    "kind": "breakdown",
-    "feature": null,
-    "sha256": "361e6221b408bbf4e76e54faead5838a22fe2ea30039e7722ffeb3aa005a4ffc"
-  },
+  "awaiting": null,
   "current": "10",
   "features": [
     {
@@ -66,12 +62,18 @@
     },
     {
       "id": "10",
-      "slug": "two-folders",
+      "slug": "tests",
       "status": "pending",
       "base": null
     },
     {
       "id": "11",
+      "slug": "documents",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "12",
       "slug": "two-packages",
       "status": "pending",
       "base": null

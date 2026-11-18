@@ -10,7 +10,7 @@ The owner decided four points for it on 2026-11-18:
 
 - The old Feature 10 is split in two. This Feature is for the tests. Feature 11 is for the documents.
 - The benchmark gets one folder at the root, `firmware-bench/`. This Feature creates it with `firmware-bench/tests/`. Feature 11 adds the documents and Feature 12 the package.
-- Only what is relevant moves. The owner's words: "only if they are relevant documents and tests. If they are not, or outdated in any way, delete them". So a test that only holds a passing state of this Run in place is deleted. 10-B4 says which.
+- Only what is relevant moves. The owner's words: "only if they are relevant documents and tests. If they are not, or outdated in any way, delete them". So a test that only holds a passing state of this Run in place is deleted. The owner then asked that the other benchmark test modules be gone through for outdated tests as well, and all sixty were, test by test. 10-B4 says which tests go.
 - Of the tests of the tool's own behaviour that run on the benchmark's cases today, the 41 that run on the tool's own fixtures join the tool's tests now. About 85 more need the bench harness's device. They stay with the benchmark's tests. `Out of scope` names what the tool then tests only from there.
 
 One requirement comes from the session that wrote this Run's brief. The owner agreed on 2026-11-14 to pass it on: the removal's test processes must not be able to import a package from outside the copy. 10-B8 closes it for the packages of today. Feature 12 closes it for the package it creates.
@@ -26,7 +26,7 @@ Terms used below:
 Where something is different after this Feature:
 
 - The benchmark's tests are run from `firmware-bench/tests/`. The tool's tests are run from `tests/`, as before.
-- 105 tests no longer exist (10-B4).
+- 157 tests no longer exist (10-B4).
 - The test command in `STANDARDS.md` and the hosted tests run both folders.
 - The stripped copy holds no benchmark code, no benchmark resources and no benchmark test.
 - No module under `src/` changes.
@@ -55,14 +55,16 @@ Where something is different after this Feature:
   - No file name is in both folders.
 
 - **10-B4** — Tests that are outdated, or that only hold a passing state of this Run in place, are deleted.
-  - Two modules are deleted whole. `tests/test_benchmark_runs_unchanged.py`: its two tests hold a benchmark run to what the kit-fixes Run left unchanged, on the tool's own test fixtures. `tests/test_benchmark_stages.py`: four of its tests become tool tests (10-B2), and the other two are a scan of tool sources (`:90`) and a list of names that are gone (`:100`).
+  - Three modules are deleted whole. `tests/test_benchmark_runs_unchanged.py`: its two tests hold a benchmark run to what the kit-fixes Run left unchanged, on the tool's own test fixtures. `tests/test_benchmark_stages.py`: four of its tests become tool tests (10-B2), and the other two are a scan of tool sources (`:90`) and a list of names that are gone (`:100`). `tests/test_benchmark_reuse_endpoint.py`: its five tests seal and regrade the evidence of the earlier, gated protocol, which nothing in the code writes any more.
   - In eight modules that this Run wrote or changed, each test goes by what its assertions depend on. A test that runs code and asserts what it does moves. So does a test that holds the benchmark's code to the interface. A test is deleted when all it asserts is a state of the list, the text or a hash of a document or a build file, a scan of the tool's source, or that something an earlier Feature removed is absent. `Interface and seams` lists every deleted test by its line, 101 in all.
+  - In the sixty other modules a test is deleted in five cases. It tests the earlier, gated protocol's own machinery, the sealing of its evidence and its regrade, whether that accepts or refuses. It shows a record, a report, an export or a saved state of another earlier format being read. All it asserts is that something removed is absent, or that a dropped name is refused as any unknown name is. It holds the tool's skill text to wording that is stale, or scans the tool's source. Or it repeats another test. `Interface and seams` lists every such test by its line, 47 in all beside the five of `test_benchmark_reuse_endpoint.py`. The list governs: a test that is not on it moves.
+  - So these stay, though they touch something old. A test in which current code turns an earlier-format file away stays, since the refusal protects results. A test that holds a rule of today stays where its fixture, or a part of its body, is of the earlier protocol. A test of the tool's own code stays, by the owner's fourth decision. The seven tests of `behavior.project_feedback` and `parameter_store.expected_state` stay, though nothing under `src/` calls those two functions: whether something outside this repository uses them cannot be seen from here.
   - Three tests of the check itself move into the list's tests: `tests/test_benchmark_commands.py:731` and `tests/test_benchmark_surface.py:1258`, `:1263`.
   - A helper, a constant or an import that only deleted tests used goes with them. A moved test keeps what it needs of a fixture or a class it shared with a deleted one.
   - No benchmark test file reads the list or imports the check or the list's tests.
 
 - **10-B5** — The benchmark's tests lie in `firmware-bench/tests/`.
-  - Every test module and helper that has a row in the list today moves there under its own name, unless 10-B2 or 10-B4 takes it elsewhere. The check and the list's tests stay in `tests/`. That is 70 test modules and 8 helpers.
+  - Every test module and helper that has a row in the list today moves there under its own name, unless 10-B2 or 10-B4 takes it elsewhere. The check and the list's tests stay in `tests/`. That is 69 test modules and 8 helpers.
   - A moved test keeps its name and its assertions. It finds the repository, the source and the documents from its new place. A child script that imports a helper by its bare name finds it in the new folder.
   - `python -m unittest discover -s firmware-bench/tests` finds and runs them.
   - `MANIFEST.in` puts the Python files of `firmware-bench/tests/` into the source archive, in a marked passage.
@@ -145,7 +147,35 @@ The tests 10-B4 deletes, by module and line. The letter says what the test's ass
 
 Every other test of these eight modules moves. `tests/test_assistive_wording.py` and `tests/test_tq9_replacement.py` move whole. The first holds documents to their wording, and Feature 11 settles it with the documents.
 
-The modules that are not named in this Spec move whole: every test keeps its name and its assertions.
+The tests 10-B4 deletes in the other modules, by module and line. P is the gated protocol's own machinery or another earlier format still being read, G something gone or a dropped name refused as any unknown one, D the stale wording of the skill text, S a scan of the tool's source, N a test that repeats another.
+
+- `tests/test_benchmark_asset_build.py`: G `:372`.
+- `tests/test_benchmark_mcp_reuse.py`: P `:22`, `:31`. N `:8`, `:11`, `:14`, which repeat `:17`.
+- `tests/test_benchmark_scenarios.py`: G `:20`.
+- `tests/test_benchmark_v2_evidence.py`: P `:97`, `:110`, `:121`, `:132`, `:138`, `:147`, `:153`, `:161`, `:168`, `:182`, `:199`, `:224`, `:393`.
+- `tests/test_case_registry.py`: G `:126`, `:131`.
+- `tests/test_corpus.py`: P `:279`, `:293`.
+- `tests/test_device_recovery.py`: G `:54`. S `:39`. That scan also held `device_recovery.py` to a closed list of imports. It goes knowingly: 10-B9 holds what matters of it, that no tool module imports the benchmark.
+- `tests/test_harness.py`: S `:179`.
+- `tests/test_pairing.py`: D `:887`.
+- `tests/test_reporting.py`: P `:25`, `:62`, `:215`.
+- `tests/test_scorecard.py`: P `:1655`.
+- `tests/test_slot_policy.py`: P `:385`.
+- `tests/test_suite_reporting.py`: P `:54`, `:105`, `:119`, `:163`, `:217`, `:234`, `:246`, `:370`, `:426`, `:469`, `:485`, `:515`.
+- `tests/test_suite_store.py`: P `:42`.
+- `tests/test_benchmark_surface.py`, one of the eight modules above: P `:1096`, which asserts what `tests/test_suite_reporting.py:217` and `:246` assert.
+
+Six tests that touch an earlier format are not on the list, because each also holds a rule of today that no other test holds: `tests/test_assistive_reports.py:472` and `:986`, `tests/test_corpus_preflight.py:215`, `tests/test_family_seam.py:506`, `tests/test_suite_reporting.py:133` and `tests/test_unlocked_keys.py:1000`. They move unchanged.
+
+The earlier formats these tests read are mainly the gated protocol's run evidence and its report (`benchmark-run-evidence/1`, `benchmark-report/2`), the suite reports `/1` and `/2`, the corpus plan and report `/1`, registration rows such as the dropped legacy cases had, a scorecard saved before a later field, and a suite stored before later columns or before each case had its own grader identity. The code that reads them stays, since no module under `src/` changes. The report names every function and class of the benchmark's code that these deletions leave without a test: one that a deleted test named and that no remaining benchmark test file names. The session that runs this Run records them as noticed, for the firmware bench repository.
+
+Fixtures that deleted tests shared with remaining ones. Three rules cover them.
+
+- The test class `SealedEvidenceTests` (`tests/test_benchmark_v2_evidence.py:96`) goes with its tests. A remaining test or helper that took the evidence from that class takes it from its base class `SealedEvidenceFixture` (`:44`): `tests/test_assistive_reports.py:476` and `export_fixture` (`tests/test_suite_reporting.py:296`).
+- `owner_fixture` (`tests/test_suite_reporting.py:198`) goes, since every test that used it is on the lists.
+- Nothing else inside a helper or a method that stays is trimmed. A parameter, a branch or a mode name that only deleted tests used stays as it is, such as the parameters of `export_fixture` and the mode names at `tests/test_benchmark_tq9_v2.py:1267`.
+
+Every other test of the sixty modules moves: it keeps its name and its assertions.
 
 The three lines of `STANDARDS.md` for the owner. Line 12 ends with the new place of the test it names:
 
@@ -185,8 +215,9 @@ The test command took 434 to 440 s at the end of Feature 09, and the kit stops i
 
 - Product code. No module under `src/` changes. If a moved test shows a fault there, the report says so.
 - The tests of the tool's own behaviour that need the bench harness's device. They stay with the benchmark's tests, by the owner's decision of 2026-11-18. After this Feature the tool tests the following only from `firmware-bench/tests/`: the instrument comparison on a live device (`test_quantity_repair.py`); device recovery, a call on another binding, and a restart before a recovery is committed (`test_device_recovery.py`); calls that take turns on a device, and the scripted whole runs through repair, recovery and fresh reuse (`test_benchmark_tq9_v2.py`, `test_benchmark_mcp_reuse.py`); operating conditions through the gateway (`test_development_conditions.py`); the device client's deadline and refusals (`test_harness.py`); `record_evaluation` on a real run (`test_evaluation.py`); a replay through all six stages (`test_replay_executor.py`); and stage notes and repair context (`test_pipeline_repair.py`, `test_public_missions.py`).
+- The benchmark's code that reads earlier formats, and functions of it that nothing calls. They stay. Whether to remove them is left to the firmware bench repository.
 - What the benchmark's tests import from the tool's package. They build the service from `configurator.Controller` and use private names of the tool. The interface lists none of them.
-- Benchmark text in documents that stay, the wording `test_assistive_wording.py` requires, and the stale wording `test_pairing.py:887-896` holds the skill text to. Feature 11.
+- Benchmark text in documents that stay, the wording `test_assistive_wording.py` requires, and the stale wording of the skill text itself. Feature 11. The test that held the skill text to that wording, `test_pairing.py:887`, is deleted here (10-B4).
 - `.github/scripts/tool_releases.py` and `tool-releases.yml`, which still watch `bench/README.md`. Feature 11.
 - The benchmark's own package, build file and the name `firmware_bench`. The dropped legacy cases stay in the benchmark's code and resources. Feature 12.
 - The scans and pins that the tool's own test modules of earlier Features hold, other than those this Spec names.

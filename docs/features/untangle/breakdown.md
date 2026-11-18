@@ -51,7 +51,7 @@ On 2026-11-17 the facts for Feature 08 showed that its line asked for more than 
 
 On 2026-11-18 `main`, with pull requests 38 and 39, was merged into this Run at `fcd078c`. Pull request 38 removed plans and Specs of earlier Runs. Seven rows of the deletion list then named files that are gone, and seven tests fail on that merge. Feature 09 brings the list in line as its first part, as Feature 06 did for the merge before it.
 
-The facts for Feature 09 showed three things its line had not settled. The owner's Approval of this change decides them.
+The facts for Feature 09 showed three things its line had not settled. The owner decided them on 2026-11-18.
 
 - The benchmark's commands take the names `firmware-bench` and `firmware-bench-mcp` already in Feature 09, so that the documents and the tests change once. The owner said on 2026-11-18 that firmware bench is the repository the benchmark is going to: generative-driver is the toolkit and the workflow, and firmware bench evaluates it.
 - Once the service no longer starts the bench harness, the benchmark's MCP tools cannot start one on Windows that outlives the MCP client. The benchmark gets no background process of its own for that in this Run. Those tools refuse and name the command for a terminal.

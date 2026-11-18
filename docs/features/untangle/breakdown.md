@@ -102,7 +102,7 @@ Feature 11 follows from that in five ways.
 When Feature 11 is done, three things hold.
 
 - The tool works with no file of the benchmark present. Its package installs, its tests pass, and `generative-driver smoke` makes a driver and ends with an equivalent verdict.
-- The benchmark works from its own folder. Its package installs from `firmware-bench/` beside the tool's built package, its tests pass, and its smoke case runs the tool on an example and grades the result.
+- The benchmark works from its own folder. Its package installs from `firmware-bench/` beside the tool's built package, its tests pass on a copy of that folder outside this checkout, and `firmware-bench run --case setup-smoke` passes. That smoke checks an installation: it validates a model, emits a package and replays a recorded reply, and it starts no service, worker or grader. A graded run of an example needs what it needs today: the evaluator's password, the emulator, a fresh qualification of the case, and a model or a saved candidate.
 - Removing the benchmark from this repository is deleting the folder `firmware-bench/` and the few lines outside it that name it, which the Spec lists.
 
 The Run's closing record names the Run's last commit, because the benchmark is copied out from it.

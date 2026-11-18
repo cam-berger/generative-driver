@@ -39,8 +39,8 @@ Where something is different after this Feature:
   - `tests/test_checkout.py` keeps its assertion that no byte changes on a Windows checkout. The loop that holds each case's answer file to its hash (`:44-50`) moves to a benchmark test file, which makes the same checkout for the files under `resources/bench/`.
   - `tests/test_tool_releases.py` (`:110`) requires the three pins of the tool's own workflow: Ghidra, the JDK and the Xtensa compiler. That `bench/README.md` pins Renode is asserted by a benchmark test file, which reads that document itself.
   - `test_03_B8_the_software_checks_run_the_smoke` (`tests/test_service_smoke.py:503`) reads `README.md` and no longer `docs/verification.md`: one of the fenced blocks of its install section holds a line that ends `-m generative_driver smoke`.
-  - No tool test file names `setup-smoke`, `resources/bench`, `bench/cases`, `bench/evidence` or `docs/verification.md` in its code. A doc or a comment that says the file uses none of them is no such use, and the test that holds this scan is left out of it.
-  - Four tests that hold their own file free of registered case names read `resources/registrations/cases.json` when it is there (`tests/test_client_calls.py:456`, `tests/test_client_surface.py:393`, `tests/test_supplied_runs.py:1326`, `tests/test_tool_commands.py:580`). They stay as they are.
+  - No tool test file names `setup-smoke`, `resources/bench`, `bench/cases`, `resources/registrations`, `bench/evidence` or `docs/verification.md` in a string of its code. The scan reads string constants and leaves out module, class and function docs, comments, and the test file that holds the scan. A path built from parts is not seen by it; the removal shows the rest (10-B8).
+  - Four tests that hold their own file free of registered case names read `resources/registrations/cases.json` when it is there (`tests/test_client_calls.py:456`, `tests/test_client_surface.py:393`, `tests/test_supplied_runs.py:1326`, `tests/test_tool_commands.py:580`). They stay as they are. They build that path from parts, so the scan does not name them.
 
 - **10-B2** — Forty-one tests of the tool's own behaviour are tool tests.
   - The table under `Interface and seams` names them, their new files, and what each uses in place of the benchmark's fixture.
@@ -49,8 +49,9 @@ Where something is different after this Feature:
   - The seven modules they are in have no row in the list.
 
 - **10-B3** — The benchmark's tests take nothing from the tool's test files.
-  - No benchmark test file imports a module that lies in `tests/`. That holds for import statements at any depth and for the scripts a test writes for a child process.
+  - No benchmark test file imports a module that lies in `tests/`. The scan reads import statements at any depth. It also reads as code every string constant that parses as Python and holds an import: that is how a test writes the script of a child process.
   - What the benchmark's tests took from the tool's test files is copied into one benchmark helper, `firmware-bench/tests/tool_fixtures.py`. `Interface and seams` lists the names.
+  - A benchmark test that starts a Python child gives it the environment of the copy of `package_env` in that helper. That meets line 38 of `STANDARDS.md`, which names the tool's `tests/package_env.py`; Feature 11 settles the line's wording.
   - No file name is in both folders.
 
 - **10-B4** — Tests that are outdated, or that only hold a passing state of this Run in place, are deleted.
@@ -61,11 +62,12 @@ Where something is different after this Feature:
   - No benchmark test file reads the list or imports the check or the list's tests.
 
 - **10-B5** — The benchmark's tests lie in `firmware-bench/tests/`.
-  - Every test module and helper that has a row in the list today moves there under its own name, with `git mv`, unless 10-B2 or 10-B4 takes it elsewhere. The check and the list's tests stay in `tests/`. That is 70 test modules and 8 helpers.
+  - Every test module and helper that has a row in the list today moves there under its own name, unless 10-B2 or 10-B4 takes it elsewhere. The check and the list's tests stay in `tests/`. That is 70 test modules and 8 helpers.
   - A moved test keeps its name and its assertions. It finds the repository, the source and the documents from its new place. A child script that imports a helper by its bare name finds it in the new folder.
   - `python -m unittest discover -s firmware-bench/tests` finds and runs them.
   - `MANIFEST.in` puts the Python files of `firmware-bench/tests/` into the source archive, in a marked passage.
-  - Four lines of the benchmark's documents that name a moved file or the folder name the new place: `bench/README.md:35`, `bench/groundtruth/README.md:73`, `docs/benchmark-case-authoring.md:30` and `docs/codex-acceptance.md:37`. No other line of a document changes, but in the list.
+  - Five lines of the benchmark's documents that name a moved file or the folder name the new place: `bench/README.md:35`, `bench/groundtruth/README.md:73`, `docs/benchmark-case-authoring.md:30`, `docs/codex-acceptance.md:37`, and `docs/generated-device-interface.md:186`, whose link to `tests/generated_fixtures.py` gets the new text and the new target. No other line of a document changes, but in the list.
+  - A doc or a comment in a test file that names a moved or deleted test file follows it: `tests/test_input_paths.py:805-807`, `tests/test_supplied_stages.py:5-6` and `tests/test_service_without_legacy_cases.py:4-5`, and the like in the files that move.
 
 - **10-B6** — The test command and the kit read both folders.
   - `STANDARDS.md` holds the three lines given under `Interface and seams`. The owner puts them in by hand before the Build begins, since only the owner changes that file.
@@ -82,7 +84,7 @@ Where something is different after this Feature:
   - The eight rows of the dropped legacy cases are gone as rows. The notes of `benchmark_support/` and of `resources/bench/` say which of their files belong to a dropped legacy case and are not carried to the benchmark's repository.
   - No row names a file under `tests/` but the check and the list's tests.
   - The stripped copy holds none of the ready items, and every tool test module passes in it.
-  - In the stripped copy a Python child cannot import `generative_driver.benchmark` or `generative_driver.benchmark_support`. That holds also where the tree the copy was made from, or an installed wheel, still has them.
+  - In the stripped copy a Python child cannot import `generative_driver.benchmark` or `generative_driver.benchmark_support`. That holds also where the tree the copy was made from, or an installed wheel, still has them. No mechanism changes for this: the removal already puts the copy's `src` first for its children, and the copy keeps the tool's package. One of the list's tests starts a child in a stripped copy with the environment the removal gives its children and expects both imports to fail. The half about an installed wheel is shown by the hosted run.
 
 - **10-B9** — A boundary test on each side.
   - A tool test fails if a tool module, or a tool test file, imports the benchmark's code. It sees the benchmark under each of its names: `generative_driver.benchmark`, `generative_driver.benchmark_support` and `firmware_bench`. It sees an import statement at any depth, relative or absolute, and a literal name given to `import_module` or `__import__`.
@@ -92,7 +94,8 @@ Where something is different after this Feature:
 
 - **10-B10** — The list and its check follow.
   - The check takes the `Freed by` values `02` to `12`.
-  - Under `Still used by the tool` stand only documents: `bench/README.md`, `bench/groundtruth/README.md`, `docs/benchmark-case-authoring.md`, `docs/benchmark-corpus.md` and `.scratch/benchmark-lifecycle/`. Each is freed by `11`, and each reason is true and names no test file that moved.
+  - Under `Still used by the tool` stand only documents: `bench/README.md`, `bench/groundtruth/README.md`, `docs/benchmark-case-authoring.md`, `docs/benchmark-corpus.md` and `.scratch/benchmark-lifecycle/`. Each is freed by `11`, and each reason is true.
+  - No reason and no note in any table of the list names a test file at a place it no longer has.
   - Every `Freed by` under `Passages` is `11` or `stays`. The row of `docs/codex-acceptance.md` says that Feature 11 settles what moves. No row and no sentence of the list names Feature 10.
   - Every count under `Passages` is true. The row of `STANDARDS.md` says 4.
   - The check reports no problem on the repository.
@@ -164,7 +167,13 @@ Existing tests. Each keeps its name and its assertions unless a rule here says o
 - A tool test that holds the hosted step word for word (`tests/test_tool_commands.py:337-355`, `:400`) holds the new step, in a way that passes in the stripped copy as well. Its assertion that no line of the workflow says `bench` holds for the lines outside a marked passage. The hash of the workflow's text before the step stays as it is, since that text does not change.
 - A test of the list's tests that says where a row stands follows 10-B8 and 10-B10: `tests/test_deletion_marking.py:738` holds `bench/README.md` under `Still used by the tool` and `benchmark_support/` under `Ready to delete`.
 - `test_01_B7_the_hosted_test_step_sets_the_variable` (`tests/test_deletion_marking.py:667`) holds that the step sets the variable before it runs the tests of either folder.
-- The check changes only where 10-B10 says, and where a test file's place is fixed in it: a Python file under `firmware-bench/` is a benchmark item, which its folder's row covers. Tool test modules are found as before.
+- Two of the list's tests follow the `Freed by` values of 10-B10. `test_04_B7_takes_02_to_11_as_a_freed_by_and_reports_12_as_no_later_feature` (`tests/test_deletion_marking.py:191`) takes `02` to `12` and reports `13`. The test at `:171` gives its row the value `13` where it gave `12`.
+- A test renamed under these rules is renamed only where its name states a value that changed.
+- The check changes in one place: the `Freed by` values it takes (`tests/deletion_marking.py:28`). The row of `firmware-bench/tests/` covers the benchmark's test files, and tool test modules are found as before.
+
+The scans. Each scan this Feature adds has a test of its own on planted sources, which shows that it sees each form it is meant to see. The scan of 10-B9 passes on the tree from the start, so its RED is taken on planted sources.
+
+The archives. What 10-B1 says of `tests/test_distribution.py`, and the `MANIFEST.in` point of 10-B5, are shown only where `GD_TEST_WHEEL` and `GD_TEST_SDIST` are set. The implementer builds the wheel and the source archive from a copy of the tree, outside the clone, and runs the two distribution tests with both variables set. The hosted run shows the same.
 
 The hosted tests. Windows does not run on this machine, and faults there show only in a hosted run. So the session that runs this Run commits the state of the Build to the Run's branch before the Feature is Done and pushes it, again if a run still fails, and gives the implementer and the Reviewer each run's result. The Feature is not Done before the workflow `Installed package` has passed on all four of its jobs for the tree the Reviewer passed. This is a rule and not a numbered Behaviour, because no test on one machine can show it.
 

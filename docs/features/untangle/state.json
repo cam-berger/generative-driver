@@ -2,9 +2,9 @@
   "goal": "Separate the driver tool from the benchmark. Pull them apart in place until they are two installable packages that only share this repository, and mark every legacy benchmark item for later deletion. The benchmark is not deleted, and behaviour does not change apart from two decided exceptions: benchmark runs and suites start from the benchmark's own command, and the benchmark package is renamed firmware_bench.",
   "slug": "untangle",
   "branch": "mdk/untangle",
-  "stage": "build",
+  "stage": "spec",
   "awaiting": null,
-  "current": "09",
+  "current": "10",
   "features": [
     {
       "id": "01",
@@ -57,7 +57,7 @@
     {
       "id": "09",
       "slug": "commands",
-      "status": "building",
+      "status": "done",
       "base": "af775e35c37a7cc5d240962ffe9436e01305a971"
     },
     {

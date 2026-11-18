@@ -36,7 +36,6 @@ import os
 import runpy
 import secrets
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -1308,7 +1307,7 @@ def _exclusive(trial_dir):
 
 
 def launch(case, output_dir=None, executor=None, options=None, approval=None, *, effects=(), autostart=True, wait=False,
-           timeout=900, via_owner=False):
+           timeout=900):
     """Start a trial in a detached harness and return {trial_id, run_id} once the run has started; with `wait`, follow
     the trial until the harness has finished with it. Password file and emulator paths reach the harness on its stdin
     only. A repeated request_id with the same inputs follows the trial it started, with no second harness or device;
@@ -1356,8 +1355,7 @@ def launch(case, output_dir=None, executor=None, options=None, approval=None, *,
     trial_dir.mkdir(parents=True, mode=0o700)
     try:
         payload = {**request, 'password_file': password_file, 'renode': renode}
-        process = (_spawn_via_owner(trial_dir, 'trial', payload, home) if via_owner else
-                   _spawn(trial_dir, ['--trial-dir', str(trial_dir)], payload))
+        process = _spawn(trial_dir, ['--trial-dir', str(trial_dir)], payload)
     except (OSError, ValueError) as error:
         # A claimed request_id then reports this failure instead of waiting for a harness that never ran.
         _private(trial_dir / 'trial.json', {'schema': TRIAL, 'trial_id': trial_id, 'request_id': request_id or trial_id,
@@ -1383,45 +1381,6 @@ def _spawn(directory, arguments, payload):
     finally:
         process.stdin.close()
     return process
-
-
-def _spawn_via_owner(directory, kind, payload, home):
-    """Launch outside a Windows MCP client's kill-on-close job. The independent owner
-    receives only launch metadata; credentials travel directly from this client to
-    the harness over a one-shot authenticated loopback connection, never on disk.
-    """
-    from ..client import call
-    token = secrets.token_hex(32)
-    with socket.socket() as listener:
-        listener.bind(('127.0.0.1', 0))
-        listener.listen(1)
-        listener.settimeout(30)
-        channel = {'schema':'bench-launch-channel/1', 'port':listener.getsockname()[1], 'token':token}
-        reply = call('benchmark_spawn', {'directory':str(directory), 'kind':kind, 'channel':channel},
-                     home, autostart=False)
-        if not reply.get('ok'):
-            raise ValueError(reply.get('reason') or 'The background owner refused the harness launch')
-        with listener.accept()[0] as connection:
-            connection.settimeout(30)
-            with connection.makefile('rb') as stream:
-                if not secrets.compare_digest(stream.readline(66).rstrip(b'\n'), token.encode('ascii')):
-                    raise ValueError('The bench harness launch connection did not authenticate')
-                connection.sendall(json.dumps(payload).encode('utf-8'))
-                connection.shutdown(socket.SHUT_WR)
-    return None  # Its process is reaped by the owner that launched it.
-
-
-def _launch_payload(request):
-    """The owner's stdin envelope names a direct handoff, without evaluator secrets."""
-    if request.get('schema') != 'bench-launch-channel/1':
-        return request
-    with socket.create_connection(('127.0.0.1', request['port']), timeout=30) as connection:
-        connection.sendall(request['token'].encode('ascii') + b'\n')
-        with connection.makefile('rb') as stream:
-            raw = stream.read(4 * 1024 * 1024 + 1)
-        if len(raw) > 4 * 1024 * 1024:
-            raise ValueError('Bench harness launch payload is too large')
-        return json.loads(raw.decode('utf-8'))
 
 
 # What makes two launches the same request; never a password file or emulator path.
@@ -1929,8 +1888,7 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
     return None
 
 
-def launch_suite(request, *, home, password_files=None, renode=None, set_root=None, autostart=True, timeout=900,
-                 via_owner=False):
+def launch_suite(request, *, home, password_files=None, renode=None, set_root=None, autostart=True, timeout=900):
     """Start a detached bench harness for a suite and return once the configurator took the suite on, or refused it.
     `request` holds the manifest, executor, options and request_id of a new suite, or the suite_id (with an approved
     budget extension) of a stopped one to resume. Password file and emulator paths, and a set suite's `set_root`, reach
@@ -1982,8 +1940,7 @@ def launch_suite(request, *, home, password_files=None, renode=None, set_root=No
     try:
         payload = {**request, 'password_files': passwords, 'renode': renode,
                    **({'set_root': set_root} if set_root else {})}
-        process = (_spawn_via_owner(suite_dir, 'suite', payload, home) if via_owner else
-                   _spawn(suite_dir, ['--suite-dir', str(suite_dir)], payload))
+        process = _spawn(suite_dir, ['--suite-dir', str(suite_dir)], payload)
     except (OSError, ValueError) as error:
         _private(suite_dir / 'suite.json', {'schema': SUITE, 'status': 'failed', 'accepted': False, 'finished': time.time(),
                                             'reason': 'The bench harness did not start: ' + str(error)})
@@ -2030,7 +1987,7 @@ def main(argv=None):
     fixture = os.environ.get('GD_TEST_HARNESS_FIXTURE')
     if fixture:
         runpy.run_path(fixture, run_name='gd_harness_fixture')
-    request = _launch_payload(json.loads(sys.stdin.buffer.read().decode('utf-8')))
+    request = json.loads(sys.stdin.buffer.read().decode('utf-8'))
     if args.suite_dir:
         run_suite(Path(args.suite_dir), request)
         return

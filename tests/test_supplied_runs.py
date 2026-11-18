@@ -763,10 +763,9 @@ class NoCaseTests(unittest.TestCase):
         self.assertEqual(lines, [2, 3, 4, 5])
 
     def test_06_B8_the_benchmark_imports_that_remain_are_the_named_ones(self):
-        support = 'generative_driver.benchmark_support.'
-        # Those Feature 08 leaves (08-B7 of docs/features/untangle/08-reports.md): the harness launch.
-        allowed = {('call', support + 'harness', '_spawn'), ('call', support + 'trial_store', 'bench_home'),
-                   ('call', support + 'trial_store', 'solo_trial_dir'), ('call', support + 'trial_store', 'suite_dir')}
+        # None: the last, which launched a harness, left in Feature 09 (09-B8 of
+        # docs/features/untangle/09-commands.md).
+        allowed = set()
         other = []
         for node, names in enclosing(ast.parse(service_source().read_bytes())):
             if not isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -781,7 +780,7 @@ class NoCaseTests(unittest.TestCase):
         self.assertEqual(other, [])
         # The scan above agrees with the helper every Feature of this Run uses: nothing is imported at module level.
         taken = benchmark_imports(service_source(), 'generative_driver')
-        self.assertTrue(taken)
+        self.assertEqual(taken, [])
         self.assertEqual([node for node in ast.parse(service_source().read_bytes()).body
                           if isinstance(node, (ast.Import, ast.ImportFrom))
                           and 'benchmark' in (getattr(node, 'module', None) or '')], [])

@@ -31,14 +31,14 @@ Use an installed `generative-driver`. All paths below are operator-chosen placeh
 
 ```sh
 generative-driver --home /operator/state/corpus configure --executor codex --command /absolute/path/to/codex --provider openai --model YOUR_MODEL
-generative-driver --home /operator/state/corpus benchmark corpus list
-generative-driver --home /operator/state/corpus benchmark corpus plan --repetitions 3 --output /operator/reports/corpus-plan.json
+firmware-bench --home /operator/state/corpus corpus list
+firmware-bench --home /operator/state/corpus corpus plan --repetitions 3 --output /operator/reports/corpus-plan.json
 ```
 
 This is the all-selected pilot: three slots for each of seven lineages, including all blocked lineages. Only selected, publicly ready cases enter the existing suite runner. To debug one lineage, freeze a separate plan:
 
 ```sh
-generative-driver --home /operator/state/corpus benchmark corpus plan --repetitions 1 --include zephyr-modbus --output /operator/reports/zephyr-debug-plan.json
+firmware-bench --home /operator/state/corpus corpus plan --repetitions 1 --include zephyr-modbus --output /operator/reports/zephyr-debug-plan.json
 ```
 
 `--include LINEAGE` can repeat and selects only those lineage IDs. `--exclude LINEAGE REASON` can repeat and records an explicit exclusion, for example `--exclude grbl-motion "No qualified backend for this pilot"`. A lineage cannot be both explicitly included and excluded. With no `--include`, every lineage is selected except explicit exclusions. Neither option deletes catalog entries or coverage slots: unselected slots say `excluded` and retain a reason; selected gaps say `blocked` and retain their admission blockers.
@@ -65,12 +65,12 @@ Create `/operator/private/corpus-options.json` outside the checkout and worker d
 `home` must equal the absolute `--home` used to configure Codex and control the owner. Password paths and values stay with the operator check and detached bench harness. Keep decrypted bundles, reference logs, upstream source/build trees and credentials outside worker inputs and enforce host access controls. Hashes establish integrity. Workers have no filesystem isolation in this implementation.
 
 ```sh
-generative-driver --home /operator/state/corpus benchmark corpus check --plan /operator/reports/corpus-plan.json --options /operator/private/corpus-options.json
+firmware-bench --home /operator/state/corpus corpus check --plan /operator/reports/corpus-plan.json --options /operator/private/corpus-options.json
 generative-driver --home /operator/state/corpus service start
-generative-driver --home /operator/state/corpus benchmark corpus start --plan /operator/reports/corpus-plan.json --executor codex --options /operator/private/corpus-options.json --request-id corpus-pilot-1
-generative-driver --home /operator/state/corpus benchmark suite status SUITE_ID
-generative-driver --home /operator/state/corpus benchmark suite events SUITE_ID --after 0
-generative-driver --home /operator/state/corpus benchmark suite result SUITE_ID --offset 0 --limit 50
+firmware-bench --home /operator/state/corpus corpus start --plan /operator/reports/corpus-plan.json --executor codex --options /operator/private/corpus-options.json --request-id corpus-pilot-1
+firmware-bench --home /operator/state/corpus suite status SUITE_ID
+firmware-bench --home /operator/state/corpus suite events SUITE_ID --after 0
+firmware-bench --home /operator/state/corpus suite result SUITE_ID --offset 0 --limit 50
 ```
 
 `corpus check` authenticates the frozen selection's current ready cases through the same `require_calibration` admission used by the harness. It launches no owner, worker, native process or device and reports no password handles or private paths. A successful check establishes authenticated evaluator qualification only: it does not validate runtime authentication, installed native tools or model performance. Blocked and excluded entries remain visible; a selection with no ready cases cannot pass. Requalify stale evidence and freeze a new plan before checking again.
@@ -78,7 +78,7 @@ generative-driver --home /operator/state/corpus benchmark suite result SUITE_ID 
 Save `suite_id` from `corpus start`; the returned suite is the normal suite lifecycle. The harness starts children sequentially through acquire → interpret → probe → ground → emit → fresh reuse. Repeating the request ID reconnects to the same suite. After correcting a stopped suite's operator or host fault:
 
 ```sh
-generative-driver --home /operator/state/corpus benchmark suite resume SUITE_ID --options /operator/private/corpus-options.json
+firmware-bench --home /operator/state/corpus suite resume SUITE_ID --options /operator/private/corpus-options.json
 ```
 
 Use the [existing suite budget and recovery rules](../bench/README.md#run-a-repeated-suite); resume does not erase attempts, failures or elapsed time. No corpus-specific status or resume command is needed.
@@ -86,14 +86,14 @@ Use the [existing suite budget and recovery rules](../bench/README.md#run-a-repe
 ## Report without losing coverage
 
 ```sh
-generative-driver --home /operator/state/corpus benchmark corpus report --plan /operator/reports/corpus-plan.json --suite-id SUITE_ID --output /operator/reports/corpus-report.json
+firmware-bench --home /operator/state/corpus corpus report --plan /operator/reports/corpus-plan.json --suite-id SUITE_ID --output /operator/reports/corpus-report.json
 ```
 
 `--suite-id` exports through the existing suite reporter. With the output path above, it preserves the raw suite export in `/operator/reports/corpus-report-suite/` beside the corpus report. Without `--output`, it uses a temporary suite export and prints the corpus report. To choose the suite export directory explicitly, use these commands instead:
 
 ```sh
-generative-driver --home /operator/state/corpus benchmark suite report SUITE_ID --output /operator/reports/corpus-suite
-generative-driver --home /operator/state/corpus benchmark corpus report --plan /operator/reports/corpus-plan.json --suite-report /operator/reports/corpus-suite/suite.json --output /operator/reports/corpus-report.json
+firmware-bench --home /operator/state/corpus suite report SUITE_ID --output /operator/reports/corpus-suite
+firmware-bench --home /operator/state/corpus corpus report --plan /operator/reports/corpus-plan.json --suite-report /operator/reports/corpus-suite/suite.json --output /operator/reports/corpus-report.json
 ```
 
 Supply either `--suite-id` or `--suite-report`. Omit both for an intake-only report with no measured model rate. A suite must match the frozen manifest, complete case pins and actual-agent execution before its outcomes count. Reports retain every catalog slot, including excluded slots and their reasons.
@@ -128,8 +128,8 @@ git -C /operator/source/zephyr checkout 413b789deb391d3a37d06b463288a5fe765ee57e
 From `/operator/source`, run `west init -l zephyr`, `west update cmsis cmsis_6 hal_stm32` and `python -m pip install -r zephyr/scripts/requirements-base.txt`. Then:
 
 ```sh
-generative-driver --home /operator/state/corpus benchmark corpus build --case zephyr-modbus-v1 --source /operator/source/zephyr --compiler /absolute/path/to/arm-none-eabi-gcc --west /absolute/path/to/west --output /operator/private/empty-zephyr-build
-generative-driver --home /operator/state/corpus benchmark truth calibrate --case zephyr-modbus-v1 --password-file /operator/private/zephyr-modbus-v1.password --renode /absolute/path/to/renode --ghidra-home /absolute/path/to/ghidra --java-home /absolute/path/to/jdk --output /operator/private/empty-zephyr-qualification
+firmware-bench --home /operator/state/corpus corpus build --case zephyr-modbus-v1 --source /operator/source/zephyr --compiler /absolute/path/to/arm-none-eabi-gcc --west /absolute/path/to/west --output /operator/private/empty-zephyr-build
+firmware-bench --home /operator/state/corpus truth calibrate --case zephyr-modbus-v1 --password-file /operator/private/zephyr-modbus-v1.password --renode /absolute/path/to/renode --ghidra-home /absolute/path/to/ghidra --java-home /absolute/path/to/jdk --output /operator/private/empty-zephyr-qualification
 ```
 
 Build verifies clean pinned source/module commits, builds twice with the shipped configuration, compares image hashes and records compiler/configuration provenance. It does not fetch sources or modify protocol handlers. Qualification authenticates the selected encrypted inventory and its pinned image; a separate rebuild alone does not replace that image. It runs native Ghidra analysis, two valid references in diagnostic and final phases, and six functional mutants. Final phases execute emitted packages. A failed positive reference stops qualification before mutants. Image, mission, grader-identity (the grading core, the case's family closure, its own entry in `cases.json`, the `cryptography` version) or reference-inventory changes require new qualification; runtime, template, toolkit, report and other cases' changes do not.

@@ -109,7 +109,7 @@ The navigation exporter bounds `references.tsv`, `strings.tsv` and `switches.tsv
 
 New runs use `assistive/1`: notes accompany handoffs, device differences drive bounded repair, and each run records one final equivalence verdict. These are a **new series** relative to the older gated protocol below. Workers are **not read-isolated** until a real sandbox exists; evaluator separation is password-based. The bench harness holds passwords and truth; the configurator holds no password or recipe. Workers see instrument readings. A **fresh native calibration** for the exact implementation precedes model measurement; an earlier seal regrades from its **preserved checkout**, rather than a later evaluator.
 
-`benchmark run --executor replay` and replay suites have scripted TCP/toy-truth coverage through all six stages, final grading and sealing. Reports label `replay-emulation`; comparisons reject mixing replay and model evidence. Those tests do not establish native replay or model performance.
+`firmware-bench run --executor replay` and replay suites have scripted TCP/toy-truth coverage through all six stages, final grading and sealing. Reports label `replay-emulation`; comparisons reject mixing replay and model evidence. Those tests do not establish native replay or model performance.
 
 The dashboard at `0b9fb96` observed one original-image TQ9 model trial (Codex CLI 0.159.2, `gpt-6.1-sol`, medium): six stages, zero repairs, 10.05 minutes, fresh reuse and regraded 9/9. Nineteen sampled browser snapshots agreed with bracketing owner state; stale status and reconnection preserved the completed run. Final source and installed Python 3.11/3.13 suites ran 430 tests each, zero archive skips. Hosted startup exposed reverse DNS blocking; a no-name-service regression validated loopback startup without that dependency. The precise initial hosted cause remains an inference; unchanged cleanup/reconnect failures and retries remain recorded. The workstation observations cover the macOS dashboard. See [dashboard evidence](../bench/evidence/dashboard-verification.json) and [usage](dashboard.md).
 
@@ -145,8 +145,8 @@ python -m build
 Set `GD_TEST_WHEEL` and `GD_TEST_SDIST` to absolute archive paths; run `python -m unittest discover -s tests -v` and `node tests/dashboard-client.test.js` (Node.js 22+). Install the wheel in clean Python 3.11/3.13 environments, extract the source archive elsewhere and run tests there. Remove checkout `PYTHONPATH` and credential/native overrides; retain archive variables. Confirm `generative_driver.__file__` and `interface_runtime.__file__` resolve to the installation.
 
 ```sh
-python -m generative_driver benchmark cases
-python -m generative_driver benchmark run --case setup-smoke --output "smoke output"
+firmware-bench cases
+firmware-bench run --case setup-smoke --output "smoke output"
 python -m generative_driver setup --host codex --output "codex setup"
 python -m generative_driver smoke
 ```

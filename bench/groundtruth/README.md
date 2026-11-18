@@ -11,8 +11,8 @@ Store version 5 requires six transaction scenarios in both phases, full ending-s
 The publisher supplies passwords separately to a human evaluator. There is no bundled key or default. Smoke needs none. Store password files outside checkout/candidate workspaces with host access controls; pass paths, never contents, to the evaluator. Keep secrets out of prompts, environments and worker logs. Password possession is the trust boundary; worker filesystem isolation is unverified.
 
 ```sh
-python -m generative_driver benchmark truth unlock --case tq9 --password-file "/private/evaluator/tq9.password" --output "/private/evaluator/unlocked"
-python -m generative_driver benchmark truth rebuild --case tq9 --password-file "/private/evaluator/tq9.password" --compiler "/absolute/path/to/arm-none-eabi-gcc" --output "/private/evaluator/rebuilt"
+firmware-bench truth unlock --case tq9 --password-file "/private/evaluator/tq9.password" --output "/private/evaluator/unlocked"
+firmware-bench truth rebuild --case tq9 --password-file "/private/evaluator/tq9.password" --compiler "/absolute/path/to/arm-none-eabi-gcc" --output "/private/evaluator/rebuilt"
 ```
 
 Use empty output directories. Unlock writes `evidence.json` and top-level sources; authored inventories remain embedded. Rebuild uses pinned Arm GCC and adjacent objcopy, then verifies the image hash. Changed toolchains/contracts require reviewed versions.
@@ -22,7 +22,7 @@ Use empty output directories. Unlock writes `evidence.json` and top-level source
 Create a random password in a separate evaluator-only file:
 
 ```sh
-python -m generative_driver benchmark truth rekey --case tq9 --password-file "/private/evaluator/old.password" --new-password-file "/private/evaluator/new.password" --output "/private/evaluator/rekeyed"
+firmware-bench truth rekey --case tq9 --password-file "/private/evaluator/old.password" --new-password-file "/private/evaluator/new.password" --output "/private/evaluator/rekeyed"
 ```
 
 Publish the reviewed ciphertext and manifest together; deliver the password separately. Installed resources are untouched. Rekeying preserves expectations. Changed inputs/acceptance require versioning and qualification. Execution-only fixes retain case versions but need qualification for the exact implementation/dependency digest.
@@ -32,7 +32,7 @@ Publish the reviewed ciphertext and manifest together; deliver the password sepa
 Use native GCC, objcopy, Renode, Ghidra and Java. Rebuild/analyze the image; run two references and required mutants through both phases. References must pass and mutants fail their predeclared checks. Missing tools, host faults and skips cannot qualify a case.
 
 ```sh
-python -m generative_driver benchmark truth calibrate --case tq9-v2 --password-file "/private/evaluator/tq9-v2.password" --compiler "/absolute/path/to/arm-none-eabi-gcc" --renode "/absolute/path/to/renode" --ghidra-home "/absolute/path/to/ghidra" --java-home "/absolute/path/to/java-home" --output "/private/evaluator/calibration"
+firmware-bench truth calibrate --case tq9-v2 --password-file "/private/evaluator/tq9-v2.password" --compiler "/absolute/path/to/arm-none-eabi-gcc" --renode "/absolute/path/to/renode" --ghidra-home "/absolute/path/to/ghidra" --java-home "/absolute/path/to/java-home" --output "/private/evaluator/calibration"
 ```
 
 `ARM_NONE_EABI_GCC` or PATH selects the compiler. Review and publish the emitted manifest/encrypted bundle together; raw evidence stays private. Admission authenticates current code, dependencies, images, inventories and evidence, not a public `passed` label.
@@ -40,7 +40,7 @@ python -m generative_driver benchmark truth calibrate --case tq9-v2 --password-f
 For sampled-sensor/store, unlock into a new private directory, then recover the authenticated inventory outside checkout/worker roots. Keep its password in the authoring directory's parent. This POSIX-shell example checks hashes and the allowed file inventory:
 
 ```sh
-python -m generative_driver benchmark truth unlock --case sampled-sensor-v1 --password-file "/private/evaluator/sampled-sensor-v1.password" --output "/private/evaluator/sampled-unlocked"
+firmware-bench truth unlock --case sampled-sensor-v1 --password-file "/private/evaluator/sampled-sensor-v1.password" --output "/private/evaluator/sampled-unlocked"
 python - "/private/evaluator/sampled-unlocked/evidence.json" "/private/evaluator/sampled-sensor-v1-authoring" <<'PYTHON'
 import json, os, sys
 from pathlib import Path
@@ -79,7 +79,7 @@ Current `assistive/1` trials use `benchmark-run-evidence/2`: one post-run grade 
 Preserve V2 encrypted sidecars and accepted artifacts. They pin execution, observations, six gates and final grades. Offline scoring verifies bytes and recomputes grades without workers/devices:
 
 ```sh
-python -m generative_driver benchmark score "reports/trial.json" --evidence "/private/evaluator/run-evidence.enc" --password-file "/private/evaluator/tq9-v2.password"
+firmware-bench score "reports/trial.json" --evidence "/private/evaluator/run-evidence.enc" --password-file "/private/evaluator/tq9-v2.password"
 ```
 
 Keep private vectors, sources and monitor recipes outside candidate inputs/version control. Public reports expose selected counts, hashes and verdicts. Qualification establishes evaluator behavior, not model performance, physical compatibility, Windows support or third-party attestation. See [verification](../../docs/verification.md).

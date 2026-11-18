@@ -102,7 +102,7 @@ A family hook is one thing the grading core asks of a family. A family module de
 1. Record immutable source/license evidence and build twice to the same firmware bytes. Verify backend startup/reset and independent observations. Define separate diagnostic and final episodes and their complete ending-state checks; do not infer an oracle from the candidate's own replies.
 2. Run native image analysis and two independently valid references. Both must pass their required episodes; final episodes must execute emitted packages. Freeze each mutant's targeted failed check IDs before running it, then demonstrate rejection of every required mutant. Host faults, missing tools, skipped episodes or public `calibration.status: passed` text cannot qualify a case.
 3. Use the matching trusted qualification command to emit the replacement manifest and encrypted bundle. For the three synthetic families, follow [native groundtruth qualification](../bench/groundtruth/README.md#native-reference-qualification), including private authoring inventory recovery for sampled-sensor/store. Qualify against the case's current grader identity (below); a change to its grading code voids existing evidence without changing the case version.
-4. Review the pair and explicitly copy it into a complete operator asset tree using the [activation example](benchmark-corpus.md#rebuild-and-requalify-zephyr). Publish a new catalog revision that changes the row from `case: null` to the registered case ID and removes each blocker only when its evidence is resolved; any remaining blocker keeps the lineage blocked. The case manifest's `corpus_identity` must match the promoted catalog row. `GENERATIVE_DRIVER_BENCH_ROOT` selects the tree but neither installs outputs nor requalifies them. Preserve matching images, missions, platforms, catalogs and notices; keep raw authoring evidence private. Restart the owner with the selected tree, freeze a fresh plan and run `benchmark corpus check` with operator-only password handles.
+4. Review the pair and explicitly copy it into a complete operator asset tree using the [activation example](benchmark-corpus.md#rebuild-and-requalify-zephyr). Publish a new catalog revision that changes the row from `case: null` to the registered case ID and removes each blocker only when its evidence is resolved; any remaining blocker keeps the lineage blocked. The case manifest's `corpus_identity` must match the promoted catalog row. `GENERATIVE_DRIVER_BENCH_ROOT` selects the tree but neither installs outputs nor requalifies them. Preserve matching images, missions, platforms, catalogs and notices; keep raw authoring evidence private. Restart the owner with the selected tree, freeze a fresh plan and run `firmware-bench corpus check` with operator-only password handles.
 5. Run the normal actual-agent six-stage pipeline: acquire → interpret → probe → ground → emit → reuse. The bench harness pins and admits the case, freezes the case's inputs in its trial folder and supplies the frozen firmware and the mission, with the device, to the configurator, which knows no case. Reuse starts a fresh worker with only the package, objective and permitted operating data. Retain all outcomes and obtain the harness's final equivalence and separate mission evidence. Native reference calibration and scripted/replay tests do not measure model performance.
 
 Changing the image, mission/acceptance behavior, grading code, native recipes, references or mutant inventory requires qualification again. Version changed expectations and preserve old evidence/checkouts so historical reports retain their meaning. Software qualification leaves physical transport, timing and plant behavior open until measured separately.
@@ -124,7 +124,7 @@ A generated set is a batch of devices that the private device generator writes a
 **Qualify** a registered set once, with the answer vault mounted and no worker running:
 
 ```sh
-python -m generative_driver benchmark set qualify --set generated-development-v1 \
+firmware-bench set qualify --set generated-development-v1 \
   --root /path/to/set --password-file /path/to/set.password \
   --renode /path/to/renode --output /path/to/vault/set-qualification
 ```
@@ -150,7 +150,7 @@ Its options name the set's directory and key its password file by the set's name
  "renode": "/path/to/renode"}
 ```
 
-`set_root` reaches the bench harness on its stdin, as password files do. The harness refuses the suite, before it contacts the configurator, unless the set is registered and qualified, every entry's device is admitted, and neither the configurator home, the bench home, the emulator executable nor a replay candidate lies under the set's folder. A device pin (the harness builds it and freezes it with the trial's snapshot) never holds the level or framing. A trial on a set's device is resumed through its suite (`benchmark suite resume`, with the same options): `benchmark trial-resume` has no set root and refuses it. Its grade reports fresh reuse as not judged.
+`set_root` reaches the bench harness on its stdin, as password files do. The harness refuses the suite, before it contacts the configurator, unless the set is registered and qualified, every entry's device is admitted, and neither the configurator home, the bench home, the emulator executable nor a replay candidate lies under the set's folder. A device pin (the harness builds it and freezes it with the trial's snapshot) never holds the level or framing. A trial on a set's device is resumed through its suite (`firmware-bench suite resume`, with the same options): `firmware-bench trial-resume` has no set root and refuses it. Its grade reports fresh reuse as not judged.
 
 Workers never run with the vault open. To start a suite:
 
@@ -163,9 +163,9 @@ A folder still reachable after an hour ends the harness with `The vault holding 
 
 To resume a stopped suite:
 
-1. Stop the suite or let it finish: `benchmark suite resume` refuses while its active child is queued or running, or anything of it is still stopping.
+1. Stop the suite or let it finish: `firmware-bench suite resume` refuses while its active child is queued or running, or anything of it is still stopping.
 2. Open the vault and run the resume with the same options. The harness asks its own store whether the suite can resume, then holds the set and refuses a set no longer admitted, or a record other than the one each device pin names, with the vault still open.
-3. The call returns `status: awaiting-unmount` with the `suite_id`. Close the vault as above. A resume takes no claim, so follow it with `benchmark suite status`, not by repeating it.
+3. The call returns `status: awaiting-unmount` with the `suite_id`. Close the vault as above. A resume takes no claim, so follow it with `firmware-bench suite status`, not by repeating it.
 
 A resume with no `set_root` does not wait: slots with a recorded verdict or an uncertain effect settle without one, and a slot that needs its device, or a stopped child's audit, fails.
 
@@ -199,13 +199,13 @@ Nothing is sealed or deleted until the password is proved: a sweep or `store` wi
 
 With the vault open, once the suite is settled:
 
-- `benchmark suite store <suite id> --password-file <file> --vault-folder <folder>` seals what is left, then moves each seal under `<folder>/sealed-trials/<suite id>/`, unlocking each copy before its original goes. It takes a completed suite, or a cancelled one with nothing stopping. Stubs and other `*.enc` files stay. A repeat finishes a move cut short, and it never replaces a vault file that differs.
+- `firmware-bench suite store <suite id> --password-file <file> --vault-folder <folder>` seals what is left, then moves each seal under `<folder>/sealed-trials/<suite id>/`, unlocking each copy before its original goes. It takes a completed suite, or a cancelled one with nothing stopping. Stubs and other `*.enc` files stay. A repeat finishes a move cut short, and it never replaces a vault file that differs.
 - To abandon a suite, cancel it, then store it. That seals every readable trial, an unsettled slot's too. A later resume that reaches such a slot stops at the failed restore.
-- `benchmark suite scorecard` of a scoring suite needs `--password-file` and `--set-root`, and `--vault-folder` once `store` has run. It refuses while the suite is queued or running or anything of it is stopping, and it stays aggregate-only.
-- `benchmark suite report` of a scoring suite needs `--password-file`, `--set-root` and `--vault-folder`, and refuses in the same states, or unless the set root and `--output` lie under the vault folder, since the report holds per-trial data. `benchmark suite compare` still reads it, as only its counts leave.
-- `benchmark suite unseal <suite id> --trial <run id or trial id> --password-file <file> --vault-folder <folder> --output <folder under it>` writes one sealed trial out for a person checking a flagged command. It refuses any other location.
+- `firmware-bench suite scorecard` of a scoring suite needs `--password-file` and `--set-root`, and `--vault-folder` once `store` has run. It refuses while the suite is queued or running or anything of it is stopping, and it stays aggregate-only.
+- `firmware-bench suite report` of a scoring suite needs `--password-file`, `--set-root` and `--vault-folder`, and refuses in the same states, or unless the set root and `--output` lie under the vault folder, since the report holds per-trial data. `firmware-bench suite compare` still reads it, as only its counts leave.
+- `firmware-bench suite unseal <suite id> --trial <run id or trial id> --password-file <file> --vault-folder <folder> --output <folder under it>` writes one sealed trial out for a person checking a flagged command. It refuses any other location.
 
-`gd report <run>` on a sealed run writes files into the run's folder, and the next sweep seals them. `suite_result`, `suite_events`, `suite_status` and `suite.json` are unchanged and can show per-trial data.
+`firmware-bench report <run>` on a sealed run writes files into the run's folder, and the next sweep seals them. `suite_result`, `suite_events`, `suite_status` and `suite.json` are unchanged and can show per-trial data.
 
 ### Output figures on the scorecard
 
@@ -236,29 +236,29 @@ the clean pinned Zephyr source, host GCC, west and Zephyr build dependencies.
 files belong to the evaluator; workers receive neither their paths nor contents.
 
 ```sh
-python -m generative_driver benchmark corpus build --case zephyr-modbus-v1 \
+firmware-bench corpus build --case zephyr-modbus-v1 \
   --backend native-sim --source /path/to/zephyr --compiler /path/to/gcc \
   --west /path/to/west --output native-build
 
-python -m generative_driver benchmark corpus prepare-execution --build native-build \
+firmware-bench corpus prepare-execution --build native-build \
   --password-file /path/to/evaluator.password --output native-intake
 
 GENERATIVE_DRIVER_BENCH_ROOT="$PWD/native-intake" \
-  python -m generative_driver benchmark corpus exercise-execution --case zephyr-modbus-v1 \
+  firmware-bench corpus exercise-execution --case zephyr-modbus-v1 \
   --password-file /path/to/evaluator.password --output native-observations
 
-python -m generative_driver benchmark corpus exercise-execution --case zephyr-modbus-v1 \
+firmware-bench corpus exercise-execution --case zephyr-modbus-v1 \
   --password-file /path/to/evaluator.password --renode /path/to/renode --output renode-observations
 
-python -m generative_driver benchmark corpus compare-execution \
+firmware-bench corpus compare-execution \
   native-observations/observations.json renode-observations/observations.json --output comparison.json
 
-python -m generative_driver benchmark corpus prepare-execution --build native-build \
+firmware-bench corpus prepare-execution --build native-build \
   --password-file /path/to/evaluator.password --native-record native-observations/observations.json \
   --reference-record renode-observations/observations.json --output native-qualified-inputs
 
 GENERATIVE_DRIVER_BENCH_ROOT="$PWD/native-qualified-inputs" \
-  python -m generative_driver benchmark truth calibrate --case zephyr-modbus-v1 \
+  firmware-bench truth calibrate --case zephyr-modbus-v1 \
   --password-file /path/to/evaluator.password --ghidra-home /path/to/ghidra \
   --java-home /path/to/jdk --output native-calibration
 ```
@@ -282,7 +282,7 @@ namespaces and mounts. Verify these before spending model inference on a trial.
 
 ```sh
 GENERATIVE_DRIVER_BENCH_ROOT="$PWD/native-qualified-inputs" \
-  python -m generative_driver benchmark run --case zephyr-modbus-v1 --executor codex \
+  firmware-bench run --case zephyr-modbus-v1 --executor codex \
   --password-file /path/to/evaluator.password --home "$PWD/native-state" \
   --output "$PWD/native-trial" --ghidra-home /path/to/ghidra --java-home /path/to/jdk \
   --approve-emulator-tools --wait

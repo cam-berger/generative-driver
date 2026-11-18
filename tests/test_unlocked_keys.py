@@ -798,8 +798,11 @@ class SuitePasswordTests(HarnessSuiteFixture):
                     self.assertNotIn('QUOTED', written)
 
     def test_02_B6_launch_suite_reports_the_reason_and_the_same_request_starts_afresh_once_fixed(self):
+        from suite_fixtures import wait_harnesses
         path = self.root / 'private-handle'
         home = self.root / 'detached-home'
+        # A refusal reports before its harness exits, and Windows cannot delete a log still open.
+        self.addCleanup(wait_harnesses, home)
         request = {'manifest': suite_manifest(1), 'executor': 'codex', 'options': {}, 'request_id': 'fixed-later'}
         refused = harness.launch_suite(request, home=home, password_files={'tq9-v2': str(path)}, autostart=False, timeout=60)
         self.assertEqual(refused['ok'], False)

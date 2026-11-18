@@ -188,12 +188,6 @@ class RegistrationTests(unittest.TestCase):
                     benchmark.main(['truth', 'unlock', '--case', case, '--output', output])
                 self.assertIn('invalid choice', printed.getvalue())
 
-    def test_04_B1_the_benchmark_tool_no_longer_says_that_a_dropped_case_runs(self):
-        from generative_driver import mcp
-        description = ' '.join(mcp.driver_benchmark_run.__doc__.split())
-        self.assertIn('the harness provides the emulator', description)
-        self.assertEqual(re.findall(r'(?<![\w-])tq9(?![\w-])|bme280', description), [])
-
 
 class GradingCodeTests(unittest.TestCase):
     def test_04_B2_grading_code_is_the_34_modules_without_the_old_tq9_family(self):
@@ -321,38 +315,34 @@ class DeletionListTests(unittest.TestCase):
             self.assertNotIn('tests/test_legacy_cases.py', listed)
             self.assertNotIn('tests/test_benchmark_physical.py', listed)
 
-    def test_04_B7_every_freed_by_names_feature_09_or_10_or_stays(self):
-        # Feature 08 freed what named it (08-B16 of docs/features/untangle/08-reports.md): the report module's row
-        # is gone, and the service's names Feature 09.
+    def test_04_B7_every_freed_by_names_feature_10_or_stays(self):
+        # Feature 09 freed what named it (09-B11 of docs/features/untangle/09-commands.md): no tool module imports
+        # the benchmark, and the tool offers no benchmark command.
         modules = freed_by('Tool modules that import the benchmark')
-        source = 'src/generative_driver/'
-        self.assertEqual(modules, {source + 'cli.py': ['09'], source + 'configurator.py': ['09'],
-                                   source + 'mcp.py': ['09']})
+        self.assertEqual(modules, {})
         commands = freed_by('Commands')
-        self.assertEqual(len(commands), 8)
-        self.assertEqual({value for values in commands.values() for value in values}, {'09'})
+        self.assertEqual(len(commands), 0)
         still_used = freed_by('Still used by the tool')
         self.assertGreater(len(still_used), 60)
         self.assertEqual({value for values in still_used.values() for value in values}, {'10'})
         passages = freed_by('Passages')
-        # What named Feature 08 names 09, what named 09 names 10, and the three rows that stay still do.
-        expected = {'.github/workflows/test.yml': ['09'], 'README.md': ['09', '10', 'stays'],
-                    'MANIFEST.in': ['10', 'stays'], 'docs/design.md': ['10', 'stays']}
+        # What named Feature 09 is gone, and the three rows that stay still do.
+        expected = {'README.md': ['10', 'stays'], 'MANIFEST.in': ['10', 'stays'], 'docs/design.md': ['10', 'stays']}
         self.assertEqual({file: values for file, values in passages.items() if values != ['10']}, expected)
         self.assertGreater(len(passages), 15)
         every = [value for heading in ('Still used by the tool', 'Tool modules that import the benchmark', 'Commands',
                                        'Passages') for values in freed_by(heading).values() for value in values]
-        self.assertEqual(set(every), {'09', '10', 'stays'})
+        self.assertEqual(set(every), {'10', 'stays'})
         self.assertEqual(every.count('stays'), 3)
 
-    def test_04_B7_the_list_names_feature_09_for_the_entry_point_and_feature_10_for_what_moves(self):
+    def test_04_B7_the_list_names_the_benchmarks_own_command_and_feature_10_for_what_moves(self):
         commands = table('Commands')
-        self.assertIn('Feature 09 gives the benchmark its own entry point.', commands)
+        self.assertIn('The benchmark\'s own command is `firmware-bench`.', commands)
         acceptance = [cells for cells in rows('Passages') if cells[0] == '`docs/codex-acceptance.md`']
         self.assertEqual(len(acceptance), 1)
         self.assertIn('Feature 10 settles what moves', acceptance[0][2])
         text = (REPO / LIST).read_text(encoding='utf-8')
-        self.assertEqual(re.findall(r'Feature \d\d', text), ['Feature 09', 'Feature 10'])
+        self.assertEqual(re.findall(r'Feature \d\d', text), ['Feature 10'])
 
 
 if __name__ == '__main__':

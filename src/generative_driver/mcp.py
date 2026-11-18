@@ -1,10 +1,8 @@
 """Developer-facing MCP server; workflows belong to the detached configurator."""
 import json
 import platform
-from pathlib import Path
 from typing import Literal
 from mcp.server.mcpserver import MCPServer
-from pydantic import StrictInt
 from .setup import doctor
 
 server = MCPServer("generative-driver")
@@ -99,127 +97,6 @@ def driver_resume(run_id: str, scoped_tool_approval: Literal["emulator", "bound-
 def driver_respond(run_id: str, observation: dict) -> str:
     """Supply a requested operator observation with its source and evidence. Never invent observations."""
     return _call("respond", run_id=run_id, observation=observation)
-
-
-@server.tool()
-def driver_benchmark_run(profile: str = "setup-smoke", executor: Literal["codex", "replay"] | None = None,
-                         output_dir: str | None = None, options: dict | None = None) -> str:
-    """Run installation replay or start a configured real-agent benchmark.
-    setup-smoke uses no inference. Actual-agent cases default to the configured Codex runtime.
-    Supply evaluator password FILE paths through options, never the password itself.
-    Every real-agent case starts a bench harness that holds the password file path, admits the case and, after the
-    run, grades the frozen driver once and posts the run's verdict; the configurator never receives the path. For an
-    emulated case (tq9-v2 and the v2 families) the harness provides the emulator. They return trial_id and run_id; the
-    same options.request_id with the same inputs returns that trial again and starts no second emulator.
-    executor "replay" runs an emulated case without a model from options.replay_candidate, a saved candidate directory;
-    its results are labelled replay-emulation and never count as model runs.
-    For real-agent profiles, options.home must resolve to this MCP connection's configured home.
-    """
-    from .benchmark import run
-    from .benchmark_support.registry import resolve_case
-    try:
-        definition = resolve_case(profile)
-    except ValueError as error:
-        return json.dumps({'ok': False, 'reason': str(error)})
-    autostart = platform.system() != 'Windows'
-    if definition.execution.startswith('actual-agent-'):
-        from .client import call, default_home
-        selected_home = (options or {}).get('home')
-        if selected_home and Path(selected_home).expanduser().resolve() != default_home().resolve():
-            return json.dumps({'ok':False, 'reason':
-                'Benchmark options.home must match the configured MCP home. Omit options.home, '
-                'or reconnect using an MCP configuration for the selected home.'})
-        if not autostart:
-            owner = call('ping', home=selected_home, autostart=False)
-            if not owner.get('ok'):
-                return json.dumps(owner, default=str)
-    try:
-        return json.dumps(run(case=profile, output_dir=output_dir, executor=executor, options=options,
-                              autostart=autostart, via_owner=not autostart), default=str)
-    except ValueError as error:
-        return json.dumps({'ok': False, 'reason': str(error)})
-
-
-@server.tool()
-def driver_benchmark_suite_start(manifest: dict, executor: Literal['codex', 'replay'] | None = None,
-                                 options: dict | None = None, request_id: str | None = None) -> str:
-    """Start a durable emulated suite; save suite_id, or a set suite's request_id, to reconnect from either client.
-
-    A detached bench harness drives the suite: it receives options.evaluator_password_files and options.renode (FILE
-    paths, never a password) on its stdin, provides each child's device and grades each frozen driver after its run.
-    The suite tables never hold those paths and no child's run receives them. Use the configured MCP home.
-    A suite of one generated set also takes options.set_root, the set's folder, on the same stdin. It returns
-    status awaiting-unmount with a request_id once the set is held in memory: the operator then closes the vault, and
-    the same call with that request_id returns the suite_id once the harness has started the suite.
-    executor "replay" replays options.replay_candidates, one saved candidate directory per case, without a model; its
-    results are labelled replay-emulation and never compared with model suites.
-    Emulator tool approval and inference budgets require explicit user authorization.
-    Windows requires an independently started configurator.
-    """
-    from .benchmark_support.suites import start_suite
-    try:
-        return json.dumps(start_suite(manifest, executor, options, request_id,
-            autostart=platform.system() != 'Windows', via_owner=platform.system() == 'Windows'), allow_nan=False)
-    except (OSError, ValueError, RuntimeError) as error:
-        return json.dumps({'ok': False, 'reason': str(error)})
-
-
-def _suite_call(method, **params):
-    """What the benchmark's suite book answers a suite call, in this process: the bench harness keeps a suite, and the
-    configurator serves no suite call (Feature 07 of the untangle Run, docs/features/untangle/07-suites.md)."""
-    from .benchmark_support.suite_book import suite_call
-    return json.dumps(suite_call(method, params, autostart=platform.system() != 'Windows'), default=str)
-
-
-@server.tool()
-def driver_benchmark_suite_status(suite_id: str) -> str:
-    """Reconnect to a durable suite and its active child without starting another owner."""
-    return _suite_call('suite_status', suite_id=suite_id)
-
-
-@server.tool()
-def driver_benchmark_suite_events(suite_id: str, after: StrictInt = 0) -> str:
-    """Read retained suite events after the previous cursor."""
-    return _suite_call('suite_events', suite_id=suite_id, after=after)
-
-
-@server.tool()
-def driver_benchmark_suite_result(suite_id: str, offset: StrictInt = 0, limit: StrictInt = 50) -> str:
-    """Read public trial summaries in pages of at most 100, with frozen experiment metadata."""
-    return _suite_call('suite_result', suite_id=suite_id, offset=offset, limit=limit)
-
-
-@server.tool()
-def driver_benchmark_suite_cancel(suite_id: str) -> str:
-    """Stop further suite work while preserving its current child and evidence."""
-    return _suite_call('suite_cancel', suite_id=suite_id)
-
-
-@server.tool()
-def driver_benchmark_suite_resume(suite_id: str, suite_budget_seconds: float | None = None,
-                                  budget_reason: str | None = None, options: dict | None = None,
-                                  child_budget_seconds: float | None = None,
-                                  child_budget_reason: str | None = None) -> str:
-    """Resume a stopped incomplete suite after correcting its blocker; a newly launched bench harness takes it over.
-
-    options holds only evaluator_password_files, renode and a set suite's set_root (paths) for that harness; emulated
-    suites need them. Given set_root it may return status awaiting-unmount with the suite_id: the operator then closes
-    the vault, and driver_benchmark_suite_status follows the suite.
-    A user-approved extension increases the total suite wall-clock budget from original start and requires a reason.
-    A separate user-approved child extension (child_budget_seconds, child_budget_reason) increases the total budget of
-    the stopped child the resume continues, and of no other child.
-    """
-    from .benchmark_support.suites import resume_suite
-    try:
-        return json.dumps(resume_suite(suite_id, options, autostart=platform.system() != 'Windows',
-                                       via_owner=platform.system() == 'Windows',
-                                       suite_budget_seconds=suite_budget_seconds,
-                                       budget_reason=budget_reason if suite_budget_seconds is not None else None,
-                                       child_budget_seconds=child_budget_seconds,
-                                       child_budget_reason=child_budget_reason),
-                          allow_nan=False, default=str)
-    except (OSError, ValueError, RuntimeError) as error:
-        return json.dumps({'ok': False, 'reason': str(error)})
 
 
 def main():

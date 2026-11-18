@@ -1675,38 +1675,21 @@ class ReaderTests(ScriptedSuiteCase):
         printed, sent = self.command('status', 'suite-unknown')
         self.assertEqual(printed, {'ok': False, 'error': 'ValueError', 'reason': 'Unknown suite_id'})
 
-    def test_07_B14_the_cancel_command_and_the_mcp_tools_return_what_they_did_from_a_book(self):
-        from generative_driver import mcp
-        with patch.dict(os.environ, {'GENERATIVE_DRIVER_HOME': str(self.fixture.home)}), \
-                patch('generative_driver.client.call', side_effect=self.fixture.configurator):
-            mark = len(self.fixture.calls)
-            status = json.loads(mcp.driver_benchmark_suite_status(self.suite_id))
-            events = json.loads(mcp.driver_benchmark_suite_events(self.suite_id, after=2))
-            result = json.loads(mcp.driver_benchmark_suite_result(self.suite_id, offset=1, limit=1))
-            sent = [method for method, _ in self.fixture.calls[mark:]]
-        self.assertEqual(status, self.asked('suite_status', suite_id=self.suite_id))
-        self.assertEqual(events, self.asked('suite_events', suite_id=self.suite_id, after=2))
-        self.assertEqual(result, self.asked('suite_result', suite_id=self.suite_id, offset=1, limit=1))
-        self.assertEqual([method for method in sent if method.startswith('suite_')], [])
-        # A suite of its own to cancel, twice: by the command and by the MCP tool. The shared suite stays complete.
+    def test_07_B14_the_cancel_command_returns_what_it_did_from_a_book(self):
+        # The benchmark's MCP tools, through which this test also read and cancelled a suite, are gone (Feature 09 of
+        # this Run, docs/features/untangle/09-commands.md).
+        # A suite of its own to cancel by the command. The shared suite stays complete.
         from suite_fixtures import book
-        for cancel in ('command', 'tool'):
-            with self.subTest(cancel=cancel):
-                started = book(self.fixture.controller).call('suite_start', {
-                    'manifest': scripted_manifest(1), 'executor': 'codex', 'options': {},
-                    'request_id': 'to-cancel-by-' + cancel, 'harness_token_sha256': TOKEN_SHA256,
-                    'harness_pid': os.getpid()})
-                # Its harness has let go, so that the cancellation does not wait for it.
-                book(self.fixture.controller).store.detach_harness(started['suite_id'])
-                if cancel == 'command':
-                    cancelled, sent = self.command('cancel', started['suite_id'])
-                else:
-                    with patch.dict(os.environ, {'GENERATIVE_DRIVER_HOME': str(self.fixture.home)}), \
-                            patch('generative_driver.client.call', side_effect=self.fixture.configurator):
-                        cancelled = json.loads(mcp.driver_benchmark_suite_cancel(started['suite_id']))
-                self.assertEqual((cancelled['ok'], cancelled['status'], cancelled['suite_id']),
-                                 (True, 'cancelled', started['suite_id']))
-                self.assertEqual(self.asked('suite_status', suite_id=started['suite_id'])['status'], 'cancelled')
+        started = book(self.fixture.controller).call('suite_start', {
+            'manifest': scripted_manifest(1), 'executor': 'codex', 'options': {},
+            'request_id': 'to-cancel-by-command', 'harness_token_sha256': TOKEN_SHA256,
+            'harness_pid': os.getpid()})
+        # Its harness has let go, so that the cancellation does not wait for it.
+        book(self.fixture.controller).store.detach_harness(started['suite_id'])
+        cancelled, sent = self.command('cancel', started['suite_id'])
+        self.assertEqual((cancelled['ok'], cancelled['status'], cancelled['suite_id']),
+                         (True, 'cancelled', started['suite_id']))
+        self.assertEqual(self.asked('suite_status', suite_id=started['suite_id'])['status'], 'cancelled')
         self.assertEqual(self.asked('suite_status', suite_id=self.suite_id)['status'], 'completed')
 
     def test_07_B14_the_readers_read_the_suite_from_the_book_and_the_runs_from_the_service(self):
@@ -1936,11 +1919,11 @@ class ListTests(unittest.TestCase):
             with self.subTest(document=document):
                 self.assertEqual(lines_counted, unmarked)
 
-    def test_07_B17_the_service_is_listed_as_a_tool_module_that_still_imports_the_benchmark(self):
-        # It launches the bench harness until Feature 09 (08-B16 of docs/features/untangle/08-reports.md).
+    def test_07_B17_the_service_is_no_longer_listed_as_a_tool_module_that_imports_the_benchmark(self):
+        # It launched the bench harness until Feature 09, and the MCP server held the benchmark's tools (09-B11 of
+        # docs/features/untangle/09-commands.md).
         modules = {row[0]: row[1] for row in self.rows('Tool modules that import the benchmark')}
-        self.assertEqual(modules['`src/generative_driver/configurator.py`'], '09')
-        self.assertEqual(modules['`src/generative_driver/mcp.py`'], '09')
+        self.assertEqual(modules, {})
 
 
 if __name__ == '__main__':

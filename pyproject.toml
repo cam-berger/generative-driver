@@ -23,6 +23,9 @@ dev = ["build>=1.2"]
 [project.scripts]
 generative-driver = "generative_driver.cli:main"
 generative-driver-mcp = "generative_driver.mcp:main"
+# legacy-benchmark:begin
+firmware-bench = "generative_driver.benchmark:main"
+# legacy-benchmark:end
 
 [tool.setuptools]
 include-package-data = false

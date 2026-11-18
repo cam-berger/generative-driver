@@ -34,7 +34,7 @@ from unittest.mock import patch
 
 import generative_driver
 import interface_runtime
-from generative_driver import cli, client, client_interface, integrity, replay
+from generative_driver import benchmark, client, client_interface, integrity, replay
 from generative_driver.benchmark_support import grader_identity, harness, trial_store
 from test_benchmark_runs import CASE, SnapshotCase, TrialCase
 from test_benchmark_suite_book import ScriptedSuiteCase
@@ -229,15 +229,18 @@ class RunReportTests(TemporaryHomeCase):
         with self.assertRaises(ModuleNotFoundError):
             importlib.import_module('generative_driver.reporting')
 
-    def test_08_B1_no_tool_module_but_the_command_line_imports_the_report_module(self):
+    def test_08_B1_no_tool_module_imports_the_report_module(self):
+        # The tool's command line did, until the benchmark's own command took the report (09-B3 of
+        # docs/features/untangle/09-commands.md).
         report = 'generative_driver.benchmark_support.run_reporting'
         importing = [path.name for path, package in tool_modules()
                      if any(module == report for module, _ in benchmark_imports(path, package))]
-        self.assertEqual(importing, ['cli.py'])
+        self.assertEqual(importing, [])
         naming = [path.name for path, _ in tool_modules()
                   if 'run_reporting' in path.read_text(encoding='utf-8') or 'import reporting' in
                   path.read_text(encoding='utf-8') or '.reporting import' in path.read_text(encoding='utf-8')]
-        self.assertEqual(naming, ['cli.py'])
+        self.assertEqual(naming, [])
+        self.assertGreater(len(tool_modules()), 40)
 
     def test_08_B1_report_run_writes_the_same_report_and_markdown_as_before_in_each_format(self):
         module = report_module()
@@ -275,13 +278,15 @@ class RunReportTests(TemporaryHomeCase):
 
 
 class ReportCommandTests(TemporaryHomeCase):
-    """`generative-driver report` gives what it gave (08-B2)."""
+    """`firmware-bench report` gives what `generative-driver report` gave (08-B2). The command is the benchmark's
+    since Feature 09 of this Run (09-B3 of docs/features/untangle/09-commands.md)."""
 
     def run_command(self, *arguments):
-        """What the command line prints for `arguments`, as JSON, once it has ended with status 0."""
+        """What the benchmark's command line prints for `arguments`, as JSON, once it has ended with status 0. The
+        home it sets for the process is put back as it was."""
         printed = io.StringIO()
-        with contextlib.redirect_stdout(printed):
-            status = cli.main(['--home', str(self.home), *arguments])
+        with patch.dict(os.environ), contextlib.redirect_stdout(printed):
+            status = benchmark.main(['--home', str(self.home), *arguments])
         self.assertEqual(status, 0)
         return json.loads(printed.getvalue())
 
@@ -313,11 +318,12 @@ class ReportCommandTests(TemporaryHomeCase):
         self.assertEqual(digests(saved, text), BEFORE['3'])
 
     def test_08_B2_the_command_line_imports_report_run_from_the_benchmarks_module_in_the_branch_of_report(self):
-        tree = ast.parse(Path(cli.__file__).read_bytes())
+        # The benchmark's own command line, which also imports the suite's report module.
+        tree = ast.parse(Path(benchmark.__file__).read_bytes())
         [branch] = [node for node in ast.walk(tree) if isinstance(node, ast.If)
                     and ast.unparse(node.test) in ("args.command == 'report'", 'args.command == "report"')]
         imports = [(node.level, node.module, [alias.name for alias in node.names]) for node in ast.walk(tree)
-                   if isinstance(node, ast.ImportFrom) and 'reporting' in (node.module or '')]
+                   if isinstance(node, ast.ImportFrom) and (node.module or '').endswith('.run_reporting')]
         self.assertEqual(imports, [(1, 'benchmark_support.run_reporting', ['report_run'])])
         inside = [node for node in ast.walk(branch) if isinstance(node, ast.ImportFrom)
                   and node.module == 'benchmark_support.run_reporting']
@@ -351,11 +357,10 @@ class ReplayCandidateTests(TemporaryHomeCase):
         return str(refusal.exception)
 
     def no_harness(self):
-        """Fail the test if a harness is started, in this process or through the service."""
-        for name in ('_spawn', '_spawn_via_owner'):
-            guard = patch.object(harness, name, side_effect=AssertionError('a bench harness started'))
-            guard.start()
-            self.addCleanup(guard.stop)
+        """Fail the test if a harness is started."""
+        guard = patch.object(harness, '_spawn', side_effect=AssertionError('a bench harness started'))
+        guard.start()
+        self.addCleanup(guard.stop)
 
     def test_08_B6_replay_candidate_gives_what_the_tools_candidate_config_gives(self):
         candidate = saved_candidate(self.root / 'candidate')
@@ -881,29 +886,29 @@ class Recording:
 
 
 class SentMethodTests(unittest.TestCase):
-    """The benchmark's code sends the service only calls the interface lists, and the launch (08-B14), by its
-    source."""
+    """The benchmark's code sends the service only calls the interface lists (08-B14), by its source. The launch,
+    the one exception it had, went with Feature 09 of this Run (09-B5 of docs/features/untangle/09-commands.md)."""
 
     @classmethod
     def setUpClass(cls):
         cls.sent = [(path.name, function, method) for path, _ in benchmark_sources()
                     for function, method in sent_methods(path.read_text(encoding='utf-8'))]
 
-    def test_08_B14_every_method_the_benchmarks_code_sends_the_service_is_a_listed_call_but_for_the_launch(self):
+    def test_08_B14_every_method_the_benchmarks_code_sends_the_service_is_a_listed_call(self):
         named = {method for _, _, method in self.sent if method is not None}
         # A suite call is served by the suite book in the benchmark's own process, and never reaches the service.
         to_service = {method for method in named if not method.startswith('suite_')}
-        self.assertEqual(sorted(to_service - set(client_interface.CALLS)), ['benchmark_spawn'])
+        self.assertEqual(sorted(to_service - set(client_interface.CALLS)), [])
         self.assertEqual(sorted(set(client_interface.CALLS) - to_service), [])
         self.assertGreater(len(named - to_service), 10)
 
-    def test_08_B14_the_launch_is_sent_from_one_function_alone(self):
+    def test_08_B14_the_launch_is_sent_from_no_function(self):
         self.assertEqual([(file, function) for file, function, method in self.sent if method == 'benchmark_spawn'],
-                         [('harness.py', '_spawn_via_owner')])
+                         [])
         naming = [path.name for path, _ in benchmark_sources()
                   if 'benchmark_spawn' in path.read_text(encoding='utf-8')]
-        self.assertEqual(naming, ['harness.py'])
-        self.assertEqual((SUPPORT / 'harness.py').read_text(encoding='utf-8').count('benchmark_spawn'), 1)
+        self.assertEqual(naming, [])
+        self.assertEqual((SUPPORT / 'harness.py').read_text(encoding='utf-8').count('benchmark_spawn'), 0)
 
     def test_08_B14_a_method_is_handed_on_unnamed_only_by_the_wrappers_the_named_sends_pass_through(self):
         self.assertEqual(sorted({(file, function) for file, function, method in self.sent if method is None}),
@@ -1134,27 +1139,22 @@ class DeletionListTests(unittest.TestCase):
                 rows.append([cell.strip() for cell in line.strip('|').split('|')])
         return rows
 
-    def test_08_B16_the_report_modules_row_is_gone_and_the_services_row_names_feature_09(self):
-        source = '`src/generative_driver/'
-        self.assertEqual(self.rows(MODULES), [[source + 'cli.py`', '09'], [source + 'configurator.py`', '09'],
-                                              [source + 'mcp.py`', '09']])
+    def test_08_B16_the_report_modules_row_is_gone_and_so_is_the_services(self):
+        # The service's row named Feature 09, which took it and the two others away (09-B11 of
+        # docs/features/untangle/09-commands.md).
+        self.assertEqual(self.rows(MODULES), [])
         self.assertNotIn('src/generative_driver/reporting.py', LIST.read_text(encoding='utf-8'))
 
     def test_08_B16_no_row_of_the_list_names_feature_08(self):
         freed = {heading: sorted({row[-1] for row in self.rows(heading)})
                  for heading in ('Still used by the tool', MODULES, 'Commands', 'Passages')}
-        self.assertEqual(freed, {'Still used by the tool': ['10'], MODULES: ['09'], 'Commands': ['09'],
-                                 'Passages': ['09', '10', 'stays']})
+        self.assertEqual(freed, {'Still used by the tool': ['10'], MODULES: [], 'Commands': [],
+                                 'Passages': ['10', 'stays']})
 
-    def test_08_B16_the_two_rows_that_count_the_importing_modules_say_three(self):
+    def test_08_B16_no_row_counts_the_importing_modules_for_there_are_none(self):
         counting = {row[0]: row[1] for row in self.rows('Still used by the tool') if 'modules under' in row[1]}
-        said = 'The three modules under `' + MODULES + '`'
-        self.assertEqual(sorted(counting), ['`src/generative_driver/benchmark.py`',
-                                            '`src/generative_driver/benchmark_support/`'])
-        for item, used_by in counting.items():
-            with self.subTest(item=item):
-                self.assertTrue(used_by.startswith(said + ', '), used_by)
-        self.assertEqual(len(self.rows(MODULES)), 3)
+        self.assertEqual(counting, {})
+        self.assertEqual(len(self.rows(MODULES)), 0)
         # They are the tool modules that import the benchmark, as the source has them.
         importing = sorted('`src/' + path.relative_to(PACKAGE.parent).as_posix() + '`'
                            for path, package in tool_modules() if benchmark_imports(path, package))

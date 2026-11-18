@@ -177,17 +177,6 @@ class CliTests(unittest.TestCase):
             finally:
                 call("shutdown", {}, home=home)
 
-    def test_benchmark_smoke_runs_via_installed_cli_and_reports_replay(self):
-        with tempfile.TemporaryDirectory(prefix="benchmark caller ") as temp:
-            result = subprocess.run([sys.executable, "-m", "generative_driver", "benchmark", "run",
-                                     "--case", "setup-smoke", "--output", str(Path(temp) / "run")],
-                                    cwd=temp, capture_output=True, text=True, timeout=60)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            report = json.loads(result.stdout)
-            self.assertEqual(report["execution"], "scripted-replay")
-            self.assertFalse(report["model_benchmark"])
-            self.assertEqual(report["verdict"], "passed")
-
     def test_setup_generates_host_assets_with_the_installed_interpreter(self):
         from generative_driver.setup import home_path
         with tempfile.TemporaryDirectory(prefix="plugin output ") as temp:
@@ -228,19 +217,6 @@ class CliTests(unittest.TestCase):
                          ("configure", "--executor", "unknown-runtime", "--command", sys.executable)):
                 with self.subTest(command=args[0]):
                     result = subprocess.run([sys.executable, "-m", "generative_driver", "--home", "state", *args],
-                                            cwd=temp, capture_output=True, text=True, timeout=15)
-                    self.assertIn("invalid choice", result.stderr)
-                    self.assertEqual(result.returncode, 2)
-                    self.assertEqual(list(Path(temp).iterdir()), [])
-
-    def test_benchmark_executor_options_refuse_unsupported_choices(self):
-        with tempfile.TemporaryDirectory() as temp:
-            for args in (("run", "--case", "setup-smoke", "--output", "smoke"),
-                         ("suite", "start", "--manifest", "suite.json"),
-                         ("corpus", "start", "--plan", "plan.json")):
-                with self.subTest(command=args[0]):
-                    result = subprocess.run([sys.executable, "-m", "generative_driver", "benchmark",
-                                             *args, "--executor", "unknown-runtime"],
                                             cwd=temp, capture_output=True, text=True, timeout=15)
                     self.assertIn("invalid choice", result.stderr)
                     self.assertEqual(result.returncode, 2)

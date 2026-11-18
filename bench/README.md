@@ -22,7 +22,7 @@ Current `assistive/1` runs follow acquire → interpret → probe → ground →
 
 [Installed assets](../src/generative_driver/resources/bench/) pin stable original images, encrypted truth and evaluator versions. A listed or publicly `available` case has not authenticated admission for the installed implementation. The three-family core plans nine default trials and requires fresh native qualification before execution. The [catalog and execution gaps](../docs/benchmark-corpus.md#catalog-and-execution-gaps) describe future admissions separately from [measured results](../docs/verification.md).
 
-The [upstream corpus](../docs/benchmark-corpus.md) adds seven lineages: one upstream case with published native qualification evidence and six blocked lineages. Freeze all lineages for a pilot or select a debug subset; immutable plans retain excluded slots and reasons. Authenticate selected ready cases with `benchmark corpus check`, run them through the existing suite lifecycle and report measured success, selected coverage and full-catalog demonstrated coverage separately. See [case authoring](../docs/benchmark-case-authoring.md) to add or retire cases and the [architecture decision](../docs/adr/0001-benchmark-registration-and-selection.md) for the static registration boundary.
+The [upstream corpus](../docs/benchmark-corpus.md) adds seven lineages: one upstream case with published native qualification evidence and six blocked lineages. Freeze all lineages for a pilot or select a debug subset; immutable plans retain excluded slots and reasons. Authenticate selected ready cases with `firmware-bench corpus check`, run them through the existing suite lifecycle and report measured success, selected coverage and full-catalog demonstrated coverage separately. See [case authoring](../docs/benchmark-case-authoring.md) to add or retire cases and the [architecture decision](../docs/adr/0001-benchmark-registration-and-selection.md) for the static registration boundary.
 
 ## Install and check
 
@@ -31,7 +31,7 @@ Use Python 3.11+ in one environment. Follow [setup](../docs/setup.md). To use Co
 ```sh
 python -m pip install -e ".[dev]"
 python -m generative_driver doctor
-python -m generative_driver benchmark run --case setup-smoke --output "smoke output"
+firmware-bench run --case setup-smoke --output "smoke output"
 python -m unittest discover -s tests -v
 ```
 
@@ -43,18 +43,18 @@ Install [Renode](https://github.com/renode/renode/releases), [Ghidra](https://gi
 
 ```sh
 generative-driver --home /operator/state/benchmark configure --executor codex --command /absolute/path/to/codex --provider openai --model YOUR_MODEL
-generative-driver --home /operator/state/benchmark benchmark cases
-generative-driver --home /operator/state/benchmark benchmark run --case tq9-v2 --scenario original --case-seed 0 --executor codex --budget-seconds 10800 --password-file /private/evaluator/tq9-v2.password --renode /absolute/path/to/renode --ghidra-home /absolute/path/to/ghidra --java-home /absolute/path/to/java-home --approve-emulator-tools
+firmware-bench --home /operator/state/benchmark cases
+firmware-bench --home /operator/state/benchmark run --case tq9-v2 --scenario original --case-seed 0 --executor codex --budget-seconds 10800 --password-file /private/evaluator/tq9-v2.password --renode /absolute/path/to/renode --ghidra-home /absolute/path/to/ghidra --java-home /absolute/path/to/java-home --approve-emulator-tools
 ```
 
-Replace placeholder paths with your own absolute paths. Quote paths containing spaces. Keep the same absolute global `--home` through configure, start, status, resume and report. Emulator approval covers assigned emulator tools only. MCP uses `scoped_tool_approval: "emulator"`. Use `original` for V2 families. The `case_seed` controls evaluator episodes.
+Replace placeholder paths with your own absolute paths. Quote paths containing spaces. Keep the same absolute global `--home` through configure, start, status, resume and report. Emulator approval covers assigned emulator tools only. Use `original` for V2 families. The `case_seed` controls evaluator episodes.
 
 A detached bench harness receives password-file/Renode paths on stdin, pins the case, authenticates admission and starts the device. It freezes the case's inputs in its trial folder and supplies the device descriptor, the frozen firmware and the mission to the configurator, which knows no case. The configurator never receives the password or its path. Legacy TQ9 uses its legacy recipe through the same harness.
 
 Save `trial_id` and `run_id`. `--wait` follows device shutdown and post-run grading/sealing. Records live at `<state>-bench/trials/<trial_id>`. Repeating `--request-id` follows the same trial without another device. To finish an unscored/unposted evaluation, or grade a formerly stopped trial whose run later completed:
 
 ```sh
-generative-driver --home /operator/state/benchmark benchmark trial-resume TRIAL_DIRECTORY --password-file /private/evaluator/tq9-v2.password --renode /absolute/path/to/renode
+firmware-bench --home /operator/state/benchmark trial-resume TRIAL_DIRECTORY --password-file /private/evaluator/tq9-v2.password --renode /absolute/path/to/renode
 ```
 
 It requires the trial's password and Renode when grading remains; a sealed/drafted final is never graded twice. A stopped emulated run needs a matching healthy device attached by its harness. Only suite harnesses attach replacements today; start a new single trial instead of continuing a stopped one. If emulator stop was unconfirmed, stop it manually from its record; no command records that reconciliation, so the trial stays ungraded.
@@ -96,16 +96,14 @@ Keep password files outside checkout/candidate inputs. Workers are not read-isol
 ```sh
 generative-driver --home /operator/state/benchmark status RUN_ID
 generative-driver --home /operator/state/benchmark result RUN_ID
-generative-driver --home /operator/state/benchmark report RUN_ID --output reports/trial.json
-generative-driver --home /operator/state/benchmark benchmark score reports/trial.json --evidence /private/evaluator/run-evidence.enc --password-file /private/evaluator/tq9-v2.password
-generative-driver --home /operator/state/benchmark benchmark compare reports/before.json reports/after.json
+firmware-bench --home /operator/state/benchmark report RUN_ID --output reports/trial.json
+firmware-bench --home /operator/state/benchmark score reports/trial.json --evidence /private/evaluator/run-evidence.enc --password-file /private/evaluator/tq9-v2.password
+firmware-bench --home /operator/state/benchmark compare reports/before.json reports/after.json
 ```
 
 `benchmark-report/3` records the final `equivalent` verdict, and a pass is that verdict: the evaluator's graded equivalence of the frozen driver. The fresh mission is reported beside it and does not change it; corpus success no longer requires it or the six accepted handoffs. Score with the trial's `run-evidence.enc` (`benchmark-run-evidence/2`): verify run/snapshot/case, accepted package and single final, then regrade its records offline. Sidecars seal artifact/note hashes, final/mission checks, public verdict and recovery receipts/journal hash. Pending, stopped or unscored runs score `unscored`.
 
 Preserve accepted artifacts. Regrade earlier evidence only from its preserved checkout; another evaluator implementation is refused. Earlier `/2` reports and evidence `/1` keep gated semantics. Compare refuses different protocols, except suite reports on a shared scoring set, which `suite compare` pairs device by device.
-
-MCP: `driver_benchmark_run` takes `profile`, `executor`, and options `scenario_id`, `case_seed`, `budget_seconds`, `evaluator_password_file`, `renode`, `ghidra_home`, `java_home`, `scoped_tool_approval`. Follow status/events/result with the saved ID. Windows requires a [separately started owner](../docs/setup.md#start-the-configurator).
 
 ## Replay a saved candidate
 
@@ -114,7 +112,7 @@ MCP: `driver_benchmark_run` takes `profile`, `executor`, and options `scenario_i
 `stages` lists ordered steps. `{"write":"model.json"}` copies without replacement, only in interpret/probe. Other stages use gateway tools. Arguments can reference assignment values with `{"$context":"model_dir"}` or the latest earlier result containing a key with `{"$result":"key"}`.
 
 ```sh
-generative-driver --home /operator/state/benchmark benchmark run --case tq9-v2 --scenario original --executor replay --replay-candidate /private/candidates/tq9-v2 --password-file /private/evaluator/tq9-v2.password --renode /absolute/path/to/renode --wait
+firmware-bench --home /operator/state/benchmark run --case tq9-v2 --scenario original --executor replay --replay-candidate /private/candidates/tq9-v2 --password-file /private/evaluator/tq9-v2.password --renode /absolute/path/to/renode --wait
 ```
 
 The worker reads only its candidate/assignment and uses recorded gateway calls. The configurator copies the candidate at start, hashes it before/after each stage and stops on tampering. Reports record candidate hash, `replay-emulation`, `model_benchmark: false`; score verifies those against the seal and compare refuses model/replay mixtures.
@@ -157,21 +155,21 @@ Create `/operator/private/suite-options.json` outside the checkout and worker di
 ```
 
 ```sh
-generative-driver --home /operator/state/suite benchmark suite start --manifest pilot.json --executor codex --options /operator/private/suite-options.json --request-id pilot-approved-1
-generative-driver --home /operator/state/suite benchmark suite status SUITE_ID
-generative-driver --home /operator/state/suite benchmark suite events SUITE_ID --after 0
-generative-driver --home /operator/state/suite benchmark suite result SUITE_ID --offset 0 --limit 50
-generative-driver --home /operator/state/suite benchmark suite report SUITE_ID --output reports/pilot-approved-1 [--audit-path PATH]...
-generative-driver --home /operator/state/suite benchmark suite compare reports/before/suite.json reports/pilot-approved-1/suite.json
+firmware-bench --home /operator/state/suite suite start --manifest pilot.json --executor codex --options /operator/private/suite-options.json --request-id pilot-approved-1
+firmware-bench --home /operator/state/suite suite status SUITE_ID
+firmware-bench --home /operator/state/suite suite events SUITE_ID --after 0
+firmware-bench --home /operator/state/suite suite result SUITE_ID --offset 0 --limit 50
+firmware-bench --home /operator/state/suite suite report SUITE_ID --output reports/pilot-approved-1 [--audit-path PATH]...
+firmware-bench --home /operator/state/suite suite compare reports/before/suite.json reports/pilot-approved-1/suite.json
 ```
 
 Save `suite_id`; identical request IDs reconnect. The harness provides devices, grades after runs and settles slots from the status/verdict the configurator recorded. Unscored/pending grades or stops block the suite; an unknown grade (no failed step, an undecided one) settles its slot. `/3` exports store each trial's `scored` outcome (pass, failure, unknown, fault, flagged, running or not_run) and lead with a pass line such as `7/9 pass, 1 unknown, 2 faults, 12 planned` (flagged, running and not-run trials add `, N flagged`, `, N running` and `, N not run` after it, each when there are some); `/2` exports keep their old counts (equivalent/planned, not-equivalent, unscored, stopped-by-category and unrun). Rows include scrubbed reason, stopped stage and repairs. Markdown adds frequent failing check IDs; status/events explain stops. `--audit-path PATH` (repeat for each path) reads the worker transcripts in the configurator home: a trial whose worker ran a command naming a forbidden path is flagged and not graded: the evaluator's equivalent count (`equivalence`) still holds its driver, and the Markdown says so, but it is no `equivalent_and_mission` success, as earlier studies counted a stopped trial. A saved `/3` report is read back only if each label is the outcome its row shows. A path loses surrounding spaces and trailing `/` or `\`, so the tab-completed `/Volumes/Answer Vault/` finds a command that names the directory bare; a path that is then empty is refused. Results are paginated; preserve every slot. Physical and gated results stay separate.
 
-MCP offers suite start/status/events/result/cancel/resume; CLI exports/compares. Use the same owner for cancel and resume:
+Use the same owner for cancel and resume:
 
 ```sh
-generative-driver --home /operator/state/suite benchmark suite cancel SUITE_ID
-generative-driver --home /operator/state/suite benchmark suite resume SUITE_ID --options /operator/private/suite-options.json
+firmware-bench --home /operator/state/suite suite cancel SUITE_ID
+firmware-bench --home /operator/state/suite suite resume SUITE_ID --options /operator/private/suite-options.json
 ```
 
 After correction, the harness reattaches a stopped child or grades an unscored one once. Resume reads the password/Renode handles for the harness. Pre-harness suites are read-only.
@@ -183,8 +181,8 @@ Stopped time counts toward both budgets. Extend suite total with `--suite-budget
 A scorecard measures a suite afterwards from the records its runs kept; the system under test records nothing for it, so a stored suite can be measured again. Every trial counts in the pass rate, and every trial with a run is measured, whatever its outcome, except one still running: its records are still moving, so it counts in the pass line alone.
 
 ```sh
-generative-driver --home /operator/state/suite benchmark suite scorecard SUITE_ID --output reports/pilot-scorecard [--audit-path PATH]...
-generative-driver --home /operator/state/suite benchmark suite compare reports/before/suite.json reports/after/suite.json [--leak-check reports/fresh/suite.json]
+firmware-bench --home /operator/state/suite suite scorecard SUITE_ID --output reports/pilot-scorecard [--audit-path PATH]...
+firmware-bench --home /operator/state/suite suite compare reports/before/suite.json reports/after/suite.json [--leak-check reports/fresh/suite.json]
 ```
 
 `scorecard` makes the export that `suite report` makes in a temporary folder and writes only `scorecard.json` and `scorecard.md` to `--output`.
@@ -214,17 +212,17 @@ Limits:
 Install `.[hardware,docs]`, USB support and the FTDI adapter from [setup](../docs/setup.md). Use explicit URL and vendor wiring. Acquire fetches the official [Bosch datasheet](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bme280-ds002.pdf).
 
 ```sh
-generative-driver --home /operator/state/physical benchmark run --case bme280 --executor codex --password-file /private/evaluator/bme280.password --binding-json '{"url":"ftdi://SELECTED_ADAPTER/1"}' --approve-bound-device-tools
+firmware-bench --home /operator/state/physical run --case bme280 --executor codex --password-file /private/evaluator/bme280.password --binding-json '{"url":"ftdi://SELECTED_ADAPTER/1"}' --approve-bound-device-tools
 ```
 
 Ground uses operator observations when supplied. Reuse waits for an independent reference: temperature Celsius, humidity % RH, pressure pascals, uncertainties, `observed_at`, evidence path. Supply via `driver_respond` or `respond RUN_ID --observation reference.json`, then resume promptly. Instruments share a stable environment; stale references leave the trial unscored. Agreement within uncertainty is not absolute calibration.
 
-The harness authenticates before starting, never touches the board and grades recorded reuse after completion, extending its wait with run budgets. If it stopped following first, `benchmark trial-resume TRIAL_DIRECTORY --password-file FILE` grades the completed run once.
+The harness authenticates before starting, never touches the board and grades recorded reuse after completion, extending its wait with run budgets. If it stopped following first, `firmware-bench trial-resume TRIAL_DIRECTORY --password-file FILE` grades the completed run once.
 
 Assistive physical scoring uses its `run-evidence.enc`, sealing reference/measurement and evidence hash; the evidence file remains accepted. Earlier physical reports instead use saved `benchmark/reference-reuse-<attempt>.*` with matching digest/time window:
 
 ```bash
-generative-driver --home /operator/state/physical benchmark score reports/physical.json --evidence /private/evaluator/saved-reference.txt --password-file /private/evaluator/bme280.password
+firmware-bench --home /operator/state/physical score reports/physical.json --evidence /private/evaluator/saved-reference.txt --password-file /private/evaluator/bme280.password
 ```
 
 ## Metrics and comparisons

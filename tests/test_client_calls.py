@@ -428,11 +428,9 @@ class NoSuiteTests(ServiceCase):
         self.assertEqual(self.call('result', run_id=started['run_id'])['request'], json.loads(json.dumps(params)))
 
     def test_07_B5_the_benchmark_imports_that_remain_in_the_service_are_exactly_the_named_ones(self):
-        # The two others left in Feature 08 (08-B7 of docs/features/untangle/08-reports.md): what remains launches a
-        # harness.
-        support = 'generative_driver.benchmark_support.'
-        named = {('call', support + 'harness', '_spawn'), ('call', support + 'trial_store', 'bench_home'),
-                 ('call', support + 'trial_store', 'solo_trial_dir'), ('call', support + 'trial_store', 'suite_dir')}
+        # The two others left in Feature 08 (08-B7 of docs/features/untangle/08-reports.md), and those that launched
+        # a harness in Feature 09 (09-B8 of docs/features/untangle/09-commands.md): none remains.
+        named = set()
         found = set()
         for node, names in enclosing(ast.parse(service_source().read_bytes())):
             if not isinstance(node, (ast.Import, ast.ImportFrom)):

@@ -582,11 +582,10 @@ class ReplayCommandTests(unittest.TestCase):
         from generative_driver.benchmark import main
         from tq9_workflow_fixture import replay_candidate
         # A refusal that does not happen fails here instead of starting a real bench harness and configurator.
-        for name in ('_spawn', '_spawn_via_owner'):
-            guard = patch('generative_driver.benchmark_support.harness.' + name,
-                          side_effect=AssertionError('a bench harness started'))
-            guard.start()
-            self.addCleanup(guard.stop)
+        guard = patch('generative_driver.benchmark_support.harness._spawn',
+                      side_effect=AssertionError('a bench harness started'))
+        guard.start()
+        self.addCleanup(guard.stop)
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
             candidate = str(replay_candidate(root / 'candidate'))

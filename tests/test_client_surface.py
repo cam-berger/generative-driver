@@ -3,8 +3,9 @@
 Feature 08 of the untangle Run (docs/features/untangle/08-reports.md): 08-B4 but for its last point, 08-B5, 08-B7 to
 08-B11. The interface lists every tool name a client may import and names the records on disk a client on the same
 machine may read. The service has no summary for the benchmark's reports, does not know the folder beside its home,
-and imports the benchmark only to launch a harness. This module imports nothing from the benchmark package and names
-no registered case, so it also runs where the benchmark is gone. The benchmark's side of the Feature is in
+and imports nothing of the benchmark: the launch of a harness, its last import, went with Feature 09
+(docs/features/untangle/09-commands.md). This module imports nothing from the benchmark package and names no
+registered case, so it also runs where the benchmark is gone. The benchmark's side of the Feature is in
 `tests/test_benchmark_surface.py`.
 
 Temporary homes only; no model, no hardware and no password. The device is the hand-written one of
@@ -287,16 +288,6 @@ def saved_candidate(directory):
     return str(directory)
 
 
-def spawn_branch():
-    """The branch of `Controller.call` that launches a harness, as its syntax node, and the tree of the service."""
-    tree = ast.parse(service_source().read_bytes())
-    [controller] = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'Controller']
-    [call] = [node for node in controller.body if isinstance(node, ast.FunctionDef) and node.name == 'call']
-    [branch] = [node for node in call.body if isinstance(node, ast.If)
-                and ast.unparse(node.test) == "method == 'benchmark_spawn'"]
-    return branch, tree
-
-
 class ReplayCandidateTests(ServiceCase):
     """The service does not know the folder beside its home (08-B5)."""
 
@@ -372,96 +363,30 @@ class ReplayCandidateTests(ServiceCase):
                 self.assertEqual([f'{number}: {line.strip()}' for number, line in enumerate(lines, 1)
                                   if 'bench home' in line.lower()], [])
 
-    def test_08_B5_the_service_names_bench_home_only_in_the_branch_that_launches_a_harness(self):
-        branch, _ = spawn_branch()
+    def test_08_B5_the_service_names_bench_home_nowhere(self):
+        # It named it in the branch that launched a harness, which went with Feature 09 of this Run (09-B8 of
+        # docs/features/untangle/09-commands.md).
         lines = service_source().read_text(encoding='utf-8').splitlines()
-        naming = [number for number, line in enumerate(lines, 1) if 'bench_home' in line]
-        self.assertTrue(naming)
-        self.assertEqual([number for number in naming if not branch.lineno <= number <= branch.body[-1].end_lineno],
-                         [])
+        self.assertGreater(len(lines), 2000)
+        self.assertEqual([number for number, line in enumerate(lines, 1) if 'bench_home' in line], [])
 
 
-SUPPORT = 'generative_driver.benchmark_support.'
-# The benchmark names the service still imports, all to launch a harness (08-B7).
-LAUNCH_IMPORTS = [(SUPPORT + 'harness', '_spawn'), (SUPPORT + 'trial_store', 'bench_home'),
-                  (SUPPORT + 'trial_store', 'solo_trial_dir'), (SUPPORT + 'trial_store', 'suite_dir')]
-CHANNEL = {'schema': 'bench-launch-channel/1', 'port': 12345, 'token': 'a' * 64}
-OUTSIDE = 'A bench harness must launch in its owner\'s bench directory'
-NO_CHANNEL = 'Invalid bench harness launch channel'
+class LaunchTests(unittest.TestCase):
+    """The service imported the benchmark only to launch a harness (08-B7). Since Feature 09 of this Run it launches
+    none, and no tool module imports the benchmark (09-B8 of docs/features/untangle/09-commands.md)."""
 
+    def test_08_B7_the_service_imports_nothing_of_the_benchmark(self):
+        self.assertEqual(sorted(benchmark_imports(service_source(), 'generative_driver')), [])
+        tree = ast.parse(service_source().read_bytes())
+        naming = [node.lineno for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
+                  and 'benchmark' in ast.unparse(node)]
+        self.assertEqual(naming, [])
 
-class Launched:
-    """What stands in for the process a launch starts: its command, its options and what its input was given."""
-    pid = 4242
-    started = []
-
-    def __init__(self, command, **options):
-        self.command, self.options, self.given, self.stdin = command, options, b'', self
-        Launched.started.append(self)
-
-    def write(self, data):
-        self.given += data
-
-    def close(self):
-        pass
-
-    def wait(self):
-        return 0
-
-
-class LaunchTests(ServiceCase):
-    """The service imports the benchmark only to launch a harness (08-B7)."""
-
-    def setUp(self):
-        super().setUp()
-        Launched.started = []
-        # The folders a launch is allowed in lie beside the home.
-        self.beside = self.home.parent / (self.home.name + '-bench')
-        self.trial, self.suite = self.beside / 'trials' / 'trial-test', self.beside / 'suites' / 'suite-test'
-        for folder in (self.trial, self.suite):
-            folder.mkdir(parents=True)
-
-    def test_08_B7_the_services_benchmark_imports_are_exactly_those_of_the_launch_and_all_in_its_branch(self):
-        self.assertEqual(sorted(benchmark_imports(service_source(), 'generative_driver')), LAUNCH_IMPORTS)
-        branch, tree = spawn_branch()
-        inside = {id(node) for node in ast.walk(branch)}
-        outside = [node.lineno for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
-                   and 'benchmark' in ast.unparse(node) and id(node) not in inside]
-        self.assertEqual(outside, [])
-
-    def test_08_B7_the_tool_modules_that_import_the_benchmark_are_the_command_line_the_mcp_server_and_the_service(self):
+    def test_08_B7_no_tool_module_imports_the_benchmark(self):
         importing = sorted(str(path.relative_to(path.parents[1])).replace('\\', '/')
                            for path, package in tool_modules() if benchmark_imports(path, package))
-        self.assertEqual(importing, ['generative_driver/cli.py', 'generative_driver/configurator.py',
-                                     'generative_driver/mcp.py'])
-
-    def test_08_B7_benchmark_spawn_launches_a_harness_in_a_folder_beside_the_home_and_answers_with_its_pid(self):
-        for kind, folder in (('trial', self.trial), ('suite', self.suite)):
-            with self.subTest(kind=kind), patch('subprocess.Popen', Launched):
-                answer = self.call('benchmark_spawn', directory=str(folder), kind=kind, channel=dict(CHANNEL))
-                self.assertEqual(answer, {'ok': True, 'pid': Launched.pid})
-                launched = Launched.started.pop()
-                self.assertEqual(launched.command[:2], [sys.executable, '-m'])
-                self.assertEqual(launched.command[3:], ['--' + kind + '-dir', str(folder)])
-                self.assertEqual(Path(launched.options['cwd']), folder)
-                # The channel goes to the harness on its input, never on its command line.
-                self.assertEqual(json.loads(launched.given), CHANNEL)
-                self.assertNotIn(CHANNEL['token'], ' '.join(launched.command))
-        self.assertEqual(Launched.started, [])
-
-    def test_08_B7_benchmark_spawn_refuses_another_folder_another_kind_and_what_is_no_channel(self):
-        valid = {'directory': str(self.trial), 'kind': 'trial', 'channel': dict(CHANNEL)}
-        with patch('subprocess.Popen', Launched):
-            for changes in ({'directory': str(self.home)}, {'directory': str(self.suite)}, {'kind': 'program'},
-                            {'kind': 'suite'}, {'directory': str(self.root / 'trials' / 'trial-test')}):
-                with self.subTest(changes=changes):
-                    self.assertEqual(self.refused('benchmark_spawn', **{**valid, **changes}), OUTSIDE)
-            for channel in ({**CHANNEL, 'password_file': '/a/secret'}, {**CHANNEL, 'port': True},
-                            {**CHANNEL, 'port': 65536}, {**CHANNEL, 'token': 'short'},
-                            {**CHANNEL, 'schema': 'bench-launch-channel/2'}, {}, None):
-                with self.subTest(channel=channel):
-                    self.assertEqual(self.refused('benchmark_spawn', **{**valid, 'channel': channel}), NO_CHANNEL)
-        self.assertEqual(Launched.started, [])
+        self.assertEqual(importing, [])
+        self.assertGreater(len(tool_modules()), 80)
 
 
 class ThisModuleTests(unittest.TestCase):

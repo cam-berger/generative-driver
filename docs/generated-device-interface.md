@@ -18,9 +18,9 @@ A set is a directory in the answer vault ([ADR 0003](adr/0003-generated-devices-
 | `manifest.json` | The plaintext manifest, `generated-set-manifest/1` |
 | `devices/<id>.inputs.enc` | Sealed `{"image_base64", "mission"}`: what a trial's worker receives |
 | `devices/<id>.answer.enc` | The sealed answer key, `generated-answer-key/2`, read only by grading and qualification |
-| `qualification.enc` | The sealed qualification record, written by `benchmark set qualify`, never by the generator |
+| `qualification.enc` | The sealed qualification record, written by `firmware-bench set qualify`, never by the generator |
 
-Each sealed file is a `generative-driver-groundtruth/1` envelope: AES-256-GCM under a key derived from the set's one password. Pass `seal_device` the password exactly as the operator's password file holds it, without surrounding whitespace, since `benchmark set qualify` strips the file's. The set's secret seed, if the generator keeps one, stays in the answer vault outside the bundle. Registering and qualifying a set are the operator's steps, in the [authoring guide](benchmark-case-authoring.md#generated-sets).
+Each sealed file is a `generative-driver-groundtruth/1` envelope: AES-256-GCM under a key derived from the set's one password. Pass `seal_device` the password exactly as the operator's password file holds it, without surrounding whitespace, since `firmware-bench set qualify` strips the file's. The set's secret seed, if the generator keeps one, stays in the answer vault outside the bundle. Registering and qualifying a set are the operator's steps, in the [authoring guide](benchmark-case-authoring.md#generated-sets).
 
 ## Manifest
 
@@ -143,7 +143,7 @@ Beyond each field's own shape, the validator checks that the parts agree:
 
 ## Rules only an emulator run can check
 
-`benchmark set qualify` runs both references on every device, and every mutant on the first two devices by id of each level and framing ([qualification](benchmark-case-authoring.md#generated-sets)). Together with the validator's rules, these runs enforce:
+`firmware-bench set qualify` runs both references on every device, and every mutant on the first two devices by id of each level and framing ([qualification](benchmark-case-authoring.md#generated-sets)). Together with the validator's rules, these runs enforce:
 
 | Obligation | Checked by |
 |---|---|

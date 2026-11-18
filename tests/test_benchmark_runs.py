@@ -968,13 +968,12 @@ class DeletionListTests(unittest.TestCase):
                 found = importers(Path(item).stem)
                 self.assertIn(named, found)
                 self.assertEqual(others, len(found) - 1, found)
-        # Three since Feature 08 moved the report module to the benchmark (08-B16 of
-        # docs/features/untangle/08-reports.md).
+        # None since Feature 09 took the last three away (09-B11 of docs/features/untangle/09-commands.md), so no
+        # row counts them any more.
         modules = self.rows('Tool modules that import the benchmark')
-        self.assertEqual(len(modules), 3)
-        for item, used_by, _ in self.rows('Still used by the tool'):
-            if 'modules under' in used_by:
-                self.assertIn('The three modules under', used_by, item)
+        self.assertEqual(len(modules), 0)
+        self.assertEqual([item for item, used_by, _ in self.rows('Still used by the tool')
+                          if 'modules under' in used_by], [])
 
     def test_06_B24_the_check_reports_no_problem_on_the_repository(self):
         from deletion_marking import problems

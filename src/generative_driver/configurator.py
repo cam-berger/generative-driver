@@ -1242,25 +1242,6 @@ class Controller:
             return self.device_access.cancel_invocation(params, assignment=True)
         if method.startswith('device_'):
             return self.device_access.control(method, params)
-        if method == 'benchmark_spawn':
-            from .benchmark_support.harness import _spawn
-            from .benchmark_support.trial_store import bench_home, solo_trial_dir, suite_dir
-            kind = params.get('kind')
-            directory = Path(params['directory']).resolve()
-            if kind not in ('trial', 'suite') or directory != (solo_trial_dir(bench_home(self.home), directory.name)
-                                                               if kind == 'trial'
-                                                               else suite_dir(self.home, directory.name)):
-                raise ValueError('A bench harness must launch in its owner\'s bench directory')
-            channel = params.get('channel') or {}
-            if (set(channel) != {'schema', 'port', 'token'} or channel['schema'] != 'bench-launch-channel/1'
-                    or type(channel['port']) is not int or not 0 < channel['port'] < 65536
-                    or not isinstance(channel['token'], str) or not re.fullmatch('[0-9a-f]{64}', channel['token'])):
-                raise ValueError('Invalid bench harness launch channel')
-            with self._lock:
-                if self._closing:
-                    raise ValueError('Configurator is stopping')
-                process = _spawn(directory, ['--' + kind + '-dir', str(directory)], channel)
-            return {'ok':True, 'pid':process.pid}
         if method == 'start':
             return self.start(params)
         run_id = params.get('run_id')

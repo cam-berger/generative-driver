@@ -22,23 +22,19 @@ Nothing that stays needs these. The deletion removes them.
 | `tests/deletion_marking.py` | The check and the removal behind this list. Removed last. |
 | `tests/test_deletion_marking.py` | The tests of this list. Removed last. |
 | `docs/generated-device-interface.md` | Benchmark document. Only benchmark items link to it. |
-| `docs/features/bench-harness/` | Record of the bench-harness Run. |
 | `docs/adr/0001-benchmark-registration-and-selection.md` | Benchmark decision record. `docs/verification.md` links to it. |
 | `docs/adr/0003-generated-devices-register-by-set.md` | Benchmark decision record. |
 | `docs/adr/0004-compare-systems-through-a-scoring-set.md` | Benchmark decision record. |
 | `docs/adr/0005-keep-the-device-generator-private.md` | Benchmark decision record. |
 | `docs/adr/0006-seal-graded-scoring-trials.md` | Benchmark decision record. |
 | `docs/adr/0007-one-validator-defines-a-generated-device.md` | Benchmark decision record. |
-| `docs/superpowers/plans/2026-10-28-tq9-replacement.md` | Benchmark plan, a record. |
-| `docs/superpowers/plans/2026-10-30-grader-identity.md` | Benchmark plan, a record. |
-| `docs/superpowers/plans/2026-10-30-scorecard.md` | Benchmark plan, a record. |
-| `docs/superpowers/plans/2026-11-01-generated-grader.md` | Benchmark plan, a record. |
 | `.scratch/benchmark-baseline/` | Benchmark spec and its issue, a record. |
 | `.scratch/benchmark-review/` | Benchmark review notes, a record. |
 | `tests/test_audit.py` | Tests only the benchmark. No file that stays imports it. |
 | `tests/test_benchmark_asset_build.py` | Tests only the benchmark. No file that stays imports it. |
 | `tests/test_benchmark_behavior.py` | Tests only the benchmark. No file that stays imports it. |
 | `tests/test_benchmark_client_interface.py` | Holds the benchmark and this list to the client interface. No file that stays imports it. |
+| `tests/test_benchmark_commands.py` | Holds the benchmark, its documents and this list to the benchmark's own command. No file that stays imports it. |
 | `tests/test_benchmark_ground.py` | Tests only the benchmark. No file that stays imports it. |
 | `tests/test_benchmark_helper_copies.py` | Holds the grader's helpers to the tool's answers. No file that stays imports it. |
 | `tests/test_benchmark_legacy_cases_dropped.py` | Holds the benchmark and this list to the drop of the two legacy cases. No file that stays imports it. |
@@ -70,9 +66,9 @@ The tool, its tests or its documents need these today. Deleting one now would br
 
 | Item | Used by | Freed by |
 |---|---|---|
-| `src/generative_driver/benchmark.py` | The three modules under `Tool modules that import the benchmark`, the commands under `Commands` and the still-used tests | 10 |
-| `src/generative_driver/benchmark_support/` | The three modules under `Tool modules that import the benchmark`, the commands under `Commands` and the still-used tests | 10 |
-| `src/generative_driver/resources/bench/` | `benchmark.py` and `benchmark_support/` read it; `tests/test_service.py`, `tests/test_toolkit.py` and `tests/test_cli.py` use its smoke case; `tests/test_distribution.py` requires it in the wheel; `.github/workflows/test.yml` runs its smoke case | 10 |
+| `src/generative_driver/benchmark.py` | The still-used tests | 10 |
+| `src/generative_driver/benchmark_support/` | The still-used tests | 10 |
+| `src/generative_driver/resources/bench/` | `benchmark.py` and `benchmark_support/` read it; `tests/test_service.py` and `tests/test_toolkit.py` use its smoke case; `tests/test_distribution.py` requires it in the wheel | 10 |
 | `src/generative_driver/resources/registrations/` | `benchmark_support/` reads it on import; `tests/test_distribution.py` requires it in the wheel | 10 |
 | `bench/README.md` | `README.md`, `docs/codex.md`, `docs/codex-acceptance.md` and `docs/design.md` link to it; `.github/scripts/tool_releases.py` reads its pins; `tests/test_assistive_wording.py` requires its wording | 10 |
 | `bench/groundtruth/README.md` | `docs/codex-acceptance.md` links to it; `NOTICE` names it | 10 |
@@ -113,7 +109,6 @@ The tool, its tests or its documents need these today. Deleting one now would br
 | `tests/test_generated_trials.py` | Tests the tool and the benchmark together | 10 |
 | `tests/test_grader_identity.py` | Tests the tool and the benchmark together | 10 |
 | `tests/test_harness.py` | Tests the tool and the benchmark together | 10 |
-| `tests/test_mcp.py` | Tests the tool and the benchmark together | 10 |
 | `tests/test_native_rehosting.py` | Tests the tool and the benchmark together | 10 |
 | `tests/test_outcomes.py` | Tests the tool and the benchmark together | 10 |
 | `tests/test_output_measure.py` | Tests the tool and the benchmark together | 10 |
@@ -148,28 +143,17 @@ The tool, its tests or its documents need these today. Deleting one now would br
 
 ## Tool modules that import the benchmark
 
-These modules stay. Each stops importing the benchmark package in the Feature named.
+No tool module imports the benchmark package.
 
 | Module | Freed by |
 |---|---|
-| `src/generative_driver/cli.py` | 09 |
-| `src/generative_driver/configurator.py` | 09 |
-| `src/generative_driver/mcp.py` | 09 |
 
 ## Commands
 
-The benchmark commands the tool offers today. Feature 09 gives the benchmark its own entry point.
+The tool offers no benchmark command. The benchmark's own command is `firmware-bench`.
 
 | Command | Where | Freed by |
 |---|---|---|
-| `generative-driver benchmark` | `src/generative_driver/cli.py` | 09 |
-| `driver_benchmark_run` | `src/generative_driver/mcp.py` | 09 |
-| `driver_benchmark_suite_start` | `src/generative_driver/mcp.py` | 09 |
-| `driver_benchmark_suite_status` | `src/generative_driver/mcp.py` | 09 |
-| `driver_benchmark_suite_events` | `src/generative_driver/mcp.py` | 09 |
-| `driver_benchmark_suite_result` | `src/generative_driver/mcp.py` | 09 |
-| `driver_benchmark_suite_cancel` | `src/generative_driver/mcp.py` | 09 |
-| `driver_benchmark_suite_resume` | `src/generative_driver/mcp.py` | 09 |
 
 ## Passages
 
@@ -177,7 +161,6 @@ Lines that say `bench` outside the marked passages, in files that stay. `stays` 
 
 | File | Unmarked lines | Why | Freed by |
 |---|---|---|---|
-| `.github/workflows/test.yml` | 1 | The hosted tests run the benchmark's smoke case | 09 |
 | `.github/workflows/tool-releases.yml` | 1 | Names the pins in `bench/README.md` | 10 |
 | `.gitignore` | 3 | Keeps benchmark runs and plaintext answers out of Git while the legacy copy is here | 10 |
 | `AGENTS.md` | 3 | Project rules whose lines cover the tool and the benchmark together | 10 |
@@ -186,7 +169,6 @@ Lines that say `bench` outside the marked passages, in files that stay. `stays` 
 | `MANIFEST.in` | 3 | Puts a benchmark record in the source archive and keeps benchmark runs and plaintext answers out of it | 10 |
 | `MANIFEST.in` | 1 | Puts `bench/evidence/`, which is kept, in the source archive | stays |
 | `NOTICE` | 1 | Names `bench/groundtruth/README.md` and the benchmark evidence | 10 |
-| `README.md` | 3 | Command lines that run the benchmark's smoke case | 09 |
 | `README.md` | 3 | Two rows of a table that also holds tool rows, and one mixed paragraph | 10 |
 | `README.md` | 1 | Links to the published record under `bench/evidence/`, which is kept | stays |
 | `STANDARDS.md` | 2 | Rules about the bench harness. Only the owner edits this file | 10 |
@@ -215,8 +197,6 @@ These stay. The deletion does not touch them, and no passage in them is marked.
 | `docs/adr/0002-driver-contract-and-generated-mcp.md` | Decision record of the tool. |
 | `docs/adr/0008-run-the-installed-runtime-over-package-data.md` | Decision record of the tool. |
 | `docs/adr/0009-device-first-interpretation.md` | Decision record of the tool. |
-| `docs/superpowers/plans/2026-10-28-driver-contract-mcp.md` | Plan of the tool, a record. |
-| `docs/superpowers/specs/2026-10-28-driver-contract-mcp-design.md` | Design of the tool, a record. `docs/design.md` links to it. |
 | `docs/research/` | Research notes, a record. |
 | `.scratch/effect-labels/` | Spec and issues of the tool, a record. |
 | `.scratch/learning-loop/` | Parked spec of the tool, a record. |

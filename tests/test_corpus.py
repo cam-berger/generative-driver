@@ -1,11 +1,14 @@
 """The broader corpus must expose exclusions instead of inflating device coverage."""
 import copy
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import unittest
 from unittest.mock import patch
+
+from package_env import package_env
 
 
 def unavailable_catalog():
@@ -475,9 +478,9 @@ class CorpusTests(unittest.TestCase):
             validate_plan(changed)
 
     def test_cli_reports_coverage_without_runtime_credentials_or_device_access(self):
-        result = subprocess.run([sys.executable, '-m', 'generative_driver',
-                                 'benchmark', 'corpus', 'plan', '--repetitions', '1'],
-                                capture_output=True, text=True, timeout=15)
+        result = subprocess.run([sys.executable, '-m', 'generative_driver.benchmark',
+                                 'corpus', 'plan', '--repetitions', '1'],
+                                env={**os.environ, **package_env()}, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
         plan = json.loads(result.stdout)
         self.assertEqual(plan['schema'], 'benchmark-corpus-plan/2')

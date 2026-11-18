@@ -2,19 +2,21 @@
 from contextlib import redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 
+from package_env import package_env
 from suite_fixtures import standing_in
 
 
 class CorpusWorkflowTests(unittest.TestCase):
     def command(self, *arguments):
-        return subprocess.run([sys.executable, '-m', 'generative_driver', 'benchmark', 'corpus',
-                               *arguments], capture_output=True, text=True, timeout=30)
+        return subprocess.run([sys.executable, '-m', 'generative_driver.benchmark', 'corpus', *arguments],
+                              env={**os.environ, **package_env()}, capture_output=True, text=True, timeout=30)
 
     def test_operator_can_exclude_a_lineage_without_deleting_its_coverage_slot(self):
         with tempfile.TemporaryDirectory() as directory:

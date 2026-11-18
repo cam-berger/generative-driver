@@ -21,7 +21,7 @@ macOS:
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
 .venv/bin/python -m generative_driver doctor
-.venv/bin/python -m generative_driver benchmark run --case setup-smoke --output "smoke output"
+.venv/bin/python -m generative_driver smoke
 ```
 
 Windows 11+, in a standalone PowerShell window:
@@ -30,7 +30,7 @@ Windows 11+, in a standalone PowerShell window:
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 .\.venv\Scripts\python.exe -m generative_driver doctor
-.\.venv\Scripts\python.exe -m generative_driver benchmark run --case setup-smoke --output "smoke output"
+.\.venv\Scripts\python.exe -m generative_driver smoke
 .\.venv\Scripts\python.exe -m generative_driver service start
 ```
 
@@ -39,12 +39,12 @@ With [uv](https://docs.astral.sh/uv/), on either system, replace the environment
 ```sh
 uv sync --extra dev
 uv run generative-driver doctor
-uv run generative-driver benchmark run --case setup-smoke --output "smoke output"
+uv run generative-driver smoke
 ```
 
 On Windows, still run `uv run generative-driver service start` in a standalone PowerShell window.
 
-Use a new output directory each time. Smoke tests installation and recorded replay; it needs no AI account or hardware and measures no model performance.
+The smoke runs one whole run through a service of its own, with a scripted worker and a stand-in device. It needs no AI account or hardware and measures no model performance.
 
 ## Next
 

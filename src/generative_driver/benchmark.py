@@ -2,10 +2,13 @@
 
 Replay setup checks and actual agent trials have distinct execution labels.
 Evaluator truth and process options must never be included in worker assignments.
+`main` is the command `firmware-bench`, the one way the benchmark is driven: the tool offers no benchmark command
+(Feature 09 of the untangle Run, docs/features/untangle/09-commands.md).
 """
 import json
 import argparse
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -32,7 +35,10 @@ def supplied_inputs(case_id, run_dir, options=None):
 def main(argv=None):
     from .benchmark_support.registry import case_ids, case_descriptors
     from .benchmark_support.registrations import build_case_ids
-    parser = argparse.ArgumentParser(prog='gd benchmark')
+    parser = argparse.ArgumentParser(prog='firmware-bench')
+    # Not the `--home` of `run`, which names the home of one trial: the two are options of their own.
+    parser.add_argument('--home', dest='configurator_home', metavar='HOME',
+                        help='Configurator state directory, for every command that finds the home itself')
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('cases')
     corpus = commands.add_parser('corpus', help='Inspect upstream coverage and freeze a software-first corpus plan')
@@ -205,7 +211,12 @@ def main(argv=None):
     evaluator.add_argument('--renode')
     evaluator.add_argument('--ghidra-home')
     evaluator.add_argument('--java-home')
+    reporting = commands.add_parser('report', help='Export stage and overall benchmark metrics')
+    reporting.add_argument('run_id')
+    reporting.add_argument('--output', help='JSON destination; also writes a Markdown sibling')
     args = parser.parse_args(argv)
+    if args.configurator_home is not None:
+        os.environ['GENERATIVE_DRIVER_HOME'] = args.configurator_home
     try:
         if args.command == 'corpus':
             if args.action == 'prepare-execution':
@@ -334,6 +345,11 @@ def main(argv=None):
             print(json.dumps({'ok': record['status'] == 'passed', 'status': record['status'],
                               'failures': record['failures'], 'seconds': record['seconds']}, indent=2, allow_nan=False))
             return 0 if record['status'] == 'passed' else 1
+        if args.command == 'report':
+            # A written report ends the command with 0, whatever verdict it holds.
+            from .benchmark_support.run_reporting import report_run
+            print(json.dumps(report_run(args.run_id, output=args.output), indent=2))
+            return 0
         if args.command == 'cases':
             result = case_descriptors()
         elif args.command == 'run':
@@ -389,7 +405,7 @@ def _unseal(suite_id, trial, password_file, vault_folder, output):
     return {'ok': True, 'suite_id': suite_id, 'output': str(target)}
 
 
-def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, autostart=True, wait=False, via_owner=False):
+def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, autostart=True, wait=False):
     """Run the installation replay, or start an actual-agent trial. Every actual-agent case starts a detached bench
     harness, which admits the case, holds the evaluator password file and grades the frozen driver once after the run;
     it provides the emulator of an emulated case (v2 or legacy tq9) and leaves the operator's bound device (bme280)
@@ -420,7 +436,7 @@ def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, aut
             if not reachable.get('ok'):
                 return reachable
         return launch(case, output_dir, executor, options, approval, effects=definition.default_effects,
-                      autostart=autostart, wait=wait, via_owner=via_owner)
+                      autostart=autostart, wait=wait)
     from .toolkit import call_tool
     started = time.monotonic()
     output = Path(output_dir or tempfile.mkdtemp(prefix='generative-driver-smoke-')).resolve()
@@ -590,3 +606,5 @@ def score(report, password_file=None, *, evidence_path=None):
     return adapter_for(case_id).score(data, password)
 
 
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -126,7 +126,7 @@ def _launch_options(options, home):
 
 
 def start_suite(manifest: dict, executor: str | None = None, options: dict | None = None,
-                request_id: str | None = None, *, home=None, autostart=True, via_owner=False) -> dict:
+                request_id: str | None = None, *, home=None, autostart=True) -> dict:
     """Start a suite through a detached bench harness, which freezes it, stores it in its suite book and drives it; the
     configurator runs each child and keeps no suite. Password files (keyed by the set's name for a set suite), the
     emulator executable and a set suite's `set_root` in `options` go to the harness on its stdin, never into the suite
@@ -156,8 +156,7 @@ def start_suite(manifest: dict, executor: str | None = None, options: dict | Non
         preflight_selection(normalized)
     return launch_suite({'manifest': normalized, 'executor': executor, 'options': selected,
                          'request_id': request_id},
-                        home=directory, password_files=passwords, renode=renode, set_root=set_root, autostart=autostart,
-                        via_owner=via_owner)
+                        home=directory, password_files=passwords, renode=renode, set_root=set_root, autostart=autostart)
 
 
 # The one refusal of an extension of a scoring suite's child budget: `resume_suite` before it launches a harness, the
@@ -208,7 +207,7 @@ def refuse_unsettled_scoring(suite_id, home) -> None:
         raise ValueError('A scoring suite is measured only once nothing of it runs: ' + str(status.get('status')))
 
 
-def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autostart=True, via_owner=False,
+def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autostart=True,
                  suite_budget_seconds=None, budget_reason=None, child_budget_seconds=None,
                  child_budget_reason=None) -> dict:
     """Resume a stopped suite through a newly launched bench harness, which takes over its scheduling. Only the password
@@ -235,7 +234,7 @@ def resume_suite(suite_id: str, options: dict | None = None, *, home=None, autos
         ('child_budget_seconds', child_budget_seconds),
         ('child_budget_reason', child_budget_reason if child_budget_seconds is not None else None)) if value is not None}}
     return launch_suite(request, home=directory, password_files=passwords, renode=renode, set_root=set_root,
-                        autostart=autostart, via_owner=via_owner)
+                        autostart=autostart)
 
 
 SCHEDULER = 'harness/1'

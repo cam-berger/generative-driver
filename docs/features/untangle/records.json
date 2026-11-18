@@ -119,6 +119,12 @@
       "feature": null,
       "sha256": "361e6221b408bbf4e76e54faead5838a22fe2ea30039e7722ffeb3aa005a4ffc",
       "at": "2026-11-18T13:05:58+00:00"
+    },
+    {
+      "kind": "breakdown",
+      "feature": null,
+      "sha256": "f1df8318343f5cd2ce801a8060c0f5d92c5bf1f33eb5d878a87d17e652916f3f",
+      "at": "2026-11-18T14:55:59+00:00"
     }
   ],
   "done": [

@@ -79,7 +79,7 @@ def driver_result(run_id: str) -> str:
 def driver_resume(run_id: str, scoped_tool_approval: Literal["emulator", "bound-device"] | None = None,
                   budget_seconds: float | None = None, budget_reason: str | None = None) -> str:
     """Resume after correcting a blocker; recheck accepted evidence.
-    Set scoped_tool_approval only after explicit user approval. emulator covers an emulated case's assigned tools;
+    Set scoped_tool_approval only after explicit user approval. emulator covers the assigned tools of a run on a supplied device;
     bound-device requires the saved explicit device binding and allowed effects. Neither permits unrelated tools.
     Set budget_seconds only after explicit user approval to increase the total wall-clock budget from the original
     start. Supply a nonblank budget_reason; the increase is recorded without resetting time or prior attempts.

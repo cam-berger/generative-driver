@@ -225,7 +225,7 @@ class ReplayCandidateTests(ServiceCase):
                          'A replay candidate holds replay.json: ' + str(self.root / 'empty'))
         installed = Path(client_interface.__file__).parent / 'resources' / 'toolchain'
         self.assertEqual(self.refused_config({'candidate': str(installed)}),
-                         'A replay candidate is saved worker output, never the installed case sources or groundtruth')
+                         'A replay candidate is saved worker output, never a folder of the installed resources')
         self.assertEqual(self.refused_config({'candidate': candidate, 'candidate_sha256': 'f' * 64}),
                          'The replay candidate changed since its hash was recorded: ' + candidate)
         self.assertEqual(replay.candidate_config({'runtime': 'replay', 'candidate': candidate,

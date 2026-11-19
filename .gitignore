@@ -11,7 +11,5 @@ build/
 *.secret
 .generative-driver/
 
-.local-runs/
-
 # Generated local device packages and reports stay outside Git.
 outputs/

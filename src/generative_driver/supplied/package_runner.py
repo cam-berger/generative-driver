@@ -1,8 +1,7 @@
 """The runner of an emitted package's own command line, for the package calls of fresh reuse.
 
-The stage code runs the stage-assigned copy of a package with it. The benchmark's grader has a runner of its own,
-which the tool may not import, so this is the tool's copy of what the stage code calls (Feature 05 of the untangle
-Run, docs/features/untangle/05-supplied-device-stages.md).
+The stage code runs the stage-assigned copy of a package with it (Feature 05 of the untangle Run,
+docs/features/untangle/05-supplied-device-stages.md).
 """
 import hashlib
 import json

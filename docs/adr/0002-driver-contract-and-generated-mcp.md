@@ -1,6 +1,6 @@
 # Driver contract and generated MCP
 
-Status: Accepted, 2026-10-29. Implements the contract design agreed on 2026-10-28.
+Status: Accepted, 2026-10-29.
 
 ## Context
 

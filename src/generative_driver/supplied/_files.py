@@ -1,6 +1,5 @@
 """Two helpers the stage modules share: the finder of an artifact in an accepted handoff, and the writer of the JSON
-files a stage leaves. The benchmark's grader has both in a module of its own, which the tool may not import, so these
-are the tool's (Feature 05 of the untangle Run, docs/features/untangle/05-supplied-device-stages.md)."""
+files a stage leaves (Feature 05 of the untangle Run, docs/features/untangle/05-supplied-device-stages.md)."""
 import json
 from pathlib import Path
 

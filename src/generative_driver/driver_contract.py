@@ -2,8 +2,8 @@
 matches the model (docs/features/kit-fixes/05-driver-package.md, 05-B6 and 05-B8).
 
 Emit keeps each operation of the worker's contract that compiles back to the model and imports the rest from the
-model, so a repair that leaves part of the contract behind its model costs only that part. Benchmark runs use none of
-this; their interpret instructions stay as they were."""
+model, so a repair that leaves part of the contract behind its model costs only that part. A run on a supplied device uses none
+of this; its interpret instructions stay as they were."""
 import json
 from pathlib import Path
 

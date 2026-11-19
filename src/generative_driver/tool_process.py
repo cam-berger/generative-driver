@@ -1,6 +1,5 @@
 """A kit tool run in a child process of the service, with a deadline (docs/features/kit-fixes/04-service-diagnostics.md,
-04-B7 to 04-B9). A kit tool is a tool `toolkit.call_tool` runs, as against a tool the benchmark provides or an
-operation of an emitted package.
+04-B7 to 04-B9). A kit tool is a tool `toolkit.call_tool` runs, as against an operation of an emitted package.
 
 A tool that runs inside the service has no deadline and holds its run while it runs, and some tools execute code a
 worker wrote: a register model's conversion module. The service therefore runs a generic run's kit tools here, in a

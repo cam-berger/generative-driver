@@ -1,6 +1,6 @@
 """Headless Ghidra as a toolchain tool.
 
-The implementation is bench/tools/workspace/ghidra_run.py, a standard-library file that an offline worker can
+The implementation is resources/tools/workspace/ghidra_run.py, a standard-library file that an offline worker can
 carry on its own; this module loads it by path and wraps it as `ghidra_run` so the call is an event in
 the run log with the sha256 of the image, the exports and the analyzer's captured output. One
 implementation serves both entry points on purpose: the offline trial of 2026-09-18 showed how much a

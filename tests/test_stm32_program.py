@@ -7,6 +7,7 @@ installation. No test here starts it, or anything else: a path that names no fil
 Temporary homes only; no model, no hardware and no program of ST's.
 """
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -83,6 +84,10 @@ class ConfigureProgramTests(ProgramCase):
             'a .Cmd file': (['--command', batch + '.Cmd'], batch + '.Cmd'),
             'an empty argument': (['--command', self.program, '--argument', 'kept', '--argument', ''], 'argument'),
         }
+        # On Windows a path without its drive is not absolute.
+        driveless = os.path.splitdrive(self.program)[1]
+        if driveless != self.program:
+            refused['a path without its drive'] = (['--command', driveless], driveless)
         for label, (words, named) in refused.items():
             with self.subTest(label):
                 ended = self.configure_program(*words)

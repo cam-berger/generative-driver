@@ -6,6 +6,7 @@ walks it and stops at the first rung that yields a description. Every rung it tr
 reason it was taken or skipped, so the class is a finding rather than a setting.
 """
 import array, hashlib, json, os, re, shutil, subprocess, tempfile, time, urllib.request, uuid
+from pathlib import Path
 
 from . import core, runner
 
@@ -194,7 +195,7 @@ def acquire_flash(run_dir, port, chunked=False, strip_app_desc=False, backend=No
 
 
 # Where an STM32's main flash begins: the one address this tool reads from.
-STM32_FLASH_START = '0x08000000'
+_STM32_FLASH_START = '0x08000000'
 # How long each launch of the program may run, in seconds: the one that shows the option bytes, the one that reads,
 # and the one that returns the chip to its application. Together they stay inside the time the configurator gives
 # one tool call.
@@ -204,12 +205,14 @@ STM32_RETURN_SECONDS = 30
 _ESCAPE_SEQUENCE = re.compile(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])')
 
 
-def _stm32_launch(command, folder, seconds):
+def _stm32_launch(command, folder, seconds, started):
     """One launch of the program, as its exit code and its text: its standard output, then its standard error, each
     decoded as UTF-8 with replacement and with escape sequences removed. A launch that runs past `seconds` is stopped,
-    and its exit code is None. `command` is an argument list, started without a shell in `folder`."""
+    and its exit code is None. `command` is an argument list, started without a shell in `folder`; `started()` is
+    called once the program runs, so a launch the system could not start is told from one that touched the chip."""
     with tempfile.TemporaryFile(dir=folder) as output, tempfile.TemporaryFile(dir=folder) as errors:
         process = subprocess.Popen(command, cwd=folder, stdin=subprocess.DEVNULL, stdout=output, stderr=errors)
+        started()
         try:
             code = process.wait(seconds)
         except subprocess.TimeoutExpired:
@@ -230,9 +233,10 @@ def _stm32_line(text, pattern):
 
 def _stm32_program(program):
     """Whether `program` is a command the tool can start: a list of nonempty strings whose first is the absolute path
-    of an existing file."""
+    of an existing file. A path is absolute as it is where the command is configured: on Windows it names its
+    drive."""
     return (isinstance(program, list) and bool(program) and all(isinstance(part, str) and part for part in program)
-            and os.path.isabs(program[0]) and os.path.isfile(program[0]))
+            and Path(program[0]).is_absolute() and os.path.isfile(program[0]))
 
 
 @core.tool('acquire_stm32_flash')
@@ -242,10 +246,11 @@ def acquire_stm32_flash(run_dir, program, probe_serial_number=None, allow_reset=
     erases or changes an option byte, so a read-protected chip is left as it is and not read.
 
     Without `allow_reset` both launches connect without a halt or a reset. With it they reset the chip to connect and
-    the read ends with a reset; a call that ends without an image after a launch then makes one more launch to let
-    the chip run again, and `returned_to_application` says whether that launch exited 0. The size read is `size_kb`,
-    else the one the program reports. Each launch's text is kept beside the provenance record under
-    `acquire/stm32/`, also when no image is made (Feature 01 of the stm32-acquire Run).
+    the read ends with a reset; a call that ends without an image after a launch that started, also one an exception
+    ends, then makes one more launch to let the chip run again, and `returned_to_application` says whether that
+    launch exited 0. Such a call leaves no image, no read file and no provenance record. The size read is `size_kb`,
+    else the one the program reports. Each launch's text is kept under `acquire/stm32/`, also when no image is made
+    (Feature 01 of the stm32-acquire Run).
     """
     def unavailable(reason, code=1, **more):
         return {'available': False, 'reason': reason, '_exit': code, **more}
@@ -263,16 +268,18 @@ def acquire_stm32_flash(run_dir, program, probe_serial_number=None, allow_reset=
     probe = ['sn=' + probe_serial_number] if probe_serial_number else []
     connection = 'normal' if allow_reset else 'hotplug'
     connect = ['-c', 'port=SWD', *(['mode=NORMAL', 'reset=SWrst'] if allow_reset else ['mode=HOTPLUG']), *probe]
-    launched, texts = [], []
+    flash, provenance = os.path.join(work, 'flash.bin'), os.path.join(work, 'provenance.json')
+    # The launches that started, and the text kept of each as its path and its SHA-256.
+    launched, texts = [], {}
 
     def launch(arguments, seconds, name=None):
         """One launch with `arguments` after the program's command. Its text is kept as `name` when given."""
-        launched.append(arguments)
-        code, text = _stm32_launch([*program, *arguments], work, seconds)
+        code, text = _stm32_launch([*program, *arguments], work, seconds, lambda: launched.append(arguments))
         if name:
-            texts.append(os.path.join(work, name))
-            with open(texts[-1], 'wb') as stream:
-                stream.write(text.encode('utf-8'))
+            path, written = os.path.join(work, name), text.encode('utf-8')
+            with open(path, 'wb') as stream:
+                stream.write(written)
+            texts[path] = hashlib.sha256(written).hexdigest()
         return code, text
 
     def read():
@@ -290,51 +297,63 @@ def acquire_stm32_flash(run_dir, program, probe_serial_number=None, allow_reset=
             int(reported[1]) * (1024 if reported[2] in 'Kk' else 1048576) if reported else 0
         if not size:
             return unavailable('The program did not report the flash size; pass size_kb')
-        flash = os.path.join(work, 'flash.bin')
         if os.path.lexists(flash):
             os.remove(flash)  # What an earlier call left behind is not this call's read.
-        code, _ = launch([*connect, '--upload', STM32_FLASH_START, str(size), flash,
+        code, _ = launch([*connect, '--upload', _STM32_FLASH_START, str(size), flash,
                           *(['-rst'] if allow_reset else [])], STM32_READ_SECONDS, 'read.txt')
         cause = ('the read launch exited nonzero' if code != 0 else
                  'the read launch left no file' if not os.path.isfile(flash) else
                  'the file is not the size asked for' if os.path.getsize(flash) != size else None)
-        blank = False
-        if cause is None:
-            with open(flash, 'rb') as stream:
-                data = stream.read()
-            blank = data.count(data[:1]) == len(data)
-        if cause or blank:
-            if os.path.lexists(flash):
-                os.remove(flash)
-            return unavailable('the dump is blank') if blank else unavailable('dump failed', cause=cause)
+        if cause:
+            return unavailable('dump failed', cause=cause)
+        with open(flash, 'rb') as stream:
+            data = stream.read()
+        if data.count(data[:1]) == len(data):
+            return unavailable('the dump is blank')
         image = os.path.join(out, 'interpret-input.bin')
-        os.replace(flash, image)
         digest = hashlib.sha256(data).hexdigest()
         protection = 'level 0' if protection else 'unknown'
-        provenance = os.path.join(work, 'provenance.json')
         with open(provenance, 'w', encoding='utf-8') as stream:
             json.dump({'schema': 'firmware-readout/1', 'origin': 'device_dump', 'origin_basis': 'debug_probe_read',
                        'program': os.path.basename(program[0]), 'probe': 'stlink',
                        'probe_serial_number': probe_serial_number, 'connection': connection,
-                       'reset_granted': bool(allow_reset), 'start_address': STM32_FLASH_START, 'size': size,
+                       'reset_granted': bool(allow_reset), 'start_address': _STM32_FLASH_START, 'size': size,
                        'sha256': digest, 'device_name': chip, 'readout_protection': protection,
                        'flash_performed': False, 'bit_identical_to_device': 'not_verified'}, stream, indent=2)
             stream.write('\n')
-        return {'available': True, 'rung': 'flash', 'chip': chip, 'artifact': image, 'interpret_input': image,
+        made = {'available': True, 'rung': 'flash', 'chip': chip, 'artifact': image, 'interpret_input': image,
                 'artifacts': [image, *texts, provenance], 'provenance': provenance, 'sha256': digest, 'size': size,
                 'connection': connection, 'readout_protection': protection, 'front_end': 'interpret-firmware-binary',
                 'inputs_for_interpret': {'image.bin': image},
                 **({'returned_to_application': True} if allow_reset else {}),
-                '_files': {image: digest, **{path: core.sha256(path) for path in (*texts, provenance)}}}
+                '_files': {image: digest, **texts, provenance: core.sha256(provenance)}}
+        # The move is the last step that can fail: a call that fails anywhere leaves no image.
+        os.replace(flash, image)
+        return made
 
-    result = read()
+    def returned():
+        """Whether one more launch let the chip run again. A launch that could not be made did not."""
+        try:
+            return launch(['-c', 'port=SWD', 'mode=HOTPLUG', *probe, '-rst'], STM32_RETURN_SECONDS)[0] == 0
+        except Exception:
+            return False
+
+    try:
+        result = read()
+    except Exception as error:
+        # Whatever ends the read, the call ends as a failed one does: the chip is let run again and nothing is left.
+        result = unavailable('the read could not be finished', cause=type(error).__name__ + ': ' + str(error))
     if not result['available']:
-        if texts:
-            result.update(launch_texts=list(texts), _files={path: core.sha256(path) for path in texts})
         if allow_reset and launched:
             # The chip was reset and halted to connect, and no read ended with a reset: let it run again.
-            code, _ = launch(['-c', 'port=SWD', 'mode=HOTPLUG', *probe, '-rst'], STM32_RETURN_SECONDS)
-            result['returned_to_application'] = code == 0
+            result['returned_to_application'] = returned()
+        for left in (flash, provenance):
+            try:
+                os.remove(left)
+            except OSError:
+                pass  # It is not there, or it is not this tool's to remove.
+        if texts:
+            result.update(launch_texts=list(texts), _files=dict(texts))
     return result
 
 

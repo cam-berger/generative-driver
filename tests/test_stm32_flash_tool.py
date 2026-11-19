@@ -7,11 +7,13 @@ program's files and exit codes. They give no physical evidence.
 
 Temporary folders only; no model, no hardware and no program of ST's.
 """
+import contextlib
 import hashlib
 import json
 import os
 import re
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -170,6 +172,119 @@ class ResetGrantTests(FlashToolCase):
                 self.assertNotIn('returned_to_application', result)
 
 
+UNFINISHED = 'the read could not be finished'
+
+
+class RaisedTests(FlashToolCase):
+    """A call that an exception ends after a launch ends as any failed call does: under the reset grant the chip is
+    let run again (01-B10), and no image and no read file is left (01-B12)."""
+
+    def stand(self, name):
+        """Put a folder where the tool is to write the file `name` of its work folder, so that writing it raises."""
+        (self.work / name).mkdir(parents=True)
+
+    @contextlib.contextmanager
+    def unstartable(self, refuse):
+        """While the block runs, the system refuses to start a process whose command `refuse` picks, as it refuses a
+        file it cannot run. Gives the commands it refused."""
+        start, refused = subprocess.Popen, []
+
+        def popen(command, *more, **named):
+            if refuse(command):
+                refused.append(list(command))
+                raise OSError('The system cannot start the program')
+            return start(command, *more, **named)
+        with patch('subprocess.Popen', popen):
+            yield refused
+
+    def test_01_B10_stm32_a_call_that_an_exception_ends_after_a_launch_returns_the_chip_to_its_application(self):
+        identify, back = [*NORMAL, '-ob', 'displ'], [*HOTPLUG, '-rst']
+        cases = (('identify.txt', [identify, back]), ('flash.bin', [identify, back]),
+                 ('read.txt', [identify, 'read', back]), ('provenance.json', [identify, 'read', back]))
+        for name, expected in cases:
+            with self.subTest(cannot_be_written=name):
+                self.fresh()
+                self.stand(name)
+                result = self.read(allow_reset=True, size_kb=4)
+                read = [*NORMAL, '--upload', '0x08000000', '4096', str(self.flash), '-rst']
+                self.assertEqual(self.launches(), [read if launch == 'read' else launch for launch in expected])
+                self.assertEqual(
+                    (result.get('available'), result.get('reason'), result.get('returned_to_application')),
+                    (False, UNFINISHED, True), result)
+        # The return launch names the probe, and its exit code is what the result says.
+        self.fresh(exit={'return': 1})
+        self.stand('read.txt')
+        result = self.read(allow_reset=True, size_kb=4, probe_serial_number='0670FF3632')
+        self.assertEqual(self.launches()[2:], [[*HOTPLUG, 'sn=0670FF3632', '-rst']])
+        self.assertEqual((result.get('available'), result.get('returned_to_application')), (False, False), result)
+        # Without the grant no launch follows, and the result does not say where the chip is.
+        for name, launched in (('identify.txt', 1), ('read.txt', 2)):
+            with self.subTest(without_the_grant=name):
+                self.fresh()
+                self.stand(name)
+                result = self.read(size_kb=4)
+                self.assertEqual((len(self.launches()), result.get('available'), result.get('reason')),
+                                 (launched, False, UNFINISHED), result)
+                self.assertNotIn('-rst', [argument for launch in self.launches() for argument in launch])
+                self.assertNotIn('returned_to_application', result)
+
+    def test_01_B10_stm32_a_launch_the_system_cannot_start_is_no_launch_and_the_call_ends_as_a_failed_one(self):
+        identify = [*NORMAL, '-ob', 'displ']
+        # The read cannot be started after the first launch reset the chip: one more launch lets it run again.
+        self.fresh()
+        with self.unstartable(lambda command: '--upload' in command) as refused:
+            result = self.read(allow_reset=True, size_kb=4)
+        self.assertEqual((self.launches(), len(refused)), ([identify, [*HOTPLUG, '-rst']], 1))
+        self.assertEqual((result.get('available'), result.get('reason'), result.get('returned_to_application')),
+                         (False, UNFINISHED, True), result)
+        # The return launch cannot be started: the chip is not said to be back, and the result keeps its reason.
+        self.fresh(exit={'identify': 1})
+        with self.unstartable(lambda command: 'mode=HOTPLUG' in command) as refused:
+            result = self.read(allow_reset=True, size_kb=4)
+        self.assertEqual((self.launches(), len(refused)), ([identify], 1))
+        self.assertEqual((result.get('available'), result.get('reason'), result.get('returned_to_application')),
+                         (False, NO_CONTROLLER, False), result)
+        # The first launch cannot be started: nothing reset the chip, so no launch follows.
+        self.fresh()
+        with self.unstartable(lambda command: '-ob' in command) as refused:
+            result = self.read(allow_reset=True, size_kb=4)
+        self.assertEqual((self.launches(), len(refused)), ([], 1))
+        self.assertEqual((result.get('available'), result.get('reason')), (False, UNFINISHED), result)
+        self.assertNotIn('returned_to_application', result)
+
+    def test_01_B12_stm32_a_call_that_an_exception_ends_makes_no_image_and_leaves_no_read_file(self):
+        for name, kept in (('read.txt', ['identify.txt']), ('provenance.json', ['identify.txt', 'read.txt'])):
+            with self.subTest(cannot_be_written=name):
+                self.fresh()
+                self.stand(name)
+                result = self.read(size_kb=4)
+                self.assertEqual(len(self.launches()), 2)
+                self.assertEqual((self.image.exists(), self.flash.exists()), (False, False), result)
+                self.assertEqual((result.get('available'), result.get('reason'), result.get('_exit')),
+                                 (False, UNFINISHED, 1), result)
+                # The result says what was raised, and names the texts that were kept.
+                self.assertIn(name, result.get('cause', ''))
+                self.assertEqual(result.get('launch_texts'), [str(self.work / text) for text in kept])
+                # Nothing of the failed call stands in the way of the next: with the folder gone, the same run reads.
+                (self.work / name).rmdir()
+                again = self.read(size_kb=4)
+                self.assertIs(again.get('available'), True, again)
+                self.assertEqual(self.image.read_bytes(), stand_in.image(4096))
+
+    def test_01_B12_stm32_a_move_that_fails_leaves_no_image_no_read_file_and_no_record(self):
+        # While the read runs, a folder comes to stand where the image is to go, so the tool's last step fails.
+        self.fresh(in_the_way=True)
+        result = self.read(size_kb=4, allow_reset=True)
+        self.assertEqual(len(self.launches()), 3)
+        self.assertEqual(sorted(path.name for path in self.work.iterdir()), ['identify.txt', 'read.txt'])
+        # What stood there is left as it was, and the chip is let run again.
+        self.assertEqual((self.image.is_dir(), list(self.image.iterdir())), (True, []))
+        self.assertEqual((result.get('available'), result.get('reason'), result.get('returned_to_application')),
+                         (False, UNFINISHED, True), result)
+        self.assertEqual(self.launches()[2], [*HOTPLUG, '-rst'])
+        self.assertEqual(result.get('launch_texts'), [str(self.work / 'identify.txt'), str(self.work / 'read.txt')])
+
+
 DEVICE_NAME = 'STM32F101/F102/F103 Medium-density'
 
 
@@ -260,8 +375,10 @@ class UnavailableTests(FlashToolCase):
             relative = os.path.relpath(sys.executable)
         except ValueError:  # On Windows no relative path leads to another drive.
             relative = 'STM32_Programmer_CLI'
+        # On Windows a path without its drive is not absolute, though it may name a file on the current drive.
+        driveless = os.path.splitdrive(sys.executable)[1]
         programs = (sys.executable, [], [''], [sys.executable, ''], [sys.executable, 5], [missing], [str(self.root)],
-                    [relative], None)
+                    [relative], None, *([[driveless]] if driveless != sys.executable else []))
         for program in programs:
             with self.subTest(program=program):
                 self.fresh()
@@ -317,18 +434,29 @@ class UnavailableTests(FlashToolCase):
             return True
         return False
 
+    def patched_limit(self):
+        """The seconds a launch that is to outlast its limit is given here: enough on this machine for the stand-in to
+        start and record the launch before it is stopped, however slow the machine is. That is the time of ten
+        launches, as a plain read of two launches measures it now, and 3 seconds at least."""
+        self.fresh()
+        began = time.monotonic()
+        self.assertIs(self.read(size_kb=4).get('available'), True)
+        return max(3, 5 * (time.monotonic() - began))
+
     def test_01_B12_stm32_a_launch_past_its_limit_is_stopped_and_counts_as_failed(self):
         from generative_driver._toolchain import acquire
         self.assertEqual((acquire.STM32_IDENTIFY_SECONDS, acquire.STM32_READ_SECONDS), (60, 300))
+        seconds = self.patched_limit()
         cases = (('identify', 'STM32_IDENTIFY_SECONDS', NO_CONTROLLER, 1),
                  ('read', 'STM32_READ_SECONDS', DUMP_FAILED, 2))
-        for kind, limit, reason, launched in cases:
+        for kind, constant, reason, launched in cases:
             with self.subTest(kind=kind):
-                self.fresh(outlast={kind: 120})
+                self.fresh(outlast={kind: 600})
                 began = time.monotonic()
-                with patch.object(acquire, limit, 3):  # Long enough for the stand-in to start and record.
+                with patch.object(acquire, constant, seconds):
                     result = self.read(size_kb=4)
-                self.assertLess(time.monotonic() - began, 60)
+                # The tool did not wait for the launch to end by itself.
+                self.assertLess(time.monotonic() - began, seconds + 120)
                 self.refused(reason, result, launched=launched)
                 last = stand_in.launches(self.state)[-1]
                 self.assertEqual(last['kind'], kind)
@@ -337,17 +465,17 @@ class UnavailableTests(FlashToolCase):
     def test_01_B12_stm32_a_return_launch_past_its_limit_is_stopped_and_the_chip_is_not_said_to_be_back(self):
         from generative_driver._toolchain import acquire
         self.assertEqual(acquire.STM32_RETURN_SECONDS, 30)
-        self.fresh(exit={'identify': 1}, outlast={'return': 120})
+        seconds = self.patched_limit()
+        self.fresh(exit={'identify': 1}, outlast={'return': 600})
         began = time.monotonic()
-        with patch.object(acquire, 'STM32_RETURN_SECONDS', 3):
+        with patch.object(acquire, 'STM32_RETURN_SECONDS', seconds):
             result = self.read(size_kb=4, allow_reset=True)
-        self.assertLess(time.monotonic() - began, 60)
+        self.assertLess(time.monotonic() - began, seconds + 120)
         self.refused(NO_CONTROLLER, result, launched=2)
         self.assertIs(result.get('returned_to_application'), False)
         last = stand_in.launches(self.state)[-1]
         self.assertEqual(last['kind'], 'return')
         self.assertTrue(self.stopped(last))
-
 
 def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()

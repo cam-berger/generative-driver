@@ -11,12 +11,12 @@ from pathlib import Path
 from .setup import STM32_PROGRAMMER, program_command
 
 KEY = 'debug_probe'
-PROGRAM_KEY = 'debug_probe_program'
-MALFORMED = 'binding.debug_probe must be an object with kind "stlink" and an optional serial_number'
-BAD_SERIAL = 'binding.debug_probe.serial_number must be 1 to 64 letters and digits'
-NEEDS_PROGRAM = ('binding.debug_probe needs STM32CubeProgrammer: run generative-driver configure-program --program '
-                 + STM32_PROGRAMMER + ' --command PATH')
-SUPPLIED = 'binding.debug_probe is for a run without a supplied device'
+_PROGRAM_KEY = 'debug_probe_program'
+_MALFORMED = 'binding.debug_probe must be an object with kind "stlink" and an optional serial_number'
+_BAD_SERIAL = 'binding.debug_probe.serial_number must be 1 to 64 letters and digits'
+_NEEDS_PROGRAM = ('binding.debug_probe needs STM32CubeProgrammer: run generative-driver configure-program --program '
+                  + STM32_PROGRAMMER + ' --command PATH')
+_SUPPLIED = 'binding.debug_probe is for a run without a supplied device'
 # The tool the acquire stage of a run that declares a probe is assigned after its other tools, and what its worker
 # is told of the probe: that one exists, never which.
 TOOL = 'acquire_stm32_flash'
@@ -41,38 +41,38 @@ def refusal(binding, supplied, home):
     if not isinstance(binding, dict) or KEY not in binding:
         return None
     if supplied:
-        return SUPPLIED
+        return _SUPPLIED
     probe = binding[KEY]
     if not isinstance(probe, dict) or set(probe) - {'kind', 'serial_number'} or probe.get('kind') != 'stlink':
-        return MALFORMED
+        return _MALFORMED
     if 'serial_number' in probe and not (isinstance(probe['serial_number'], str)
                                          and re.fullmatch('[0-9A-Za-z]{1,64}', probe['serial_number'])):
-        return BAD_SERIAL
+        return _BAD_SERIAL
     command = program_command(home, STM32_PROGRAMMER)
     if command is None or not Path(command[0]).is_file():
-        return NEEDS_PROGRAM
+        return _NEEDS_PROGRAM
     return None
 
 
 def settle(spec, home):
     """Settle the probe in `spec`, the record a start builds from its request: the declaration leaves the binding and
     is kept under `KEY` beside it, so that everything after the start sees the binding without it. The program's
-    command, as `home` has it configured now, is copied under `PROGRAM_KEY`, as the executor's configuration is
+    command, as `home` has it configured now, is copied under `_PROGRAM_KEY`, as the executor's configuration is
     copied: the run launches what it started with. Only a binding declares a probe: a record whose binding declares
     none holds nothing under either key, whatever the request held there."""
     binding = spec.get('binding')
     spec.pop(KEY, None)
-    spec.pop(PROGRAM_KEY, None)
+    spec.pop(_PROGRAM_KEY, None)
     if isinstance(binding, dict) and KEY in binding:
         spec[KEY] = binding[KEY]
-        spec[PROGRAM_KEY] = program_command(home, STM32_PROGRAMMER)
+        spec[_PROGRAM_KEY] = program_command(home, STM32_PROGRAMMER)
         spec['binding'] = {key: value for key, value in binding.items() if key != KEY}
 
 
 def arguments(spec, effects):
     """What the configurator supplies a call of the tool in the run of record `spec`: the program's command the run
     started with, the probe's serial number when the binding named one, and whether the operator granted a reset."""
-    supplied = {'program': spec[PROGRAM_KEY], 'allow_reset': 'reset' in effects}
+    supplied = {'program': spec[_PROGRAM_KEY], 'allow_reset': 'reset' in effects}
     if 'serial_number' in spec[KEY]:
         supplied['probe_serial_number'] = spec[KEY]['serial_number']
     return supplied

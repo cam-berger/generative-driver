@@ -5,8 +5,9 @@ Feature adds one command, one acquire tool and one entry of `doctor`. Everything
 fifteen commands with their arguments, the client's tools, the client interface's document, the description of every
 tool that existed, and the extras `doctor` lists.
 
-The documents are read from the checkout. The MCP server is started once, over stdio, to list its tools. Temporary
-homes only; no model, no hardware and no program of ST's.
+The documents are read from the checkout. The MCP server is started once, over stdio, to list its tools. One test
+starts a run in a temporary home, with stage workers that do nothing. Temporary homes only; no model, no hardware and
+no program of ST's.
 """
 import hashlib
 import json
@@ -14,8 +15,10 @@ import shlex
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import generative_driver
+from input_path_fixtures import RunCase
 from test_tool_commands import TOOLS, listed_tools, one_line, taken, typed, usage
 from test_tool_documents import benchmark_words
 
@@ -173,23 +176,39 @@ class DocumentTests(unittest.TestCase):
                          ['## Add optional hardware tools', SETUP_SECTION, '## Recovery'])
 
     def test_01_B16_stm32_the_command_and_the_binding_setup_shows_are_ones_the_tool_takes(self):
-        from generative_driver import debug_probe
+        from generative_driver.configurator import Controller
         self.assertIn(CONFIGURE_LINE, self.setup_section())
-        with tempfile.TemporaryDirectory(prefix='stm32 setup ') as temporary:
-            program = Path(temporary).resolve() / 'STM32_Programmer_CLI'
-            program.write_text('never started\n', encoding='utf-8')
-            words = [str(program) if word == PROGRAM_PLACE else word for word in shlex.split(CONFIGURE_LINE)]
-            self.assertEqual(words[:3], ['python', '-m', 'generative_driver'])
-            home = Path(temporary) / 'home'
-            saved = typed('--home', str(home), *words[3:])
-            self.assertEqual((saved.status, saved.errors), (0, ''))
-            self.assertEqual(json.loads(saved.printed)['configuration'], {'command': [str(program)]})
-            # The binding the section shows declares a probe that a start takes, once its serial number is filled in.
-            binding = json.loads(BINDING_LINE)['binding']
-            self.assertEqual(binding, {'debug_probe': {'kind': 'stlink', 'serial_number': '...'}})
-            self.assertEqual(debug_probe.refusal(binding, False, home), debug_probe.BAD_SERIAL)
-            binding['debug_probe']['serial_number'] = '066DFF485550755187121723'
-            self.assertIsNone(debug_probe.refusal(binding, False, home))
+        temporary = tempfile.TemporaryDirectory(prefix='stm32 setup ')
+        self.addCleanup(temporary.cleanup)
+        program = Path(temporary.name).resolve() / 'STM32_Programmer_CLI'
+        program.write_text('never started\n', encoding='utf-8')
+        words = [str(program) if word == PROGRAM_PLACE else word for word in shlex.split(CONFIGURE_LINE)]
+        self.assertEqual(words[:3], ['python', '-m', 'generative_driver'])
+        home = Path(temporary.name) / 'home'
+        saved = typed('--home', str(home), *words[3:])
+        self.assertEqual((saved.status, saved.errors), (0, ''))
+        self.assertEqual(json.loads(saved.printed)['configuration'], {'command': [str(program)]})
+        # The binding the section shows declares a probe whose serial number is a place to fill in. A start in the
+        # home that command configured refuses it as shown, and takes it once the number is filled in.
+        binding = json.loads(BINDING_LINE)['binding']
+        self.assertEqual(binding, {'debug_probe': {'kind': 'stlink', 'serial_number': '...'}})
+        controller = Controller(home)
+        self.addCleanup(controller.close)
+        start = {'goal': 'Read the firmware of the device', 'executor_config': {'command': ['never-launched']}}
+        with self.assertRaises(ValueError) as refused:
+            controller.call('start', {**start, 'binding': binding})
+        self.assertEqual(str(refused.exception), 'binding.debug_probe.serial_number must be 1 to 64 letters and digits')
+        binding['debug_probe']['serial_number'] = '066DFF485550755187121723'
+
+        def execute(request, config, cancel):
+            """A stage worker that does nothing and reports completed: no model runs."""
+            return {'runtime': 'codex', 'status': 'completed', 'reason': None, 'elapsed_seconds': 0, 'usage': None,
+                    'report': {'status': 'completed', 'summary': 'scripted ' + request.stage, 'artifacts': [],
+                               'checks': [], 'unresolved': []}}
+        with patch('generative_driver.configurator.execute', execute):
+            started = controller.call('start', {**start, 'binding': binding})
+            self.assertEqual((started['ok'], started['duplicate']), (True, False))
+            RunCase.stopped(controller, started)
 
     def test_01_B16_stm32_support_names_the_read_in_the_firmware_row_with_scripted_evidence_only(self):
         rows = [line for line in self.document('docs/support.md').splitlines() if line.startswith('| Firmware |')]

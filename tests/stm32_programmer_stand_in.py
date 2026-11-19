@@ -17,6 +17,8 @@ launches; a key that is absent takes the value of `DEFAULTS`:
 - `exit`: the exit code of each kind of launch, `identify`, `read` or `return`.
 - `write`: what a read leaves in its file: `image` (the bytes of `image`), `short` (one byte less), `blank` (every
   byte 0xFF) or `nothing` (no file).
+- `in_the_way`: whether a read also leaves a folder named `interpret-input.bin` in the folder above its file's,
+  which is where the tool is to move the image.
 - `outlast`: for a kind of launch, the seconds it waits before it does anything else. While it waits it listens on a
   local port, which the record names, so that a test sees whether the launch was stopped.
 - `escapes_inside`: whether escape sequences also stand inside the words a reader looks for.
@@ -36,7 +38,7 @@ COMMAND = [sys.executable, str(Path(__file__).resolve())]
 STATE = 'STM32_STAND_IN_STATE'
 DEFAULTS = {'rdp': 'AA', 'rdp_line': True, 'flash_size': '64 KBytes',
             'device_name': 'STM32F101/F102/F103 Medium-density', 'exit': {}, 'write': 'image', 'outlast': {},
-            'escapes_inside': False, 'shout': False, 'line_end': '\n'}
+            'in_the_way': False, 'escapes_inside': False, 'shout': False, 'line_end': '\n'}
 # The colours the program is remembered to wrap its lines in, and the byte of its progress bar, which is not UTF-8.
 INFO, GOOD, BAD, PLAIN = '\x1b[36m\x1b[01m', '\x1b[00;32m', '\x1b[00;31m', '\x1b[39;49m\x1b[0m'
 BAR = b'\xdb' * 20
@@ -190,6 +192,8 @@ def main():
         size = int(arguments[at + 2])
         data = {'image': image(size), 'short': image(size)[:-1], 'blank': b'\xff' * size}[scenario['write']]
         Path(arguments[at + 3]).write_bytes(data)
+    if kind == 'read' and scenario['in_the_way']:
+        (Path(arguments[arguments.index('--upload') + 3]).parent.parent / 'interpret-input.bin').mkdir()
     return code
 
 

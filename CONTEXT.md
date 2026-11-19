@@ -20,7 +20,7 @@
 | Declarative protocol | Wire exchanges and decoders implementing the public contract through a versioned shared runtime. |
 | Precondition | Driver-declared requirement checked from fresh read observations before the requested command. |
 | Effect grant | Permission for a driver call to write, actuate or reset; reads need none. The operator grants a run's effects; a call needing an ungranted effect is refused before any device I/O. |
-| Uncertain effect | A write or actuation that may have been sent to a device and whose outcome the configurator does not know. A call that succeeded, or whose result shows the requested command was never sent, leaves none. It is never repeated silently; the operator, or the verified replacement of a supplied device, resolves it. A reset is not one: it needs its effect grant and nothing more. |
+| Uncertain effect | A write or actuation that may have been sent to a device and whose outcome the configurator does not know. A call that succeeded, or whose result shows the requested command was never sent, leaves none. It is never repeated silently; the operator, or the verified replacement of a supplied device, resolves it. Until then the device stays with its run or session, and nothing else that would change it is sent. A reset is not one: it needs its effect grant and nothing more. |
 | Application MCP layer | Separately authored tools composing public managed-driver operations through the supported SDK. |
 | Semantic uncertainty | Missing or weakly supported operation or field meaning; retained as a scoped warning. |
 | Package | Contract, protocol, executable model projection, generated MCP catalog, runtime, reference, evidence and integrity manifest. |

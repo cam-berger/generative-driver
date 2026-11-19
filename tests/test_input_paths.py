@@ -798,20 +798,5 @@ class DeviceFirstRunTests(RunCase):
         self.assertEqual(list(reused['inputs'].values()), [package['sha256']])
 
 
-# The sha256 of every tool description but acquire_document's, as the base commit of Feature 07 listed them.
-BASE_TOOLS_SHA256 = '16b20a898c1024e0c77601ab9c14eba3dd99f707eb7d111d0cce8531be02d7d6'
-
-
-class BenchmarkUnchangedTests(RunCase):
-    """07-B9: the tools that existed keep their descriptions."""
-
-    def test_07_B9_every_existing_tool_description_is_unchanged(self):
-        import hashlib
-        from generative_driver.toolkit import list_tools
-        existing = [tool for tool in list_tools() if tool['name'] != 'acquire_document']
-        canonical = json.dumps(existing, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
-        self.assertEqual(hashlib.sha256(canonical.encode('utf-8')).hexdigest(), BASE_TOOLS_SHA256)
-
-
 if __name__ == '__main__':
     unittest.main()

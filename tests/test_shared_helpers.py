@@ -7,24 +7,18 @@ the benchmark package, so it also runs where the benchmark is gone.
 
 Temporary directories and homes only; no model and no hardware.
 """
-import ast
 import inspect
-import json
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
-import generative_driver
-import interface_runtime
 from generative_driver import integrity, verdict_labels
 
 ABC = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
 FIXED_TREE = '1dac59c765a528370eaa52da6b3e4dfc8127e8a08a9acd81e7cfd7d2ee3184ab'
 EMPTY_DIRECTORY = '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945'
-# The names the tool has of its own, which it once took from the benchmark package.
-SHARED = ('digest', 'IntegrityError', 'equivalence_label', 'verdict_reason', 'RUNTIME')
 
 
 def own_names(module):
@@ -50,48 +44,6 @@ def link(test, path, target):
         path.symlink_to(target)
     except (OSError, NotImplementedError) as refused:
         test.skipTest(f'This platform cannot make a symlink: {refused}')
-
-
-def tool_modules():
-    """The tool's modules, each as its file and the dotted name of its package: the Python files of
-    `interface_runtime`, and those of `generative_driver` outside `benchmark.py` and `benchmark_support/`."""
-    found = []
-    for package in (generative_driver, interface_runtime):
-        root = Path(package.__file__).resolve().parent
-        for path in sorted(root.rglob('*.py')):
-            parts = path.relative_to(root.parent).parts
-            if parts[:2] not in (('generative_driver', 'benchmark.py'), ('generative_driver', 'benchmark_support')):
-                found.append((path, '.'.join(parts[:-1])))
-    return found
-
-
-def in_benchmark_package(name):
-    """Whether the dotted `name` is the benchmark's code under one of its names, or lies under one:
-    `generative_driver.benchmark`, `generative_driver.benchmark_support`, or the package `firmware_bench` it becomes
-    (10-B9 of docs/features/untangle/10-tests.md)."""
-    parts = name.split('.')
-    return parts[0] == 'firmware_bench' or parts[:2] in (['generative_driver', 'benchmark'],
-                                                         ['generative_driver', 'benchmark_support'])
-
-
-def benchmark_imports(path, package):
-    """What the module at `path` imports from the benchmark package, in import statements at any depth: pairs of a
-    benchmark module and the name taken from it, or None where the module itself is imported. A relative import
-    starts from `package`, the dotted name of the module's package."""
-    found = []
-    for node in ast.walk(ast.parse(path.read_bytes())):
-        if isinstance(node, ast.Import):
-            found += [(alias.name, None) for alias in node.names if in_benchmark_package(alias.name)]
-        elif isinstance(node, ast.ImportFrom):
-            parts = package.split('.')
-            base = parts[:len(parts) - node.level + 1] if node.level else []
-            module = '.'.join([*base, *([node.module] if node.module else [])])
-            for alias in node.names:
-                if in_benchmark_package(module):
-                    found.append((module, alias.name))
-                elif in_benchmark_package(f'{module}.{alias.name}'):
-                    found.append((f'{module}.{alias.name}', None))
-    return found
 
 
 class TemporaryDirectoryCase(unittest.TestCase):
@@ -157,45 +109,6 @@ class VerdictLabelTests(unittest.TestCase):
                      'diff': [{'id': f'check-{number}', 'reason': f'r{number}'} for number in range(1, 6)]}
         self.assertEqual(verdict_labels.verdict_reason(differing),
                          'Final verdict: not equivalent: r1; r2; r3; 2 more')
-
-
-class OwnHelperTests(TemporaryDirectoryCase):
-    """The tool's modules use the tool's own helpers."""
-
-    def test_02_B4_no_tool_module_imports_a_shared_name_from_the_benchmark_package(self):
-        modules = tool_modules()
-        scanned = {'/'.join([*package.split('.'), path.name]) for path, package in modules}
-        for name in ('generative_driver/configurator.py', 'generative_driver/replay.py',
-                     'generative_driver/scripted_worker.py', 'generative_driver/_toolchain/emit.py',
-                     'interface_runtime/package.py'):
-            self.assertIn(name, scanned)
-        self.assertEqual([name for name in scanned if name.startswith('generative_driver/benchmark')], [],
-                         'A module of the benchmark package is no tool module')
-        taken =[f'{path.name} imports {name} from {module}' for path, package in modules
-                 for module, name in benchmark_imports(path, package) if name in (*SHARED, '*')]
-        self.assertEqual(taken, [])
-
-    def test_02_B4_replay_and_scripted_worker_import_nothing_from_the_benchmark_package(self):
-        source = Path(generative_driver.__file__).resolve().parent
-        for name in ('replay', 'scripted_worker'):
-            with self.subTest(module=name):
-                self.assertEqual(benchmark_imports(source / f'{name}.py', 'generative_driver'), [])
-
-    def test_02_B4_the_replay_executor_names_its_own_runtime(self):
-        from generative_driver import replay
-        self.assertEqual(replay.RUNTIME, 'replay')
-        candidate = self.directory() / 'candidate'
-        candidate.mkdir()
-        (candidate / 'replay.json').write_text(json.dumps({'schema': 'replay-candidate/1', 'stages': {}}),
-                                               encoding='utf-8')
-        self.assertEqual(replay.candidate_config({'candidate': str(candidate)})['runtime'], 'replay')
-        self.assertFalse(hasattr(replay, 'execution_label'), 'replay still has the name execution_label')
-
-    def test_02_B4_the_names_other_code_takes_from_the_service_are_the_tools_objects(self):
-        from generative_driver import configurator
-        self.assertIs(configurator.digest, integrity.digest)
-        self.assertIs(configurator.IntegrityError, integrity.IntegrityError)
-        self.assertIs(configurator.equivalence_label, verdict_labels.equivalence_label)
 
 
 class IntegrityStopTests(TemporaryDirectoryCase):

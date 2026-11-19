@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -321,3 +322,46 @@ class McpTests(unittest.TestCase):
                 choices = {value for branch in branches for value in branch.get("enum", [])}
                 choices.update(branch["const"] for branch in branches if "const" in branch)
                 self.assertEqual(choices, expected)
+
+
+class ServiceCallTests(unittest.TestCase):
+    """Each tool of the MCP server sends the service one call with the parameters it was given (09-B7)."""
+
+    def test_09_B7_each_tool_sends_the_service_the_call_it_sent(self):
+        from generative_driver import mcp as server
+        sent = []
+
+        def service(method, params=None, home=None, **options):
+            sent.append((method, params, home, options))
+            return {'ok': True, 'answered': method}
+        observation = {'observation': 'seen', 'source': 'operator'}
+        calls = (
+            (server.driver_start, ('Read the gauge',), {},
+             ('start', {'goal': 'Read the gauge', 'executor': None, 'inputs': {}, 'binding': None,
+                        'effects': ['read'], 'budget_seconds': 10800, 'request_id': None,
+                        'scoped_tool_approval': None, 'ghidra_home': None, 'java_home': None})),
+            (server.driver_start, ('Read the gauge',), {'effects': [], 'interpretation': 'tasks', 'budget_seconds': 60},
+             ('start', {'goal': 'Read the gauge', 'executor': None, 'inputs': {}, 'binding': None, 'effects': [],
+                        'budget_seconds': 60, 'request_id': None, 'scoped_tool_approval': None, 'ghidra_home': None,
+                        'java_home': None, 'interpretation': 'tasks'})),
+            (server.driver_status, ('run-1',), {}, ('status', {'run_id': 'run-1'})),
+            (server.driver_events, ('run-1',), {}, ('events', {'run_id': 'run-1', 'after': 0})),
+            (server.driver_events, ('run-1',), {'after': 7}, ('events', {'run_id': 'run-1', 'after': 7})),
+            (server.driver_cancel, ('run-1',), {}, ('cancel', {'run_id': 'run-1'})),
+            (server.driver_result, ('run-1',), {}, ('result', {'run_id': 'run-1'})),
+            (server.driver_resume, ('run-1',), {}, ('resume', {'run_id': 'run-1'})),
+            (server.driver_resume, ('run-1',),
+             {'scoped_tool_approval': 'emulator', 'budget_seconds': 90.5, 'budget_reason': 'A longer look'},
+             ('resume', {'run_id': 'run-1', 'scoped_tool_approval': 'emulator', 'budget_seconds': 90.5,
+                         'budget_reason': 'A longer look'})),
+            (server.driver_respond, ('run-1', observation), {},
+             ('respond', {'run_id': 'run-1', 'observation': observation})))
+        # A client on Windows starts no service of its own, as before.
+        for system, autostart in (('Darwin', True), ('Linux', True), ('Windows', False)):
+            with patch('generative_driver.client.call', service), patch('platform.system', return_value=system):
+                for tool, given, named, (method, params) in calls:
+                    with self.subTest(tool=tool.__name__, named=sorted(named), system=system):
+                        del sent[:]
+                        answer = tool(*given, **named)
+                        self.assertEqual(json.loads(answer), {'ok': True, 'answered': method})
+                        self.assertEqual(sent, [(method, params, None, {'autostart': autostart})])

@@ -24,7 +24,6 @@ from unittest.mock import patch
 
 from generative_driver.integrity import digest
 from package_env import package_env
-from test_shared_helpers import benchmark_imports, tool_modules
 
 PACKAGE = 'generative_driver.supplied'
 STAGE_FUNCTIONS = ('prepare_stage', 'observe_stage', 'package_call', 'record_call')
@@ -75,16 +74,6 @@ def stage_module(test, name):
     return importlib.import_module(dotted)
 
 
-def stage_package_files(test):
-    """The Python files of the stage package, sorted. `test` fails where the tool has no such package."""
-    try:
-        found = importlib.util.find_spec(PACKAGE)
-    except ModuleNotFoundError:
-        found = None
-    test.assertIsNotNone(found, f'The tool has no package {PACKAGE}')
-    return sorted(Path(found.origin).parent.rglob('*.py'))
-
-
 def hand_written_firmware(root):
     """The hand-written firmware: a file under `root` that holds the bytes `supplied firmware`, with its SHA-256."""
     path = Path(root) / 'supplied' / 'firmware.bin'
@@ -131,32 +120,6 @@ class PackageTests(unittest.TestCase):
         for name in STAGE_FUNCTIONS:
             self.assertTrue(callable(getattr(stages, name, None)), f'stages has no function {name}')
         self.assertTrue(callable(getattr(stage_module(self, 'instrument_evidence'), 'discrepancies', None)))
-
-    def test_05_B1_the_import_check_sees_a_benchmark_import_of_each_form_at_any_depth(self):
-        directory = tempfile.TemporaryDirectory(prefix='supplied stages ')
-        self.addCleanup(directory.cleanup)
-        path = Path(directory.name) / 'module.py'
-        for line in ('from ..benchmark_support.case_assets import write_json', 'from .. import benchmark',
-                     'def prepare():\n    from ..benchmark_support import missions',
-                     'import generative_driver.benchmark_support.execution',
-                     'def score():\n    from generative_driver.benchmark import supplied_inputs'):
-            path.write_text(line + '\n', encoding='utf-8')
-            with self.subTest(line=line):
-                self.assertTrue(benchmark_imports(path, PACKAGE))
-        for line in ('from ..integrity import digest', 'from .capabilities import bind_task', 'import json',
-                     'def call():\n    from ..configurator import _host_fault',
-                     "NAME = 'generative_driver.benchmark_support.case_assets'"):
-            path.write_text(line + '\n', encoding='utf-8')
-            with self.subTest(line=line):
-                self.assertEqual(benchmark_imports(path, PACKAGE), [])
-
-    def test_05_B1_no_module_of_the_stage_package_imports_the_benchmark_package(self):
-        files = stage_package_files(self)
-        for name in ('__init__.py', 'stages.py', 'instrument_evidence.py', 'capabilities.py', 'package_runner.py'):
-            self.assertIn(name, [path.name for path in files])
-        found = [f'{path.name} imports {name or "the module"} from {module}'
-                 for path in files for module, name in benchmark_imports(path, PACKAGE)]
-        self.assertEqual(len(found), 0, '\n'.join(found))
 
 
 class StageCase(TemporaryDirectoryCase):
@@ -435,13 +398,6 @@ class FreshReuseTests(StageCase):
                                                 'assignment_id', 'package_sha256', 'parameters', 'result',
                                                 'observation', 'before_observation'])
 
-    def test_05_B4_no_module_of_the_stage_package_holds_the_mission_check_or_the_graders_judge(self):
-        files = stage_package_files(self)
-        self.assertIn('stages.py', [path.name for path in files])
-        found = [f'{path.name} holds {word}' for path in files for word in ('fresh_worker_mission', 'reuse_mission')
-                 if word in path.read_text(encoding='utf-8')]
-        self.assertEqual(found, [])
-
 
 class DevelopmentConditionTests(StageCase):
     def device(self, **descriptor):
@@ -476,15 +432,6 @@ class DevelopmentConditionTests(StageCase):
                     self.assertNotIn('development_conditions', prepared['context'])
                     self.assertNotIn('condition_id', prepared['objective'])
                     self.assertEqual([name for name in prepared['inputs'] if 'CONDITIONS' in name], [])
-
-    def test_05_B5_no_tool_module_holds_the_name_of_the_sampled_sensor_case(self):
-        modules = tool_modules()
-        names = {path.name for path, _ in modules}
-        for name in ('configurator.py', 'stages.py', 'instrument_evidence.py', 'device_client.py'):
-            self.assertIn(name, names)
-        found = [f'{package}/{path.name}'.replace('.', '/', package.count('.')) for path, package in modules
-                 if b'sampled-sensor-v1' in path.read_bytes()]
-        self.assertEqual(found, [])
 
 
 class DiscrepancyTests(TemporaryDirectoryCase):

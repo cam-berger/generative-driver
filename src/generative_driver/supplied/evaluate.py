@@ -1,5 +1,5 @@
 """The wiring of an interpreted model to the TCP binding of a supplied device. Nothing here grades. It is part of the
-tool's stage package (Feature 05 of the untangle Run, docs/features/untangle/05-supplied-device-stages.md)."""
+tool's stage package."""
 import hashlib
 import json
 from pathlib import Path

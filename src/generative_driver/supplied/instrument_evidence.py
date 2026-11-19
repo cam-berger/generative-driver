@@ -1,8 +1,7 @@
 """Repair evidence from the quantities a supplied mission states and the configurator's live instrument readings.
 
 A task of the mission may state how it samples, and an output may name the instrument reading it is held to. Those
-keys of the mission decide what is compared (Feature 05 of the untangle Run,
-docs/features/untangle/05-supplied-device-stages.md). No worker discrepancy claims are read here.
+keys of the mission decide what is compared. No worker discrepancy claims are read here.
 """
 import hashlib
 import json

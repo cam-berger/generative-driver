@@ -1,4 +1,4 @@
-"""Supplementary documents in interpretation (docs/features/kit-fixes/07-input-paths.md, 07-B3 and 07-B4).
+"""Supplementary documents in interpretation.
 
 A datasheet's pages, a protocol specification and the documents an operator passes with a run used to stop at the
 acquire stage. The configurator now lays out the text of every supplementary document the latest acquire handoff

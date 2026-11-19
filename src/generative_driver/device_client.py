@@ -3,8 +3,7 @@ paused-between-calls window, replacement and release, over the client's private 
 
 It holds no password, recipe or truth and imports nothing that decrypts one. A reading is device evidence, as a real
 device's reading would be, never a grade. Stopping the device belongs to the client that owns it, never here. The
-descriptor is `device-descriptor/2`, in the tool's own terms (Feature 06 of the untangle Run,
-docs/features/untangle/06-benchmark-runs.md)."""
+descriptor is `device-descriptor/2`, in the tool's own terms."""
 import contextlib
 import json
 import re

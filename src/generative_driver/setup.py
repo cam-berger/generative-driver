@@ -1,8 +1,8 @@
 """Non-invasive installation checks and explicit runtime configuration.
 
 A generated Codex plugin carries a plugin build that names exactly what was generated, because Codex reinstalls a
-plugin from a local marketplace only when its version changes; `doctor` compares it with what `setup` would write now
-(docs/features/kit-fixes/02-plugin-freshness.md)."""
+plugin from a local marketplace only when its version changes; `doctor` compares it with what `setup` would write
+now."""
 import contextlib
 import hashlib
 import os

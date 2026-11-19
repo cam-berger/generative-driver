@@ -1,5 +1,4 @@
-"""The kit analysis: the firmware analysis the configurator makes once per run, before interpretation
-(docs/features/kit-fixes/06-interpret-tasks.md, 06-B1 and 06-B2).
+"""The kit analysis: the firmware analysis the configurator makes once per run, before interpretation.
 
 An interpret worker that runs Ghidra itself spends its context on what the analyzer prints, and a repair's new worker
 runs it all again. The configurator therefore decides how to load the acquired image, runs the existing Ghidra helper

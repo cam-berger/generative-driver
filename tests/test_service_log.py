@@ -1,6 +1,6 @@
 """The service's log, `daemon.log` in its home: every exception the service catches and turns into a reply, a stop or a
 failure event leaves an entry there, and so does every exception a kit tool catches while it runs for one of the
-service's runs (docs/features/kit-fixes/04-service-diagnostics.md, 04-B1 to 04-B4).
+service's runs.
 
 Scripted workers and temporary homes only; no model and no hardware."""
 import json

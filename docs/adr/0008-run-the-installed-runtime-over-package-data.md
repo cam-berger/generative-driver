@@ -1,6 +1,6 @@
 # Run the installed runtime over a package's data
 
-Status: accepted in [Feature 05, driver-package](../features/kit-fixes/05-driver-package.md).
+Status: Accepted, 2026-11-13.
 
 An interface package carries the data that describes its driver: `driver/model.json`, `probe.json` and, in `interface-package/2`, `driver/contract.json`, `driver/protocol.json` and `mcp-tools.json`. It also carries a copy of the kit's runtime (`interface_runtime/*.py`) and driver entry (`driver/*.py`), so that it runs on its own. Until this decision the kit refused to use a package whose copy differed by a byte from its installed runtime. A kit upgrade, even a comment edit, therefore stopped every earlier driver in managed sessions, fresh reuse, `emit_test_live` and the `emit_check` replay.
 

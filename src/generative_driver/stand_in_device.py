@@ -1,5 +1,5 @@
 """The stand-in device: a fictional line-protocol device that `generative-driver smoke` serves on a localhost TCP port
-for the length of one smoke (docs/features/kit-fixes/03-service-smoke.md). It answers what the stand-in model in
+for the length of one smoke. It answers what the stand-in model in
 `resources/smoke/model.json` asks; its exchanges are not physical evidence."""
 import contextlib
 import socket

@@ -78,8 +78,7 @@ EARLIER_CASE_RUN = 'This run was started on a benchmark case by an earlier versi
 
 def _earlier_case_run(spec):
     """Whether an earlier version started the stored run of `spec` on a benchmark case. The service knows no case,
-    so such a run is neither resumed nor graded (Feature 06 of the untangle Run,
-    docs/features/untangle/06-benchmark-runs.md)."""
+    so such a run is neither resumed nor graded."""
     return bool(spec.get('case'))
 
 
@@ -547,7 +546,7 @@ def _notes(result, checked, outcome, *, refusals=(), missing=(), contract=(), in
     The configurator's `records` bind each probe record a stage hands on to the digest of the model that wrote it, and
     its `driver_contract` notes say which operations a generic emit packages with the contract the kit imports. A
     generic interpret stage's `interpretation` says whether the kit analysis was made, or why not, and whether the stage
-    interpreted as tasks, with the hashes of the records they kept (docs/features/kit-fixes/06-interpret-tasks.md).
+    interpreted as tasks, with the hashes of the records they kept.
     """
     report = result.get('report') if isinstance(result.get('report'), dict) else {}
     listed = lambda key: report[key] if isinstance(report.get(key), list) else []

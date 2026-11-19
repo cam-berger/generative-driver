@@ -1,5 +1,5 @@
 """The kit analysis's export as interpret workers read it: the index, and the bounded excerpts of code and strings an
-interpret task gets (docs/features/kit-fixes/06-interpret-tasks.md, 06-B3, 06-B6, 06-B7 and 06-B9).
+interpret task gets.
 
 A worker that reads a whole export pays for every function in its context, although the commands live in a few. The
 index says where to look: each function with its size, callers, callees, strings and switch tables, and the likely

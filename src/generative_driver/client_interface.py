@@ -5,9 +5,7 @@ final verdict, read the run's records and its frozen driver, and stop or seal a 
 may make and the names it may import from the tool, holds the rules of the records it sends, and finds the frozen
 driver among a run's handoffs. The service applies these rules itself, so a record without a fault here is not
 refused there for its form. `docs/client-interface.md` says the same in plain words, and names the records on disk a
-client may read (Features 03, 06, 07 and 08 of the untangle Run, docs/features/untangle/03-client-interface.md,
-docs/features/untangle/06-benchmark-runs.md, docs/features/untangle/07-suites.md and
-docs/features/untangle/08-reports.md).
+client may read.
 """
 import math
 import re

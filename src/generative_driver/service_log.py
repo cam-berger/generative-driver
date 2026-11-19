@@ -1,4 +1,4 @@
-"""The service's log, `daemon.log` in its home (docs/features/kit-fixes/04-service-diagnostics.md, 04-B1 to 04-B4).
+"""The service's log, `daemon.log` in its home.
 
 The file takes whatever escapes the service process. This module adds an entry for every exception the service catches
 and turns into a reply, a stop or a failure event, and for every exception a kit tool catches while it runs for one of

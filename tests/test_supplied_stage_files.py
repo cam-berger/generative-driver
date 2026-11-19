@@ -1,7 +1,6 @@
 """The files the stage package prepares, seals and hands on at acquire and interpret, on the hand-written firmware.
 
-The stage functions run on the hand-written firmware and mission of `tests/test_supplied_stages.py`. These tests ran
-on a benchmark case before; they are tool tests now (10-B2 of docs/features/untangle/10-tests.md).
+The stage functions run on the hand-written firmware and mission of `tests/test_supplied_stages.py`.
 """
 import hashlib
 import json

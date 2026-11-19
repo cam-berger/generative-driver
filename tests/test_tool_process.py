@@ -1,6 +1,5 @@
 """The service runs a generic run's kit tools in a child process with a deadline, records a call that ends without a
-result as abandoned, and runs its own checks' tools the same way (docs/features/kit-fixes/04-service-diagnostics.md,
-04-B7 to 04-B9).
+result as abandoned, and runs its own checks' tools the same way.
 
 Scripted workers, temporary homes and a local HTTP server that never answers; no model and no hardware."""
 import contextlib
@@ -600,10 +599,11 @@ class CheckTests(unittest.TestCase):
         """The run's events once `reached(events)` holds; the run must not stop before."""
         until = time.monotonic() + seconds
         while True:
+            # The status is read first, so the events of a run that ends between the two reads are all there.
+            status = call('status', run)
             events = call('events', run)['events']
             if reached(events):
                 return events
-            status = call('status', run)
             self.assertTrue(status['status'] in ('queued', 'running') and time.monotonic() < until,
                             (status, [event['kind'] for event in events]))
             time.sleep(.1)

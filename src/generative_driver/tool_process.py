@@ -1,5 +1,5 @@
-"""A kit tool run in a child process of the service, with a deadline (docs/features/kit-fixes/04-service-diagnostics.md,
-04-B7 to 04-B9). A kit tool is a tool `toolkit.call_tool` runs, as against an operation of an emitted package.
+"""A kit tool run in a child process of the service, with a deadline. A kit tool is a tool `toolkit.call_tool` runs,
+as against an operation of an emitted package.
 
 A tool that runs inside the service has no deadline and holds its run while it runs, and some tools execute code a
 worker wrote: a register model's conversion module. The service therefore runs a generic run's kit tools here, in a
@@ -127,9 +127,9 @@ def run(name, arguments, *, directory, stop, context):
 
 def _stop(process):
     """Stop `process` and every process it started. On Windows the wrapper's job holds them all. On POSIX the group
-    `_terminate` ends does not hold a process started in a session of its own, as the Ghidra helper starts its analyzer
-    (docs/features/kit-fixes/06-interpret-tasks.md, 06-B1), so the group is frozen first, so that it starts nothing
-    more, and every other group its descendants lead is killed with it."""
+    `_terminate` ends does not hold a process started in a session of its own, as the Ghidra helper starts its
+    analyzer, so the group is frozen first, so that it starts nothing more, and every other group its descendants lead
+    is killed with it."""
     if os.name != 'nt':
         try:
             os.killpg(process.pid, signal.SIGSTOP)

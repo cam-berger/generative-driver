@@ -206,7 +206,7 @@ def codex_identity(config):
     """What the configured Codex command says it is: the `path` its first item resolves to and the `version` it
     reports, or the `reason` it reported none.
 
-    `doctor` asks this so that its answer is what a start would find (Feature 01 of the kit fixes). The stored command
+    `doctor` asks this so that its answer is what a start would find. The stored command
     itself is launched, as a start launches it, never the path it resolved to: the two can differ, as for a name
     that resolves to a Windows batch file."""
     command = _command(config)

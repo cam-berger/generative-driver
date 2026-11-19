@@ -1,8 +1,8 @@
 """The plugin build `setup` writes, the plugin it replaces in place, and what `doctor` says about both.
 
-Feature 02 of the kit fixes (docs/features/kit-fixes/02-plugin-freshness.md): Codex reinstalls a plugin from a local
-marketplace only when its version changes, so the version names what was generated. Every test uses temporary homes
-and output folders; none reads Codex's files or runs anything named `codex`.
+Codex reinstalls a plugin from a local marketplace only when its version changes, so the version names what was
+generated. Every test uses temporary homes and output folders; none reads Codex's files or runs anything named
+`codex`.
 """
 import asyncio
 import json

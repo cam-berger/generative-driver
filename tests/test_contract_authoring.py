@@ -1,5 +1,5 @@
 """A generic run's interpret worker is taught to write the driver contract, and emit packages what of it matches the
-model (docs/features/kit-fixes/05-driver-package.md, 05-B6 to 05-B8).
+model.
 
 Runs here are scripted through the configurator's own stage preparation: no model, worker runtime or device runs."""
 import copy
@@ -16,7 +16,7 @@ from test_package import example_model, example_replay
 
 FIRMWARE = b'\xe9 scripted image, not firmware'
 # The `TASKS.json` the stage package wrote for the hand-written mission of `tests/test_supplied_stages.py` at commit
-# 6bbdcae, before the kit-fixes Features 05 to 07 arrived: it says no word of a contract, an analysis or a document.
+# 6bbdcae, before contract authoring, the kit analysis and documents arrived: it says no word of any of them.
 STAGE_PACKAGE_TASKS = {
     'schema': 'candidate-task-contract/1',
     'tasks': {
@@ -127,8 +127,8 @@ class InterpretWorkspaceTests(unittest.TestCase):
             self.assertIn(name, context['sealed_inputs'])
 
     def test_05_B6_benchmark_interpret_workspaces_get_neither_file(self):
-        # A benchmark run interprets on the stage package, so the test asks that package, with a hand-written
-        # firmware and mission (06-B2 of the untangle Run, docs/features/untangle/06-benchmark-runs.md).
+        # A run on a supplied device interprets on the stage package, so the test asks that package, with a
+        # hand-written firmware and mission.
         from generative_driver.supplied.stages import prepare_stage
         from generative_driver.toolkit import resources_root
         from test_supplied_stages import MISSION, hand_written_firmware

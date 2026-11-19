@@ -1,8 +1,8 @@
 # Earlier package
 
-`package/` is an `interface-package/2` that the kit emitted before Feature 05 (docs/features/kit-fixes/05-driver-package.md)
-changed anything: the smoke's stand-in model (`resources/smoke/model.json`) with live evidence of `measure` from the
-stand-in device. Tests of 05-B5 check that a kit after Feature 05 still uses it. Never rewrite it.
+`package/` is an `interface-package/2` that the kit emitted before it ran the installed runtime over a package's data
+([ADR 0008](../../../docs/adr/0008-run-the-installed-runtime-over-package-data.md)): the smoke's stand-in model (`resources/smoke/model.json`) with live evidence of `measure` from the
+stand-in device. Tests of 05-B5 check that a later kit still uses it. Never rewrite it.
 
 It was emitted at commit `d9617ab7d5241a41f286566ffbe1906eb4cb4bdd` from a clean copy of that commit's `src`:
 

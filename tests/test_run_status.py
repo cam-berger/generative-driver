@@ -1,5 +1,5 @@
 """What a run's `status` adds for whoever watches it: the service's log, the deadline, the repairs used and allowed and
-the running worker's last sign of life (docs/features/kit-fixes/04-service-diagnostics.md, 04-B3, 04-B5 and 04-B6).
+the running worker's last sign of life.
 
 Scripted workers and temporary homes only; no model and no hardware."""
 import asyncio

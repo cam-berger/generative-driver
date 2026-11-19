@@ -1,8 +1,7 @@
 """A worker script for the tool's tests that run stages as real worker processes, with no model.
 
-A copy of what `test_rejection_framing.py`, `test_reuse_controller.py` and `test_service_repair.py` took from the
-benchmark's test helpers, so that they need nothing of the benchmark (10-B2 of docs/features/untangle/10-tests.md).
-The script it writes takes the model of the tool's own smoke where the original took the benchmark's.
+`test_rejection_framing.py`, `test_reuse_controller.py` and `test_service_repair.py` use it. The script it writes takes
+the model of the tool's own smoke.
 """
 
 

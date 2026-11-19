@@ -1,8 +1,7 @@
 """Calls on an emitted package and the emit stage of a supplied run, through the stage package's public functions.
 
 The package is the one the toolkit emits for the example model and replay of `tests/test_package.py`, and the stage
-functions run on the hand-written firmware and mission of `tests/test_supplied_stages.py`. These tests ran on a
-benchmark case before; they are tool tests now (10-B2 of docs/features/untangle/10-tests.md).
+functions run on the hand-written firmware and mission of `tests/test_supplied_stages.py`.
 """
 import hashlib
 import json

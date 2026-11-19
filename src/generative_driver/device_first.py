@@ -1,4 +1,4 @@
-"""Device-first interpretation (docs/features/kit-fixes/07-input-paths.md, 07-B5 to 07-B7; docs/adr/0009).
+"""Device-first interpretation (docs/adr/0009).
 
 A generic run with no single firmware image used to skip interpretation, so its device stages had nothing to test and
 the run ended with no driver even when the device answered on its own port. When such a run names a device binding, a

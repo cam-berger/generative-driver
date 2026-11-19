@@ -1,8 +1,6 @@
 """Toy wire protocols for the tests of the tool's runtime: a framed sample with a CRC and a transactional store.
 
-`tests/test_engine_protocols.py` runs `interface_runtime.engine` on them. The models and the scripted transport are a
-copy of what those tests took from the benchmark's wire fixtures, so that the tool's tests need nothing of the
-benchmark (10-B2 of docs/features/untangle/10-tests.md). This file imports nothing of the package.
+`tests/test_engine_protocols.py` runs `interface_runtime.engine` on them. This file imports nothing of the package.
 """
 import binascii
 from copy import deepcopy

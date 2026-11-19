@@ -1,5 +1,5 @@
 """`generative-driver smoke`: one whole run through the background service, a scripted worker and a stand-in device,
-with no model, no Codex and no hardware (docs/features/kit-fixes/03-service-smoke.md).
+with no model, no Codex and no hardware.
 
 Each test runs the command as a child process in folders of its own: its system temporary directory, its home
 directory and its operator homes are new folders the test removes."""

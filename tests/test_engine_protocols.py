@@ -1,7 +1,6 @@
 """The runtime on two toy wire protocols: a framed sample with a CRC, and a store whose writes take several exchanges.
 
-The protocols are those of `tests/toy_protocols.py`. These tests ran on the benchmark's wire fixtures before; they are
-tool tests now (10-B2 of docs/features/untangle/10-tests.md).
+The protocols are those of `tests/toy_protocols.py`.
 """
 import binascii
 import unittest

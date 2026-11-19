@@ -1,7 +1,7 @@
 """The stages of a run on a supplied device, observed without truth: what each stage's worker gets, and what the stage
 hands on with its checks as notes. The client supplies the device and the configurator reaches it through its device
 handle; this module starts, holds and stops no device. It takes the firmware and the mission as data and never sees a
-case's name (Feature 05 of the untangle Run, docs/features/untangle/05-supplied-device-stages.md)."""
+case's name."""
 import hashlib
 import re
 import shutil

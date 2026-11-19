@@ -1,4 +1,4 @@
-"""The hand-written device of the tool's tests: a device a client supplies, with no benchmark behind it.
+"""The hand-written device of the tool's tests: a device a client supplies.
 
 Its binding is a line device on a local TCP port (`tests/line_device.py`). Its control endpoint answers the six
 requests the tool sends, as `docs/client-interface.md` gives them: `status`, `observe`, `select_condition`,
@@ -6,9 +6,7 @@ requests the tool sends, as `docs/client-interface.md` gives them: `status`, `ob
 `multiprocessing.connection` with the key of the endpoint file, one request per connection, JSON bytes both ways.
 It works on macOS and on Windows: a Unix socket in a short temporary folder, or a named pipe.
 
-This is the helper of `tests/test_supplied_runs.py` (Feature 06 of the untangle Run,
-docs/features/untangle/06-benchmark-runs.md). It imports nothing of the benchmark package, and no benchmark test
-imports it.
+This is the helper of `tests/test_supplied_runs.py`.
 """
 import contextlib
 import hashlib
@@ -145,7 +143,7 @@ class SuppliedDevice:
             return
         self._closed = True
         self.endpoint_file.unlink(missing_ok=True)
-        # Feature 12 of the untangle Run, 12-B10: the wake-up connects from a thread of its own. A serving thread
+        # The wake-up connects from a thread of its own (12-B10). A serving thread
         # that has just answered a request ends without accepting again, and a connection nobody accepts waits in
         # its handshake for ever.
         threading.Thread(target=self._wake, daemon=True).start()

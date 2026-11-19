@@ -2,8 +2,7 @@
 
 A run ends with one final verdict: the tool's own, or one posted to the run. The configurator gives a completed run
 its reason from that verdict, and the dashboard shows it by the same word. The tool keeps the wording here, in its
-own package, so that each name has one place (Feature 02 of the untangle Run,
-docs/features/untangle/02-shared-helpers.md).
+own package, so that each name has one place.
 """
 
 __all__ = ['equivalence_label', 'verdict_reason']

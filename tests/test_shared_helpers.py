@@ -1,9 +1,7 @@
 """The tool's own helpers: the hash of an artifact, the error that stops a run for integrity, and the words of a
 run's final verdict.
 
-Feature 02 of the untangle Run (docs/features/untangle/02-shared-helpers.md), 02-B1, 02-B2, 02-B4 and 02-B6. The
-helpers are tested by what they return, and the service through its public calls. This module imports nothing from
-the benchmark package, so it also runs where the benchmark is gone.
+The helpers are tested by what they return, and the service through its public calls.
 
 Temporary directories and homes only; no model and no hardware.
 """

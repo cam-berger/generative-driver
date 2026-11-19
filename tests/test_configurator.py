@@ -4152,7 +4152,7 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
             self.assertEqual(result['agent']['version'],'contract-version')
             self.assertEqual(result['budget_seconds'],10800)
             # A key of the start that the service does not know reaches no part of the result but `request`, which
-            # gives the start's params back as they came (07-B2 of docs/features/untangle/07-suites.md).
+            # gives the start's params back as they came (07-B2).
             self.assertNotIn('not-an-agent-input',str({key:value for key,value in result.items() if key!='request'}))
             self.assertEqual(result['request'],params)
             controller.close()

@@ -1,10 +1,7 @@
 """The client interface: what a client that brings its own device and mission can ask of the tool.
 
-Feature 03 of the untangle Run (docs/features/untangle/03-client-interface.md), 03-B1 to 03-B5. The interface module
-is tested by what it offers and returns, the service through `generative_driver.client.call`, and the document by
-its text. This module imports nothing from the benchmark package and no test file the deletion takes away, so it
-also runs where the benchmark is gone and the document has lost its marked passage. The values it pins are those of
-version 4 (docs/features/untangle/08-reports.md).
+The interface module is tested by what it offers and returns, and the service through `generative_driver.client.call`.
+The values it pins are those of version 4.
 
 Temporary homes only; no model and no hardware.
 """
@@ -40,7 +37,7 @@ def offered(module):
 class InterfaceModuleTests(unittest.TestCase):
     def test_03_B1_the_interface_module_offers_ten_names_and_nothing_else(self):
         # Version 2 added `firmware_errors` and `mission_errors` to the seven names of version 1 (06-B14), and
-        # version 4 added `IMPORTS` (08-B9 of docs/features/untangle/08-reports.md).
+        # version 4 added `IMPORTS` (08-B9).
         names = ['CALLS', 'IMPORTS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors', 'firmware_errors',
                  'frozen_driver', 'mission_errors', 'verdict_errors']
         self.assertEqual(sorted(client_interface.__all__), names)
@@ -48,8 +45,7 @@ class InterfaceModuleTests(unittest.TestCase):
 
     def test_03_B1_the_version_the_protocol_the_calls_and_the_verdict_fields_have_their_values(self):
         self.assertIs(type(client_interface.VERSION), int)
-        # Version 3 added `cancel` and `seal` to the calls (07-B6 of docs/features/untangle/07-suites.md). Version 4
-        # added no call (08-B9).
+        # Version 3 added `cancel` and `seal` to the calls (07-B6). Version 4 added no call (08-B9).
         self.assertEqual(client_interface.VERSION, 4)
         self.assertEqual(client_interface.PROTOCOL, 'assistive/1')
         self.assertEqual(client_interface.CALLS, ('ping', 'start', 'resume', 'status', 'events', 'result',

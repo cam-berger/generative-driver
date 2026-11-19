@@ -1,6 +1,6 @@
 """The hand-written device of the tool's tests ends when it is closed, whatever it is doing.
 
-Feature 12 of the untangle Run, 12-B10. One hosted job of Feature 11 waited for ever in `SuppliedDevice.close()`:
+One hosted job once waited for ever in `SuppliedDevice.close()`:
 the serving thread had just answered a request, saw that the device was closed and ended without accepting again,
 and `close()` waited in the handshake of its wake-up connection, which nobody accepted. The first test forces that
 order at the device's own lock.

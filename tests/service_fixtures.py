@@ -1,4 +1,4 @@
-"""Shared fixtures for the tests of the service's diagnostics (docs/features/kit-fixes/04-service-diagnostics.md):
+"""Shared fixtures for the tests of the service's diagnostics:
 reading its log, a service in a thread of the test and a worker that idles.
 
 Temporary homes only; no model and no hardware."""

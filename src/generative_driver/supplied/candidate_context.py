@@ -1,7 +1,5 @@
 """Public task semantics and sealed continuity for a candidate's own revisions, and the reader of a run's stage state
-file, which the stage code shares: it moved here when the legacy cases that held it were dropped (Feature 04 of the
-untangle Run, docs/features/untangle/04-legacy-cases.md). The tasks are those of the mission the stage code is given
-(Feature 05, docs/features/untangle/05-supplied-device-stages.md)."""
+file, which the stage code shares. The tasks are those of the mission the stage code is given."""
 import hashlib
 import json
 import tempfile

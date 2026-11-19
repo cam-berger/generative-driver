@@ -1,5 +1,5 @@
 """The smoke's scripted interpret worker writes the driver contract, and its reuse stage is served the catalog that
-contract renders (docs/features/kit-fixes/05-driver-package.md, 05-B10)."""
+contract renders."""
 import hashlib
 import json
 import unittest

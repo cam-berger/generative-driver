@@ -1,6 +1,5 @@
 """The service runs a generic run's kit tools in a child process with a deadline, records a call that ends without a
-result as abandoned, and runs its own checks' tools the same way (docs/features/kit-fixes/04-service-diagnostics.md,
-04-B7 to 04-B9).
+result as abandoned, and runs its own checks' tools the same way.
 
 Scripted workers, temporary homes and a local HTTP server that never answers; no model and no hardware."""
 import contextlib

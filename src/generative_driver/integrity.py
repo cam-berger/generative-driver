@@ -2,7 +2,7 @@
 
 The configurator hashes every artifact and handoff a run accepts, and the scripted worker and the replay executor
 report their artifacts by the same hash. The tool keeps both names here, in its own package, so that each has one
-place (Feature 02 of the untangle Run, docs/features/untangle/02-shared-helpers.md).
+place.
 """
 import hashlib
 import json

@@ -1,4 +1,4 @@
-"""The input paths (docs/features/kit-fixes/07-input-paths.md): documents acquired beside the firmware reach
+"""The input paths: documents acquired beside the firmware reach
 interpretation, and a generic run with no single image but a device binding interprets device first.
 
 In-process runs with scripted workers that call the real tools through the configurator's gateway; temporary homes

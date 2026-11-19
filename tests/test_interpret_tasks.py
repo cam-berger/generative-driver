@@ -1,5 +1,5 @@
 """Interpretation as tasks: the inventory, the handler tasks, the assembly, the cross-check, how each task is recorded
-and the repair (docs/features/kit-fixes/06-interpret-tasks.md, 06-B5 to 06-B11).
+and the repair.
 
 The configurator in a temporary home, a stand-in analyzer and scripted task workers that recognise their task from
 their workspace's instructions; no Ghidra, Java, model or device."""

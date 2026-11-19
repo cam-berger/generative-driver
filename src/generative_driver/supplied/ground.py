@@ -1,6 +1,5 @@
 """What the ground stage of a run on a supplied device gets: the probed model, the worker's probe records and the
-instrument journal, without oracle answers. It is part of the tool's stage package (Feature 05 of the untangle Run,
-docs/features/untangle/05-supplied-device-stages.md)."""
+instrument journal, without oracle answers. It is part of the tool's stage package."""
 import hashlib
 import json
 from pathlib import Path

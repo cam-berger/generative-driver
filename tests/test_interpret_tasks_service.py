@@ -1,5 +1,5 @@
-"""Interpretation as tasks through the service and its MCP seam (docs/features/kit-fixes/06-interpret-tasks.md, 06-B5
-and 06-B10). Temporary homes, a stand-in analyzer and scripted workers; no Ghidra, Java, model or device."""
+"""Interpretation as tasks through the service and its MCP seam. Temporary homes, a stand-in analyzer and scripted
+workers; no Ghidra, Java, model or device."""
 import asyncio
 import json
 import sys

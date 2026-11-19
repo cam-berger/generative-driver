@@ -719,8 +719,7 @@ def acquire_protocol_spec(run_dir, key, **_):
             json.dump(sections, fh, indent=1)
         files[index] = core.sha256(index)
         inputs["spec/sections"] = sections_dir
-    # Its source files and sections are recorded as acquisition evidence, so the acquire handoff carries them on
-    # (docs/features/kit-fixes/07-input-paths.md, 07-B2).
+    # Its source files and sections are recorded as acquisition evidence, so the acquire handoff carries them on.
     recorded = [path for name, path in inputs.items() if name != "spec/sections"]
     recorded += [sections_dir] if sections_dir else []
     return {"available": True, "rung": "protocol_spec", "key": key, "title": entry.get("title"),

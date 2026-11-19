@@ -24,15 +24,15 @@ import generative_driver
 # The folders that hold the two packages under test, the benchmark's first (12-B4 of Feature 12 of this Run).
 PACKAGE_ROOTS = (str(Path(firmware_bench.__file__).resolve().parents[1]),
                  str(Path(generative_driver.__file__).resolve().parents[1]))
+WORKFLOW_TIMEOUT = 120
+BINDING = {'host': '127.0.0.1', 'port': 1}
+_PIDS = itertools.count(70001)
 
 
 def package_folders():
     """Both package folders as a list, once where they are the same folder: what the script of a child puts on its
     search path."""
     return list(dict.fromkeys(PACKAGE_ROOTS))
-WORKFLOW_TIMEOUT = 120
-BINDING = {'host': '127.0.0.1', 'port': 1}
-_PIDS = itertools.count(70001)
 
 
 def package_env(**values):

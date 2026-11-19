@@ -305,19 +305,23 @@ class ExportIntegrationTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         import hashlib
-        from firmware_bench.benchmark_support import suite_reporting, tool_install
+        import generative_driver
+        from firmware_bench.benchmark_support import suite_reporting
         from firmware_bench.benchmark_support.integrity import tree_hash
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);call,_,_,_,_=export_fixture(root)
             with standing_in(side_effect=call):
                 result=suite_reporting.report_suite('suite-toy',home=root,output=root/'export')
             self.assertEqual(set(result['exporter']),{'benchmark_support_tree_sha256','toolchain_revision'})
-            self.assertEqual(result['exporter']['benchmark_support_tree_sha256'],tree_hash(Path(suite_reporting.__file__).parent))
+            self.assertEqual(result['exporter']['benchmark_support_tree_sha256'],
+                             tree_hash(Path(suite_reporting.__file__).parent))
             # The exporter's toolchain revision joins the tool's package folder and the benchmark's, which were one
-            # folder before the benchmark became a package of its own (12-B2 of Feature 12 of the untangle Run).
+            # folder before the benchmark became a package of its own (12-B2 of Feature 12 of the untangle Run). The
+            # tool's folder is that of the imported package, not what the code's own lookup gives.
             package=Path(suite_reporting.__file__).resolve().parents[1]
+            tool=Path(generative_driver.__file__).resolve().parent
             self.assertEqual(result['exporter']['toolchain_revision'],
-                             hashlib.sha256((tree_hash(tool_install.tool_folder())+tree_hash(package)).encode()).hexdigest())
+                             hashlib.sha256((tree_hash(tool)+tree_hash(package)).encode()).hexdigest())
             self.assertNotEqual(result['exporter']['toolchain_revision'],tree_hash(package))
             saved=json.loads((root/'export/suite.json').read_text(encoding='utf-8'))
             self.assertEqual(saved['exporter'],result['exporter'])

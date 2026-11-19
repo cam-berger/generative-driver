@@ -1,4 +1,8 @@
-"""Offline regrade of the report of the installation replay, `setup-smoke`."""
+"""Offline regrade of the report of the installation replay, `setup-smoke`.
+
+The regrade of the two dropped cases went with their code (Feature 12 of the untangle Run,
+docs/features/untangle/12-firmware-bench.md, 12-B3).
+"""
 from ..benchmark import _read, score_observations
 
 

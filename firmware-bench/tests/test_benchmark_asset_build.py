@@ -318,19 +318,19 @@ class RebuildRefusalTests(unittest.TestCase):
         """Feature 12 of the untangle Run (docs/features/untangle/12-firmware-bench.md), 12-B3: the rebuild of the
         dropped case's firmware is gone, so a rebuild needs the private authoring folder, and says so before the case
         is resolved, an answer key unlocked or a folder made."""
-        from unittest.mock import patch
         from firmware_bench.benchmark_support.evaluator_cli import manage
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);compiler=root/'arm-none-eabi-gcc';compiler.touch()
-            (root/'password').write_text('synthetic credential')
-            with patch('firmware_bench.benchmark_support.registry.resolve_case') as resolved,patch(
-                    'firmware_bench.benchmark_support.emulator.truth_for_case') as unlocked,patch(
-                    'firmware_bench.benchmark_support.truth.read_password') as read:
-                for case in ('tq9-v2','tq9','setup-smoke','no-such-case'):
-                    with self.subTest(case=case),self.assertRaises(ValueError) as refusal:
-                        manage('rebuild',case,root/'password',root/'output',compiler=compiler)
-                    self.assertEqual(str(refusal.exception),'Rebuild requires --authoring-dir')
-            self.assertEqual([resolved.called,unlocked.called,read.called],[False,False,False])
+            (root/'password').write_text('synthetic credential',encoding='utf-8')
+            # A case with an answer key, a dropped one, the smoke and a name that was never registered get the same
+            # refusal, so it comes before the case is resolved. Neither a password that opens nothing nor a password
+            # file that is not there changes it, so it comes before a password is read or an answer key unlocked.
+            for case in ('tq9-v2','tq9','setup-smoke','no-such-case'):
+                for password in (root/'password',root/'no such password'):
+                    with self.subTest(case=case,password=password.name):
+                        with self.assertRaises(ValueError) as refusal:
+                            manage('rebuild',case,password,root/'output',compiler=compiler)
+                        self.assertEqual(str(refusal.exception),'Rebuild requires --authoring-dir')
             self.assertFalse((root/'output').exists())
 
     def test_12_B3_a_rebuild_from_an_authoring_folder_refuses_the_smoke_and_an_unregistered_case(self):

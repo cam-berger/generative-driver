@@ -1079,7 +1079,8 @@ class GraderListTests(unittest.TestCase):
         self.assertEqual([name for name in closure if name.endswith(('.run_reporting', '.process_lock'))], [])
         # Nor any module of the tool, by the name of either of its packages (12-B2 of Feature 12 of this Run).
         outside = ('generative_driver', 'interface_runtime', *grader_identity.SYSTEM_MODULES)
-        beyond = [name for name in closure if any(name == listed or name.startswith(listed + '.') for listed in outside)]
+        beyond = [name for name in closure
+                  if any(name == listed or name.startswith(listed + '.') for listed in outside)]
         self.assertEqual(beyond, [])
 
 

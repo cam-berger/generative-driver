@@ -667,7 +667,8 @@ class HarnessTrialTests(unittest.TestCase):
                 script = root / 'scripted_worker.py'
                 script.write_text(WORKER.replace('PACKAGE_PARENTS', repr(package_folders()))
                                   .replace('FIXTURE_PARENT', repr(str(Path(__file__).parent)))
-                                  .replace('SERVICE_URL', repr('http://127.0.0.1:' + str(gateway.server_port))))
+                                  .replace('SERVICE_URL', repr('http://127.0.0.1:' + str(gateway.server_port))),
+                                  encoding='utf-8')
                 (home / 'config.json').write_text(json.dumps({'executors': {'codex': {'command': [sys.executable, str(script)]}}}))
                 renode = root / 'renode-executable-handle'
                 request = {'home': str(home), 'evaluator_password_file': str(password), 'renode': str(renode),

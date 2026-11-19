@@ -2,8 +2,6 @@
 from .snapshots import canonical_digest
 
 PROFILE = 'generated-mcp/1'
-PROOF_FIELDS = ('schema', 'tool_name', 'catalog_sha256', 'manifest_sha256', 'contract_sha256',
-                'package_sha256', 'session_id', 'assignment_id', 'dispatch_id', 'request_id')
 
 
 def check_events(events, worker_events, catalogs, configured, assignment_id, package_sha256):

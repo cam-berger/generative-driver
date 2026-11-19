@@ -392,9 +392,9 @@ def trial_metrics(home: Path, run_id: str, *, trial_dir: Path | None = None, run
 
     Two limits remain, and the exchanges of such a stage are exact only apart from them. A `package_execute`
     result is counted where it holds a transcript, as the package's own result does on the device the bench harness
-    provides; on an operator's bound device it is a measurement row with none, so those exchanges are not counted, and the
-    stage reads a number that is lower than what the device exchanged. And the replies a package's live test saw the device
-    reject are in its record and are not counted as `refusals` (the other tools' rejected replies are).
+    provides; on an operator's bound device it is a measurement row with none, so those exchanges are not counted, and
+    the stage reads a number that is lower than what the device exchanged. And the replies a package's live test saw
+    the device reject are in its record and are not counted as `refusals` (the other tools' rejected replies are).
 
     A call is its `tool.started` event and its `tool.finished` event, paired by `dispatch_id`; one that never finished,
     as when its tool raised, still counts as a call, and one finished twice counts once.

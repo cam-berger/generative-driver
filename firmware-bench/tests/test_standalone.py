@@ -272,17 +272,18 @@ class RevisionTests(unittest.TestCase):
 
     def test_12_B2_a_revision_is_never_the_hash_of_nothing(self):
         from firmware_bench.benchmark_support import snapshots
-        missing = self.root / 'not there'
+        # The name holds characters a pattern reads, as a Windows path holds backslashes: the path is held as text.
+        missing = self.root / 'not there (1)+'
         for folders, named in (({'tool': missing}, missing), ({'runtime': missing}, missing)):
             with self.subTest(folders=sorted(folders)):
-                with self.assertRaisesRegex(ValueError, '^Revision folder is missing: ' + str(named) + '$'):
+                with self.assertRaisesRegex(ValueError, '^Revision folder is missing: ' + re.escape(str(named)) + '$'):
                     self.revisions(**folders)
         shutil.rmtree(self.skills)
-        with self.assertRaisesRegex(ValueError, '^Revision folder is missing: ' + str(self.skills) + '$'):
+        with self.assertRaisesRegex(ValueError, '^Revision folder is missing: ' + re.escape(str(self.skills)) + '$'):
             self.revisions()
         self.skills.mkdir()
         with patch.object(snapshots, '__file__', str(missing / 'benchmark_support' / 'snapshots.py')):
-            with self.assertRaisesRegex(ValueError, '^Revision folder is missing: ' + str(missing) + '$'):
+            with self.assertRaisesRegex(ValueError, '^Revision folder is missing: ' + re.escape(str(missing)) + '$'):
                 self.revisions()
 
 
@@ -423,7 +424,8 @@ class DroppedCasesTests(unittest.TestCase):
         from firmware_bench.benchmark_support import case_assets, mcp_reuse
         left = [module.__name__.rpartition('.')[2] + '.' + name
                 for module, name in ((case_assets, 'REUSE_EVENTS'), (case_assets, 'TASKS'),
-                                     (case_assets, 'mapping_errors'), (mcp_reuse, 'collect'))
+                                     (case_assets, 'mapping_errors'), (mcp_reuse, 'collect'),
+                                     (mcp_reuse, 'PROOF_FIELDS'))
                 if hasattr(module, name)]
         self.assertEqual(left, [])
 
@@ -488,15 +490,20 @@ class DroppedCasesTests(unittest.TestCase):
 
 # What a document of the tool is linked by: its path in the tool's repository follows.
 TOOL_FILES = 'https://github.com/cam-berger/generative-driver/blob/main/'
+# The given texts below are held word for word. Where a source line ends in a backslash, the text goes on in the next
+# line without a break: a line of a document is longer than a line of this file may be.
 OPENING = '''\
 # Firmware bench
 
-Firmware bench measures how well [Generative Driver](https://github.com/cam-berger/generative-driver) recovers a working driver from a device's firmware. It supplies a device, a firmware image and a mission to the tool through the tool's client interface, and grades the frozen driver once, after the run. The tool holds nothing of the benchmark.
+Firmware bench measures how well [Generative Driver](https://github.com/cam-berger/generative-driver) recovers a \
+working driver from a device's firmware. It supplies a device, a firmware image and a mission to the tool through the \
+tool's client interface, and grades the frozen driver once, after the run. The tool holds nothing of the benchmark.
 
 | To | Read |
 |---|---|
 | Hold the answer keys and qualify the graders | [Evaluator's guide](docs/evaluator.md) |
-| Add a case | [Case authoring](docs/case-authoring.md) · [Upstream corpus](docs/corpus.md) · [Generated-device interface](docs/generated-device-interface.md) |
+| Add a case | [Case authoring](docs/case-authoring.md) · [Upstream corpus](docs/corpus.md) · [Generated-device \
+interface](docs/generated-device-interface.md) |
 | Accept a model lane | [Codex acceptance](docs/codex-acceptance.md) |
 | Look up a term | [Glossary](CONTEXT.md) |
 | Follow a decision | [Decision records](docs/adr/) |
@@ -520,12 +527,18 @@ firmware-bench cases
 firmware-bench run --case setup-smoke --output "smoke output"
 ```
 
-While this folder lies in the tool's repository, install the tool from the checkout instead: `python -m pip install -e ..`. Set up the tool's service and Codex as its [setup](https://github.com/cam-berger/generative-driver/blob/main/docs/setup.md) and [Codex](https://github.com/cam-berger/generative-driver/blob/main/docs/codex.md) guides say. Run the tests with `python -m unittest discover -s tests`. A graded run also needs Renode, at the release this page pins, and for building firmware an Arm compiler.
+While this folder lies in the tool's repository, install the tool from the checkout instead: `python -m pip install -e \
+..`. Set up the tool's service and Codex as its \
+[setup](https://github.com/cam-berger/generative-driver/blob/main/docs/setup.md) and \
+[Codex](https://github.com/cam-berger/generative-driver/blob/main/docs/codex.md) guides say. Run the tests with \
+`python -m unittest discover -s tests`. A graded run also needs Renode, at the release this page pins, and for \
+building firmware an Arm compiler.
 '''
 GLOSSARY_HEAD = '''\
 # Domain of the benchmark
 
-The terms of firmware bench. The terms of the tool it evaluates, such as configurator, stage, handoff, package and fresh reuse, are in the tool's [CONTEXT.md](https://github.com/cam-berger/generative-driver/blob/main/CONTEXT.md).
+The terms of firmware bench. The terms of the tool it evaluates, such as configurator, stage, handoff, package and \
+fresh reuse, are in the tool's [CONTEXT.md](https://github.com/cam-berger/generative-driver/blob/main/CONTEXT.md).
 
 | Term | Meaning |
 |---|---|
@@ -539,9 +552,11 @@ What the benchmark adds to four of the tool's terms:
 | Equivalence | For a benchmark run the final verdict is the evaluator's grade. |
 | Effect grant | The grader grants each hidden step's effects. |
 | Instrument observation | Generated devices offer none for now: workers see only their UART. |
-| Public mission | Hidden vectors remain evaluator-owned. A generated mission states only each task's effect; ranges, refusal conditions, framing and the mapping onto firmware commands stay hidden. |
+| Public mission | Hidden vectors remain evaluator-owned. A generated mission states only each task's effect; ranges, \
+refusal conditions, framing and the mapping onto firmware commands stay hidden. |
 
-The pass rate scores safety and integrity stops, like a spent budget, as failures, and other operator stops and host stops as faults.
+The pass rate scores safety and integrity stops, like a spent budget, as failures, and other operator stops and host \
+stops as faults.
 '''
 # The thirty-one terms of the first table, in order, and the SHA-256 of its rows as UTF-8: the rows of the glossary
 # this one was written from, unchanged but for the second sentence of `Device pin`.
@@ -558,11 +573,16 @@ RULES = '''\
 
 Before implementation, read [CONTEXT.md](CONTEXT.md) and the [front page](README.md).
 
-- Develop through one public seam, the command `firmware-bench`: run, score, compare. For each code change, observe one behavior test fail, implement it, then observe it pass.
-- Use the tool only as an installed package, through its client interface. The benchmark's code imports no other name of it.
-- The bench harness holds evaluator passwords; the configurator and workers receive neither passwords nor their paths or plaintext answers. Describe password separation accurately; hashes are not a sandbox.
-- Keep worker claims, accepted handoffs and evaluator verdicts separate. Score observable outputs/effects, not candidate source-code equality.
-- Distinguish model runs, scripted tests, replay, emulation and physical evidence. Launch model baselines or physical operations only when explicitly assigned by the primary agent.
+- Develop through one public seam, the command `firmware-bench`: run, score, compare. For each code change, observe \
+one behavior test fail, implement it, then observe it pass.
+- Use the tool only as an installed package, through its client interface. The benchmark's code imports no other name \
+of it.
+- The bench harness holds evaluator passwords; the configurator and workers receive neither passwords nor their paths \
+or plaintext answers. Describe password separation accurately; hashes are not a sandbox.
+- Keep worker claims, accepted handoffs and evaluator verdicts separate. Score observable outputs/effects, not \
+candidate source-code equality.
+- Distinguish model runs, scripted tests, replay, emulation and physical evidence. Launch model baselines or physical \
+operations only when explicitly assigned by the primary agent.
 - Keep docs concise, concrete and executable. Preserve notices.
 - Track open issues as local Markdown under `.scratch/<feature>/`.
 '''
@@ -617,7 +637,8 @@ STANDARDS_SHA256 = '66eb0d236425748dc9f0d463f4b9ccd7fa76136ebedfca08e257dfb71d12
 # What no document outside the notes holds, in any letter case (12-B5), and the places documents had before this
 # folder was a package of its own, which nothing under this folder names any more (rule 1 of the Spec's documents).
 DROPPED_WORDS = ('bme280', 'legacy tq9', 'docs/verification.md', 'bench/evidence', 'benchmark-deletion-list')
-OLD_PLACES = re.compile(r'benchmark-case-authoring\.md|benchmark-corpus\.md|(?<!firmware-)bench/README|groundtruth/README'
+OLD_PLACES = re.compile(r'benchmark-case-authoring\.md|benchmark-corpus\.md|(?<!firmware-)bench/README'
+                        r'|groundtruth/README'
                         r'|src/generative_driver/(?:benchmark|resources/bench|resources/registrations)')
 FROM_THE_ROOT = re.compile(r'firmware-bench/(?:tests|src|docs|\.scratch|README|CONTEXT|AGENTS|STANDARDS)')
 LINK = re.compile(r'\[[^\]]*\]\(([^()\s]+)\)')
@@ -663,12 +684,15 @@ jobs:
           repo = Path.cwd()
           with tempfile.TemporaryDirectory(prefix='firmware bench ') as work:
               copy = Path(work) / 'firmware-bench'
-              shutil.copytree(repo / 'firmware-bench', copy, ignore=shutil.ignore_patterns('src', 'dist', 'build', '*.egg-info', '__pycache__'))
+              shutil.copytree(repo / 'firmware-bench', copy, ignore=shutil.ignore_patterns('src', 'dist', 'build', \
+'*.egg-info', '__pycache__'))
               env = dict(os.environ)
               env.pop('PYTHONPATH', None)
               env['FB_TEST_WHEEL'] = str(Path(glob.glob('firmware-bench/dist/*.whl')[0]).resolve())
-              subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(copy / 'tests'), '-v'], cwd=work, env=env, check=True)
-              subprocess.run([sys.executable, '-m', 'firmware_bench.benchmark', 'run', '--case', 'setup-smoke', '--output', str(Path(work) / 'smoke output')], cwd=work, env=env, check=True)
+              subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(copy / 'tests'), '-v'], \
+cwd=work, env=env, check=True)
+              subprocess.run([sys.executable, '-m', 'firmware_bench.benchmark', 'run', '--case', 'setup-smoke', \
+'--output', str(Path(work) / 'smoke output')], cwd=work, env=env, check=True)
 '''
 
 

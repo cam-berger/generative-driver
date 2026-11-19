@@ -599,7 +599,8 @@ class SuiteStartPinTests(SuiteStartFixture):
         fixture = self.base / 'registered_harness_fixture.py'
         fixture.write_text('from pathlib import Path\nfrom firmware_bench.benchmark_support import generated_sets, '
                            'generated_trials\ngenerated_trials.set_unreachable = lambda root: True\n'
-                           'generated_sets._SETS_FILE = Path(' + repr(str(generated_sets._SETS_FILE)) + ')\n')
+                           'generated_sets._SETS_FILE = Path(' + repr(str(generated_sets._SETS_FILE)) + ')\n',
+                           encoding='utf-8')
         with patch.dict(os.environ, {'GD_TEST_HARNESS_FIXTURE': str(fixture)}):
             again = harness.launch_suite(request, home=home, password_files={SET: str(password)}, set_root=str(root),
                                          autostart=False, timeout=60)

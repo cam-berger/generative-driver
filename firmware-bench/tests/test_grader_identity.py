@@ -74,8 +74,8 @@ class ToolchainRevisionTests(PackageCopy, unittest.TestCase):
 
     def test_04_B2_any_other_change_under_the_package_still_moves_the_toolchain_revision(self):
         before = self.provenance()['toolchain_revision']
-        for name in ('resources/registrations/cases.json', 'resources/sets.json', '../generative_driver/configurator.py',
-                     '../interface_runtime/engine.py'):
+        for name in ('resources/registrations/cases.json', 'resources/sets.json',
+                     '../generative_driver/configurator.py', '../interface_runtime/engine.py'):
             path = self.root / name
             kept = path.read_bytes() if path.exists() else None
             path.write_bytes((kept or b'') + b'\n')

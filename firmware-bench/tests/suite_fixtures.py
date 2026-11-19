@@ -199,7 +199,7 @@ else:
     if hold_on_repair:
         source = source.replace("    shutil.copy2(SMOKE_MODEL,'model.json')\n",
             "    if pathlib.Path('DEFECTS.json').exists(): time.sleep(20)\n"
-            "    model=json.loads(pathlib.Path(SMOKE_MODEL).read_text())\n"
+            "    model=json.loads(pathlib.Path(SMOKE_MODEL).read_text(encoding='utf-8'))\n"
             "    model['channel']={'type':'usb'}\n"
             "    pathlib.Path('model.json').write_text(json.dumps(model))\n", 1)
     source = source.replace('PACKAGE_PARENTS', repr(package_folders()))

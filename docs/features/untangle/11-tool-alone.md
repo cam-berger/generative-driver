@@ -315,3 +315,21 @@ A hosted failure. The session tells the owner what failed, whether it reads as a
 - The generator volume and the private repository. No session opens either.
 
 ## Deviations
+
+- Tests named for 11-B5, 11-B7 and 11-B8 were added, two each, in `tests/test_tool_documents.py`, though the Spec lists the three as Behaviours without a test of their own — the kit's Done check asks for every Behaviour ID in a test file and in the test output; the tests check what a test can (sections, items, the diagram, the given sentences and lines, the files that are gone), and the Reviewer still read the diff sentence by sentence.
+- The tests of 11-B5, 11-B8 and 11-B10 were written after the change, and their RED was taken in an export of the tree before the Build (for 11-B8, of `ffa9880`) — no code was written under these Behaviours, the owner's three files were already committed, and each RED fails for its Behaviour's reason.
+- Four tests that try a scan on planted text had no RED, one of 11-B3 and three of 11-B4 — the Spec asks for the planted-text test of the word scan, and there is no tool code such a test could fail against.
+- One test of 11-B10 was renamed after its first RED, from "only four files name it" to "only four places name it" — three files hold the four places; the body did not change, and RED was taken again under the new name.
+- `uv lock` also rewrote the markers of the `click` and `h11` entries that `uvicorn` brings — it is the resolver's own output after `cryptography` left the dependencies, the marker is true on macOS and on Windows, and `uv lock --check` exits 0.
+- `bench/evidence/` was deleted in the step of 11-B1, not of 11-B7 — order only, so that `bench/` is gone when the test of 11-B1 passes.
+- In `docs/design.md`, in the second sentence of line 86, " and" stands in place of the comma before "diagnostic observations as repair input" — the Spec says the list reads right without the cut items and gives no wording.
+- `.scratch/effect-labels/issues/01-observe-read-state-changes.md` also lost the clause "so it changes the evaluator implementation", and its second mention names `src/generative_driver/supplied/instrument_evidence.py:104` — the clause was no longer true, and line 104 is where the cited text stands today.
+- The wording of `.scratch/learning-loop/spec.md`, line 65, is the implementer's — the Spec gives only the fact, that the branch became pull request 24.
+- `tests/test_tool_boundary.py` leaves `tests/test_tool_alone.py` out of its scan of strings only, and its scan of imports now reads every Python file under `tests/` — stricter than the Spec asks, and 11-B3 wants no tool test to reach the benchmark's code.
+- The marker scan of 11-B3 looks for the marker's text anywhere in a line, not only for whole marker lines — stricter; it also caught the assertion at `tests/test_supplied_runs.py:1453`, which the Spec's table of tests names.
+- `test_03_B5_no_line_outside_a_marked_passage_says_bench` in `tests/test_client_interface.py` was renamed `test_03_B5_no_line_says_bench` — the name stated a place that is gone.
+- The module doc of `tests/test_tool_commands.py` gained two lines that cite Feature 11 — the pinned step is now the one 11-B9 leaves, and the Standards ask a module doc to cite the decision behind it.
+- Where a paragraph or a marked passage went, one adjoining empty line went with it — otherwise two empty lines would stand together.
+- The reworded paragraph of `NOTICE` takes three lines where four stood — it is wrapped at the file's width of 80.
+- `tests/test_tool_documents.py` takes the README paragraph and the folder's name from `tests/test_tool_alone.py`, also checks the anchors of links, its wheel test also checks the wheel's scripts and requirement names, and its tool test of 11-B6 asks the MCP server over stdio — the first keeps 11-B10 true of the test files, and the others check more of what 11-B2, 11-B4 and 11-B6 say.
+- The three copies under `firmware-bench/` were written with `git show ffa9880:<file>` — their blob hashes equal those of `ffa9880`.

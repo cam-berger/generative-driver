@@ -42,8 +42,9 @@ SERIAL_SUITE = ('Each test module runs in its own process, eight at a time, beca
                 'minutes and the Done check stops at 9.')
 LEFT_OUT = {'README.md': (README_PARAGRAPH,), 'STANDARDS.md': (SERIAL_SUITE, TEST_COMMAND, TEST_FILES)}
 LINK = re.compile(r'\]\(([^)\s]+)\)')
-# The client skill as the Feature gives it, by the SHA-256 of its text as UTF-8.
-SKILL_SHA256 = 'b803f831bd4435176bc3c08d4ab7aa08437de6c8f73ae519fe6943d0487ea705'
+# The client skill as the Feature gives it, by the SHA-256 of its text as UTF-8, with the one sentence its step on
+# binding gained since (Feature 01 of the stm32-acquire Run, 01-B16).
+SKILL_SHA256 = '8ec43eb202266f69056b8471c27e585966ecb7a123301ea8141b54931257fa3f'
 # What the Feature leaves of `docs/design.md` (11-B5): its sections, the titles of the amendment's items, the three
 # rows of its table of seams, the amendment's diagram, and the sentences the Feature words anew.
 DESIGN_SECTIONS = ['Original design — 2026-10-03', 'Workflow', 'Device access and recovery',

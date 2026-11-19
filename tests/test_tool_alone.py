@@ -115,7 +115,7 @@ class PackageTests(unittest.TestCase):
                 patch('shutil.which', lambda name, *more, **named: found.get(name)):
             report = doctor(Path(temporary) / 'home')
         programs = report['dependencies']
-        self.assertEqual(sorted(programs), ['codex', 'java', 'podman'])
+        self.assertEqual(sorted(programs), ['codex', 'java', 'podman', 'stm32_programmer'])
         self.assertEqual(programs['java'], {'available': True, 'path': '/somewhere/bin/java',
                                             'required_for': 'firmware analysis', 'source': 'PATH'})
         self.assertEqual(programs['podman'], {'available': False, 'path': None,

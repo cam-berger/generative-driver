@@ -190,7 +190,7 @@ class DoctorCodexTests(unittest.TestCase):
                     self.assertIn(CONFIGURE, entry['reason'])
                     self.assertEqual(sorted(report), ['core', 'dependencies', 'extras', 'home', 'plugin',
                                                       'serial_ports', 'serial_ports_available'])
-                    self.assertEqual(sorted(report['dependencies']), ['codex', 'java', 'podman'])
+                    self.assertEqual(sorted(report['dependencies']), ['codex', 'java', 'podman', 'stm32_programmer'])
                     self.assertTrue(report['core']['ok'])
             with self.subTest('a string is a command a start accepts'):
                 config.write_text(json.dumps({'executors': {'codex': {'command': sys.executable}}}), encoding='utf-8')

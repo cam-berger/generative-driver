@@ -6,7 +6,7 @@ The core targets native macOS and Windows 11+. Development uses Apple silicon ma
 |---|---|
 | Configurator | Durable background owner; native socket or Windows named pipe. Windows MCP needs an independently started owner. |
 | Codex | Installed and authenticated CLI for model runs |
-| Firmware | Pinned local import; operator owns acquisition rights. ESP acquisition needs esptool and rejects incomplete app carving. |
+| Firmware | Pinned local import; operator owns acquisition rights. ESP acquisition needs esptool and rejects incomplete app carving. STM32 flash is read through an ST-LINK probe with STM32CubeProgrammer; that read has scripted evidence only. |
 | Datasheets | Registered vendor fetch, hash and extraction; optional PDF dependency; PDFs not bundled |
 | USB | Explicit read-only discovery; control/bulk/interrupt execution via PyUSB/libusb |
 | FTDI | Explicit I2C scan/register sweep and I2C/SPI execution via PyFtdi/libusb |

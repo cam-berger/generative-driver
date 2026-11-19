@@ -36,6 +36,7 @@ COMMANDS = {
     'doctor': '[--json]',
     'configure': '--executor {codex} --command EXECUTABLE [--argument ARGUMENT] [--model MODEL] [--provider PROVIDER] '
                  '[--reasoning-effort REASONING_EFFORT]',
+    'configure-program': '--program {stm32-programmer} --command PATH [--argument ARG]',
     'setup': '--host {codex} --output OUTPUT',
     'service': '{start,status,stop}',
     'smoke': '',
@@ -139,7 +140,8 @@ class CommandLineTests(TemporaryFolderCase):
                           if 'benchmark' in line.lower() or 'report' in line.lower()], [])
 
     def test_09_B6_the_commands_are_exactly_the_fifteen_each_with_the_arguments_it_had(self):
-        self.assertEqual(len(COMMANDS), 15)
+        # Feature 01 of the stm32-acquire Run added the sixteenth, `configure-program`, directly after `configure`.
+        self.assertEqual(len(COMMANDS), 16)
         self.assertEqual(usage(typed('--help').printed),
                          'usage: generative-driver [-h] [--home HOME] {' + ','.join(COMMANDS) + '} ...')
         for command, arguments in COMMANDS.items():

@@ -1,7 +1,0 @@
-Firmware bench
-Copyright 2026 Generative Driver contributors
-
-Third-party materials retain their original notices and licenses. See
-docs/evaluator.md and the notices beside each case for the provenance of
-emulator models. Renode, Zephyr and compilers are separately distributed
-under their respective licenses.

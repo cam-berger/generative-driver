@@ -3,12 +3,12 @@
 Feature 11 of the untangle Run (docs/features/untangle/11-tool-alone.md), 11-B4 and 11-B6: no line of a tool's
 document holds a word of the benchmark's, every relative link of one resolves, and the client skill is the text the
 Feature gives. The tool's documents are the front page, the project's rules and glossary, the notice, the guides and
-decision records under `docs/`, and both copies of the client skill. The paragraph of the front page that points to
-the benchmark is taken from `tests/test_tool_alone.py`, the one tool test file that may hold the benchmark's names.
+decision records under `docs/`, and both copies of the client skill.
 
-Feature 12 of the untangle Run, 12-B7: the rules give a test command and test files that name both test folders.
-Those two lines are taken from `tests/test_tool_alone.py` as well: 11-B8 holds them, and the word scan of 11-B4 leaves
-them out.
+Feature 12 of the untangle Run parked the benchmark in a folder here; on 2026-11-19 the owner had it removed from
+this repository. So the front page has no paragraph that points to it, no link of a document leads to it, and the
+two lines of the rules that give the test command name the tool's tests alone. Those two lines are taken from
+`tests/test_tool_alone.py`, the one tool test file that may hold the benchmark's names: 11-B8 holds them.
 
 The Spec leaves 11-B5 (the design) and 11-B8 (the owner's three files) to the Reviewer. Each still has a test here,
 because the Done check asks for one by name: the design by its sections, items, diagram and new sentences, and the
@@ -22,7 +22,7 @@ import unittest
 from pathlib import Path
 
 import generative_driver
-from test_tool_alone import PARKED, README_PARAGRAPH, TEST_COMMAND, TEST_FILES
+from test_tool_alone import REMOVED, TEST_COMMAND, TEST_FILES
 from test_tool_commands import listed_tools
 
 REPO = Path(__file__).resolve().parents[1]
@@ -35,12 +35,11 @@ PLUGIN_SKILL = REPO / 'plugins/generative-driver' / SKILL
 # The words no line of a tool's document holds, in any letter case.
 WORDS = ('bench', 'harness', 'suite', 'trial', 'scorecard', 'scoring set', 'answer key', 'answer vault',
          'groundtruth', 'leak check', 'pass rate', 'mutant', 'renode')
-# The four places the scan leaves out, each by the document's name and its whole text: the paragraph of the front
-# page that points to the benchmark, the sentence of the rules on the serial suite of tests, and the two lines of
-# the rules that run both test folders (Feature 12 of the untangle Run, 12-B7).
+# The one place the scan leaves out, by the document's name and its whole text: the sentence of the rules on the
+# serial suite of tests.
 SERIAL_SUITE = ('Each test module runs in its own process, eight at a time, because the serial suite takes about 13 '
                 'minutes and the Done check stops at 9.')
-LEFT_OUT = {'README.md': (README_PARAGRAPH,), 'STANDARDS.md': (SERIAL_SUITE, TEST_COMMAND, TEST_FILES)}
+LEFT_OUT = {'STANDARDS.md': (SERIAL_SUITE,)}
 LINK = re.compile(r'\]\(([^)\s]+)\)')
 # The client skill as the Feature gives it, by the SHA-256 of its text as UTF-8, with the one sentence its step on
 # binding gained since (Feature 01 of the stm32-acquire Run, 01-B16).
@@ -94,7 +93,7 @@ AGENTS_LINES = (
     '- Keep docs concise, concrete and executable. Define terms on first use; remove repeated explanations. Preserve '
     'notices and private research artifacts. Launch model runs or physical operations only when explicitly assigned '
     'by the primary agent.')
-# The two lines in the middle are those Feature 12 of the untangle Run gives (12-B7).
+# The two lines in the middle give the test command and the test files of the tool alone.
 STANDARDS_LINES = (
     '- The configurator and workers never receive a password, its path or a plaintext answer.',
     TEST_COMMAND,
@@ -178,36 +177,29 @@ class NoBenchmarkTextTests(DocumentsCase):
         self.assertEqual(benchmark_words('docs/codex.md', 'For emulated benchmarks, see the trials.'),
                          [(1, 'bench'), (1, 'trial')])
 
-    def test_11_B4_the_scan_leaves_out_the_four_named_places_and_nothing_else(self):
-        self.assertTrue(benchmark_words('docs/setup.md', README_PARAGRAPH))
+    def test_11_B4_the_scan_leaves_out_the_one_named_place_and_nothing_else(self):
+        self.assertEqual(sum(len(places) for places in LEFT_OUT.values()), 1)
         self.assertEqual(benchmark_words('docs/setup.md', SERIAL_SUITE), [(1, 'suite')])
-        self.assertEqual(benchmark_words('README.md', f'| Task | Guide |\n\n{README_PARAGRAPH}\n'), [])
         self.assertEqual(benchmark_words('STANDARDS.md', f'{SERIAL_SUITE} `PYTHONPATH` is absolute.\n'), [])
-        # Each place is left out of its own document alone, and only by its whole text.
+        # The place is left out of its own document alone, and only by its whole text.
         self.assertEqual(benchmark_words('README.md', SERIAL_SUITE), [(1, 'suite')])
-        self.assertTrue(benchmark_words('STANDARDS.md', README_PARAGRAPH))
         self.assertEqual(benchmark_words('STANDARDS.md', SERIAL_SUITE.replace('13 minutes', '14 minutes')),
                          [(1, 'suite')])
-        self.assertEqual(benchmark_words('README.md', README_PARAGRAPH[:-1]), [(1, 'bench')])
-        # A word beside a place that is left out is still seen.
+        # A word beside the place that is left out is still seen.
         self.assertEqual(benchmark_words('STANDARDS.md', f'{SERIAL_SUITE} A trial runs.'), [(1, 'trial')])
-        self.assertEqual(benchmark_words('README.md', f'{README_PARAGRAPH} See the harness.'), [(1, 'harness')])
-        # The two lines of the rules that run both test folders: each is left out of the rules alone, only by its
-        # whole text, and a word beside it is still seen.
-        self.assertEqual(sum(len(places) for places in LEFT_OUT.values()), 4)
+        # A paragraph that points to the benchmark is seen in the front page as anywhere else.
+        self.assertEqual(benchmark_words('README.md', 'Firmware bench evaluates this tool.'), [(1, 'bench')])
+        # The two lines of the rules that give the test command hold no word of the benchmark's and need no place.
         for line in (TEST_COMMAND, TEST_FILES):
             with self.subTest(line=line[:14]):
-                self.assertEqual(benchmark_words('docs/setup.md', line), [(1, 'bench')])
-                self.assertEqual(benchmark_words('README.md', line), [(1, 'bench')])
-                self.assertEqual(benchmark_words('STANDARDS.md', f'A line.\n{line}\n'), [])
-                self.assertEqual(benchmark_words('STANDARDS.md', line[:-1]), [(1, 'bench')])
-                self.assertEqual(benchmark_words('STANDARDS.md', f'{line} A trial runs.'), [(1, 'trial')])
+                self.assertEqual(benchmark_words('STANDARDS.md', line), [])
+                self.assertEqual(benchmark_words('docs/setup.md', line), [])
 
 
 class LinkTests(DocumentsCase):
-    """Every relative link of a tool's document resolves, and one alone leads to the benchmark (11-B4)."""
+    """Every relative link of a tool's document resolves, and none leads to the benchmark's removed folder (11-B4)."""
 
-    def test_11_B4_every_relative_link_resolves_and_only_the_named_one_leads_to_the_benchmark(self):
+    def test_11_B4_every_relative_link_resolves_and_none_leads_to_the_benchmark(self):
         broken, leading, count = [], [], 0
         for name, path in self.documents():
             text = path.read_text(encoding='utf-8')
@@ -218,11 +210,11 @@ class LinkTests(DocumentsCase):
                 if not aim.exists() or anchor and aim.suffix == '.md' and anchor not in anchors(
                         aim.read_text(encoding='utf-8')):
                     broken.append(f'{name}:{number} links {target}')
-                if aim.is_relative_to(REPO / PARKED):
+                if aim.is_relative_to(REPO / REMOVED):
                     leading.append((name, text.splitlines()[number - 1]))
         self.assertGreater(count, 30)
         self.assertEqual(len(broken), 0, '\n'.join(broken))
-        self.assertEqual(leading, [('README.md', README_PARAGRAPH)])
+        self.assertEqual(leading, [])
 
     def test_11_B4_the_scan_reads_links_to_files_and_anchors_and_leaves_addresses(self):
         text = ('# Run dashboard\n\nSee [setup](setup.md), [the smoke](codex.md#verify-the-openai-cli) and '
@@ -303,7 +295,7 @@ class OwnerFilesTests(unittest.TestCase):
                 with self.subTest(file=name, line=line[:60]):
                     self.assertIn(line, lines)
 
-    def test_11_B8_the_glossary_keeps_the_tools_rows_and_the_rules_both_test_folders(self):
+    def test_11_B8_the_glossary_keeps_the_tools_rows_and_the_rules_the_tools_test_folder(self):
         if not (REPO / 'STANDARDS.md').is_file():
             self.skipTest(f'The rules are read from a checkout, and {REPO / "STANDARDS.md"} is not there')
         rows = [line for line in (REPO / 'CONTEXT.md').read_text(encoding='utf-8').splitlines()
@@ -315,9 +307,9 @@ class OwnerFilesTests(unittest.TestCase):
         rules = (REPO / 'STANDARDS.md').read_text(encoding='utf-8').splitlines()
         self.assertEqual([line for line in rules if line.startswith(('Test command:', 'Test files:'))],
                          [STANDARDS_LINES[1], STANDARDS_LINES[2]])
-        # Each of the two lines names two test folders.
+        # Each of the two lines names one test folder, the tool's.
         for line in STANDARDS_LINES[1:3]:
-            self.assertEqual(len(re.findall(r'tests/test_\*\.py', line)), 2)
+            self.assertEqual(re.findall(r'[\w-]*/?tests/test_\*\.py', line), ['tests/test_*.py'])
 
 
 if __name__ == '__main__':

@@ -25,9 +25,9 @@ How code in this project is built. Build follows these rules, the Reviewer enfor
 
 Each test module runs in its own process, eight at a time, because the serial suite takes about 13 minutes and the Done check stops at 9. `PYTHONPATH` is absolute because some tests start a configurator from another directory. A worktree links `.venv` to the main checkout's environment.
 
-Test command: `ls tests/test_*.py firmware-bench/tests/test_*.py 2>/dev/null | PYTHONPATH="$PWD/src:$PWD/firmware-bench/src" xargs -P 8 -n 1 sh -c 'out=$(.venv/bin/python -m unittest discover -v -s "$(dirname "$0")" -p "$(basename "$0")" 2>&1); s=$?; printf "%s\n" "$out"; exit $s' && node tests/dashboard-client.test.js`
+Test command: `ls tests/test_*.py | PYTHONPATH="$PWD/src" xargs -P 8 -n 1 sh -c 'out=$(.venv/bin/python -m unittest discover -v -s "$(dirname "$0")" -p "$(basename "$0")" 2>&1); s=$?; printf "%s\n" "$out"; exit $s' && node tests/dashboard-client.test.js`
 
-Test files: `tests/test_*.py`, `firmware-bench/tests/test_*.py`
+Test files: `tests/test_*.py`
 
 - Test through public interfaces at the seams the Spec agrees, so tests survive refactoring.
 - Each test name carries its Behaviour ID, such as `test_01_B2_rejects_empty_name`.

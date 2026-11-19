@@ -4,7 +4,7 @@ service knows no case.
 Feature 06 of the untangle Run (docs/features/untangle/06-benchmark-runs.md): the first two points of 06-B1, 06-B3
 to 06-B5, 06-B6 without its last sentence, 06-B7 to 06-B14 and the tool's side of 06-B20 to 06-B22. This module
 imports nothing from the benchmark package and names no registered case, so it also runs where the benchmark is
-gone. The benchmark's side of the Feature is in `firmware-bench/tests/test_benchmark_runs.py`.
+gone. The benchmark's side of the Feature is in the benchmark's tests.
 
 Temporary homes only; no model, no hardware and no password. The device is the hand-written one of
 `tests/supplied_device.py`.
@@ -1450,7 +1450,6 @@ class InterfaceDocumentTests(unittest.TestCase):
 
     def test_06_B14_limits_today_and_its_marked_passage_are_gone(self):
         self.assertNotIn('## Limits today', self.lines)
-        self.assertEqual([line for line in self.lines if 'legacy-benchmark' in line], [])
         self.assertEqual([line for line in self.lines if 'bench' in line.lower()], [])
 
 

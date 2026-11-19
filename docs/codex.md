@@ -64,11 +64,11 @@ A failure prints `"ok": false` with `failed_stage`, `reason` and `logs`, and kee
 
 ## First conversation
 
-> Use Generative Driver to check my installation, help me select a benchmark or supported device, and start a run. Save its run ID and show the accepted evidence when it finishes.
+> Use Generative Driver to check my installation, help me select a supported device, and start a run. Save its run ID and show the accepted evidence when it finishes.
 
-The configurator launches workers and retains progress after disconnect. [Benchmark instructions](../bench/README.md) cover replay, calibrated agent trials and private evaluator inputs. Plugin installation does not install optional native tools. The plugin format and stdio connection have automated checks; UI labels may vary.
+The configurator launches workers and retains progress after disconnect. Plugin installation does not install optional native tools. The plugin format and stdio connection have automated checks; UI labels may vary.
 
-For emulated benchmarks, `driver_benchmark_run` sends the evaluator password file path to a bench harness. The configurator never receives the password or its path. The harness provides the device and grades once after the run; workers see instrument readings, not grades. Current `assistive/1` results form a new series. Workers are not read-isolated; answer-key separation is password-based, not a sandbox. Fresh native calibration is required because the recorded calibration predates this protocol. See [trial commands and scoring](../bench/README.md#run-an-agent-benchmark).
+Workers are not read-isolated: a worker running as the same user can read files outside its workspace.
 
 ## Firmware analysis and interpret tasks
 
@@ -82,7 +82,7 @@ Interpretation runs as one worker unless the run starts with `interpretation` se
 
 A task-mode attempt is an inventory of the firmware's commands, one fresh worker per command, and a cross-check of the model the configurator assembles from their pieces. A repair re-runs only the commands the device contradicted. The mode needs the analysis; without it, or when an inventory or the identity command's piece is unusable, the attempt runs the single worker and its notes say so. While a task runs, `driver_status` names it in `worker.task`.
 
-Task mode is unmeasured: whether it costs fewer tokens or makes better drivers than the single worker is a hypothesis until model runs compare them. Each task's token use is recorded for that comparison, in its `task.finished` event and in a `reports` row of its own under the stage's assignment. Benchmark runs use neither the analysis nor task mode.
+Task mode is unmeasured: whether it costs fewer tokens or makes better drivers than the single worker is a hypothesis until model runs compare them. Each task's token use is recorded for that comparison, in its `task.finished` event and in a `reports` row of its own under the stage's assignment. A run on a supplied device gets no kit analysis and no task mode.
 
 ## Documents and runs without firmware
 
@@ -94,10 +94,10 @@ Pass a manual, protocol notes or a datasheet with a run as a named input of `dri
 
 The acquire worker imports each PDF, `.txt` or `.md` input with `acquire_document`, which splits it into page text. A PDF needs pypdf: install `generative-driver[docs]`. Every interpret worker reads the text of the run's documents, with the datasheet pages and protocol specifications the acquire stage fetched, under `documents/` with `DOCUMENTS.json`, up to 2 MiB in all. Documents are evidence of meanings, units and framing; where one disagrees with the firmware or the device, the worker follows the firmware or the device.
 
-A run that acquires no firmware image, or several, and names a device `binding` interprets device first: one worker writes the model from the device's replies to operations it declares `read`, with the listen evidence and the documents. The configurator refuses it any other operation, whatever the run's grants; probe and ground then test the model under those grants, and the run goes on as usual. The interpret stage's notes give the mode `device` and list each device call. A run with neither one image nor a binding skips interpretation and ends without a driver. Benchmark runs get neither documents nor device-first interpretation.
+A run that acquires no firmware image, or several, and names a device `binding` interprets device first: one worker writes the model from the device's replies to operations it declares `read`, with the listen evidence and the documents. The configurator refuses it any other operation, whatever the run's grants; probe and ground then test the model under those grants, and the run goes on as usual. The interpret stage's notes give the mode `device` and list each device call. A run with neither one image nor a binding skips interpretation and ends without a driver. A run on a supplied device gets neither documents nor device-first interpretation.
 
 ## When a run fails
 
 `driver_status`, or `python -m generative_driver status RUN_ID`, names the service's log as `log`: `daemon.log` in the state directory. The traceback behind a failed run is there, in an entry that names the run and its stage. Older entries may be in `daemon.log.1` beside it: a log over 10 MB is set aside under that name when the service starts. The same status gives `deadline`, `repairs` and `worker`, which tell a slow stage from a stuck one.
 
-A worker's tool call has 570 seconds. The service stops a call that takes longer, or that still runs when the run is cancelled or out of budget, and records it as abandoned; an effect it might have had stays uncertain until you confirm it. Benchmark runs are the exception: their tool calls still have no limit.
+A worker's tool call has 570 seconds. The service stops a call that takes longer, or that still runs when the run is cancelled or out of budget, and records it as abandoned; an effect it might have had stays uncertain until you confirm it. A run on a supplied device is the exception: its tool calls still have no limit.

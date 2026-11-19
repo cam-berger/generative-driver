@@ -3,7 +3,7 @@
 Feature 05 of the untangle Run (docs/features/untangle/05-supplied-device-stages.md): the first point of 05-B1, 05-B2,
 05-B5, the first five points of 05-B4 and the first two of 05-B6. This module imports nothing from the benchmark
 package and uses no file under `resources/bench`, so it also runs where the benchmark is gone. The benchmark's side of
-the Feature is in `firmware-bench/tests/test_benchmark_supplied_stages.py`.
+the Feature is in the benchmark's tests.
 
 Temporary directories only; no model, no hardware and no device.
 """

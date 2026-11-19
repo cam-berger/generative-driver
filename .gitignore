@@ -10,10 +10,8 @@ build/
 *.password
 *.secret
 .generative-driver/
-bench/runs/
-bench/groundtruth/plaintext/
 
 .local-runs/
 
-# Generated local device packages, reports and benchmark runs stay outside Git.
+# Generated local device packages and reports stay outside Git.
 outputs/

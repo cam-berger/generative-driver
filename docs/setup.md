@@ -2,7 +2,7 @@
 
 [Install first](../README.md). Below, `python` means your installation’s executable: `.venv/bin/python` on macOS or `.venv\Scripts\python.exe` on Windows. Quote paths containing spaces. No activation is required. With uv, use `uv run` in place of `python` from the checkout, for example `uv run python -m generative_driver doctor`; clients that need an absolute interpreter path take the same `.venv` executable.
 
-For an older Windows checkout created before `.gitattributes`, use a fresh clone: converted line endings can invalidate benchmark hashes.
+For an older Windows checkout created before `.gitattributes`, use a fresh clone: converted line endings change bytes that the tool hashes.
 
 ## Configure Codex
 
@@ -47,7 +47,7 @@ uv sync --extra dev --extra hardware --extra docs
 uv run generative-driver doctor
 ```
 
-USB drivers, permissions, Ghidra, Java and Renode are separate installations. Follow vendor instructions and check [supported paths](support.md). Optional analysis tools may run in [Podman](https://podman.io/) containers, which `doctor` reports; native core operation does not require containers or provide container USB forwarding.
+USB drivers, permissions, Ghidra and Java are separate installations. Follow vendor instructions and check [supported paths](support.md). Optional analysis tools may run in [Podman](https://podman.io/) containers, which `doctor` reports; native core operation does not require containers or provide container USB forwarding.
 
 Supply the objective, exact serial/USB/FTDI binding and allowed effects. Reads are the default; discovery does not authorize a device. For approved noninteractive tools, set `scoped_tool_approval` to `"bound-device"` or `"emulator"`. The configurator enforces assigned tools, binding and effects without changing global Codex settings. Resume with `--approve-bound-device-tools` or `--approve-emulator-tools` when authorization is already established.
 
@@ -66,10 +66,6 @@ python -m generative_driver resume RUN_ID --budget-seconds 21600 --budget-reason
 ```
 
 This sets six hours total, not six additional hours. The maximum is seven days; repeating a total adds nothing. MCP uses `budget_seconds` and `budget_reason`. Extensions retain start time, attempts and evidence and record a `run.budget_extended` event.
-
-<!-- legacy-benchmark:begin -->
-A detached bench harness drives suites; resume relaunches it and retains the current child. Suites use the same owner. Save `suite_id` and use suite status/events/result/cancel/resume. Suite and child budgets are separate; extend each explicitly. Keep CLI `--home` and MCP `GENERATIVE_DRIVER_HOME` consistent; conflicting `options.home` is refused. See [suite commands](../bench/README.md#run-a-repeated-suite).
-<!-- legacy-benchmark:end -->
 
 ## Developer command line
 

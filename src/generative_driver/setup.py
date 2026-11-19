@@ -371,9 +371,7 @@ def doctor(home=None):
     It is a diagnosis: it changes no configuration, asks the configured worker runtime only for its version, reads
     only the kit's own files and environment, never Codex's, and never fails because something optional is
     missing."""
-    purposes = {"renode": "emulated STM32 benchmark", "java": "firmware analysis",
-                "arm-none-eabi-gcc": "rebuilding STM32 firmware",
-                "podman": "optional analysis containers"}
+    purposes = {"java": "firmware analysis", "podman": "optional analysis containers"}
     dependencies = {"codex": _codex(home),
                     **{name: {"available": bool(shutil.which(name)), "path": shutil.which(name),
                               "required_for": purpose, "source": "PATH"}

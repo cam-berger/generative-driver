@@ -1,6 +1,6 @@
 # Domain documentation
 
-This is a single-context repository: one domain vocabulary for the configurator, runtime, package and benchmark.
+This is a single-context repository: one domain vocabulary for the configurator, runtime and package.
 
 ## Read before exploring
 

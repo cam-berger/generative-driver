@@ -3,7 +3,10 @@
 Feature 09 of the untangle Run (docs/features/untangle/09-commands.md): 09-B6, 09-B7, 09-B8, and of 09-B9 the hosted
 workflow and `README.md`. The benchmark is driven from a command of its own, so the tool hands nothing over to it.
 This module imports nothing from the benchmark package and names no registered case, so it also runs where the
-benchmark is gone. The benchmark's side of the Feature is in `firmware-bench/tests/test_benchmark_commands.py`.
+benchmark is gone. The benchmark's side of the Feature is in the benchmark's tests.
+
+Feature 11 (docs/features/untangle/11-tool-alone.md, 11-B9) took the benchmark's tests and the removal out of the
+hosted step, so the step is pinned here as that Feature leaves it.
 
 Temporary homes only; no model, no hardware and no password.
 """
@@ -335,8 +338,7 @@ class NoLaunchTests(ServiceCase):
 
 
 WORKFLOW = REPO / '.github' / 'workflows' / 'test.yml'
-# The step of the hosted workflow that runs the tests against the installed wheel, to the end of the file, without
-# its marked passages: what the deletion of the benchmark leaves of it.
+# The step of the hosted workflow that runs the tests against the installed wheel, to the end of the file.
 STEP = '\n'.join((
     "      - name: Test outside the checkout",
     "        shell: python",
@@ -349,7 +351,6 @@ STEP = '\n'.join((
     "              env.pop('PYTHONPATH', None)",
     "              env['GD_TEST_WHEEL'] = str(Path(glob.glob('dist/*.whl')[0]).resolve())",
     "              env['GD_TEST_SDIST'] = str(Path(glob.glob('dist/*.tar.gz')[0]).resolve())",
-    "              env['GD_TEST_REMOVAL'] = '1'",
     "              subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(repo / 'tests'), '-v'], "
     "cwd=work, env=env, check=True)",
     "              subprocess.run([sys.executable, '-m', 'generative_driver', 'smoke'], cwd=work, env=env, check=True)",
@@ -384,18 +385,6 @@ def fenced_blocks(lines):
     return blocks
 
 
-def unmarked(text):
-    """The lines of `text` outside its marked passages: without each line from one that is `# legacy-benchmark:begin`
-    to the next that is `# legacy-benchmark:end`, as the deletion of the benchmark removes them."""
-    kept, inside = [], False
-    for line in text.splitlines():
-        if line.strip() in ('# legacy-benchmark:begin', '# legacy-benchmark:end'):
-            inside = line.strip().endswith('begin')
-        elif not inside:
-            kept.append(line)
-    return kept
-
-
 class SmokeTests(unittest.TestCase):
     """The hosted tests and `README.md` use the tool's own smoke (09-B9)."""
 
@@ -412,43 +401,19 @@ class SmokeTests(unittest.TestCase):
 
     def test_09_B9_the_hosted_step_runs_the_tests_and_then_the_tools_smoke_each_with_check(self):
         before, name, step = self.workflow().partition('      - name: Test outside the checkout\n')
-        self.assertEqual('\n'.join(unmarked(name + step)) + '\n', STEP)
-        ran = [line.strip() for line in unmarked(step) if 'subprocess.run(' in line]
+        self.assertEqual(name + step, STEP)
+        ran = [line.strip() for line in step.splitlines() if 'subprocess.run(' in line]
         self.assertEqual(len(ran), 2)
         self.assertIn("'-m', 'unittest', 'discover'", ran[0])
         self.assertIn("[sys.executable, '-m', 'generative_driver', 'smoke']", ran[1])
         for line in ran:
             self.assertTrue(line.endswith('check=True)'), line)
 
-    def test_10_B7_the_step_runs_the_tools_tests_then_the_tools_smoke_and_any_other_command_is_marked(self):
-        step = self.workflow().partition('      - name: Test outside the checkout\n')[2]
-        every = [line.strip() for line in step.splitlines() if 'subprocess.run(' in line]
-        ran = [line.strip() for line in unmarked(step) if 'subprocess.run(' in line]
-        # What the deletion leaves runs the tool's tests from `tests/` and then the tool's smoke, and nothing else.
-        self.assertEqual(ran, [
-            "subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(repo / 'tests'), '-v'], "
-            "cwd=work, env=env, check=True)",
-            "subprocess.run([sys.executable, '-m', 'generative_driver', 'smoke'], cwd=work, env=env, check=True)"])
-        # Whatever else the step runs stands between the two, in a marked passage, as a process of its own that
-        # must pass, in the folder and with the environment of the others.
-        self.assertEqual([line for line in every if line in ran], ran)
-        between = every[every.index(ran[0]) + 1:every.index(ran[1])]
-        self.assertEqual(sorted(between), sorted(line for line in every if line not in ran))
-        for line in between:
-            self.assertTrue(line.endswith('cwd=work, env=env, check=True)'), line)
-
-    def test_10_B7_the_scan_leaves_out_each_marked_passage_with_its_markers(self):
-        text = '\n'.join(('steps:', '    # legacy-benchmark:begin', '    run: bench', '    # legacy-benchmark:end',
-                          '    run: tool', '# legacy-benchmark:begin', 'run: more', '# legacy-benchmark:end', 'end'))
-        self.assertEqual(unmarked(text), ['steps:', '    run: tool', 'end'])
-        self.assertEqual(unmarked('run: tool  # legacy-benchmark:begin\nrun: smoke'),
-                         ['run: tool  # legacy-benchmark:begin', 'run: smoke'])
-
     def test_09_B9_no_other_line_of_the_workflow_changed_and_none_says_bench(self):
         text = self.workflow()
         before = text.partition('      - name: Test outside the checkout\n')[0]
         self.assertEqual(hashlib.sha256(before.encode('utf-8')).hexdigest(), BEFORE_THE_STEP)
-        self.assertEqual([line for line in unmarked(text) if 'bench' in line.lower()], [])
+        self.assertEqual([line for line in text.splitlines() if 'bench' in line.lower()], [])
 
     def test_09_B9_each_install_block_of_the_readme_shows_the_tools_smoke(self):
         blocks = fenced_blocks(self.install_section())
@@ -612,20 +577,6 @@ class NoImportTests(unittest.TestCase):
         self.assertEqual(document.splitlines()[0], '# Client interface, version 4')
         self.assertEqual(hashlib.sha256(document.encode('utf-8')).hexdigest(),
                          '01bde7ab829f83fa8eac430f04003366f3b5126d71f69bb3525417869ba5a634')
-
-    def test_09_B8_this_module_imports_nothing_of_the_benchmark_and_names_no_registered_case(self):
-        # The registered cases are read from the registrations table, which is data; where the benchmark is gone
-        # there is none to name.
-        table = Path(client_interface.__file__).parent / 'resources' / 'registrations' / 'cases.json'
-        registered = json.loads(table.read_text(encoding='utf-8'))['cases'] if table.is_file() else []
-        cases = [case['id'] for case in registered]
-        self.assertEqual(benchmark_imports(Path(__file__), ''), [])
-        self.assertEqual(reaches(Path(__file__).read_text(encoding='utf-8'), ''), [])
-        texts = [node.value for node in ast.walk(ast.parse(Path(__file__).read_bytes()))
-                 if isinstance(node, ast.Constant) and isinstance(node.value, str)]
-        # A case's name as a text of its own, or inside a longer text when it is no everyday word.
-        self.assertEqual([case for case in cases if case in texts
-                          or '-' in case and any(case in text for text in texts)], [])
 
 
 if __name__ == '__main__':

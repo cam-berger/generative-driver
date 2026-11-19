@@ -5,8 +5,8 @@ Feature 08 of the untangle Run (docs/features/untangle/08-reports.md): 08-B4 but
 machine may read. The service has no summary for the benchmark's reports, does not know the folder beside its home,
 and imports nothing of the benchmark: the launch of a harness, its last import, went with Feature 09
 (docs/features/untangle/09-commands.md). This module imports nothing from the benchmark package and names no
-registered case, so it also runs where the benchmark is gone. The benchmark's side of the Feature is in
-`firmware-bench/tests/test_benchmark_surface.py`.
+registered case, so it also runs where the benchmark is gone. The benchmark's side of the Feature is in the
+benchmark's tests.
 
 Temporary homes only; no model, no hardware and no password. The device is the hand-written one of
 `tests/supplied_device.py`.

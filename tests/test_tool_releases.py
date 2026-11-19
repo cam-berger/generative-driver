@@ -20,12 +20,11 @@ def load_script():
 
 def write_checkout(root):
     (root / ".github" / "workflows").mkdir(parents=True)
-    (root / "bench").mkdir()
     (root / ".github" / "workflows" / "ci.yml").write_text(
         "TOOL: https://github.com/o/tool/releases/download/v1/tool.zip\n"
         "OLD: https://github.com/o/old/releases/download/v1/old.zip\n", encoding="utf-8")
-    (root / "bench" / "README.md").write_text(
-        "Uses [Fresh 9](https://github.com/o/fresh/releases/tag/v9).\n", encoding="utf-8")
+    (root / ".github" / "workflows" / "reference.yaml").write_text(
+        "# Uses [Fresh 9](https://github.com/o/fresh/releases/tag/v9).\n", encoding="utf-8")
 
 
 class FakeGh:

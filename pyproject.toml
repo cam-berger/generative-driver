@@ -9,7 +9,7 @@ description = "Generate device interfaces through firmware evidence and checked 
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
-dependencies = ["mcp>=2.2,<3", "cryptography>=43", "jsonschema>=4.20,<5"]
+dependencies = ["mcp>=2.2,<3", "jsonschema>=4.20,<5"]
 
 [project.urls]
 Repository = "https://github.com/cam-berger/generative-driver"
@@ -23,9 +23,6 @@ dev = ["build>=1.2"]
 [project.scripts]
 generative-driver = "generative_driver.cli:main"
 generative-driver-mcp = "generative_driver.mcp:main"
-# legacy-benchmark:begin
-firmware-bench = "generative_driver.benchmark:main"
-# legacy-benchmark:end
 
 [tool.setuptools]
 include-package-data = false

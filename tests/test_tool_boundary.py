@@ -2,9 +2,10 @@
 
 Feature 10 of the untangle Run (docs/features/untangle/10-tests.md), 10-B1 and 10-B9: no tool module and no tool test
 file imports the benchmark's code, under any of its names, and no tool test file names a path of the benchmark's
-resources or of its published record. A tool test file is a Python file under `tests/` other than the check of the
-deletion list and its tests, which the deletion removes last. This module imports nothing of the benchmark, so it
-also runs where the benchmark is gone.
+resources or of its published record. A tool test file is a Python file under `tests/`. One of them,
+`tests/test_tool_alone.py`, holds that those paths are gone and so may name them (Feature 11,
+docs/features/untangle/11-tool-alone.md). This module imports nothing of the benchmark, so it also runs where the
+benchmark is gone.
 
 The sources are read as syntax trees. Nothing is started.
 """
@@ -16,16 +17,16 @@ from pathlib import Path
 from test_shared_helpers import benchmark_imports, in_benchmark_package, tool_modules
 
 TESTS = Path(__file__).resolve().parent
-LIST_FILES = ('deletion_marking.py', 'test_deletion_marking.py')
+# The one tool test file that may name the benchmark's paths in a string of its code.
+NAMES_THE_PATHS = 'test_tool_alone.py'
 # What names the benchmark's smoke case, its resources, its registrations and its published record in a path.
 BENCHMARK_PATHS = ('setup-smoke', 'resources/bench', 'bench/cases', 'resources/registrations', 'bench/evidence',
                    'docs/verification.md')
 
 
 def tool_test_files():
-    """The tool test files, sorted: every Python file under `tests/` but the check of the deletion list and its
-    tests."""
-    return [path for path in sorted(TESTS.rglob('*.py')) if path.relative_to(TESTS).as_posix() not in LIST_FILES]
+    """The tool test files, sorted: every Python file under `tests/`."""
+    return sorted(TESTS.rglob('*.py'))
 
 
 def named_paths(source):
@@ -133,7 +134,8 @@ class NoBenchmarkPathTests(unittest.TestCase):
     """The tool's tests name nothing of the benchmark's resources or of its published record (10-B1)."""
 
     def test_10_B1_no_tool_test_file_names_a_benchmark_path_in_a_string_of_its_code(self):
-        files = [path for path in tool_test_files() if path != Path(__file__).resolve()]
+        files = [path for path in tool_test_files()
+                 if path != Path(__file__).resolve() and path.relative_to(TESTS).as_posix() != NAMES_THE_PATHS]
         self.assertGreater(len(files), 50)
         named = [f'{path.relative_to(TESTS).as_posix()}:{line} names {name}' for path in files
                  for line, name in named_paths(path.read_text(encoding='utf-8'))]

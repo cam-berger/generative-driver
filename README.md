@@ -1,6 +1,6 @@
 # Generative Driver
 
-[Driver contracts and application MCP authoring](docs/extending-drivers-and-mcp.md) · [Generated MCP verification](bench/evidence/2026-10-29-driver-contract-mcp-verification.json)
+[Driver contracts and application MCP authoring](docs/extending-drivers-and-mcp.md)
 
 Turn a supported device’s firmware or documentation into a portable driver, with evidence that it works. Use Codex or the command line.
 
@@ -53,11 +53,11 @@ The smoke runs one whole run through a service of its own, with a scripted worke
 | Connect a client | [Codex](docs/codex.md) |
 | Configure AI or hardware | [Setup and recovery](docs/setup.md) |
 | Supply your own device and mission | [Client interface](docs/client-interface.md) |
-| Evaluate a run | [Benchmarks](bench/README.md) · [Recorded results](docs/verification.md) |
-| Broaden firmware coverage | [Upstream corpus](docs/benchmark-corpus.md) · [Recorded coverage](docs/verification.md) |
 | Contribute | [Development](CONTRIBUTING.md) · [Design](docs/design.md) |
 
-The background configurator keeps runs, stage notes and evidence after the client closes. Save your run ID. Under `assistive/1`, the final equivalence verdict is an evaluator grade for benchmarks and self-evidence otherwise. Results form a new series. Workers are not read-isolated; answer-key separation is password-based, not a sandbox.
+Firmware bench, the benchmark that evaluates this tool, lies in [firmware-bench/](firmware-bench/README.md) until it moves to a repository of its own.
+
+The background configurator keeps runs, stage notes and evidence after the client closes. Save your run ID. Under `assistive/1`, a run ends with one final equivalence verdict: the configurator's own, labelled self-evidence, or one posted through the client interface for a run on a supplied device. Workers are not read-isolated: a worker running as the same user can read files outside its workspace.
 
 ## Watch a run
 

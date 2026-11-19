@@ -217,8 +217,6 @@ class ServiceCallTests(ServiceCase):
 
 
 DOCUMENT = Path(__file__).resolve().parents[1] / 'docs' / 'client-interface.md'
-# The two lines that set a passage about the legacy benchmark off; the deletion takes the passage away with them.
-BEGIN, END = '<!-- legacy-benchmark:begin -->', '<!-- legacy-benchmark:end -->'
 # Version 3 added `Stop or seal a run` to the six sections of version 2 (07-B6), and version 4 `Records on disk`
 # (08-B11).
 HEADINGS = ['Start a run on a supplied device', 'The control endpoint', 'Replace a device', 'Post one final verdict',
@@ -229,18 +227,12 @@ RECORD_NAMES = ('device-descriptor/2', 'equivalence/2', 'assistive/1')
 
 
 class DocumentTests(unittest.TestCase):
-    """The document by its text outside any marked passage, which is all of it where the benchmark is gone."""
+    """The document by its text."""
 
     def lines(self):
-        """The lines of the document outside any marked passage."""
+        """The lines of the document."""
         self.assertTrue(DOCUMENT.is_file(), 'docs/client-interface.md is missing')
-        kept, marked = [], False
-        for line in DOCUMENT.read_text(encoding='utf-8').splitlines():
-            if line.strip() in (BEGIN, END):
-                marked = line.strip() == BEGIN
-            elif not marked:
-                kept.append(line)
-        return kept
+        return DOCUMENT.read_text(encoding='utf-8').splitlines()
 
     def test_03_B5_the_first_line_names_the_interface_and_its_version(self):
         first = self.lines()[0]
@@ -255,7 +247,7 @@ class DocumentTests(unittest.TestCase):
         names = (*client_interface.CALLS, *sorted(client_interface.VERDICT_FIELDS), *DESCRIPTOR_PARTS, *RECORD_NAMES)
         self.assertEqual([name for name in names if f'`{name}`' not in text], [])
 
-    def test_03_B5_no_line_outside_a_marked_passage_says_bench(self):
+    def test_03_B5_no_line_says_bench(self):
         saying = [f'{number}: {line}' for number, line in enumerate(self.lines(), 1) if 'bench' in line.lower()]
         self.assertEqual(saying, [])
 

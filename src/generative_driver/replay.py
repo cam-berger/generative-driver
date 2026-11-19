@@ -6,7 +6,7 @@ stage's steps in order. `{"write": name}` copies the candidate file `name` into 
 file there. `{"call": tool, "arguments": {...}}` calls an assigned gateway tool; an argument `{"$context": key}` is the
 assignment context's value and `{"$result": key}` that key of the latest earlier result of the stage that has it.
 
-The worker reads nothing but the candidate and its assignment: no groundtruth, evaluator record or case source. It
+The worker reads nothing but the candidate and its assignment. It
 reaches the toolchain and the device only through the gateway, which the configurator observes and records. Its results
 are replay, never model runs."""
 import argparse
@@ -66,7 +66,7 @@ def load_candidate(directory):
     if not root.is_absolute() or root.is_symlink() or not root.is_dir():
         raise ValueError('A replay candidate is an absolute directory path: ' + str(directory))
     if _inside(root.resolve(), resources_root()):
-        raise ValueError('A replay candidate is saved worker output, never the installed case sources or groundtruth')
+        raise ValueError('A replay candidate is saved worker output, never a folder of the installed resources')
     script = root / SCRIPT
     if script.is_symlink() or not script.is_file():
         raise ValueError('A replay candidate holds ' + SCRIPT + ': ' + str(root))

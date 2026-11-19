@@ -1620,8 +1620,8 @@ class Controller:
                                     outcome_category='operator')
                     return
                 if prepared.get('blocked'):
-                    # Preparation waits for the operator: a binding, a grant, a reference or the device the bench
-                    # harness provides.
+                    # Preparation waits for the operator: a binding, a grant, a reference or the device a client
+                    # supplies.
                     self._state(run_id,'blocked',prepared['blocked'],stage,outcome_category='operator')
                     return
                 if prepared.get('skip'):

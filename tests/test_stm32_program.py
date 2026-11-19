@@ -6,14 +6,32 @@ installation. No test here starts it, or anything else: a path that names no fil
 
 Temporary homes only; no model, no hardware and no program of ST's.
 """
+import contextlib
+import io
 import json
 import os
 import tempfile
 import unittest
+from collections import namedtuple
 from pathlib import Path
 from unittest.mock import patch
 
-from test_tool_commands import typed
+from generative_driver import cli
+
+Ended = namedtuple('Ended', 'status printed errors')
+
+
+def typed(*words):
+    """What the tool's command line does for `words` in this process: its status, what it printed and what it wrote
+    to its error stream. An exit of the parser counts as the status. The environment variables are then put back as
+    they were, since the hosted tests run every test module in one process."""
+    printed, errors = io.StringIO(), io.StringIO()
+    with patch.dict(os.environ), contextlib.redirect_stdout(printed), contextlib.redirect_stderr(errors):
+        try:
+            status = cli.main(list(words))
+        except SystemExit as stopped:
+            status = stopped.code
+    return Ended(status, printed.getvalue(), errors.getvalue())
 
 
 class ProgramCase(unittest.TestCase):

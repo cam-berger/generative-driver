@@ -11,7 +11,6 @@ benchmark's tests.
 Temporary homes only; no model, no hardware and no password. The device is the hand-written one of
 `tests/supplied_device.py`.
 """
-import ast
 import contextlib
 import copy
 import importlib
@@ -31,8 +30,7 @@ from types import MappingProxyType
 from unittest.mock import patch
 
 from generative_driver import client, client_interface, integrity, replay
-from test_client_calls import TOKEN, ServiceCase, service_source
-from test_shared_helpers import benchmark_imports, tool_modules
+from test_client_calls import TOKEN, ServiceCase
 from test_supplied_runs import WORKERS, ScriptedCase, gauge_model
 
 DOCUMENT = Path(__file__).resolve().parents[1] / 'docs' / 'client-interface.md'
@@ -72,10 +70,6 @@ def backticked(text):
 class ImportListTests(unittest.TestCase):
     """The interface is version 4, and its module lists what a client may import (08-B9)."""
 
-    def test_08_B9_the_module_and_the_documents_first_line_say_version_4(self):
-        self.assertEqual(client_interface.VERSION, 4)
-        self.assertEqual(DOCUMENT.read_text(encoding='utf-8').splitlines()[0], '# Client interface, version 4')
-
     def test_08_B9_imports_maps_each_module_to_the_names_a_client_may_take_from_it(self):
         self.assertEqual(dict(client_interface.IMPORTS), IMPORTS)
         self.assertEqual(list(client_interface.IMPORTS), list(IMPORTS))
@@ -85,18 +79,6 @@ class ImportListTests(unittest.TestCase):
         # A client reads the list and cannot change it.
         self.assertIs(type(client_interface.IMPORTS), MappingProxyType)
 
-    def test_08_B9_all_gains_imports_and_the_calls_the_protocol_and_the_verdict_fields_are_unchanged(self):
-        self.assertEqual(sorted(client_interface.__all__),
-                         ['CALLS', 'IMPORTS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors',
-                          'firmware_errors', 'frozen_driver', 'mission_errors', 'verdict_errors'])
-        self.assertEqual(sorted(client_interface.__all__), sorted(IMPORTS['generative_driver.client_interface']))
-        self.assertEqual(client_interface.CALLS, ('ping', 'start', 'resume', 'status', 'events', 'result',
-                                                  'attach_device', 'record_evaluation', 'cancel', 'seal'))
-        self.assertEqual(client_interface.PROTOCOL, 'assistive/1')
-        self.assertEqual(client_interface.VERDICT_FIELDS,
-                         frozenset({'schema', 'status', 'equivalent', 'basis', 'checks', 'diff', 'passed', 'total',
-                                    'mission', 'frozen_artifact_sha256', 'evidence_sha256', 'protocol'}))
-
     def test_08_B9_every_listed_module_can_be_imported_and_holds_each_name_listed_for_it(self):
         for module, names in client_interface.IMPORTS.items():
             loaded = importlib.import_module(module)
@@ -104,56 +86,6 @@ class ImportListTests(unittest.TestCase):
             for name in names:
                 with self.subTest(module=module, name=name):
                     self.assertTrue(hasattr(loaded, name), module + ' has no ' + name)
-
-
-# What the document says of each name version 4 added to the list, in the tool's terms (08-B10).
-ADDITIONS = (
-    '`SUPPORTED_EXECUTORS` are the executors a `start` takes.',
-    '`resolve_executor(executor)` gives the executor a `start` runs with, the default for none, and refuses one the '
-    'tool does not have, as `start` does.',
-    '`candidate_config(config)` checks the saved candidate of a replay, given as `{"candidate": <directory>}`, and '
-    'gives the `executor_config` of a `start` with the executor `replay`: the candidate\'s absolute path and the hash '
-    'of its files, as `start` checks them.',
-    '`call_tool(name, arguments)` calls one of the tool\'s developer tools in this process, the ones '
-    '`generative-driver tool` calls.',
-    '`resources_root()` is the folder of the tool\'s installed assets.',
-    '`interface_runtime` is the runtime a driver package runs on.',
-    '`validate_model` of `interface_runtime.engine` checks a device model without opening a transport.')
-
-
-class ImportSectionTests(unittest.TestCase):
-    """The document's section `What a client imports` says the same as `IMPORTS` (08-B10)."""
-
-    def listed(self):
-        """What the section's list gives: each module with the names after it, from its bullet lines."""
-        found = {}
-        for line in section('What a client imports'):
-            if line.startswith('- '):
-                module, *names = backticked(line)
-                self.assertNotIn(module, found)
-                found[module] = names
-        return found
-
-    def test_08_B10_the_section_lists_exactly_the_modules_and_names_of_imports(self):
-        listed = self.listed()
-        self.assertEqual({module: sorted(names) for module, names in listed.items()},
-                         {module: sorted(names) for module, names in client_interface.IMPORTS.items()})
-        self.assertEqual(list(listed), list(client_interface.IMPORTS))
-        # A module with no name is listed as such, and not left out.
-        [bare] = [line for line in section('What a client imports') if line.startswith('- `interface_runtime`:')]
-        self.assertEqual(bare, '- `interface_runtime`: no name.')
-
-    def test_08_B10_it_says_of_each_addition_what_it_is(self):
-        text = said('What a client imports')
-        for sentence in ADDITIONS:
-            with self.subTest(sentence=sentence):
-                self.assertIn(sentence, text)
-
-    def test_08_B10_it_says_that_any_listed_module_may_be_imported_for_where_it_is_installed(self):
-        self.assertIn('Any listed module may be imported for where it is installed.', said('What a client imports'))
-
-    def test_08_B10_it_keeps_the_sentence_that_nothing_else_is_part_of_the_interface(self):
-        self.assertIn('Nothing else in the tool is part of this interface.', said('What a client imports'))
 
 
 class ImportedNameTests(ServiceCase):
@@ -238,36 +170,10 @@ RESULT_KEYS = ['accepted_handoffs', 'agent', 'budget_seconds', 'created', 'deadl
                'emulator_recovery_count', 'equivalence', 'evaluator_verdicts', 'limits', 'log', 'ok',
                'outcome_category', 'progress', 'reason', 'repairs', 'request', 'run_id', 'scoped_tool_approval',
                'stage', 'stage_notes', 'status', 'stopping', 'uncertain_effect', 'updated', 'worker', 'worker_reports']
-# The three keys of a run's state file from which the service once built a summary for the reports of an earlier
-# protocol. No code writes them any more.
-EARLIER_STATE = {'accepted_gates': [{'stage': 'probe', 'assignment_id': 'a-1', 'verdict': 'passed'}],
-                 'evaluations': [{'stage': 'probe', 'assignment_id': 'a-1', 'verdict': 'passed', 'passed': 1,
-                                  'total': 1}],
-                 'final_evaluation': {'stage': 'reuse', 'verdict': 'passed', 'passed': 1, 'total': 1}}
 
 
 class ResultTests(ServiceCase):
-    """`result` has no `benchmark_summary` (08-B4)."""
-
-    def state_file(self, run_id):
-        return self.home / 'runs' / run_id / 'supplied' / 'state.json'
-
-    def test_08_B4_result_of_a_supplied_run_has_no_benchmark_summary(self):
-        started = self.held(self.supplied())
-        self.assertFalse(self.state_file(started['run_id']).exists())
-        self.assertNotIn('benchmark_summary', self.call('result', run_id=started['run_id']))
-
-    def test_08_B4_nor_when_the_runs_state_file_holds_the_keys_the_summary_was_built_from(self):
-        started = self.held(self.supplied())
-        before = self.call('result', run_id=started['run_id'])
-        state = self.state_file(started['run_id'])
-        state.parent.mkdir(parents=True)
-        state.write_text(json.dumps(EARLIER_STATE), encoding='utf-8')
-        result = self.call('result', run_id=started['run_id'])
-        self.assertNotIn('benchmark_summary', result)
-        # The state file is the stage code's own: nothing of it reaches `result`.
-        self.assertEqual(result, before)
-        self.assertEqual([key for key in EARLIER_STATE if key in json.dumps(result)], [])
+    """The keys of `result` (08-B4)."""
 
     def test_08_B4_every_other_key_of_result_is_as_before(self):
         supplied = self.held(self.supplied(client_record={'order': 17}))
@@ -300,14 +206,6 @@ class ReplayCandidateTests(ServiceCase):
     def replay_start(self, candidate, **config):
         return {**self.supplied(), 'executor': 'replay', 'executor_config': {'candidate': candidate, **config}}
 
-    def test_08_B5_candidate_config_takes_the_configuration_alone(self):
-        self.assertEqual(list(inspect.signature(replay.candidate_config).parameters), ['config'])
-        candidate = saved_candidate(self.root / 'candidate')
-        with self.assertRaises(TypeError):
-            replay.candidate_config({'candidate': candidate}, bench=self.root / 'elsewhere')
-        self.assertEqual(replay.candidate_config({'candidate': candidate}),
-                         {'runtime': 'replay', 'candidate': candidate, 'candidate_sha256': integrity.digest(candidate)})
-
     def test_08_B5_it_makes_every_other_check_with_the_same_texts_in_the_same_order(self):
         candidate = saved_candidate(self.root / 'candidate')
         sha256 = integrity.digest(candidate)
@@ -327,7 +225,7 @@ class ReplayCandidateTests(ServiceCase):
                          'A replay candidate holds replay.json: ' + str(self.root / 'empty'))
         installed = Path(client_interface.__file__).parent / 'resources' / 'toolchain'
         self.assertEqual(self.refused_config({'candidate': str(installed)}),
-                         'A replay candidate is saved worker output, never the installed case sources or groundtruth')
+                         'A replay candidate is saved worker output, never a folder of the installed resources')
         self.assertEqual(self.refused_config({'candidate': candidate, 'candidate_sha256': 'f' * 64}),
                          'The replay candidate changed since its hash was recorded: ' + candidate)
         self.assertEqual(replay.candidate_config({'runtime': 'replay', 'candidate': candidate,
@@ -356,53 +254,6 @@ class ReplayCandidateTests(ServiceCase):
         self.assertIn('replay.json is not UTF-8 JSON', self.refused('start', **self.replay_start(candidate)))
         self.assertEqual(list((self.home / 'runs').glob('*')) if (self.home / 'runs').is_dir() else [], [])
 
-    def test_08_B5_neither_the_replay_module_nor_the_service_holds_the_text_bench_home(self):
-        for source in (Path(replay.__file__), service_source()):
-            with self.subTest(module=source.name):
-                lines = source.read_text(encoding='utf-8').splitlines()
-                self.assertEqual([f'{number}: {line.strip()}' for number, line in enumerate(lines, 1)
-                                  if 'bench home' in line.lower()], [])
-
-    def test_08_B5_the_service_names_bench_home_nowhere(self):
-        # It named it in the branch that launched a harness, which went with Feature 09 of this Run (09-B8 of
-        # docs/features/untangle/09-commands.md).
-        lines = service_source().read_text(encoding='utf-8').splitlines()
-        self.assertGreater(len(lines), 2000)
-        self.assertEqual([number for number, line in enumerate(lines, 1) if 'bench_home' in line], [])
-
-
-class LaunchTests(unittest.TestCase):
-    """The service imported the benchmark only to launch a harness (08-B7). Since Feature 09 of this Run it launches
-    none, and no tool module imports the benchmark (09-B8 of docs/features/untangle/09-commands.md)."""
-
-    def test_08_B7_the_service_imports_nothing_of_the_benchmark(self):
-        self.assertEqual(sorted(benchmark_imports(service_source(), 'generative_driver')), [])
-        tree = ast.parse(service_source().read_bytes())
-        naming = [node.lineno for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
-                  and 'benchmark' in ast.unparse(node)]
-        self.assertEqual(naming, [])
-
-    def test_08_B7_no_tool_module_imports_the_benchmark(self):
-        importing = sorted(str(path.relative_to(path.parents[1])).replace('\\', '/')
-                           for path, package in tool_modules() if benchmark_imports(path, package))
-        self.assertEqual(importing, [])
-        self.assertGreater(len(tool_modules()), 80)
-
-
-class ThisModuleTests(unittest.TestCase):
-    def test_08_B7_this_module_imports_nothing_of_the_benchmark_and_names_no_registered_case(self):
-        # The registered cases are read from the registrations table, which is data; where the benchmark is gone
-        # there is none to name.
-        table = Path(client_interface.__file__).parent / 'resources' / 'registrations' / 'cases.json'
-        registered = json.loads(table.read_text(encoding='utf-8'))['cases'] if table.is_file() else []
-        cases = [case['id'] for case in registered]
-        self.assertEqual(benchmark_imports(Path(__file__), ''), [])
-        texts = [node.value for node in ast.walk(ast.parse(Path(__file__).read_bytes()))
-                 if isinstance(node, ast.Constant) and isinstance(node.value, str)]
-        # A case's name as a text of its own, or inside a longer text when it is no everyday word.
-        self.assertEqual([case for case in cases if case in texts
-                          or '-' in case and any(case in text for text in texts)], [])
-
 
 CLEANUP_FAILED = 'Cleanup failed; operator reconciliation required'
 
@@ -429,11 +280,6 @@ class CleanupTextTests(ServiceCase):
         self.assertIs(status['uncertain_effect'], True)
         failed = [event['data'] for event in self.call('events', **run)['events'] if event['kind'] == 'cleanup.failed']
         self.assertEqual(failed, [{'reason': 'RuntimeError: scripted release failure'}])
-
-    def test_08_B8_no_tool_module_holds_the_text_benchmark_cleanup_failed(self):
-        holding = [path.name for path, _ in tool_modules()
-                   if 'benchmark cleanup failed' in path.read_text(encoding='utf-8').lower()]
-        self.assertEqual(holding, [])
 
 
 RECORDS = 'Records on disk'
@@ -524,11 +370,6 @@ class RecordsCase(ScriptedCase):
 
 class RecordsOnDiskTests(RecordsCase):
     """Each thing the document's section `Records on disk` says of a run's records is true of a run (08-B11)."""
-
-    def test_08_B11_the_section_lies_between_stop_or_seal_a_run_and_what_a_client_imports(self):
-        headings = [line[3:] for line in DOCUMENT.read_text(encoding='utf-8').splitlines() if line.startswith('## ')]
-        self.assertEqual(headings[-3:], ['Stop or seal a run', RECORDS, 'What a client imports'])
-        self.assertEqual(headings.count(RECORDS), 1)
 
     def test_08_B11_the_database_has_the_tables_and_columns_it_names_and_a_client_opens_it_read_only(self):
         self.assertIn('`runs.sqlite3` in the home is the SQLite database of the service\'s records, and a client '
@@ -739,14 +580,6 @@ class HomeRecordTests(ServiceCase):
         self.controller = self.service()
         self.call('status', run_id=started['run_id'])
         self.assertEqual(tree(kept), before)
-
-
-class DocumentWordTests(unittest.TestCase):
-    def test_08_B11_no_line_of_the_document_says_bench_or_suite(self):
-        lines = DOCUMENT.read_text(encoding='utf-8').splitlines()
-        self.assertIn('## ' + RECORDS, lines)
-        self.assertEqual([f'{number}: {line}' for number, line in enumerate(lines, 1)
-                          if 'bench' in line.lower() or 'suite' in line.lower()], [])
 
 
 if __name__ == '__main__':

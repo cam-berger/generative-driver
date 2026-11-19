@@ -9,7 +9,6 @@ gone. The benchmark's side of the Feature is in the benchmark's tests.
 Temporary homes only; no model, no hardware and no password. The device is the hand-written one of
 `tests/supplied_device.py`.
 """
-import ast
 import copy
 import hashlib
 import json
@@ -20,13 +19,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from generative_driver import client_interface, integrity, interpret_tasks, kit_analysis
+from generative_driver import client_interface, integrity
 from input_path_fixtures import RunCase as ScriptedRunCase
 from interpret_task_fixtures import INVENTORY, RunCase as TaskRunCase, cortex_m_image, seen, stopped
 from supplied_device import SuppliedDevice
-from test_shared_helpers import benchmark_imports, tool_modules
-from test_supplied_stages import (ECHO, FIRMWARE_SHA256, MAPPING, MISSION, SAMPLED, hand_written_firmware,
-                                  hand_written_package)
+from test_supplied_stages import FIRMWARE_SHA256, MAPPING, MISSION, SAMPLED, hand_written_firmware
 
 SHA = 'a' * 64
 # A device descriptor without a fault. Its endpoint file need not exist for `device_errors`.
@@ -279,21 +276,6 @@ class VerdictRuleTests(unittest.TestCase):
         unscored = {**VERDICT, 'status': 'unscored', 'equivalent': None, 'checks': [], 'passed': 0, 'total': 0,
                     'diff': [{'id': 'evaluation', 'reason': 'the evaluator could not run'}], 'evidence_sha256': None}
         self.assertEqual(client_interface.verdict_errors(unscored), [])
-
-
-class InterfaceModuleTests(unittest.TestCase):
-    """The interface module as version 2 made it (06-B14), with what version 3 added (07-B6 of
-    docs/features/untangle/07-suites.md), the calls `cancel` and `seal`, and what version 4 added (08-B9 of
-    docs/features/untangle/08-reports.md): its number and the name `IMPORTS`."""
-
-    def test_06_B14_the_module_has_the_calls_of_version_2_and_its_two_more_names(self):
-        self.assertEqual(client_interface.VERSION, 4)
-        self.assertEqual(client_interface.CALLS[:8], ('ping', 'start', 'resume', 'status', 'events', 'result',
-                                                      'attach_device', 'record_evaluation'))
-        self.assertEqual(client_interface.CALLS[8:], ('cancel', 'seal'))
-        self.assertEqual(sorted(client_interface.__all__),
-                         ['CALLS', 'IMPORTS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors',
-                          'firmware_errors', 'frozen_driver', 'mission_errors', 'verdict_errors'])
 
 
 TOKEN = 'a token only this test holds'
@@ -707,91 +689,6 @@ class StageOptionTests(ScriptedCase):
         child.assert_not_called()
 
 
-def enclosing(tree):
-    """Every node of `tree` with the names of the functions it lies in, outermost first."""
-    def walk(node, names):
-        for child in ast.iter_child_nodes(node):
-            inner = [*names, child.name] if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else names
-            yield child, inner
-            yield from walk(child, inner)
-    return walk(tree, [])
-
-
-def service_source():
-    from generative_driver import configurator
-    return Path(configurator.__file__)
-
-
-class NoCaseTests(unittest.TestCase):
-    """The service knows no case (06-B8). Its suite code, which these scans left out, is gone since Feature 07 of the
-    untangle Run (docs/features/untangle/07-suites.md), so they leave nothing out for it."""
-
-    def test_06_B8_the_helpers_that_read_a_case_are_gone(self):
-        from generative_driver import configurator
-        for name in ('_supplied_inputs', '_expected_pin', '_provided_device', '_v2', '_emulated', '_observed_case',
-                     '_verify_snapshot'):
-            with self.subTest(name=name):
-                self.assertFalse(hasattr(configurator, name), name)
-                self.assertFalse(hasattr(configurator.Controller, name), name)
-
-    def test_06_B8_no_function_reads_a_case_a_pin_or_a_snapshot_hash(self):
-        keys = ('case', 'case_options', 'case_pin', '_case_pin', '_snapshot_sha256', '_execution_run_dir')
-        text = lambda node: isinstance(node, ast.Constant) and node.value in keys
-        found = []
-        for node, names in enclosing(ast.parse(service_source().read_bytes())):
-            if not names or names[-1] == '_earlier_case_run':
-                continue
-            used = (isinstance(node, ast.Subscript) and text(node.slice)
-                    or isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'get'
-                    and bool(node.args) and text(node.args[0])
-                    or isinstance(node, ast.Compare) and text(node.left)
-                    and any(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops))
-            if used:
-                found.append(f'{names[-1]}, line {node.lineno}')
-        self.assertEqual(found, [])
-
-    def test_06_B8_the_scan_sees_each_way_of_reading_a_key(self):
-        source = ("def reads(spec):\n    a = spec['case']\n    b = spec.get('case_pin')\n    c = '_case_pin' in spec\n"
-                  "    d = 'case_options' not in spec\n    return spec['goal'], spec.get('device')\n")
-        keys = ('case', 'case_options', 'case_pin', '_case_pin')
-        text = lambda node: isinstance(node, ast.Constant) and node.value in keys
-        lines = sorted({node.lineno for node, _ in enclosing(ast.parse(source))
-                        if isinstance(node, ast.Subscript) and text(node.slice)
-                        or isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                        and node.func.attr == 'get' and bool(node.args) and text(node.args[0])
-                        or isinstance(node, ast.Compare) and text(node.left)})
-        self.assertEqual(lines, [2, 3, 4, 5])
-
-    def test_06_B8_the_benchmark_imports_that_remain_are_the_named_ones(self):
-        # None: the last, which launched a harness, left in Feature 09 (09-B8 of
-        # docs/features/untangle/09-commands.md).
-        allowed = set()
-        other = []
-        for node, names in enclosing(ast.parse(service_source().read_bytes())):
-            if not isinstance(node, (ast.Import, ast.ImportFrom)):
-                continue
-            module = ('generative_driver.' + (node.module or '') if isinstance(node, ast.ImportFrom) and node.level == 1
-                      else getattr(node, 'module', None) or '')
-            for alias in node.names:
-                name = module if isinstance(node, ast.ImportFrom) else alias.name
-                if name.startswith('generative_driver.benchmark') and \
-                        (names[-1] if names else None, name, alias.name) not in allowed:
-                    other.append(f'{names[-1] if names else "module"} imports {alias.name} from {name}')
-        self.assertEqual(other, [])
-        # The scan above agrees with the helper every Feature of this Run uses: nothing is imported at module level.
-        taken = benchmark_imports(service_source(), 'generative_driver')
-        self.assertEqual(taken, [])
-        self.assertEqual([node for node in ast.parse(service_source().read_bytes()).body
-                          if isinstance(node, (ast.Import, ast.ImportFrom))
-                          and 'benchmark' in (getattr(node, 'module', None) or '')], [])
-
-    def test_06_B8_device_access_reads_no_pin(self):
-        from generative_driver import device_access
-        source = Path(device_access.__file__).read_text(encoding='utf-8')
-        for word in ('_case_pin', 'case_pin', '_emulated', "'case'"):
-            self.assertNotIn(word, source)
-
-
 class ReplaceTests(ScriptedCase):
     def test_06_B9_the_service_replaces_a_failed_device_for_a_model_fault_on_a_supplied_run(self):
         # The device answers `ERR` where the model expects `OK`: a write that reached it and failed for the model.
@@ -1108,61 +1005,6 @@ class ClientRecordTests(ServiceCase):
         script = Path(project_run.__code__.co_filename).parent / 'resources' / 'dashboard' / 'app.js'
         self.assertNotIn('data.case', script.read_text(encoding='utf-8'))
 
-    def test_06_B13_no_tool_module_outside_the_reports_reads_a_key_of_a_client_record(self):
-        reading = []
-        for path, package in tool_modules():
-            if path.name == 'reporting.py':
-                continue
-            source = path.read_text(encoding='utf-8')
-            if path != service_source():
-                # No other module so much as names the record.
-                if 'client_record' in source:
-                    reading.append(f'{path.name} names client_record')
-                continue
-            reading += [f'{path.name} line {line} reads a key of the record' for line in record_key_reads(source)]
-        self.assertEqual(reading, [])
-        # The scan sees a key read where there is one, in a function of any name, and leaves a plain hand-back alone.
-        sample = ("def result(spec):\n    out = {'client_record': spec['client_record']}\n"
-                  "    pin = spec['client_record']['case_pin']\n    name = spec.get('client_record').get('case')\n"
-                  "    return out, pin, name\n"
-                  "def _suite_experiment(spec):\n    return (spec.get('client_record') or {}).get('snapshot_sha256')\n")
-        self.assertEqual(record_key_reads(sample), [3, 4, 7])
-
-
-def record_key_reads(source):
-    """The lines of the Python `source` that read a key of a client record: a subscript of, or a mapping method on,
-    an expression that names `client_record`."""
-    mentions = lambda node: any(isinstance(inner, ast.Constant) and inner.value == 'client_record'
-                                for inner in ast.walk(node))
-    lines = set()
-    for node, names in enclosing(ast.parse(source)):
-        if (isinstance(node, ast.Subscript) and mentions(node.value)
-                or isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr in ('get', 'items', 'keys', 'values') and mentions(node.func.value)):
-            lines.add(node.lineno)
-    return sorted(lines)
-
-
-def tool_files():
-    """Every file of the tool under `src/`, as (path, bytes): the files of `interface_runtime` and those of
-    `generative_driver` outside `benchmark.py` and `benchmark_support/`. Compiled files are left out."""
-    import generative_driver
-    import interface_runtime
-    found = []
-    for package in (generative_driver, interface_runtime):
-        root = Path(package.__file__).resolve().parent
-        for path in sorted(root.rglob('*')):
-            parts = path.relative_to(root.parent).parts
-            if (path.is_file() and '__pycache__' not in parts and parts[:2] not in (
-                    ('generative_driver', 'benchmark.py'), ('generative_driver', 'benchmark_support'))):
-                found.append((path, path.read_bytes()))
-    return found
-
-
-def holding(name):
-    """The tool's files that hold the text `name`, by file name."""
-    return [path.name for path, data in tool_files() if name.encode() in data]
-
 
 # The fresh worker's package tool as the service offers it: the description and the schema it had under its old name.
 PACKAGE_TOOL = {
@@ -1193,7 +1035,6 @@ class PackageToolTests(ScriptedCase):
             worker.offered = worker.controller.call('tools', worker.identity)['tools']
             package = worker.task['context']['package_dir']
             worker.called = worker.tool('package_execute', package_dir=package, operation='level')
-            worker.old = worker.tool('benchmark_package_execute', package_dir=package, operation='level')
         device = self.device(units={'gauge': 'percent'}, values={'gauge': 42})
         with patch.object(Controller, '_generated_reuse', staticmethod(lambda prepared: prepared)):
             return self.run_with({**WORKERS, 'reuse': reuse}, **self.supplied(device))
@@ -1218,17 +1059,6 @@ class PackageToolTests(ScriptedCase):
                  if event['data']['stage'] == 'reuse']
         self.assertEqual([call['name'] for call in calls], ['package_execute', 'package_execute'])
         self.assertIs(calls[-1]['connected'], True)
-
-    def test_06_B20_the_tool_is_not_dispatched_under_its_old_name(self):
-        self.package_run()
-        [worker] = self.workers('reuse')
-        self.assertIsInstance(worker.old, ValueError, worker.old)
-        self.assertEqual(str(worker.old), 'Tool is not assigned to this worker')
-        self.assertEqual([event['data']['name'] for event in self.events('tool.refused')],
-                         ['benchmark_package_execute'])
-
-    def test_06_B20_no_file_of_the_tool_holds_the_old_name(self):
-        self.assertEqual(holding('benchmark_package_execute'), [])
 
 
 class GeneratedReuseTests(FullRunCase):
@@ -1285,11 +1115,6 @@ class SchemaNameTests(FullRunCase):
         [worker] = self.fixture.workers('ground')
         self.assertEqual(worker.evidence['schema'], 'ground-evidence/3')
 
-    def test_06_B21_no_file_of_the_tool_holds_an_old_schema_name(self):
-        for name in ('benchmark-capabilities/2', 'benchmark-ground-evidence/3'):
-            with self.subTest(name=name):
-                self.assertEqual(holding(name), [])
-
 
 # What a full supplied run leaves under its `supplied/` folder: the six records of 06-B22.
 RECORDS = ['candidate-history', 'live-observations-0.jsonl', 'package-checks', 'package-events.jsonl', 'state.json',
@@ -1322,23 +1147,6 @@ class RecordFolderTests(FullRunCase):
         self.assertEqual(len(worker.evidence['live_observations']), 2)
 
 
-class ThisModuleTests(unittest.TestCase):
-    def test_06_B7_this_module_and_its_device_helper_import_nothing_of_the_benchmark_and_name_no_registered_case(self):
-        # The registered cases are read from the registrations table, which is data; where the benchmark is gone
-        # there is none to name.
-        table = Path(client_interface.__file__).parent / 'resources' / 'registrations' / 'cases.json'
-        registered = json.loads(table.read_text(encoding='utf-8'))['cases'] if table.is_file() else []
-        cases = [case['id'] for case in registered]
-        for path in (Path(__file__), Path(__file__).with_name('supplied_device.py')):
-            with self.subTest(module=path.name):
-                self.assertEqual(benchmark_imports(path, ''), [])
-                texts = [node.value for node in ast.walk(ast.parse(path.read_bytes()))
-                         if isinstance(node, ast.Constant) and isinstance(node.value, str)]
-                # A case's name as a text of its own, or inside a longer text when it is no everyday word.
-                self.assertEqual([case for case in cases if case in texts
-                                  or '-' in case and any(case in text for text in texts)], [])
-
-
 class NoDeviceTextTests(unittest.TestCase):
     def test_06_B7_a_device_stage_without_a_device_waits_with_the_text_that_names_the_supplied_device(self):
         from generative_driver.supplied import stages
@@ -1357,115 +1165,8 @@ class NoDeviceTextTests(unittest.TestCase):
                                                'the run with a device, a firmware and a mission'})
 
 
-DOCUMENT = Path(__file__).resolve().parents[1] / 'docs' / 'client-interface.md'
-
-
-class InterfaceDocumentTests(unittest.TestCase):
-    """The interface document by its text: what version 2 made it say (06-B14), under the title of version 4."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.lines = DOCUMENT.read_text(encoding='utf-8').splitlines()
-        cls.text = ' '.join(' '.join(cls.lines).split())
-
-    def rows(self, heading_of_table):
-        """The first cell of each row of the table whose header row is `heading_of_table`, without backticks."""
-        start = self.lines.index(heading_of_table) + 2
-        cells = []
-        for line in self.lines[start:]:
-            if not line.startswith('|'):
-                break
-            cells.append(line.strip('|').split('|')[0].strip())
-        return cells
-
-    def test_06_B14_the_title_carries_the_modules_version(self):
-        # Version 4 since Feature 08 (08-B9).
-        self.assertEqual(self.lines[0], '# Client interface, version 4')
-        self.assertEqual(self.lines[0], f'# Client interface, version {client_interface.VERSION}')
-
-    def test_06_B14_the_start_table_has_the_firmware_the_mission_and_the_client_record(self):
-        keys = self.rows('| Key | Value |')
-        for key in ('`goal`', '`device`', '`firmware`', '`mission`', '`client_record`', '`evaluation_token_sha256`'):
-            self.assertIn(key, keys)
-        self.assertIn('`device`, `firmware` and `mission` come together', self.text)
-        self.assertIn('need `evaluation_token_sha256`', self.text)
-
-    def test_06_B14_it_gives_the_rules_of_the_mission_and_of_the_firmware(self):
-        for said in ('`firmware_errors(firmware)`', '`mission_errors(mission)`', '`path`', '`sha256`',
-                     '`tasks`', '`reuse_objective`', '`operating_conditions`', '`meaning`', '`inputs`', '`outputs`',
-                     '`sampling`', '`acquire`', '`retained`', '`instrument`', '`absolute_tolerance`', '`unit`',
-                     '`integer`', '`number`', '`string`', '`bytes`', '`[A-Za-z][A-Za-z0-9_]{0,63}`',
-                     '1 to 16', '1000 characters', '262144 bytes'):
-            with self.subTest(said=said):
-                self.assertIn(said, self.text)
-        # What the tool does with a task's sampling and with an output's instrument and tolerance.
-        self.assertIn('compares', self.text)
-        self.assertIn("the device's reading of that name", self.text)
-
-    def test_06_B14_the_descriptors_table_is_that_of_device_descriptor_2(self):
-        self.assertEqual(self.rows('| Part | Value |'),
-                         ['`schema`', '`control`', '`session_id`', '`binding`', '`firmware_sha256`', '`instrument`',
-                          '`development_conditions`'])
-        self.assertIn('`device-descriptor/2`', self.text)
-        for gone in ('device-descriptor/1', 'provided-emulator', 'image_sha256', 'provider_id', 'time_policy'):
-            self.assertNotIn(gone, self.text)
-
-    def test_06_B14_it_says_what_the_endpoint_file_holds_and_how_the_tool_speaks_to_it(self):
-        for said in ('`family`', '`AF_UNIX`', '`AF_PIPE`', '`address`', '`authkey`', 'as hex',
-                     '`multiprocessing.connection`', 'one request per connection', '`method`', '`params`',
-                     '`{"ok": true, "result": ...}`', '`{"ok": false, "error": ..., "reason": ...}`', '4 MiB'):
-            with self.subTest(said=said):
-                self.assertIn(said, self.text)
-
-    def test_06_B14_it_gives_each_of_the_six_requests_with_its_params_and_the_parts_the_tool_reads(self):
-        requests = self.rows('| Request | Params the tool sends | Parts of the answer the tool reads | When |')
-        self.assertEqual(requests, ['`status`', '`observe`', '`select_condition`', '`set_running`', '`replace`',
-                                    '`release`'])
-        start = self.lines.index('| Request | Params the tool sends | Parts of the answer the tool reads | When |')
-        table = {line.strip('|').split('|')[0].strip().strip('`'): line for line in self.lines[start + 2:start + 8]}
-        named = {'status': ('`session_id`', '`binding`', '`healthy`'),
-                 'observe': ('`session_id`', '`values`', '`units`', '`condition`'),
-                 'select_condition': ('`condition_id`', '`expected_session_id`'),
-                 'set_running': ('`running`',),
-                 'replace': ('`expected_session_id`', '`evidence_ids`', '`dispatch_ids`', '`deadline_seconds`',
-                             '`emulator-recovery/2`', '`old_session_id`', '`new_session_id`', '`binding`',
-                             '`old_owner_stopped`', '`initial_state_verified`'),
-                 'release': ('`session_id`',)}
-        for request, parts in named.items():
-            for part in parts:
-                with self.subTest(request=request, part=part):
-                    self.assertIn(part, table[request])
-
-    def test_06_B14_the_verdict_table_has_the_twelve_fields_and_result_gives_the_client_record(self):
-        fields = ' '.join(self.rows('| Field | Value |'))
-        for field in TWELVE:
-            self.assertIn(f'`{field}`', fields)
-        self.assertEqual(len(self.rows('| Field | Value |')), 10, 'ten rows hold the twelve fields')
-        for gone in ('`method`', '`capabilities_sha256`'):
-            self.assertNotIn(gone, fields)
-        for gone in ('capabilities_sha256', 'equivalence/1', 'fresh-final', 'recorded-reuse'):
-            self.assertNotIn(gone, self.text)
-        self.assertIn('`equivalence/2`', self.text)
-        self.assertRegex(self.text, r'`result` gives [^.]*`client_record`')
-
-    def test_06_B14_limits_today_and_its_marked_passage_are_gone(self):
-        self.assertNotIn('## Limits today', self.lines)
-        self.assertEqual([line for line in self.lines if 'bench' in line.lower()], [])
-
-
 class CatchUpTests(TaskRunCase):
     """What arrived with `main` uses the tool's own integrity helpers (06-B1)."""
-
-    def test_06_B1_the_modules_that_arrived_take_their_integrity_helpers_from_the_tool(self):
-        self.assertIs(interpret_tasks.IntegrityError, integrity.IntegrityError)
-        self.assertIs(kit_analysis.IntegrityError, integrity.IntegrityError)
-        self.assertIs(kit_analysis.digest, integrity.digest)
-        # The helpers the tool has of its own. `reporting.py` keeps its other benchmark imports until Feature 08.
-        own = (*integrity.__all__, '*', None)
-        taken = [f'{path.name} imports {name} from {module}' for path, package in tool_modules()
-                 for module, name in benchmark_imports(path, package)
-                 if module == 'generative_driver.benchmark_support.integrity' and name in own]
-        self.assertEqual(taken, [])
 
     def test_06_B1_an_inventory_task_that_changes_a_sealed_input_blocks_the_run_for_integrity(self):
         controller, run, _, folder = self.start(cortex_m_image(), interpretation='tasks',

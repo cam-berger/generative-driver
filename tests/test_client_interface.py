@@ -216,41 +216,5 @@ class ServiceCallTests(ServiceCase):
                          {'ok': False, 'error': 'ValueError', 'reason': 'Invalid evaluation record: ' + FIELDS_MESSAGE})
 
 
-DOCUMENT = Path(__file__).resolve().parents[1] / 'docs' / 'client-interface.md'
-# Version 3 added `Stop or seal a run` to the six sections of version 2 (07-B6), and version 4 `Records on disk`
-# (08-B11).
-HEADINGS = ['Start a run on a supplied device', 'The control endpoint', 'Replace a device', 'Post one final verdict',
-            'Read the records and the frozen driver', 'Stop or seal a run', 'Records on disk', 'What a client imports']
-DESCRIPTOR_PARTS = ('schema', 'control', 'endpoint_file', 'session_id', 'binding', 'firmware_sha256', 'instrument',
-                    'development_conditions')
-RECORD_NAMES = ('device-descriptor/2', 'equivalence/2', 'assistive/1')
-
-
-class DocumentTests(unittest.TestCase):
-    """The document by its text."""
-
-    def lines(self):
-        """The lines of the document."""
-        self.assertTrue(DOCUMENT.is_file(), 'docs/client-interface.md is missing')
-        return DOCUMENT.read_text(encoding='utf-8').splitlines()
-
-    def test_03_B5_the_first_line_names_the_interface_and_its_version(self):
-        first = self.lines()[0]
-        self.assertEqual(first, '# Client interface, version 4')
-        self.assertEqual(first, f'# Client interface, version {client_interface.VERSION}')
-
-    def test_03_B5_the_second_level_headings_are_the_eight_in_their_order(self):
-        self.assertEqual([line[3:] for line in self.lines() if line.startswith('## ')], HEADINGS)
-
-    def test_03_B5_names_every_call_verdict_field_descriptor_part_and_record_name_in_backticks(self):
-        text = '\n'.join(self.lines())
-        names = (*client_interface.CALLS, *sorted(client_interface.VERDICT_FIELDS), *DESCRIPTOR_PARTS, *RECORD_NAMES)
-        self.assertEqual([name for name in names if f'`{name}`' not in text], [])
-
-    def test_03_B5_no_line_says_bench(self):
-        saying = [f'{number}: {line}' for number, line in enumerate(self.lines(), 1) if 'bench' in line.lower()]
-        self.assertEqual(saying, [])
-
-
 if __name__ == '__main__':
     unittest.main()

@@ -1,4 +1,4 @@
-"""The same generic firmware-analysis inputs for device runs and benchmark workers."""
+"""The same generic firmware-analysis inputs for every run."""
 import json
 from pathlib import Path
 

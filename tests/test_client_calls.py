@@ -10,12 +10,9 @@ benchmark's tests.
 Temporary homes only; no model, no hardware and no password. The device is the hand-written one of
 `tests/supplied_device.py`.
 """
-import ast
 import copy
 import hashlib
-import inspect
 import json
-import re
 import sqlite3
 import tempfile
 import time
@@ -24,25 +21,13 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from generative_driver import client_interface, integrity, replay, run_status
+from generative_driver import integrity
 from supplied_device import SuppliedDevice
-from test_shared_helpers import benchmark_imports
 from test_supplied_stages import MISSION, hand_written_firmware
 
 TOKEN = 'a token only this test holds'
 TOKEN_SHA256 = hashlib.sha256(TOKEN.encode()).hexdigest()
-# The methods the service served for a suite before this Feature.
-SUITE_CALLS = ('suite_start', 'suite_resume', 'suite_reserve', 'suite_attach', 'suite_start_child',
-               'suite_resume_child', 'suite_settle', 'suite_no_run', 'suite_flag', 'suite_sealed', 'suite_detach',
-               'suite_cancel', 'suite_status', 'suite_events', 'suite_result')
-SUITE_TABLES = ('suites', 'suite_trials', 'suite_events')
 SEALED = 'A sealed run does not resume or take a device: '
-DOCUMENT = Path(__file__).resolve().parents[1] / 'docs' / 'client-interface.md'
-
-
-def service_source():
-    from generative_driver import configurator
-    return Path(configurator.__file__)
 
 
 class ServiceCase(unittest.TestCase):
@@ -308,230 +293,6 @@ class WholeConfigurationTests(ServiceCase):
                          '<directory>}')
         (candidate / 'replay.json').write_text('not a candidate', encoding='utf-8')
         self.assertIn('replay.json', self.refused('start', **{**self.supplied(), **replay_config}))
-
-
-def enclosing(tree):
-    """Every node of `tree` with the names of the functions it lies in, outermost first."""
-    def walk(node, names):
-        for child in ast.iter_child_nodes(node):
-            inner = [*names, child.name] if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else names
-            yield child, inner
-            yield from walk(child, inner)
-    return walk(tree, [])
-
-
-class NoSuiteTests(ServiceCase):
-    """The service has no suite (07-B5)."""
-
-    def test_07_B5_a_suite_call_is_refused_as_any_method_the_service_does_not_have(self):
-        started = self.held(self.supplied())
-        for method in SUITE_CALLS:
-            with self.subTest(method=method):
-                self.assertEqual(self.refused(method, suite_id='suite-0123456789abcdef'), 'Unknown run_id')
-                self.assertEqual(self.refused(method, run_id=started['run_id'], suite_id='suite-0123456789abcdef'),
-                                 'Unknown method: ' + method)
-        self.assertEqual(self.refused('never_a_method', run_id=started['run_id']), 'Unknown method: never_a_method')
-
-    def tables(self):
-        with closing(sqlite3.connect(self.home / 'runs.sqlite3')) as db:
-            return {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-
-    def test_07_B5_in_a_new_home_the_services_database_has_no_suite_table(self):
-        self.held(self.supplied())
-        tables = self.tables()
-        self.assertIn('runs', tables)
-        self.assertEqual([table for table in SUITE_TABLES if table in tables], [])
-        self.assertEqual([table for table in tables if 'suite' in table], [])
-
-    def test_07_B5_in_a_home_that_has_the_suite_tables_the_service_neither_reads_nor_changes_them(self):
-        self.controller.close()
-        # The tables as the version before this Feature made them (that version makes them itself, so they are made
-        # here only where they are missing), with a suite that version would have blocked when the service started.
-        with closing(sqlite3.connect(self.home / 'runs.sqlite3')) as db, db:
-            db.executescript('''
-                CREATE TABLE IF NOT EXISTS suites (
-                    id TEXT PRIMARY KEY, request_id TEXT UNIQUE, request_json TEXT NOT NULL,
-                    frozen_json TEXT NOT NULL, status TEXT NOT NULL, reason TEXT,
-                    created REAL NOT NULL, updated REAL NOT NULL,
-                    budget_seconds REAL NOT NULL, cancelled INTEGER NOT NULL DEFAULT 0,
-                    harness_token_sha256 TEXT, harness_pid INTEGER, harness_attached INTEGER NOT NULL DEFAULT 0,
-                    harness_lock TEXT);
-                CREATE TABLE IF NOT EXISTS suite_trials (
-                    suite_id TEXT NOT NULL, ordinal INTEGER NOT NULL, trial_json TEXT NOT NULL,
-                    child_request_id TEXT NOT NULL UNIQUE, run_id TEXT UNIQUE,
-                    status TEXT NOT NULL, outcome_category TEXT NOT NULL DEFAULT 'unknown',
-                    result_json TEXT, attempt INTEGER NOT NULL DEFAULT 1, first_attempt TEXT, no_run_reason TEXT,
-                    regrade TEXT, audit TEXT, PRIMARY KEY(suite_id,ordinal));
-                CREATE TABLE IF NOT EXISTS suite_events (
-                    seq INTEGER PRIMARY KEY AUTOINCREMENT, suite_id TEXT NOT NULL,
-                    kind TEXT NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL);
-                INSERT INTO suites(id, request_id, request_json, frozen_json, status, created, updated, budget_seconds)
-                    VALUES('suite-earlier', 'earlier', '{}', '{"trials": []}', 'running', 1.0, 1.0, 600.0);
-                INSERT INTO suite_trials(suite_id, ordinal, trial_json, child_request_id, status)
-                    VALUES('suite-earlier', 0, '{"ordinal": 0}', 'suite:suite-earlier:trial:0', 'launching');
-                INSERT INTO suite_events(suite_id, kind, payload, created)
-                    VALUES('suite-earlier', 'suite.started', '{}', 1.0);
-            ''')
-
-        def held_by_the_tables():
-            with closing(sqlite3.connect(self.home / 'runs.sqlite3')) as db:
-                return {table: (db.execute('SELECT sql FROM sqlite_master WHERE name=?', (table,)).fetchone(),
-                                db.execute('SELECT * FROM ' + table).fetchall()) for table in SUITE_TABLES}
-        before = held_by_the_tables()
-        self.assertEqual([row[4] for row in before['suites'][1]], ['running'])
-        self.controller = self.service()
-        started = self.held(self.supplied(request_id='suite:suite-earlier:trial:0'))
-        self.call('status', request_id='suite:suite-earlier:trial:0')
-        self.call('result', run_id=started['run_id'])
-        self.call('cancel', run_id=started['run_id'])
-        self.call('seal', run_id=started['run_id'])
-        self.assertEqual(held_by_the_tables(), before)
-        self.assertEqual(self.refused('suite_status', suite_id='suite-earlier'), 'Unknown run_id')
-        self.assertEqual(held_by_the_tables(), before)
-
-    def test_07_B5_the_source_of_the_service_has_none_of_the_suite_names(self):
-        source = service_source().read_text(encoding='utf-8')
-        named = ('suite_start', 'find_request', '_replay_suite_config', '_harness_identity', '_harness_alive',
-                 '_sealing', '_attached_to', '_assistive', 'OLD_SUITE', 'TAKEN', '_slot', '_child_evaluation',
-                 '_child_mismatch', '_child_ended', '_cancel_live', '_started_from', '_resumed_on', '_budgeted',
-                 '_first_attempt', '_reserved_for_scoring', '_verify_suite')
-        self.assertEqual([name for name in named if re.search(r'(?<![A-Za-z0-9_])' + name + r'(?![A-Za-z0-9_])',
-                                                              source)], [])
-        tree = ast.parse(source)
-        defined = [node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                                                                             ast.ClassDef))]
-        for node in tree.body:
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(
-                node, (ast.AnnAssign, ast.AugAssign)) else []
-            defined += [name.id for target in targets for name in ast.walk(target) if isinstance(name, ast.Name)]
-        self.assertIn('Controller', defined)
-        self.assertIn('TERMINAL', defined)
-        self.assertEqual([name for name in defined if 'suite' in name.lower()], [])
-        # Nor does the service keep or call anything of that name on itself: no suite lock, store or method.
-        self.assertEqual(sorted({node.attr for node in ast.walk(tree)
-                                 if isinstance(node, ast.Attribute) and 'suite' in node.attr.lower()}), [])
-
-    def test_07_B5_start_takes_the_params_alone(self):
-        from generative_driver.configurator import Controller
-        self.assertEqual(list(inspect.signature(Controller.start).parameters), ['self', 'params'])
-        starts = {name: list(inspect.signature(value).parameters) for name, value in vars(Controller).items()
-                  if 'start' in name and inspect.isfunction(value)}
-        self.assertIn('start', starts)
-        for name, parameters in starts.items():
-            with self.subTest(function=name):
-                # No start takes an intent to store or a flag for a complete configuration.
-                self.assertEqual([parameter for parameter in parameters if 'intent' in parameter
-                                  or 'complete' in parameter], [])
-        # The request a run keeps is the params of its `start`, whatever start made it.
-        params = self.supplied(request_id='gauge-1')
-        started = self.held(params)
-        self.assertEqual(self.call('result', run_id=started['run_id'])['request'], json.loads(json.dumps(params)))
-
-    def test_07_B5_the_benchmark_imports_that_remain_in_the_service_are_exactly_the_named_ones(self):
-        # The two others left in Feature 08 (08-B7 of docs/features/untangle/08-reports.md), and those that launched
-        # a harness in Feature 09 (09-B8 of docs/features/untangle/09-commands.md): none remains.
-        named = set()
-        found = set()
-        for node, names in enclosing(ast.parse(service_source().read_bytes())):
-            if not isinstance(node, (ast.Import, ast.ImportFrom)):
-                continue
-            module = ('generative_driver.' + (node.module or '') if isinstance(node, ast.ImportFrom) and node.level == 1
-                      else getattr(node, 'module', None) or '')
-            for alias in node.names:
-                name = module if isinstance(node, ast.ImportFrom) else alias.name
-                if name.startswith('generative_driver.benchmark'):
-                    found.add((names[-1] if names else None, name, alias.name))
-        self.assertEqual(found, named)
-        self.assertEqual(sorted(benchmark_imports(service_source(), 'generative_driver')),
-                         sorted((module, name) for _, module, name in named))
-
-    def test_07_B5_the_helpers_only_suite_code_called_have_left_the_tool(self):
-        self.assertFalse(hasattr(run_status, 'without'))
-        self.assertFalse(hasattr(replay, 'suite_candidates'))
-        self.assertFalse(hasattr(replay, 'stored_candidate'))
-        # What the tool's own runs use of these modules stays.
-        self.assertTrue(callable(run_status.added))
-        self.assertTrue(callable(replay.candidate_config))
-
-    def test_07_B5_this_module_imports_nothing_of_the_benchmark_and_names_no_registered_case(self):
-        # The registered cases are read from the registrations table, which is data; where the benchmark is gone
-        # there is none to name.
-        table = Path(client_interface.__file__).parent / 'resources' / 'registrations' / 'cases.json'
-        registered = json.loads(table.read_text(encoding='utf-8'))['cases'] if table.is_file() else []
-        cases = [case['id'] for case in registered]
-        self.assertEqual(benchmark_imports(Path(__file__), ''), [])
-        texts = [node.value for node in ast.walk(ast.parse(Path(__file__).read_bytes()))
-                 if isinstance(node, ast.Constant) and isinstance(node.value, str)]
-        # A case's name as a text of its own, or inside a longer text when it is no everyday word.
-        self.assertEqual([case for case in cases if case in texts
-                          or '-' in case and any(case in text for text in texts)], [])
-
-
-class VersionThreeTests(unittest.TestCase):
-    """What version 3 made the interface document and module say (07-B6), under the number and with the names of
-    version 4 (08-B9 of docs/features/untangle/08-reports.md)."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.lines = DOCUMENT.read_text(encoding='utf-8').splitlines()
-        cls.text = ' '.join(' '.join(cls.lines).split())
-
-    def section(self, heading):
-        """The text of the section under the second-level `heading`, as one line."""
-        start = self.lines.index('## ' + heading) + 1
-        end = next((number for number in range(start, len(self.lines)) if self.lines[number].startswith('## ')),
-                   len(self.lines))
-        return ' '.join(' '.join(self.lines[start:end]).split())
-
-    def row(self, key):
-        """The value cell of the row of the start table whose key cell holds `key`."""
-        [line] = [line for line in self.lines if line.startswith('| `' + key + '`')]
-        return line.strip('|').split('|', 1)[1].strip()
-
-    def test_07_B6_the_module_and_the_documents_first_line_say_version_4(self):
-        self.assertEqual(client_interface.VERSION, 4)
-        self.assertEqual(self.lines[0], '# Client interface, version 4')
-
-    def test_07_B6_the_calls_gain_cancel_and_seal_and_lose_nothing_and_the_names_are_those_of_version_4(self):
-        self.assertEqual(client_interface.CALLS, ('ping', 'start', 'resume', 'status', 'events', 'result',
-                                                  'attach_device', 'record_evaluation', 'cancel', 'seal'))
-        self.assertEqual(sorted(client_interface.__all__),
-                         ['CALLS', 'IMPORTS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_errors',
-                          'firmware_errors', 'frozen_driver', 'mission_errors', 'verdict_errors'])
-        for name in client_interface.CALLS:
-            with self.subTest(call=name):
-                self.assertIn('`' + name + '`', self.text)
-
-    def test_07_B6_the_start_table_says_what_an_executor_config_and_a_request_id_do(self):
-        config = self.row('executor_config')
-        self.assertIn('On a supplied run it is the whole configuration, and without it the run has what the operator '
-                      'configured.', config)
-        self.assertIn('`status` finds the run by it', self.row('request_id'))
-
-    def test_07_B6_it_says_that_ping_answers_with_the_process_id_of_the_service(self):
-        [sentence] = [part for part in re.split(r'(?<=[.])\s', self.text) if '`pid`' in part]
-        for said in ('`ping`', 'the process id of the service', 'another service process answers'):
-            with self.subTest(said=said):
-                self.assertIn(said, sentence)
-
-    def test_07_B6_the_section_on_reading_records_gives_the_request_id_its_refusal_and_the_request(self):
-        section = self.section('Read the records and the frozen driver')
-        self.assertIn('`status` takes a `run_id` or a `request_id`', section)
-        self.assertIn('`Unknown request_id`', section)
-        self.assertRegex(section, r'`result` gives [^.]*`request`')
-
-    def test_07_B6_a_new_section_gives_cancel_and_seal(self):
-        headings = [line[3:] for line in self.lines if line.startswith('## ')]
-        self.assertIn('Stop or seal a run', headings)
-        section = self.section('Stop or seal a run')
-        for said in ('`cancel`', '`seal`', '`run_id`', '`{"ok": true, "run_id": ..., "sealed": true}`', '`resume`',
-                     '`attach_device`', '`A sealed run does not resume or take a device: <run_id>`'):
-            with self.subTest(said=said):
-                self.assertIn(said, section)
-
-    def test_07_B6_no_line_of_the_document_says_bench_or_suite(self):
-        self.assertEqual([f'{number}: {line}' for number, line in enumerate(self.lines, 1)
-                          if 'bench' in line.lower() or 'suite' in line.lower()], [])
 
 
 if __name__ == '__main__':

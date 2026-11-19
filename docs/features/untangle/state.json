@@ -3,11 +3,7 @@
   "slug": "untangle",
   "branch": "mdk/untangle",
   "stage": "spec",
-  "awaiting": {
-    "kind": "breakdown",
-    "feature": null,
-    "sha256": "373b93e16fd11a96f5755fd3bc6d4ec8f270ffed9a2b90f17a46e49511f9b6fe"
-  },
+  "awaiting": null,
   "current": "11",
   "features": [
     {
@@ -72,13 +68,13 @@
     },
     {
       "id": "11",
-      "slug": "documents",
+      "slug": "tool-alone",
       "status": "pending",
       "base": null
     },
     {
       "id": "12",
-      "slug": "two-packages",
+      "slug": "firmware-bench",
       "status": "pending",
       "base": null
     }

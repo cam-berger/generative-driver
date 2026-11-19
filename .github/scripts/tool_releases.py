@@ -1,8 +1,8 @@
 """Report tools pinned to a GitHub release that trail their latest upstream release.
 
 A pin is a link to https://github.com/<owner>/<repo>/releases/download/<tag>/... or
-.../releases/tag/<tag> in a watched file: the workflows under .github/workflows and the native
-reference setup in firmware-bench/README.md. Needs an authenticated GitHub CLI (gh).
+.../releases/tag/<tag> in a watched file: the workflows under .github/workflows. Needs an
+authenticated GitHub CLI (gh).
 
     python .github/scripts/tool_releases.py                # print each pinned tool: current or behind
     python .github/scripts/tool_releases.py --open-issues  # also open one issue per new release
@@ -21,7 +21,7 @@ import sys
 from urllib.parse import quote, unquote
 
 ROOT = Path(__file__).resolve().parents[2]
-WATCHED = (".github/workflows/*.yml", ".github/workflows/*.yaml", "firmware-bench/README.md")
+WATCHED = (".github/workflows/*.yml", ".github/workflows/*.yaml")
 PIN = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/releases/(?:download|tag)/([^/\s)\"'<>#?]+)")
 
 
